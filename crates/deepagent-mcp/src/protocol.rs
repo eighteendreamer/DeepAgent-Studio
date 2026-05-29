@@ -157,7 +157,8 @@ mod tests {
 
     #[test]
     fn parses_error_response() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}"#;
         let res: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert!(res.result.is_none());
         assert_eq!(res.error.unwrap().code, -32601);

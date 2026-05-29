@@ -171,11 +171,16 @@ mod tests {
     #[tokio::test]
     async fn registers_and_namespaces_tools() {
         let mut reg = McpRegistry::new();
-        let n = reg.register("asana", client(tools_transport())).await.unwrap();
+        let n = reg
+            .register("asana", client(tools_transport()))
+            .await
+            .unwrap();
         assert_eq!(n, 2);
         assert_eq!(reg.server_count(), 1);
         let tools = reg.all_tools();
-        assert!(tools.iter().any(|t| t.namespaced_name == "mcp__asana__search"));
+        assert!(tools
+            .iter()
+            .any(|t| t.namespaced_name == "mcp__asana__search"));
         assert!(tools
             .iter()
             .any(|t| t.namespaced_name == "mcp__asana__create_task"));
@@ -184,7 +189,9 @@ mod tests {
     #[tokio::test]
     async fn invokes_routed_tool() {
         let mut reg = McpRegistry::new();
-        reg.register("asana", client(tools_transport())).await.unwrap();
+        reg.register("asana", client(tools_transport()))
+            .await
+            .unwrap();
         let res = reg
             .invoke("mcp__asana__search", serde_json::json!({"q": "x"}))
             .await
@@ -205,7 +212,9 @@ mod tests {
     #[tokio::test]
     async fn invoke_unknown_tool_on_known_server_errors() {
         let mut reg = McpRegistry::new();
-        reg.register("asana", client(tools_transport())).await.unwrap();
+        reg.register("asana", client(tools_transport()))
+            .await
+            .unwrap();
         let err = reg
             .invoke("mcp__asana__nonexistent", serde_json::json!({}))
             .await
@@ -216,7 +225,12 @@ mod tests {
     #[tokio::test]
     async fn duplicate_server_registration_fails() {
         let mut reg = McpRegistry::new();
-        reg.register("asana", client(tools_transport())).await.unwrap();
-        assert!(reg.register("asana", client(tools_transport())).await.is_err());
+        reg.register("asana", client(tools_transport()))
+            .await
+            .unwrap();
+        assert!(reg
+            .register("asana", client(tools_transport()))
+            .await
+            .is_err());
     }
 }

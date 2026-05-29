@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${CLAUDE_PROJECT_DIR}"],
+      "env": {
+        "LOG_LEVEL": "info"
+      }
+    },
+    "asana": {
+      "type": "sse",
+      "url": "https://mcp.asana.com/sse"
+    },
+    "internal-api": {
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${API_TOKEN}"
+      }
+    }
+  }
+}

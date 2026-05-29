@@ -34,3 +34,33 @@ export interface SessionDetail {
   timeline: TimelineEntry[];
   stats: SessionStats;
 }
+
+export interface Command {
+  id: string;
+  title: string;
+  category: string;
+  shortcut: string | null;
+}
+
+export interface ApprovalRequest {
+  call_id: string;
+  tool: string;
+  risk: string;
+  arguments: string;
+  reason: string;
+}
+
+export type DiffKind = "context" | "added" | "removed";
+
+export interface DiffLine {
+  kind: DiffKind;
+  old_line: number | null;
+  new_line: number | null;
+  content: string;
+}
+
+export interface DiffResult {
+  lines: DiffLine[];
+  added: number;
+  removed: number;
+}

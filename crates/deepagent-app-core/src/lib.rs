@@ -11,8 +11,15 @@
 //! [`service::AppService`]; the UI never touches kernel internals, so the wire
 //! contract stays stable as the kernel evolves.
 
+pub mod commands;
+pub mod diff;
 pub mod dto;
 pub mod service;
 
-pub use dto::{SessionDetailDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto};
+pub use commands::{builtin_commands, filter_commands};
+pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
+pub use dto::{
+    ApprovalRequestDto, CommandDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto,
+    TimelineEntryDto,
+};
 pub use service::AppService;

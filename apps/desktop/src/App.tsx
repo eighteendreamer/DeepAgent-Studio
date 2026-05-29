@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
-import { getSessionDetail, isTauri, listSessions } from "./api";
-import type { SessionDetail, SessionSummary } from "./types";
+import { useCallback, useEffect, useState } from "react";
+import { getPendingApprovals, getSessionDetail, isTauri, listSessions } from "./api";
+import type { ApprovalRequest, Command, SessionDetail, SessionSummary } from "./types";
 import { Sidebar } from "./components/Sidebar";
 import { Timeline } from "./components/Timeline";
 import { Inspector } from "./components/Inspector";
+import { CommandPalette } from "./components/CommandPalette";
+import { ApprovalDialog } from "./components/ApprovalDialog";
+import { DiffView } from "./components/DiffView";
 
 export function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -11,17 +14,25 @@ export function App() {
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Load session list on mount.
-  useEffect(() => {
+  // Interactive overlays.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [approval, setApproval] = useState<ApprovalRequest | null>(null);
+  const [showMetrics, setShowMetrics] = useState(true);
+
+  const refresh = useCallback(() => {
     listSessions()
       .then((s) => {
         setSessions(s);
-        if (s.length > 0) setActiveId(s[0].id);
+        if (s.length > 0 && !activeId) setActiveId(s[0].id);
       })
       .catch((e) => setError(String(e)));
-  }, []);
+  }, [activeId]);
 
-  // Load detail when the active session changes.
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
   useEffect(() => {
     if (!activeId) {
       setDetail(null);
@@ -32,6 +43,44 @@ export function App() {
       .catch((e) => setError(String(e)));
   }, [activeId]);
 
+  // Global keyboard shortcuts (Codex-style).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(true);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        setDiffOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const runCommand = useCallback(
+    (cmd: Command) => {
+      switch (cmd.id) {
+        case "session.refresh":
+          refresh();
+          break;
+        case "view.diff":
+          setDiffOpen(true);
+          break;
+        case "view.metrics":
+          setShowMetrics((m) => !m);
+          break;
+        case "approvals.review":
+          getPendingApprovals().then((a) => setApproval(a[0] ?? null));
+          break;
+        default:
+          // Other commands are no-ops in this read-only preview build.
+          break;
+      }
+    },
+    [refresh]
+  );
+
   return (
     <div className="app">
       <header className="topbar">
@@ -39,6 +88,9 @@ export function App() {
           DeepAgent<span className="dot">.</span>Studio
         </span>
         <span className="spacer" />
+        <button className="topbar-btn" onClick={() => setPaletteOpen(true)}>
+          ⌘K Commands
+        </button>
         <span className="env-pill">{isTauri() ? "tauri" : "preview"}</span>
       </header>
 
@@ -56,7 +108,15 @@ export function App() {
         )}
       </main>
 
-      <Inspector stats={detail?.stats ?? null} />
+      {showMetrics ? <Inspector stats={detail?.stats ?? null} /> : <div />}
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onRun={runCommand} />
+      <DiffView open={diffOpen} onClose={() => setDiffOpen(false)} />
+      <ApprovalDialog
+        request={approval}
+        onApprove={() => setApproval(null)}
+        onReject={() => setApproval(null)}
+      />
     </div>
   );
 }

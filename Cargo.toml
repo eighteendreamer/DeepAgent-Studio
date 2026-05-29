@@ -25,8 +25,12 @@ members = [
     "crates/deepagent-observation",
     "crates/deepagent-security",
     "crates/deepagent-app-core",
+    "crates/deepagent-mcp",
     "apps/cli",
 ]
+# The Tauri desktop shell is its own workspace root (it carries the WebView
+# toolchain dependency tree). Exclude it so this kernel workspace ignores it.
+exclude = ["apps/desktop/src-tauri"]
 
 # Phase placeholders (created in later phases):
 #   deepagent-prompts      (Phase 11)
@@ -68,6 +72,7 @@ deepagent-subagents = { path = "crates/deepagent-subagents" }
 deepagent-observation = { path = "crates/deepagent-observation" }
 deepagent-security = { path = "crates/deepagent-security" }
 deepagent-app-core = { path = "crates/deepagent-app-core" }
+deepagent-mcp = { path = "crates/deepagent-mcp" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

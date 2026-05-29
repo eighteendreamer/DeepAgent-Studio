@@ -225,7 +225,10 @@ mod tests {
         let json = r#"{"_comment":"hi","api":{"type":"http","url":"https://x.com/mcp"}}"#;
         let cfg = McpConfig::parse(json).unwrap();
         assert_eq!(cfg.servers.len(), 1);
-        assert_eq!(cfg.servers["api"].effective_type().unwrap(), TransportType::Http);
+        assert_eq!(
+            cfg.servers["api"].effective_type().unwrap(),
+            TransportType::Http
+        );
     }
 
     #[test]

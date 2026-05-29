@@ -9,6 +9,7 @@ description = "Model Context Protocol (MCP): config (.mcp.json), JSON-RPC client
 
 [dependencies]
 deepagent-core.workspace = true
+deepagent-tools.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

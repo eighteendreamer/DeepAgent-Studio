@@ -33,7 +33,11 @@ impl McpClient {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    async fn call(&self, method: &str, params: Option<serde_json::Value>) -> Result<serde_json::Value> {
+    async fn call(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
         let req = JsonRpcRequest::new(self.next_id(), method, params);
         let resp = self.transport.send(&req).await?;
         if let Some(err) = resp.error {

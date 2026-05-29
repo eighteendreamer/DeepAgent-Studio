@@ -12,7 +12,11 @@ use deepagent_observation::{build_timeline, SessionStats};
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::Database;
 
-use crate::dto::{SessionDetailDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto};
+use crate::commands::{builtin_commands, filter_commands};
+use crate::diff::{diff_lines, DiffResult};
+use crate::dto::{
+    CommandDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto,
+};
 
 /// The application service backing the UI.
 pub struct AppService {
@@ -100,6 +104,16 @@ impl AppService {
             stats,
         })
     }
+
+    /// The command-palette commands, optionally filtered by a fuzzy `query`.
+    pub fn commands(&self, query: &str) -> Vec<CommandDto> {
+        filter_commands(query, &builtin_commands())
+    }
+
+    /// Compute a line-based diff between `old` and `new` for the Diff view.
+    pub fn diff(&self, old: &str, new: &str) -> DiffResult {
+        diff_lines(old, new)
+    }
 }
 
 #[cfg(test)]
@@ -163,5 +177,21 @@ mod tests {
     fn bad_id_errors() {
         let (svc, _) = seeded_service();
         assert!(svc.session_detail("not-a-valid-id-!!!").is_err());
+    }
+
+    #[test]
+    fn commands_filterable() {
+        let (svc, _) = seeded_service();
+        assert!(!svc.commands("").is_empty());
+        let hits = svc.commands("mcp");
+        assert!(hits.iter().any(|c| c.id == "mcp.list"));
+    }
+
+    #[test]
+    fn diff_reports_changes() {
+        let (svc, _) = seeded_service();
+        let d = svc.diff("a\nb\nc", "a\nB\nc");
+        assert_eq!(d.added, 1);
+        assert_eq!(d.removed, 1);
     }
 }

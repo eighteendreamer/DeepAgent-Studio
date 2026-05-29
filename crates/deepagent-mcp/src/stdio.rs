@@ -7,11 +7,11 @@
 //! any notifications). The child is terminated on [`McpTransport::close`].
 
 use std::process::Stdio;
-use std::sync::Mutex;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::Mutex;
 
 use deepagent_core::error::{CoreError, Result};
 
@@ -41,9 +41,9 @@ impl StdioTransport {
             .stdout(Stdio::piped())
             .stderr(Stdio::null()); // MCP servers log to stderr; ignore here.
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| CoreError::other(format!("failed to spawn MCP server '{command}': {e}")))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            CoreError::other(format!("failed to spawn MCP server '{command}': {e}"))
+        })?;
 
         let stdin = child
             .stdin
@@ -69,10 +69,7 @@ impl McpTransport for StdioTransport {
         let mut line = serde_json::to_string(request)?;
         line.push('\n');
         {
-            let mut stdin = self
-                .stdin
-                .lock()
-                .map_err(|_| CoreError::other("stdin mutex poisoned"))?;
+            let mut stdin = self.stdin.lock().await;
             stdin
                 .write_all(line.as_bytes())
                 .await
@@ -84,10 +81,7 @@ impl McpTransport for StdioTransport {
         }
 
         // Read lines until we find the response with the matching id.
-        let mut reader = self
-            .stdout
-            .lock()
-            .map_err(|_| CoreError::other("stdout mutex poisoned"))?;
+        let mut reader = self.stdout.lock().await;
         loop {
             let mut buf = String::new();
             let n = reader
@@ -113,9 +107,8 @@ impl McpTransport for StdioTransport {
     }
 
     async fn close(&self) -> Result<()> {
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.start_kill();
-        }
+        let mut child = self.child.lock().await;
+        let _ = child.start_kill();
         Ok(())
     }
 }

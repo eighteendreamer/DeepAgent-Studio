@@ -71,3 +71,31 @@ pub struct SessionDetailDto {
     /// Aggregated stats.
     pub stats: SessionStatsDto,
 }
+
+/// A command-palette action the UI can present and dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandDto {
+    /// Stable command id (e.g. "session.new").
+    pub id: String,
+    /// Display title.
+    pub title: String,
+    /// Grouping category (e.g. "Session", "View").
+    pub category: String,
+    /// Optional keyboard shortcut hint.
+    pub shortcut: Option<String>,
+}
+
+/// A pending tool approval awaiting a human decision (high-risk tool gate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalRequestDto {
+    /// Correlates the decision back to the blocked tool call.
+    pub call_id: String,
+    /// The tool name.
+    pub tool: String,
+    /// Risk label (e.g. "high").
+    pub risk: String,
+    /// Pretty-printed arguments for review.
+    pub arguments: String,
+    /// Why approval is required.
+    pub reason: String,
+}
