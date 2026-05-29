@@ -1,0 +1,14 @@
+[package]
+name = "deepagent-planner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Planning engine: decomposes a goal into a validated DAG of subtasks (plan-execute / reflective / multi-agent)."
+
+[dependencies]
+deepagent-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

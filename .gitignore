@@ -1,0 +1,44 @@
+# Rust
+/target
+**/target
+Cargo.lock
+*.pdb
+
+# Node / Frontend
+node_modules
+dist
+dist-ssr
+.vite
+*.local
+
+# Tauri
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/gen
+
+# Databases / runtime artifacts
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+/.deepagent/runtime
+/data
+
+# Logs
+*.log
+logs/
+
+# Editor / OS
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+开发计划.md
+开发提示词.md
+ARCHITECTURE.md
+claude_code_ui_Agent/

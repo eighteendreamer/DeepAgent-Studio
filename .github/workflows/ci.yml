@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint & format: fast gate that must pass before the heavier matrix runs.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy (deny warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: clippy (models http transport)
+        run: cargo clippy -p deepagent-models --features http --all-targets -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # Test matrix: the plan requires Win/macOS/Linux. Bundled SQLite means no
+  # system DB packages are needed on any platform.
+  # ---------------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.os }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace
+      - name: Build with optional http transport
+        run: cargo build -p deepagent-models --features http
+      - name: Smoke-test the runtime demo
+        run: cargo run -p deepagent-cli
+
+  # ---------------------------------------------------------------------------
+  # Frontend: type-check + production build of the Codex-style desktop UI.
+  # (The full Tauri bundle needs platform webview deps; the web build is the
+  # fast, deterministic gate here.)
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: desktop frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+      - name: Type-check + build
+        run: pnpm build

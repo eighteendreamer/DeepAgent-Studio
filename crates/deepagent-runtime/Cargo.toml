@@ -1,0 +1,27 @@
+[package]
+name = "deepagent-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The Agent Runtime Kernel: the THINK->TOOL->OBSERVE->VERIFY->REFLECT loop and step model."
+
+[dependencies]
+deepagent-core.workspace = true
+deepagent-session.workspace = true
+deepagent-persistence.workspace = true
+deepagent-context.workspace = true
+deepagent-tools.workspace = true
+deepagent-tracing.workspace = true
+deepagent-models.workspace = true
+deepagent-hooks.workspace = true
+deepagent-verification.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile.workspace = true

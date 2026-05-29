@@ -1,0 +1,27 @@
+[package]
+name = "deepagent-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "DeepAgent Studio desktop shell (Tauri v2)."
+license = "Apache-2.0"
+
+# This crate is intentionally NOT a member of the root workspace: Tauri apps
+# carry their own dependency tree (and a separate target dir) so the kernel
+# workspace stays lean. It depends on the kernel via path.
+
+[lib]
+name = "deepagent_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+deepagent-app-core = { path = "../../../crates/deepagent-app-core" }
+deepagent-core = { path = "../../../crates/deepagent-core" }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

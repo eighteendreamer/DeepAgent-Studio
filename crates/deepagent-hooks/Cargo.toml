@@ -1,0 +1,18 @@
+[package]
+name = "deepagent-hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Hook lifecycle: pluggable extension points around the agent runtime loop (SessionStart .. SessionEnd)."
+
+[dependencies]
+deepagent-core.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Default capability for the main window: core APIs only.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

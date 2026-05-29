@@ -1,0 +1,20 @@
+[package]
+name = "deepagent-app-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Application-service facade: serializable DTOs and commands bridging the kernel to any UI (Tauri/web)."
+
+[dependencies]
+deepagent-core.workspace = true
+deepagent-persistence.workspace = true
+deepagent-session.workspace = true
+deepagent-observation.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

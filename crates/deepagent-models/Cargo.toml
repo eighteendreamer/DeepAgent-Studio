@@ -1,0 +1,31 @@
+[package]
+name = "deepagent-models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "DeepSeek-native model client: chat types, SSE streaming, delta/tool_call merge, and Thinking Mode reasoning persistence."
+
+[features]
+default = []
+# The real network transport (reqwest + rustls). Kept optional so the default
+# build and CI exercise 100% of the streaming/accumulator logic offline via the
+# mock transport, without pulling a TLS stack.
+http = ["dep:reqwest"]
+
+[dependencies]
+deepagent-core.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+tracing.workspace = true
+
+reqwest = { version = "0.12", default-features = false, features = [
+    "stream",
+    "rustls-tls",
+], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

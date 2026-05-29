@@ -1,0 +1,27 @@
+[package]
+name = "deepagent-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "A headless demo driver for the DeepAgent runtime kernel (proves the stack end-to-end)."
+
+[[bin]]
+name = "deepagent"
+path = "src/main.rs"
+
+[dependencies]
+deepagent-core.workspace = true
+deepagent-persistence.workspace = true
+deepagent-session.workspace = true
+deepagent-runtime.workspace = true
+deepagent-tools.workspace = true
+deepagent-tracing.workspace = true
+deepagent-context.workspace = true
+deepagent-workspace.workspace = true
+deepagent-memory.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true

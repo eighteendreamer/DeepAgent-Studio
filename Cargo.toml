@@ -1,0 +1,97 @@
+# DeepAgent Studio — Rust Workspace
+# Agent Runtime Operating System
+#
+# This virtual manifest defines the full Runtime Kernel crate graph described in
+# 开发提示词.md / 开发计划.md. Crates are introduced incrementally per phase; each
+# is a real, compiling member of the workspace.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/deepagent-core",
+    "crates/deepagent-tracing",
+    "crates/deepagent-persistence",
+    "crates/deepagent-session",
+    "crates/deepagent-context",
+    "crates/deepagent-memory",
+    "crates/deepagent-tools",
+    "crates/deepagent-runtime",
+    "crates/deepagent-models",
+    "crates/deepagent-hooks",
+    "crates/deepagent-workspace",
+    "crates/deepagent-verification",
+    "crates/deepagent-planner",
+    "crates/deepagent-subagents",
+    "crates/deepagent-observation",
+    "crates/deepagent-security",
+    "crates/deepagent-app-core",
+    "apps/cli",
+]
+
+# Phase placeholders (created in later phases):
+#   deepagent-prompts      (Phase 11)
+#   deepagent-planner      (Phase 6)
+#   deepagent-hooks        (Phase 2/3)
+#   deepagent-cache        (Phase 3)
+#   deepagent-subagents    (Phase 6)
+#   deepagent-observation  (Phase 10)
+#   deepagent-verification (Phase 7)
+#   deepagent-security     (Phase 9)
+#   deepagent-mcp          (Phase 12)
+#   deepagent-models       (Phase 2)
+#   deepagent-workspace    (Phase 3)
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "Apache-2.0"
+authors = ["DeepAgent Studio"]
+repository = "https://github.com/deepagent-studio/deepagent-studio"
+
+[workspace.dependencies]
+# Internal crates
+deepagent-core = { path = "crates/deepagent-core" }
+deepagent-tracing = { path = "crates/deepagent-tracing" }
+deepagent-persistence = { path = "crates/deepagent-persistence" }
+deepagent-session = { path = "crates/deepagent-session" }
+deepagent-context = { path = "crates/deepagent-context" }
+deepagent-memory = { path = "crates/deepagent-memory" }
+deepagent-tools = { path = "crates/deepagent-tools" }
+deepagent-runtime = { path = "crates/deepagent-runtime" }
+deepagent-models = { path = "crates/deepagent-models" }
+deepagent-hooks = { path = "crates/deepagent-hooks" }
+deepagent-workspace = { path = "crates/deepagent-workspace" }
+deepagent-verification = { path = "crates/deepagent-verification" }
+deepagent-planner = { path = "crates/deepagent-planner" }
+deepagent-subagents = { path = "crates/deepagent-subagents" }
+deepagent-observation = { path = "crates/deepagent-observation" }
+deepagent-security = { path = "crates/deepagent-security" }
+deepagent-app-core = { path = "crates/deepagent-app-core" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Errors
+thiserror = "1"
+anyhow = "1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+
+# Identifiers & time
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+
+# Persistence
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Testing
+tempfile = "3"

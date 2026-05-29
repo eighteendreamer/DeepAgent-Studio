@@ -1,0 +1,18 @@
+[package]
+name = "deepagent-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Multi-tier long-term agent memory with importance/recency/decay ranking."
+
+[dependencies]
+deepagent-core.workspace = true
+deepagent-persistence.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
