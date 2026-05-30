@@ -17,10 +17,11 @@ use async_trait::async_trait;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::{Message, Role};
 use deepagent_models::chat::FinishReason;
-use deepagent_models::{ChatRequest, ModelClient, ToolSchema};
+use deepagent_models::{ChatRequest, DeltaObserver, ModelClient, ToolSchema};
 use deepagent_tools::ToolInvocation;
 
 use crate::agent::{Agent, AgentDecision, Observation};
+use crate::events::{RuntimeEvent, RuntimeEventSink};
 
 /// An [`Agent`] that delegates decision-making to a model.
 pub struct ModelAgent {
@@ -32,6 +33,9 @@ pub struct ModelAgent {
     tools: Vec<ToolSchema>,
     /// Most recent tool call id, used to correlate the next tool result.
     pending_tool_call_id: Option<String>,
+    /// Optional live event sink: when set, token/reasoning deltas are forwarded
+    /// as [`RuntimeEvent`]s for streaming to a UI.
+    events: Option<Arc<dyn RuntimeEventSink>>,
 }
 
 impl ModelAgent {
@@ -53,7 +57,15 @@ impl ModelAgent {
             messages: vec![Message::system(system), Message::user(goal)],
             tools,
             pending_tool_call_id: None,
+            events: None,
         }
+    }
+
+    /// Attach a live event sink so token/reasoning deltas stream out as
+    /// [`RuntimeEvent`]s (builder style).
+    pub fn with_events(mut self, events: Arc<dyn RuntimeEventSink>) -> Self {
+        self.events = Some(events);
+        self
     }
 
     /// The current conversation (for inspection / persistence).
@@ -73,6 +85,27 @@ impl ModelAgent {
     }
 }
 
+/// Forwards model streaming deltas to a [`RuntimeEventSink`] as
+/// [`RuntimeEvent`]s, so a UI sees tokens/reasoning live.
+struct SinkObserver {
+    sink: Arc<dyn RuntimeEventSink>,
+}
+
+impl DeltaObserver for SinkObserver {
+    fn on_content(&mut self, delta: &str) {
+        self.sink.emit(RuntimeEvent::ContentDelta {
+            text: delta.to_string(),
+        });
+    }
+    fn on_reasoning(&mut self, delta: &str) {
+        self.sink.emit(RuntimeEvent::ReasoningDelta {
+            text: delta.to_string(),
+        });
+    }
+    // Tool-call start is emitted by the loop engine (with args + call_id) at the
+    // BeforeToolUse gate, so we don't duplicate it here.
+}
+
 #[async_trait]
 impl Agent for ModelAgent {
     async fn think(&mut self, _step: usize, last: Option<&Observation>) -> Result<AgentDecision> {
@@ -83,7 +116,18 @@ impl Agent for ModelAgent {
 
         let request = ChatRequest::new(self.model.clone(), self.messages.clone())
             .with_tools(self.tools.clone());
-        let response = self.client.stream_chat(request).await?;
+
+        // Stream the turn, forwarding token/reasoning deltas to the event sink
+        // (if any) as they arrive.
+        let response = match &self.events {
+            Some(sink) => {
+                let mut observer = SinkObserver { sink: sink.clone() };
+                self.client
+                    .stream_chat_observed(request, &mut observer)
+                    .await?
+            }
+            None => self.client.stream_chat(request).await?,
+        };
 
         // Persist the assistant turn. Thinking Mode: keep reasoning_content when
         // the turn carries tool calls so it is replayed next request.

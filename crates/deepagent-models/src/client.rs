@@ -25,10 +25,26 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
-    /// DeepSeek defaults; supply your API key.
+    /// DeepSeek defaults (base URL is hard-coded); supply your API key.
     pub fn deepseek(api_key: impl Into<String>) -> Self {
         Self {
-            base_url: "https://api.deepseek.com".to_string(),
+            base_url: crate::discovery::DEEPSEEK_BASE_URL.to_string(),
+            chat_path: "/chat/completions".to_string(),
+            api_key: api_key.into(),
+        }
+    }
+
+    /// Build a config from a discovered [`ModelCatalog`] + API key, targeting a
+    /// specific role's model. This is how the system wires the user's key to the
+    /// auto-selected model after project initialization.
+    pub fn from_catalog(
+        api_key: impl Into<String>,
+        catalog: &crate::discovery::ModelCatalog,
+        role: crate::discovery::ModelRole,
+    ) -> Self {
+        let _ = catalog.model_for(role); // role resolution lives in the catalog
+        Self {
+            base_url: catalog.base_url.clone(),
             chat_path: "/chat/completions".to_string(),
             api_key: api_key.into(),
         }
@@ -61,7 +77,19 @@ impl ModelClient {
     /// The request is forced into streaming mode. Each SSE payload is parsed and
     /// folded by a [`DeltaAccumulator`]; the final assembled [`ChatResponse`]
     /// retains `reasoning_content` for Thinking Mode persistence.
-    pub async fn stream_chat(&self, mut request: ChatRequest) -> Result<ChatResponse> {
+    pub async fn stream_chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+        self.stream_chat_observed(request, &mut crate::stream::NoopObserver)
+            .await
+    }
+
+    /// Like [`ModelClient::stream_chat`] but forwards each semantic delta
+    /// (content / reasoning / tool-call start) to `observer` as it arrives, for
+    /// live token streaming to a UI or event bus.
+    pub async fn stream_chat_observed(
+        &self,
+        mut request: ChatRequest,
+        observer: &mut dyn crate::stream::DeltaObserver,
+    ) -> Result<ChatResponse> {
         request.stream = true;
         let body = serde_json::to_string(&request)?;
         let transport_req = TransportRequest {
@@ -74,10 +102,12 @@ impl ModelClient {
 
         // The transport's contract is to deliver already-de-framed SSE payloads
         // (the reqwest transport runs the SseParser; the mock yields payloads
-        // directly). So we fold each payload straight into the accumulator.
+        // directly). So we fold each payload straight into the accumulator,
+        // notifying the observer of each semantic fragment.
         {
             let acc = &mut accumulator;
-            let mut sink = move |data: &str| -> Result<bool> { acc.push_sse_data(data) };
+            let mut sink =
+                move |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
             self.transport.stream(transport_req, &mut sink).await?;
         }
 

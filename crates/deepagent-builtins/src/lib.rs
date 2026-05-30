@@ -1,0 +1,223 @@
+//! # deepagent-builtins
+//!
+//! The built-in tool set, aligned with Claude Code's first-party tools and
+//! routed through the [`deepagent_tools`] capability registry (开发计划.md
+//! Phase 4; Claude Code 复刻规范 §"工具系统"). These are the tools the agent
+//! can use out of the box, every one of them gated by [`Permission`] and
+//! [`RiskLevel`] and (for file tools) confined to a [`WorkspaceRoot`].
+//!
+//! ## Tool inventory
+//!
+//! | built-in     | Claude Code analogue | risk    | permission        |
+//! |--------------|----------------------|---------|-------------------|
+//! | `read_file`  | Read                 | Safe    | read-only         |
+//! | `write_file` | Write                | Low     | WorkspaceWrite    |
+//! | `edit_file`  | Edit                 | Low     | WorkspaceWrite    |
+//! | `multi_edit` | MultiEdit            | Low     | WorkspaceWrite    |
+//! | `list_dir`   | LS                   | Safe    | read-only         |
+//! | `glob`       | Glob                 | Safe    | read-only         |
+//! | `grep`       | Grep                 | Safe    | read-only         |
+//! | `bash`       | Bash                 | Medium+ | ShellSafe         |
+//! | `todo_write` | TodoWrite            | Safe    | read-only         |
+//! | `task_list`  | TaskList             | Safe    | read-only         |
+//! | `web_fetch`  | WebFetch             | Medium  | Network (http ft) |
+//! | `web_search` | WebSearch            | Medium  | Network (http ft) |
+//!
+//! ## Safety model
+//!
+//! - **Path confinement** ([`fs_guard`]): file tools reject `..` traversal,
+//!   absolute paths outside the root, and sensitive files (`.env`, keys).
+//! - **Command safety** ([`bash_tool`]): the `bash` tool enforces a
+//!   `Bash(prefix:*)` allow-list and refuses dangerous fragments (`rm -rf`,
+//!   `curl | sh`, `sudo`, remote pushes) on its safe path, surfacing them for
+//!   explicit approval.
+//! - **No external deps**: glob matching ([`glob_match`]) is hand-rolled so the
+//!   crate stays light and builds offline.
+//!
+//! ## Wiring
+//!
+//! Use [`register_builtins`] to install every built-in into a
+//! [`ToolRegistry`], or the per-family helpers ([`file_tools::file_tools`]) for
+//! finer control.
+
+#![warn(missing_docs)]
+
+pub mod bash_tool;
+pub mod file_tools;
+pub mod fs_guard;
+pub mod glob_match;
+pub mod guard_hooks;
+pub mod todo_tool;
+pub mod web_tools;
+
+#[cfg(feature = "http")]
+pub mod reqwest_web;
+
+use std::sync::Arc;
+
+use deepagent_core::error::Result;
+use deepagent_hooks::{HookPoint, HookRegistry};
+use deepagent_tools::{Tool, ToolRegistry};
+
+pub use bash_tool::{
+    is_allowed, is_dangerous, BashTool, CommandExecutor, CommandOutcome, SystemExecutor,
+};
+pub use file_tools::{
+    file_tools, EditFileTool, GlobTool, GrepTool, ListDirTool, MultiEditTool, ReadFileTool,
+    WriteFileTool,
+};
+pub use fs_guard::WorkspaceRoot;
+pub use glob_match::glob_match;
+pub use guard_hooks::{BashGuardHook, PathGuardHook};
+pub use todo_tool::{TaskListTool, TodoItem, TodoStatus, TodoStore, TodoWriteTool};
+pub use web_tools::{SearchResult, WebClient, WebFetchTool, WebSearchTool};
+
+#[cfg(feature = "http")]
+pub use reqwest_web::ReqwestWebClient;
+
+// Re-export the permission vocabulary callers need to grant access.
+pub use deepagent_tools::permission::{Permission, PermissionSet, RiskLevel};
+
+/// Configuration for assembling the built-in tool set.
+pub struct BuiltinConfig {
+    /// The confined workspace root for file tools.
+    pub root: WorkspaceRoot,
+    /// Working directory for the `bash` tool (usually the root path).
+    pub bash_cwd: String,
+    /// Allow-listed command prefixes for `bash` (`Bash(prefix:*)` semantics).
+    pub bash_allow: Vec<String>,
+    /// Shared session todo list backing `todo_write`.
+    pub todo_store: TodoStore,
+}
+
+impl BuiltinConfig {
+    /// Build a config rooted at `root` with a `bash` allow-list. The bash cwd
+    /// defaults to the root path and a fresh [`TodoStore`] is created.
+    pub fn new(root: WorkspaceRoot, bash_allow: impl IntoIterator<Item = String>) -> Self {
+        let bash_cwd = root.path().to_string_lossy().to_string();
+        Self {
+            root,
+            bash_cwd,
+            bash_allow: bash_allow.into_iter().collect(),
+            todo_store: TodoStore::new(),
+        }
+    }
+}
+
+/// Assemble every built-in tool over the given config, using the real
+/// [`SystemExecutor`] for `bash`.
+///
+/// Returns the tools plus the [`TodoStore`] so the caller can render the todo
+/// list between turns.
+pub fn builtin_tools(config: BuiltinConfig) -> (Vec<Arc<dyn Tool>>, TodoStore) {
+    let BuiltinConfig {
+        root,
+        bash_cwd,
+        bash_allow,
+        todo_store,
+    } = config;
+
+    let mut tools = file_tools(root);
+    tools.push(Arc::new(BashTool::new(
+        SystemExecutor,
+        bash_cwd,
+        bash_allow,
+    )));
+    tools.push(Arc::new(TodoWriteTool::new(todo_store.clone())));
+    tools.push(Arc::new(TaskListTool::new(todo_store.clone())));
+    (tools, todo_store)
+}
+
+/// Register every built-in tool into `registry`, returning the [`TodoStore`].
+///
+/// Tools are registered with the risk/permission metadata from their
+/// descriptors; the registry then gates them per the agent's granted
+/// permissions. Fails if any tool name collides with one already registered.
+pub fn register_builtins(registry: &mut ToolRegistry, config: BuiltinConfig) -> Result<TodoStore> {
+    let (tools, store) = builtin_tools(config);
+    for tool in tools {
+        registry.register(tool)?;
+    }
+    Ok(store)
+}
+
+/// Register the security-boundary guard hooks ([`PathGuardHook`] +
+/// [`BashGuardHook`]) at [`HookPoint::BeforeToolUse`].
+///
+/// This enforces path confinement and command safety *centrally* at the
+/// runtime's permission gate, so the boundary holds for every tool — built-in,
+/// MCP, or custom — not just the file/bash built-ins themselves.
+pub fn register_guard_hooks(
+    hooks: &mut HookRegistry,
+    root: WorkspaceRoot,
+    bash_allow: impl IntoIterator<Item = String>,
+) {
+    hooks.register(HookPoint::BeforeToolUse, Arc::new(PathGuardHook::new(root)));
+    hooks.register(
+        HookPoint::BeforeToolUse,
+        Arc::new(BashGuardHook::new(bash_allow)),
+    );
+}
+
+/// Register the network web tools (`web_fetch` + `web_search`) backed by the
+/// real reqwest client. Requires the `http` feature. Both require the
+/// [`Permission::Network`] grant to be invoked.
+#[cfg(feature = "http")]
+pub fn register_web_tools(registry: &mut ToolRegistry) -> Result<()> {
+    registry.register(Arc::new(WebFetchTool::new(ReqwestWebClient::new())))?;
+    registry.register(Arc::new(WebSearchTool::new(ReqwestWebClient::new())))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_config() -> (tempfile::TempDir, BuiltinConfig) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = WorkspaceRoot::new(dir.path());
+        let config = BuiltinConfig::new(root, ["git".to_string(), "cargo".to_string()]);
+        (dir, config)
+    }
+
+    #[test]
+    fn builtin_tools_includes_every_family() {
+        let (_d, config) = temp_config();
+        let (tools, _store) = builtin_tools(config);
+        let names: Vec<String> = tools.iter().map(|t| t.descriptor().name).collect();
+        for expected in [
+            "read_file",
+            "write_file",
+            "edit_file",
+            "multi_edit",
+            "list_dir",
+            "glob",
+            "grep",
+            "bash",
+            "todo_write",
+            "task_list",
+        ] {
+            assert!(names.contains(&expected.to_string()), "missing {expected}");
+        }
+        assert_eq!(tools.len(), 10);
+    }
+
+    #[test]
+    fn register_builtins_populates_registry() {
+        let (_d, config) = temp_config();
+        let mut registry = ToolRegistry::new();
+        let _store = register_builtins(&mut registry, config).unwrap();
+        assert!(registry.get("read_file").is_some());
+        assert!(registry.get("bash").is_some());
+        assert!(registry.get("todo_write").is_some());
+    }
+
+    #[test]
+    fn register_guard_hooks_adds_two_before_tool_use_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = WorkspaceRoot::new(dir.path());
+        let mut hooks = HookRegistry::new();
+        register_guard_hooks(&mut hooks, root, ["git".to_string()]);
+        assert_eq!(hooks.count_at(HookPoint::BeforeToolUse), 2);
+    }
+}

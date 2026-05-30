@@ -115,7 +115,14 @@ mod tests {
     #[test]
     fn aggregates_tool_and_message_counts() {
         let events = vec![
-            event(0, 1000, EventPayload::SessionStarted { title: None }),
+            event(
+                0,
+                1000,
+                EventPayload::SessionStarted {
+                    title: None,
+                    mode: deepagent_core::session_mode::SessionMode::Normal,
+                },
+            ),
             event(
                 1,
                 1100,

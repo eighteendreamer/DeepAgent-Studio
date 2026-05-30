@@ -25,6 +25,7 @@
 
 pub mod chat;
 pub mod client;
+pub mod discovery;
 pub mod sse;
 pub mod stream;
 pub mod transport;
@@ -37,7 +38,8 @@ pub use chat::{
     ToolSchema, Usage,
 };
 pub use client::{ModelClient, ModelConfig};
-pub use stream::DeltaAccumulator;
+pub use discovery::{ModelCatalog, ModelDiscovery, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
+pub use stream::{DeltaAccumulator, DeltaObserver, NoopObserver};
 pub use transport::{HttpTransport, MockTransport, TransportRequest};
 
 #[cfg(feature = "http")]

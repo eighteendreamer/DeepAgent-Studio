@@ -126,6 +126,46 @@ impl ToolCallResult {
     }
 }
 
+/// A minimal Server-Sent-Events frame extractor.
+///
+/// MCP's Streamable HTTP transport may reply with an `text/event-stream` body
+/// where each event is a block of lines terminated by a blank line; the
+/// payload is the concatenation of the `data:` lines. This extracts the `data`
+/// payloads from a complete SSE body so the HTTP transport can locate the
+/// JSON-RPC response frame. Kept dependency-free (and in `protocol` rather than
+/// the feature-gated `http` module) so it is testable without `--features http`.
+pub struct SseFrames;
+
+impl SseFrames {
+    /// Extract the `data:` payloads from a complete SSE body, one `String` per
+    /// event. Lines beginning with `:` (comments) and non-`data` fields are
+    /// ignored; multi-line `data:` within one event are joined with `\n`.
+    pub fn parse(body: &str) -> Vec<String> {
+        let normalized = body.replace("\r\n", "\n");
+        let mut frames = Vec::new();
+        let mut current: Vec<String> = Vec::new();
+
+        for line in normalized.split('\n') {
+            if line.is_empty() {
+                // End of an event: flush accumulated data lines.
+                if !current.is_empty() {
+                    frames.push(current.join("\n"));
+                    current.clear();
+                }
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("data:") {
+                current.push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
+            }
+            // Other fields (event:, id:, retry:, comments) are ignored.
+        }
+        if !current.is_empty() {
+            frames.push(current.join("\n"));
+        }
+        frames
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +209,29 @@ mod tests {
         let json = r#"{"content":[{"type":"image","data":"..."}],"isError":false}"#;
         let res: ToolCallResult = serde_json::from_str(json).unwrap();
         assert_eq!(res.text(), "");
+    }
+
+    #[test]
+    fn sse_extracts_single_frame() {
+        let body = "event: message\ndata: {\"id\":1}\n\n";
+        let frames = SseFrames::parse(body);
+        assert_eq!(frames, vec!["{\"id\":1}".to_string()]);
+    }
+
+    #[test]
+    fn sse_joins_multiline_data() {
+        let body = "data: line1\ndata: line2\n\n";
+        let frames = SseFrames::parse(body);
+        assert_eq!(frames, vec!["line1\nline2".to_string()]);
+    }
+
+    #[test]
+    fn sse_handles_crlf_and_multiple_frames() {
+        let body = "data: {\"a\":1}\r\n\r\ndata: {\"b\":2}\r\n\r\n";
+        let frames = SseFrames::parse(body);
+        assert_eq!(
+            frames,
+            vec!["{\"a\":1}".to_string(), "{\"b\":2}".to_string()]
+        );
     }
 }

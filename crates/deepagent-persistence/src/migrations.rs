@@ -66,6 +66,20 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX idx_documents_collection ON documents(collection);
     "#,
+    // V4: session run mode (复刻规范 §5 "运行模式是一等公民"). Stored on the
+    // session row so the sidebar can show it without loading the event stream.
+    // Existing rows default to "normal".
+    r#"
+    ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'normal';
+    "#,
+    // V5: project association. A session belongs to a project (a folder, keyed
+    // by its absolute root path) so the sidebar can group sessions by project
+    // and the agent's file operations default to that folder. Nullable so
+    // legacy/unscoped sessions remain valid.
+    r#"
+    ALTER TABLE sessions ADD COLUMN project TEXT;
+    CREATE INDEX idx_sessions_project ON sessions(project);
+    "#,
 ];
 
 /// The highest schema version defined by this build.

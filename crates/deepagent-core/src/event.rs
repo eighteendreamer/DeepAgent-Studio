@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::Timestamp;
 use crate::id::{EventId, SessionId, TaskId};
 use crate::message::{Message, ToolCall};
+use crate::session_mode::SessionMode;
 use crate::task::TaskState;
 
 /// Monotonic per-session sequence number. The first event in a session has
@@ -55,6 +56,9 @@ pub enum EventPayload {
     SessionStarted {
         /// Optional human-friendly title.
         title: Option<String>,
+        /// The run mode of the session (defaults to Normal for old events).
+        #[serde(default)]
+        mode: SessionMode,
     },
 
     /// A session was closed (graceful end).

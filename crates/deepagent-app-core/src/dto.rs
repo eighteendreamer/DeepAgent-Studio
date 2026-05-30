@@ -11,14 +11,31 @@ use serde::{Deserialize, Serialize};
 pub struct SessionSummaryDto {
     /// Session id (string form).
     pub id: String,
+    /// The project this session belongs to (folder name for display), or null.
+    pub project: Option<String>,
     /// Optional title.
     pub title: Option<String>,
+    /// Run mode label (normal / resumed / remote / …).
+    pub mode: String,
     /// Created-at, Unix ms.
     pub created_at: i64,
     /// Updated-at, Unix ms.
     pub updated_at: i64,
     /// Whether the session has ended.
     pub ended: bool,
+}
+
+/// A project (a folder) the user has opened, with its session count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectDto {
+    /// The project folder name (display), e.g. "小红草".
+    pub name: String,
+    /// The absolute project root path (stable key).
+    pub path: String,
+    /// Number of sessions under this project.
+    pub session_count: u32,
+    /// Most-recent session update under this project, Unix ms (0 if none).
+    pub updated_at: i64,
 }
 
 /// A timeline entry for the Codex-style timeline panel.
@@ -98,4 +115,68 @@ pub struct ApprovalRequestDto {
     pub arguments: String,
     /// Why approval is required.
     pub reason: String,
+}
+
+/// Result of forking a session: identifies the new branch and how much of the
+/// source timeline it copied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ForkResultDto {
+    /// The new (forked) session id.
+    pub new_session_id: String,
+    /// The source session id the fork branched from.
+    pub source_session_id: String,
+    /// The sequence number the fork was taken at (inclusive).
+    pub forked_at: u64,
+}
+
+/// Result of rewinding a session in place.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RewindResultDto {
+    /// The session that was rewound.
+    pub session_id: String,
+    /// Sequence number kept through (inclusive).
+    pub kept_through: u64,
+    /// Number of events discarded by the rewind.
+    pub events_removed: u64,
+}
+
+/// An exported session transcript ready for the UI to save.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptDto {
+    /// The session id.
+    pub session_id: String,
+    /// Format label ("markdown" / "json").
+    pub format: String,
+    /// Suggested file extension ("md" / "json").
+    pub extension: String,
+    /// The rendered transcript content.
+    pub content: String,
+}
+
+/// Identifies the active project: the working-directory the agent operates in.
+/// The UI shows the folder **name**; all agent file operations are rooted here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceInfoDto {
+    /// The project folder name (last path component), e.g. "小红草".
+    pub name: String,
+    /// The absolute project root path.
+    pub path: String,
+}
+
+/// The result of running a one-shot terminal command in the active project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalResultDto {
+    /// The command that was run.
+    pub command: String,
+    /// The working directory it ran in (the active project root).
+    pub cwd: String,
+    /// Exit code (null if killed by signal).
+    pub exit_code: Option<i32>,
+    /// Captured stdout.
+    pub stdout: String,
+    /// Captured stderr.
+    pub stderr: String,
+    /// True when the command was refused as dangerous (needs approval) and not
+    /// executed at all.
+    pub blocked: bool,
 }

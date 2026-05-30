@@ -20,7 +20,7 @@ pub struct TransportRequest {
     pub body: String,
 }
 
-/// A transport that can stream an SSE response.
+/// A transport that can stream an SSE response and perform simple GET requests.
 ///
 /// Implementations push each decoded SSE `data:` payload to `on_event`. The
 /// boxed closure returns `Ok(true)` to signal the caller wants to stop early
@@ -29,6 +29,17 @@ pub struct TransportRequest {
 pub trait HttpTransport: Send + Sync {
     /// Perform the request and drive `sink` with each SSE payload string.
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()>;
+
+    /// Perform an authenticated `GET` and return the raw JSON body. Used for
+    /// non-streaming endpoints like `GET /models` (model discovery).
+    ///
+    /// The default implementation errors so transports that only stream are not
+    /// forced to implement it; the real HTTP transport and the mock override it.
+    async fn get_json(&self, _url: &str, _api_key: &str) -> Result<String> {
+        Err(deepagent_core::error::CoreError::other(
+            "this transport does not support GET requests",
+        ))
+    }
 }
 
 /// Receives decoded SSE payloads as they arrive.
@@ -52,6 +63,8 @@ where
 pub struct MockTransport {
     /// Raw SSE payload strings to emit, in order (each as one `data:` event).
     pub events: Vec<String>,
+    /// Canned JSON body returned by [`HttpTransport::get_json`].
+    pub get_response: Option<String>,
 }
 
 impl MockTransport {
@@ -59,6 +72,16 @@ impl MockTransport {
     pub fn new(events: impl IntoIterator<Item = String>) -> Self {
         Self {
             events: events.into_iter().collect(),
+            get_response: None,
+        }
+    }
+
+    /// Build a transport that answers `get_json` with `body` (for discovery
+    /// tests). Streaming events default to empty.
+    pub fn with_get_json(body: impl Into<String>) -> Self {
+        Self {
+            events: Vec::new(),
+            get_response: Some(body.into()),
         }
     }
 }
@@ -72,6 +95,12 @@ impl HttpTransport for MockTransport {
             }
         }
         Ok(())
+    }
+
+    async fn get_json(&self, _url: &str, _api_key: &str) -> Result<String> {
+        self.get_response.clone().ok_or_else(|| {
+            deepagent_core::error::CoreError::other("mock transport has no canned GET response")
+        })
     }
 }
 

@@ -1,22 +1,45 @@
 //! DeepAgent Studio desktop shell (Tauri v2).
 //!
-//! Thin command layer over [`deepagent_app_core::AppService`]. Each `#[command]`
-//! is a one-liner delegating to the service, which returns the serializable DTOs
-//! the React UI consumes. The database lives under the OS app-data dir so the
-//! desktop app and CLI can share runtime state if pointed at the same path.
+//! Thin command layer over `deepagent-app-core`. Each `#[command]` delegates to
+//! a service and returns the serializable DTOs the React UI consumes. Services:
+//! - [`AppService`] — sessions, timeline, commands, diff, fork/rewind/export.
+//! - [`SettingsService`] — project init + model discovery (API key → OS keychain).
+//! - [`SkillsService`] — skill discovery/install/activation.
+//! - [`ChatService`] — streamed chat runs (rooted at the active project).
+//! - [`McpService`] — visual MCP server config + live tool registration.
+//! - [`ProjectService`] — multi-project registry (folders → sessions).
+//! - [`WorkspaceService`] — active-project identity (folder name/path).
+//! - [`TerminalService`] — interactive terminal in the active project dir.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
-    AppService, CommandDto, DiffResult, SessionDetailDto, SessionSummaryDto,
+    AppService, ChatService, CommandDto, DiffResult, ForkResultDto, KeychainStore, McpServerDto,
+    McpService, ProjectDto, ProjectService, RewindResultDto, SessionDetailDto, SessionSummaryDto,
+    SettingsService, SettingsView, SkillActivationDto, SkillDto, SkillsService, TerminalResultDto,
+    TerminalService, TranscriptDto, WorkspaceInfoDto, WorkspaceService,
 };
-use tauri::{Manager, State};
+use deepagent_models::ReqwestTransport;
+use tauri::{Emitter, Manager, State};
 
-/// Shared application state: the service guarded by a mutex (commands are
-/// dispatched from multiple threads).
+/// Service name used for keychain entries.
+const KEYCHAIN_SERVICE: &str = "deepagent-studio";
+
+/// Shared application state.
 struct AppState {
     service: Mutex<AppService>,
+    settings: Arc<SettingsService>,
+    skills: Mutex<SkillsService>,
+    chat: Arc<ChatService>,
+    mcp: Arc<McpService>,
+    projects: Arc<ProjectService>,
+    workspace: Arc<WorkspaceService>,
+    terminal: Arc<TerminalService>,
+    /// Tokio runtime for async calls invoked from sync commands.
+    rt: tokio::runtime::Runtime,
 }
+
+// ---- session / view commands ---------------------------------------------
 
 #[tauri::command]
 fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummaryDto>, String> {
@@ -49,21 +72,409 @@ fn compute_diff(
     Ok(svc.diff(&old, &new))
 }
 
+#[tauri::command]
+fn fork_session(
+    state: State<'_, AppState>,
+    session_id: String,
+    at_seq: u64,
+) -> Result<ForkResultDto, String> {
+    let svc = state.service.lock().map_err(|e| e.to_string())?;
+    svc.fork_session(&session_id, at_seq)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rewind_session(
+    state: State<'_, AppState>,
+    session_id: String,
+    to_seq: u64,
+) -> Result<RewindResultDto, String> {
+    let svc = state.service.lock().map_err(|e| e.to_string())?;
+    svc.rewind_session(&session_id, to_seq)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_transcript(
+    state: State<'_, AppState>,
+    session_id: String,
+    format: String,
+) -> Result<TranscriptDto, String> {
+    let svc = state.service.lock().map_err(|e| e.to_string())?;
+    svc.export_transcript(&session_id, &format)
+        .map_err(|e| e.to_string())
+}
+
+// ---- settings / initialization commands -----------------------------------
+
+#[tauri::command]
+fn initialize_project(state: State<'_, AppState>, api_key: String) -> Result<SettingsView, String> {
+    let settings = state.settings.clone();
+    state
+        .rt
+        .block_on(async move { settings.initialize(&api_key).await })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_settings(state: State<'_, AppState>) -> Result<Option<SettingsView>, String> {
+    state.settings.view().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn refresh_models(state: State<'_, AppState>) -> Result<SettingsView, String> {
+    let settings = state.settings.clone();
+    state
+        .rt
+        .block_on(async move { settings.refresh_models().await })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_api_key(state: State<'_, AppState>) -> Result<(), String> {
+    state.settings.clear_key().map_err(|e| e.to_string())
+}
+
+// ---- skill commands -------------------------------------------------------
+
+#[tauri::command]
+fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillDto>, String> {
+    let svc = state.skills.lock().map_err(|e| e.to_string())?;
+    Ok(svc.list())
+}
+
+#[tauri::command]
+fn reload_skills(state: State<'_, AppState>) -> Result<Vec<SkillDto>, String> {
+    let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
+    svc.reload().map_err(|e| e.to_string())?;
+    Ok(svc.list())
+}
+
+#[tauri::command]
+fn install_skill(state: State<'_, AppState>, source_dir: String) -> Result<SkillDto, String> {
+    let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
+    svc.install_from_dir(&source_dir).map_err(|e| e.to_string())
+}
+
+/// Install a skill from a `.zip` archive: extract to a temp dir, then install
+/// the unpacked source (the archive's single top-level folder when present).
+#[tauri::command]
+fn install_skill_from_zip(state: State<'_, AppState>, zip_path: String) -> Result<SkillDto, String> {
+    let tmp = tempfile::tempdir().map_err(|e| format!("temp dir failed: {e}"))?;
+    let source = extract_zip(&zip_path, tmp.path()).map_err(|e| e.to_string())?;
+    let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
+    svc.install_from_dir(&source).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn uninstall_skill(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
+    svc.uninstall(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn preview_skill_activation(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Option<SkillActivationDto>, String> {
+    let svc = state.skills.lock().map_err(|e| e.to_string())?;
+    Ok(svc.preview_activation(&query))
+}
+
+#[tauri::command]
+fn activate_skill(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<SkillActivationDto>, String> {
+    let svc = state.skills.lock().map_err(|e| e.to_string())?;
+    Ok(svc.activate(&id))
+}
+
+// ---- chat (streamed) ------------------------------------------------------
+
+#[tauri::command]
+fn run_chat(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    prompt: String,
+) -> Result<String, String> {
+    let chat = state.chat.clone();
+    let event_emitter = app.clone();
+    let approval_emitter = app.clone();
+    state
+        .rt
+        .block_on(async move {
+            chat.run(
+                &prompt,
+                move |event| {
+                    let _ = event_emitter.emit("chat://event", event);
+                },
+                move |approval| {
+                    let _ = approval_emitter.emit("chat://approval", approval);
+                },
+            )
+            .await
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn resolve_approval(state: State<'_, AppState>, call_id: String, approved: bool) -> bool {
+    state
+        .chat
+        .pending_approvals()
+        .resolve_approved(&call_id, approved)
+}
+
+#[tauri::command]
+fn get_approval_policy(state: State<'_, AppState>) -> Result<String, String> {
+    state
+        .settings
+        .approval_policy()
+        .map(|p| p.label().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_approval_policy(state: State<'_, AppState>, policy: String) -> Result<SettingsView, String> {
+    let parsed = match policy.as_str() {
+        "always_ask" => deepagent_app_core::ApprovalPolicy::AlwaysAsk,
+        "auto_review" => deepagent_app_core::ApprovalPolicy::AutoReview,
+        "full_access" => deepagent_app_core::ApprovalPolicy::FullAccess,
+        other => return Err(format!("unknown approval policy: {other}")),
+    };
+    state
+        .settings
+        .set_approval_policy(parsed)
+        .map_err(|e| e.to_string())
+}
+
+// ---- MCP server management (visual config) --------------------------------
+
+#[tauri::command]
+fn list_mcp_servers(state: State<'_, AppState>) -> Result<Vec<McpServerDto>, String> {
+    state.mcp.list().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_mcp_server(state: State<'_, AppState>, server: McpServerDto) -> Result<McpServerDto, String> {
+    state.mcp.upsert(server).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_mcp_server(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    state.mcp.remove(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_mcp_server_enabled(
+    state: State<'_, AppState>,
+    name: String,
+    enabled: bool,
+) -> Result<bool, String> {
+    state
+        .mcp
+        .set_enabled(&name, enabled)
+        .map_err(|e| e.to_string())
+}
+
+// ---- permission rules + hooks.json ----------------------------------------
+
+#[tauri::command]
+fn get_permission_rules(
+    state: State<'_, AppState>,
+) -> Result<deepagent_app_core::PermissionRules, String> {
+    state.settings.permission_rules().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_permission_rules(
+    state: State<'_, AppState>,
+    rules: deepagent_app_core::PermissionRules,
+) -> Result<(), String> {
+    state
+        .settings
+        .set_permission_rules(rules)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_hooks_json(state: State<'_, AppState>) -> Result<String, String> {
+    state.settings.hooks_json().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_hooks_json(state: State<'_, AppState>, hooks_json: String) -> Result<(), String> {
+    state
+        .settings
+        .set_hooks_json(&hooks_json)
+        .map_err(|e| e.to_string())
+}
+
+// ---- workspace (active project) -------------------------------------------
+
+#[tauri::command]
+fn workspace_info(state: State<'_, AppState>) -> Result<WorkspaceInfoDto, String> {
+    Ok(state.workspace.info())
+}
+
+// ---- projects (sidebar: folders → sessions) -------------------------------
+
+#[tauri::command]
+fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectDto>, String> {
+    state.projects.list().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn active_project(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    state.projects.active().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_project(state: State<'_, AppState>, path: String) -> Result<ProjectDto, String> {
+    state.projects.add_project(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_active_project(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    state.projects.set_active(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_project(state: State<'_, AppState>, path: String) -> Result<bool, String> {
+    state
+        .projects
+        .remove_project(&path)
+        .map_err(|e| e.to_string())
+}
+
+// ---- terminal (interactive command in the active project) -----------------
+
+#[tauri::command]
+fn run_terminal(state: State<'_, AppState>, command: String) -> Result<TerminalResultDto, String> {
+    let terminal = state.terminal.clone();
+    state
+        .rt
+        .block_on(async move { terminal.run(&command).await })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn terminal_cwd(state: State<'_, AppState>) -> String {
+    state.terminal.current_dir()
+}
+
+/// Extract `zip_path` into `dest`, returning the directory to install from: the
+/// single top-level folder if the archive has exactly one, else `dest` itself.
+fn extract_zip(zip_path: &str, dest: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    let mut top_levels = std::collections::BTreeSet::new();
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        let Some(path) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+            continue;
+        };
+        if let Some(first) = path.components().next() {
+            top_levels.insert(first.as_os_str().to_string_lossy().into_owned());
+        }
+        let out = dest.join(&path);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out)?;
+        } else {
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut outfile = std::fs::File::create(&out)?;
+            std::io::copy(&mut entry, &mut outfile)?;
+        }
+    }
+    if top_levels.len() == 1 {
+        let only = top_levels.into_iter().next().unwrap();
+        let candidate = dest.join(&only);
+        if candidate.is_dir() {
+            return Ok(candidate);
+        }
+    }
+    Ok(dest.to_path_buf())
+}
+
 /// Entry point invoked by `main.rs`.
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // Resolve a per-user database path under the app-data directory.
             let dir = app
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::env::temp_dir());
             std::fs::create_dir_all(&dir).ok();
             let db_path = dir.join("deepagent.db");
-            let service = AppService::open(&db_path)
-                .map_err(|e| format!("failed to open database: {e}"))?;
+
+            let service =
+                AppService::open(&db_path).map_err(|e| format!("failed to open database: {e}"))?;
+
+            // Settings: share the same DB; key goes to the OS keychain; discovery
+            // uses the real reqwest transport against the hard-coded DeepSeek URL.
+            let settings_arc = Arc::new(SettingsService::new(
+                service.shared_database(),
+                Arc::new(ReqwestTransport::new()),
+                Arc::new(KeychainStore::new(KEYCHAIN_SERVICE)),
+            ));
+
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("failed to create tokio runtime: {e}"))?;
+
+            // Skills: discover from the project's `.deepagent/skills` (cwd) and
+            // manage installs under the app data dir.
+            let workspace_skills = std::env::current_dir()
+                .ok()
+                .map(|c| c.join(".deepagent").join("skills"));
+            let install_dir = dir.join("skills");
+            let skills = SkillsService::open(workspace_skills, install_dir)
+                .map_err(|e| format!("failed to open skills service: {e}"))?;
+
+            // MCP: visual server management over the shared DB.
+            let mcp = Arc::new(McpService::new(service.shared_database()));
+
+            // Workspace + projects: the launch directory is the default project.
+            let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+            let workspace = Arc::new(WorkspaceService::new(workspace_root.clone()));
+            let projects = Arc::new(ProjectService::new(service.shared_database()));
+            let _ = projects.ensure_default(&workspace_root.to_string_lossy());
+
+            // Terminal: interactive commands rooted at the active project.
+            let terminal = Arc::new(TerminalService::new(
+                projects.clone(),
+                workspace_root.to_string_lossy().into_owned(),
+            ));
+
+            // Chat: streamed runs; MCP servers connect + live-register tools, and
+            // each run is rooted at the active project's folder.
+            let chat = Arc::new(
+                ChatService::new(
+                    service.shared_database(),
+                    settings_arc.clone(),
+                    Arc::new(ReqwestTransport::new()),
+                    workspace_root,
+                )
+                .with_mcp(mcp.clone())
+                .with_projects(projects.clone()),
+            );
+
             app.manage(AppState {
                 service: Mutex::new(service),
+                settings: settings_arc,
+                skills: Mutex::new(skills),
+                chat,
+                mcp,
+                projects,
+                workspace,
+                terminal,
+                rt,
             });
             Ok(())
         })
@@ -71,7 +482,41 @@ pub fn run() {
             list_sessions,
             session_detail,
             commands,
-            compute_diff
+            compute_diff,
+            fork_session,
+            rewind_session,
+            export_transcript,
+            initialize_project,
+            get_settings,
+            refresh_models,
+            clear_api_key,
+            list_skills,
+            reload_skills,
+            install_skill,
+            install_skill_from_zip,
+            uninstall_skill,
+            preview_skill_activation,
+            activate_skill,
+            run_chat,
+            resolve_approval,
+            get_approval_policy,
+            set_approval_policy,
+            list_mcp_servers,
+            save_mcp_server,
+            remove_mcp_server,
+            set_mcp_server_enabled,
+            get_permission_rules,
+            set_permission_rules,
+            get_hooks_json,
+            set_hooks_json,
+            workspace_info,
+            list_projects,
+            active_project,
+            add_project,
+            set_active_project,
+            remove_project,
+            run_terminal,
+            terminal_cwd
         ])
         .run(tauri::generate_context!())
         .expect("error while running DeepAgent Studio");

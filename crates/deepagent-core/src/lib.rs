@@ -14,12 +14,15 @@
 //! - [`event`]   — the append-only [`event::Event`] envelope and payloads.
 //! - [`task`]    — the [`task::TaskState`] machine used by the runtime.
 //! - [`message`] — conversation [`message::Message`] / role primitives.
+//! - [`session_mode`] — the [`session_mode::SessionMode`] run-mode taxonomy.
 
 pub mod clock;
 pub mod error;
 pub mod event;
 pub mod id;
 pub mod message;
+pub mod session_mode;
 pub mod task;
 
 pub use error::{CoreError, Result};
+pub use session_mode::SessionMode;

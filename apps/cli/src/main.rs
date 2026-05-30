@@ -139,6 +139,12 @@ async fn main() -> Result<()> {
     // --- Phase 3: Context Engineering -------------------------------------
     demo_context_pipeline()?;
 
+    // --- Input dispatch (intent) + Skill system ---------------------------
+    demo_intent_and_skills()?;
+
+    // --- Prompt engineering: command/agent loading + system-prompt assembly
+    demo_prompts()?;
+
     Ok(())
 }
 
@@ -232,6 +238,148 @@ fn demo_context_pipeline() -> Result<()> {
     );
     println!("layers (in order):");
     for frag in &outcome.prompt.fragments {
+        println!("  - {:?} (prio {})", frag.source, frag.priority);
+    }
+
+    Ok(())
+}
+
+/// Demonstrates the input-dispatch layer (slash routing + attachments) and the
+/// Skill system (auto-discovery + passive trigger activation + progressive
+/// disclosure) end-to-end against the repo's `.deepagent/skills/` tree.
+fn demo_intent_and_skills() -> Result<()> {
+    use deepagent_intent::{CommandDef, CommandRegistry, Intent, IntentRouter};
+    use deepagent_skills::SkillManager;
+
+    println!("\n=== Input Dispatch (Intent) ===");
+    let mut commands = CommandRegistry::new();
+    commands.register(
+        CommandDef::new("review", "Review code for quality")
+            .with_body("Review the following for quality:\n$ARGUMENTS")
+            .with_allowed_tools(["read_file".into(), "grep".into()]),
+    );
+    let router = IntentRouter::new(commands);
+
+    for input in [
+        "/review src/main.rs for error handling",
+        "explain #src/lib.rs to me",
+        "/unknown do a thing",
+    ] {
+        let req = router.route(input);
+        match &req.intent {
+            Intent::SlashCommand { name, .. } => println!(
+                "  /{:<8} → command '{}', allowed_tools={:?}, attachments={}",
+                "slash",
+                name,
+                req.allowed_tools,
+                req.attachments.len()
+            ),
+            Intent::Chat => println!(
+                "  {:<9} → chat, attachments={} ({:?})",
+                "chat",
+                req.attachments.len(),
+                req.attachments.iter().map(|a| &a.value).collect::<Vec<_>>()
+            ),
+            Intent::UnknownCommand { name } => {
+                println!("  {:<9} → unknown command '{}'", "unknown", name)
+            }
+        }
+    }
+
+    println!("\n=== Skill System (progressive disclosure) ===");
+    // Auto-discover skills from the repo's `.deepagent/skills/` tree.
+    let cwd = std::env::current_dir()
+        .map_err(|e| deepagent_core::error::CoreError::other(format!("cannot read cwd: {e}")))?;
+    let ws_skills = cwd.join(".deepagent").join("skills");
+    let install_dir = std::env::temp_dir().join("deepagent-skills-installed");
+
+    let mut skills = SkillManager::new(Some(ws_skills), install_dir);
+    let count = skills.load_all()?;
+    println!("discovered      : {count} skill(s)");
+    for meta in skills.registry().catalog() {
+        println!(
+            "  - {} [{}] triggers: {}",
+            meta.id,
+            meta.origin.label(),
+            skills
+                .registry()
+                .get(&meta.id)
+                .map(|s| s.triggers.len())
+                .unwrap_or(0)
+        );
+    }
+
+    // Passive activation: a user query is matched against trigger phrases and
+    // the best skill's body is disclosed (Level 1 → Level 2).
+    let query = "can you review rust code in this crate for error handling?";
+    match skills.auto_activate(query) {
+        Some((id, fragment)) => {
+            println!("passive match   : query → skill '{id}'");
+            let preview: String = fragment.content.chars().take(80).collect();
+            println!("disclosed body  : {}…", preview.replace('\n', " "));
+        }
+        None => println!("passive match   : (none)"),
+    }
+
+    Ok(())
+}
+
+/// Demonstrates prompt engineering: load command/agent definitions from
+/// `.deepagent/` and assemble a Claude-Code-structured system prompt over the
+/// context Prompt AST.
+fn demo_prompts() -> Result<()> {
+    use deepagent_context::HeuristicTokenizer;
+    use deepagent_prompts::{discover_commands, AgentDef, SystemPromptBuilder};
+
+    println!("\n=== Prompt Engineering (commands / agents / system prompt) ===");
+
+    let cwd = std::env::current_dir()
+        .map_err(|e| deepagent_core::error::CoreError::other(format!("cannot read cwd: {e}")))?;
+    let deepagent = cwd.join(".deepagent");
+
+    // Load slash commands from `.deepagent/commands/`.
+    let commands = discover_commands(deepagent.join("commands"))?;
+    println!("commands loaded : {}", commands.len());
+    for c in &commands {
+        println!(
+            "  - /{} — {} (allowed_tools={:?})",
+            c.name, c.description, c.allowed_tools
+        );
+    }
+
+    // Load an agent definition from `.deepagent/agents/`.
+    let agent_path = deepagent.join("agents").join("rust-architect.md");
+    let agent = std::fs::read_to_string(&agent_path)
+        .ok()
+        .and_then(|raw| AgentDef::parse(&raw));
+
+    // Assemble a layered system prompt (optionally adopting the agent persona).
+    let counter = HeuristicTokenizer::new();
+    let mut builder = SystemPromptBuilder::new()
+        .core("You are DeepAgent, a verifiable Rust-native agent runtime.")
+        .safety("Never run destructive commands without explicit approval.")
+        .workspace_rule("Match the crate's existing conventions; keep modules small and tested.")
+        .tool_rule("Prefer read tools before write tools.")
+        .user_goal("Design the prompt-assembly layer.");
+
+    if let Some(agent) = &agent {
+        println!(
+            "agent loaded    : {} (model={:?}, tools={})",
+            agent.name,
+            agent.model,
+            agent.tools.len()
+        );
+        builder = builder.with_agent(agent);
+    }
+
+    let compiled = builder.compile(&counter);
+    println!(
+        "system prompt   : {} tokens, {} layers",
+        compiled.tokens,
+        compiled.fragments.len()
+    );
+    println!("layers (in order):");
+    for frag in &compiled.fragments {
         println!("  - {:?} (prio {})", frag.source, frag.priority);
     }
 

@@ -42,7 +42,7 @@ pub fn build_timeline(events: &[Event]) -> Vec<TimelineEntry> {
 
 fn entry_for_event(event: &Event) -> TimelineEntry {
     let (kind, icon, label, detail, duration_ms) = match &event.payload {
-        EventPayload::SessionStarted { title } => (
+        EventPayload::SessionStarted { title, .. } => (
             "session",
             "🟢",
             "Session started".to_string(),
@@ -166,6 +166,7 @@ mod tests {
                 0,
                 EventPayload::SessionStarted {
                     title: Some("demo".into()),
+                    mode: deepagent_core::session_mode::SessionMode::Normal,
                 },
             ),
             event(

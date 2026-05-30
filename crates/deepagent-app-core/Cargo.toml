@@ -12,9 +12,33 @@ deepagent-core.workspace = true
 deepagent-persistence.workspace = true
 deepagent-session.workspace = true
 deepagent-observation.workspace = true
+deepagent-models.workspace = true
+deepagent-skills.workspace = true
+deepagent-runtime.workspace = true
+deepagent-tools.workspace = true
+deepagent-builtins.workspace = true
+deepagent-hooks.workspace = true
+deepagent-mcp.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+tokio = { workspace = true }
+keyring = { version = "3", optional = true }
+
+[features]
+default = []
+# OS keychain-backed secret storage (Windows Credential Manager / macOS
+# Keychain / Linux Secret Service). Off by default so the kernel workspace and
+# CI stay free of platform secret-service dependencies; the desktop app turns
+# it on.
+keychain = ["dep:keyring"]
+# Network web tools (web_fetch / web_search) backed by reqwest, registered into
+# the ChatService tool registry. Pulls a TLS stack; the desktop app turns it on.
+# Also enables the MCP HTTP/SSE network transport so visually-configured hosted
+# MCP servers can connect and live-register their tools.
+web = ["deepagent-builtins/http", "deepagent-mcp/http"]
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true }

@@ -6,39 +6,54 @@
 
 use std::str::FromStr;
 
+use deepagent_core::clock::SystemClock;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::id::SessionId;
-use deepagent_observation::{build_timeline, SessionStats};
+use deepagent_observation::{build_timeline, export_transcript, SessionStats, TranscriptFormat};
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::Database;
+use deepagent_session::Session;
 
 use crate::commands::{builtin_commands, filter_commands};
 use crate::diff::{diff_lines, DiffResult};
 use crate::dto::{
-    CommandDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto,
+    CommandDto, ForkResultDto, RewindResultDto, SessionDetailDto, SessionStatsDto,
+    SessionSummaryDto, TimelineEntryDto, TranscriptDto,
 };
 
 /// The application service backing the UI.
 pub struct AppService {
-    db: Database,
+    db: std::sync::Arc<Database>,
 }
 
 impl AppService {
     /// Open the service over a database at `path` (created + migrated if new).
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Ok(Self {
-            db: Database::open(path)?,
+            db: std::sync::Arc::new(Database::open(path)?),
         })
     }
 
     /// Build over an existing database (e.g. in-memory for tests).
     pub fn new(db: Database) -> Self {
+        Self {
+            db: std::sync::Arc::new(db),
+        }
+    }
+
+    /// Build over a shared database handle (so settings + sessions share one DB).
+    pub fn from_shared(db: std::sync::Arc<Database>) -> Self {
         Self { db }
     }
 
     /// Borrow the database (for callers that also run the runtime against it).
     pub fn database(&self) -> &Database {
         &self.db
+    }
+
+    /// The shared database handle (e.g. to build a `SettingsService` on the same DB).
+    pub fn shared_database(&self) -> std::sync::Arc<Database> {
+        self.db.clone()
     }
 
     /// List all sessions, newest first, as summaries for the sidebar.
@@ -49,7 +64,9 @@ impl AppService {
             .into_iter()
             .map(|r| SessionSummaryDto {
                 id: r.id.to_string(),
+                project: r.project.as_deref().map(project_display_name),
                 title: r.title,
+                mode: r.mode.label().to_string(),
                 created_at: r.created_at.as_millis(),
                 updated_at: r.updated_at.as_millis(),
                 ended: r.ended_at.is_some(),
@@ -95,7 +112,9 @@ impl AppService {
         Ok(SessionDetailDto {
             summary: SessionSummaryDto {
                 id: record.id.to_string(),
+                project: record.project.as_deref().map(project_display_name),
                 title: record.title,
+                mode: record.mode.label().to_string(),
                 created_at: record.created_at.as_millis(),
                 updated_at: record.updated_at.as_millis(),
                 ended: record.ended_at.is_some(),
@@ -110,10 +129,68 @@ impl AppService {
         filter_commands(query, &builtin_commands())
     }
 
+    /// **Fork** a session at sequence `at_seq`: create a new sibling branch
+    /// whose stream copies events `0..=at_seq` from the source. The source is
+    /// left untouched (non-destructive branching). Returns the new branch id.
+    pub fn fork_session(&self, session_id: &str, at_seq: u64) -> Result<ForkResultDto> {
+        let id = SessionId::from_str(session_id)
+            .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+        let clock = SystemClock;
+        let forked = Session::fork(&self.db, &clock, id, at_seq)?;
+        Ok(ForkResultDto {
+            new_session_id: forked.id().to_string(),
+            source_session_id: session_id.to_string(),
+            forked_at: at_seq,
+        })
+    }
+
+    /// **Rewind** a session in place to sequence `to_seq`: discard every event
+    /// after `to_seq`. Destructive and user-initiated; the session is reopened
+    /// so new turns append from the kept tail. Returns how many events were
+    /// removed.
+    pub fn rewind_session(&self, session_id: &str, to_seq: u64) -> Result<RewindResultDto> {
+        let id = SessionId::from_str(session_id)
+            .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+        let clock = SystemClock;
+        let mut session = Session::recover(&self.db, &clock, id)?;
+        let removed = session.rewind(to_seq)?;
+        Ok(RewindResultDto {
+            session_id: session_id.to_string(),
+            kept_through: to_seq,
+            events_removed: removed,
+        })
+    }
+
+    /// Export a session's transcript in `format` ("markdown"/"md" or "json").
+    pub fn export_transcript(&self, session_id: &str, format: &str) -> Result<TranscriptDto> {
+        let id = SessionId::from_str(session_id)
+            .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+        let fmt = TranscriptFormat::parse(format)
+            .ok_or_else(|| CoreError::invalid(format!("unknown transcript format: {format}")))?;
+        let store = EventStore::new(&self.db);
+        let record = store
+            .get_session(id)?
+            .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
+        let events = store.load_session(id)?;
+        let content = export_transcript(record.title.as_deref(), &events, fmt)
+            .map_err(|e| CoreError::invalid(format!("transcript render failed: {e}")))?;
+        Ok(TranscriptDto {
+            session_id: session_id.to_string(),
+            format: format.trim().to_ascii_lowercase(),
+            extension: fmt.extension().to_string(),
+            content,
+        })
+    }
+
     /// Compute a line-based diff between `old` and `new` for the Diff view.
     pub fn diff(&self, old: &str, new: &str) -> DiffResult {
         diff_lines(old, new)
     }
+}
+
+/// Map a stored project path to its display name (last folder component).
+fn project_display_name(path: &str) -> String {
+    crate::project_service::folder_name(path)
 }
 
 #[cfg(test)]
@@ -193,5 +270,52 @@ mod tests {
         let d = svc.diff("a\nb\nc", "a\nB\nc");
         assert_eq!(d.added, 1);
         assert_eq!(d.removed, 1);
+    }
+
+    #[test]
+    fn fork_creates_independent_branch() {
+        let (svc, sid) = seeded_service();
+        let before = svc.session_detail(&sid).unwrap();
+        let last_seq = before.timeline.last().unwrap().sequence;
+
+        let fork = svc.fork_session(&sid, last_seq).unwrap();
+        assert_ne!(fork.new_session_id, sid);
+        assert_eq!(fork.source_session_id, sid);
+
+        // Both sessions now exist and the branch has the full prefix.
+        let sessions = svc.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 2);
+        let branch = svc.session_detail(&fork.new_session_id).unwrap();
+        assert_eq!(branch.timeline.len(), before.timeline.len());
+    }
+
+    #[test]
+    fn rewind_truncates_timeline() {
+        let (svc, sid) = seeded_service();
+        let before = svc.session_detail(&sid).unwrap();
+        assert!(before.timeline.len() > 1);
+
+        let res = svc.rewind_session(&sid, 0).unwrap();
+        assert_eq!(res.kept_through, 0);
+        assert!(res.events_removed > 0);
+
+        let after = svc.session_detail(&sid).unwrap();
+        assert_eq!(after.timeline.len(), 1);
+    }
+
+    #[test]
+    fn export_markdown_and_json() {
+        let (svc, sid) = seeded_service();
+        let md = svc.export_transcript(&sid, "markdown").unwrap();
+        assert_eq!(md.extension, "md");
+        assert!(md.content.starts_with("# demo"));
+
+        let json = svc.export_transcript(&sid, "json").unwrap();
+        assert_eq!(json.extension, "json");
+        let parsed: serde_json::Value = serde_json::from_str(&json.content).unwrap();
+        assert!(parsed.is_array());
+
+        // Unknown format errors.
+        assert!(svc.export_transcript(&sid, "pdf").is_err());
     }
 }

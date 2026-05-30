@@ -10,12 +10,22 @@
 //! - [`registry`] — the Capability Registry / [`registry::ToolRegistry`] that
 //!   stores tools, filters them by an agent's granted permissions, and routes
 //!   invocations.
+//! - [`sandbox`] — the engine-independent [`sandbox::SandboxPolicy`] (memory /
+//!   fuel / timeout / capability limits) + [`sandbox::Sandbox`] trait and JSON
+//!   ABI helpers. The real WebAssembly backend
+//!   ([`wasm::WasmSandbox`](crate::wasm), behind `--features wasm`) executes
+//!   untrusted tool modules with no ambient authority.
 //!
-//! Sandboxing (Wasmtime) is added in Phase 4; the [`Tool`] abstraction is
-//! designed so a sandboxed executor can wrap any tool transparently.
+//! Sandboxing uses WebAssembly (Wasmtime): the [`Tool`] abstraction is designed
+//! so a sandboxed executor can wrap any tool transparently, and [`sandbox`]
+//! holds the policy/ABI while [`wasm`](crate::wasm) holds the engine backend.
 
 pub mod permission;
 pub mod registry;
+pub mod sandbox;
+pub mod sandboxed_tool;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -24,6 +34,11 @@ use deepagent_core::error::Result;
 
 pub use permission::{Permission, PermissionSet, RiskLevel};
 pub use registry::{ToolRegistry, ToolSpec};
+pub use sandbox::{Capabilities, Sandbox, SandboxPolicy, SandboxStats};
+pub use sandboxed_tool::SandboxedTool;
+
+#[cfg(feature = "wasm")]
+pub use wasm::WasmSandbox;
 
 /// A tool invocation request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

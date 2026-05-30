@@ -19,11 +19,17 @@
 //! in over later phases behind the traits defined in [`agent`].
 
 pub mod agent;
+pub mod approval;
+pub mod events;
 pub mod loop_engine;
 pub mod model_agent;
 pub mod phase;
 
 pub use agent::{Agent, AgentDecision, Observation};
-pub use loop_engine::{RunOutcome, RuntimeConfig, RuntimeEngine, VerificationPlan};
+pub use approval::{
+    ApprovalDecision, ApprovalGate, ApprovalRequest, AutoApproveGate, AutoDenyGate,
+};
+pub use events::{ChannelSink, NullEventSink, RuntimeEvent, RuntimeEventSink};
+pub use loop_engine::{PromptDecision, RunOutcome, RuntimeConfig, RuntimeEngine, VerificationPlan};
 pub use model_agent::ModelAgent;
 pub use phase::LoopPhase;

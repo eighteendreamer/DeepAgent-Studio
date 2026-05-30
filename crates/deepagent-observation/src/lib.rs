@@ -16,9 +16,11 @@
 
 pub mod stats;
 pub mod timeline;
+pub mod transcript;
 
 pub use stats::SessionStats;
 pub use timeline::{build_timeline, TimelineEntry};
+pub use transcript::{export_transcript, TranscriptFormat};
 
 // Re-export the live metrics types for convenience so consumers have one import.
 pub use deepagent_tracing::metrics::{Metrics, MetricsSnapshot};

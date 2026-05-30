@@ -40,6 +40,28 @@ impl ReqwestTransport {
 
 #[async_trait]
 impl HttpTransport for ReqwestTransport {
+    async fn get_json(&self, url: &str, api_key: &str) -> Result<String> {
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(api_key)
+            .header("accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| CoreError::other(format!("GET {url} failed: {e}")))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let detail = response.text().await.unwrap_or_default();
+            return Err(CoreError::other(format!(
+                "GET {url} returned {status}: {detail}"
+            )));
+        }
+        response
+            .text()
+            .await
+            .map_err(|e| CoreError::other(format!("reading GET {url} body failed: {e}")))
+    }
+
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         let response = self
             .client

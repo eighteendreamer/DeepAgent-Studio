@@ -38,7 +38,7 @@ impl Hook for ToolAllowlistHook {
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
         if let HookData::Tool { name, .. } = &ctx.data {
             if !self.allowed.contains(name) {
-                return Ok(HookOutcome::Deny(format!(
+                return Ok(HookOutcome::deny(format!(
                     "tool '{name}' is not in the allow-list"
                 )));
             }
@@ -74,7 +74,7 @@ impl Hook for ArgumentGuardHook {
             let serialized = arguments.to_string();
             for needle in &self.blocked_substrings {
                 if serialized.contains(needle) {
-                    return Ok(HookOutcome::Deny(format!(
+                    return Ok(HookOutcome::deny(format!(
                         "argument contains blocked pattern '{needle}'"
                     )));
                 }

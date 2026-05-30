@@ -15,6 +15,10 @@ members = [
     "crates/deepagent-context",
     "crates/deepagent-memory",
     "crates/deepagent-tools",
+    "crates/deepagent-builtins",
+    "crates/deepagent-intent",
+    "crates/deepagent-skills",
+    "crates/deepagent-prompts",
     "crates/deepagent-runtime",
     "crates/deepagent-models",
     "crates/deepagent-hooks",
@@ -62,6 +66,10 @@ deepagent-session = { path = "crates/deepagent-session" }
 deepagent-context = { path = "crates/deepagent-context" }
 deepagent-memory = { path = "crates/deepagent-memory" }
 deepagent-tools = { path = "crates/deepagent-tools" }
+deepagent-builtins = { path = "crates/deepagent-builtins" }
+deepagent-intent = { path = "crates/deepagent-intent" }
+deepagent-skills = { path = "crates/deepagent-skills" }
+deepagent-prompts = { path = "crates/deepagent-prompts" }
 deepagent-runtime = { path = "crates/deepagent-runtime" }
 deepagent-models = { path = "crates/deepagent-models" }
 deepagent-hooks = { path = "crates/deepagent-hooks" }

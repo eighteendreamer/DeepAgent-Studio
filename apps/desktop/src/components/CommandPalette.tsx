@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getCommands } from "../api";
 import type { Command } from "../types";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   open: boolean;
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export function CommandPalette({ open, onClose, onRun }: Props) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Command[]>([]);
   const [selected, setSelected] = useState(0);
@@ -54,12 +56,12 @@ export function CommandPalette({ open, onClose, onRun }: Props) {
         <input
           ref={inputRef}
           className="palette-input"
-          placeholder="Type a command…"
+          placeholder={t("commandPalette.placeholder")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         <div className="palette-results">
-          {results.length === 0 && <div className="palette-empty">No matching commands</div>}
+          {results.length === 0 && <div className="palette-empty">{t("commandPalette.noMatch")}</div>}
           {results.map((c, i) => (
             <div
               key={c.id}

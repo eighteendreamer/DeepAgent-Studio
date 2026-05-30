@@ -30,25 +30,45 @@ pub struct Session<'db, C: Clock> {
 }
 
 impl<'db, C: Clock> Session<'db, C> {
-    /// Start a brand new session, writing the initial `SessionStarted` event.
+    /// Start a brand new session in [`SessionMode::Normal`].
     pub fn create(db: &'db Database, clock: &'db C, title: Option<&str>) -> Result<Self> {
+        Self::create_with_mode(db, clock, title, deepagent_core::SessionMode::Normal)
+    }
+
+    /// Start a brand new session with an explicit run mode, writing the initial
+    /// `SessionStarted` event (run mode is durable session metadata).
+    pub fn create_with_mode(
+        db: &'db Database,
+        clock: &'db C,
+        title: Option<&str>,
+        mode: deepagent_core::SessionMode,
+    ) -> Result<Self> {
+        Self::create_in_project(db, clock, title, mode, None)
+    }
+
+    /// Start a brand new session bound to a `project` (a folder path). The
+    /// project is durable session metadata used to group sessions in the UI and
+    /// to root the agent's file operations. Pass `None` for an unscoped session.
+    pub fn create_in_project(
+        db: &'db Database,
+        clock: &'db C,
+        title: Option<&str>,
+        mode: deepagent_core::SessionMode,
+        project: Option<&str>,
+    ) -> Result<Self> {
         let id = SessionId::new();
         let now = clock.now();
         let store = EventStore::new(db);
-        store.create_session(id, title, now)?;
-        store.append(
-            id,
-            EventPayload::SessionStarted {
-                title: title.map(|s| s.to_string()),
-            },
-            now,
-        )?;
+        store.create_session_full(id, title, mode, project, now)?;
+        let started = EventPayload::SessionStarted {
+            title: title.map(|s| s.to_string()),
+            mode,
+        };
+        store.append(id, started.clone(), now)?;
 
         let mut state = SessionState::new(id);
         // Fold the one event we just wrote.
-        state.apply(&EventPayload::SessionStarted {
-            title: title.map(|s| s.to_string()),
-        });
+        state.apply(&started);
 
         Ok(Self {
             db,
@@ -76,6 +96,47 @@ impl<'db, C: Clock> Session<'db, C> {
             id,
             state,
         })
+    }
+
+    /// **Fork** this session at `at_seq`: create a new sibling session whose
+    /// stream is a copy of events `0..=at_seq` from `source_id`. The source is
+    /// left untouched, so forking is fully non-destructive (it branches the
+    /// timeline). Returns the new, recovered [`Session`].
+    ///
+    /// Forking lets the user explore an alternative continuation from any point
+    /// in the timeline without losing the original transcript.
+    pub fn fork(
+        db: &'db Database,
+        clock: &'db C,
+        source_id: SessionId,
+        at_seq: deepagent_core::event::Sequence,
+    ) -> Result<Self> {
+        let store = EventStore::new(db);
+        if store.get_session(source_id)?.is_none() {
+            return Err(CoreError::not_found(format!("session {source_id}")));
+        }
+        let new_id = SessionId::new();
+        let now = clock.now();
+        store.fork_session(source_id, new_id, at_seq, now)?;
+        tracing::info!(%source_id, %new_id, at_seq, "forked session");
+        Self::recover(db, clock, new_id)
+    }
+
+    /// **Rewind** this session in place to `to_seq`: discard every event after
+    /// `to_seq` and reload the projection. This is destructive (the discarded
+    /// tail is gone) and is only reachable through an explicit user action.
+    ///
+    /// After rewinding, the session is "reopened" (any prior end is cleared)
+    /// and new events append gaplessly from the kept tail. Returns the number
+    /// of events discarded.
+    pub fn rewind(&mut self, to_seq: deepagent_core::event::Sequence) -> Result<u64> {
+        let store = EventStore::new(self.db);
+        let removed = store.truncate_after(self.id, to_seq)?;
+        // Rebuild the in-memory projection from the truncated stream.
+        let events = store.load_session(self.id)?;
+        self.state = SessionState::replay(self.id, events.iter().map(|e| &e.payload));
+        tracing::info!(id = %self.id, to_seq, removed, "rewound session");
+        Ok(removed)
     }
 
     /// The session id.
@@ -201,6 +262,119 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let clock = FixedClock::new(1);
         match Session::recover(&db, &clock, SessionId::new()) {
+            Err(CoreError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {:?}", other.map(|_| "session")),
+        }
+    }
+
+    #[test]
+    fn session_mode_persists_and_recovers() {
+        use deepagent_core::SessionMode;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let sid;
+        {
+            let s = Session::create_with_mode(
+                &db,
+                &clock,
+                Some("coordinated"),
+                SessionMode::Coordinator,
+            )
+            .unwrap();
+            sid = s.id();
+            // Mode is reflected in the live projection.
+            assert_eq!(s.state().mode, SessionMode::Coordinator);
+        }
+        // Mode survives a cold recover (from both the row and the event).
+        let recovered = Session::recover(&db, &clock, sid).unwrap();
+        assert_eq!(recovered.state().mode, SessionMode::Coordinator);
+        // And the persisted session record carries it too.
+        assert_eq!(recovered.record().unwrap().mode, SessionMode::Coordinator);
+    }
+
+    #[test]
+    fn default_create_is_normal_mode() {
+        use deepagent_core::SessionMode;
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let s = Session::create(&db, &clock, None).unwrap();
+        assert_eq!(s.state().mode, SessionMode::Normal);
+    }
+
+    #[test]
+    fn fork_branches_without_touching_source() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+
+        let sid;
+        {
+            let mut s = Session::create(&db, &clock, Some("origin")).unwrap();
+            sid = s.id();
+            s.append(EventPayload::MessageAppended {
+                message: Message::user("first"),
+            })
+            .unwrap();
+            s.append(EventPayload::MessageAppended {
+                message: Message::user("second"),
+            })
+            .unwrap();
+        }
+        // Stream is: 0=SessionStarted, 1=first, 2=second.
+        // Fork at seq 1 → branch keeps SessionStarted + "first" only.
+        let mut forked = Session::fork(&db, &clock, sid, 1).unwrap();
+        assert_ne!(forked.id(), sid);
+        assert_eq!(forked.state().message_count, 1);
+        assert_eq!(forked.state().title.as_deref(), Some("origin"));
+
+        // Branch can diverge.
+        forked
+            .append(EventPayload::MessageAppended {
+                message: Message::user("branch-only"),
+            })
+            .unwrap();
+        assert_eq!(forked.state().message_count, 2);
+
+        // Source is unchanged (still 2 messages).
+        let source = Session::recover(&db, &clock, sid).unwrap();
+        assert_eq!(source.state().message_count, 2);
+    }
+
+    #[test]
+    fn rewind_discards_tail_in_place() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+
+        let mut s = Session::create(&db, &clock, Some("rw")).unwrap();
+        let sid = s.id();
+        for i in 0..4 {
+            s.append(EventPayload::MessageAppended {
+                message: Message::user(format!("m{i}")),
+            })
+            .unwrap();
+        }
+        s.end(Some("done")).unwrap();
+        assert!(s.state().ended);
+        assert_eq!(s.state().message_count, 4);
+
+        // Rewind to seq 2 (SessionStarted=0, m0=1, m1=2). Keep 3 events.
+        // Stream was: 0=Started,1=m0,2=m1,3=m2,4=m3,5=Ended → remove 3,4,5.
+        let removed = s.rewind(2).unwrap();
+        assert_eq!(removed, 3);
+        assert_eq!(s.state().message_count, 2);
+        assert!(!s.state().ended);
+
+        // Recover confirms the truncation is durable.
+        let recovered = Session::recover(&db, &clock, sid).unwrap();
+        assert_eq!(recovered.state().message_count, 2);
+        assert!(!recovered.state().ended);
+    }
+
+    #[test]
+    fn fork_unknown_session_errors() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        match Session::fork(&db, &clock, SessionId::new(), 0) {
             Err(CoreError::NotFound(_)) => {}
             other => panic!("expected NotFound, got {:?}", other.map(|_| "session")),
         }

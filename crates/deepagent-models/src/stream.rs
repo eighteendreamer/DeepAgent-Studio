@@ -83,6 +83,25 @@ pub struct FunctionDelta {
     pub arguments: Option<String>,
 }
 
+/// Observes streaming deltas as they arrive (for live UIs / event streams).
+///
+/// Distinct from the transport-level [`crate::transport::EventSink`] (raw SSE
+/// payloads): this receives *semantic* fragments — visible content, Thinking
+/// Mode reasoning, and tool-call starts — already decoded from each chunk. The
+/// default no-op impl lets callers ignore deltas (the non-streaming path).
+pub trait DeltaObserver: Send {
+    /// A visible content fragment arrived.
+    fn on_content(&mut self, _delta: &str) {}
+    /// A Thinking Mode reasoning fragment arrived.
+    fn on_reasoning(&mut self, _delta: &str) {}
+    /// A tool call began (its name became known).
+    fn on_tool_call(&mut self, _name: &str) {}
+}
+
+/// A `DeltaObserver` that ignores everything (the default for `stream_chat`).
+pub struct NoopObserver;
+impl DeltaObserver for NoopObserver {}
+
 /// Accumulates streamed deltas into a final message.
 #[derive(Debug, Default)]
 pub struct DeltaAccumulator {
@@ -111,6 +130,12 @@ impl DeltaAccumulator {
 
     /// Fold one chunk into the accumulator.
     pub fn push_chunk(&mut self, chunk: &ChatChunk) {
+        self.push_chunk_observed(chunk, &mut NoopObserver);
+    }
+
+    /// Fold one chunk and notify `observer` of the semantic fragments it carried
+    /// (content / reasoning / new tool-call names).
+    pub fn push_chunk_observed(&mut self, chunk: &ChatChunk, observer: &mut dyn DeltaObserver) {
         if let Some(usage) = chunk.usage {
             self.usage = Some(usage);
         }
@@ -123,18 +148,51 @@ impl DeltaAccumulator {
         let delta = &choice.delta;
         if let Some(c) = &delta.content {
             self.content.push_str(c);
+            if !c.is_empty() {
+                observer.on_content(c);
+            }
         }
         if let Some(r) = &delta.reasoning_content {
             self.reasoning.push_str(r);
+            if !r.is_empty() {
+                observer.on_reasoning(r);
+            }
         }
         for tc in &delta.tool_calls {
+            // Detect a tool-call name becoming known for the first time.
+            let known = self
+                .tool_calls
+                .iter()
+                .find(|b| b.index == tc.index)
+                .map(|b| b.name.is_some())
+                .unwrap_or(false);
             self.merge_tool_call(tc);
+            if !known {
+                if let Some(name) = self
+                    .tool_calls
+                    .iter()
+                    .find(|b| b.index == tc.index)
+                    .and_then(|b| b.name.clone())
+                {
+                    observer.on_tool_call(&name);
+                }
+            }
         }
     }
 
     /// Parse a single SSE `data:` payload and fold it. Returns `Ok(true)` if the
     /// payload was the `[DONE]` sentinel (stream finished).
     pub fn push_sse_data(&mut self, data: &str) -> Result<bool> {
+        self.push_sse_data_observed(data, &mut NoopObserver)
+    }
+
+    /// Like [`DeltaAccumulator::push_sse_data`] but notifies `observer` of
+    /// semantic fragments.
+    pub fn push_sse_data_observed(
+        &mut self,
+        data: &str,
+        observer: &mut dyn DeltaObserver,
+    ) -> Result<bool> {
         let trimmed = data.trim();
         if trimmed == "[DONE]" {
             return Ok(true);
@@ -144,7 +202,7 @@ impl DeltaAccumulator {
         }
         let chunk: ChatChunk = serde_json::from_str(trimmed)
             .map_err(|e| CoreError::Serialization(format!("bad chunk: {e}")))?;
-        self.push_chunk(&chunk);
+        self.push_chunk_observed(&chunk, observer);
         Ok(false)
     }
 
@@ -223,6 +281,55 @@ mod tests {
 
     fn chunk(json: serde_json::Value) -> ChatChunk {
         serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn observer_receives_semantic_deltas() {
+        #[derive(Default)]
+        struct Rec {
+            content: String,
+            reasoning: String,
+            tools: Vec<String>,
+        }
+        impl DeltaObserver for Rec {
+            fn on_content(&mut self, d: &str) {
+                self.content.push_str(d);
+            }
+            fn on_reasoning(&mut self, d: &str) {
+                self.reasoning.push_str(d);
+            }
+            fn on_tool_call(&mut self, name: &str) {
+                self.tools.push(name.to_string());
+            }
+        }
+
+        let mut acc = DeltaAccumulator::new();
+        let mut rec = Rec::default();
+        acc.push_chunk_observed(
+            &chunk(serde_json::json!({"choices":[{"delta":{"reasoning_content":"think "}}]})),
+            &mut rec,
+        );
+        acc.push_chunk_observed(
+            &chunk(serde_json::json!({"choices":[{"delta":{"content":"Hi"}}]})),
+            &mut rec,
+        );
+        acc.push_chunk_observed(
+            &chunk(serde_json::json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"c0","function":{"name":"search","arguments":""}}
+            ]}}]})),
+            &mut rec,
+        );
+        // A second arguments fragment for the same call must NOT re-fire on_tool_call.
+        acc.push_chunk_observed(
+            &chunk(serde_json::json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"function":{"arguments":"{}"}}
+            ]}}]})),
+            &mut rec,
+        );
+
+        assert_eq!(rec.content, "Hi");
+        assert_eq!(rec.reasoning, "think ");
+        assert_eq!(rec.tools, vec!["search"]); // fired exactly once
     }
 
     #[test]

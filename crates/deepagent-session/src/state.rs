@@ -28,6 +28,8 @@ pub struct SessionState {
     pub id: SessionId,
     /// Optional title.
     pub title: Option<String>,
+    /// The session run mode (set by `SessionStarted`).
+    pub mode: deepagent_core::session_mode::SessionMode,
     /// Whether the session has ended.
     pub ended: bool,
     /// Number of conversation messages appended.
@@ -46,6 +48,7 @@ impl SessionState {
         Self {
             id,
             title: None,
+            mode: deepagent_core::session_mode::SessionMode::Normal,
             ended: false,
             message_count: 0,
             tool_calls_requested: 0,
@@ -69,8 +72,9 @@ impl SessionState {
     /// Apply a single event payload to the state (the fold step).
     pub fn apply(&mut self, payload: &EventPayload) {
         match payload {
-            EventPayload::SessionStarted { title } => {
+            EventPayload::SessionStarted { title, mode } => {
                 self.title = title.clone();
+                self.mode = *mode;
             }
             EventPayload::SessionEnded { .. } => {
                 self.ended = true;
@@ -133,6 +137,7 @@ mod tests {
         let payloads = [
             EventPayload::SessionStarted {
                 title: Some("t".into()),
+                mode: deepagent_core::session_mode::SessionMode::Normal,
             },
             EventPayload::TaskCreated {
                 task_id: task,

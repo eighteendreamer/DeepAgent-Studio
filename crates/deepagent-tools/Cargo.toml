@@ -7,12 +7,28 @@ license.workspace = true
 authors.workspace = true
 description = "Tool runtime: registry, capability/permission model, and the Tool trait."
 
+[features]
+default = []
+# The real WebAssembly sandbox backend (Wasmtime). Kept optional so the default
+# build and CI stay light/offline; the policy + ABI logic in `sandbox` compiles
+# and is fully tested without it. A sandbox-enabled build turns this on to
+# execute untrusted tool modules with no ambient authority.
+wasm = ["dep:wasmtime", "dep:wat", "dep:anyhow"]
+
 [dependencies]
 deepagent-core.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+tokio = { workspace = true }
+
+wasmtime = { version = "27", default-features = false, features = [
+    "cranelift",
+    "runtime",
+], optional = true }
+wat = { version = "1", optional = true }
+anyhow = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

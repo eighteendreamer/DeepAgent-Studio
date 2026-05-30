@@ -23,8 +23,15 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-deepagent-app-core = { path = "../../../crates/deepagent-app-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Enable the OS keychain so the API key is stored in Windows Credential Manager
+# / macOS Keychain / Linux Secret Service — never in plaintext on disk.
+deepagent-app-core = { path = "../../../crates/deepagent-app-core", features = ["keychain", "web"] }
 deepagent-core = { path = "../../../crates/deepagent-core" }
+deepagent-models = { path = "../../../crates/deepagent-models", features = ["http"] }
+tauri-plugin-dialog = "2.7.1"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+tempfile = "3.8"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

@@ -26,6 +26,8 @@ pub enum Permission {
     GitPush,
     /// Read secrets / credentials.
     Secrets,
+    /// Execute sandboxed / untrusted code modules (WASM tools).
+    Sandbox,
 }
 
 /// How dangerous a tool invocation is. Drives whether human approval is needed.

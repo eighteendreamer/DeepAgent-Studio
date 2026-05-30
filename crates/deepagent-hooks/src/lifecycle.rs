@@ -23,6 +23,9 @@ use deepagent_core::id::SessionId;
 pub enum HookPoint {
     /// Fired once when a session is created / resumed.
     SessionStart,
+    /// Fired when a user prompt is submitted, before it becomes a task. Hooks
+    /// here may **deny** (reject the input) or **modify** (rewrite/augment it).
+    UserPromptSubmit,
     /// Before the planner decides the next move.
     BeforePlan,
     /// Before a tool is executed. Hooks here may **deny** the call.
@@ -44,6 +47,7 @@ impl HookPoint {
     pub const fn label(&self) -> &'static str {
         match self {
             HookPoint::SessionStart => "session_start",
+            HookPoint::UserPromptSubmit => "user_prompt_submit",
             HookPoint::BeforePlan => "before_plan",
             HookPoint::BeforeToolUse => "before_tool_use",
             HookPoint::AfterToolUse => "after_tool_use",
@@ -55,11 +59,13 @@ impl HookPoint {
     }
 
     /// Whether hooks at this point are allowed to deny / halt the operation.
-    /// Only the "before" gates are vetoable; observational points are not.
+    /// Only the "before"/submission gates are vetoable; observational points
+    /// are not.
     pub const fn is_vetoable(&self) -> bool {
         matches!(
             self,
-            HookPoint::BeforePlan
+            HookPoint::UserPromptSubmit
+                | HookPoint::BeforePlan
                 | HookPoint::BeforeToolUse
                 | HookPoint::BeforeCompact
                 | HookPoint::BeforeResponse
@@ -95,6 +101,12 @@ impl HookContext {
 pub enum HookData {
     /// No additional data (session lifecycle, plan gates).
     None,
+    /// A user prompt was submitted (carried at
+    /// [`HookPoint::UserPromptSubmit`]).
+    Prompt {
+        /// The submitted prompt text (post-dispatch effective prompt).
+        text: String,
+    },
     /// A tool is about to run / has run.
     Tool {
         /// Tool name.
@@ -119,6 +131,11 @@ pub enum HookData {
 }
 
 impl HookData {
+    /// Convenience constructor for a user-prompt-submit payload.
+    pub fn prompt(text: impl Into<String>) -> Self {
+        HookData::Prompt { text: text.into() }
+    }
+
     /// Convenience constructor for a pre-tool-use payload.
     pub fn before_tool(name: impl Into<String>, arguments: serde_json::Value) -> Self {
         HookData::Tool {
@@ -145,8 +162,20 @@ mod tests {
     #[test]
     fn vetoable_points() {
         assert!(HookPoint::BeforeToolUse.is_vetoable());
+        assert!(HookPoint::UserPromptSubmit.is_vetoable());
         assert!(!HookPoint::AfterToolUse.is_vetoable());
         assert!(!HookPoint::SessionStart.is_vetoable());
+    }
+
+    #[test]
+    fn user_prompt_submit_label_and_payload() {
+        assert_eq!(HookPoint::UserPromptSubmit.label(), "user_prompt_submit");
+        let json = serde_json::to_string(&HookPoint::UserPromptSubmit).unwrap();
+        assert_eq!(json, "\"user_prompt_submit\"");
+        assert_eq!(
+            HookData::prompt("hi"),
+            HookData::Prompt { text: "hi".into() }
+        );
     }
 
     #[test]

@@ -23,6 +23,8 @@ use deepagent_verification::reflection::NextAction;
 use deepagent_verification::{CommandRunner, ReflectionEngine, VerificationStep, Verifier};
 
 use crate::agent::{Agent, AgentDecision, Observation};
+use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyGate};
+use crate::events::{NullEventSink, RuntimeEvent, RuntimeEventSink};
 
 /// An optional post-completion verification plan (开发计划.md Phase 7).
 ///
@@ -64,6 +66,41 @@ pub enum RunOutcome {
     StepLimitReached,
 }
 
+/// The result of the `UserPromptSubmit` gate (复刻规范 P1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptDecision {
+    /// The prompt is accepted (possibly rewritten by a `Modify` hook). Carries
+    /// the effective prompt text to turn into a task.
+    Accept(String),
+    /// A hook requested approval before the prompt may proceed.
+    NeedsApproval {
+        /// The (unmodified) prompt awaiting approval.
+        prompt: String,
+        /// Why approval is required.
+        reason: String,
+    },
+    /// A hook rejected the prompt outright.
+    Rejected {
+        /// Why the prompt was rejected.
+        reason: String,
+    },
+}
+
+impl PromptDecision {
+    /// The accepted prompt text, if accepted.
+    pub fn accepted(&self) -> Option<&str> {
+        match self {
+            PromptDecision::Accept(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Whether the prompt was accepted.
+    pub fn is_accepted(&self) -> bool {
+        matches!(self, PromptDecision::Accept(_))
+    }
+}
+
 /// Tuning knobs for a run.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -92,6 +129,8 @@ pub struct RuntimeEngine<'a, C: Clock> {
     config: RuntimeConfig,
     hooks: Option<&'a HookRegistry>,
     verification: Option<&'a VerificationPlan>,
+    events: std::sync::Arc<dyn RuntimeEventSink>,
+    approvals: std::sync::Arc<dyn ApprovalGate>,
     _clock: std::marker::PhantomData<&'a C>,
 }
 
@@ -104,8 +143,31 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             config,
             hooks: None,
             verification: None,
+            events: std::sync::Arc::new(NullEventSink),
+            approvals: std::sync::Arc::new(AutoDenyGate),
             _clock: std::marker::PhantomData,
         }
+    }
+
+    /// Attach a live event sink (builder style). Events are pushed as the run
+    /// progresses, for streaming to a UI. Defaults to a no-op sink.
+    pub fn with_events(mut self, events: std::sync::Arc<dyn RuntimeEventSink>) -> Self {
+        self.events = events;
+        self
+    }
+
+    /// Attach an approval gate (builder style). When a tool needs approval
+    /// (an `Ask` hook outcome, or a high-risk tool without auto-approve), the
+    /// runtime awaits the gate's decision. Defaults to deny-all (safe when no
+    /// UI is attached).
+    pub fn with_approvals(mut self, approvals: std::sync::Arc<dyn ApprovalGate>) -> Self {
+        self.approvals = approvals;
+        self
+    }
+
+    /// Emit a live runtime event (no-op if no sink attached).
+    fn emit(&self, event: RuntimeEvent) {
+        self.events.emit(event);
     }
 
     /// Attach a verification plan (builder style). When set, the runtime runs
@@ -155,6 +217,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         self.fire_hook(session_id, HookPoint::SessionStart, HookData::None)
             .await?;
 
+        self.emit(RuntimeEvent::RunStarted {
+            task_id: task.to_string(),
+        });
+
         // Move the task into Running (validated by the session).
         if session.state().task(task).map(|t| t.state) == Some(TaskState::Queued) {
             session.transition_task(task, TaskState::Running)?;
@@ -170,6 +236,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             .map(|p| ReflectionEngine::new(p.max_repeats, p.max_attempts));
 
         for step in 0..self.config.max_steps {
+            self.emit(RuntimeEvent::TurnStarted { step });
             let decision = agent.think(step, last_observation.as_ref()).await?;
             tracing::debug!(step, ?decision, "agent decision");
 
@@ -198,6 +265,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         message: Message::assistant(&msg),
                     })?;
                     session.transition_task(task, TaskState::Completed)?;
+                    self.emit(RuntimeEvent::RunCompleted {
+                        message: msg.clone(),
+                    });
                     outcome = RunOutcome::Completed(msg);
                     finished = true;
                     break;
@@ -208,6 +278,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         text: format!("approval requested: {msg}"),
                     })?;
                     session.transition_task(task, TaskState::WaitingApproval)?;
+                    self.emit(RuntimeEvent::RunAwaitingApproval {
+                        message: msg.clone(),
+                    });
                     outcome = RunOutcome::AwaitingApproval(msg);
                     finished = true;
                     break;
@@ -223,6 +296,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         if !finished {
             // Ran out of steps: mark failed so the task does not linger.
             session.transition_task(task, TaskState::Failed)?;
+            self.emit(RuntimeEvent::RunFailed {
+                reason: format!("step limit reached ({} steps)", self.config.max_steps),
+            });
         }
 
         // SessionEnd hook (observational). The session stays open for resumption
@@ -233,20 +309,66 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         Ok(outcome)
     }
 
+    /// Run the `UserPromptSubmit` gate for a freshly submitted prompt.
+    ///
+    /// This is the Prompt Submission layer (复刻规范 P1): before raw input
+    /// becomes a task, hooks may **deny** it (reject the prompt), **modify** it
+    /// (rewrite/augment the text), or **ask** for approval. The returned
+    /// [`PromptDecision`] tells the caller how to proceed.
+    ///
+    /// If no hook registry is attached, the prompt is accepted unchanged.
+    pub async fn submit_prompt(
+        &self,
+        session_id: deepagent_core::id::SessionId,
+        prompt: impl Into<String>,
+    ) -> Result<PromptDecision> {
+        let prompt = prompt.into();
+        let outcome = self
+            .fire_hook(
+                session_id,
+                HookPoint::UserPromptSubmit,
+                HookData::prompt(prompt.clone()),
+            )
+            .await?;
+
+        let decision = match outcome {
+            HookOutcome::Continue => PromptDecision::Accept(prompt),
+            HookOutcome::Modify { updated_input, .. } => {
+                // For a prompt, the rewritten text is taken from `updated_input`:
+                // either a bare JSON string or an object with a `text` field.
+                let rewritten = updated_input
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        updated_input
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or(prompt);
+                PromptDecision::Accept(rewritten)
+            }
+            HookOutcome::Ask { reason, .. } => PromptDecision::NeedsApproval { prompt, reason },
+            HookOutcome::Deny { reason, .. } => PromptDecision::Rejected { reason },
+        };
+        Ok(decision)
+    }
+
     /// Execute one tool invocation, recording request + completion events and
     /// returning the [`Observation`] to feed back to the agent.
     async fn execute_tool(
         &self,
         session: &mut Session<'a, C>,
         session_id: deepagent_core::id::SessionId,
-        invocation: deepagent_tools::ToolInvocation,
+        mut invocation: deepagent_tools::ToolInvocation,
     ) -> Result<Observation> {
         let call_id = format!("call_{}", deepagent_core::id::EventId::new());
         let tool_name = invocation.name.clone();
 
-        // BeforeToolUse gate: a hook may veto the call. A veto becomes a failed
-        // observation (recorded to the log) so the agent can react, rather than
-        // aborting the whole run.
+        // BeforeToolUse gate: a hook may allow, rewrite the input (Modify),
+        // request approval (Ask), or veto (Deny) the call. A blocked call
+        // becomes a failed observation (recorded to the log) so the agent can
+        // react, rather than aborting the whole run.
         let before = self
             .fire_hook(
                 session_id,
@@ -254,9 +376,70 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 HookData::before_tool(tool_name.clone(), invocation.arguments.clone()),
             )
             .await?;
-        if let HookOutcome::Deny(reason) = before {
+
+        let block_reason: Option<String> = match before {
+            HookOutcome::Continue => None,
+            HookOutcome::Modify {
+                updated_input,
+                source,
+            } => {
+                tracing::info!(
+                    tool = %tool_name,
+                    source = source.label(),
+                    "BeforeToolUse hook rewrote tool arguments"
+                );
+                invocation.arguments = updated_input;
+                None
+            }
+            HookOutcome::Ask { reason, source } => {
+                // `ask` requires explicit approval. With auto-approval on, the
+                // call proceeds; otherwise the approval gate is consulted and we
+                // await its decision (the desktop dialog, a policy, etc.).
+                if self.config.auto_approve {
+                    tracing::info!(
+                        tool = %tool_name,
+                        source = source.label(),
+                        "BeforeToolUse hook asked for approval; auto-approved by config"
+                    );
+                    None
+                } else {
+                    self.emit(RuntimeEvent::ToolBlocked {
+                        name: tool_name.clone(),
+                        reason: reason.clone(),
+                        needs_approval: true,
+                    });
+                    let decision = self
+                        .approvals
+                        .request(ApprovalRequest {
+                            call_id: call_id.clone(),
+                            tool: tool_name.clone(),
+                            reason: reason.clone(),
+                            risk: "ask".to_string(),
+                            arguments: invocation.arguments.clone(),
+                        })
+                        .await;
+                    match decision {
+                        ApprovalDecision::Allow => {
+                            tracing::info!(tool = %tool_name, "tool approved by gate");
+                            None
+                        }
+                        ApprovalDecision::Deny => Some(format!("approval denied: {reason}")),
+                    }
+                }
+            }
+            HookOutcome::Deny { reason, .. } => Some(format!("blocked by hook: {reason}")),
+        };
+
+        if let Some(reason) = block_reason {
             self.metrics.incr(names::TOOL_FAILURES, 1);
-            let err_value = serde_json::json!({ "error": format!("blocked by hook: {reason}") });
+            // An approval-pending ToolBlocked was already emitted in the Ask
+            // branch; here we emit the terminal block (deny / approval denied).
+            self.emit(RuntimeEvent::ToolBlocked {
+                name: tool_name.clone(),
+                reason: reason.clone(),
+                needs_approval: false,
+            });
+            let err_value = serde_json::json!({ "error": reason });
             session.append(EventPayload::ToolCallRequested {
                 call: ToolCall {
                     id: call_id.clone(),
@@ -292,6 +475,11 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             },
         })?;
         self.metrics.incr(names::TOOL_CALLS, 1);
+        self.emit(RuntimeEvent::ToolStarted {
+            name: tool_name.clone(),
+            call_id: call_id.clone(),
+            arguments: invocation.arguments.clone(),
+        });
 
         let start = std::time::Instant::now();
         let output = self
@@ -310,6 +498,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 if !out.ok {
                     self.metrics.incr(names::TOOL_FAILURES, 1);
                 }
+                self.emit(RuntimeEvent::ToolCompleted {
+                    name: tool_name.clone(),
+                    call_id: call_id.clone(),
+                    ok: out.ok,
+                    output: out.value.clone(),
+                    duration_ms,
+                });
                 session.append(EventPayload::ToolCallCompleted {
                     call_id,
                     ok: out.ok,
@@ -328,6 +523,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 // can reflect / choose an alternative.
                 self.metrics.incr(names::TOOL_FAILURES, 1);
                 let err_value = serde_json::json!({ "error": e.to_string() });
+                self.emit(RuntimeEvent::ToolCompleted {
+                    name: tool_name.clone(),
+                    call_id: call_id.clone(),
+                    ok: false,
+                    output: err_value.clone(),
+                    duration_ms,
+                });
                 session.append(EventPayload::ToolCallCompleted {
                     call_id,
                     ok: false,
@@ -371,6 +573,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             session.append(EventPayload::Note {
                 text: "verification passed".to_string(),
             })?;
+            self.emit(RuntimeEvent::Verification {
+                passed: true,
+                detail: "verification passed".to_string(),
+            });
             return Ok(VerifyStep::Passed);
         }
 
@@ -382,6 +588,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         session.append(EventPayload::Note {
             text: format!("verification failed: {}", reflection.diagnosis),
         })?;
+        self.emit(RuntimeEvent::Verification {
+            passed: false,
+            detail: reflection.diagnosis.clone(),
+        });
         self.fire_hook(
             session_id,
             HookPoint::VerificationFailed,
@@ -776,5 +986,294 @@ mod tests {
             session.state().task(task).unwrap().state,
             TaskState::Completed
         );
+    }
+
+    // --- UserPromptSubmit gate (Prompt Submission layer) ---
+
+    /// A hook that rewrites any prompt to a fixed string (Modify), or denies /
+    /// asks based on a sentinel substring.
+    struct PromptHook;
+
+    #[async_trait]
+    impl deepagent_hooks::Hook for PromptHook {
+        fn name(&self) -> &str {
+            "prompt_hook"
+        }
+        async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+            if let HookData::Prompt { text } = &ctx.data {
+                if text.contains("BLOCK") {
+                    return Ok(HookOutcome::deny("prompt contains blocked content"));
+                }
+                if text.contains("CONFIRM") {
+                    return Ok(HookOutcome::ask("please confirm this prompt"));
+                }
+                if text.contains("AUGMENT") {
+                    return Ok(HookOutcome::modify(serde_json::json!({
+                        "text": format!("{text}\n\n[context added by hook]")
+                    })));
+                }
+            }
+            Ok(HookOutcome::Continue)
+        }
+    }
+
+    fn prompt_engine<'a>(
+        reg: &'a ToolRegistry,
+        hooks: &'a HookRegistry,
+    ) -> RuntimeEngine<'a, FixedClock> {
+        RuntimeEngine::new(reg, Metrics::new(), RuntimeConfig::default()).with_hooks(hooks)
+    }
+
+    #[tokio::test]
+    async fn submit_prompt_accepts_when_no_hooks() {
+        let reg = registry();
+        let engine =
+            RuntimeEngine::<FixedClock>::new(&reg, Metrics::new(), RuntimeConfig::default());
+        let decision = engine
+            .submit_prompt(deepagent_core::id::SessionId::nil(), "hello")
+            .await
+            .unwrap();
+        assert_eq!(decision, PromptDecision::Accept("hello".into()));
+    }
+
+    #[tokio::test]
+    async fn submit_prompt_denied_by_hook() {
+        let reg = registry();
+        let mut hooks = HookRegistry::new();
+        hooks.register(HookPoint::UserPromptSubmit, Arc::new(PromptHook));
+        let engine = prompt_engine(&reg, &hooks);
+        let decision = engine
+            .submit_prompt(deepagent_core::id::SessionId::nil(), "please BLOCK this")
+            .await
+            .unwrap();
+        assert!(matches!(decision, PromptDecision::Rejected { .. }));
+    }
+
+    #[tokio::test]
+    async fn submit_prompt_modified_by_hook() {
+        let reg = registry();
+        let mut hooks = HookRegistry::new();
+        hooks.register(HookPoint::UserPromptSubmit, Arc::new(PromptHook));
+        let engine = prompt_engine(&reg, &hooks);
+        let decision = engine
+            .submit_prompt(deepagent_core::id::SessionId::nil(), "AUGMENT my prompt")
+            .await
+            .unwrap();
+        let prompt = decision.accepted().expect("accepted");
+        assert!(prompt.contains("[context added by hook]"));
+    }
+
+    #[tokio::test]
+    async fn submit_prompt_asks_for_approval() {
+        let reg = registry();
+        let mut hooks = HookRegistry::new();
+        hooks.register(HookPoint::UserPromptSubmit, Arc::new(PromptHook));
+        let engine = prompt_engine(&reg, &hooks);
+        let decision = engine
+            .submit_prompt(deepagent_core::id::SessionId::nil(), "CONFIRM please")
+            .await
+            .unwrap();
+        assert!(matches!(decision, PromptDecision::NeedsApproval { .. }));
+    }
+
+    // --- Live event stream (P1-C) ---
+
+    #[tokio::test]
+    async fn run_emits_live_event_stream() {
+        use crate::events::{ChannelSink, RuntimeEvent};
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("run")).unwrap();
+        let task = session.create_task("add numbers").unwrap();
+
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CallTool(ToolInvocation::new(
+                "add",
+                serde_json::json!({"a": 2, "b": 3}),
+            )),
+            AgentDecision::Complete("the sum is 5".into()),
+        ]);
+
+        let reg = registry();
+        let (sink, mut rx) = ChannelSink::new();
+        let engine = RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default())
+            .with_events(Arc::new(sink));
+
+        engine.run(&mut session, task, &mut agent).await.unwrap();
+
+        // Drain the stream and assert the phase sequence.
+        let mut labels = Vec::new();
+        let mut tool_started_args = None;
+        let mut final_msg = None;
+        while let Ok(ev) = rx.try_recv() {
+            labels.push(ev.label().to_string());
+            match ev {
+                RuntimeEvent::ToolStarted {
+                    name, arguments, ..
+                } => {
+                    assert_eq!(name, "add");
+                    tool_started_args = Some(arguments);
+                }
+                RuntimeEvent::ToolCompleted { ok, output, .. } => {
+                    assert!(ok);
+                    assert_eq!(output["sum"], 5);
+                }
+                RuntimeEvent::RunCompleted { message } => final_msg = Some(message),
+                _ => {}
+            }
+        }
+
+        assert_eq!(labels.first().map(String::as_str), Some("run_started"));
+        assert_eq!(labels.last().map(String::as_str), Some("run_completed"));
+        assert!(labels.iter().any(|l| l == "turn_started"));
+        assert!(labels.iter().any(|l| l == "tool_started"));
+        assert!(labels.iter().any(|l| l == "tool_completed"));
+        assert_eq!(tool_started_args, Some(serde_json::json!({"a": 2, "b": 3})));
+        assert_eq!(final_msg.as_deref(), Some("the sum is 5"));
+    }
+
+    #[tokio::test]
+    async fn blocked_tool_emits_tool_blocked_event() {
+        use crate::events::{ChannelSink, RuntimeEvent};
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        let task = session.create_task("blocked").unwrap();
+
+        let mut hooks = HookRegistry::new();
+        hooks.register(
+            HookPoint::BeforeToolUse,
+            Arc::new(ToolAllowlistHook::new(["read_file".to_string()])),
+        );
+
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CallTool(ToolInvocation::new("add", serde_json::json!({"a":1,"b":1}))),
+            AgentDecision::Complete("done".into()),
+        ]);
+        let reg = registry();
+        let (sink, mut rx) = ChannelSink::new();
+        let engine = RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default())
+            .with_hooks(&hooks)
+            .with_events(Arc::new(sink));
+
+        engine.run(&mut session, task, &mut agent).await.unwrap();
+
+        let mut saw_blocked = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let RuntimeEvent::ToolBlocked {
+                name,
+                needs_approval,
+                ..
+            } = ev
+            {
+                assert_eq!(name, "add");
+                assert!(!needs_approval); // a hard deny, not an ask
+                saw_blocked = true;
+            }
+        }
+        assert!(saw_blocked, "expected a ToolBlocked event");
+    }
+
+    // --- Approval gate (Phase A-3 human-in-the-loop) ---
+
+    /// A hook that asks for approval on the `add` tool.
+    struct AskHook;
+    #[async_trait]
+    impl deepagent_hooks::Hook for AskHook {
+        fn name(&self) -> &str {
+            "ask_hook"
+        }
+        async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+            if let HookData::Tool { name, .. } = &ctx.data {
+                if name == "add" {
+                    return Ok(HookOutcome::ask("needs human approval"));
+                }
+            }
+            Ok(HookOutcome::Continue)
+        }
+    }
+
+    /// A gate returning a fixed decision and recording the tools it saw.
+    struct FixedGate {
+        decision: crate::approval::ApprovalDecision,
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    #[async_trait]
+    impl crate::approval::ApprovalGate for FixedGate {
+        async fn request(
+            &self,
+            req: crate::approval::ApprovalRequest,
+        ) -> crate::approval::ApprovalDecision {
+            self.seen.lock().unwrap().push(req.tool.clone());
+            self.decision
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_hook_consults_gate_and_allows() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        let task = session.create_task("ask").unwrap();
+
+        let mut hooks = HookRegistry::new();
+        hooks.register(HookPoint::BeforeToolUse, Arc::new(AskHook));
+
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CallTool(ToolInvocation::new("add", serde_json::json!({"a":2,"b":2}))),
+            AgentDecision::Complete("4".into()),
+        ]);
+        let reg = registry();
+        let metrics = Metrics::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let gate = Arc::new(FixedGate {
+            decision: crate::approval::ApprovalDecision::Allow,
+            seen: seen.clone(),
+        });
+        let engine = RuntimeEngine::new(&reg, metrics.clone(), RuntimeConfig::default())
+            .with_hooks(&hooks)
+            .with_approvals(gate);
+
+        engine.run(&mut session, task, &mut agent).await.unwrap();
+        // Gate was consulted for "add", and the call then ran successfully.
+        assert_eq!(*seen.lock().unwrap(), vec!["add".to_string()]);
+        assert!(agent.observations[0].ok);
+        assert_eq!(metrics.get(names::TOOL_CALLS), 1);
+    }
+
+    #[tokio::test]
+    async fn ask_hook_gate_denies_blocks_call() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        let task = session.create_task("ask").unwrap();
+
+        let mut hooks = HookRegistry::new();
+        hooks.register(HookPoint::BeforeToolUse, Arc::new(AskHook));
+
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CallTool(ToolInvocation::new("add", serde_json::json!({"a":2,"b":2}))),
+            AgentDecision::Complete("done anyway".into()),
+        ]);
+        let reg = registry();
+        let metrics = Metrics::new();
+        let gate = Arc::new(FixedGate {
+            decision: crate::approval::ApprovalDecision::Deny,
+            seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+        });
+        let engine = RuntimeEngine::new(&reg, metrics.clone(), RuntimeConfig::default())
+            .with_hooks(&hooks)
+            .with_approvals(gate);
+
+        engine.run(&mut session, task, &mut agent).await.unwrap();
+        // Denied: failed observation, real tool never ran.
+        assert!(!agent.observations[0].ok);
+        assert!(agent.observations[0].output["error"]
+            .as_str()
+            .unwrap()
+            .contains("approval denied"));
+        assert_eq!(metrics.get(names::TOOL_CALLS), 0);
     }
 }

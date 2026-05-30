@@ -11,15 +11,42 @@
 //! [`service::AppService`]; the UI never touches kernel internals, so the wire
 //! contract stays stable as the kernel evolves.
 
+pub mod approval_bridge;
+pub mod chat_service;
 pub mod commands;
 pub mod diff;
 pub mod dto;
+pub mod mcp_service;
+pub mod project_service;
+pub mod secret_store;
 pub mod service;
+pub mod settings;
+pub mod skills_service;
+pub mod terminal_service;
+pub mod workspace_service;
 
+pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
+pub use chat_service::ChatService;
 pub use commands::{builtin_commands, filter_commands};
 pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
 pub use dto::{
-    ApprovalRequestDto, CommandDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto,
-    TimelineEntryDto,
+    ApprovalRequestDto, CommandDto, ForkResultDto, ProjectDto, RewindResultDto, SessionDetailDto,
+    SessionStatsDto, SessionSummaryDto, TerminalResultDto, TimelineEntryDto, TranscriptDto,
+    WorkspaceInfoDto,
 };
+pub use mcp_service::{McpServerDto, McpService};
+pub use project_service::{folder_name, ProjectService};
+pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore};
 pub use service::AppService;
+pub use settings::{AppSettings, ApprovalPolicy, SettingsService, SettingsView};
+pub use skills_service::{SkillActivationDto, SkillDto, SkillsService};
+pub use terminal_service::TerminalService;
+pub use workspace_service::WorkspaceService;
+
+// Re-export the live runtime event + approval types so the Tauri/web layer can
+// forward them.
+pub use deepagent_hooks::{HookDefinitions, PermissionRules};
+pub use deepagent_runtime::{ApprovalDecision, RuntimeEvent};
+
+#[cfg(feature = "keychain")]
+pub use secret_store::KeychainStore;

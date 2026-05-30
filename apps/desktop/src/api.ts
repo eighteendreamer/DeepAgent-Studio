@@ -9,8 +9,18 @@ import type {
   ApprovalRequest,
   Command,
   DiffResult,
+  ForkResult,
+  McpServer,
+  PermissionRules,
+  Project,
+  RewindResult,
   SessionDetail,
   SessionSummary,
+  SettingsView,
+  Skill,
+  SkillActivation,
+  Transcript,
+  WorkspaceInfo,
 } from "./types";
 
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
@@ -32,13 +42,13 @@ function getInvoke(): InvokeFn | null {
 export async function listSessions(): Promise<SessionSummary[]> {
   const invoke = getInvoke();
   if (invoke) return invoke<SessionSummary[]>("list_sessions");
-  return mockSessions();
+  return [];
 }
 
 export async function getSessionDetail(id: string): Promise<SessionDetail> {
   const invoke = getInvoke();
   if (invoke) return invoke<SessionDetail>("session_detail", { sessionId: id });
-  return mockDetail(id);
+  throw new Error("session detail requires the desktop app");
 }
 
 export async function getCommands(query: string): Promise<Command[]> {
@@ -53,9 +63,386 @@ export async function computeDiff(oldText: string, newText: string): Promise<Dif
   return mockDiff(oldText, newText);
 }
 
+// ---- settings / project initialization ------------------------------------
+
+/**
+ * Initialize the project with a DeepSeek API key. This **validates** the key by
+ * running model discovery against DeepSeek — an invalid key rejects (throws).
+ * On success the key is stored in the OS keychain and the redacted view is
+ * returned. Only callable inside the desktop app.
+ */
+export async function initializeProject(apiKey: string): Promise<SettingsView> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SettingsView>("initialize_project", { apiKey });
+  throw new Error("connecting an API key requires the desktop app");
+}
+
+/** The current (redacted) settings view, or null if uninitialized. */
+export async function getSettings(): Promise<SettingsView | null> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SettingsView | null>("get_settings");
+  return null;
+}
+
+/** Re-run model discovery with the stored key. */
+export async function refreshModels(): Promise<SettingsView> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SettingsView>("refresh_models");
+  throw new Error("refresh requires the desktop app");
+}
+
+/** Clear the stored API key (sign out). */
+export async function clearApiKey(): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("clear_api_key");
+}
+
+/**
+ * Fork a session at a timeline sequence: create a new branch copying events
+ * `0..=atSeq`. The source session is left untouched. Returns the branch id.
+ */
+export async function forkSession(id: string, atSeq: number): Promise<ForkResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ForkResult>("fork_session", { sessionId: id, atSeq });
+  return { new_session_id: `${id}-fork`, source_session_id: id, forked_at: atSeq };
+}
+
+/**
+ * Rewind a session in place to a timeline sequence, discarding later events.
+ * Destructive and user-initiated; the session is reopened afterwards.
+ */
+export async function rewindSession(id: string, toSeq: number): Promise<RewindResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RewindResult>("rewind_session", { sessionId: id, toSeq });
+  return { session_id: id, kept_through: toSeq, events_removed: 0 };
+}
+
+/** Export a session transcript as "markdown" or "json". */
+export async function exportTranscript(
+  id: string,
+  format: "markdown" | "json"
+): Promise<Transcript> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Transcript>("export_transcript", { sessionId: id, format });
+  return {
+    session_id: id,
+    format,
+    extension: format === "json" ? "json" : "md",
+    content: format === "json" ? "[]" : "# Session transcript\n",
+  };
+}
+
 /** Pending approvals are pushed by the runtime; mocked here for preview. */
 export async function getPendingApprovals(): Promise<ApprovalRequest[]> {
   return mockApprovals();
+}
+
+// ---- skills ---------------------------------------------------------------
+
+export async function listSkills(): Promise<Skill[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Skill[]>("list_skills");
+  return mockSkills();
+}
+
+export async function reloadSkills(): Promise<Skill[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Skill[]>("reload_skills");
+  return mockSkills();
+}
+
+export async function installSkill(sourceDir: string): Promise<Skill> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Skill>("install_skill", { sourceDir });
+  throw new Error("install requires the desktop app");
+}
+
+export async function installSkillFromZip(zipPath: string): Promise<Skill> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Skill>("install_skill_from_zip", { zipPath });
+  throw new Error("zip install requires the desktop app");
+}
+
+export async function uninstallSkill(id: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("uninstall_skill", { id });
+  return false;
+}
+
+export async function previewSkillActivation(
+  query: string
+): Promise<SkillActivation | null> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<SkillActivation | null>("preview_skill_activation", { query });
+  return mockPreview(query);
+}
+
+export async function activateSkill(id: string): Promise<SkillActivation | null> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SkillActivation | null>("activate_skill", { id });
+  const s = mockSkills().find((x) => x.id === id);
+  return s ? { id, body: `# Skill: ${s.name}\n\n${s.description}` } : null;
+}
+
+// ---- chat (streamed) ------------------------------------------------------
+
+/** A live runtime event mirroring deepagent-runtime::RuntimeEvent. */
+export interface RuntimeEvent {
+  type:
+    | "run_started"
+    | "turn_started"
+    | "reasoning_delta"
+    | "content_delta"
+    | "tool_started"
+    | "tool_completed"
+    | "tool_blocked"
+    | "verification"
+    | "run_completed"
+    | "run_awaiting_approval"
+    | "run_failed";
+  // Fields are variant-specific (tagged union); read what each type carries.
+  [key: string]: unknown;
+}
+
+/**
+ * Run a streamed chat turn-loop. Runtime events go to `onEvent`; any tool
+ * approval request goes to `onApproval` (the UI shows a dialog and later calls
+ * `resolveApproval`). Resolves with the new session id when the run finishes.
+ */
+export async function runChat(
+  prompt: string,
+  onEvent: (event: RuntimeEvent) => void,
+  onApproval?: (request: ApprovalRequest) => void
+): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const mod = await import("@tauri-apps/api/event");
+    const unlistenEvent = await mod.listen<RuntimeEvent>("chat://event", (e) => {
+      onEvent(e.payload);
+    });
+    const unlistenApproval = await mod.listen<ApprovalRequest>(
+      "chat://approval",
+      (e) => {
+        onApproval?.(e.payload);
+      }
+    );
+    try {
+      return await invoke<string>("run_chat", { prompt });
+    } finally {
+      unlistenEvent();
+      unlistenApproval();
+    }
+  }
+  return mockChatStream(prompt, onEvent);
+}
+
+/** Resolve a pending tool approval (true = approved). */
+export async function resolveApproval(
+  callId: string,
+  approved: boolean
+): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("resolve_approval", { callId, approved });
+  return true;
+}
+
+/** Get the current approval policy label. */
+export async function getApprovalPolicy(): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("get_approval_policy");
+  return "always_ask";
+}
+
+/** Set the approval policy ("always_ask" | "auto_review" | "full_access"). */
+export async function setApprovalPolicy(policy: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("set_approval_policy", { policy });
+}
+
+// ---- MCP servers (visual config) ------------------------------------------
+
+export async function listMcpServers(): Promise<McpServer[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<McpServer[]>("list_mcp_servers");
+  return mockMcpServers();
+}
+
+export async function saveMcpServer(server: McpServer): Promise<McpServer> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<McpServer>("save_mcp_server", { server });
+  return server;
+}
+
+export async function removeMcpServer(name: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("remove_mcp_server", { name });
+  return true;
+}
+
+export async function setMcpServerEnabled(
+  name: string,
+  enabled: boolean
+): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("set_mcp_server_enabled", { name, enabled });
+  return true;
+}
+
+// ---- permission rules (declarative allow/ask/deny) ------------------------
+
+export async function getPermissionRules(): Promise<PermissionRules> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<PermissionRules>("get_permission_rules");
+  return { allow: [], ask: [], deny: [] };
+}
+
+export async function setPermissionRules(rules: PermissionRules): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("set_permission_rules", { rules });
+}
+
+// ---- declarative external hooks (hooks.json) ------------------------------
+
+/** Get the raw hooks.json source (empty string when unset). */
+export async function getHooksJson(): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("get_hooks_json");
+  return "";
+}
+
+/**
+ * Set the hooks.json source. Rejects (throws) with a parse-error message when
+ * the JSON is malformed, so the UI can surface validation feedback.
+ */
+export async function setHooksJson(hooksJson: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("set_hooks_json", { hooksJson });
+}
+
+// ---- workspace (active project) -------------------------------------------
+
+/** The active project folder (name + absolute path). */
+export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<WorkspaceInfo>("workspace_info");
+  return { name: "Looker-v2", path: "Looker-v2" };
+}
+
+// ---- projects (sidebar: folders → sessions) -------------------------------
+
+/** List all opened projects with session counts. */
+export async function listProjects(): Promise<Project[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Project[]>("list_projects");
+  return [];
+}
+
+/** The active project path, or null. */
+export async function getActiveProject(): Promise<string | null> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string | null>("active_project");
+  return null;
+}
+
+/** Open (add) a project folder; it becomes active. */
+export async function addProject(path: string): Promise<Project> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Project>("add_project", { path });
+  return { name: path.split(/[\\/]/).pop() || path, path, session_count: 0, updated_at: Date.now() };
+}
+
+/** Set the active project. */
+export async function setActiveProject(path: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("set_active_project", { path });
+}
+
+/** Close (remove) a project from the sidebar. */
+export async function removeProject(path: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("remove_project", { path });
+  return true;
+}
+
+// ---- terminal (run commands in the active project) ------------------------
+
+/** Result of a one-shot terminal command (mirrors TerminalResultDto). */
+export interface TerminalResult {
+  command: string;
+  cwd: string;
+  exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  blocked: boolean;
+}
+
+/** Run a shell command in the active project directory. */
+export async function runTerminal(command: string): Promise<TerminalResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<TerminalResult>("run_terminal", { command });
+  return {
+    command,
+    cwd: "",
+    exit_code: null,
+    stdout: "",
+    stderr: "terminal requires the desktop app",
+    blocked: false,
+  };
+}
+
+/** The current working directory for the terminal (active project root). */
+export async function terminalCwd(): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("terminal_cwd");
+  return "";
+}
+
+/**
+ * Open the OS-native "select folder" dialog and return the chosen absolute
+ * path, or null if the user cancelled. Only available inside the desktop app.
+ */
+export async function pickProjectFolder(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const mod = await import("@tauri-apps/plugin-dialog");
+  const selected = await mod.open({
+    directory: true,
+    multiple: false,
+    title: "Select Project Root",
+  });
+  if (typeof selected === "string") return selected;
+  return null;
+}
+
+function mockMcpServers(): McpServer[] {
+  return [
+    {
+      name: "node_repl",
+      transport: "stdio",
+      enabled: true,
+      command: "node",
+      args: ["--experimental-repl-await"],
+      env: {},
+      url: null,
+      headers: {},
+    },
+  ];
+}
+
+async function mockChatStream(
+  prompt: string,
+  onEvent: (event: RuntimeEvent) => void
+): Promise<string> {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  onEvent({ type: "run_started", task_id: "mock" });
+  onEvent({ type: "turn_started", step: 0 });
+  const reply = `I received: "${prompt}". (Connect a DeepSeek API key in 设置 for live responses.)`;
+  for (const word of reply.split(" ")) {
+    await sleep(35);
+    onEvent({ type: "content_delta", text: word + " " });
+  }
+  onEvent({ type: "run_completed", message: reply });
+  return "ses_mock0000000000000000000000000001";
 }
 
 export function isTauri(): boolean {
@@ -63,60 +450,6 @@ export function isTauri(): boolean {
 }
 
 // ---- Mock data (browser/dev fallback) ------------------------------------
-
-function mockSessions(): SessionSummary[] {
-  const now = Date.now();
-  return [
-    {
-      id: "ses_demo000000000000000000000000001",
-      title: "Implement payment retry",
-      created_at: now - 3_600_000,
-      updated_at: now - 120_000,
-      ended: false,
-    },
-    {
-      id: "ses_demo000000000000000000000000002",
-      title: "Refactor context pipeline",
-      created_at: now - 7_200_000,
-      updated_at: now - 5_400_000,
-      ended: true,
-    },
-  ];
-}
-
-function mockDetail(id: string): SessionDetail {
-  const base = Date.now() - 600_000;
-  return {
-    summary: {
-      id,
-      title: "Implement payment retry",
-      created_at: base,
-      updated_at: base + 480_000,
-      ended: false,
-    },
-    timeline: [
-      { sequence: 0, timestamp: base, kind: "session", icon: "🟢", label: "Session started", detail: "Implement payment retry", duration_ms: null },
-      { sequence: 1, timestamp: base + 1000, kind: "task", icon: "📋", label: "Task created: add retry with backoff", detail: null, duration_ms: null },
-      { sequence: 2, timestamp: base + 2000, kind: "task", icon: "🔄", label: "Task Queued → Running", detail: null, duration_ms: null },
-      { sequence: 3, timestamp: base + 5000, kind: "tool", icon: "🔧", label: "Tool requested: read_file", detail: '{"path":"payment/retry.rs"}', duration_ms: null },
-      { sequence: 4, timestamp: base + 5200, kind: "tool", icon: "✅", label: "Tool completed", detail: "read 1.2 KB", duration_ms: 180 },
-      { sequence: 5, timestamp: base + 9000, kind: "tool", icon: "🔧", label: "Tool requested: write_file", detail: '{"path":"payment/retry.rs"}', duration_ms: null },
-      { sequence: 6, timestamp: base + 9400, kind: "tool", icon: "✅", label: "Tool completed", detail: "wrote 1.5 KB", duration_ms: 240 },
-      { sequence: 7, timestamp: base + 12000, kind: "note", icon: "📝", label: "Note", detail: "verification passed", duration_ms: null },
-      { sequence: 8, timestamp: base + 12500, kind: "message", icon: "💬", label: "Assistant message", detail: "Added exponential backoff with jitter to the retry path.", duration_ms: null },
-    ],
-    stats: {
-      event_count: 9,
-      messages: 1,
-      tool_calls: 2,
-      tool_successes: 2,
-      tool_failures: 0,
-      total_tool_ms: 420,
-      tool_success_rate: 1,
-      duration_ms: 12500,
-    },
-  };
-}
 
 const MOCK_COMMANDS: Command[] = [
   { id: "session.new", title: "New Session", category: "Session", shortcut: "Ctrl+N" },
@@ -157,6 +490,37 @@ function mockApprovals(): ApprovalRequest[] {
       reason: "high-risk tool requires explicit approval",
     },
   ];
+}
+
+// Mirrors the skills auto-discovered from `.deepagent/skills/` so the browser
+// preview matches what the desktop app shows.
+function mockSkills(): Skill[] {
+  return [
+    { id: "agent-browser", name: "Agent Browser", description: "Browser automation via a CLI using accessibility-tree element refs — navigate, fill forms, click, screenshot, scrape, test web apps.", version: "0.1.0", origin: "workspace", triggers: ["browse a website", "fill a form", "click a button", "take a screenshot", "scrape a page", "extract data from a web page", "test a web app", "web automation"] },
+    { id: "code-review-skill", name: "Code Review", description: "Structured code review with severity-classified findings across correctness, security, performance, and maintainability.", version: "0.1.0", origin: "workspace", triggers: ["review code", "review a file", "review a diff", "review a pull request", "audit code quality", "find security issues", "check for performance problems"] },
+    { id: "mcp-builder", name: "MCP Builder", description: "Guide for creating high-quality MCP servers that let LLMs interact with external services through well-designed tools.", version: "0.1.0", origin: "workspace", triggers: ["build an mcp server", "create a model context protocol server", "define mcp tools", "write mcp evaluations"] },
+    { id: "planning-with-files", name: "Planning With Files", description: "Manus-style persistent markdown planning — task_plan.md, notes.md, deliverable — so working state survives context resets.", version: "0.1.0", origin: "workspace", triggers: ["complex task", "multi-step project", "research task", "planning", "organizing work", "tracking progress"] },
+    { id: "rust-backend-review", name: "Rust Backend Review", description: "Focused Rust backend review: ownership, error types, async correctness, unsafe, clippy.", version: "0.1.0", origin: "workspace", triggers: ["review rust code", "audit a rust crate", "check error handling", "review unsafe code"] },
+    { id: "superpowers", name: "Superpowers", description: "Meta-skill for authoring high-quality skills and following disciplined engineering workflows (brainstorm, plan, TDD).", version: "0.1.0", origin: "workspace", triggers: ["write a skill", "create a new skill", "improve a skill"] },
+    { id: "ui-ux-pro-max-skill", name: "UI UX Pro Max", description: "UI/UX design intelligence — styles, color palettes, font pairings, product types, UX guidelines, chart types.", version: "0.1.0", origin: "workspace", triggers: ["design a UI", "improve the UX", "pick a color palette", "choose font pairings", "design a landing page", "audit a UI", "build a dashboard"] },
+    { id: "webapp-testing", name: "Webapp Testing", description: "Python Playwright toolkit for testing/automating local web apps — e2e tests, screenshots, console logs, UI debugging.", version: "0.1.0", origin: "workspace", triggers: ["test a web app", "write an end-to-end test", "verify frontend behavior", "capture a screenshot", "debug UI interactions", "automate the browser", "check browser console logs"] },
+  ];
+}
+
+function mockPreview(query: string): SkillActivation | null {
+  const q = query.toLowerCase();
+  const skills = mockSkills();
+  let best: { skill: Skill; score: number } | null = null;
+  for (const skill of skills) {
+    let score = 0;
+    for (const t of skill.triggers) {
+      if (q.includes(t.toLowerCase())) score += 5 + t.split(/\s+/).length;
+    }
+    if (score > 0 && (!best || score > best.score)) best = { skill, score };
+  }
+  return best
+    ? { id: best.skill.id, body: `# Skill: ${best.skill.name}\n\n${best.skill.description}` }
+    : null;
 }
 
 // A tiny LCS diff mirroring the Rust implementation, for browser preview.

@@ -1,0 +1,32 @@
+[package]
+name = "deepagent-builtins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Built-in tool set aligned with Claude Code: read/write/edit/multi_edit/list/glob/grep/bash/todo_write/task_list/web_fetch/web_search, behind the capability registry."
+
+[features]
+default = []
+# The real network-backed web tools (reqwest). Kept optional so the default
+# build and CI stay offline; the WebClient trait + tools are tested via a mock
+# without this feature.
+http = ["dep:reqwest"]
+
+[dependencies]
+deepagent-core.workspace = true
+deepagent-tools.workspace = true
+deepagent-hooks.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tokio = { workspace = true }
+
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+], optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
