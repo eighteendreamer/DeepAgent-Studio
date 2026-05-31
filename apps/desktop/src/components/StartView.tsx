@@ -137,7 +137,7 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
             className="flex items-center px-2 py-1 hover:bg-gray-100 rounded cursor-pointer text-sm transition-colors"
             onClick={() => setIsModeDropdownOpen(!isModeDropdownOpen)}
           >
-            <FontAwesomeIcon icon={["fas", workMode === "code" ? "code" : "sun"]} className={workMode === "code" ? "text-blue-500" : "text-yellow-500"} />
+            <FontAwesomeIcon icon={workMode === "code" ? ["fas", "code"] : ["far", "comments"]} className={workMode === "code" ? "text-blue-500" : "text-text-base"} />
           </div>
 
           {isModeDropdownOpen && (
@@ -174,7 +174,7 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
               >
                 <div className="flex items-start">
                   <div className="w-6 h-6 flex items-center justify-center mr-3 mt-0.5">
-                    <FontAwesomeIcon icon={["fas", "sun"]} className="text-yellow-500 text-[13px]" />
+                    <FontAwesomeIcon icon={["far", "comments"]} className="text-text-base text-[13px]" />
                   </div>
                   <div className="flex-1">
                     <div className="text-[13px] font-medium text-text-base">{t("settings.general.workMode.daily")}</div>
@@ -395,7 +395,7 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
                       <div
                         key={c.title}
                         onClick={() => handleOpenBottomPlugin(c)}
-                        className="bg-[#F9FAFB] rounded-2xl p-5 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-100 transition-colors h-[110px] w-[140px] border border-transparent hover:border-gray-200"
+                        className="bg-gray-50 rounded-2xl p-5 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-100 transition-colors h-[110px] w-[140px] border border-transparent hover:border-gray-200"
                       >
                         <FontAwesomeIcon icon={c.icon} className="text-[22px] text-text-base mb-2.5" />
                         <div className="text-[13px] font-medium text-text-base mb-1">{getTranslatedToolName(c.title, c.type)}</div>
@@ -491,7 +491,7 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
                       <div
                         key={c.title}
                         onClick={() => handleOpenSidebarPlugin(c)}
-                        className="bg-[#F9FAFB] rounded-2xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-100 transition-colors border border-transparent hover:border-gray-200 aspect-square"
+                        className="bg-gray-50 rounded-2xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-100 transition-colors border border-transparent hover:border-gray-200 aspect-square"
                       >
                         <FontAwesomeIcon icon={c.icon} className="text-[20px] text-text-base mb-2" />
                         <div className="text-[12px] font-medium text-text-base mb-1">{getTranslatedToolName(c.title, c.type)}</div>

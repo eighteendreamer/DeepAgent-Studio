@@ -116,20 +116,24 @@ function ThemeDropdown({
     </div>
   );
 }
+import { useTheme } from "../../hooks/useTheme";
 
 export function AppearanceSettings() {
   const { t } = useTranslation();
-  const [themeMode, setThemeMode] = useState("light");
+  const { config, activeIsDark, updateConfig, updateThemeDetails } = useTheme();
+
   const [reduceMotion, setReduceMotion] = useState("system");
   const [diffMarker, setDiffMarker] = useState("color");
-
-  const [lightTranslucent, setLightTranslucent] = useState(true);
-  const [darkTranslucent, setDarkTranslucent] = useState(true);
   const [pointerCursor, setPointerCursor] = useState(false);
-
   const [lightThemeName, setLightThemeName] = useState("Codex");
   const [darkThemeName, setDarkThemeName] = useState("Codex");
-  
+
+  // Determine which config to show in the editor below (always show the one matching the active toggle, or based on system if system is selected)
+  const isEditingDark = activeIsDark;
+  const activeDetails = isEditingDark ? config.dark : config.light;
+  const activeThemeName = isEditingDark ? darkThemeName : lightThemeName;
+  const setActiveThemeName = isEditingDark ? setDarkThemeName : setLightThemeName;
+
   const [isPetExpanded, setIsPetExpanded] = useState(true);
 
   return (
@@ -153,37 +157,23 @@ export function AppearanceSettings() {
                   {label: <><FontAwesomeIcon icon={["fas", "circle-user"]} className="mr-1.5"/>{t("settings.appearance.dark")}</>, value: 'dark'}, // using circle-user as a placeholder for moon if moon not available
                   {label: <><FontAwesomeIcon icon={["fas", "desktop"]} className="mr-1.5"/>{t("settings.appearance.system")}</>, value: 'system'}
                 ]} 
-                value={themeMode} 
-                onChange={(val) => setThemeMode(val)} 
+                value={config.mode} 
+                onChange={(val: any) => updateConfig({ mode: val })} 
               />
             </div>
 
             {/* Theme Preview Box */}
             <div className="flex border border-border-theme rounded-lg overflow-hidden text-[11px] font-mono shadow-sm">
-              <div className="flex-1 bg-white border-r border-border-theme">
+              <div className="flex-1 bg-white border-r border-border-theme" style={{ backgroundColor: activeDetails.bg }}>
                 <div className="flex">
-                  <div className="w-8 text-right pr-2 text-gray-400 select-none py-2 bg-gray-50 border-r border-border-theme">
+                  <div className="w-8 text-right pr-2 text-gray-400 select-none py-2 border-r border-border-theme" style={{ backgroundColor: `color-mix(in srgb, ${activeDetails.bg} 95%, black)` }}>
                     1<br/>2<br/>3<br/>4<br/>5
                   </div>
-                  <div className="flex-1 py-2 relative">
-                    <div className="pl-3"><span className="text-purple-600">const</span> <span className="text-blue-600">themePreview</span>: <span className="text-green-600">ThemeConfig</span> = {'{'}</div>
-                    <div className="pl-3 bg-red-50 border-l-2 border-red-400 text-red-800">  surface: <span className="text-red-600">"sidebar"</span>,</div>
-                    <div className="pl-3 bg-red-50 border-l-2 border-red-400 text-red-800">  accent: <span className="text-red-600">"#2563cb"</span>,</div>
-                    <div className="pl-3 bg-red-50 border-l-2 border-red-400 text-red-800">  contrast: <span className="text-orange-600">42</span>,</div>
-                    <div className="pl-3">{'}'};</div>
-                  </div>
-                </div>
-              </div>
-              <div className="flex-1 bg-white">
-                <div className="flex">
-                  <div className="w-8 text-right pr-2 text-gray-400 select-none py-2 bg-gray-50 border-r border-border-theme">
-                    1<br/>2<br/>3<br/>4<br/>5
-                  </div>
-                  <div className="flex-1 py-2 relative">
-                    <div className="pl-3"><span className="text-purple-600">const</span> <span className="text-blue-600">themePreview</span>: <span className="text-green-600">ThemeConfig</span> = {'{'}</div>
-                    <div className="pl-3 bg-green-50 border-l-2 border-green-500 text-green-800">  surface: <span className="text-green-700">"sidebar-elevated"</span>,</div>
-                    <div className="pl-3 bg-green-50 border-l-2 border-green-500 text-green-800">  accent: <span className="text-green-700">"#0ea5e9"</span>,</div>
-                    <div className="pl-3 bg-green-50 border-l-2 border-green-500 text-green-800">  contrast: <span className="text-orange-600">68</span>,</div>
+                  <div className="flex-1 py-2 relative" style={{ color: activeDetails.fg }}>
+                    <div className="pl-3"><span className="text-purple-500">const</span> <span className="text-blue-500">themePreview</span>: <span className="text-green-500">ThemeConfig</span> = {'{'}</div>
+                    <div className="pl-3 border-l-2" style={{ backgroundColor: `color-mix(in srgb, ${activeDetails.accent} 10%, transparent)`, borderColor: activeDetails.accent, color: activeDetails.accent }}>  surface: <span>"sidebar"</span>,</div>
+                    <div className="pl-3 border-l-2" style={{ backgroundColor: `color-mix(in srgb, ${activeDetails.accent} 10%, transparent)`, borderColor: activeDetails.accent, color: activeDetails.accent }}>  accent: <span>"{activeDetails.accent}"</span>,</div>
+                    <div className="pl-3 border-l-2" style={{ backgroundColor: `color-mix(in srgb, ${activeDetails.accent} 10%, transparent)`, borderColor: activeDetails.accent, color: activeDetails.accent }}>  contrast: <span className="text-orange-500">{activeDetails.contrast}</span>,</div>
                     <div className="pl-3">{'}'};</div>
                   </div>
                 </div>
@@ -201,120 +191,58 @@ export function AppearanceSettings() {
           </div>
 
           <div className="p-4 bg-gray-50/50 border-t border-border-theme space-y-6">
-            {/* 浅色主题 Config Nested Card */}
+            {/* 浅色/深色主题 Config Nested Card */}
             <div className="border border-border-theme rounded-xl bg-white shadow-sm overflow-hidden">
               <div className="flex items-center justify-between p-3 border-b border-border-theme bg-gray-50/80">
-            <div className="text-[14px] font-medium text-text-base">{t("settings.appearance.lightTheme")}</div>
+            <div className="text-[14px] font-medium text-text-base">{isEditingDark ? t("settings.appearance.darkTheme") : t("settings.appearance.lightTheme")}</div>
             <div className="flex items-center space-x-3">
               <button className="text-[12px] text-text-secondary hover:text-text-base">{t("settings.appearance.import")}</button>
               <button className="text-[12px] text-text-secondary hover:text-text-base">{t("settings.appearance.copyTheme")}</button>
-              <ThemeDropdown selectedTheme={lightThemeName} onChange={setLightThemeName} isDark={false} />
+              <ThemeDropdown selectedTheme={activeThemeName} onChange={setActiveThemeName} isDark={isEditingDark} />
             </div>
           </div>
 
           <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
             <div className="text-[13px] text-text-base">{t("settings.appearance.accentColor")}</div>
-            <div className="flex items-center justify-center rounded-lg px-3 py-1.5 bg-[#339CFF] text-white text-[12px] font-mono shadow-sm cursor-pointer w-24">
-              #339CFF
+            <div className="flex items-center justify-center rounded-lg px-2 py-1 bg-white border border-border-theme text-text-base text-[12px] font-mono shadow-sm relative">
+              <input type="color" value={activeDetails.accent} onChange={(e) => updateThemeDetails(isEditingDark, { accent: e.target.value })} className="w-5 h-5 absolute left-2 top-1/2 -mt-2.5 opacity-0 cursor-pointer" />
+              <div className="w-3 h-3 rounded-full border border-gray-300 mr-2" style={{ backgroundColor: activeDetails.accent }}></div>
+              <input type="text" value={activeDetails.accent.toUpperCase()} onChange={(e) => updateThemeDetails(isEditingDark, { accent: e.target.value })} className="w-16 focus:outline-none bg-transparent" />
             </div>
           </div>
           <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
             <div className="text-[13px] text-text-base">{t("settings.appearance.background")}</div>
-            <div className="flex items-center justify-center rounded-lg px-3 py-1.5 bg-white border border-border-theme text-text-base text-[12px] font-mono shadow-sm cursor-pointer w-24 relative">
-              <div className="w-2.5 h-2.5 rounded-full border border-gray-300 absolute left-2 top-1/2 -mt-[5px] bg-white"></div>
-              #FFFFFF
+            <div className="flex items-center justify-center rounded-lg px-2 py-1 bg-white border border-border-theme text-text-base text-[12px] font-mono shadow-sm relative">
+              <input type="color" value={activeDetails.bg} onChange={(e) => updateThemeDetails(isEditingDark, { bg: e.target.value })} className="w-5 h-5 absolute left-2 top-1/2 -mt-2.5 opacity-0 cursor-pointer" />
+              <div className="w-3 h-3 rounded-full border border-gray-300 mr-2" style={{ backgroundColor: activeDetails.bg }}></div>
+              <input type="text" value={activeDetails.bg.toUpperCase()} onChange={(e) => updateThemeDetails(isEditingDark, { bg: e.target.value })} className="w-16 focus:outline-none bg-transparent" />
             </div>
           </div>
           <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
             <div className="text-[13px] text-text-base">{t("settings.appearance.foreground")}</div>
-            <div className="flex items-center justify-center rounded-lg px-3 py-1.5 bg-[#1A1C1F] text-white text-[12px] font-mono shadow-sm cursor-pointer w-24 relative">
-              <div className="w-2.5 h-2.5 rounded-full border border-gray-600 absolute left-2 top-1/2 -mt-[5px] bg-black"></div>
-              #1A1C1F
+            <div className="flex items-center justify-center rounded-lg px-2 py-1 bg-white border border-border-theme text-text-base text-[12px] font-mono shadow-sm relative">
+              <input type="color" value={activeDetails.fg} onChange={(e) => updateThemeDetails(isEditingDark, { fg: e.target.value })} className="w-5 h-5 absolute left-2 top-1/2 -mt-2.5 opacity-0 cursor-pointer" />
+              <div className="w-3 h-3 rounded-full border border-gray-300 mr-2" style={{ backgroundColor: activeDetails.fg }}></div>
+              <input type="text" value={activeDetails.fg.toUpperCase()} onChange={(e) => updateThemeDetails(isEditingDark, { fg: e.target.value })} className="w-16 focus:outline-none bg-transparent" />
             </div>
           </div>
           <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
             <div className="text-[13px] text-text-base">{t("settings.appearance.uiFont")}</div>
-            <div className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] text-gray-400 w-[200px] text-right truncate cursor-text shadow-sm">
-              -apple-system, BlinkM...
-            </div>
+            <input type="text" value={activeDetails.uiFont} onChange={(e) => updateThemeDetails(isEditingDark, { uiFont: e.target.value })} className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] text-text-base w-[200px] text-right truncate cursor-text shadow-sm focus:outline-none" />
           </div>
           <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
             <div className="text-[13px] text-text-base">{t("settings.appearance.codeFont")}</div>
-            <div className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] text-gray-400 w-[200px] text-right truncate cursor-text shadow-sm">
-              ui-monospace, "SFMon...
-            </div>
+            <input type="text" value={activeDetails.codeFont} onChange={(e) => updateThemeDetails(isEditingDark, { codeFont: e.target.value })} className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] text-text-base w-[200px] text-right truncate cursor-text shadow-sm focus:outline-none" />
           </div>
           <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
             <div className="text-[13px] text-text-base">{t("settings.appearance.translucentSidebar")}</div>
-            <ToggleSwitch checked={lightTranslucent} onChange={() => setLightTranslucent(!lightTranslucent)} />
+            <ToggleSwitch checked={activeDetails.translucentSidebar} onChange={() => updateThemeDetails(isEditingDark, { translucentSidebar: !activeDetails.translucentSidebar })} />
           </div>
           <div className="flex items-center justify-between px-4 py-3">
             <div className="text-[13px] text-text-base">{t("settings.appearance.contrast")}</div>
-            <div className="flex items-center">
-              <div className="w-[120px] h-1 bg-blue-100 rounded-full relative mr-3">
-                <div className="absolute top-0 left-0 h-1 bg-blue-500 rounded-full" style={{ width: '45%' }}></div>
-                <div className="absolute top-1/2 -mt-2.5 w-5 h-5 bg-black rounded-full shadow-md cursor-pointer" style={{ left: '45%', marginLeft: '-10px' }}></div>
-              </div>
-              <span className="text-[12px] text-text-base w-6 text-right">45</span>
-            </div>
-          </div>
-        </div>
-
-        {/* 深色主题 Config Nested Card */}
-        <div className="border border-border-theme rounded-xl bg-white shadow-sm overflow-hidden">
-          <div className="flex items-center justify-between p-3 border-b border-border-theme bg-gray-50/80">
-            <div className="text-[14px] font-medium text-text-base">{t("settings.appearance.darkTheme")}</div>
             <div className="flex items-center space-x-3">
-              <button className="text-[12px] text-text-secondary hover:text-text-base">{t("settings.appearance.import")}</button>
-              <button className="text-[12px] text-text-secondary hover:text-text-base">{t("settings.appearance.copyTheme")}</button>
-              <ThemeDropdown selectedTheme={darkThemeName} onChange={setDarkThemeName} isDark={true} />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
-            <div className="text-[13px] text-text-base">{t("settings.appearance.accentColor")}</div>
-            <div className="flex items-center justify-center rounded-lg px-3 py-1.5 bg-[#339CFF] text-white text-[12px] font-mono shadow-sm cursor-pointer w-24">
-              #339CFF
-            </div>
-          </div>
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
-            <div className="text-[13px] text-text-base">{t("settings.appearance.background")}</div>
-            <div className="flex items-center justify-center rounded-lg px-3 py-1.5 bg-[#181818] border border-gray-600 text-white text-[12px] font-mono shadow-sm cursor-pointer w-24 relative">
-              <div className="w-2.5 h-2.5 rounded-full border border-gray-500 absolute left-2 top-1/2 -mt-[5px] bg-[#181818]"></div>
-              #181818
-            </div>
-          </div>
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
-            <div className="text-[13px] text-text-base">{t("settings.appearance.foreground")}</div>
-            <div className="flex items-center justify-center rounded-lg px-3 py-1.5 bg-white border border-border-theme text-text-base text-[12px] font-mono shadow-sm cursor-pointer w-24 relative">
-              <div className="w-2.5 h-2.5 rounded-full border border-gray-300 absolute left-2 top-1/2 -mt-[5px] bg-white"></div>
-              #FFFFFF
-            </div>
-          </div>
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
-            <div className="text-[13px] text-text-base">{t("settings.appearance.uiFont")}</div>
-            <div className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] text-gray-400 w-[200px] text-right truncate cursor-text shadow-sm">
-              -apple-system, BlinkM...
-            </div>
-          </div>
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
-            <div className="text-[13px] text-text-base">{t("settings.appearance.codeFont")}</div>
-            <div className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] text-gray-400 w-[200px] text-right truncate cursor-text shadow-sm">
-              ui-monospace, "SFMon...
-            </div>
-          </div>
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
-            <div className="text-[13px] text-text-base">{t("settings.appearance.translucentSidebar")}</div>
-            <ToggleSwitch checked={darkTranslucent} onChange={() => setDarkTranslucent(!darkTranslucent)} />
-          </div>
-          <div className="flex items-center justify-between px-4 py-3">
-            <div className="text-[13px] text-text-base">{t("settings.appearance.contrast")}</div>
-            <div className="flex items-center">
-              <div className="w-[120px] h-1 bg-blue-100 rounded-full relative mr-3">
-                <div className="absolute top-0 left-0 h-1 bg-blue-500 rounded-full" style={{ width: '60%' }}></div>
-                <div className="absolute top-1/2 -mt-2.5 w-5 h-5 bg-black rounded-full shadow-md cursor-pointer" style={{ left: '60%', marginLeft: '-10px' }}></div>
-              </div>
-              <span className="text-[12px] text-text-base w-6 text-right">60</span>
+              <input type="range" min="0" max="100" value={activeDetails.contrast} onChange={(e) => updateThemeDetails(isEditingDark, { contrast: parseInt(e.target.value) })} className="w-32 accent-text-base" />
+              <div className="text-[12px] text-text-secondary w-6 text-right">{activeDetails.contrast}</div>
             </div>
           </div>
         </div>

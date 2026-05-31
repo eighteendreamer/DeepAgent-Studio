@@ -25,6 +25,15 @@ pub enum RuntimeEvent {
         /// The task being run.
         task_id: String,
     },
+    /// The session backing this run is known (emitted early, before the model
+    /// loop starts) so a UI can register and navigate to the session while it
+    /// is still running — not only after it completes.
+    SessionRegistered {
+        /// The session id this run is recorded under.
+        session_id: String,
+        /// The session title (the originating prompt), if any.
+        title: Option<String>,
+    },
     /// A new model turn began (step index).
     TurnStarted {
         /// 0-based step index.
@@ -78,6 +87,20 @@ pub enum RuntimeEvent {
         /// Short diagnosis / detail.
         detail: String,
     },
+    /// Token accounting for one model call (accumulates across a multi-turn run
+    /// on the UI side). Carries DeepSeek's cache hit/miss breakdown when present.
+    Usage {
+        /// Prompt (input) tokens for this call.
+        prompt_tokens: u32,
+        /// Completion (output) tokens for this call.
+        completion_tokens: u32,
+        /// Total tokens for this call.
+        total_tokens: u32,
+        /// Prompt tokens served from the context cache (a "hit").
+        prompt_cache_hit_tokens: u32,
+        /// Prompt tokens NOT served from cache (a "miss").
+        prompt_cache_miss_tokens: u32,
+    },
     /// The run finished.
     RunCompleted {
         /// Final assistant message.
@@ -93,6 +116,8 @@ pub enum RuntimeEvent {
         /// Failure reason.
         reason: String,
     },
+    /// The run was cancelled by the user (manual stop).
+    RunCancelled,
 }
 
 impl RuntimeEvent {
@@ -100,6 +125,7 @@ impl RuntimeEvent {
     pub fn label(&self) -> &'static str {
         match self {
             RuntimeEvent::RunStarted { .. } => "run_started",
+            RuntimeEvent::SessionRegistered { .. } => "session_registered",
             RuntimeEvent::TurnStarted { .. } => "turn_started",
             RuntimeEvent::ReasoningDelta { .. } => "reasoning_delta",
             RuntimeEvent::ContentDelta { .. } => "content_delta",
@@ -107,9 +133,11 @@ impl RuntimeEvent {
             RuntimeEvent::ToolCompleted { .. } => "tool_completed",
             RuntimeEvent::ToolBlocked { .. } => "tool_blocked",
             RuntimeEvent::Verification { .. } => "verification",
+            RuntimeEvent::Usage { .. } => "usage",
             RuntimeEvent::RunCompleted { .. } => "run_completed",
             RuntimeEvent::RunAwaitingApproval { .. } => "run_awaiting_approval",
             RuntimeEvent::RunFailed { .. } => "run_failed",
+            RuntimeEvent::RunCancelled => "run_cancelled",
         }
     }
 
@@ -120,6 +148,7 @@ impl RuntimeEvent {
             RuntimeEvent::RunCompleted { .. }
                 | RuntimeEvent::RunAwaitingApproval { .. }
                 | RuntimeEvent::RunFailed { .. }
+                | RuntimeEvent::RunCancelled
         )
     }
 }

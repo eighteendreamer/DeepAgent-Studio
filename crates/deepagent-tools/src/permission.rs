@@ -28,6 +28,8 @@ pub enum Permission {
     Secrets,
     /// Execute sandboxed / untrusted code modules (WASM tools).
     Sandbox,
+    /// Spawn sub-agents (delegated nested agent runs via the `task` tool).
+    Subagent,
 }
 
 /// How dangerous a tool invocation is. Drives whether human approval is needed.
@@ -73,13 +75,15 @@ impl PermissionSet {
         Self::from_iter_perms([Permission::ReadOnly])
     }
 
-    /// A typical developer agent: read + write + safe shell + network.
+    /// A typical developer agent: read + write + safe shell + network +
+    /// sub-agents.
     pub fn developer() -> Self {
         Self::from_iter_perms([
             Permission::ReadOnly,
             Permission::WorkspaceWrite,
             Permission::ShellSafe,
             Permission::Network,
+            Permission::Subagent,
         ])
     }
 

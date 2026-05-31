@@ -1,3 +1,5 @@
+import { AnimatePresence, motion } from "framer-motion";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import type { ApprovalRequest } from "../types";
 
@@ -22,15 +24,36 @@ function riskClasses(risk: string): string {
   }
 }
 
+/**
+ * A compact approval card that floats directly above the composer (Codex-style)
+ * rather than a fullscreen modal. Render it inside the composer's container so
+ * it hovers over the input box; it animates in from below and shows the tool,
+ * its risk, the reason, and the (collapsible) arguments.
+ */
 export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }: Props) {
   const { t } = useTranslation();
-  if (!request) return null;
   const remaining = Math.max(0, queueCount - 1);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-      <div className="w-[480px] max-w-[90vw] bg-white rounded-2xl shadow-xl border border-border-theme overflow-hidden">
-        <div className="px-6 py-4 border-b border-border-theme">
-          <div className="flex items-center gap-2 mb-2">
+    <AnimatePresence>
+      {request && (
+        <motion.div
+          key={request.call_id}
+          initial={{ opacity: 0, y: 12, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 12, scale: 0.98 }}
+          transition={{ type: "spring", bounce: 0, duration: 0.25 }}
+          className="w-full bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme overflow-hidden"
+        >
+          <div className="px-4 pt-3 pb-2 flex items-center gap-2">
+            <FontAwesomeIcon
+              icon={["fas", "shield-halved"]}
+              className="text-text-secondary text-[13px]"
+            />
+            <span className="text-[13px] font-semibold text-text-base">
+              {t("approvalDialog.requestTool")}
+              <span className="font-mono">{request.tool}</span>
+            </span>
             <span
               className={`text-[10px] font-semibold uppercase tracking-wide rounded-full px-2 py-0.5 ${riskClasses(
                 request.risk
@@ -44,31 +67,32 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
               </span>
             )}
           </div>
-          <h3 className="text-base font-semibold text-text-base">
-            {t("approvalDialog.requestTool")}<span className="font-mono">{request.tool}</span>
-          </h3>
-        </div>
-        <div className="px-6 py-4">
-          <p className="text-sm text-text-secondary mb-3">{request.reason}</p>
-          <pre className="text-[12px] font-mono text-text-base whitespace-pre-wrap bg-gray-50 border border-border-theme rounded-lg p-3 max-h-60 overflow-y-auto">
-            {request.arguments}
-          </pre>
-        </div>
-        <div className="px-6 py-4 border-t border-border-theme flex justify-end gap-3">
-          <button
-            className="px-4 py-1.5 rounded-full text-sm border border-border-theme text-text-base hover:bg-gray-50 transition-colors"
-            onClick={() => onReject(request)}
-          >
-            {t("approvalDialog.reject")}
-          </button>
-          <button
-            className="px-4 py-1.5 rounded-full text-sm bg-primary text-white hover:bg-opacity-90 transition-colors shadow-sm"
-            onClick={() => onApprove(request)}
-          >
-            {t("approvalDialog.approve")}
-          </button>
-        </div>
-      </div>
-    </div>
+
+          <div className="px-4 pb-3">
+            {request.reason && (
+              <p className="text-[12px] text-text-secondary mb-2">{request.reason}</p>
+            )}
+            <pre className="text-[12px] font-mono text-text-base whitespace-pre-wrap break-words bg-gray-50 border border-border-theme rounded-lg p-2.5 max-h-44 overflow-y-auto">
+              {request.arguments}
+            </pre>
+          </div>
+
+          <div className="px-4 py-2.5 border-t border-border-theme flex justify-end gap-2 bg-[#FbFcFd]">
+            <button
+              className="px-3.5 py-1.5 rounded-full text-[13px] border border-border-theme text-text-base hover:bg-gray-100 transition-colors"
+              onClick={() => onReject(request)}
+            >
+              {t("approvalDialog.reject")}
+            </button>
+            <button
+              className="px-3.5 py-1.5 rounded-full text-[13px] bg-primary text-white hover:bg-opacity-90 transition-colors shadow-sm"
+              onClick={() => onApprove(request)}
+            >
+              {t("approvalDialog.approve")}
+            </button>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

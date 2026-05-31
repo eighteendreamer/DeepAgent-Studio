@@ -179,7 +179,11 @@ impl<C: WebClient> Tool for WebSearchTool<C> {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "web_search".into(),
-            description: "Search the web and return result rows (title, url, snippet). \
+            description: "Search the web and return result rows (title, url, snippet). Use this \
+                for anything time-sensitive or current (today's weather, news, latest versions, \
+                docs, unfamiliar errors) — anything beyond your training data or the codebase. \
+                IMPORTANT: when searching for current/recent information, use the CURRENT year \
+                from the environment block in your query; do not assume an older year. \
                 Args: { query, limit? }."
                 .into(),
             parameters: serde_json::json!({

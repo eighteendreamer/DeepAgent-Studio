@@ -124,7 +124,6 @@ export function SideChatPlugin() {
               onChange={setValue}
               onSubmit={submit}
               placeholder={t("chatView.requestFollowUp")}
-              reviewIcon="history"
             />
           </div>
         </div>

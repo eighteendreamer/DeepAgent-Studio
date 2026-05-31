@@ -8,8 +8,12 @@
 import type {
   ApprovalRequest,
   Command,
+  ConversationMessage,
   DiffResult,
   ForkResult,
+  KnowledgeDraft,
+  KnowledgeEntry,
+  KnowledgeHit,
   McpServer,
   PermissionRules,
   Project,
@@ -49,6 +53,14 @@ export async function getSessionDetail(id: string): Promise<SessionDetail> {
   const invoke = getInvoke();
   if (invoke) return invoke<SessionDetail>("session_detail", { sessionId: id });
   throw new Error("session detail requires the desktop app");
+}
+
+/** Reconstruct a session's styled conversation (messages with ordered parts:
+ * reasoning / tool cards / text), for replaying a returned-to session. */
+export async function getSessionConversation(id: string): Promise<ConversationMessage[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ConversationMessage[]>("session_conversation", { sessionId: id });
+  return [];
 }
 
 export async function getCommands(query: string): Promise<Command[]> {
@@ -95,6 +107,16 @@ export async function refreshModels(): Promise<SettingsView> {
 export async function clearApiKey(): Promise<void> {
   const invoke = getInvoke();
   if (invoke) await invoke("clear_api_key");
+}
+
+/**
+ * Switch the active chat model to a discovered model id. Returns the updated
+ * (redacted) settings view. Throws if the id is not in `available_models`.
+ */
+export async function setChatModel(modelId: string): Promise<SettingsView> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SettingsView>("set_chat_model", { modelId });
+  throw new Error("switching models requires the desktop app");
 }
 
 /**
@@ -185,12 +207,141 @@ export async function activateSkill(id: string): Promise<SkillActivation | null>
   return s ? { id, body: `# Skill: ${s.name}\n\n${s.description}` } : null;
 }
 
+// ---- knowledge base -------------------------------------------------------
+
+/** List all knowledge entries (sorted by id). */
+export async function kbList(): Promise<KnowledgeEntry[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<KnowledgeEntry[]>("kb_list");
+  return mockKnowledge();
+}
+
+/** Search the knowledge base; returns scored hits (best first). */
+export async function kbSearch(
+  query: string,
+  kind?: string | null,
+  limit?: number
+): Promise<KnowledgeHit[]> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<KnowledgeHit[]>("kb_search", {
+      query,
+      kind: kind ?? null,
+      limit: limit ?? null,
+    });
+  return mockKnowledge()
+    .filter(
+      (e) =>
+        e.title.toLowerCase().includes(query.toLowerCase()) ||
+        e.body.toLowerCase().includes(query.toLowerCase())
+    )
+    .filter((e) => !kind || e.kind === kind)
+    .slice(0, limit ?? 10)
+    .map((e) => ({
+      id: e.id,
+      title: e.title,
+      kind: e.kind,
+      scope: e.scope,
+      score: 0.5,
+      excerpt: e.body.slice(0, 160),
+    }));
+}
+
+/** Get a single entry by composite id (`scope:slug`). */
+export async function kbGet(id: string): Promise<KnowledgeEntry | null> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<KnowledgeEntry | null>("kb_get", { id });
+  return mockKnowledge().find((e) => e.id === id) ?? null;
+}
+
+/** Create or update a knowledge entry. */
+export async function kbSave(draft: KnowledgeDraft): Promise<KnowledgeEntry> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<KnowledgeEntry>("kb_save", { draft });
+  const now = Date.now();
+  return {
+    id: `project:${draft.title.toLowerCase().replace(/\s+/g, "-")}`,
+    title: draft.title,
+    kind: draft.kind ?? "note",
+    tags: draft.tags,
+    scope: draft.scope ?? "project",
+    created_at: now,
+    updated_at: now,
+    source_session: null,
+    body: draft.body,
+  };
+}
+
+/** Delete a knowledge entry by id. */
+export async function kbDelete(id: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("kb_delete", { id });
+  return true;
+}
+
+/** Re-scan vaults from disk and return the refreshed list. */
+export async function kbReload(): Promise<KnowledgeEntry[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<KnowledgeEntry[]>("kb_reload");
+  return mockKnowledge();
+}
+
+/** Toggle passive injection; returns the new state. */
+export async function kbSetPassive(enabled: boolean): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("kb_set_passive", { enabled });
+  return enabled;
+}
+
+/** Whether passive injection is currently enabled. */
+export async function kbPassiveEnabled(): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("kb_passive_enabled");
+  return true;
+}
+
+/** List pending auto-capture drafts awaiting confirmation. */
+export async function kbListDrafts(): Promise<KnowledgeEntry[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<KnowledgeEntry[]>("kb_list_drafts");
+  return [];
+}
+
+/** Accept a draft (promote to an active entry). */
+export async function kbAcceptDraft(id: string): Promise<KnowledgeEntry> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<KnowledgeEntry>("kb_accept_draft", { id });
+  throw new Error("accepting a draft requires the desktop app");
+}
+
+/** Discard a draft. */
+export async function kbDiscardDraft(id: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("kb_discard_draft", { id });
+  return true;
+}
+
+/** Toggle session auto-capture; returns the new state. */
+export async function kbSetAutoCapture(enabled: boolean): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("kb_set_auto_capture", { enabled });
+  return enabled;
+}
+
+/** Whether session auto-capture is currently enabled. */
+export async function kbAutoCaptureEnabled(): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("kb_auto_capture_enabled");
+  return true;
+}
+
 // ---- chat (streamed) ------------------------------------------------------
 
 /** A live runtime event mirroring deepagent-runtime::RuntimeEvent. */
 export interface RuntimeEvent {
   type:
     | "run_started"
+    | "session_registered"
     | "turn_started"
     | "reasoning_delta"
     | "content_delta"
@@ -198,9 +349,11 @@ export interface RuntimeEvent {
     | "tool_completed"
     | "tool_blocked"
     | "verification"
+    | "usage"
     | "run_completed"
     | "run_awaiting_approval"
-    | "run_failed";
+    | "run_failed"
+    | "run_cancelled";
   // Fields are variant-specific (tagged union); read what each type carries.
   [key: string]: unknown;
 }
@@ -208,12 +361,15 @@ export interface RuntimeEvent {
 /**
  * Run a streamed chat turn-loop. Runtime events go to `onEvent`; any tool
  * approval request goes to `onApproval` (the UI shows a dialog and later calls
- * `resolveApproval`). Resolves with the new session id when the run finishes.
+ * `resolveApproval`). When `sessionId` is given, the turn **continues** that
+ * session (its prior conversation is replayed to the model); otherwise a new
+ * session is created. Resolves with the session id used.
  */
 export async function runChat(
   prompt: string,
   onEvent: (event: RuntimeEvent) => void,
-  onApproval?: (request: ApprovalRequest) => void
+  onApproval?: (request: ApprovalRequest) => void,
+  sessionId?: string | null
 ): Promise<string> {
   const invoke = getInvoke();
   if (invoke) {
@@ -228,7 +384,7 @@ export async function runChat(
       }
     );
     try {
-      return await invoke<string>("run_chat", { prompt });
+      return await invoke<string>("run_chat", { prompt, sessionId: sessionId ?? null });
     } finally {
       unlistenEvent();
       unlistenApproval();
@@ -245,6 +401,13 @@ export async function resolveApproval(
   const invoke = getInvoke();
   if (invoke) return invoke<boolean>("resolve_approval", { callId, approved });
   return true;
+}
+
+/** Request a manual stop of an in-flight run for `sessionId`. */
+export async function stopChat(sessionId: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("stop_chat", { sessionId });
+  return false;
 }
 
 /** Get the current approval policy label. */
@@ -504,6 +667,35 @@ function mockSkills(): Skill[] {
     { id: "superpowers", name: "Superpowers", description: "Meta-skill for authoring high-quality skills and following disciplined engineering workflows (brainstorm, plan, TDD).", version: "0.1.0", origin: "workspace", triggers: ["write a skill", "create a new skill", "improve a skill"] },
     { id: "ui-ux-pro-max-skill", name: "UI UX Pro Max", description: "UI/UX design intelligence — styles, color palettes, font pairings, product types, UX guidelines, chart types.", version: "0.1.0", origin: "workspace", triggers: ["design a UI", "improve the UX", "pick a color palette", "choose font pairings", "design a landing page", "audit a UI", "build a dashboard"] },
     { id: "webapp-testing", name: "Webapp Testing", description: "Python Playwright toolkit for testing/automating local web apps — e2e tests, screenshots, console logs, UI debugging.", version: "0.1.0", origin: "workspace", triggers: ["test a web app", "write an end-to-end test", "verify frontend behavior", "capture a screenshot", "debug UI interactions", "automate the browser", "check browser console logs"] },
+  ];
+}
+
+// Mirrors the knowledge entries so the browser preview has something to show.
+function mockKnowledge(): KnowledgeEntry[] {
+  const now = Date.now();
+  return [
+    {
+      id: "project:powershell-pipe-interrupt",
+      title: "PowerShell 管道命令被 ^C 中断",
+      kind: "pitfall",
+      tags: ["windows", "powershell", "cargo"],
+      scope: "project",
+      created_at: now,
+      updated_at: now,
+      source_session: null,
+      body: "## 现象\n`cargo test | Select-String` 经常 exit -1，是 UI artifact 不是真失败。\n\n## 解决\n改用 `> out.txt 2>&1` 重定向后再读。",
+    },
+    {
+      id: "global:cargo-offline-tests",
+      title: "离线运行 workspace 测试",
+      kind: "command",
+      tags: ["cargo", "test"],
+      scope: "global",
+      created_at: now,
+      updated_at: now,
+      source_session: null,
+      body: "运行后端测试：`cargo test --workspace --offline`。",
+    },
   ];
 }
 

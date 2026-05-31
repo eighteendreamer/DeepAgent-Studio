@@ -14,10 +14,11 @@
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
-    AppService, ChatService, CommandDto, DiffResult, ForkResultDto, KeychainStore, McpServerDto,
+    AppService, ChatService, CommandDto, DiffResult, ForkResultDto, KeychainStore,
+    KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, McpServerDto,
     McpService, ProjectDto, ProjectService, RewindResultDto, SessionDetailDto, SessionSummaryDto,
     SettingsService, SettingsView, SkillActivationDto, SkillDto, SkillsService, TerminalResultDto,
-    TerminalService, TranscriptDto, WorkspaceInfoDto, WorkspaceService,
+    TerminalService, TranscriptDto, WorkspaceInfoDto, WorkspaceService, ConversationMessageDto,
 };
 use deepagent_models::ReqwestTransport;
 use tauri::{Emitter, Manager, State};
@@ -32,6 +33,7 @@ struct AppState {
     skills: Mutex<SkillsService>,
     chat: Arc<ChatService>,
     mcp: Arc<McpService>,
+    knowledge: Arc<KnowledgeService>,
     projects: Arc<ProjectService>,
     workspace: Arc<WorkspaceService>,
     terminal: Arc<TerminalService>,
@@ -54,6 +56,16 @@ fn session_detail(
 ) -> Result<SessionDetailDto, String> {
     let svc = state.service.lock().map_err(|e| e.to_string())?;
     svc.session_detail(&session_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn session_conversation(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<ConversationMessageDto>, String> {
+    let svc = state.service.lock().map_err(|e| e.to_string())?;
+    svc.session_conversation(&session_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -135,6 +147,16 @@ fn clear_api_key(state: State<'_, AppState>) -> Result<(), String> {
     state.settings.clear_key().map_err(|e| e.to_string())
 }
 
+/// Switch the active chat model to a discovered model id. Returns the updated
+/// (redacted) settings view. The id must be one of `available_models`.
+#[tauri::command]
+fn set_chat_model(state: State<'_, AppState>, model_id: String) -> Result<SettingsView, String> {
+    state
+        .settings
+        .set_model(deepagent_models::ModelRole::Chat, &model_id)
+        .map_err(|e| e.to_string())
+}
+
 // ---- skill commands -------------------------------------------------------
 
 #[tauri::command]
@@ -190,22 +212,110 @@ fn activate_skill(
     Ok(svc.activate(&id))
 }
 
+// ---- knowledge base -------------------------------------------------------
+
+#[tauri::command]
+fn kb_list(state: State<'_, AppState>) -> Result<Vec<KnowledgeDto>, String> {
+    Ok(state.knowledge.list())
+}
+
+#[tauri::command]
+fn kb_search(
+    state: State<'_, AppState>,
+    query: String,
+    kind: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<KnowledgeHitDto>, String> {
+    let limit = limit.unwrap_or(10).clamp(1, 50);
+    Ok(state
+        .knowledge
+        .search(&query, kind.as_deref(), limit))
+}
+
+#[tauri::command]
+fn kb_get(state: State<'_, AppState>, id: String) -> Result<Option<KnowledgeDto>, String> {
+    Ok(state.knowledge.get(&id))
+}
+
+#[tauri::command]
+fn kb_save(state: State<'_, AppState>, draft: KnowledgeDraftDto) -> Result<KnowledgeDto, String> {
+    state.knowledge.save(draft).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn kb_delete(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    state.knowledge.delete(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn kb_reload(state: State<'_, AppState>) -> Result<Vec<KnowledgeDto>, String> {
+    state.knowledge.reload().map_err(|e| e.to_string())?;
+    Ok(state.knowledge.list())
+}
+
+#[tauri::command]
+fn kb_set_passive(state: State<'_, AppState>, enabled: bool) -> Result<bool, String> {
+    state.knowledge.set_passive_enabled(enabled);
+    Ok(state.knowledge.passive_enabled())
+}
+
+#[tauri::command]
+fn kb_passive_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.knowledge.passive_enabled())
+}
+
+#[tauri::command]
+fn kb_list_drafts(state: State<'_, AppState>) -> Result<Vec<KnowledgeDto>, String> {
+    Ok(state.knowledge.list_drafts())
+}
+
+#[tauri::command]
+fn kb_accept_draft(state: State<'_, AppState>, id: String) -> Result<KnowledgeDto, String> {
+    state.knowledge.accept_draft(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn kb_discard_draft(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    state.knowledge.discard_draft(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn kb_set_auto_capture(state: State<'_, AppState>, enabled: bool) -> Result<bool, String> {
+    state.knowledge.set_auto_capture(enabled);
+    Ok(state.knowledge.auto_capture_enabled())
+}
+
+#[tauri::command]
+fn kb_auto_capture_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.knowledge.auto_capture_enabled())
+}
+
 // ---- chat (streamed) ------------------------------------------------------
 
 #[tauri::command]
-fn run_chat(
+async fn run_chat(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     prompt: String,
+    session_id: Option<String>,
 ) -> Result<String, String> {
+    // IMPORTANT: this command is `async` so Tauri runs it on a worker thread,
+    // never the main (UI) thread. A streamed run can pause mid-flight to await
+    // a tool-approval decision; that decision arrives via the separate
+    // `resolve_approval` command. If `run_chat` blocked the main thread (as a
+    // sync command + `block_on` would), `resolve_approval` could never be
+    // dispatched and the whole UI would deadlock. We offload the run onto the
+    // dedicated async runtime and await its result through a oneshot, keeping
+    // every other command responsive while the agent streams.
     let chat = state.chat.clone();
     let event_emitter = app.clone();
-    let approval_emitter = app.clone();
-    state
-        .rt
-        .block_on(async move {
-            chat.run(
+    let approval_emitter = app;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state.rt.spawn(async move {
+        let result = chat
+            .run_in_session(
                 &prompt,
+                session_id.as_deref(),
                 move |event| {
                     let _ = event_emitter.emit("chat://event", event);
                 },
@@ -213,9 +323,14 @@ fn run_chat(
                     let _ = approval_emitter.emit("chat://approval", approval);
                 },
             )
-            .await
-        })
-        .map_err(|e| e.to_string())
+            .await;
+        // Receiver gone (window closed mid-run) → drop the result silently.
+        let _ = tx.send(result);
+    });
+    match rx.await {
+        Ok(result) => result.map_err(|e| e.to_string()),
+        Err(_) => Err("chat run was cancelled".to_string()),
+    }
 }
 
 #[tauri::command]
@@ -224,6 +339,14 @@ fn resolve_approval(state: State<'_, AppState>, call_id: String, approved: bool)
         .chat
         .pending_approvals()
         .resolve_approved(&call_id, approved)
+}
+
+/// Request a manual stop of an in-flight run for `session_id`. The run ends
+/// cleanly at its next step boundary (partial transcript preserved). Returns
+/// whether a matching in-flight run was found.
+#[tauri::command]
+fn stop_chat(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    Ok(state.chat.cancel_session(&session_id))
 }
 
 #[tauri::command]
@@ -446,14 +569,23 @@ pub fn run() {
             let projects = Arc::new(ProjectService::new(service.shared_database()));
             let _ = projects.ensure_default(&workspace_root.to_string_lossy());
 
+            // Knowledge base: a project-local vault (`<project>/.deepagent/knowledge`)
+            // plus a user-global vault (under the app data dir), loaded into one
+            // index. Drives passive injection + the knowledge_search/write tools.
+            let knowledge = Arc::new(
+                KnowledgeService::open(&workspace_root, &dir)
+                    .map_err(|e| format!("failed to open knowledge service: {e}"))?,
+            );
+
             // Terminal: interactive commands rooted at the active project.
             let terminal = Arc::new(TerminalService::new(
                 projects.clone(),
                 workspace_root.to_string_lossy().into_owned(),
             ));
 
-            // Chat: streamed runs; MCP servers connect + live-register tools, and
-            // each run is rooted at the active project's folder.
+            // Chat: streamed runs; MCP servers connect + live-register tools, each
+            // run is rooted at the active project's folder, and the knowledge base
+            // is attached for passive injection + active tools.
             let chat = Arc::new(
                 ChatService::new(
                     service.shared_database(),
@@ -462,7 +594,8 @@ pub fn run() {
                     workspace_root,
                 )
                 .with_mcp(mcp.clone())
-                .with_projects(projects.clone()),
+                .with_projects(projects.clone())
+                .with_knowledge(knowledge.clone()),
             );
 
             app.manage(AppState {
@@ -471,6 +604,7 @@ pub fn run() {
                 skills: Mutex::new(skills),
                 chat,
                 mcp,
+                knowledge,
                 projects,
                 workspace,
                 terminal,
@@ -481,6 +615,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_sessions,
             session_detail,
+            session_conversation,
             commands,
             compute_diff,
             fork_session,
@@ -490,6 +625,7 @@ pub fn run() {
             get_settings,
             refresh_models,
             clear_api_key,
+            set_chat_model,
             list_skills,
             reload_skills,
             install_skill,
@@ -497,8 +633,22 @@ pub fn run() {
             uninstall_skill,
             preview_skill_activation,
             activate_skill,
+            kb_list,
+            kb_search,
+            kb_get,
+            kb_save,
+            kb_delete,
+            kb_reload,
+            kb_set_passive,
+            kb_passive_enabled,
+            kb_list_drafts,
+            kb_accept_draft,
+            kb_discard_draft,
+            kb_set_auto_capture,
+            kb_auto_capture_enabled,
             run_chat,
             resolve_approval,
+            stop_chat,
             get_approval_policy,
             set_approval_policy,
             list_mcp_servers,

@@ -11,11 +11,30 @@ use std::path::{Component, Path, PathBuf};
 
 use deepagent_core::error::{CoreError, Result};
 
+/// How broadly file tools may reach outside the workspace root. Drives the
+/// approval-policy → filesystem mapping:
+/// - [`FsAccess::Workspace`] (默认权限): reads and writes confined to the root.
+/// - [`FsAccess::ReadAnywhere`] (自动审核): reads may go anywhere on disk
+///   (sensitive files still blocked); writes stay confined to the root.
+/// - [`FsAccess::Full`] (完全访问): reads and writes may go anywhere
+///   (sensitive files still blocked to avoid silent credential leaks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FsAccess {
+    /// Confine reads and writes to the workspace root (the safe default).
+    #[default]
+    Workspace,
+    /// Allow reads anywhere on disk; confine writes to the root.
+    ReadAnywhere,
+    /// Allow reads and writes anywhere on disk.
+    Full,
+}
+
 /// A confined workspace root. Paths are always resolved relative to it and may
 /// never escape it.
 #[derive(Debug, Clone)]
 pub struct WorkspaceRoot {
     root: PathBuf,
+    access: FsAccess,
 }
 
 /// File/dir names that are refused outright (credentials & secrets).
@@ -36,14 +55,67 @@ const SENSITIVE_SUBSTRINGS: &[&str] = &[".env.", "secret", "credential", ".pem",
 
 impl WorkspaceRoot {
     /// Create a root from a directory path. The path is normalized but not
-    /// required to exist (tools create files under it).
+    /// required to exist (tools create files under it). Defaults to
+    /// [`FsAccess::Workspace`] (fully confined).
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            access: FsAccess::Workspace,
+        }
+    }
+
+    /// Set the filesystem access mode (builder style).
+    pub fn with_access(mut self, access: FsAccess) -> Self {
+        self.access = access;
+        self
+    }
+
+    /// The current filesystem access mode.
+    pub fn access(&self) -> FsAccess {
+        self.access
     }
 
     /// The root path.
     pub fn path(&self) -> &Path {
         &self.root
+    }
+
+    /// Resolve a path for a **read** operation, honoring the access mode:
+    /// confined to the root under [`FsAccess::Workspace`], or allowed anywhere
+    /// on disk under [`FsAccess::ReadAnywhere`] / [`FsAccess::Full`]. Sensitive
+    /// files are always rejected.
+    pub fn resolve_read(&self, input: &str) -> Result<PathBuf> {
+        match self.access {
+            FsAccess::Workspace => self.resolve(input),
+            FsAccess::ReadAnywhere | FsAccess::Full => self.resolve_unconfined(input),
+        }
+    }
+
+    /// Resolve a path for a **write** operation, honoring the access mode:
+    /// confined to the root unless [`FsAccess::Full`] is set. Sensitive files
+    /// are always rejected.
+    pub fn resolve_write(&self, input: &str) -> Result<PathBuf> {
+        match self.access {
+            FsAccess::Workspace | FsAccess::ReadAnywhere => self.resolve(input),
+            FsAccess::Full => self.resolve_unconfined(input),
+        }
+    }
+
+    /// Resolve a path anywhere on disk (used by the unconfined access modes),
+    /// still rejecting known-sensitive credential files.
+    fn resolve_unconfined(&self, input: &str) -> Result<PathBuf> {
+        let candidate = Path::new(input);
+        let joined = if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            self.root.join(candidate)
+        };
+        if is_sensitive(&joined) {
+            return Err(CoreError::invalid(format!(
+                "access to sensitive file is denied: {input}"
+            )));
+        }
+        Ok(joined)
     }
 
     /// Resolve a user-supplied relative (or absolute-within-root) path into an
@@ -111,6 +183,12 @@ fn is_sensitive(path: &Path) -> bool {
             false
         }
     })
+}
+
+/// Whether a user-supplied path string refers to a sensitive credential file.
+/// Public helper for guards that classify a path before resolving it.
+pub fn is_sensitive_path(input: &str) -> bool {
+    is_sensitive(Path::new(input))
 }
 
 #[cfg(test)]

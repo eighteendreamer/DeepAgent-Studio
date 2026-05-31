@@ -3,9 +3,12 @@
 //! Fetches a URL and reduces HTML to readable text via a tiny tag-stripping
 //! pass (no heavy HTML crate): scripts/styles are dropped, tags removed, and
 //! whitespace collapsed. This keeps the dependency surface small while giving
-//! the model usable page text. Search is left unimplemented here (the default
-//! trait impl reports "unavailable"); the desktop app wires a real search
-//! provider.
+//! the model usable page text.
+//!
+//! Search is backed by DuckDuckGo's keyless HTML endpoint
+//! (`https://html.duckduckgo.com/html/`), so `web_search` works out of the box
+//! with **no API key** — matching the situation where the user has only set a
+//! model API key. Result rows are scraped from the returned HTML.
 
 use std::time::Duration;
 
@@ -13,7 +16,7 @@ use async_trait::async_trait;
 
 use deepagent_core::error::{CoreError, Result};
 
-use crate::web_tools::WebClient;
+use crate::web_tools::{SearchResult, WebClient};
 
 /// `reqwest`-backed web client with a fetch timeout.
 pub struct ReqwestWebClient {
@@ -31,7 +34,12 @@ impl ReqwestWebClient {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
-            .user_agent("DeepAgentStudio/0.1 (+web_fetch)")
+            // A browser-like UA so search/content endpoints return real HTML
+            // rather than a bot challenge page.
+            .user_agent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 DeepAgentStudio/0.1",
+            )
             .build()
             .unwrap_or_default();
         Self { client }
@@ -70,6 +78,153 @@ impl WebClient for ReqwestWebClient {
             Ok(body)
         }
     }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        // DuckDuckGo's HTML endpoint needs no API key and returns server-rendered
+        // result rows we can scrape. POSTing the query avoids some bot checks.
+        let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+        let body = format!("q={encoded}");
+        let resp = self
+            .client
+            .post("https://html.duckduckgo.com/html/")
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| CoreError::other(format!("search request failed: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(CoreError::other(format!(
+                "search returned {}",
+                resp.status()
+            )));
+        }
+        let html = resp
+            .text()
+            .await
+            .map_err(|e| CoreError::other(format!("reading search body failed: {e}")))?;
+        let results = parse_ddg_results(&html, limit);
+        if results.is_empty() {
+            return Err(CoreError::other(
+                "search returned no parseable results (the provider may have changed its markup)",
+            ));
+        }
+        Ok(results)
+    }
+}
+
+/// Parse DuckDuckGo HTML result rows into [`SearchResult`]s (best-effort).
+///
+/// The HTML endpoint renders each hit as an `<a class="result__a" href=...>`
+/// title link followed by an `<a class="result__snippet">` description. DDG
+/// wraps outbound links in a redirect (`/l/?uddg=<encoded-url>`); we decode that
+/// back to the real target. This is intentionally a light scraper (no HTML
+/// crate); if the markup drifts, `search` reports "no parseable results".
+fn parse_ddg_results(html: &str, limit: usize) -> Vec<SearchResult> {
+    let mut out = Vec::new();
+    let mut rest = html;
+    while out.len() < limit {
+        let Some(a_rel) = rest.find("result__a") else {
+            break;
+        };
+        let after_class = &rest[a_rel..];
+        // href="..."
+        let Some(href) = extract_attr(after_class, "href") else {
+            rest = &after_class[9..];
+            continue;
+        };
+        let url = decode_ddg_redirect(&href);
+        // The title is the text between this <a ...> and its </a>.
+        let title = after_class
+            .find('>')
+            .and_then(|gt| {
+                after_class[gt + 1..]
+                    .find("</a>")
+                    .map(|end| strip_tags(&after_class[gt + 1..gt + 1 + end]))
+            })
+            .unwrap_or_default();
+        // Snippet: the next result__snippet block after this title.
+        let snippet = after_class
+            .find("result__snippet")
+            .and_then(|s| {
+                let seg = &after_class[s..];
+                seg.find('>').and_then(|gt| {
+                    seg[gt + 1..]
+                        .find("</a>")
+                        .map(|end| strip_tags(&seg[gt + 1..gt + 1 + end]))
+                })
+            })
+            .unwrap_or_default();
+
+        if !url.is_empty() && !title.trim().is_empty() {
+            out.push(SearchResult {
+                title: decode_entities(title.trim()),
+                url,
+                snippet: decode_entities(snippet.trim()),
+            });
+        }
+        // Advance past this match to find the next row.
+        rest = &after_class[9..];
+    }
+    out
+}
+
+/// Extract the value of `attr="..."` from the start of an HTML tag fragment.
+fn extract_attr(fragment: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let start = fragment.find(&needle)? + needle.len();
+    let end = fragment[start..].find('"')? + start;
+    Some(fragment[start..end].to_string())
+}
+
+/// Decode DuckDuckGo's `/l/?uddg=<encoded>` redirect wrapper to the real URL.
+fn decode_ddg_redirect(href: &str) -> String {
+    let marker = "uddg=";
+    if let Some(pos) = href.find(marker) {
+        let encoded = &href[pos + marker.len()..];
+        // Stop at the next param separator.
+        let encoded = encoded.split('&').next().unwrap_or(encoded);
+        let decoded: String = url::form_urlencoded::parse(format!("x={encoded}").as_bytes())
+            .next()
+            .map(|(_, v)| v.into_owned())
+            .unwrap_or_default();
+        if !decoded.is_empty() {
+            return decoded;
+        }
+    }
+    // Protocol-relative links → https.
+    if let Some(stripped) = href.strip_prefix("//") {
+        return format!("https://{stripped}");
+    }
+    href.to_string()
+}
+
+/// Remove any HTML tags from a fragment, returning the text content.
+fn strip_tags(fragment: &str) -> String {
+    let mut out = String::with_capacity(fragment.len());
+    let mut in_tag = false;
+    for ch in fragment.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Decode the handful of HTML entities DDG emits in titles/snippets.
+fn decode_entities(s: &str) -> String {
+    s.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
 }
 
 /// Cheap heuristic: does this look like HTML?
@@ -176,5 +331,66 @@ mod tests {
         assert!(looks_like_html("<!DOCTYPE html><html>"));
         assert!(looks_like_html("<HTML><body>"));
         assert!(!looks_like_html("plain text response"));
+    }
+
+    #[test]
+    fn decodes_ddg_redirect_to_real_url() {
+        let href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage&rut=abc";
+        assert_eq!(decode_ddg_redirect(href), "https://example.com/page");
+        // Protocol-relative passthrough.
+        assert_eq!(
+            decode_ddg_redirect("//example.org/x"),
+            "https://example.org/x"
+        );
+    }
+
+    #[test]
+    fn parses_ddg_result_rows() {
+        // A trimmed-down shape of DuckDuckGo's HTML endpoint output.
+        let html = r#"
+            <div class="result results_links">
+              <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fweather.com%2Fchangsha">
+                Changsha Weather &amp; Forecast
+              </a>
+              <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fweather.com%2Fchangsha">
+                Today in Changsha: <b>sunny</b>, 25&#176;C.
+              </a>
+            </div>
+            <div class="result results_links">
+              <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fb">
+                Second Result
+              </a>
+              <a class="result__snippet">Another snippet</a>
+            </div>
+        "#;
+        let results = parse_ddg_results(html, 5);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].url, "https://weather.com/changsha");
+        assert_eq!(results[0].title, "Changsha Weather & Forecast");
+        assert!(results[0].snippet.contains("sunny"));
+        assert_eq!(results[1].url, "https://example.com/b");
+        assert_eq!(results[1].title, "Second Result");
+    }
+
+    #[test]
+    fn parser_respects_limit_and_skips_empty() {
+        let html = r#"
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.com">One</a>
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fb.com">Two</a>
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fc.com">Three</a>
+        "#;
+        let results = parse_ddg_results(html, 2);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn parser_returns_empty_on_foreign_markup() {
+        assert!(parse_ddg_results("<html><body>no results here</body></html>", 5).is_empty());
+    }
+
+    #[test]
+    fn strip_tags_and_entities() {
+        assert_eq!(strip_tags("a <b>bold</b> c"), "a bold c");
+        assert_eq!(decode_entities("x &amp; y &#39;z&#39;"), "x & y 'z'");
     }
 }

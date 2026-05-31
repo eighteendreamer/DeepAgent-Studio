@@ -16,9 +16,12 @@ interface Props {
   onRemoveProject: (path: string) => void;
   onOpenSearch: () => void;
   onOpenSkills: () => void;
+  onOpenKnowledge: () => void;
   onOpenAutomation: () => void;
   onOpenSettings: () => void;
   onLogout: () => void;
+  /** The session id of the currently-running agent run (shows a spinner). */
+  runningSessionId?: string | null;
 }
 
 function NavButton({ icon, label, onClick }: { icon: IconProp; label: string; onClick?: () => void }) {
@@ -47,7 +50,7 @@ function formatTimeAgo(timestamp: number) {
   return `${months} 个月`;
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onRemoveProject, onOpenSearch, onOpenSkills, onOpenAutomation, onOpenSettings, onLogout }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onRemoveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionId }: Props) {
   const { t } = useTranslation();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
@@ -147,6 +150,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   const renderSessionItem = (s: SessionSummary, isPinnedSection: boolean = false) => {
     const active = s.id === activeId;
     const isPinned = pinnedSessionIds.has(s.id);
+    const isRunning = !!runningSessionId && s.id === runningSessionId;
     return (
       <div
         key={s.id + (isPinnedSection ? '_pinned' : '')}
@@ -157,31 +161,51 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             : "text-text-secondary hover:bg-black/5 hover:text-text-base"
         }`}
       >
-        <span className="truncate flex-1 pr-2">{s.title}</span>
-        
-        {/* Timestamp (hidden on hover) */}
-        {!isPinnedSection && (
-          <span className="text-[10px] text-gray-400 flex-shrink-0 group-hover/session:hidden">
-            {formatTimeAgo(s.created_at)}
-          </span>
+        {isRunning && (
+          <FontAwesomeIcon
+            icon={["fas", "circle-notch"]}
+            spin
+            className="text-[11px] text-blue-500 mr-1.5 flex-shrink-0"
+            title={t("sidebar.running")}
+          />
         )}
+        <span className="truncate flex-1 pr-2">{s.title}</span>
 
-        {/* Action Buttons (visible on hover) */}
-        <div className="hidden group-hover/session:flex items-center space-x-0.5">
-          <button 
-            onClick={(e) => { e.stopPropagation(); togglePin(s.id); }} 
-            className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded text-text-secondary"
-            title={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
-          >
-            <FontAwesomeIcon icon={["fas", "thumbtack"]} className="text-[10px]" />
-          </button>
-          <button 
-            onClick={(e) => { e.stopPropagation(); }} 
-            className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded text-text-secondary"
-            title={t("sidebar.archive")}
-          >
-            <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-[10px]" />
-          </button>
+        {/* Right side container for timestamp and buttons using grid stacking */}
+        <div className="grid items-center flex-shrink-0">
+          {/* Running indicator takes precedence and never fades on hover. */}
+          {isRunning ? (
+            <span className="col-start-1 row-start-1 text-[10px] text-blue-500 whitespace-nowrap justify-self-end">
+              {t("sidebar.running")}
+            </span>
+          ) : (
+            <>
+              {/* Timestamp (fades out on hover) */}
+              {!isPinnedSection && (
+                <span className="col-start-1 row-start-1 text-[10px] text-gray-400 group-hover/session:opacity-0 transition-opacity whitespace-nowrap justify-self-end">
+                  {formatTimeAgo(s.created_at)}
+                </span>
+              )}
+
+              {/* Action Buttons (fades in on hover) */}
+              <div className="col-start-1 row-start-1 flex items-center space-x-0.5 opacity-0 pointer-events-none group-hover/session:opacity-100 group-hover/session:pointer-events-auto transition-opacity justify-self-end">
+                <button
+                  onClick={(e) => { e.stopPropagation(); togglePin(s.id); }}
+                  className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded text-text-secondary"
+                  title={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
+                >
+                  <FontAwesomeIcon icon={["fas", "thumbtack"]} className="text-[10px]" />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); }}
+                  className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded text-text-secondary"
+                  title={t("sidebar.archive")}
+                >
+                  <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-[10px]" />
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     );
@@ -200,6 +224,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         </button>
         <NavButton icon={["fas", "magnifying-glass"]} label={t("sidebar.search")} onClick={onOpenSearch} />
         <NavButton icon={["fas", "layer-group"]} label={t("sidebar.skills")} onClick={onOpenSkills} />
+        <NavButton icon={["fas", "book"]} label={t("sidebar.knowledge")} onClick={onOpenKnowledge} />
         <NavButton icon={["fas", "puzzle-piece"]} label={t("sidebar.plugins")} />
         <NavButton icon={["far", "clock"]} label={t("sidebar.automation")} onClick={onOpenAutomation} />
       </div>

@@ -14,6 +14,7 @@ deepagent-session.workspace = true
 deepagent-observation.workspace = true
 deepagent-models.workspace = true
 deepagent-skills.workspace = true
+deepagent-knowledge.workspace = true
 deepagent-runtime.workspace = true
 deepagent-tools.workspace = true
 deepagent-builtins.workspace = true
@@ -24,7 +25,22 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tokio = { workspace = true }
+# Current date/OS for the dynamic system-prompt environment block (so the model
+# never searches a stale year). Already in the workspace lock; offline-safe.
+time = { version = "0.3", default-features = false, features = ["std", "local-offset"] }
 keyring = { version = "3", optional = true }
+
+# Platform-native keychain backends (only the relevant one per OS). keyring v3
+# ships no backend by default, so we must enable one explicitly or `set` becomes
+# a no-op that never persists. These are additive features on the same crate.
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", optional = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", optional = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", optional = true, features = ["sync-secret-service"] }
 
 [features]
 default = []

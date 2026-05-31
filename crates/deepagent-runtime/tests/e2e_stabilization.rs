@@ -53,7 +53,7 @@ struct BusyAgent {
 
 #[async_trait]
 impl Agent for BusyAgent {
-    async fn think(&mut self, _step: usize, _last: Option<&Observation>) -> Result<AgentDecision> {
+    async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
         if self.remaining > 0 {
             self.remaining -= 1;
             Ok(AgentDecision::CallTool(ToolInvocation::new(

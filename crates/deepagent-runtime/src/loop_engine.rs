@@ -55,6 +55,16 @@ impl VerificationPlan {
     }
 }
 
+/// A tool call whose I/O already completed concurrently, ready to have its
+/// events recorded in order (see [`RuntimeEngine::record_parallel_result`]).
+struct CompletedToolCall {
+    call_id: String,
+    tool_name: String,
+    arguments: serde_json::Value,
+    result: Result<deepagent_tools::ToolOutput>,
+    duration_ms: u64,
+}
+
 /// Why a run stopped.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunOutcome {
@@ -64,6 +74,8 @@ pub enum RunOutcome {
     AwaitingApproval(String),
     /// The configured maximum number of steps was reached.
     StepLimitReached,
+    /// The run was cancelled by the user (manual stop).
+    Cancelled,
 }
 
 /// The result of the `UserPromptSubmit` gate (复刻规范 P1).
@@ -131,6 +143,7 @@ pub struct RuntimeEngine<'a, C: Clock> {
     verification: Option<&'a VerificationPlan>,
     events: std::sync::Arc<dyn RuntimeEventSink>,
     approvals: std::sync::Arc<dyn ApprovalGate>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     _clock: std::marker::PhantomData<&'a C>,
 }
 
@@ -145,8 +158,25 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             verification: None,
             events: std::sync::Arc::new(NullEventSink),
             approvals: std::sync::Arc::new(AutoDenyGate),
+            cancel: None,
             _clock: std::marker::PhantomData,
         }
+    }
+
+    /// Attach a cancellation flag (builder style). When set to `true` mid-run,
+    /// the loop stops at the next step boundary and returns
+    /// [`RunOutcome::Cancelled`] (manual stop from the UI).
+    pub fn with_cancel(mut self, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    /// Whether a cancellation has been requested.
+    fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(false)
     }
 
     /// Attach a live event sink (builder style). Events are pushed as the run
@@ -212,6 +242,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         agent: &mut dyn Agent,
     ) -> Result<RunOutcome> {
         let session_id = session.id();
+        let run_started_at = std::time::Instant::now();
 
         // SessionStart hook (observational).
         self.fire_hook(session_id, HookPoint::SessionStart, HookData::None)
@@ -221,12 +252,20 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             task_id: task.to_string(),
         });
 
+        // Announce the backing session early so a UI can register & navigate to
+        // it WHILE it runs (not only on completion). This fixes the case where a
+        // user starts a task, switches away, and cannot find the in-flight chat.
+        self.emit(RuntimeEvent::SessionRegistered {
+            session_id: session_id.to_string(),
+            title: session.state().title.clone(),
+        });
+
         // Move the task into Running (validated by the session).
         if session.state().task(task).map(|t| t.state) == Some(TaskState::Queued) {
             session.transition_task(task, TaskState::Running)?;
         }
 
-        let mut last_observation: Option<Observation> = None;
+        let mut last_observations: Vec<Observation> = Vec::new();
         let mut outcome = RunOutcome::StepLimitReached;
         let mut finished = false;
 
@@ -236,8 +275,17 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             .map(|p| ReflectionEngine::new(p.max_repeats, p.max_attempts));
 
         for step in 0..self.config.max_steps {
+            // Honor a manual stop requested from the UI: end cleanly at the
+            // step boundary so the partial transcript is preserved.
+            if self.is_cancelled() {
+                session.transition_task(task, TaskState::Failed)?;
+                self.emit(RuntimeEvent::RunCancelled);
+                outcome = RunOutcome::Cancelled;
+                finished = true;
+                break;
+            }
             self.emit(RuntimeEvent::TurnStarted { step });
-            let decision = agent.think(step, last_observation.as_ref()).await?;
+            let decision = agent.think(step, &last_observations).await?;
             tracing::debug!(step, ?decision, "agent decision");
 
             match decision {
@@ -255,7 +303,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             }
                             VerifyStep::Retry(obs) => {
                                 // Hand the reflection back; keep the task running.
-                                last_observation = Some(obs);
+                                last_observations = vec![obs];
                                 continue;
                             }
                         }
@@ -287,8 +335,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 }
 
                 AgentDecision::CallTool(invocation) => {
-                    last_observation =
-                        Some(self.execute_tool(session, session_id, invocation).await?);
+                    last_observations =
+                        vec![self.execute_tool(session, session_id, invocation).await?];
+                }
+
+                AgentDecision::CallTools(invocations) => {
+                    last_observations =
+                        self.execute_tools(session, session_id, invocations).await?;
                 }
             }
         }
@@ -299,6 +352,20 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             self.emit(RuntimeEvent::RunFailed {
                 reason: format!("step limit reached ({} steps)", self.config.max_steps),
             });
+        }
+
+        // Persist the run's cumulative token usage + wall-clock duration so the
+        // UI can show per-turn metrics when the session is reopened later.
+        if let Some(u) = agent.cumulative_usage() {
+            let duration_ms = run_started_at.elapsed().as_millis() as u64;
+            session.append(EventPayload::UsageRecorded {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+                prompt_cache_hit_tokens: u.prompt_cache_hit_tokens,
+                prompt_cache_miss_tokens: u.prompt_cache_miss_tokens,
+                duration_ms,
+            })?;
         }
 
         // SessionEnd hook (observational). The session stays open for resumption
@@ -354,6 +421,219 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         Ok(decision)
     }
 
+    /// Execute several tool invocations requested in the same model turn.
+    ///
+    /// Mirrors Claude Code's parallel tool calling. To keep the append-only
+    /// event log deterministic, the request/gate/completion **events** are
+    /// written sequentially in the model's call order; what runs concurrently is
+    /// the underlying tool I/O for **read-only, concurrency-safe** tools (file
+    /// reads, glob/grep, web fetch/search). Any non-read-only tool (writes,
+    /// edits, bash) and any tool needing approval is run sequentially via
+    /// [`RuntimeEngine::execute_tool`] to preserve ordering and safety.
+    ///
+    /// A single invocation short-circuits to [`RuntimeEngine::execute_tool`].
+    async fn execute_tools(
+        &self,
+        session: &mut Session<'a, C>,
+        session_id: deepagent_core::id::SessionId,
+        invocations: Vec<deepagent_tools::ToolInvocation>,
+    ) -> Result<Vec<Observation>> {
+        if invocations.len() <= 1 {
+            let mut out = Vec::with_capacity(invocations.len());
+            for inv in invocations {
+                out.push(self.execute_tool(session, session_id, inv).await?);
+            }
+            return Ok(out);
+        }
+
+        // Partition: read-only/concurrency-safe tools can have their I/O run in
+        // parallel; everything else runs sequentially for safety + ordering.
+        let parallel_idx: Vec<usize> = invocations
+            .iter()
+            .enumerate()
+            .filter(|(_, inv)| self.is_parallel_safe(&inv.name))
+            .map(|(i, _)| i)
+            .collect();
+
+        // Fast path: nothing parallelizable → just run them in order.
+        if parallel_idx.len() <= 1 {
+            let mut out = Vec::with_capacity(invocations.len());
+            for inv in invocations {
+                out.push(self.execute_tool(session, session_id, inv).await?);
+            }
+            return Ok(out);
+        }
+
+        // Pre-assign call ids and emit ToolStarted for EVERY parallel tool up
+        // front, so the UI shows them all as "running" immediately — not only
+        // after they finish. (This is what makes parallel `task` sub-agents and
+        // batched reads show live progress instead of flipping to "completed"
+        // all at once at the very end.)
+        use futures::stream::{FuturesUnordered, StreamExt};
+        let parallel_set: std::collections::HashSet<usize> = parallel_idx.iter().copied().collect();
+
+        let mut call_ids: std::collections::HashMap<usize, String> =
+            std::collections::HashMap::new();
+        for &i in &parallel_idx {
+            let inv = &invocations[i];
+            let call_id = inv
+                .id
+                .clone()
+                .unwrap_or_else(|| format!("call_{}", deepagent_core::id::EventId::new()));
+            self.emit(RuntimeEvent::ToolStarted {
+                name: inv.name.clone(),
+                call_id: call_id.clone(),
+                arguments: inv.arguments.clone(),
+            });
+            call_ids.insert(i, call_id);
+        }
+
+        // Concurrently invoke the parallel-safe tools' I/O (no session access).
+        let mut futs = FuturesUnordered::new();
+        for &i in &parallel_idx {
+            let inv = &invocations[i];
+            let call_id = call_ids[&i].clone();
+            let name = inv.name.clone();
+            let args = inv.arguments.clone();
+            let registry = self.registry;
+            let perms = self.config.permissions.clone();
+            let auto = self.config.auto_approve;
+            futs.push(async move {
+                let start = std::time::Instant::now();
+                let result = registry.invoke(&name, args, &perms, auto).await;
+                let duration_ms = start.elapsed().as_millis() as u64;
+                (i, call_id, name, result, duration_ms)
+            });
+        }
+        let mut results: std::collections::HashMap<
+            usize,
+            (String, String, Result<deepagent_tools::ToolOutput>, u64),
+        > = std::collections::HashMap::new();
+        // Drain completions AS THEY ARRIVE and emit ToolCompleted immediately,
+        // so each parallel tool flips to ok/error the moment it actually
+        // finishes (live, out-of-order progress) — the session-log append still
+        // happens deterministically below in the model's original order.
+        while let Some((i, call_id, name, result, duration_ms)) = futs.next().await {
+            let (ok, value) = match &result {
+                Ok(out) => (out.ok, out.value.clone()),
+                Err(e) => (false, serde_json::json!({ "error": e.to_string() })),
+            };
+            self.emit(RuntimeEvent::ToolCompleted {
+                name: name.clone(),
+                call_id: call_id.clone(),
+                ok,
+                output: value,
+                duration_ms,
+            });
+            results.insert(i, (call_id, name, result, duration_ms));
+        }
+
+        // Now stitch observations back together in the model's original order,
+        // appending events to the session log sequentially. Parallel-safe
+        // entries use their precomputed result (events already emitted live, so
+        // we skip re-emitting); the rest run through the normal sequential path.
+        let mut observations = Vec::with_capacity(invocations.len());
+        for (i, inv) in invocations.into_iter().enumerate() {
+            if parallel_set.contains(&i) {
+                let (call_id, tool_name, result, duration_ms) =
+                    results.remove(&i).expect("parallel result present");
+                observations.push(
+                    self.record_parallel_result(
+                        session,
+                        session_id,
+                        CompletedToolCall {
+                            call_id,
+                            tool_name,
+                            arguments: inv.arguments,
+                            result,
+                            duration_ms,
+                        },
+                    )
+                    .await?,
+                );
+            } else {
+                observations.push(self.execute_tool(session, session_id, inv).await?);
+            }
+        }
+        Ok(observations)
+    }
+
+    /// Whether a tool is safe to run concurrently with others. Two cases:
+    /// - read-only tools (`RiskLevel::Safe`) like file reads, glob/grep, web
+    ///   fetch/search — no side effects, so their I/O can overlap;
+    /// - the `task` sub-agent tool: each call runs an isolated nested agent on
+    ///   its own ephemeral session, so launching several at once is safe and is
+    ///   exactly Claude Code's parallel-Task pattern (the big latency win when
+    ///   exploring multiple directories/files at once).
+    ///
+    /// An unknown tool is treated as not parallel-safe (it'll fail in the normal
+    /// path with a clean error).
+    fn is_parallel_safe(&self, name: &str) -> bool {
+        if name == "task" {
+            return true;
+        }
+        match self.registry.get(name) {
+            Some(spec) => spec.descriptor.risk == deepagent_tools::RiskLevel::Safe,
+            None => false,
+        }
+    }
+
+    /// Record the request + completion events for a tool whose I/O already ran
+    /// concurrently (in [`RuntimeEngine::execute_tools`]), returning its
+    /// [`Observation`]. The live `ToolStarted`/`ToolCompleted` UI events were
+    /// already emitted by `execute_tools` (up front / as each finished); this
+    /// only writes the append-only session log (in deterministic call order)
+    /// and fires the AfterToolUse hook. Skips the BeforeToolUse gate (only
+    /// invoked for parallel-safe tools that don't need approval).
+    async fn record_parallel_result(
+        &self,
+        session: &mut Session<'a, C>,
+        session_id: deepagent_core::id::SessionId,
+        completed: CompletedToolCall,
+    ) -> Result<Observation> {
+        let CompletedToolCall {
+            call_id,
+            tool_name,
+            arguments,
+            result,
+            duration_ms,
+        } = completed;
+        self.metrics.incr(names::TOOL_CALLS, 1);
+        session.append(EventPayload::ToolCallRequested {
+            call: ToolCall {
+                id: call_id.clone(),
+                name: tool_name.clone(),
+                arguments: arguments.clone(),
+            },
+        })?;
+
+        let (ok, value) = match result {
+            Ok(out) => (out.ok, out.value),
+            Err(e) => (false, serde_json::json!({ "error": e.to_string() })),
+        };
+        if !ok {
+            self.metrics.incr(names::TOOL_FAILURES, 1);
+        }
+        session.append(EventPayload::ToolCallCompleted {
+            call_id: call_id.clone(),
+            ok,
+            output: value.clone(),
+            duration_ms,
+        })?;
+        self.fire_hook(
+            session_id,
+            HookPoint::AfterToolUse,
+            HookData::after_tool(tool_name.clone(), arguments, ok),
+        )
+        .await?;
+        Ok(Observation {
+            tool: tool_name,
+            ok,
+            output: value,
+            call_id: Some(call_id),
+        })
+    }
+
     /// Execute one tool invocation, recording request + completion events and
     /// returning the [`Observation`] to feed back to the agent.
     async fn execute_tool(
@@ -362,7 +642,12 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         session_id: deepagent_core::id::SessionId,
         mut invocation: deepagent_tools::ToolInvocation,
     ) -> Result<Observation> {
-        let call_id = format!("call_{}", deepagent_core::id::EventId::new());
+        // Reuse the model's tool-call id when present so the observation
+        // correlates with the exact `tool_calls[].id`; else synthesize one.
+        let call_id = invocation
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("call_{}", deepagent_core::id::EventId::new()));
         let tool_name = invocation.name.clone();
 
         // BeforeToolUse gate: a hook may allow, rewrite the input (Modify),
@@ -448,7 +733,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 },
             })?;
             session.append(EventPayload::ToolCallCompleted {
-                call_id,
+                call_id: call_id.clone(),
                 ok: false,
                 output: err_value.clone(),
                 duration_ms: 0,
@@ -463,6 +748,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 tool: tool_name,
                 ok: false,
                 output: err_value,
+                call_id: Some(call_id),
             });
         }
 
@@ -506,7 +792,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     duration_ms,
                 });
                 session.append(EventPayload::ToolCallCompleted {
-                    call_id,
+                    call_id: call_id.clone(),
                     ok: out.ok,
                     output: out.value.clone(),
                     duration_ms,
@@ -515,6 +801,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     tool: tool_name.clone(),
                     ok: out.ok,
                     output: out.value,
+                    call_id: Some(call_id),
                 }
             }
             Err(e) => {
@@ -531,7 +818,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     duration_ms,
                 });
                 session.append(EventPayload::ToolCallCompleted {
-                    call_id,
+                    call_id: call_id.clone(),
                     ok: false,
                     output: err_value.clone(),
                     duration_ms,
@@ -540,6 +827,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     tool: tool_name.clone(),
                     ok: false,
                     output: err_value,
+                    call_id: Some(call_id),
                 }
             }
         };
@@ -613,6 +901,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         "diagnosis": reflection.diagnosis,
                         "failure_kind": reflection.failure_kind,
                     }),
+                    call_id: None,
                 }))
             }
             // Proceed should not occur for a failing report, but treat it as
@@ -761,6 +1050,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parallel_tools_run_and_feed_back_all_observations() {
+        // A model turn with several read-only (Safe) tool calls runs them all
+        // and feeds every observation back, each correlated to its call id.
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        let task = session.create_task("parallel").unwrap();
+
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CallTools(vec![
+                ToolInvocation::new("add", serde_json::json!({"a": 1, "b": 2})).with_id("c1"),
+                ToolInvocation::new("add", serde_json::json!({"a": 3, "b": 4})).with_id("c2"),
+                ToolInvocation::new("add", serde_json::json!({"a": 5, "b": 6})).with_id("c3"),
+            ]),
+            AgentDecision::Complete("done".into()),
+        ]);
+        let reg = registry();
+        let metrics = Metrics::new();
+        let engine = RuntimeEngine::new(&reg, metrics.clone(), RuntimeConfig::default());
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+        assert_eq!(outcome, RunOutcome::Completed("done".into()));
+
+        // All three observations were fed back on the next think, in order,
+        // each tagged with its originating call id.
+        assert_eq!(agent.observations.len(), 3);
+        assert_eq!(agent.observations[0].call_id.as_deref(), Some("c1"));
+        assert_eq!(agent.observations[1].call_id.as_deref(), Some("c2"));
+        assert_eq!(agent.observations[2].call_id.as_deref(), Some("c3"));
+        assert!(agent.observations.iter().all(|o| o.ok));
+        assert_eq!(metrics.get(names::TOOL_CALLS), 3);
+        // Three request + three completion events recorded for the session.
+        assert_eq!(session.state().tool_calls_completed, 3);
+    }
+
+    #[tokio::test]
     async fn step_limit_marks_failed() {
         let db = Database::open_in_memory().unwrap();
         let clock = FixedClock::new(1);
@@ -774,7 +1098,7 @@ mod tests {
             async fn think(
                 &mut self,
                 _step: usize,
-                _last: Option<&Observation>,
+                _last: &[Observation],
             ) -> Result<AgentDecision> {
                 Ok(AgentDecision::CallTool(ToolInvocation::new(
                     "add",

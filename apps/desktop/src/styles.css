@@ -2,6 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  body {
+    background-color: var(--theme-bg, #ffffff);
+    color: var(--theme-fg, #1F2937);
+  }
+  /* Reserve the scrollbar gutter so toggling tall content / dropdowns does not
+     shift the layout horizontally (fixes the left-right "jitter" when opening
+     a tall dropdown). */
+  html {
+    scrollbar-gutter: stable;
+    overflow-x: hidden;
+  }
+}
+
+.dark .bg-white { background-color: var(--theme-bg) !important; }
+.dark .text-gray-900, .dark .text-gray-800, .dark .text-black { color: var(--theme-fg) !important; }
+.dark .bg-gray-50, .dark .bg-gray-100 { background-color: var(--theme-sidebar) !important; }
+.dark .hover\:bg-gray-100:hover, .dark .hover\:bg-gray-50:hover { background-color: var(--theme-border) !important; }
+.dark .border-gray-200, .dark .border-gray-300 { border-color: var(--theme-border) !important; }
+.dark .text-gray-500, .dark .text-gray-600 { color: var(--theme-text-secondary) !important; }
+
 /* Codex-style polish: slim scrollbars, no resize handles, focus rings off. */
 ::-webkit-scrollbar {
   width: 4px;

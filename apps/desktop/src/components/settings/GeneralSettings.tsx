@@ -2,8 +2,6 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  getApprovalPolicy,
-  setApprovalPolicy as apiSetApprovalPolicy,
   getPermissionRules,
   setPermissionRules,
 } from "../../api";
@@ -327,19 +325,16 @@ export function GeneralSettings() {
     setWorkMode(mode);
     localStorage.setItem("workMode", mode);
   };
-  // Approval policy is a single exclusive choice synced to the backend
-  // (always_ask = 默认权限, auto_review = 自动审核, full_access = 完全访问).
-  const [approvalPolicy, setApprovalPolicy] = useState<string>("always_ask");
-  useEffect(() => {
-    getApprovalPolicy().then(setApprovalPolicy).catch(() => {});
-  }, []);
-  const changePolicy = (policy: string) => {
-    setApprovalPolicy(policy);
-    apiSetApprovalPolicy(policy).catch(() => {});
+  const [permDefault, setPermDefault] = useState(() => localStorage.getItem("approvalMenu_default") !== "false");
+  const [permAuto, setPermAuto] = useState(() => localStorage.getItem("approvalMenu_auto") !== "false");
+  const [permFull, setPermFull] = useState(() => localStorage.getItem("approvalMenu_full") !== "false");
+
+  const togglePerm = (type: "default" | "auto" | "full", val: boolean) => {
+    if (type === "default") { setPermDefault(val); localStorage.setItem("approvalMenu_default", String(val)); }
+    if (type === "auto") { setPermAuto(val); localStorage.setItem("approvalMenu_auto", String(val)); }
+    if (type === "full") { setPermFull(val); localStorage.setItem("approvalMenu_full", String(val)); }
+    window.dispatchEvent(new Event("approvalMenuChanged"));
   };
-  const permDefault = approvalPolicy === "always_ask";
-  const permAuto = approvalPolicy === "auto_review";
-  const permFull = approvalPolicy === "full_access";
 
   // Declarative permission rules (allow/ask/deny patterns, one per line).
   const [rulesAllow, setRulesAllow] = useState("");
@@ -484,7 +479,7 @@ export function GeneralSettings() {
               </div>
             </div>
             <div className="pt-1">
-              <ToggleSwitch checked={permDefault} onChange={() => changePolicy("always_ask")} />
+              <ToggleSwitch checked={permDefault} onChange={() => togglePerm("default", !permDefault)} />
             </div>
           </div>
 
@@ -496,7 +491,7 @@ export function GeneralSettings() {
               </div>
             </div>
             <div className="pt-1">
-              <ToggleSwitch checked={permAuto} onChange={() => changePolicy("auto_review")} />
+              <ToggleSwitch checked={permAuto} onChange={() => togglePerm("auto", !permAuto)} />
             </div>
           </div>
 
@@ -508,7 +503,7 @@ export function GeneralSettings() {
               </div>
             </div>
             <div className="pt-1">
-              <ToggleSwitch checked={permFull} onChange={() => changePolicy("full_access")} />
+              <ToggleSwitch checked={permFull} onChange={() => togglePerm("full", !permFull)} />
             </div>
           </div>
         </div>

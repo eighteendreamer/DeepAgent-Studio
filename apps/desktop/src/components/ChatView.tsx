@@ -1,8 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
-import type { ChatMessage, TimelineEntry } from "../types";
+import type { ChatMessage, MessagePart, TokenUsage, TimelineEntry, ApprovalRequest } from "../types";
 import { Composer } from "./Composer";
+import { ToolCallCard } from "./ToolCallCard";
+import { ApprovalDialog } from "./ApprovalDialog";
 import { FilesPlugin } from "./plugins/FilesPlugin";
 import { SideChatPlugin } from "./plugins/SideChatPlugin";
 import { BrowserPlugin } from "./plugins/BrowserPlugin";
@@ -21,6 +24,16 @@ interface Props {
   onExport?: (format: "markdown" | "json") => void;
   /** The session timeline, used to offer rewind anchors. */
   timeline?: TimelineEntry[];
+  /** Head-of-queue tool-approval request to show floating above the composer. */
+  approval?: ApprovalRequest | null;
+  /** Total queued approvals (including the current one). */
+  approvalQueueCount?: number;
+  /** Resolve the current approval (allow / deny). */
+  onApprovalDecision?: (req: ApprovalRequest, approved: boolean) => void;
+  /** True while a run is streaming — disables the composer send button. */
+  busy?: boolean;
+  /** Stop the in-flight run (manual cancel). */
+  onStop?: () => void;
 }
 
 export type PluginType = "none" | "files" | "chat" | "browser" | "terminal";
@@ -39,7 +52,7 @@ export const TOOL_CARDS: { icon: IconProp; title: string; desc: string; type: Pl
   { icon: ["fas", "terminal"], title: "terminal", desc: "terminalDesc", type: "terminal" },
 ];
 
-export function ChatView({ messages, onSend, onFork, onRewind, onExport, timeline = [] }: Props) {
+export function ChatView({ messages, onSend, onFork, onRewind, onExport, timeline = [], approval = null, approvalQueueCount = 0, onApprovalDecision, busy = false, onStop }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
   const [isOutputPanelOpen, setIsOutputPanelOpen] = useState(true);
@@ -92,6 +105,13 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
   }, [isResizingSidebar]);
   const [sidebarTabs, setSidebarTabs] = useState<Tab[]>([]);
   const [activeSidebarTabId, setActiveSidebarTabId] = useState<string>("new");
+
+  // Auto-scroll the conversation to the bottom as messages/tokens stream in.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   const getTranslatedToolName = (_title: string, type: string) => {
     return t(`chatView.tools.${type}`);
@@ -299,10 +319,10 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
           </div>
         </header>
       <div className="flex-1 flex overflow-hidden relative">
-        <div className="flex-1 flex flex-col relative min-w-0">
+        <div className="flex-1 flex flex-col relative min-w-0 min-h-0">
           
 
-        <div className="flex-1 overflow-y-auto px-6 py-4 pb-32">
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-6 py-4 pb-44">
           {messages.length === 0 && (
             <div className="w-full max-w-4xl mx-auto text-text-secondary text-[15px] pl-2">
               {t("chatView.startConversation")}
@@ -320,27 +340,34 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
                 </div>
               </div>
             ) : (
-              <div key={i} className="flex flex-col items-start mb-6 w-full max-w-4xl mx-auto pl-2">
-                <div
-                  className={`text-[15px] leading-relaxed whitespace-pre-wrap ${
-                    m.tone === "error" ? "text-red-500" : "text-text-secondary"
-                  }`}
-                >
-                  {m.content}
-                </div>
-              </div>
+              <AssistantTurn
+                key={i}
+                message={m}
+                busy={busy && i === messages.length - 1}
+              />
             )
           )}
         </div>
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
           <div className="w-full max-w-4xl">
+            {approval && (
+              <div className="mb-3">
+                <ApprovalDialog
+                  request={approval}
+                  queueCount={approvalQueueCount}
+                  onApprove={(req) => onApprovalDecision?.(req, true)}
+                  onReject={(req) => onApprovalDecision?.(req, false)}
+                />
+              </div>
+            )}
             <Composer
               value={value}
               onChange={setValue}
               onSubmit={submit}
               placeholder={t("chatView.requestFollowUp")}
-              reviewIcon="history"
+              busy={busy}
+              onStop={onStop}
             />
           </div>
         </div>
@@ -426,7 +453,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
                       <div
                         key={c.title}
                         onClick={() => handleOpenBottomPlugin(c)}
-                        className="bg-[#F9FAFB] rounded-2xl p-5 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-100 transition-colors h-[110px] w-[140px] border border-transparent hover:border-gray-200"
+                        className="bg-gray-50 rounded-2xl p-5 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-100 transition-colors h-[110px] w-[140px] border border-transparent hover:border-gray-200"
                       >
                         <FontAwesomeIcon icon={c.icon} className="text-[22px] text-text-base mb-2.5" />
                         <div className="text-[13px] font-medium text-text-base mb-1">{getTranslatedToolName(c.title, c.type)}</div>
@@ -522,7 +549,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
                       <div
                         key={c.title}
                         onClick={() => handleOpenSidebarPlugin(c)}
-                        className="bg-[#F9FAFB] rounded-2xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-100 transition-colors border border-transparent hover:border-gray-200 aspect-square"
+                        className="bg-gray-50 rounded-2xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-100 transition-colors border border-transparent hover:border-gray-200 aspect-square"
                       >
                         <FontAwesomeIcon icon={c.icon} className="text-[20px] text-text-base mb-2" />
                         <div className="text-[12px] font-medium text-text-base mb-1">{getTranslatedToolName(c.title, c.type)}</div>
@@ -586,6 +613,326 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
           </div>
         )}
     </div>
+    </div>
+  );
+}
+
+/**
+ * Wraps one assistant turn in a coherent block. A long agent run produces many
+ * reasoning/tool "process" steps before the final answer; once the model starts
+ * summarizing (final answer text appears) or the run finishes, those process
+ * steps collapse into ONE big dropdown so the answer stays prominent. While the
+ * run is still working with no answer yet, the steps stay expanded for live
+ * progress.
+ */
+function AssistantTurn({ message: m, busy }: { message: ChatMessage; busy: boolean }) {
+  const { t } = useTranslation();
+  const parts = m.parts ?? [];
+
+  // Split into process steps (reasoning + tools, plus any interleaved
+  // intermediate text) and the final answer (the trailing run of text parts).
+  let lastNonText = -1;
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i].kind !== "text") lastNonText = i;
+  }
+  const processParts = lastNonText >= 0 ? parts.slice(0, lastNonText + 1) : [];
+  const answerParts = lastNonText >= 0 ? parts.slice(lastNonText + 1) : parts;
+
+  const toolCount = processParts.filter((p) => p.kind === "tool").length;
+  const hasProcess = processParts.length > 0 && toolCount > 0;
+  const hasAnswer = answerParts.some(
+    (p) => p.kind === "text" && p.text.trim().length > 0
+  );
+
+  // Total wall-clock spent in tool calls this turn (sum of card durations).
+  const totalToolMs = parts.reduce(
+    (acc, p) => acc + (p.kind === "tool" ? p.tool.durationMs ?? 0 : 0),
+    0
+  );
+
+  // Collapse the process once the answer has begun (summary phase) or the run
+  // finished; keep it open while actively working with nothing summarized yet.
+  const collapseProcess = hasAnswer || !busy;
+
+  const renderPart = (part: MessagePart, pi: number, streamTail: boolean) => {
+    if (part.kind === "tool") {
+      return <ToolCallCard key={`tool-${part.tool.call_id}`} tool={part.tool} />;
+    }
+    if (part.kind === "reasoning") {
+      return <ReasoningBlock key={`r-${pi}`} text={part.text} defaultOpen={streamTail} />;
+    }
+    return (
+      <div
+        key={`t-${pi}`}
+        className={`text-[15px] leading-relaxed whitespace-pre-wrap mb-1 ${
+          part.tone === "error" ? "text-red-500" : "text-text-base"
+        }`}
+      >
+        {part.text}
+      </div>
+    );
+  };
+
+  return (
+    <div className="mb-6 w-full max-w-4xl mx-auto">
+      {/* Header: agent label + live status. */}
+      <div className="flex items-center mb-2 pl-1">
+        <div className="w-5 h-5 rounded-md bg-primary/10 text-primary flex items-center justify-center mr-2">
+          <FontAwesomeIcon icon={["fas", "robot"]} className="text-[11px]" />
+        </div>
+        <span className="text-[12px] font-medium text-text-base">{t("chatView.assistant")}</span>
+        {busy && (
+          <span className="ml-2 flex items-center text-[11px] text-blue-500">
+            <FontAwesomeIcon icon={["fas", "circle-notch"]} className="animate-spin mr-1 text-[10px]" />
+            {t("chatView.working")}
+          </span>
+        )}
+      </div>
+
+      {parts.length > 0 ? (
+        <>
+          {/* Process steps: collapsed into one dropdown once summarizing. */}
+          {hasProcess &&
+            (collapseProcess ? (
+              <ProcessSteps toolCount={toolCount} totalMs={totalToolMs}>
+                {processParts.map((p, pi) => renderPart(p, pi, false))}
+              </ProcessSteps>
+            ) : (
+              <div className="w-full rounded-xl border border-border-theme bg-white px-4 py-3 mb-2">
+                {processParts.map((p, pi) =>
+                  renderPart(p, pi, busy && pi === processParts.length - 1 && !hasAnswer)
+                )}
+              </div>
+            ))}
+
+          {/* Final answer: always prominent, outside the collapsible. */}
+          {hasAnswer && (
+            <div className="w-full rounded-xl border border-border-theme bg-white px-4 py-3">
+              {answerParts.map((p, pi) => renderPart(p, processParts.length + pi, false))}
+              {!busy && (
+                <UsageFooter usage={m.usage} totalMs={m.runMs ?? totalToolMs} answer={m.content} />
+              )}
+            </div>
+          )}
+
+          {/* Working placeholder before any step/answer exists. */}
+          {busy && !hasProcess && !hasAnswer && (
+            <div className="w-full rounded-xl border border-border-theme bg-white px-4 py-3">
+              <div className="flex items-center text-text-secondary text-[14px]">
+                <FontAwesomeIcon icon={["fas", "circle-notch"]} className="animate-spin mr-2 text-[13px]" />
+                {t("chatView.working")}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        // Legacy layout (replayed sessions without ordered parts).
+        <div className="w-full rounded-xl border border-border-theme bg-white px-4 py-3">
+          {m.tools && m.tools.length > 0 && (
+            <ProcessSteps toolCount={m.tools.length} totalMs={0}>
+              {m.tools.map((tool) => (
+                <ToolCallCard key={tool.call_id} tool={tool} />
+              ))}
+            </ProcessSteps>
+          )}
+          {m.reasoning && <ReasoningBlock text={m.reasoning} />}
+          {m.content ? (
+            <div
+              className={`text-[15px] leading-relaxed whitespace-pre-wrap ${
+                m.tone === "error" ? "text-red-500" : "text-text-base"
+              }`}
+            >
+              {m.content}
+            </div>
+          ) : (
+            busy && (
+              <div className="flex items-center text-text-secondary text-[14px]">
+                <FontAwesomeIcon icon={["fas", "circle-notch"]} className="animate-spin mr-2 text-[13px]" />
+                {t("chatView.working")}
+              </div>
+            )
+          )}
+          {!busy && m.content && (
+            <UsageFooter usage={m.usage} totalMs={m.runMs ?? 0} answer={m.content} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A big collapsible container that folds away a long run's process steps
+ * (reasoning + tool calls), keeping the final answer prominent. Collapsed by
+ * default; the header summarizes how many tools ran.
+ */
+function ProcessSteps({
+  toolCount,
+  totalMs,
+  children,
+}: {
+  toolCount: number;
+  totalMs: number;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="w-full mb-2 border border-border-theme rounded-xl bg-gray-50/60 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center px-4 py-2.5 text-[13px] text-text-secondary hover:text-text-base transition-colors"
+      >
+        <FontAwesomeIcon
+          icon={["fas", open ? "chevron-down" : "chevron-right"]}
+          className="mr-2 text-[11px]"
+        />
+        <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-2 text-[12px]" />
+        <span className="font-medium">{t("chatView.processSteps", { count: toolCount })}</span>
+        {totalMs > 0 && (
+          <span className="ml-2 text-[11px] text-text-secondary tabular-nums">· {formatMs(totalMs)}</span>
+        )}
+        {!open && <span className="ml-2 text-[11px] text-text-secondary">{t("chatView.clickToExpand")}</span>}
+      </button>
+      {open && <div className="border-t border-border-theme px-4 py-3">{children}</div>}
+    </div>
+  );
+}
+
+/** Format a millisecond duration compactly (e.g. 850ms, 2.3s, 1m12s). */
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s % 60);
+  return `${m}m${rem}s`;
+}
+
+/** Compact number (1234 → 1.2k). */
+function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
+}
+
+/**
+ * The footer shown under a finished assistant answer: a token/usage metaline
+ * (total + input/output breakdown + cache hit) and total duration, plus a row
+ * of action buttons (copy now; worktree and others wired in later). Gives the
+ * answer breathing room from the composer and a home for per-turn actions.
+ */
+function UsageFooter({
+  usage,
+  totalMs: durationMs,
+  answer,
+}: {
+  usage?: TokenUsage;
+  totalMs: number;
+  answer?: string;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  const onCopy = () => {
+    if (!answer) return;
+    navigator.clipboard?.writeText(answer).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => {}
+    );
+  };
+
+  const hasMetrics = !!usage || durationMs > 0;
+
+  return (
+    <div className="mt-3 pt-2.5 border-t border-border-theme">
+      {/* Metrics line(s) */}
+      {hasMetrics && (
+        <div className="flex flex-col gap-0.5 text-[11px] text-text-secondary tabular-nums">
+          {usage && (
+            <div className="flex items-center flex-wrap gap-x-1.5">
+              <span className="font-medium text-text-base">
+                {formatTokens(usage.totalTokens)} tokens
+              </span>
+              <span className="text-text-secondary">
+                ({formatTokens(usage.promptTokens)}
+                <FontAwesomeIcon icon={["fas", "arrow-down"]} className="mx-0.5 text-[9px]" />
+                {formatTokens(usage.completionTokens)}
+                <FontAwesomeIcon icon={["fas", "arrow-up"]} className="ml-0.5 text-[9px]" />)
+              </span>
+              {usage.cacheHitTokens > 0 && (
+                <span className="text-green-600 ml-1" title={t("chatView.tokensCacheHit")}>
+                  <FontAwesomeIcon icon={["fas", "bolt"]} className="mr-0.5 text-[9px]" />
+                  {t("chatView.tokensCacheHit")} {formatTokens(usage.cacheHitTokens)}
+                </span>
+              )}
+            </div>
+          )}
+          {durationMs > 0 && (
+            <div className="flex items-center">
+              <FontAwesomeIcon icon={["far", "clock"]} className="mr-1 text-[9px]" />
+              {t("chatView.totalDuration")}: {formatMs(durationMs)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Actions row (copy now; worktree & more wired later). */}
+      <div className="flex items-center gap-1 mt-1.5 -ml-1">
+        <button
+          onClick={onCopy}
+          title={t("chatView.copyAnswer")}
+          className="w-7 h-7 rounded-md flex items-center justify-center text-text-secondary hover:bg-gray-100 hover:text-text-base transition-colors"
+        >
+          <FontAwesomeIcon icon={copied ? ["fas", "check"] : ["far", "copy"]} className="text-[12px]" />
+        </button>
+        <button
+          title={t("chatView.addWorktree")}
+          className="w-7 h-7 rounded-md flex items-center justify-center text-text-secondary hover:bg-gray-100 hover:text-text-base transition-colors"
+        >
+          <FontAwesomeIcon icon={["fas", "code-branch"]} className="text-[12px]" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A collapsible block showing the model's full Thinking-Mode reasoning trace.
+ * Auto-expands while it is the actively-streaming tail (so the user watches the
+ * reasoning grow); collapsible afterwards to keep the answer prominent.
+ */
+function ReasoningBlock({ text, defaultOpen = false }: { text: string; defaultOpen?: boolean }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(defaultOpen);
+  // Follow the streaming state: open while streaming, collapse once it ends.
+  const prevDefault = useRef(defaultOpen);
+  useEffect(() => {
+    if (prevDefault.current !== defaultOpen) {
+      setOpen(defaultOpen);
+      prevDefault.current = defaultOpen;
+    }
+  }, [defaultOpen]);
+  return (
+    <div className="w-full mb-3 border border-border-theme rounded-lg bg-gray-50/60 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center px-3 py-2 text-[12px] text-text-secondary hover:text-text-base transition-colors"
+      >
+        <FontAwesomeIcon
+          icon={["fas", open ? "chevron-down" : "chevron-right"]}
+          className="mr-2 text-[10px]"
+        />
+        <FontAwesomeIcon icon={["fas", "lightbulb"]} className="mr-1.5 text-[11px]" />
+        {t("chatView.reasoning")}
+      </button>
+      {open && (
+        <pre className="px-3 pb-3 text-[12px] text-text-secondary whitespace-pre-wrap font-mono leading-relaxed border-t border-border-theme pt-2">
+          {text}
+        </pre>
+      )}
     </div>
   );
 }

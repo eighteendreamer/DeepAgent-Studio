@@ -42,11 +42,14 @@
 
 #![warn(missing_docs)]
 
+pub mod ask_user_tool;
 pub mod bash_tool;
 pub mod file_tools;
 pub mod fs_guard;
 pub mod glob_match;
 pub mod guard_hooks;
+pub mod knowledge_tools;
+pub mod task_tool;
 pub mod todo_tool;
 pub mod web_tools;
 
@@ -59,6 +62,10 @@ use deepagent_core::error::Result;
 use deepagent_hooks::{HookPoint, HookRegistry};
 use deepagent_tools::{Tool, ToolRegistry};
 
+pub use ask_user_tool::{
+    AskUserQuestionTool, DeclineResponder, Question, QuestionOption, QuestionResponder,
+    ASK_USER_QUESTION_TOOL_NAME,
+};
 pub use bash_tool::{
     is_allowed, is_dangerous, BashTool, CommandExecutor, CommandOutcome, SystemExecutor,
 };
@@ -66,9 +73,17 @@ pub use file_tools::{
     file_tools, EditFileTool, GlobTool, GrepTool, ListDirTool, MultiEditTool, ReadFileTool,
     WriteFileTool,
 };
-pub use fs_guard::WorkspaceRoot;
+pub use fs_guard::{is_sensitive_path, FsAccess, WorkspaceRoot};
 pub use glob_match::glob_match;
 pub use guard_hooks::{BashGuardHook, PathGuardHook};
+pub use knowledge_tools::{
+    KnowledgeBackend, KnowledgeSearchTool, KnowledgeToolDraft, KnowledgeToolHit,
+    KnowledgeWriteTool, UnavailableKnowledgeBackend, KNOWLEDGE_SEARCH_TOOL_NAME,
+    KNOWLEDGE_WRITE_TOOL_NAME,
+};
+pub use task_tool::{
+    SubagentRequest, SubagentRunner, TaskTool, UnavailableSubagentRunner, TASK_TOOL_NAME,
+};
 pub use todo_tool::{TaskListTool, TodoItem, TodoStatus, TodoStore, TodoWriteTool};
 pub use web_tools::{SearchResult, WebClient, WebFetchTool, WebSearchTool};
 
@@ -152,10 +167,14 @@ pub fn register_guard_hooks(
     root: WorkspaceRoot,
     bash_allow: impl IntoIterator<Item = String>,
 ) {
+    // Full access (the root's FsAccess::Full mode) lets the bash guard pass
+    // every command without prompting; otherwise the allow-list + danger
+    // classifier apply (dangerous/unlisted commands ask for approval).
+    let full_access = root.access() == fs_guard::FsAccess::Full;
     hooks.register(HookPoint::BeforeToolUse, Arc::new(PathGuardHook::new(root)));
     hooks.register(
         HookPoint::BeforeToolUse,
-        Arc::new(BashGuardHook::new(bash_allow)),
+        Arc::new(BashGuardHook::new(bash_allow).with_full_access(full_access)),
     );
 }
 

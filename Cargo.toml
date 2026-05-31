@@ -14,6 +14,7 @@ members = [
     "crates/deepagent-session",
     "crates/deepagent-context",
     "crates/deepagent-memory",
+    "crates/deepagent-knowledge",
     "crates/deepagent-tools",
     "crates/deepagent-builtins",
     "crates/deepagent-intent",
@@ -65,6 +66,7 @@ deepagent-persistence = { path = "crates/deepagent-persistence" }
 deepagent-session = { path = "crates/deepagent-session" }
 deepagent-context = { path = "crates/deepagent-context" }
 deepagent-memory = { path = "crates/deepagent-memory" }
+deepagent-knowledge = { path = "crates/deepagent-knowledge" }
 deepagent-tools = { path = "crates/deepagent-tools" }
 deepagent-builtins = { path = "crates/deepagent-builtins" }
 deepagent-intent = { path = "crates/deepagent-intent" }

@@ -89,6 +89,71 @@ pub struct SessionDetailDto {
     pub stats: SessionStatsDto,
 }
 
+/// One ordered segment of a reconstructed assistant/user turn, mirroring the
+/// live chat's `MessagePart` so a returned-to session renders with the same
+/// styled tool cards / reasoning / text (not flattened timeline lines).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConversationPartDto {
+    /// Visible assistant/user text.
+    Text {
+        /// The text content.
+        text: String,
+    },
+    /// Thinking-Mode reasoning trace.
+    Reasoning {
+        /// The reasoning text.
+        text: String,
+    },
+    /// A tool call card (request + completion folded together).
+    Tool {
+        /// Correlation id.
+        call_id: String,
+        /// Tool name.
+        name: String,
+        /// JSON-stringified arguments (pretty).
+        args: String,
+        /// Status: "ok" | "error" (completed) or "running" (no completion seen).
+        status: String,
+        /// Wall-clock duration ms when known.
+        duration_ms: Option<u64>,
+        /// One-line result/error summary.
+        detail: Option<String>,
+    },
+}
+
+/// A reconstructed conversation message (user or assistant) for replaying a
+/// session with full styling.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConversationMessageDto {
+    /// "user" or "assistant".
+    pub role: String,
+    /// Flat text mirror (for user turns / copy / fallback).
+    pub content: String,
+    /// Ordered parts (assistant turns carry reasoning / tool / text in order).
+    pub parts: Vec<ConversationPartDto>,
+    /// Persisted token usage for this turn, when recorded (assistant turns).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ConversationUsageDto>,
+}
+
+/// Persisted per-turn token usage + duration (mirrors `UsageRecorded`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationUsageDto {
+    /// Prompt (input) tokens.
+    pub prompt_tokens: u32,
+    /// Completion (output) tokens.
+    pub completion_tokens: u32,
+    /// Total tokens.
+    pub total_tokens: u32,
+    /// Prompt tokens served from the context cache.
+    pub prompt_cache_hit_tokens: u32,
+    /// Prompt tokens NOT served from cache.
+    pub prompt_cache_miss_tokens: u32,
+    /// Wall-clock run duration in milliseconds.
+    pub duration_ms: u64,
+}
+
 /// A command-palette action the UI can present and dispatch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandDto {

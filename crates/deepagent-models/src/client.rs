@@ -91,6 +91,10 @@ impl ModelClient {
         observer: &mut dyn crate::stream::DeltaObserver,
     ) -> Result<ChatResponse> {
         request.stream = true;
+        // Ask the provider to include a final usage chunk in the stream.
+        request.stream_options = Some(crate::chat::StreamOptions {
+            include_usage: true,
+        });
         let body = serde_json::to_string(&request)?;
         let transport_req = TransportRequest {
             url: self.config.endpoint(),

@@ -134,9 +134,23 @@ impl PolicyGate {
 impl ApprovalGate for PolicyGate {
     async fn request(&self, request: ApprovalRequest) -> ApprovalDecision {
         match self.policy {
-            // Auto-approve policies never prompt the user.
-            ApprovalPolicy::AutoReview | ApprovalPolicy::FullAccess => ApprovalDecision::Allow,
-            // Ask the user via the inner gate.
+            // 完全访问: allow everything without prompting.
+            ApprovalPolicy::FullAccess => ApprovalDecision::Allow,
+            // 自动审核: lenient but careful. The system auto-approves anything
+            // that isn't a direct computer operation (e.g. out-of-workspace
+            // file reads, extra access). Shell/bash commands — "operating the
+            // computer" — and explicitly high-risk calls still go to the user.
+            ApprovalPolicy::AutoReview => {
+                let tool = request.tool.as_str();
+                let is_computer_op = matches!(tool, "bash" | "shell");
+                let is_high_risk = request.risk.eq_ignore_ascii_case("high");
+                if is_computer_op || is_high_risk {
+                    self.inner.request(request).await
+                } else {
+                    ApprovalDecision::Allow
+                }
+            }
+            // 默认权限: ask the user for every approval-requiring call.
             ApprovalPolicy::AlwaysAsk => self.inner.request(request).await,
         }
     }
@@ -189,11 +203,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_auto_review_allows_without_prompt() {
-        // Inner gate would deny; the AutoReview policy short-circuits to Allow.
+    async fn policy_auto_review_allows_non_computer_ops() {
+        // A non-bash request (e.g. out-of-workspace read) auto-approves under
+        // AutoReview even though the inner gate would deny.
         let inner: Arc<dyn ApprovalGate> = Arc::new(deepagent_runtime::AutoDenyGate);
         let gate = PolicyGate::new(ApprovalPolicy::AutoReview, inner);
-        assert_eq!(gate.request(req("c1")).await, ApprovalDecision::Allow);
+        let mut r = req("c1");
+        r.tool = "read_file".into();
+        r.risk = "ask".into();
+        assert_eq!(gate.request(r).await, ApprovalDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn policy_auto_review_delegates_computer_ops() {
+        // A bash request (computer operation) still goes to the user under
+        // AutoReview: here the inner gate approves, proving it delegated.
+        let inner: Arc<dyn ApprovalGate> = Arc::new(deepagent_runtime::AutoApproveGate);
+        let gate = PolicyGate::new(ApprovalPolicy::AutoReview, inner);
+        let r = req("c1"); // tool = "bash"
+        assert_eq!(gate.request(r).await, ApprovalDecision::Allow);
+
+        // And if the inner gate denies, the bash op is denied (not auto-allowed).
+        let deny_inner: Arc<dyn ApprovalGate> = Arc::new(deepagent_runtime::AutoDenyGate);
+        let deny_gate = PolicyGate::new(ApprovalPolicy::AutoReview, deny_inner);
+        assert_eq!(deny_gate.request(req("c2")).await, ApprovalDecision::Deny);
     }
 
     #[tokio::test]

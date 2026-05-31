@@ -12,7 +12,7 @@ default = []
 # The real network-backed web tools (reqwest). Kept optional so the default
 # build and CI stay offline; the WebClient trait + tools are tested via a mock
 # without this feature.
-http = ["dep:reqwest"]
+http = ["dep:reqwest", "dep:url"]
 
 [dependencies]
 deepagent-core.workspace = true
@@ -27,6 +27,9 @@ tokio = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ], optional = true }
+# URL query encoding for web_search (only used by the http-backed client).
+# `url` is already in the dependency tree via reqwest, so this adds nothing new.
+url = { version = "2", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

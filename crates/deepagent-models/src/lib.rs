@@ -29,13 +29,14 @@ pub mod discovery;
 pub mod sse;
 pub mod stream;
 pub mod transport;
+pub mod wire;
 
 #[cfg(feature = "http")]
 pub mod reqwest_transport;
 
 pub use chat::{
-    ChatRequest, ChatResponse, FinishReason, FunctionSchema, ThinkingConfig, ThinkingDepth,
-    ToolSchema, Usage,
+    ChatRequest, ChatResponse, FinishReason, FunctionSchema, StreamOptions, ThinkingConfig,
+    ThinkingDepth, ToolSchema, Usage,
 };
 pub use client::{ModelClient, ModelConfig};
 pub use discovery::{ModelCatalog, ModelDiscovery, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};

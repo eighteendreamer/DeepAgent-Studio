@@ -1,0 +1,20 @@
+[package]
+name = "deepagent-knowledge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Knowledge base: Obsidian-style markdown vault as source of truth, plus passive injection + active search/write tooling backends. Reuses the contextual-retrieval stack (chunk → contextualize → embed → BM25 → RRF → rerank)."
+
+[dependencies]
+deepagent-core.workspace = true
+deepagent-memory.workspace = true
+deepagent-skills.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

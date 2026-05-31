@@ -51,7 +51,7 @@ impl Tool for ReadFileTool {
         let Some(path) = arg_str(&args, "path") else {
             return Ok(ToolOutput::failure("missing 'path'"));
         };
-        let resolved = match self.root.resolve(path) {
+        let resolved = match self.root.resolve_read(path) {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
@@ -103,7 +103,7 @@ impl Tool for WriteFileTool {
         else {
             return Ok(ToolOutput::failure("missing 'path' or 'content'"));
         };
-        let resolved = match self.root.resolve(path) {
+        let resolved = match self.root.resolve_write(path) {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
@@ -170,7 +170,7 @@ impl Tool for EditFileTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let resolved = match self.root.resolve(path) {
+        let resolved = match self.root.resolve_write(path) {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
@@ -260,7 +260,7 @@ impl Tool for MultiEditTool {
             return Ok(ToolOutput::failure("'edits' must not be empty"));
         }
 
-        let resolved = match self.root.resolve(path) {
+        let resolved = match self.root.resolve_write(path) {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
@@ -344,7 +344,7 @@ impl Tool for ListDirTool {
 
     async fn invoke(&self, args: serde_json::Value) -> Result<ToolOutput> {
         let rel = arg_str(&args, "path").unwrap_or(".");
-        let resolved = match self.root.resolve(rel) {
+        let resolved = match self.root.resolve_read(rel) {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };

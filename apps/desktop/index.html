@@ -5,6 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/logo.png" />
     <title>DeepAgent Studio</title>
+    <script>
+      (function() {
+        try {
+          const configStr = localStorage.getItem("codex-theme-config");
+          if (configStr) {
+            const config = JSON.parse(configStr);
+            let isDark = config.mode === "dark";
+            if (config.mode === "system") {
+              isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+            }
+            
+            const theme = isDark ? config.dark : config.light;
+            if (theme && theme.cssVariables) {
+              const root = document.documentElement;
+              for (const [key, value] of Object.entries(theme.cssVariables)) {
+                root.style.setProperty(key, value);
+              }
+              if (isDark) root.classList.add("dark");
+              else root.classList.remove("dark");
+            }
+          }
+        } catch(e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

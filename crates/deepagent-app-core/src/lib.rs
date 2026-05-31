@@ -16,6 +16,7 @@ pub mod chat_service;
 pub mod commands;
 pub mod diff;
 pub mod dto;
+pub mod knowledge_service;
 pub mod mcp_service;
 pub mod project_service;
 pub mod secret_store;
@@ -30,9 +31,13 @@ pub use chat_service::ChatService;
 pub use commands::{builtin_commands, filter_commands};
 pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
 pub use dto::{
-    ApprovalRequestDto, CommandDto, ForkResultDto, ProjectDto, RewindResultDto, SessionDetailDto,
+    ApprovalRequestDto, CommandDto, ConversationMessageDto, ConversationPartDto,
+    ConversationUsageDto, ForkResultDto, ProjectDto, RewindResultDto, SessionDetailDto,
     SessionStatsDto, SessionSummaryDto, TerminalResultDto, TimelineEntryDto, TranscriptDto,
     WorkspaceInfoDto,
+};
+pub use knowledge_service::{
+    KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, KnowledgeServiceBackend,
 };
 pub use mcp_service::{McpServerDto, McpService};
 pub use project_service::{folder_name, ProjectService};

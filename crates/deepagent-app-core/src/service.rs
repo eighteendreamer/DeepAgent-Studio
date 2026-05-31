@@ -17,8 +17,9 @@ use deepagent_session::Session;
 use crate::commands::{builtin_commands, filter_commands};
 use crate::diff::{diff_lines, DiffResult};
 use crate::dto::{
-    CommandDto, ForkResultDto, RewindResultDto, SessionDetailDto, SessionStatsDto,
-    SessionSummaryDto, TimelineEntryDto, TranscriptDto,
+    CommandDto, ConversationMessageDto, ConversationPartDto, ConversationUsageDto, ForkResultDto,
+    RewindResultDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto,
+    TranscriptDto,
 };
 
 /// The application service backing the UI.
@@ -129,6 +130,159 @@ impl AppService {
         filter_commands(query, &builtin_commands())
     }
 
+    /// Reconstruct a session's conversation as ordered, styled messages so the
+    /// UI can replay a returned-to session with the SAME tool cards / reasoning
+    /// / text it showed live — not flattened timeline lines.
+    ///
+    /// Walks the event log in order: user/assistant `MessageAppended` become
+    /// message turns (assistant text + its reasoning), and
+    /// `ToolCallRequested`/`ToolCallCompleted` fold into a tool card attached
+    /// (in chronological position) to the current assistant turn.
+    pub fn session_conversation(&self, session_id: &str) -> Result<Vec<ConversationMessageDto>> {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Role;
+
+        let id = SessionId::from_str(session_id)
+            .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+        let store = EventStore::new(&self.db);
+        let events = store.load_session(id)?;
+
+        let mut messages: Vec<ConversationMessageDto> = Vec::new();
+        // Index of tool parts by call_id within the current assistant turn, so a
+        // completion updates the request card in place.
+        let mut tool_pos: std::collections::HashMap<String, (usize, usize)> =
+            std::collections::HashMap::new();
+
+        // Ensure there is a trailing assistant turn to attach tool cards to.
+        let ensure_assistant = |messages: &mut Vec<ConversationMessageDto>| -> usize {
+            if let Some(last) = messages.last() {
+                if last.role == "assistant" {
+                    return messages.len() - 1;
+                }
+            }
+            messages.push(ConversationMessageDto {
+                role: "assistant".to_string(),
+                content: String::new(),
+                parts: Vec::new(),
+                usage: None,
+            });
+            messages.len() - 1
+        };
+
+        for ev in &events {
+            match &ev.payload {
+                EventPayload::MessageAppended { message } => match message.role {
+                    Role::User => {
+                        let text = message.content.trim().to_string();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        // A new user turn ends the previous assistant turn's
+                        // tool-card grouping.
+                        tool_pos.clear();
+                        messages.push(ConversationMessageDto {
+                            role: "user".to_string(),
+                            content: text.clone(),
+                            parts: vec![ConversationPartDto::Text { text }],
+                            usage: None,
+                        });
+                    }
+                    Role::Assistant => {
+                        let content = message.content.trim();
+                        let reasoning = message
+                            .reasoning_content
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty());
+                        if content.is_empty() && reasoning.is_none() {
+                            // Pure tool-call assistant turn: cards already added.
+                            continue;
+                        }
+                        let idx = ensure_assistant(&mut messages);
+                        if let Some(r) = reasoning {
+                            messages[idx].parts.push(ConversationPartDto::Reasoning {
+                                text: r.to_string(),
+                            });
+                        }
+                        if !content.is_empty() {
+                            messages[idx].parts.push(ConversationPartDto::Text {
+                                text: content.to_string(),
+                            });
+                            if messages[idx].content.is_empty() {
+                                messages[idx].content = content.to_string();
+                            } else {
+                                messages[idx].content.push('\n');
+                                messages[idx].content.push_str(content);
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                EventPayload::ToolCallRequested { call } => {
+                    let idx = ensure_assistant(&mut messages);
+                    let part_idx = messages[idx].parts.len();
+                    messages[idx].parts.push(ConversationPartDto::Tool {
+                        call_id: call.id.clone(),
+                        name: call.name.clone(),
+                        args: serde_json::to_string_pretty(&call.arguments)
+                            .unwrap_or_else(|_| call.arguments.to_string()),
+                        status: "running".to_string(),
+                        duration_ms: None,
+                        detail: None,
+                    });
+                    tool_pos.insert(call.id.clone(), (idx, part_idx));
+                }
+                EventPayload::ToolCallCompleted {
+                    call_id,
+                    ok,
+                    output,
+                    duration_ms,
+                } => {
+                    if let Some(&(idx, part_idx)) = tool_pos.get(call_id) {
+                        if let Some(ConversationPartDto::Tool {
+                            status,
+                            duration_ms: dm,
+                            detail,
+                            ..
+                        }) = messages[idx].parts.get_mut(part_idx)
+                        {
+                            *status = if *ok {
+                                "ok".to_string()
+                            } else {
+                                "error".to_string()
+                            };
+                            *dm = Some(*duration_ms);
+                            *detail = Some(summarize_output(output));
+                        }
+                    }
+                }
+                EventPayload::UsageRecorded {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    prompt_cache_hit_tokens,
+                    prompt_cache_miss_tokens,
+                    duration_ms,
+                } => {
+                    // Attach the run's persisted usage to the current (last)
+                    // assistant turn so the replayed footer matches the live one.
+                    let idx = ensure_assistant(&mut messages);
+                    messages[idx].usage = Some(ConversationUsageDto {
+                        prompt_tokens: *prompt_tokens,
+                        completion_tokens: *completion_tokens,
+                        total_tokens: *total_tokens,
+                        prompt_cache_hit_tokens: *prompt_cache_hit_tokens,
+                        prompt_cache_miss_tokens: *prompt_cache_miss_tokens,
+                        duration_ms: *duration_ms,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Ok(messages)
+    }
+
     /// **Fork** a session at sequence `at_seq`: create a new sibling branch
     /// whose stream copies events `0..=at_seq` from the source. The source is
     /// left untouched (non-destructive branching). Returns the new branch id.
@@ -191,6 +345,32 @@ impl AppService {
 /// Map a stored project path to its display name (last folder component).
 fn project_display_name(path: &str) -> String {
     crate::project_service::folder_name(path)
+}
+
+/// Summarize a tool's JSON output into a short one-line detail string for the
+/// replayed tool card (mirrors the frontend's live `summarize`).
+fn summarize_output(output: &serde_json::Value) -> String {
+    const MAX: usize = 200;
+    let raw = if let Some(s) = output.as_str() {
+        s.to_string()
+    } else if let Some(e) = output.get("error").and_then(|v| v.as_str()) {
+        e.to_string()
+    } else if let Some(arr) = output.get("results").and_then(|v| v.as_array()) {
+        format!("{} result(s)", arr.len())
+    } else if let Some(n) = output.get("count").and_then(|v| v.as_u64()) {
+        format!("{n} result(s)")
+    } else if let Some(p) = output.get("path").and_then(|v| v.as_str()) {
+        p.to_string()
+    } else {
+        output.to_string()
+    };
+    let one_line = raw.replace('\n', " ");
+    if one_line.chars().count() <= MAX {
+        one_line
+    } else {
+        let truncated: String = one_line.chars().take(MAX).collect();
+        format!("{truncated}…")
+    }
 }
 
 #[cfg(test)]

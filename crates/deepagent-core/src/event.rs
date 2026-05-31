@@ -124,6 +124,23 @@ pub enum EventPayload {
         /// The note text.
         text: String,
     },
+
+    /// Token usage + wall-clock duration for a completed run, persisted so the
+    /// UI can show per-turn metrics when a session is reopened.
+    UsageRecorded {
+        /// Prompt (input) tokens.
+        prompt_tokens: u32,
+        /// Completion (output) tokens.
+        completion_tokens: u32,
+        /// Total tokens.
+        total_tokens: u32,
+        /// Prompt tokens served from the context cache (a "hit").
+        prompt_cache_hit_tokens: u32,
+        /// Prompt tokens NOT served from cache (a "miss").
+        prompt_cache_miss_tokens: u32,
+        /// Wall-clock duration of the run in milliseconds.
+        duration_ms: u64,
+    },
 }
 
 impl EventPayload {
@@ -140,6 +157,7 @@ impl EventPayload {
             EventPayload::ToolCallCompleted { .. } => "tool_call_completed",
             EventPayload::ContextCompacted { .. } => "context_compacted",
             EventPayload::Note { .. } => "note",
+            EventPayload::UsageRecorded { .. } => "usage_recorded",
         }
     }
 }

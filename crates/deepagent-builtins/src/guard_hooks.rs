@@ -25,8 +25,23 @@ use crate::fs_guard::WorkspaceRoot;
 /// Argument keys that carry a filesystem path across the built-in tools.
 const PATH_KEYS: &[&str] = &["path", "file_path", "filename"];
 
-/// Denies tool calls whose path argument escapes the workspace root or targets
-/// a sensitive file. Registered at [`HookPoint::BeforeToolUse`].
+/// Tool names that only **read** the filesystem (vs. write/edit).
+fn is_read_tool(name: &str) -> bool {
+    matches!(name, "read_file" | "list_dir" | "glob" | "grep")
+}
+
+/// Denies (or asks approval for) tool calls whose path argument escapes the
+/// workspace root or targets a sensitive file. Registered at
+/// [`HookPoint::BeforeToolUse`]. Policy-aware via the root's [`FsAccess`] mode:
+///
+/// - Sensitive credential files are **always denied**.
+/// - In-workspace paths always **continue**.
+/// - Out-of-workspace **reads** continue under `ReadAnywhere`/`Full`, else ask.
+/// - Out-of-workspace **writes** continue under `Full`, else ask.
+///
+/// Returning `Ask` (rather than `Deny`) lets the approval policy decide: under
+/// 默认权限 the user is prompted; under 自动审核 reads auto-approve and writes
+/// are prompted; under 完全访问 everything is pre-allowed.
 ///
 /// [`HookPoint::BeforeToolUse`]: deepagent_hooks::HookPoint::BeforeToolUse
 pub struct PathGuardHook {
@@ -34,7 +49,7 @@ pub struct PathGuardHook {
 }
 
 impl PathGuardHook {
-    /// Build over the confined workspace root.
+    /// Build over the confined workspace root (carrying its access mode).
     pub fn new(root: WorkspaceRoot) -> Self {
         Self { root }
     }
@@ -47,15 +62,41 @@ impl Hook for PathGuardHook {
     }
 
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
-        if let HookData::Tool { arguments, .. } = &ctx.data {
+        if let HookData::Tool {
+            name, arguments, ..
+        } = &ctx.data
+        {
+            let read_tool = is_read_tool(name);
             for key in PATH_KEYS {
                 if let Some(path) = arguments.get(*key).and_then(|v| v.as_str()) {
-                    if let Err(e) = self.root.resolve(path) {
+                    // First: in-workspace + non-sensitive always passes.
+                    if self.root.resolve(path).is_ok() {
+                        continue;
+                    }
+                    // Sensitive files are always denied outright, regardless of
+                    // mode (never silently read/leak credentials).
+                    if crate::fs_guard::is_sensitive_path(path) {
                         return Ok(HookOutcome::deny_from(
-                            format!("path '{path}' rejected: {e}"),
+                            format!("access to sensitive file is denied: {path}"),
                             DecisionSource::Policy,
                         ));
                     }
+                    // Out-of-workspace: does the access mode auto-allow it?
+                    let allowed = if read_tool {
+                        self.root.resolve_read(path).is_ok()
+                    } else {
+                        self.root.resolve_write(path).is_ok()
+                    };
+                    if allowed {
+                        continue;
+                    }
+                    // Otherwise ask the user (the policy gate decides whether to
+                    // prompt or auto-handle).
+                    let verb = if read_tool { "read" } else { "modify" };
+                    return Ok(HookOutcome::ask_from(
+                        format!("{verb} outside the workspace: '{path}' needs approval"),
+                        DecisionSource::Policy,
+                    ));
                 }
             }
         }
@@ -66,9 +107,16 @@ impl Hook for PathGuardHook {
 /// Guards `bash` tool calls: denies commands outside the allow-list and asks
 /// for approval on dangerous ones. Registered at [`HookPoint::BeforeToolUse`].
 ///
+/// Policy-aware: under **full access** every command is allowed without prompt
+/// (the user has opted into unrestricted computer operation). Otherwise the
+/// allow-list + danger classifier apply: dangerous fragments ask for approval,
+/// non-allow-listed commands ask too (so the user can approve a one-off rather
+/// than being hard-denied — "computer operations need manual approval").
+///
 /// [`HookPoint::BeforeToolUse`]: deepagent_hooks::HookPoint::BeforeToolUse
 pub struct BashGuardHook {
     allow: Vec<String>,
+    full_access: bool,
 }
 
 impl BashGuardHook {
@@ -76,7 +124,14 @@ impl BashGuardHook {
     pub fn new(allow: impl IntoIterator<Item = String>) -> Self {
         Self {
             allow: allow.into_iter().collect(),
+            full_access: false,
         }
+    }
+
+    /// Allow every command without prompting (builder style; for 完全访问).
+    pub fn with_full_access(mut self, full_access: bool) -> Self {
+        self.full_access = full_access;
+        self
     }
 
     /// The tool names this guard applies to.
@@ -99,6 +154,11 @@ impl Hook for BashGuardHook {
             if !Self::applies_to(name) {
                 return Ok(HookOutcome::Continue);
             }
+            // Full access: the user has opted into unrestricted shell. Let the
+            // command through without prompting.
+            if self.full_access {
+                return Ok(HookOutcome::Continue);
+            }
             let Some(command) = arguments.get("command").and_then(|v| v.as_str()) else {
                 return Ok(HookOutcome::Continue);
             };
@@ -111,11 +171,12 @@ impl Hook for BashGuardHook {
                     DecisionSource::Classifier,
                 ));
             }
-            // Not on the allow-list → deny by policy.
+            // Not on the allow-list → a computer operation that needs the user's
+            // explicit OK. Ask (rather than hard-deny) so it can be approved.
             if !is_allowed(command, &self.allow) {
-                return Ok(HookOutcome::deny_from(
+                return Ok(HookOutcome::ask_from(
                     format!(
-                        "command '{}' is not allow-listed",
+                        "command '{}' runs on your computer and needs approval",
                         command.split_whitespace().next().unwrap_or("")
                     ),
                     DecisionSource::Policy,
@@ -141,8 +202,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn path_guard_denies_traversal_and_sensitive() {
+    async fn path_guard_denies_sensitive_asks_outside_workspace() {
         let guard = PathGuardHook::new(WorkspaceRoot::new("/work"));
+        // Out-of-workspace read under the default (Workspace) mode → ask.
         let out = guard
             .run(&tool_ctx(
                 "read_file",
@@ -150,13 +212,39 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert!(out.is_deny());
+        assert!(out.is_ask());
 
+        // Sensitive credential file → always denied.
         let out = guard
             .run(&tool_ctx("read_file", serde_json::json!({"path": ".env"})))
             .await
             .unwrap();
         assert!(out.is_deny());
+    }
+
+    #[tokio::test]
+    async fn path_guard_read_anywhere_allows_outside_reads() {
+        use crate::fs_guard::FsAccess;
+        let guard =
+            PathGuardHook::new(WorkspaceRoot::new("/work").with_access(FsAccess::ReadAnywhere));
+        // Out-of-workspace read auto-allowed under ReadAnywhere.
+        let out = guard
+            .run(&tool_ctx(
+                "read_file",
+                serde_json::json!({"path": "/etc/hosts"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out, HookOutcome::Continue);
+        // But an out-of-workspace WRITE still asks.
+        let out = guard
+            .run(&tool_ctx(
+                "write_file",
+                serde_json::json!({"path": "/etc/hosts"}),
+            ))
+            .await
+            .unwrap();
+        assert!(out.is_ask());
     }
 
     #[tokio::test]
@@ -186,13 +274,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bash_guard_denies_unlisted() {
+    async fn bash_guard_asks_on_unlisted() {
         let guard = BashGuardHook::new(["git".to_string()]);
         let out = guard
             .run(&tool_ctx("bash", serde_json::json!({"command": "ls -la"})))
             .await
             .unwrap();
-        assert!(out.is_deny());
+        assert!(out.is_ask());
+    }
+
+    #[tokio::test]
+    async fn bash_guard_full_access_allows_everything() {
+        let guard = BashGuardHook::new(["git".to_string()]).with_full_access(true);
+        let out = guard
+            .run(&tool_ctx(
+                "bash",
+                serde_json::json!({"command": "rm -rf /tmp/x"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out, HookOutcome::Continue);
     }
 
     #[tokio::test]

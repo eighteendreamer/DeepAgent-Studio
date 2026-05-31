@@ -3,13 +3,14 @@ import { library } from "@fortawesome/fontawesome-svg-core";
 import {
   faChevronDown, faMagnifyingGlassChart, faEllipsis, faThumbtack, faPen, faBoxArchive,
   faChevronRight, faChevronUp, faCodeBranch, faArrowUpRightFromSquare, faCircleInfo, faGlobe, faXmark,
-  faPlus, faTerminal, faCheck, faArrowUp, faArrowLeft, faArrowRight, faRotateRight,
+  faPlus, faTerminal, faCheck, faArrowUp, faArrowDown, faArrowLeft, faArrowRight, faRotateRight,
   faExpand, faMagnifyingGlass, faCaretUp, faCaretDown, faCode, faGear, faLayerGroup,
   faPuzzlePiece, faCircleUser, faArrowRightFromBracket, faCube, faFileCsv, faFileWord, faArrowPointer,
   faFileLines as faFileLinesSolid, faEnvelope, faFileExcel, faRobot, faCloud, faBullseye,
   faBorderAll, faMinus, faSliders, faServer, faAnchor, faLink, faLeaf, faDesktop,
   faCircleCheck as faCircleCheckSolid, faLaptop, faCompress, faFolderPlus, faFileExport, faClockRotateLeft,
-  faKey, faLock, faMoon, faCircleNotch
+  faKey, faLock, faMoon, faCircleNotch, faHand, faCircleExclamation, faWrench, faListCheck, faShieldHalved,
+  faBook, faToggleOn, faToggleOff, faTriangleExclamation, faNoteSticky, faTrash, faShareNodes, faList, faInbox, faLightbulb, faStop, faBolt
 } from "@fortawesome/free-solid-svg-icons";
 
 import {
@@ -23,12 +24,13 @@ import { faChrome, faFigma, faGitAlt } from "@fortawesome/free-brands-svg-icons"
 const solidIcons = [
   faChevronDown, faMagnifyingGlassChart, faEllipsis, faThumbtack, faPen, faBoxArchive,
   faChevronRight, faChevronUp, faCodeBranch, faArrowUpRightFromSquare, faCircleInfo, faGlobe, faXmark,
-  faPlus, faTerminal, faCheck, faArrowUp, faArrowLeft, faArrowRight, faRotateRight,
+  faPlus, faTerminal, faCheck, faArrowUp, faArrowDown, faArrowLeft, faArrowRight, faRotateRight,
   faExpand, faMagnifyingGlass, faCaretUp, faCaretDown, faCode, faGear, faLayerGroup,
   faPuzzlePiece, faCircleUser, faArrowRightFromBracket, faCube, faFileCsv, faFileWord, faArrowPointer,
   faFileLinesSolid, faEnvelope, faFileExcel, faRobot, faCloud, faBullseye, faBorderAll, faMinus,
   faSliders, faServer, faAnchor, faLink, faLeaf, faDesktop, faCircleCheckSolid, faLaptop,
-  faCompress, faFolderPlus, faFileExport, faClockRotateLeft, faKey, faLock, faMoon, faCircleNotch
+  faCompress, faFolderPlus, faFileExport, faClockRotateLeft, faKey, faLock, faMoon, faCircleNotch, faHand, faCircleExclamation, faWrench, faListCheck, faShieldHalved,
+  faBook, faToggleOn, faToggleOff, faTriangleExclamation, faNoteSticky, faTrash, faShareNodes, faList, faInbox, faLightbulb, faStop, faBolt
 ];
 
 const regularIcons = [

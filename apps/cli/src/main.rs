@@ -68,7 +68,7 @@ struct DemoAgent {
 
 #[async_trait]
 impl Agent for DemoAgent {
-    async fn think(&mut self, _step: usize, last: Option<&Observation>) -> Result<AgentDecision> {
+    async fn think(&mut self, _step: usize, last: &[Observation]) -> Result<AgentDecision> {
         if !self.done_tool {
             self.done_tool = true;
             return Ok(AgentDecision::CallTool(ToolInvocation::new(
@@ -77,6 +77,7 @@ impl Agent for DemoAgent {
             )));
         }
         let reversed = last
+            .first()
             .and_then(|o| o.output.get("reversed"))
             .and_then(|v| v.as_str())
             .unwrap_or("?")

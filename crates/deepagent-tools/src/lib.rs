@@ -47,6 +47,11 @@ pub struct ToolInvocation {
     pub name: String,
     /// JSON arguments.
     pub arguments: serde_json::Value,
+    /// Optional provider-assigned call id (from the model's `tool_calls[].id`).
+    /// Carried through so the runtime can correlate a tool result back to the
+    /// exact call when the model emits several tool calls in one turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 impl ToolInvocation {
@@ -55,7 +60,14 @@ impl ToolInvocation {
         Self {
             name: name.into(),
             arguments,
+            id: None,
         }
+    }
+
+    /// Build an invocation carrying the model's tool-call id (builder style).
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 }
 

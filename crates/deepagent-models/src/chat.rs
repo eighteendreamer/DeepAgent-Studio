@@ -116,10 +116,18 @@ pub struct FunctionSchema {
 pub struct ChatRequest {
     /// Target model id (e.g. `"deepseek-chat"` / `"deepseek-reasoner"`).
     pub model: String,
-    /// Conversation so far.
+    /// Conversation so far. Serialized through [`crate::wire::serialize_messages`]
+    /// so assistant tool calls take the API's required
+    /// `{id, type:"function", function:{name, arguments}}` shape (with
+    /// `arguments` JSON-stringified) rather than the kernel's internal flat form.
+    #[serde(serialize_with = "crate::wire::serialize_messages")]
     pub messages: Vec<Message>,
     /// Whether to stream the response as SSE.
     pub stream: bool,
+    /// Streaming options. When streaming, set `{include_usage: true}` so the
+    /// provider (DeepSeek) emits a final usage chunk; omitted when not streaming.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
     /// Sampling temperature.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
@@ -131,6 +139,13 @@ pub struct ChatRequest {
     pub tools: Vec<ToolSchema>,
 }
 
+/// Streaming options (OpenAI/DeepSeek-compatible).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct StreamOptions {
+    /// Ask the provider to emit a final chunk carrying token usage.
+    pub include_usage: bool,
+}
+
 impl ChatRequest {
     /// Build a non-streaming request for `model` with `messages`.
     pub fn new(model: impl Into<String>, messages: Vec<Message>) -> Self {
@@ -138,15 +153,19 @@ impl ChatRequest {
             model: model.into(),
             messages,
             stream: false,
+            stream_options: None,
             temperature: None,
             max_tokens: None,
             tools: Vec::new(),
         }
     }
 
-    /// Enable streaming (builder style).
+    /// Enable streaming (builder style). Also requests usage in the stream.
     pub fn streaming(mut self) -> Self {
         self.stream = true;
+        self.stream_options = Some(StreamOptions {
+            include_usage: true,
+        });
         self
     }
 
@@ -195,6 +214,12 @@ pub struct Usage {
     /// Total tokens.
     #[serde(default)]
     pub total_tokens: u32,
+    /// DeepSeek: prompt tokens served from the context cache (a "hit").
+    #[serde(default)]
+    pub prompt_cache_hit_tokens: u32,
+    /// DeepSeek: prompt tokens NOT served from cache (a "miss").
+    #[serde(default)]
+    pub prompt_cache_miss_tokens: u32,
 }
 
 /// A fully assembled (non-streaming, or post-accumulation) response.
