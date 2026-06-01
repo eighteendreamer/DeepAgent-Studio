@@ -19,6 +19,7 @@ use deepagent_app_core::{
     McpService, ProjectDto, ProjectService, RewindResultDto, SessionDetailDto, SessionSummaryDto,
     SettingsService, SettingsView, SkillActivationDto, SkillDto, SkillsService, TerminalResultDto,
     TerminalService, TranscriptDto, WorkspaceInfoDto, WorkspaceService, ConversationMessageDto,
+    BudgetConfig, CostService, CostSummary,
 };
 use deepagent_models::ReqwestTransport;
 use tauri::{Emitter, Manager, State};
@@ -34,6 +35,7 @@ struct AppState {
     chat: Arc<ChatService>,
     mcp: Arc<McpService>,
     knowledge: Arc<KnowledgeService>,
+    cost: Arc<CostService>,
     projects: Arc<ProjectService>,
     workspace: Arc<WorkspaceService>,
     terminal: Arc<TerminalService>,
@@ -288,6 +290,32 @@ fn kb_set_auto_capture(state: State<'_, AppState>, enabled: bool) -> Result<bool
 #[tauri::command]
 fn kb_auto_capture_enabled(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.knowledge.auto_capture_enabled())
+}
+
+// ---- cost tracking + budget -----------------------------------------------
+
+#[tauri::command]
+fn get_cost_summary(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<CostSummary, String> {
+    state
+        .cost
+        .summary(session_id.as_deref().unwrap_or(""))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_budget(
+    state: State<'_, AppState>,
+    daily_limit: Option<f64>,
+    monthly_limit: Option<f64>,
+) -> Result<CostSummary, String> {
+    state.cost.set_budget(BudgetConfig {
+        daily_limit,
+        monthly_limit,
+    });
+    state.cost.summary("").map_err(|e| e.to_string())
 }
 
 // ---- chat (streamed) ------------------------------------------------------
@@ -583,6 +611,10 @@ pub fn run() {
                 workspace_root.to_string_lossy().into_owned(),
             ));
 
+            // Cost tracking: records per-run token cost over the shared DB and
+            // enforces optional daily/monthly budget limits.
+            let cost = Arc::new(CostService::new(service.shared_database()));
+
             // Chat: streamed runs; MCP servers connect + live-register tools, each
             // run is rooted at the active project's folder, and the knowledge base
             // is attached for passive injection + active tools.
@@ -595,7 +627,8 @@ pub fn run() {
                 )
                 .with_mcp(mcp.clone())
                 .with_projects(projects.clone())
-                .with_knowledge(knowledge.clone()),
+                .with_knowledge(knowledge.clone())
+                .with_cost(cost.clone()),
             );
 
             app.manage(AppState {
@@ -605,6 +638,7 @@ pub fn run() {
                 chat,
                 mcp,
                 knowledge,
+                cost,
                 projects,
                 workspace,
                 terminal,
@@ -646,6 +680,8 @@ pub fn run() {
             kb_discard_draft,
             kb_set_auto_capture,
             kb_auto_capture_enabled,
+            get_cost_summary,
+            set_budget,
             run_chat,
             resolve_approval,
             stop_chat,

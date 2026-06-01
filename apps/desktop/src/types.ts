@@ -131,6 +131,21 @@ export interface TokenUsage {
   cacheMissTokens: number;
 }
 
+/** Budget configuration (mirrors deepagent-app-core::BudgetConfig). */
+export interface BudgetConfig {
+  daily_limit: number | null;
+  monthly_limit: number | null;
+}
+
+/** Accumulated cost summary (mirrors deepagent-app-core::CostSummary). */
+export interface CostSummary {
+  session_cost: number;
+  today_cost: number;
+  month_cost: number;
+  total_cost: number;
+  budget: BudgetConfig;
+}
+
 /** A message rendered in the chat view. */
 export interface ChatMessage {
   role: "user" | "assistant";

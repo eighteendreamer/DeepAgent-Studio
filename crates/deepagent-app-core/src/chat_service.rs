@@ -15,6 +15,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use deepagent_builtins::WorkspaceRoot;
+use deepagent_context::{
+    CompactionPolicy, HeuristicTokenizer, ModelCompactor, TaskSummary, TokenCounter,
+};
 use deepagent_core::clock::SystemClock;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
@@ -26,7 +29,7 @@ use deepagent_models::transport::HttpTransport;
 use deepagent_models::{ModelClient, ModelConfig, ModelRole, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{
-    ChannelSink, ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent, RuntimeEventSink,
+    Agent, ChannelSink, ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent, RuntimeEventSink,
 };
 use deepagent_session::Session;
 use deepagent_tools::{PermissionSet, ToolRegistry};
@@ -147,6 +150,11 @@ pub struct ChatService {
     /// are registered. When unset, behavior is identical to before the feature
     /// (no injection, no tools) — preserving backward compatibility.
     knowledge: Option<Arc<crate::knowledge_service::KnowledgeService>>,
+    /// Optional cost tracker: when set, each completed run records its token
+    /// cost and runs are refused when a configured budget is exhausted. When
+    /// unset, behavior is identical to before the feature (no recording, no
+    /// budget enforcement) — preserving backward compatibility.
+    cost: Option<Arc<crate::cost_service::CostService>>,
     /// Per-session cancellation flags for in-flight runs. The UI sets one via
     /// [`ChatService::cancel_session`] to stop a run; the engine checks it at
     /// each step boundary.
@@ -172,6 +180,7 @@ impl ChatService {
             mcp: None,
             projects: None,
             knowledge: None,
+            cost: None,
             cancellations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -216,6 +225,15 @@ impl ChatService {
         self
     }
 
+    /// Attach a [`CostService`](crate::cost_service::CostService) so each
+    /// completed run records its token cost and runs are refused when a
+    /// configured budget is exhausted. Without it, runs behave exactly as
+    /// before this feature existed (no recording, no enforcement).
+    pub fn with_cost(mut self, cost: Arc<crate::cost_service::CostService>) -> Self {
+        self.cost = Some(cost);
+        self
+    }
+
     /// The effective project root for this run: the active project's folder when
     /// a project registry is attached and a project is active, else the default
     /// launch workspace.
@@ -234,6 +252,71 @@ impl ChatService {
     /// [`PendingApprovals::resolve_approved`] on this to answer a dialog.
     pub fn pending_approvals(&self) -> PendingApprovals {
         self.pending.clone()
+    }
+
+    /// Model-driven context compaction (Phase 2B). Given the recovered chat
+    /// `history`, when token pressure exceeds the policy threshold, compress the
+    /// older turns into a structured [`TaskSummary`] (via the model, falling
+    /// back to the heuristic summarizer) and return `[summary_turn, recent…]`.
+    /// Records a `ContextCompacted` event on success. Returns `history`
+    /// unchanged when below threshold (Property 7: backward compatible).
+    async fn maybe_compact_history(
+        &self,
+        session: &mut Session<'_, SystemClock>,
+        history: Vec<Message>,
+        client: &Arc<ModelClient>,
+        model: &str,
+    ) -> Vec<Message> {
+        let policy = CompactionPolicy::default();
+        // Render each turn to a rough "role: content" string for counting +
+        // summarization input.
+        let rendered: Vec<String> = history
+            .iter()
+            .map(|m| format!("{:?}: {}", m.role, m.content))
+            .collect();
+        let counter = HeuristicTokenizer::new();
+        let total: usize = rendered.iter().map(|t| counter.count(t)).sum();
+
+        if !policy.should_compact(total) || history.len() <= policy.keep_recent_turns {
+            return history;
+        }
+
+        let split = history.len() - policy.keep_recent_turns;
+        let older = &rendered[..split];
+        let goal = history
+            .first()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+
+        // Model summary with heuristic fallback baked into ModelCompactor.
+        let compactor = ModelCompactor::new(client.clone(), model.to_string());
+        let summary: TaskSummary = compactor
+            .summarize(&goal, &TaskSummary::default(), older)
+            .await;
+        let summary_block = summary.to_context_block();
+
+        let tokens_after = counter.count(&summary_block)
+            + rendered[split..]
+                .iter()
+                .map(|t| counter.count(t))
+                .sum::<usize>();
+
+        // Record the compaction in the session log (best-effort).
+        if let Err(e) = session.append(EventPayload::ContextCompacted {
+            tokens_before: total as u64,
+            tokens_after: tokens_after as u64,
+            strategy: "model".to_string(),
+        }) {
+            tracing::warn!(error = %e, "failed to record ContextCompacted event");
+        }
+
+        // Seed the agent with [summary as a user-context turn] + recent turns.
+        let mut compacted = Vec::with_capacity(policy.keep_recent_turns + 1);
+        compacted.push(Message::user(format!(
+            "[Earlier conversation compacted to summary]\n{summary_block}"
+        )));
+        compacted.extend(history.into_iter().skip(split));
+        compacted
     }
 
     /// Map the approval policy to the filesystem access mode used by the
@@ -347,6 +430,13 @@ impl ChatService {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
+        // Budget gate: refuse a new run when a configured daily/monthly limit is
+        // already exhausted. No-op when no cost tracker is attached or no budget
+        // is set (Property 7: backward-compatible default).
+        if let Some(cost) = &self.cost {
+            cost.check_budget()?;
+        }
+
         let root = self.effective_root();
         let policy = self.settings.approval_policy()?;
         let access = Self::fs_access_for(policy);
@@ -434,8 +524,10 @@ impl ChatService {
         // Wire the approval gate: AlwaysAsk → channel gate (prompts the UI);
         // auto policies short-circuit to allow.
         let channel_gate = ChannelApprovalGate::new(self.pending.clone(), Arc::new(on_approval));
-        let gate: Arc<dyn deepagent_runtime::ApprovalGate> =
-            Arc::new(PolicyGate::new(policy, Arc::new(channel_gate)));
+        let gate: Arc<dyn deepagent_runtime::ApprovalGate> = Arc::new(
+            PolicyGate::new(policy, Arc::new(channel_gate))
+                .with_classifier(deepagent_builtins::SafetyClassifier::with_defaults()),
+        );
 
         // Wire hooks: declarative permission rules + path/bash safety guards +
         // declarative external hooks (hooks.json), all at their lifecycle
@@ -499,6 +591,16 @@ impl ChatService {
                 (session, Vec::new())
             }
         };
+
+        // Model-driven context compaction (Phase 2B): when the recovered history
+        // is large (token pressure over the policy threshold), compress the
+        // older turns into a structured summary and seed the agent with
+        // [summary + recent turns] instead of the full transcript. Falls back to
+        // the heuristic summarizer if the model call fails, and records a
+        // `ContextCompacted` event. No-op for new sessions / short history.
+        let history = self
+            .maybe_compact_history(&mut session, history, &client, &model)
+            .await;
         let session_id = session.id().to_string();
         // Record the incoming user turn so the thread's history is complete.
         session.append(EventPayload::MessageAppended {
@@ -513,6 +615,13 @@ impl ChatService {
         // prefix byte-identical. Empty when nothing clears the score threshold,
         // passive injection is disabled, or no knowledge base is attached.
         let mut system_prompt = build_system_prompt(&root);
+        // Git context injection (Phase 2A): append a compact VCS snapshot after
+        // the DYNAMIC boundary so the cacheable static prefix stays intact.
+        // Best-effort: no git / non-repo yields nothing (backward compatible).
+        if let Some(git) = deepagent_workspace::detect_git_context(&root) {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&git.to_prompt_block());
+        }
         if let Some(knowledge) = &self.knowledge {
             let block = knowledge.passive_block(prompt);
             if !block.trim().is_empty() {
@@ -525,6 +634,9 @@ impl ChatService {
         // are moved into the agent below).
         let capture_client = client.clone();
         let capture_model = model.clone();
+        // Model name for cost attribution (the original `model` is moved into
+        // the agent below).
+        let model_name_for_cost = model.clone();
 
         let mut agent = ModelAgent::new(client, model, system_prompt, prompt, tools)
             .with_history(history)
@@ -551,6 +663,27 @@ impl ChatService {
         // Run the loop. Errors are surfaced as a terminal RunFailed event so the
         // UI always gets a clean end, then returned to the caller.
         let run_result = engine.run(&mut session, task, &mut agent).await;
+
+        // Cost recording: persist this run's token cost (Phase 1B). Done before
+        // dropping the agent so `cumulative_usage()` is still reachable. No-op
+        // when no cost tracker is attached. Failures are logged, never fatal.
+        if let Some(cost) = &self.cost {
+            if let Some(u) = agent.cumulative_usage() {
+                if u.total_tokens > 0 {
+                    match cost.record(
+                        &session_id,
+                        &model_name_for_cost,
+                        u.prompt_tokens,
+                        u.completion_tokens,
+                        u.prompt_cache_hit_tokens,
+                        u.total_tokens,
+                    ) {
+                        Ok(yuan) => tracing::info!(cost_yuan = yuan, "recorded run cost"),
+                        Err(e) => tracing::warn!(error = %e, "failed to record run cost"),
+                    }
+                }
+            }
+        }
 
         // Drop the cancellation flag for this session (run is over).
         {

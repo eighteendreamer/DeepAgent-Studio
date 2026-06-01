@@ -14,6 +14,7 @@
 //! invariants (gapless sequence numbers) simple and correct. A connection pool
 //! can be layered in later without changing the repository API.
 
+pub mod cost_store;
 pub mod document_store;
 pub mod event_store;
 pub mod migrations;
@@ -60,7 +61,7 @@ impl Database {
     }
 
     /// Run a closure with exclusive access to the underlying connection.
-    pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let guard = self
             .conn
             .lock()

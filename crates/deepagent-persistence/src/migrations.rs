@@ -80,6 +80,24 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sessions ADD COLUMN project TEXT;
     CREATE INDEX idx_sessions_project ON sessions(project);
     "#,
+    // V6: cost tracking. Records per-request token cost so the UI can show
+    // cumulative spend and enforce budget limits.
+    r#"
+    CREATE TABLE costs (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        timestamp   INTEGER NOT NULL,
+        model       TEXT NOT NULL,
+        input_tokens    INTEGER NOT NULL DEFAULT 0,
+        output_tokens   INTEGER NOT NULL DEFAULT 0,
+        cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens    INTEGER NOT NULL DEFAULT 0,
+        cost_yuan       REAL NOT NULL DEFAULT 0.0
+    );
+
+    CREATE INDEX idx_costs_session ON costs(session_id);
+    CREATE INDEX idx_costs_timestamp ON costs(timestamp);
+    "#,
 ];
 
 /// The highest schema version defined by this build.

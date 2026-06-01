@@ -9,6 +9,7 @@ import type {
   ApprovalRequest,
   Command,
   ConversationMessage,
+  CostSummary,
   DiffResult,
   ForkResult,
   KnowledgeDraft,
@@ -333,6 +334,38 @@ export async function kbAutoCaptureEnabled(): Promise<boolean> {
   const invoke = getInvoke();
   if (invoke) return invoke<boolean>("kb_auto_capture_enabled");
   return true;
+}
+
+// ---- cost tracking + budget -----------------------------------------------
+
+const EMPTY_COST_SUMMARY: CostSummary = {
+  session_cost: 0,
+  today_cost: 0,
+  month_cost: 0,
+  total_cost: 0,
+  budget: { daily_limit: null, monthly_limit: null },
+};
+
+/** Accumulated cost summary (session / today / month / total + budget). */
+export async function getCostSummary(sessionId?: string): Promise<CostSummary> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<CostSummary>("get_cost_summary", { sessionId: sessionId ?? null });
+  return EMPTY_COST_SUMMARY;
+}
+
+/** Set the daily/monthly budget (¥); returns the refreshed summary. */
+export async function setBudget(
+  dailyLimit: number | null,
+  monthlyLimit: number | null,
+): Promise<CostSummary> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<CostSummary>("set_budget", {
+      dailyLimit,
+      monthlyLimit,
+    });
+  return EMPTY_COST_SUMMARY;
 }
 
 // ---- chat (streamed) ------------------------------------------------------

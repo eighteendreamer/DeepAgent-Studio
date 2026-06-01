@@ -816,6 +816,28 @@ function formatTokens(n: number): string {
 }
 
 /**
+ * Estimate this turn's spend (¥) from the token breakdown, using DeepSeek-chat
+ * default pricing (input ¥1/M, output ¥2/M, cache-hit ¥0.1/M). This mirrors the
+ * backend's `default_pricing` for the common chat model; the authoritative
+ * cumulative figure lives in the cost summary. Cache-hit tokens are a subset of
+ * input billed at the discounted rate.
+ */
+function estimateCostYuan(usage: TokenUsage): number {
+  const fullInput = Math.max(0, usage.promptTokens - usage.cacheHitTokens);
+  const yuan =
+    (fullInput * 1.0 + usage.completionTokens * 2.0 + usage.cacheHitTokens * 0.1) / 1_000_000;
+  return Math.round(yuan * 10000) / 10000;
+}
+
+/** Format a ¥ amount with adaptive precision (small spends keep 4 decimals). */
+function formatYuan(n: number): string {
+  if (n <= 0) return "¥0";
+  if (n < 0.01) return `¥${n.toFixed(4)}`;
+  if (n < 1) return `¥${n.toFixed(3)}`;
+  return `¥${n.toFixed(2)}`;
+}
+
+/**
  * The footer shown under a finished assistant answer: a token/usage metaline
  * (total + input/output breakdown + cache hit) and total duration, plus a row
  * of action buttons (copy now; worktree and others wired in later). Gives the
@@ -868,6 +890,13 @@ function UsageFooter({
                   {t("chatView.tokensCacheHit")} {formatTokens(usage.cacheHitTokens)}
                 </span>
               )}
+              <span
+                className="text-text-secondary ml-1"
+                title={t("chatView.turnCost")}
+              >
+                <FontAwesomeIcon icon={["fas", "coins"]} className="mr-0.5 text-[9px]" />
+                {formatYuan(estimateCostYuan(usage))}
+              </span>
             </div>
           )}
           {durationMs > 0 && (

@@ -12,8 +12,10 @@
 //! skips build output, VCS, and dependency directories, keeping it fast and
 //! within a token budget.
 
+pub mod git;
 pub mod scanner;
 pub mod snapshot;
 
+pub use git::{detect_git_context, CommitSummary, GitContext};
 pub use scanner::{ScanLimits, WorkspaceScanner};
 pub use snapshot::{ManifestInfo, ProjectKind, WorkspaceSnapshot};

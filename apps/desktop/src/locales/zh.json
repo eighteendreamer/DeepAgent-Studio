@@ -653,6 +653,7 @@
     "tokensTotal": "总计",
     "tokensCacheHit": "命中缓存",
     "totalDuration": "总耗时",
+    "turnCost": "本轮花费",
     "copyAnswer": "复制",
     "addWorktree": "添加工作树",
     "output": "输出",

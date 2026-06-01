@@ -44,8 +44,10 @@
 
 pub mod ask_user_tool;
 pub mod bash_tool;
+pub mod classifier;
 pub mod file_tools;
 pub mod fs_guard;
+pub mod git_tools;
 pub mod glob_match;
 pub mod guard_hooks;
 pub mod knowledge_tools;
@@ -69,11 +71,15 @@ pub use ask_user_tool::{
 pub use bash_tool::{
     is_allowed, is_dangerous, BashTool, CommandExecutor, CommandOutcome, SystemExecutor,
 };
+pub use classifier::{
+    ClassifierConfig, ClassifierRule, SafetyClassifier, SafetyVerdict, VerdictKind,
+};
 pub use file_tools::{
     file_tools, EditFileTool, GlobTool, GrepTool, ListDirTool, MultiEditTool, ReadFileTool,
     WriteFileTool,
 };
 pub use fs_guard::{is_sensitive_path, FsAccess, WorkspaceRoot};
+pub use git_tools::{GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool};
 pub use glob_match::glob_match;
 pub use guard_hooks::{BashGuardHook, PathGuardHook};
 pub use knowledge_tools::{
@@ -135,9 +141,18 @@ pub fn builtin_tools(config: BuiltinConfig) -> (Vec<Arc<dyn Tool>>, TodoStore) {
     let mut tools = file_tools(root);
     tools.push(Arc::new(BashTool::new(
         SystemExecutor,
-        bash_cwd,
+        bash_cwd.clone(),
         bash_allow,
     )));
+    // Git tools (read-only status/diff/log + workspace-write commit). They run
+    // through the same SystemExecutor as bash, rooted at the workspace dir.
+    tools.push(Arc::new(GitStatusTool::new(
+        SystemExecutor,
+        bash_cwd.clone(),
+    )));
+    tools.push(Arc::new(GitDiffTool::new(SystemExecutor, bash_cwd.clone())));
+    tools.push(Arc::new(GitLogTool::new(SystemExecutor, bash_cwd.clone())));
+    tools.push(Arc::new(GitCommitTool::new(SystemExecutor, bash_cwd)));
     tools.push(Arc::new(TodoWriteTool::new(todo_store.clone())));
     tools.push(Arc::new(TaskListTool::new(todo_store.clone())));
     (tools, todo_store)
@@ -213,12 +228,16 @@ mod tests {
             "glob",
             "grep",
             "bash",
+            "git_status",
+            "git_diff",
+            "git_log",
+            "git_commit",
             "todo_write",
             "task_list",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 14);
     }
 
     #[test]

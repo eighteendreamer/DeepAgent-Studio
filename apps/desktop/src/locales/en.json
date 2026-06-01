@@ -653,6 +653,7 @@
     "tokensTotal": "total",
     "tokensCacheHit": "cached",
     "totalDuration": "total time",
+    "turnCost": "cost this turn",
     "copyAnswer": "Copy",
     "addWorktree": "Add worktree",
     "output": "Output",

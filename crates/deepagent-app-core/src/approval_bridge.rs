@@ -121,12 +121,26 @@ impl ApprovalGate for ChannelApprovalGate {
 pub struct PolicyGate {
     policy: ApprovalPolicy,
     inner: Arc<dyn ApprovalGate>,
+    /// Safety classifier for the `AutoReview` policy: decides per-call whether
+    /// to auto-approve or delegate to the user. When `None`, falls back to the
+    /// legacy "bash/high-risk → ask, else allow" heuristic.
+    classifier: Option<deepagent_builtins::SafetyClassifier>,
 }
 
 impl PolicyGate {
     /// Build with a policy and the inner gate used for `AlwaysAsk`.
     pub fn new(policy: ApprovalPolicy, inner: Arc<dyn ApprovalGate>) -> Self {
-        Self { policy, inner }
+        Self {
+            policy,
+            inner,
+            classifier: None,
+        }
+    }
+
+    /// Attach a safety classifier for the `AutoReview` policy (builder style).
+    pub fn with_classifier(mut self, classifier: deepagent_builtins::SafetyClassifier) -> Self {
+        self.classifier = Some(classifier);
+        self
     }
 }
 
@@ -136,18 +150,28 @@ impl ApprovalGate for PolicyGate {
         match self.policy {
             // 完全访问: allow everything without prompting.
             ApprovalPolicy::FullAccess => ApprovalDecision::Allow,
-            // 自动审核: lenient but careful. The system auto-approves anything
-            // that isn't a direct computer operation (e.g. out-of-workspace
-            // file reads, extra access). Shell/bash commands — "operating the
-            // computer" — and explicitly high-risk calls still go to the user.
+            // 自动审核: use the safety classifier (when attached) to decide
+            // per-call whether to auto-approve or prompt. Falls back to the
+            // legacy heuristic when no classifier is configured.
             ApprovalPolicy::AutoReview => {
-                let tool = request.tool.as_str();
-                let is_computer_op = matches!(tool, "bash" | "shell");
-                let is_high_risk = request.risk.eq_ignore_ascii_case("high");
-                if is_computer_op || is_high_risk {
-                    self.inner.request(request).await
+                if let Some(classifier) = &self.classifier {
+                    match classifier.classify(&request.tool, &request.arguments) {
+                        deepagent_builtins::SafetyVerdict::Allow => ApprovalDecision::Allow,
+                        deepagent_builtins::SafetyVerdict::Deny(_) => ApprovalDecision::Deny,
+                        deepagent_builtins::SafetyVerdict::Ask(_) => {
+                            self.inner.request(request).await
+                        }
+                    }
                 } else {
-                    ApprovalDecision::Allow
+                    // Legacy fallback: bash/shell → ask; high-risk → ask; else allow.
+                    let tool = request.tool.as_str();
+                    let is_computer_op = matches!(tool, "bash" | "shell");
+                    let is_high_risk = request.risk.eq_ignore_ascii_case("high");
+                    if is_computer_op || is_high_risk {
+                        self.inner.request(request).await
+                    } else {
+                        ApprovalDecision::Allow
+                    }
                 }
             }
             // 默认权限: ask the user for every approval-requiring call.

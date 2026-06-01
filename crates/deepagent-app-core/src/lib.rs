@@ -14,6 +14,7 @@
 pub mod approval_bridge;
 pub mod chat_service;
 pub mod commands;
+pub mod cost_service;
 pub mod diff;
 pub mod dto;
 pub mod knowledge_service;
@@ -29,6 +30,7 @@ pub mod workspace_service;
 pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
 pub use chat_service::ChatService;
 pub use commands::{builtin_commands, filter_commands};
+pub use cost_service::{BudgetConfig, CostRecord, CostService, CostSummary, ModelPricing};
 pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
 pub use dto::{
     ApprovalRequestDto, CommandDto, ConversationMessageDto, ConversationPartDto,
