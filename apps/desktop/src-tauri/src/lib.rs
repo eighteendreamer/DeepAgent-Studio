@@ -642,7 +642,8 @@ pub fn run() {
                 .with_mcp(mcp.clone())
                 .with_projects(projects.clone())
                 .with_knowledge(knowledge.clone())
-                .with_cost(cost.clone()),
+                .with_cost(cost.clone())
+                .with_tool_results_dir(dir.join("tool_results")),
             );
 
             app.manage(AppState {

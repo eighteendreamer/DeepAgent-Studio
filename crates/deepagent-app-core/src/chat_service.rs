@@ -157,6 +157,8 @@ pub struct ChatService {
     /// unset, behavior is identical to before the feature (no recording, no
     /// budget enforcement) — preserving backward compatibility.
     cost: Option<Arc<crate::cost_service::CostService>>,
+    /// Base directory for persisted large tool results.
+    tool_results_dir: PathBuf,
     /// Per-session Plan-mode flags. Plan mode is a read-only planning state:
     /// while active, the BeforeToolUse plan-mode hook denies write tools. The
     /// flag is shared (cheap `Arc<AtomicBool>`) so the enter/exit tools, the
@@ -179,17 +181,20 @@ impl ChatService {
         transport: Arc<dyn HttpTransport>,
         workspace: impl Into<PathBuf>,
     ) -> Self {
+        let workspace = workspace.into();
+        let tool_results_dir = workspace.join(".deepagent").join("tool_results");
         Self {
             db,
             settings,
             transport,
-            workspace: workspace.into(),
+            workspace,
             bash_allow: default_bash_allow(),
             pending: PendingApprovals::new(),
             mcp: None,
             projects: None,
             knowledge: None,
             cost: None,
+            tool_results_dir,
             plan_modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cancellations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
@@ -241,6 +246,12 @@ impl ChatService {
     /// before this feature existed (no recording, no enforcement).
     pub fn with_cost(mut self, cost: Arc<crate::cost_service::CostService>) -> Self {
         self.cost = Some(cost);
+        self
+    }
+
+    /// Store oversized tool results under `dir` (usually app_data/tool_results).
+    pub fn with_tool_results_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.tool_results_dir = dir.into();
         self
     }
 
@@ -842,6 +853,10 @@ impl ChatService {
 
         let config = RuntimeConfig {
             permissions: granted,
+            tool_result_budget: deepagent_runtime::ToolResultBudgetConfig {
+                output_dir: self.tool_results_dir.clone(),
+                ..Default::default()
+            },
             ..Default::default()
         };
 

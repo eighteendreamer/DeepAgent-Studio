@@ -25,6 +25,9 @@ use deepagent_verification::{CommandRunner, ReflectionEngine, VerificationStep, 
 use crate::agent::{Agent, AgentDecision, Observation};
 use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyGate};
 use crate::events::{NullEventSink, RuntimeEvent, RuntimeEventSink};
+use crate::tool_budget::{
+    apply_tool_result_budget, cleanup_tool_result_paths, saved_path, ToolResultBudgetConfig,
+};
 
 /// An optional post-completion verification plan (开发计划.md Phase 7).
 ///
@@ -122,6 +125,8 @@ pub struct RuntimeConfig {
     pub permissions: PermissionSet,
     /// Whether high-risk tools are pre-approved for this run.
     pub auto_approve: bool,
+    /// Tool result truncation and persistence budget.
+    pub tool_result_budget: ToolResultBudgetConfig,
 }
 
 impl Default for RuntimeConfig {
@@ -130,6 +135,7 @@ impl Default for RuntimeConfig {
             max_steps: 64,
             permissions: PermissionSet::developer(),
             auto_approve: false,
+            tool_result_budget: ToolResultBudgetConfig::default(),
         }
     }
 }
@@ -144,6 +150,7 @@ pub struct RuntimeEngine<'a, C: Clock> {
     events: std::sync::Arc<dyn RuntimeEventSink>,
     approvals: std::sync::Arc<dyn ApprovalGate>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    created_tool_result_paths: std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>,
     _clock: std::marker::PhantomData<&'a C>,
 }
 
@@ -159,6 +166,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             events: std::sync::Arc::new(NullEventSink),
             approvals: std::sync::Arc::new(AutoDenyGate),
             cancel: None,
+            created_tool_result_paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             _clock: std::marker::PhantomData,
         }
     }
@@ -373,7 +381,27 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         self.fire_hook(session_id, HookPoint::SessionEnd, HookData::None)
             .await?;
 
+        if self.config.tool_result_budget.cleanup_on_run_end {
+            let paths = {
+                let mut guard = self
+                    .created_tool_result_paths
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                std::mem::take(&mut *guard)
+            };
+            cleanup_tool_result_paths(paths).await;
+        }
+
         Ok(outcome)
+    }
+
+    fn remember_tool_result_path(&self, output: &deepagent_tools::ToolOutput) {
+        if let Some(path) = saved_path(output) {
+            self.created_tool_result_paths
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(path);
+        }
     }
 
     /// Run the `UserPromptSubmit` gate for a freshly submitted prompt.
@@ -498,9 +526,31 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             let registry = self.registry;
             let perms = self.config.permissions.clone();
             let auto = self.config.auto_approve;
+            let budget = self.config.tool_result_budget.clone();
+            let session_id_str = session_id.to_string();
+            let created_paths = self.created_tool_result_paths.clone();
             futs.push(async move {
                 let start = std::time::Instant::now();
-                let result = registry.invoke(&name, args, &perms, auto).await;
+                let result = match registry.invoke(&name, args, &perms, auto).await {
+                    Ok(out) => {
+                        let out = apply_tool_result_budget(
+                            &budget,
+                            &session_id_str,
+                            &name,
+                            &call_id,
+                            out,
+                        )
+                        .await;
+                        if let Some(path) = saved_path(&out) {
+                            created_paths
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .push(path);
+                        }
+                        Ok(out)
+                    }
+                    Err(e) => Err(e),
+                };
                 let duration_ms = start.elapsed().as_millis() as u64;
                 (i, call_id, name, result, duration_ms)
             });
@@ -781,6 +831,15 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
 
         let observation = match output {
             Ok(out) => {
+                let out = apply_tool_result_budget(
+                    &self.config.tool_result_budget,
+                    &session_id.to_string(),
+                    &tool_name,
+                    &call_id,
+                    out,
+                )
+                .await;
+                self.remember_tool_result_path(&out);
                 if !out.ok {
                     self.metrics.incr(names::TOOL_FAILURES, 1);
                 }
@@ -936,6 +995,7 @@ mod tests {
     use std::sync::Arc;
 
     struct AddTool;
+    struct BigTool;
 
     #[async_trait]
     impl Tool for AddTool {
@@ -955,9 +1015,33 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl Tool for BigTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "big".into(),
+                description: "returns a large payload".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                risk: RiskLevel::Safe,
+                required_permissions: PermissionSet::read_only(),
+            }
+        }
+        async fn invoke(&self, _arguments: serde_json::Value) -> Result<ToolOutput> {
+            Ok(ToolOutput::success(serde_json::json!({
+                "content": "x".repeat(200)
+            })))
+        }
+    }
+
     fn registry() -> ToolRegistry {
         let mut r = ToolRegistry::new();
         r.register(Arc::new(AddTool)).unwrap();
+        r
+    }
+
+    fn registry_with_big() -> ToolRegistry {
+        let mut r = registry();
+        r.register(Arc::new(BigTool)).unwrap();
         r
     }
 
@@ -994,6 +1078,59 @@ mod tests {
         // Metrics recorded the call.
         assert_eq!(metrics.get(names::TOOL_CALLS), 1);
         assert_eq!(metrics.get(names::TOOL_FAILURES), 0);
+    }
+
+    #[tokio::test]
+    async fn oversized_tool_result_is_truncated_and_persisted() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("budget")).unwrap();
+        let task = session.create_task("big output").unwrap();
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CallTool(ToolInvocation::new("big", serde_json::json!({}))),
+            AgentDecision::Complete("done".into()),
+        ]);
+
+        let reg = registry_with_big();
+        let config = RuntimeConfig {
+            tool_result_budget: ToolResultBudgetConfig {
+                max_tokens: 10,
+                preview_tokens: 4,
+                output_dir: temp.path().to_path_buf(),
+                cleanup_on_run_end: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let engine = RuntimeEngine::new(&reg, Metrics::new(), config);
+
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+        assert_eq!(outcome, RunOutcome::Completed("done".into()));
+
+        let observation = &agent.observations[0];
+        assert!(observation.output["truncated"].as_bool().unwrap());
+        assert!(observation.output["message"]
+            .as_str()
+            .unwrap()
+            .contains("output truncated"));
+        let saved = std::path::PathBuf::from(observation.output["saved_path"].as_str().unwrap());
+        assert!(saved.exists());
+        let full = tokio::fs::read_to_string(saved).await.unwrap();
+        assert!(full.contains(&"x".repeat(200)));
+
+        let events = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap();
+        let completed = events
+            .iter()
+            .find_map(|ev| match &ev.payload {
+                EventPayload::ToolCallCompleted { output, .. } => Some(output),
+                _ => None,
+            })
+            .expect("tool completion event");
+        assert_eq!(completed["truncated"], true);
     }
 
     #[tokio::test]

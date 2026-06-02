@@ -24,6 +24,7 @@ pub mod events;
 pub mod loop_engine;
 pub mod model_agent;
 pub mod phase;
+pub mod tool_budget;
 
 pub use agent::{Agent, AgentDecision, Observation};
 pub use approval::{
@@ -33,3 +34,4 @@ pub use events::{ChannelSink, NullEventSink, RuntimeEvent, RuntimeEventSink};
 pub use loop_engine::{PromptDecision, RunOutcome, RuntimeConfig, RuntimeEngine, VerificationPlan};
 pub use model_agent::ModelAgent;
 pub use phase::LoopPhase;
+pub use tool_budget::ToolResultBudgetConfig;

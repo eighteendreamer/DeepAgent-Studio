@@ -52,7 +52,11 @@ async fn run_git<E: CommandExecutor>(executor: &E, cwd: &str, command: &str) -> 
                 "stdout": cap(out.stdout),
                 "stderr": cap(out.stderr),
             });
-            Ok(ToolOutput { ok, value })
+            Ok(ToolOutput {
+                ok,
+                value,
+                truncated: false,
+            })
         }
         Err(e) => Ok(ToolOutput::failure(e.to_string())),
     }
@@ -258,6 +262,7 @@ impl<E: CommandExecutor> Tool for GitCommitTool<E> {
                             "stderr": cap(o.stderr.clone()),
                             "error": "git add -A failed",
                         }),
+                        truncated: false,
                     });
                 }
             } else if let Err(e) = add {

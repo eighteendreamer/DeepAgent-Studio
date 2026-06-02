@@ -176,7 +176,11 @@ impl<E: CommandExecutor> Tool for BashTool<E> {
                     "stdout": out.stdout,
                     "stderr": out.stderr,
                 });
-                Ok(ToolOutput { ok, value })
+                Ok(ToolOutput {
+                    ok,
+                    value,
+                    truncated: false,
+                })
             }
             Err(e) => Ok(ToolOutput::failure(e.to_string())),
         }

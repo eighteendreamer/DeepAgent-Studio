@@ -78,12 +78,19 @@ pub struct ToolOutput {
     pub ok: bool,
     /// JSON-encoded result (or error detail when `ok == false`).
     pub value: serde_json::Value,
+    /// Whether the model-visible result was truncated by the runtime budget.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 impl ToolOutput {
     /// A successful result.
     pub fn success(value: serde_json::Value) -> Self {
-        Self { ok: true, value }
+        Self {
+            ok: true,
+            value,
+            truncated: false,
+        }
     }
 
     /// A failure result with a message.
@@ -91,6 +98,7 @@ impl ToolOutput {
         Self {
             ok: false,
             value: serde_json::json!({ "error": message.into() }),
+            truncated: false,
         }
     }
 }

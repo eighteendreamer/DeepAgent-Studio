@@ -123,6 +123,7 @@ impl Tool for SandboxedTool {
                         Ok(ToolOutput {
                             ok: !is_error,
                             value,
+                            truncated: false,
                         })
                     }
                     Err(e) => Ok(ToolOutput::failure(format!(
