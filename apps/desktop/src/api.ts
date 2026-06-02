@@ -443,6 +443,20 @@ export async function stopChat(sessionId: string): Promise<boolean> {
   return false;
 }
 
+/** Whether a session is currently in read-only Plan mode. */
+export async function getPlanMode(sessionId: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("get_plan_mode", { sessionId });
+  return false;
+}
+
+/** Set a session's read-only Plan mode state. */
+export async function setPlanMode(sessionId: string, active: boolean): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("set_plan_mode", { sessionId, active });
+  return active;
+}
+
 /** Get the current approval policy label. */
 export async function getApprovalPolicy(): Promise<string> {
   const invoke = getInvoke();
@@ -657,6 +671,14 @@ const MOCK_COMMANDS: Command[] = [
   { id: "approvals.review", title: "Review Pending Approvals", category: "Approvals", shortcut: "Ctrl+Shift+A" },
   { id: "mcp.list", title: "List MCP Servers", category: "MCP", shortcut: null },
   { id: "theme.toggle", title: "Toggle Theme", category: "View", shortcut: null },
+  { id: "slash.compact", title: "/compact", category: "Slash", shortcut: null },
+  { id: "slash.cost", title: "/cost", category: "Slash", shortcut: null },
+  { id: "slash.doctor", title: "/doctor", category: "Slash", shortcut: null },
+  { id: "slash.plan", title: "/plan", category: "Slash", shortcut: null },
+  { id: "slash.execute", title: "/execute", category: "Slash", shortcut: null },
+  { id: "slash.resume", title: "/resume", category: "Slash", shortcut: null },
+  { id: "slash.model", title: "/model", category: "Slash", shortcut: null },
+  { id: "slash.clear", title: "/clear", category: "Slash", shortcut: null },
 ];
 
 function isSubsequence(needle: string, haystack: string): boolean {

@@ -34,6 +34,8 @@ interface Props {
   busy?: boolean;
   /** Stop the in-flight run (manual cancel). */
   onStop?: () => void;
+  /** Current session is in read-only Plan mode. */
+  planMode?: boolean;
 }
 
 export type PluginType = "none" | "files" | "chat" | "browser" | "terminal";
@@ -52,7 +54,7 @@ export const TOOL_CARDS: { icon: IconProp; title: string; desc: string; type: Pl
   { icon: ["fas", "terminal"], title: "terminal", desc: "terminalDesc", type: "terminal" },
 ];
 
-export function ChatView({ messages, onSend, onFork, onRewind, onExport, timeline = [], approval = null, approvalQueueCount = 0, onApprovalDecision, busy = false, onStop }: Props) {
+export function ChatView({ messages, onSend, onFork, onRewind, onExport, timeline = [], approval = null, approvalQueueCount = 0, onApprovalDecision, busy = false, onStop, planMode = false }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
   const [isOutputPanelOpen, setIsOutputPanelOpen] = useState(true);
@@ -368,6 +370,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
               placeholder={t("chatView.requestFollowUp")}
               busy={busy}
               onStop={onStop}
+              planMode={planMode}
             />
           </div>
         </div>

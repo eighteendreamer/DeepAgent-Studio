@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
-import { getSettings, setChatModel, getApprovalPolicy, setApprovalPolicy } from "../api";
+import { getSettings, setChatModel, getApprovalPolicy, setApprovalPolicy, getCommands } from "../api";
 import { message } from "./message";
+import type { Command } from "../types";
 
 /** Map composer dropdown option id ↔ backend approval-policy label. */
 const OPTION_TO_POLICY: Record<string, string> = {
@@ -34,9 +35,11 @@ interface Props {
   busy?: boolean;
   /** Stop the in-flight run (turns the busy button into a stop button). */
   onStop?: () => void;
+  /** True when the current session is in read-only Plan mode. */
+  planMode?: boolean;
 }
 
-export function Composer({ value, onChange, onSubmit, placeholder, busy = false, onStop }: Props) {
+export function Composer({ value, onChange, onSubmit, placeholder, busy = false, onStop, planMode = false }: Props) {
   const { t } = useTranslation();
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const [isApprovalDropdownOpen, setIsApprovalDropdownOpen] = useState(false);
@@ -47,6 +50,8 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [switching, setSwitching] = useState(false);
+  const [slashResults, setSlashResults] = useState<Command[]>([]);
+  const [slashSelected, setSlashSelected] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -152,6 +157,38 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   // The active model's two-tier label (empty until settings load).
   const selectedLabel = labelFor(selectedModel);
 
+  const slashQuery = value.startsWith("/") ? value.slice(1) : "";
+  const slashHasArgs = /\s/.test(slashQuery);
+  const slashOpen = value.startsWith("/") && !slashHasArgs && slashResults.length > 0;
+
+  useEffect(() => {
+    if (!value.startsWith("/") || slashHasArgs) {
+      setSlashResults([]);
+      setSlashSelected(0);
+      return;
+    }
+    let cancelled = false;
+    getCommands(slashQuery)
+      .then((commands) => {
+        if (cancelled) return;
+        const slash = commands.filter((c) => c.id.startsWith("slash."));
+        setSlashResults(slash);
+        setSlashSelected(0);
+      })
+      .catch(() => {
+        if (!cancelled) setSlashResults([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slashQuery, slashHasArgs, value]);
+
+  const chooseSlash = (cmd: Command) => {
+    onChange(`${cmd.title} `);
+    setSlashResults([]);
+    setSlashSelected(0);
+  };
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -168,6 +205,30 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   }, [isModelDropdownOpen, isApprovalDropdownOpen]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashOpen && e.key === "ArrowDown") {
+      e.preventDefault();
+      setSlashSelected((s) => Math.min(s + 1, slashResults.length - 1));
+      return;
+    }
+    if (slashOpen && e.key === "ArrowUp") {
+      e.preventDefault();
+      setSlashSelected((s) => Math.max(s - 1, 0));
+      return;
+    }
+    if (slashOpen && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+      const selected = slashResults[slashSelected];
+      const exact = selected?.title === value.trim();
+      if (selected && !exact) {
+        e.preventDefault();
+        chooseSlash(selected);
+        return;
+      }
+    }
+    if (slashOpen && e.key === "Escape") {
+      e.preventDefault();
+      setSlashResults([]);
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy) onSubmit();
@@ -175,7 +236,34 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   };
 
   return (
-    <div className="w-full border border-border-theme rounded-xl shadow-[0_2px_10px_rgba(0,0,0,0.02)] bg-white p-3 flex flex-col transition-all focus-within:border-gray-300 focus-within:shadow-md">
+    <div className="relative w-full border border-border-theme rounded-xl shadow-[0_2px_10px_rgba(0,0,0,0.02)] bg-white p-3 flex flex-col transition-all focus-within:border-gray-300 focus-within:shadow-md">
+      {slashOpen && (
+        <div className="absolute left-3 right-3 bottom-full mb-2 max-h-56 overflow-y-auto rounded-lg border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-50">
+          {slashResults.map((cmd, index) => (
+            <button
+              key={cmd.id}
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                chooseSlash(cmd);
+              }}
+              onMouseEnter={() => setSlashSelected(index)}
+              className={`flex w-full items-center justify-between px-3 py-2 text-left text-[12px] transition-colors ${
+                index === slashSelected ? "bg-gray-100 text-text-base" : "text-text-secondary"
+              }`}
+            >
+              <span className="font-medium text-text-base">{cmd.title}</span>
+              <span className="ml-3 truncate text-[11px] text-text-secondary">{cmd.category}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {planMode && (
+        <div className="mb-2 inline-flex w-fit items-center rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700">
+          <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-1.5 text-[10px]" />
+          Plan Mode
+        </div>
+      )}
       <textarea
         className="w-full min-h-[60px] max-h-[200px] text-text-base placeholder-gray-400 text-sm bg-transparent"
         placeholder={placeholder ?? t("composer.placeholder")}
@@ -297,6 +385,8 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
                 ? onStop
                   ? "bg-text-base hover:bg-red-500 cursor-pointer"
                   : "bg-gray-300 cursor-not-allowed"
+                : planMode
+                ? "bg-amber-500 hover:bg-amber-600 cursor-pointer"
                 : "bg-gray-400 hover:bg-primary cursor-pointer"
             }`}
           >

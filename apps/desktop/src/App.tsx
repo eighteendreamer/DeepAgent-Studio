@@ -15,6 +15,7 @@ import {
   runChat,
   resolveApproval,
   stopChat,
+  getPlanMode,
   forkSession,
   rewindSession,
   exportTranscript,
@@ -69,6 +70,7 @@ export function App() {
   // run itself is async on the backend, so the UI never freezes — approvals,
   // scrolling and navigation stay responsive while this is true.
   const [isRunning, setIsRunning] = useState(false);
+  const [planMode, setPlanMode] = useState(false);
   // The session id of the in-flight run, set as soon as the backend announces
   // it (session_registered) — used for the manual stop button and to navigate
   // into the still-running session.
@@ -135,11 +137,15 @@ export function App() {
     activeIdRef.current = activeId;
     if (!activeId) {
       setDetail(null);
+      setPlanMode(false);
       return;
     }
     getSessionDetail(activeId)
       .then(setDetail)
       .catch(() => setDetail(null));
+    getPlanMode(activeId)
+      .then(setPlanMode)
+      .catch(() => setPlanMode(false));
   }, [activeId]);
 
   // Keep a ref mirror of `messages` for stale-closure-free reads in onSubmit.
@@ -645,6 +651,11 @@ export function App() {
           // The run created (or continued) a session under the active project;
           // refresh the sidebar lists and focus that session.
           refreshSessions();
+          if (newSessionId) {
+            getPlanMode(newSessionId)
+              .then(setPlanMode)
+              .catch(() => {});
+          }
           if (newSessionId && newSessionId !== activeIdRef.current) {
             setActiveId(newSessionId);
             setNavState((prev) => {
@@ -865,6 +876,7 @@ export function App() {
                   onApprovalDecision={onApprovalDecision}
                   busy={isRunning}
                   onStop={onStopRun}
+                  planMode={planMode}
                 />
               </motion.div>
             )}

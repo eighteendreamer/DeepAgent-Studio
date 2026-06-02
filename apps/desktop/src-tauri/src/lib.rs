@@ -378,6 +378,20 @@ fn stop_chat(state: State<'_, AppState>, session_id: String) -> Result<bool, Str
 }
 
 #[tauri::command]
+fn get_plan_mode(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    Ok(state.chat.is_plan_mode(&session_id))
+}
+
+#[tauri::command]
+fn set_plan_mode(
+    state: State<'_, AppState>,
+    session_id: String,
+    active: bool,
+) -> Result<bool, String> {
+    Ok(state.chat.set_plan_mode(&session_id, active))
+}
+
+#[tauri::command]
 fn get_approval_policy(state: State<'_, AppState>) -> Result<String, String> {
     state
         .settings
@@ -685,6 +699,8 @@ pub fn run() {
             run_chat,
             resolve_approval,
             stop_chat,
+            get_plan_mode,
+            set_plan_mode,
             get_approval_policy,
             set_approval_policy,
             list_mcp_servers,

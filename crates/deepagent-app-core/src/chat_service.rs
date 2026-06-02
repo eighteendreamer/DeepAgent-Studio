@@ -25,6 +25,7 @@ use deepagent_core::message::Message;
 use deepagent_hooks::{
     HookCommandRunner, HookPoint, HookRegistry, PermissionRulesHook, SystemHookRunner,
 };
+use deepagent_intent::{CommandContext, SlashAction, SlashRegistry};
 use deepagent_models::transport::HttpTransport;
 use deepagent_models::{ModelClient, ModelConfig, ModelRole, ToolSchema};
 use deepagent_persistence::Database;
@@ -155,6 +156,13 @@ pub struct ChatService {
     /// unset, behavior is identical to before the feature (no recording, no
     /// budget enforcement) — preserving backward compatibility.
     cost: Option<Arc<crate::cost_service::CostService>>,
+    /// Per-session Plan-mode flags. Plan mode is a read-only planning state:
+    /// while active, the BeforeToolUse plan-mode hook denies write tools. The
+    /// flag is shared (cheap `Arc<AtomicBool>`) so the enter/exit tools, the
+    /// hook, and the UI toggle all view the same state. Sessions with no entry
+    /// are in normal mode.
+    plan_modes:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, deepagent_builtins::PlanMode>>>,
     /// Per-session cancellation flags for in-flight runs. The UI sets one via
     /// [`ChatService::cancel_session`] to stop a run; the engine checks it at
     /// each step boundary.
@@ -181,6 +189,7 @@ impl ChatService {
             projects: None,
             knowledge: None,
             cost: None,
+            plan_modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cancellations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -252,6 +261,168 @@ impl ChatService {
     /// [`PendingApprovals::resolve_approved`] on this to answer a dialog.
     pub fn pending_approvals(&self) -> PendingApprovals {
         self.pending.clone()
+    }
+
+    /// Return the shared plan-mode flag for a session, creating an inactive
+    /// flag the first time this process sees the session.
+    fn plan_mode_for_session(&self, session_id: &str) -> deepagent_builtins::PlanMode {
+        let mut map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
+        map.entry(session_id.to_string())
+            .or_insert_with(deepagent_builtins::PlanMode::new)
+            .clone()
+    }
+
+    /// Whether the session is currently in read-only Plan mode.
+    pub fn is_plan_mode(&self, session_id: &str) -> bool {
+        let map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
+        map.get(session_id)
+            .map(deepagent_builtins::PlanMode::is_active)
+            .unwrap_or(false)
+    }
+
+    /// Set the session's read-only Plan mode flag and return the new state.
+    pub fn set_plan_mode(&self, session_id: &str, active: bool) -> bool {
+        let plan = self.plan_mode_for_session(session_id);
+        plan.set(active);
+        plan.is_active()
+    }
+
+    /// Handle slash commands locally. They create/continue a session and append
+    /// ordinary messages so the command and result remain in conversation
+    /// history, but the raw slash line is not sent to the model.
+    async fn maybe_handle_slash_command<F>(
+        &self,
+        prompt: &str,
+        continue_session: Option<&str>,
+        on_event: &F,
+    ) -> Result<Option<String>>
+    where
+        F: Fn(RuntimeEvent) + Send + 'static,
+    {
+        let registry = SlashRegistry::with_builtins();
+        let mut ctx = CommandContext {
+            session_id: continue_session.map(str::to_string),
+        };
+        let Some(result) = registry.execute_line(prompt, &mut ctx) else {
+            return Ok(None);
+        };
+        let result = result?;
+
+        let root = self.effective_root();
+        let project = root.to_string_lossy().into_owned();
+        let clock = SystemClock;
+        let target_session = match &result.action {
+            SlashAction::Resume { session_id } => Some(session_id.as_str()),
+            _ => continue_session,
+        };
+        let mut session = match target_session {
+            Some(id_str) => {
+                let id = deepagent_core::id::SessionId::from_str(id_str)
+                    .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+                Session::recover(&self.db, &clock, id)?
+            }
+            None => Session::create_in_project(
+                &self.db,
+                &clock,
+                Some(prompt),
+                Default::default(),
+                Some(&project),
+            )?,
+        };
+
+        let session_id = session.id().to_string();
+        let reply = self
+            .apply_slash_action(&session_id, &mut session, result)
+            .await?;
+        session.append(EventPayload::MessageAppended {
+            message: Message::user(prompt),
+        })?;
+        let task = session.create_task(prompt)?;
+        session.transition_task(task, deepagent_core::task::TaskState::Running)?;
+
+        on_event(RuntimeEvent::RunStarted {
+            task_id: task.to_string(),
+        });
+        on_event(RuntimeEvent::SessionRegistered {
+            session_id: session_id.clone(),
+            title: session.state().title.clone(),
+        });
+        on_event(RuntimeEvent::TurnStarted { step: 0 });
+        on_event(RuntimeEvent::ContentDelta {
+            text: reply.clone(),
+        });
+
+        session.append(EventPayload::MessageAppended {
+            message: Message::assistant(&reply),
+        })?;
+        session.transition_task(task, deepagent_core::task::TaskState::Completed)?;
+        on_event(RuntimeEvent::RunCompleted { message: reply });
+
+        Ok(Some(session_id))
+    }
+
+    async fn apply_slash_action(
+        &self,
+        session_id: &str,
+        session: &mut Session<'_, SystemClock>,
+        result: deepagent_intent::CommandResult,
+    ) -> Result<String> {
+        let message = match result.action {
+            SlashAction::EnterPlanMode => {
+                self.set_plan_mode(session_id, true);
+                result.message
+            }
+            SlashAction::ExitPlanMode => {
+                self.set_plan_mode(session_id, false);
+                result.message
+            }
+            SlashAction::Compact => {
+                let store = deepagent_persistence::event_store::EventStore::new(&self.db);
+                let events = store.load_session(session.id())?;
+                let history = conversation_from_events(&events);
+                let rendered: Vec<String> = history
+                    .iter()
+                    .map(|m| format!("{:?}: {}", m.role, m.content))
+                    .collect();
+                let counter = HeuristicTokenizer::new();
+                let tokens_before: usize = rendered.iter().map(|t| counter.count(t)).sum();
+                let tokens_after = tokens_before / 2;
+                session.append(EventPayload::ContextCompacted {
+                    tokens_before: tokens_before as u64,
+                    tokens_after: tokens_after as u64,
+                    strategy: "manual".to_string(),
+                })?;
+                format!(
+                    "Compacted current session context. Tokens before: {tokens_before}; target after: {tokens_after}."
+                )
+            }
+            SlashAction::Cost => match &self.cost {
+                Some(cost) => {
+                    let s = cost.summary(session_id)?;
+                    format!(
+                        "Cost summary: session ¥{:.4}, today ¥{:.4}, month ¥{:.4}, total ¥{:.4}.",
+                        s.session_cost, s.today_cost, s.month_cost, s.total_cost
+                    )
+                }
+                None => "Cost tracking is not enabled for this runtime.".to_string(),
+            },
+            SlashAction::Doctor => {
+                "Doctor diagnostics are not wired yet. Task 10 will add environment checks."
+                    .to_string()
+            }
+            SlashAction::Resume { session_id } => {
+                format!("Resumed session {session_id}. Continue with your next prompt.")
+            }
+            SlashAction::Model { model_id } => {
+                self.settings.set_model(ModelRole::Chat, &model_id)?;
+                format!("Switched chat model to {model_id}.")
+            }
+            SlashAction::Clear => {
+                "Cleared the chat surface. Start a new chat from the sidebar for a fresh session."
+                    .to_string()
+            }
+        };
+        Ok(message)
     }
 
     /// Model-driven context compaction (Phase 2B). Given the recovered chat
@@ -430,6 +601,13 @@ impl ChatService {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
+        if let Some(session_id) = self
+            .maybe_handle_slash_command(prompt, continue_session, &on_event)
+            .await?
+        {
+            return Ok(session_id);
+        }
+
         // Budget gate: refuse a new run when a configured daily/monthly limit is
         // already exhausted. No-op when no cost tracker is attached or no budget
         // is set (Property 7: backward-compatible default).
@@ -440,6 +618,9 @@ impl ChatService {
         let root = self.effective_root();
         let policy = self.settings.approval_policy()?;
         let access = Self::fs_access_for(policy);
+        let plan = continue_session
+            .map(|id| self.plan_mode_for_session(id))
+            .unwrap_or_else(deepagent_builtins::PlanMode::new);
         // The main run's tools are built permissive (Full, sensitive-blocked):
         // the BeforeToolUse path guard is the SINGLE policy gate, asking/denying
         // per the policy-derived `access`. This way an out-of-workspace access
@@ -503,6 +684,13 @@ impl ChatService {
             registry.register(Arc::new(KnowledgeWriteTool::new(backend)))?;
         }
 
+        registry.register(Arc::new(deepagent_builtins::EnterPlanModeTool::new(
+            plan.clone(),
+        )))?;
+        registry.register(Arc::new(deepagent_builtins::ExitPlanModeTool::new(
+            plan.clone(),
+        )))?;
+
         // Advertise the registry's visible tools to the model.
         let granted = PermissionSet::developer();
         let tools: Vec<ToolSchema> = registry
@@ -537,6 +725,10 @@ impl ChatService {
         // validator that blocks dangerous bash via exit code 2).
         let rules = self.settings.permission_rules().unwrap_or_default();
         let mut hooks = HookRegistry::new();
+        hooks.register(
+            HookPoint::BeforeToolUse,
+            Arc::new(deepagent_builtins::PlanModeHook::new(plan.clone())),
+        );
         if !rules.is_empty() {
             hooks.register(
                 HookPoint::BeforeToolUse,
@@ -602,6 +794,11 @@ impl ChatService {
             .maybe_compact_history(&mut session, history, &client, &model)
             .await;
         let session_id = session.id().to_string();
+        {
+            let mut map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
+            map.entry(session_id.clone())
+                .or_insert_with(|| plan.clone());
+        }
         // Record the incoming user turn so the thread's history is complete.
         session.append(EventPayload::MessageAppended {
             message: Message::user(prompt),
@@ -926,6 +1123,42 @@ mod tests {
         assert_eq!(labels.first().map(String::as_str), Some("run_started"));
         assert!(labels.iter().any(|l| l == "content_delta"));
         assert_eq!(labels.last().map(String::as_str), Some("run_completed"));
+    }
+
+    #[tokio::test]
+    async fn slash_plan_and_execute_toggle_session_state_without_model() {
+        let (db, settings, dir) = seeded().await;
+        let chat = ChatService::new(db.clone(), settings, chat_transport(), dir.path());
+
+        let collected = Arc::new(std::sync::Mutex::new(Vec::<RuntimeEvent>::new()));
+        let sink = collected.clone();
+        let sid = chat
+            .run(
+                "/plan",
+                move |ev| {
+                    sink.lock().unwrap().push(ev);
+                },
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert!(chat.is_plan_mode(&sid));
+        assert!(collected.lock().unwrap().iter().any(|ev| {
+            matches!(ev, RuntimeEvent::RunCompleted { message } if message.contains("Entered Plan mode"))
+        }));
+
+        chat.run_in_session("/execute", Some(&sid), |_| {}, |_| {})
+            .await
+            .unwrap();
+        assert!(!chat.is_plan_mode(&sid));
+
+        let id = deepagent_core::id::SessionId::from_str(&sid).unwrap();
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        let history = conversation_from_events(&store.load_session(id).unwrap());
+        assert!(history.iter().any(|m| m.content == "/plan"));
+        assert!(history
+            .iter()
+            .any(|m| m.content.contains("Exited Plan mode")));
     }
 
     #[tokio::test]
