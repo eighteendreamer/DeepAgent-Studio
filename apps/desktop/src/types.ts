@@ -147,6 +147,15 @@ export interface CostSummary {
   budget: BudgetConfig;
 }
 
+export type DiagStatus = "ok" | "warning" | "error";
+
+export interface DiagnosticResult {
+  name: string;
+  status: DiagStatus;
+  detail: string;
+  fix_hint: string | null;
+}
+
 /** A message rendered in the chat view. */
 export interface ChatMessage {
   role: "user" | "assistant";

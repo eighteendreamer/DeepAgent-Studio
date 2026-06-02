@@ -420,8 +420,15 @@ impl ChatService {
                 None => "Cost tracking is not enabled for this runtime.".to_string(),
             },
             SlashAction::Doctor => {
-                "Doctor diagnostics are not wired yet. Task 10 will add environment checks."
-                    .to_string()
+                let root = self.effective_root();
+                let results = crate::doctor::run_diagnostics(
+                    &self.settings,
+                    &self.db,
+                    &root,
+                    &self.tool_results_dir,
+                )
+                .await;
+                crate::doctor::format_diagnostics(&results)
             }
             SlashAction::Resume { session_id } => {
                 let store = deepagent_persistence::event_store::EventStore::new(&self.db);

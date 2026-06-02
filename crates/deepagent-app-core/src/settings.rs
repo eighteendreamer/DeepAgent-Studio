@@ -225,6 +225,25 @@ impl SettingsService {
         self.secrets.get(API_KEY_NAME)
     }
 
+    /// Validate an API key with a read-only `/models` discovery call.
+    ///
+    /// Unlike [`initialize`](Self::initialize) or [`refresh_models`](Self::refresh_models),
+    /// this does not persist the returned catalog. It is used by `/doctor` so a
+    /// diagnostic scan can verify credentials without mutating settings.
+    pub async fn validate_api_key(&self, api_key: &str) -> Result<usize> {
+        if api_key.trim().is_empty() {
+            return Err(CoreError::invalid("API key must not be empty"));
+        }
+        let discovery = ModelDiscovery::deepseek(self.transport.clone());
+        let models = discovery.list_models(api_key).await?;
+        if models.is_empty() {
+            return Err(CoreError::other(
+                "model discovery returned no models (check API key / connectivity)",
+            ));
+        }
+        Ok(models.len())
+    }
+
     /// The current approval policy (defaults to [`ApprovalPolicy::AlwaysAsk`]
     /// when uninitialized).
     pub fn approval_policy(&self) -> Result<ApprovalPolicy> {

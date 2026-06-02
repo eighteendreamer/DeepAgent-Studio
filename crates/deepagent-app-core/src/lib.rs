@@ -16,6 +16,7 @@ pub mod chat_service;
 pub mod commands;
 pub mod cost_service;
 pub mod diff;
+pub mod doctor;
 pub mod dto;
 pub mod knowledge_service;
 pub mod mcp_service;
@@ -32,6 +33,7 @@ pub use chat_service::ChatService;
 pub use commands::{builtin_commands, filter_commands};
 pub use cost_service::{BudgetConfig, CostRecord, CostService, CostSummary, ModelPricing};
 pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
+pub use doctor::{format_diagnostics, run_diagnostics, DiagStatus, DiagnosticResult};
 pub use dto::{
     ApprovalRequestDto, CommandDto, ConversationMessageDto, ConversationPartDto,
     ConversationUsageDto, ForkResultDto, ProjectDto, RewindResultDto, SessionDetailDto,

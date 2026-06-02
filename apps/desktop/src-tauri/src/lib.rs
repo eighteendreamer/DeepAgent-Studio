@@ -14,12 +14,12 @@
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
-    AppService, ChatService, CommandDto, DiffResult, ForkResultDto, KeychainStore,
-    KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, McpServerDto,
-    McpService, ProjectDto, ProjectService, RewindResultDto, SessionDetailDto, SessionSummaryDto,
-    SettingsService, SettingsView, SkillActivationDto, SkillDto, SkillsService, TerminalResultDto,
-    TerminalService, TranscriptDto, WorkspaceInfoDto, WorkspaceService, ConversationMessageDto,
-    BudgetConfig, CostService, CostSummary,
+    AppService, BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService,
+    CostSummary, DiagnosticResult, DiffResult, ForkResultDto, KeychainStore, KnowledgeDraftDto,
+    KnowledgeDto, KnowledgeHitDto, KnowledgeService, McpServerDto, McpService, ProjectDto,
+    ProjectService, RewindResultDto, SessionDetailDto, SessionSummaryDto, SettingsService,
+    SettingsView, SkillActivationDto, SkillDto, SkillsService, TerminalResultDto, TerminalService,
+    TranscriptDto, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use serde::Serialize;
@@ -331,6 +331,29 @@ fn set_budget(
         monthly_limit,
     });
     state.cost.summary("").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn run_doctor(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<DiagnosticResult>, String> {
+    let settings = state.settings.clone();
+    let db = {
+        let svc = state.service.lock().map_err(|e| e.to_string())?;
+        svc.shared_database()
+    };
+    let root = state
+        .projects
+        .active()
+        .map_err(|e| e.to_string())?
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(state.workspace.info().path));
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    Ok(deepagent_app_core::run_diagnostics(&settings, &db, &root, &app_data_dir).await)
 }
 
 // ---- chat (streamed) ------------------------------------------------------
@@ -751,6 +774,7 @@ pub fn run() {
             kb_auto_capture_enabled,
             get_cost_summary,
             set_budget,
+            run_doctor,
             run_chat,
             resolve_approval,
             stop_chat,

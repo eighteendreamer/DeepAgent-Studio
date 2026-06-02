@@ -10,6 +10,7 @@ import type {
   Command,
   ConversationMessage,
   CostSummary,
+  DiagnosticResult,
   DiffResult,
   ForkResult,
   KnowledgeDraft,
@@ -158,6 +159,19 @@ export async function exportTranscript(
 /** Pending approvals are pushed by the runtime; mocked here for preview. */
 export async function getPendingApprovals(): Promise<ApprovalRequest[]> {
   return mockApprovals();
+}
+
+export async function runDoctor(): Promise<DiagnosticResult[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<DiagnosticResult[]>("run_doctor");
+  return [
+    {
+      name: "API Key",
+      status: "warning",
+      detail: "desktop runtime is unavailable in browser preview",
+      fix_hint: "Run the Tauri desktop app to execute diagnostics.",
+    },
+  ];
 }
 
 // ---- skills ---------------------------------------------------------------
