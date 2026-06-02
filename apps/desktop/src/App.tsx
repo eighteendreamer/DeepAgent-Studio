@@ -45,6 +45,13 @@ import { message } from "./components/message";
 
 type View = "start" | "chat" | "skills" | "knowledge" | "automation" | "settings";
 
+interface SessionCompletedPayload {
+  run_id: string;
+  session_id: string | null;
+  status: "completed" | "failed" | string;
+  error?: string | null;
+}
+
 const SUGGESTIONS = [
   "Fix XHC Trinity production config before the next server deploy",
   "Sync the new prompt packs into XHC's admin prompt manager",
@@ -69,12 +76,12 @@ export function App() {
   // can't send a new message mid-output) and to show a busy send button. The
   // run itself is async on the backend, so the UI never freezes — approvals,
   // scrolling and navigation stay responsive while this is true.
-  const [isRunning, setIsRunning] = useState(false);
+  const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
   const [planMode, setPlanMode] = useState(false);
   // The session id of the in-flight run, set as soon as the backend announces
   // it (session_registered) — used for the manual stop button and to navigate
   // into the still-running session.
-  const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
+  const [activePendingRunKey, setActivePendingRunKey] = useState<string | null>(null);
 
   // The in-flight transcript, kept per-session in a ref so it SURVIVES
   // navigation. Leaving and returning to a running session restores its live
@@ -84,6 +91,7 @@ export function App() {
   const liveTranscripts = useRef<Map<string, ChatMessage[]>>(new Map());
   // Always-current activeId, readable from inside the long-lived run handler.
   const activeIdRef = useRef<string | null>(null);
+  const activePendingRunKeyRef = useRef<string | null>(null);
   // Always-current `messages`, so a continuation can read the on-screen thread
   // without taking a stale closure (and without re-creating onSubmit).
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -152,6 +160,10 @@ export function App() {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    activePendingRunKeyRef.current = activePendingRunKey;
+  }, [activePendingRunKey]);
 
   // Populate the chat view when the active session changes. Two sources:
   // 1. If this session has a live (in-flight or just-finished) transcript in
@@ -233,6 +245,7 @@ export function App() {
     setActiveId(newActiveId);
     setView(newView);
     setMessages([]);
+    setActivePendingRunKey(null);
     setNavState((prev) => {
       const newHistory = prev.history.slice(0, prev.index + 1);
       newHistory.push({ activeId: newActiveId, view: newView });
@@ -292,6 +305,39 @@ export function App() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event")
+      .then((mod) =>
+        mod.listen<SessionCompletedPayload>("session://completed", (event) => {
+          const payload = event.payload;
+          if (payload.session_id) {
+            setRunningSessionIds((prev) => {
+              const next = new Set(prev);
+              next.delete(payload.session_id as string);
+              return next;
+            });
+          }
+          refreshSessions();
+          if (payload.status === "failed") {
+            message.error(`会话运行失败：${payload.error ?? "unknown error"}`);
+          } else {
+            message.success("会话已完成");
+          }
+        })
+      )
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [refreshSessions]);
+
   // Switch the active project (agent ops + new sessions attach here).
   const onSelectProject = useCallback((path: string) => {
     setActiveProjectPath(path);
@@ -341,21 +387,32 @@ export function App() {
       if (!text) return;
       // Block new submissions while a run is streaming — you can't start a new
       // message until the current output finishes.
-      if (isRunning) return;
-      setIsRunning(true);
+      // Continue the current session when submitting a follow-up from within an
+      // open chat; start a fresh session when submitting from the start view.
+      const continueId = view === "chat" && activeId ? activeId : null;
+      if (continueId && runningSessionIds.has(continueId)) return;
+      if (!continueId && activePendingRunKey) return;
 
       // Wall-clock start of this run, for the "total time" footer metric.
       const runStart = Date.now();
 
-      // Continue the current session when submitting a follow-up from within an
-      // open chat; start a fresh session when submitting from the start view.
-      const continueId = view === "chat" && activeId ? activeId : null;
-
       // The run's session key for the live transcript. Until the backend
       // announces the real id (session_registered), a new run buffers under a
       // pending key; continuations use the existing id directly.
-      const PENDING = "__pending__";
-      let runKey = continueId ?? PENDING;
+      const runId =
+        globalThis.crypto?.randomUUID?.() ??
+        `run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const pendingKey = `__pending__:${runId}`;
+      let runKey = continueId ?? pendingKey;
+      if (continueId) {
+        setRunningSessionIds((prev) => {
+          const next = new Set(prev);
+          next.add(continueId);
+          return next;
+        });
+      } else {
+        setActivePendingRunKey(pendingKey);
+      }
 
       // Seed the transcript: continuations append to the existing one; a fresh
       // run starts clean. Stored in the ref so it survives navigation.
@@ -387,7 +444,7 @@ export function App() {
         const current = liveTranscripts.current.get(runKey) ?? [];
         const updated = fn(current);
         liveTranscripts.current.set(runKey, updated);
-        if (activeIdRef.current === runKey) {
+        if (activeIdRef.current === runKey || activePendingRunKeyRef.current === runKey) {
           setMessages(updated);
         }
       };
@@ -565,7 +622,12 @@ export function App() {
                 }
                 runKey = sid;
               }
-              setRunningSessionId(sid);
+              setActivePendingRunKey((current) => (current === pendingKey ? null : current));
+              setRunningSessionIds((prev) => {
+                const next = new Set(prev);
+                next.add(sid);
+                return next;
+              });
               setActiveId(sid);
               setNavState((prev) => {
                 const last = prev.history[prev.index];
@@ -645,7 +707,8 @@ export function App() {
           // Queue the approval request; the dialog shows the head of the queue.
           setApprovals((prev) => [...prev, request]);
         },
-        continueId
+        continueId,
+        runId
       )
         .then((newSessionId) => {
           // The run created (or continued) a session under the active project;
@@ -680,28 +743,31 @@ export function App() {
           });
         })
         .finally(() => {
-          // Re-enable input once the run finishes (success or error), and clear
-          // any approval requests still queued for this finished run.
-          setIsRunning(false);
-          setRunningSessionId(null);
-          setApprovals([]);
+          setRunningSessionIds((prev) => {
+            const next = new Set(prev);
+            next.delete(runKey);
+            if (continueId) next.delete(continueId);
+            return next;
+          });
+          setActivePendingRunKey((current) => (current === pendingKey ? null : current));
+          setApprovals((prev) => prev.filter((a) => a.run_id !== runId));
           // Drop the live buffer for the finished session: future visits load
           // the authoritative styled conversation from the DB. Keep the pending
           // key clean too.
           liveTranscripts.current.delete(runKey);
-          liveTranscripts.current.delete(PENDING);
+          liveTranscripts.current.delete(pendingKey);
         });
     },
-    [activeId, view, refreshSessions, isRunning]
+    [activeId, view, refreshSessions, runningSessionIds, activePendingRunKey]
   );
 
   const chatMessages = messages;
 
   // Manually stop the in-flight run (the run ends cleanly at the next step).
   const onStopRun = useCallback(() => {
-    const sid = runningSessionId ?? activeId;
+    const sid = activeId && runningSessionIds.has(activeId) ? activeId : null;
     if (sid) stopChat(sid).catch(() => {});
-  }, [runningSessionId, activeId]);
+  }, [runningSessionIds, activeId]);
 
   // Resolve the head-of-queue approval (allow/deny), then dequeue it.
   const onApprovalDecision = useCallback(
@@ -773,6 +839,9 @@ export function App() {
 
   const canGoBack = navState.index > 0;
   const canGoForward = navState.index < navState.history.length - 1;
+  const activeChatBusy = Boolean(
+    activePendingRunKey || (activeId && runningSessionIds.has(activeId))
+  );
 
   return (
     <div className="bg-sidebar-bg text-text-base font-sans h-screen w-full overflow-hidden flex flex-col relative">
@@ -812,7 +881,7 @@ export function App() {
                 onOpenAutomation={() => navigateTo(activeId, "automation")}
                 onOpenSettings={() => navigateTo(activeId, "settings")}
                 onLogout={onLogout}
-                runningSessionId={isRunning ? runningSessionId : null}
+                runningSessionIds={runningSessionIds}
               />
             </motion.div>
           )}
@@ -874,7 +943,7 @@ export function App() {
                   approval={approvals[0] ?? null}
                   approvalQueueCount={approvals.length}
                   onApprovalDecision={onApprovalDecision}
-                  busy={isRunning}
+                  busy={activeChatBusy}
                   onStop={onStopRun}
                   planMode={planMode}
                 />

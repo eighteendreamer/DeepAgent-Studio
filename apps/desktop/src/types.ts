@@ -50,6 +50,7 @@ export interface ApprovalRequest {
   risk: string;
   arguments: string;
   reason: string;
+  run_id?: string;
 }
 
 export type DiffKind = "context" | "added" | "removed";

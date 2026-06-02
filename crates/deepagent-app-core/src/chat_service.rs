@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use deepagent_builtins::WorkspaceRoot;
 use deepagent_context::{
-    CompactionPolicy, HeuristicTokenizer, ModelCompactor, TaskSummary, TokenCounter,
+    CompactionPolicy, HeuristicSummarizer, HeuristicTokenizer, ModelCompactor, Summarizer,
+    TaskSummary, TokenCounter,
 };
 use deepagent_core::clock::SystemClock;
 use deepagent_core::error::{CoreError, Result};
@@ -423,7 +424,37 @@ impl ChatService {
                     .to_string()
             }
             SlashAction::Resume { session_id } => {
-                format!("Resumed session {session_id}. Continue with your next prompt.")
+                let store = deepagent_persistence::event_store::EventStore::new(&self.db);
+                let events = store.load_session(session.id())?;
+                let history = conversation_from_events(&events);
+                let rendered: Vec<String> = history
+                    .iter()
+                    .map(|m| format!("{:?}: {}", m.role, m.content))
+                    .collect();
+                let counter = HeuristicTokenizer::new();
+                let tokens_before: usize = rendered.iter().map(|t| counter.count(t)).sum();
+                let goal = history
+                    .first()
+                    .map(|m| m.content.clone())
+                    .unwrap_or_else(|| format!("Resume session {session_id}"));
+                let summary =
+                    HeuristicSummarizer.summarize(&goal, &TaskSummary::default(), &rendered);
+                let summary_block = summary.to_context_block();
+                let injected =
+                    format!("[Earlier conversation compacted to summary]\n{summary_block}");
+                let tokens_after = counter.count(&injected);
+                session.append(EventPayload::ContextCompacted {
+                    tokens_before: tokens_before as u64,
+                    tokens_after: tokens_after as u64,
+                    strategy: "resume".to_string(),
+                })?;
+                session.append(EventPayload::MessageAppended {
+                    message: Message::user(injected),
+                })?;
+                format!(
+                    "Resumed session {session_id}. Loaded {} event(s), compacted recovered context from {tokens_before} to {tokens_after} estimated tokens. Continue with your next prompt.",
+                    events.len()
+                )
             }
             SlashAction::Model { model_id } => {
                 self.settings.set_model(ModelRole::Chat, &model_id)?;
@@ -1038,6 +1069,14 @@ fn conversation_from_events(events: &[deepagent_core::event::Event]) -> Vec<Mess
     let mut out = Vec::new();
     for ev in events {
         if let EventPayload::MessageAppended { message } = &ev.payload {
+            if message
+                .content
+                .starts_with("[Earlier conversation compacted to summary]")
+            {
+                out.clear();
+                out.push(Message::text(message.role, message.content.clone()));
+                continue;
+            }
             match message.role {
                 Role::User | Role::Assistant if !message.content.trim().is_empty() => {
                     out.push(Message::text(message.role, message.content.clone()));

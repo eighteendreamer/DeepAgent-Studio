@@ -22,6 +22,7 @@ use deepagent_app_core::{
     BudgetConfig, CostService, CostSummary,
 };
 use deepagent_models::ReqwestTransport;
+use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
 /// Service name used for keychain entries.
@@ -41,6 +42,20 @@ struct AppState {
     terminal: Arc<TerminalService>,
     /// Tokio runtime for async calls invoked from sync commands.
     rt: tokio::runtime::Runtime,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RunEventEnvelope<T: Serialize> {
+    run_id: String,
+    payload: T,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SessionCompletedPayload {
+    run_id: String,
+    session_id: Option<String>,
+    status: String,
+    error: Option<String>,
 }
 
 // ---- session / view commands ---------------------------------------------
@@ -326,6 +341,7 @@ async fn run_chat(
     state: State<'_, AppState>,
     prompt: String,
     session_id: Option<String>,
+    run_id: Option<String>,
 ) -> Result<String, String> {
     // IMPORTANT: this command is `async` so Tauri runs it on a worker thread,
     // never the main (UI) thread. A streamed run can pause mid-flight to await
@@ -336,23 +352,61 @@ async fn run_chat(
     // dedicated async runtime and await its result through a oneshot, keeping
     // every other command responsive while the agent streams.
     let chat = state.chat.clone();
+    let run_id = run_id.unwrap_or_else(|| {
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or_default();
+        format!("run-{millis}")
+    });
+    let requested_session_id = session_id.clone();
     let event_emitter = app.clone();
-    let approval_emitter = app;
+    let approval_emitter = app.clone();
+    let completion_emitter = app;
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.rt.spawn(async move {
+        let event_run_id = run_id.clone();
+        let approval_run_id = run_id.clone();
         let result = chat
             .run_in_session(
                 &prompt,
                 session_id.as_deref(),
                 move |event| {
-                    let _ = event_emitter.emit("chat://event", event);
+                    let _ = event_emitter.emit(
+                        "chat://event",
+                        RunEventEnvelope {
+                            run_id: event_run_id.clone(),
+                            payload: event,
+                        },
+                    );
                 },
                 move |approval| {
-                    let _ = approval_emitter.emit("chat://approval", approval);
+                    let _ = approval_emitter.emit(
+                        "chat://approval",
+                        RunEventEnvelope {
+                            run_id: approval_run_id.clone(),
+                            payload: approval,
+                        },
+                    );
                 },
             )
             .await;
         // Receiver gone (window closed mid-run) → drop the result silently.
+        let completed = match &result {
+            Ok(session_id) => SessionCompletedPayload {
+                run_id: run_id.clone(),
+                session_id: Some(session_id.clone()),
+                status: "completed".to_string(),
+                error: None,
+            },
+            Err(error) => SessionCompletedPayload {
+                run_id: run_id.clone(),
+                session_id: requested_session_id.clone(),
+                status: "failed".to_string(),
+                error: Some(error.to_string()),
+            },
+        };
+        let _ = completion_emitter.emit("session://completed", completed);
         let _ = tx.send(result);
     });
     match rx.await {

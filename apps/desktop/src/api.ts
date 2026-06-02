@@ -391,6 +391,29 @@ export interface RuntimeEvent {
   [key: string]: unknown;
 }
 
+interface RunEventEnvelope<T> {
+  run_id: string;
+  payload: T;
+}
+
+function randomRunId(): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
+  return `run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function unwrapRunPayload<T>(
+  payload: T | RunEventEnvelope<T>,
+  runId: string
+): T | null {
+  const maybe = payload as RunEventEnvelope<T>;
+  if (maybe && typeof maybe === "object" && "run_id" in maybe && "payload" in maybe) {
+    return maybe.run_id === runId ? maybe.payload : null;
+  }
+  // Browser/mock fallback and older desktop builds emitted the raw payload.
+  return payload as T;
+}
+
 /**
  * Run a streamed chat turn-loop. Runtime events go to `onEvent`; any tool
  * approval request goes to `onApproval` (the UI shows a dialog and later calls
@@ -402,22 +425,26 @@ export async function runChat(
   prompt: string,
   onEvent: (event: RuntimeEvent) => void,
   onApproval?: (request: ApprovalRequest) => void,
-  sessionId?: string | null
+  sessionId?: string | null,
+  runId?: string
 ): Promise<string> {
   const invoke = getInvoke();
   if (invoke) {
     const mod = await import("@tauri-apps/api/event");
-    const unlistenEvent = await mod.listen<RuntimeEvent>("chat://event", (e) => {
-      onEvent(e.payload);
+    const actualRunId = runId ?? randomRunId();
+    const unlistenEvent = await mod.listen<RunEventEnvelope<RuntimeEvent> | RuntimeEvent>("chat://event", (e) => {
+      const payload = unwrapRunPayload(e.payload, actualRunId);
+      if (payload) onEvent(payload);
     });
-    const unlistenApproval = await mod.listen<ApprovalRequest>(
+    const unlistenApproval = await mod.listen<RunEventEnvelope<ApprovalRequest> | ApprovalRequest>(
       "chat://approval",
       (e) => {
-        onApproval?.(e.payload);
+        const payload = unwrapRunPayload(e.payload, actualRunId);
+        if (payload) onApproval?.({ ...payload, run_id: actualRunId });
       }
     );
     try {
-      return await invoke<string>("run_chat", { prompt, sessionId: sessionId ?? null });
+      return await invoke<string>("run_chat", { prompt, sessionId: sessionId ?? null, runId: actualRunId });
     } finally {
       unlistenEvent();
       unlistenApproval();

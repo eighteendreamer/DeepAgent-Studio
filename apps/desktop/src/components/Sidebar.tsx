@@ -20,8 +20,8 @@ interface Props {
   onOpenAutomation: () => void;
   onOpenSettings: () => void;
   onLogout: () => void;
-  /** The session id of the currently-running agent run (shows a spinner). */
-  runningSessionId?: string | null;
+  /** Session ids with currently-running agent runs (show spinners). */
+  runningSessionIds?: Set<string>;
 }
 
 function NavButton({ icon, label, onClick }: { icon: IconProp; label: string; onClick?: () => void }) {
@@ -50,7 +50,7 @@ function formatTimeAgo(timestamp: number) {
   return `${months} 个月`;
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onRemoveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionId }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onRemoveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
@@ -150,7 +150,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   const renderSessionItem = (s: SessionSummary, isPinnedSection: boolean = false) => {
     const active = s.id === activeId;
     const isPinned = pinnedSessionIds.has(s.id);
-    const isRunning = !!runningSessionId && s.id === runningSessionId;
+    const isRunning = runningSessionIds?.has(s.id) ?? false;
     return (
       <div
         key={s.id + (isPinnedSection ? '_pinned' : '')}
