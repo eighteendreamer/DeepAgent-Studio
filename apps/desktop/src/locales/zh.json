@@ -564,7 +564,10 @@
     "edit": "编辑",
     "view": "查看",
     "window": "窗口",
-    "help": "帮助"
+    "help": "帮助",
+    "update": "更新",
+    "downloadUpdate": "下载更新",
+    "updateReady": "更新已下载，关闭应用后静默安装"
   },
   "startView": {
     "greeting": "我们应该在{{projectName}}中做些什么？",
@@ -583,6 +586,11 @@
     "modelSwitched": "已切换模型：{{model}}",
     "modelSwitchFailed": "切换模型失败",
     "approvalSwitchFailed": "切换权限级别失败",
+    "selectThinking": "思考",
+    "thinkingSimple": "简单",
+    "thinkingMedium": "中度",
+    "thinkingDeep": "深度",
+    "thinkingSwitchFailed": "切换思考档位失败",
     "stop": "停止",
     "models": {
       "lingsiAPI": "灵思API",

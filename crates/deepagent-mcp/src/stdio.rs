@@ -19,6 +19,9 @@ use crate::config::McpServerConfig;
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::transport::McpTransport;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// A stdio transport backed by a spawned child process.
 pub struct StdioTransport {
     child: Mutex<Child>,
@@ -40,6 +43,10 @@ impl StdioTransport {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null()); // MCP servers log to stderr; ignore here.
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
 
         let mut child = cmd.spawn().map_err(|e| {
             CoreError::other(format!("failed to spawn MCP server '{command}': {e}"))

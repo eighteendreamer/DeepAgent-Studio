@@ -9,34 +9,36 @@ use serde::{Deserialize, Serialize};
 
 use deepagent_core::message::Message;
 
-/// Thinking-mode depth, per 开发提示词.md §9.
+/// DeepSeek Thinking Mode depth exposed to users.
 ///
-/// The runtime exposes a small, intent-level knob; [`ThinkingConfig::for_depth`]
-/// maps it onto concrete request parameters. `Max` additionally signals the
-/// runtime to wrap the call in a recursive reflective loop (handled by the
-/// verification/reflection engine, not the request itself).
+/// DeepSeek maps low/medium efforts to `high`, so simple and medium both use
+/// `reasoning_effort=high`; the runtime still differentiates them with output
+/// token ceilings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingDepth {
-    /// Thinking disabled — fastest, no reasoning trace.
-    Fast,
-    /// Reasoning enabled at high effort.
-    Balanced,
+    /// Reasoning enabled with a conservative output budget.
+    Simple,
+    /// Reasoning enabled with the normal agent output budget.
+    Medium,
     /// Reasoning enabled at maximum effort.
     Deep,
-    /// Maximum effort + caller-driven recursive reflection.
-    Max,
 }
 
 impl ThinkingDepth {
-    /// Whether this depth enables the model's reasoning trace.
-    pub const fn reasoning_enabled(&self) -> bool {
-        !matches!(self, ThinkingDepth::Fast)
+    /// Stable label used in settings/UI.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            ThinkingDepth::Simple => "simple",
+            ThinkingDepth::Medium => "medium",
+            ThinkingDepth::Deep => "deep",
+        }
     }
+}
 
-    /// Whether the runtime should drive a recursive reflective loop on top.
-    pub const fn recursive_reflection(&self) -> bool {
-        matches!(self, ThinkingDepth::Max)
+impl Default for ThinkingDepth {
+    fn default() -> Self {
+        ThinkingDepth::Medium
     }
 }
 
@@ -48,28 +50,39 @@ pub struct ThinkingConfig {
     /// Reasoning effort hint, when enabled (`"high"` / `"max"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Output token ceiling for this depth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
 }
 
 impl ThinkingConfig {
     /// Derive the request-level config for a depth.
     pub fn for_depth(depth: ThinkingDepth) -> Self {
         match depth {
-            ThinkingDepth::Fast => Self {
-                enabled: false,
-                effort: None,
-            },
-            ThinkingDepth::Balanced => Self {
+            ThinkingDepth::Simple => Self {
                 enabled: true,
                 effort: Some("high".to_string()),
+                max_tokens: Some(16_384),
             },
-            // Deep and Max both request max effort at the API level; Max differs
-            // only in the runtime-side reflective loop.
-            ThinkingDepth::Deep | ThinkingDepth::Max => Self {
+            ThinkingDepth::Medium => Self {
+                enabled: true,
+                effort: Some("high".to_string()),
+                max_tokens: Some(32_768),
+            },
+            ThinkingDepth::Deep => Self {
                 enabled: true,
                 effort: Some("max".to_string()),
+                max_tokens: Some(65_536),
             },
         }
     }
+}
+
+/// DeepSeek OpenAI-format thinking toggle: `{"thinking":{"type":"enabled"}}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ThinkingToggle {
+    #[serde(rename = "type")]
+    pub kind: String,
 }
 
 /// A tool/function the model may call, in JSON-schema form.
@@ -114,7 +127,7 @@ pub struct FunctionSchema {
 /// A chat-completion request.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ChatRequest {
-    /// Target model id (e.g. `"deepseek-chat"` / `"deepseek-reasoner"`).
+    /// Target model id (e.g. `"deepseek-v4-flash"` / `"deepseek-v4-pro"`).
     pub model: String,
     /// Conversation so far. Serialized through [`crate::wire::serialize_messages`]
     /// so assistant tool calls take the API's required
@@ -134,6 +147,12 @@ pub struct ChatRequest {
     /// Max output tokens.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// DeepSeek Thinking Mode toggle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingToggle>,
+    /// DeepSeek Thinking effort (`high` / `max`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     /// Advertised tools.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolSchema>,
@@ -156,6 +175,8 @@ impl ChatRequest {
             stream_options: None,
             temperature: None,
             max_tokens: None,
+            thinking: None,
+            reasoning_effort: None,
             tools: Vec::new(),
         }
     }
@@ -184,6 +205,19 @@ impl ChatRequest {
     /// Set max tokens (builder style).
     pub fn with_max_tokens(mut self, n: u32) -> Self {
         self.max_tokens = Some(n);
+        self
+    }
+
+    /// Apply a DeepSeek Thinking Mode profile to this request.
+    pub fn with_thinking_depth(mut self, depth: ThinkingDepth) -> Self {
+        let cfg = ThinkingConfig::for_depth(depth);
+        self.thinking = Some(ThinkingToggle {
+            kind: if cfg.enabled { "enabled" } else { "disabled" }.to_string(),
+        });
+        self.reasoning_effort = cfg.effort;
+        if self.max_tokens.is_none() {
+            self.max_tokens = cfg.max_tokens;
+        }
         self
     }
 }
@@ -239,23 +273,24 @@ mod tests {
 
     #[test]
     fn thinking_depth_flags() {
-        assert!(!ThinkingDepth::Fast.reasoning_enabled());
-        assert!(ThinkingDepth::Balanced.reasoning_enabled());
-        assert!(ThinkingDepth::Max.recursive_reflection());
-        assert!(!ThinkingDepth::Deep.recursive_reflection());
+        assert_eq!(ThinkingDepth::Simple.label(), "simple");
+        assert_eq!(ThinkingDepth::Medium.label(), "medium");
+        assert_eq!(ThinkingDepth::Deep.label(), "deep");
+        assert_eq!(ThinkingDepth::default(), ThinkingDepth::Medium);
     }
 
     #[test]
     fn thinking_config_mapping() {
         assert_eq!(
-            ThinkingConfig::for_depth(ThinkingDepth::Fast),
+            ThinkingConfig::for_depth(ThinkingDepth::Simple),
             ThinkingConfig {
-                enabled: false,
-                effort: None
+                enabled: true,
+                effort: Some("high".to_string()),
+                max_tokens: Some(16_384)
             }
         );
         assert_eq!(
-            ThinkingConfig::for_depth(ThinkingDepth::Balanced)
+            ThinkingConfig::for_depth(ThinkingDepth::Medium)
                 .effort
                 .as_deref(),
             Some("high")
@@ -266,12 +301,17 @@ mod tests {
                 .as_deref(),
             Some("max")
         );
+        assert!(
+            ThinkingConfig::for_depth(ThinkingDepth::Deep).max_tokens
+                > ThinkingConfig::for_depth(ThinkingDepth::Medium).max_tokens
+        );
     }
 
     #[test]
     fn request_builder_and_serialization() {
-        let req = ChatRequest::new("deepseek-chat", vec![Message::user("hi")])
+        let req = ChatRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
             .streaming()
+            .with_thinking_depth(ThinkingDepth::Medium)
             .with_temperature(0.2)
             .with_tools(vec![ToolSchema::function(
                 "reverse",
@@ -279,12 +319,13 @@ mod tests {
                 serde_json::json!({"type": "object"}),
             )]);
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["model"], "deepseek-chat");
+        assert_eq!(json["model"], "deepseek-v4-flash");
         assert_eq!(json["stream"], true);
+        assert_eq!(json["thinking"]["type"], "enabled");
+        assert_eq!(json["reasoning_effort"], "high");
+        assert_eq!(json["max_tokens"], 32768);
         assert!((json["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
         assert_eq!(json["tools"][0]["function"]["name"], "reverse");
-        // max_tokens omitted when None.
-        assert!(json.get("max_tokens").is_none());
     }
 
     #[test]

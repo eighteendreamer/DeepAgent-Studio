@@ -1,6 +1,6 @@
 {
   "productName": "DeepAgent Studio",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "identifier": "com.deepagent.studio",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -27,6 +27,25 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"]
+    "createUpdaterArtifacts": true,
+    "icon": ["icons/icon.ico", "icons/icon.icns", "icons/icon.png"],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI1ODZGRTlCRjNGNDVENzcKUldSM1hmVHptLzZHdGFZdGVENU5rbmprZHRyYkwwbW96a3J4RGg0RUtiRFFCRlZNcHRKcko0TlUK",
+      "endpoints": [
+        "https://github.com/deepagent-studio/deepagent-studio/releases/latest/download/latest.json",
+        "https://download.deepagent.studio/releases/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "deepagent-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "DeepAgent Studio desktop UI (Codex-style) built on Tauri v2 + React.",
   "scripts": {
@@ -18,6 +18,7 @@
     "@fortawesome/react-fontawesome": "^0.2.2",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-updater": "~2.10.1",
     "deepmerge": "^4.3.1",
     "framer-motion": "^12.40.0",
     "i18next": "^26.3.0",

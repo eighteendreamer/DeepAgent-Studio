@@ -245,7 +245,7 @@ mod tests {
             r#"{"choices":[{"delta":{"content":"{\"goal\":\"ship feature\",\"completed\":[\"wrote code\"],\"pending\":[\"tests\"],\"decisions\":[\"chose sqlite\"],\"failures\":[\"migration bug\"]}"},"finish_reason":"stop"}]}"#.to_string(),
             "[DONE]".to_string(),
         ];
-        let compactor = ModelCompactor::new(client(events), "deepseek-chat");
+        let compactor = ModelCompactor::new(client(events), "deepseek-v4-flash");
         let summary = compactor
             .summarize(
                 "ship feature",
@@ -277,7 +277,7 @@ mod tests {
                 .to_string(),
             "[DONE]".to_string(),
         ];
-        let compactor = ModelCompactor::new(client(events), "deepseek-chat");
+        let compactor = ModelCompactor::new(client(events), "deepseek-v4-flash");
         let summary = compactor
             .summarize(
                 "build storage",
@@ -295,7 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_older_turns_returns_prior() {
-        let compactor = ModelCompactor::new(client(vec![]), "deepseek-chat");
+        let compactor = ModelCompactor::new(client(vec![]), "deepseek-v4-flash");
         let prior = TaskSummary {
             goal: "g".into(),
             ..Default::default()

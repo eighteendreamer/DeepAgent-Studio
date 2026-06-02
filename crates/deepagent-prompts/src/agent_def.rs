@@ -15,7 +15,7 @@ use crate::frontmatter::{self, Frontmatter};
 pub enum ModelPref {
     /// Inherit the caller/session model.
     Inherit,
-    /// A named model (e.g. "deepseek-chat", "deepseek-reasoner", "sonnet").
+    /// A named model (e.g. "deepseek-v4-flash", "deepseek-v4-pro", "sonnet").
     Named(String),
 }
 
@@ -127,8 +127,8 @@ mod tests {
         assert_eq!(ModelPref::parse(""), ModelPref::Inherit);
         assert_eq!(ModelPref::parse("Inherit"), ModelPref::Inherit);
         assert_eq!(
-            ModelPref::parse("deepseek-reasoner"),
-            ModelPref::Named("deepseek-reasoner".into())
+            ModelPref::parse("deepseek-v4-pro"),
+            ModelPref::Named("deepseek-v4-pro".into())
         );
     }
 }

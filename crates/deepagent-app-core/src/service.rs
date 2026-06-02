@@ -14,7 +14,7 @@ use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::Database;
 use deepagent_session::Session;
 
-use crate::commands::{builtin_commands, filter_commands};
+use crate::commands::{builtin_commands, commands_from_roots, filter_commands};
 use crate::diff::{diff_lines, DiffResult};
 use crate::dto::{
     CommandDto, ConversationMessageDto, ConversationPartDto, ConversationUsageDto, ForkResultDto,
@@ -128,6 +128,16 @@ impl AppService {
     /// The command-palette commands, optionally filtered by a fuzzy `query`.
     pub fn commands(&self, query: &str) -> Vec<CommandDto> {
         filter_commands(query, &builtin_commands())
+    }
+
+    /// Command-palette commands merged with dynamic command files discovered
+    /// from the provided project/workspace roots.
+    pub fn commands_with_roots(
+        &self,
+        query: &str,
+        roots: impl IntoIterator<Item = std::path::PathBuf>,
+    ) -> Vec<CommandDto> {
+        commands_from_roots(query, roots)
     }
 
     /// Reconstruct a session's conversation as ordered, styled messages so the

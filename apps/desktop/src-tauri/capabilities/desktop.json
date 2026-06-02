@@ -1,7 +1,13 @@
 {
-  "identifier": "default",
-  "description": "Default capability for the main window: core APIs + native folder picker + window controls.",
-  "windows": ["main"],
+  "identifier": "desktop-capability",
+  "platforms": [
+    "macOS",
+    "windows",
+    "linux"
+  ],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",

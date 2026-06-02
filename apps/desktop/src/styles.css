@@ -3,15 +3,21 @@
 @tailwind utilities;
 
 @layer base {
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
   body {
     background-color: var(--theme-bg, #ffffff);
     color: var(--theme-fg, #1F2937);
   }
-  /* Reserve the scrollbar gutter so toggling tall content / dropdowns does not
-     shift the layout horizontally (fixes the left-right "jitter" when opening
-     a tall dropdown). */
+
   html {
-    scrollbar-gutter: stable;
     overflow-x: hidden;
   }
 }

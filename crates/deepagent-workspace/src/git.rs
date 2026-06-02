@@ -14,6 +14,9 @@
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// A one-line summary of a commit.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CommitSummary {
@@ -43,11 +46,10 @@ const MAX_RECENT_COMMITS: usize = 3;
 /// Run `git <args>` in `root`, returning trimmed stdout on a clean exit, else
 /// `None`. Best-effort: any spawn/exec failure is swallowed.
 fn git_output(root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(root);
+    configure_hidden_process(&mut cmd);
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -118,6 +120,19 @@ pub fn detect_git_context(root: &Path) -> Option<GitContext> {
         changed_files,
         recent_commits,
     })
+}
+
+fn configure_hidden_process(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
 }
 
 impl GitContext {

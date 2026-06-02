@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::settings::SettingsService;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// Severity for one diagnostic check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -159,7 +162,10 @@ async fn check_network() -> DiagnosticResult {
 }
 
 fn check_git() -> DiagnosticResult {
-    match Command::new("git").arg("--version").output() {
+    let mut cmd = Command::new("git");
+    cmd.arg("--version");
+    configure_hidden_process(&mut cmd);
+    match cmd.output() {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             DiagnosticResult::ok(
@@ -261,8 +267,10 @@ fn check_disk_space(app_data_dir: &Path) -> DiagnosticResult {
 fn available_space_bytes(path: &Path) -> Result<u64> {
     let root = drive_root(path).ok_or_else(|| CoreError::other("path has no drive root"))?;
     let script = format!("(Get-PSDrive -Name '{}').Free", root.trim_end_matches(':'));
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command", &script]);
+    configure_hidden_process(&mut cmd);
+    let output = cmd
         .output()
         .map_err(|e| CoreError::other(format!("failed to run PowerShell: {e}")))?;
     if !output.status.success() {
@@ -318,6 +326,19 @@ fn parse_u64_stdout(stdout: &[u8]) -> Result<u64> {
         .map_err(|e| CoreError::other(format!("bad free-space output: {e}")))
 }
 
+fn configure_hidden_process(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 fn format_bytes(bytes: u64) -> String {
     const MB: u64 = 1024 * 1024;
     const GB: u64 = 1024 * MB;
@@ -336,7 +357,10 @@ mod tests {
     use std::sync::Arc;
 
     fn settings_with_models(db: Arc<Database>) -> SettingsService {
-        let body = r#"{"object":"list","data":[{"id":"deepseek-chat","object":"model","owned_by":"deepseek"}]}"#;
+        let body = r#"{"object":"list","data":[
+            {"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"},
+            {"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}
+        ]}"#;
         SettingsService::new(
             db,
             Arc::new(MockTransport::with_get_json(body)),

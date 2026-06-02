@@ -13,7 +13,7 @@ use deepagent_persistence::cost_store::{CostEntry, CostStore};
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 
-/// Pricing for one model (per million tokens, in ¥).
+/// Pricing for one model (per million tokens, in USD).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelPricing {
     /// Cost per million input (prompt) tokens.
@@ -38,25 +38,25 @@ impl ModelPricing {
     }
 }
 
-/// Default DeepSeek pricing (as of 2025-06, ¥/百万 token).
+/// Current DeepSeek v4 pricing (USD / 1M tokens), sourced from the official
+/// Models & Pricing page. Deprecated compatibility aliases are intentionally
+/// not included.
 pub fn default_pricing() -> std::collections::HashMap<String, ModelPricing> {
     let mut m = std::collections::HashMap::new();
-    // deepseek-chat (V3): input ¥1/M, output ¥2/M, cache hit ¥0.1/M
     m.insert(
-        "deepseek-chat".into(),
+        "deepseek-v4-flash".into(),
         ModelPricing {
-            input_per_million: 1.0,
-            output_per_million: 2.0,
-            cache_hit_per_million: 0.1,
+            input_per_million: 0.14,
+            output_per_million: 0.28,
+            cache_hit_per_million: 0.0028,
         },
     );
-    // deepseek-reasoner (R1): input ¥4/M, output ¥16/M, cache hit ¥1/M
     m.insert(
-        "deepseek-reasoner".into(),
+        "deepseek-v4-pro".into(),
         ModelPricing {
-            input_per_million: 4.0,
-            output_per_million: 16.0,
-            cache_hit_per_million: 1.0,
+            input_per_million: 0.435,
+            output_per_million: 0.87,
+            cache_hit_per_million: 0.003625,
         },
     );
     m
@@ -65,10 +65,10 @@ pub fn default_pricing() -> std::collections::HashMap<String, ModelPricing> {
 /// Budget configuration (optional limits).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BudgetConfig {
-    /// Maximum daily spend in ¥ (None = unlimited).
+    /// Maximum daily spend in USD (None = unlimited).
     #[serde(default)]
     pub daily_limit: Option<f64>,
-    /// Maximum monthly spend in ¥ (None = unlimited).
+    /// Maximum monthly spend in USD (None = unlimited).
     #[serde(default)]
     pub monthly_limit: Option<f64>,
 }
@@ -83,6 +83,7 @@ pub struct CostRecord {
     pub output_tokens: u32,
     pub cache_hit_tokens: u32,
     pub total_tokens: u32,
+    /// Cost in USD (kept as `cost_yuan` for DB schema compatibility).
     pub cost_yuan: f64,
 }
 
@@ -97,6 +98,8 @@ pub struct CostSummary {
     pub month_cost: f64,
     /// All-time total cost.
     pub total_cost: f64,
+    /// Currency used for all cost values.
+    pub currency: String,
     /// Budget config (for display).
     pub budget: BudgetConfig,
 }
@@ -133,7 +136,7 @@ impl CostService {
     }
 
     /// Record a cost entry for a completed model call. Returns the calculated
-    /// cost in ¥.
+    /// cost in USD.
     pub fn record(
         &self,
         session_id: &str,
@@ -143,16 +146,7 @@ impl CostService {
         cache_hit_tokens: u32,
         total_tokens: u32,
     ) -> Result<f64> {
-        let pricing = self
-            .pricing
-            .get(model)
-            .or_else(|| self.pricing.get("deepseek-chat"))
-            .cloned()
-            .unwrap_or(ModelPricing {
-                input_per_million: 1.0,
-                output_per_million: 2.0,
-                cache_hit_per_million: 0.1,
-            });
+        let pricing = self.pricing_for_model(model)?;
         let cost = pricing.calculate(input_tokens, output_tokens, cache_hit_tokens);
         let now = SystemClock.now().as_millis();
 
@@ -188,8 +182,33 @@ impl CostService {
             today_cost,
             month_cost,
             total_cost,
+            currency: "USD".to_string(),
             budget: self.budget(),
         })
+    }
+
+    fn pricing_for_model(&self, model: &str) -> Result<ModelPricing> {
+        if let Some(pricing) = self.pricing.get(model) {
+            return Ok(pricing.clone());
+        }
+        let lower = model.to_ascii_lowercase();
+        if lower.contains("v4-flash") || lower.ends_with("-flash") {
+            return self
+                .pricing
+                .get("deepseek-v4-flash")
+                .cloned()
+                .ok_or_else(|| CoreError::invalid("deepseek-v4-flash pricing is missing"));
+        }
+        if lower.contains("v4-pro") || lower.ends_with("-pro") {
+            return self
+                .pricing
+                .get("deepseek-v4-pro")
+                .cloned()
+                .ok_or_else(|| CoreError::invalid("deepseek-v4-pro pricing is missing"));
+        }
+        Err(CoreError::invalid(format!(
+            "no DeepSeek pricing configured for model '{model}'"
+        )))
     }
 
     /// Check whether the budget allows a new run. Returns `Ok(())` if within
@@ -204,7 +223,7 @@ impl CostService {
         if let Some(daily) = budget.daily_limit {
             if summary.today_cost >= daily {
                 return Err(CoreError::invalid(format!(
-                    "daily budget exhausted (¥{:.2} / ¥{:.2})",
+                    "daily budget exhausted (${:.2} / ${:.2})",
                     summary.today_cost, daily
                 )));
             }
@@ -212,7 +231,7 @@ impl CostService {
         if let Some(monthly) = budget.monthly_limit {
             if summary.month_cost >= monthly {
                 return Err(CoreError::invalid(format!(
-                    "monthly budget exhausted (¥{:.2} / ¥{:.2})",
+                    "monthly budget exhausted (${:.2} / ${:.2})",
                     summary.month_cost, monthly
                 )));
             }
@@ -258,27 +277,27 @@ mod tests {
     #[test]
     fn pricing_calculation() {
         let p = ModelPricing {
-            input_per_million: 1.0,
-            output_per_million: 2.0,
-            cache_hit_per_million: 0.1,
+            input_per_million: 0.14,
+            output_per_million: 0.28,
+            cache_hit_per_million: 0.0028,
         };
         // 5000 input (3000 cached + 2000 full), 1000 output
         let cost = p.calculate(5000, 1000, 3000);
-        // full_input = 2000, cost = (2000*1 + 1000*2 + 3000*0.1) / 1M = 4300/1M = 0.0043
-        assert!((cost - 0.0043).abs() < 0.0001);
+        assert!((cost - 0.0006).abs() < 0.0001);
     }
 
     #[test]
     fn record_and_summary() {
         let svc = service();
         let cost = svc
-            .record("ses_1", "deepseek-chat", 10000, 500, 8000, 10500)
+            .record("ses_1", "deepseek-v4-flash", 10000, 500, 8000, 10500)
             .unwrap();
         assert!(cost > 0.0);
 
         let summary = svc.summary("ses_1").unwrap();
         assert_eq!(summary.session_cost, cost);
         assert!(summary.total_cost >= cost);
+        assert_eq!(summary.currency, "USD");
     }
 
     #[test]
@@ -289,8 +308,15 @@ mod tests {
             monthly_limit: None,
         });
         // Record a cost that exceeds the tiny budget.
-        svc.record("ses_1", "deepseek-chat", 1_000_000, 500_000, 0, 1_500_000)
-            .unwrap();
+        svc.record(
+            "ses_1",
+            "deepseek-v4-flash",
+            1_000_000,
+            500_000,
+            0,
+            1_500_000,
+        )
+        .unwrap();
         // Now check_budget should fail.
         assert!(svc.check_budget().is_err());
     }
@@ -299,5 +325,13 @@ mod tests {
     fn no_budget_always_passes() {
         let svc = service();
         assert!(svc.check_budget().is_ok());
+    }
+
+    #[test]
+    fn deprecated_model_has_no_pricing_fallback() {
+        let svc = service();
+        assert!(svc
+            .record("ses_1", "deepseek-chat", 1000, 1000, 0, 2000)
+            .is_err());
     }
 }

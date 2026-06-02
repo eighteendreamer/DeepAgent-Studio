@@ -26,6 +26,7 @@ apps/desktop/src-tauri/gen
 # Logs
 *.log
 logs/
+.tmp/
 
 # Editor / OS
 .DS_Store

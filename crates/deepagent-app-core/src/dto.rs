@@ -161,6 +161,8 @@ pub struct CommandDto {
     pub id: String,
     /// Display title.
     pub title: String,
+    /// Short explanation shown in command pickers.
+    pub description: String,
     /// Grouping category (e.g. "Session", "View").
     pub category: String,
     /// Optional keyboard shortcut hint.

@@ -36,7 +36,7 @@ pub mod reqwest_transport;
 
 pub use chat::{
     ChatRequest, ChatResponse, FinishReason, FunctionSchema, StreamOptions, ThinkingConfig,
-    ThinkingDepth, ToolSchema, Usage,
+    ThinkingDepth, ThinkingToggle, ToolSchema, Usage,
 };
 pub use client::{ModelClient, ModelConfig};
 pub use discovery::{ModelCatalog, ModelDiscovery, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};

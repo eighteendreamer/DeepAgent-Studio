@@ -16,7 +16,7 @@ use async_trait::async_trait;
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::{Message, Role};
-use deepagent_models::chat::FinishReason;
+use deepagent_models::chat::{FinishReason, ThinkingDepth};
 use deepagent_models::{ChatRequest, DeltaObserver, ModelClient, ToolSchema};
 use deepagent_tools::ToolInvocation;
 
@@ -38,6 +38,8 @@ pub struct ModelAgent {
     events: Option<Arc<dyn RuntimeEventSink>>,
     /// Cumulative token usage summed across every model call this run.
     usage: crate::agent::RunUsage,
+    /// DeepSeek Thinking Mode depth applied to every request.
+    thinking_depth: ThinkingDepth,
 }
 
 impl ModelAgent {
@@ -61,6 +63,7 @@ impl ModelAgent {
             pending_tool_call_id: None,
             events: None,
             usage: crate::agent::RunUsage::default(),
+            thinking_depth: ThinkingDepth::default(),
         }
     }
 
@@ -68,6 +71,12 @@ impl ModelAgent {
     /// [`RuntimeEvent`]s (builder style).
     pub fn with_events(mut self, events: Arc<dyn RuntimeEventSink>) -> Self {
         self.events = Some(events);
+        self
+    }
+
+    /// Attach the user's DeepSeek Thinking Mode depth.
+    pub fn with_thinking_depth(mut self, depth: ThinkingDepth) -> Self {
+        self.thinking_depth = depth;
         self
     }
 
@@ -157,6 +166,7 @@ impl Agent for ModelAgent {
         }
 
         let request = ChatRequest::new(self.model.clone(), self.messages.clone())
+            .with_thinking_depth(self.thinking_depth)
             .with_tools(self.tools.clone());
 
         // Stream the turn, forwarding token/reasoning deltas to the event sink
@@ -256,7 +266,8 @@ mod tests {
             r#"{"choices":[{"delta":{"content":"All done."},"finish_reason":"stop"}]}"#.to_string(),
             "[DONE]".to_string(),
         ];
-        let mut agent = ModelAgent::new(client(events), "deepseek-chat", "sys", "do it", vec![]);
+        let mut agent =
+            ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "do it", vec![]);
         let decision = agent.think(0, &[]).await.unwrap();
         assert_eq!(decision, AgentDecision::Complete("All done.".to_string()));
         // System + user + assistant.
@@ -270,7 +281,7 @@ mod tests {
             r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"add","arguments":"{\"a\":1,\"b\":2}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
             "[DONE]".to_string(),
         ];
-        let mut agent = ModelAgent::new(client(events), "deepseek-reasoner", "sys", "add", vec![]);
+        let mut agent = ModelAgent::new(client(events), "deepseek-v4-pro", "sys", "add", vec![]);
         let decision = agent.think(0, &[]).await.unwrap();
         match decision {
             AgentDecision::CallTool(inv) => {
@@ -299,7 +310,7 @@ mod tests {
             r#"{"choices":[{"delta":{"content":"sum is 3"},"finish_reason":"stop"}]}"#.to_string(),
             "[DONE]".to_string(),
         ];
-        let mut agent = ModelAgent::new(client(events), "deepseek-chat", "sys", "add", vec![]);
+        let mut agent = ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "add", vec![]);
         let obs = Observation {
             tool: "add".to_string(),
             ok: true,
@@ -327,7 +338,8 @@ mod tests {
                 .to_string(),
             "[DONE]".to_string(),
         ];
-        let mut agent = ModelAgent::new(client(events), "deepseek-chat", "sys", "search", vec![]);
+        let mut agent =
+            ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "search", vec![]);
         let obs = Observation {
             tool: "web_search".to_string(),
             ok: false,

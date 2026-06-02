@@ -24,6 +24,27 @@ pub enum SlashAction {
     Cost,
     /// Run environment diagnostics.
     Doctor,
+    /// Show available slash commands.
+    Help,
+    /// Show project, model, and runtime status.
+    Status,
+    /// Show settings summary.
+    Settings,
+    /// Show permission mode/rules summary.
+    Permissions,
+    /// Show knowledge/memory status.
+    Knowledge,
+    /// Show MCP server summary.
+    Mcp,
+    /// Show opened projects.
+    Projects,
+    /// Show recent sessions.
+    Sessions,
+    /// Show or set thinking depth.
+    Thinking {
+        /// Optional target depth label.
+        depth: Option<String>,
+    },
     /// Resume another session id.
     Resume {
         /// Target session id.
@@ -32,7 +53,7 @@ pub enum SlashAction {
     /// Switch chat model.
     Model {
         /// Target model id.
-        model_id: String,
+        model_id: Option<String>,
     },
     /// Clear the current chat surface.
     Clear,
@@ -129,42 +150,102 @@ impl SlashRegistry {
         registry
             .register_command(SlashCommand::new(
                 "compact",
-                "Compact the current session context",
+                "压缩当前会话上下文，降低后续请求的上下文体积",
                 StaticHandler::new(SlashActionTemplate::Compact),
             ))
             .register_command(SlashCommand::new(
                 "cost",
-                "Show current and cumulative cost",
+                "查看当前会话、当天、本月和累计费用",
                 StaticHandler::new(SlashActionTemplate::Cost),
             ))
             .register_command(SlashCommand::new(
                 "doctor",
-                "Run environment diagnostics",
+                "运行环境诊断，检查配置、数据库、权限和 API Key",
                 StaticHandler::new(SlashActionTemplate::Doctor),
             ))
             .register_command(SlashCommand::new(
+                "help",
+                "查看可用的 slash 命令列表",
+                StaticHandler::new(SlashActionTemplate::Help),
+            ))
+            .register_command(SlashCommand::new(
+                "status",
+                "查看当前项目、模型、思考深度和运行状态",
+                StaticHandler::new(SlashActionTemplate::Status),
+            ))
+            .register_command(SlashCommand::new(
+                "settings",
+                "查看 DeepSeek 配置、模型、权限和思考设置",
+                StaticHandler::new(SlashActionTemplate::Settings),
+            ))
+            .register_command(SlashCommand::new(
+                "config",
+                "/settings 的别名，查看当前配置摘要",
+                StaticHandler::new(SlashActionTemplate::Settings),
+            ))
+            .register_command(SlashCommand::new(
+                "permissions",
+                "查看当前工具权限策略和 allow/ask/deny 规则",
+                StaticHandler::new(SlashActionTemplate::Permissions),
+            ))
+            .register_command(SlashCommand::new(
+                "knowledge",
+                "查看项目知识库、草稿、被动注入和自动捕获状态",
+                StaticHandler::new(SlashActionTemplate::Knowledge),
+            ))
+            .register_command(SlashCommand::new(
+                "memory",
+                "/knowledge 的别名，查看知识库状态",
+                StaticHandler::new(SlashActionTemplate::Knowledge),
+            ))
+            .register_command(SlashCommand::new(
+                "mcp",
+                "查看已配置的 MCP 服务及启用状态",
+                StaticHandler::new(SlashActionTemplate::Mcp),
+            ))
+            .register_command(SlashCommand::new(
+                "projects",
+                "查看已打开项目和当前激活项目",
+                StaticHandler::new(SlashActionTemplate::Projects),
+            ))
+            .register_command(SlashCommand::new(
+                "sessions",
+                "查看最近会话列表",
+                StaticHandler::new(SlashActionTemplate::Sessions),
+            ))
+            .register_command(SlashCommand::new(
+                "thinking",
+                "查看或设置思考深度：simple、medium、deep",
+                StaticHandler::new(SlashActionTemplate::Thinking),
+            ))
+            .register_command(SlashCommand::new(
+                "effort",
+                "/thinking 的别名，查看或设置思考深度",
+                StaticHandler::new(SlashActionTemplate::Thinking),
+            ))
+            .register_command(SlashCommand::new(
                 "plan",
-                "Enter read-only Plan mode",
+                "进入只读 Plan 模式，先规划再执行",
                 StaticHandler::new(SlashActionTemplate::EnterPlanMode),
             ))
             .register_command(SlashCommand::new(
                 "execute",
-                "Exit Plan mode",
+                "退出 Plan 模式，恢复正常执行权限",
                 StaticHandler::new(SlashActionTemplate::ExitPlanMode),
             ))
             .register_command(SlashCommand::new(
                 "resume",
-                "Resume a session by id",
+                "按会话 ID 恢复历史会话上下文",
                 StaticHandler::new(SlashActionTemplate::Resume),
             ))
             .register_command(SlashCommand::new(
                 "model",
-                "Switch the current chat model",
+                "切换当前聊天模型，例如 /model deepseek-v4-pro",
                 StaticHandler::new(SlashActionTemplate::Model),
             ))
             .register_command(SlashCommand::new(
                 "clear",
-                "Clear the current chat surface",
+                "清空当前聊天输入界面提示",
                 StaticHandler::new(SlashActionTemplate::Clear),
             ));
         registry
@@ -209,6 +290,15 @@ enum SlashActionTemplate {
     Compact,
     Cost,
     Doctor,
+    Help,
+    Status,
+    Settings,
+    Permissions,
+    Knowledge,
+    Mcp,
+    Projects,
+    Sessions,
+    Thinking,
     Resume,
     Model,
     Clear,
@@ -244,6 +334,38 @@ impl SlashHandler for StaticHandler {
             SlashActionTemplate::Doctor => {
                 CommandResult::new(SlashAction::Doctor, "Environment diagnostics.")
             }
+            SlashActionTemplate::Help => {
+                CommandResult::new(SlashAction::Help, "Available slash commands.")
+            }
+            SlashActionTemplate::Status => {
+                CommandResult::new(SlashAction::Status, "Runtime status.")
+            }
+            SlashActionTemplate::Settings => {
+                CommandResult::new(SlashAction::Settings, "Settings summary.")
+            }
+            SlashActionTemplate::Permissions => {
+                CommandResult::new(SlashAction::Permissions, "Permission summary.")
+            }
+            SlashActionTemplate::Knowledge => {
+                CommandResult::new(SlashAction::Knowledge, "Knowledge status.")
+            }
+            SlashActionTemplate::Mcp => CommandResult::new(SlashAction::Mcp, "MCP server summary."),
+            SlashActionTemplate::Projects => {
+                CommandResult::new(SlashAction::Projects, "Opened projects.")
+            }
+            SlashActionTemplate::Sessions => {
+                CommandResult::new(SlashAction::Sessions, "Recent sessions.")
+            }
+            SlashActionTemplate::Thinking => CommandResult::new(
+                SlashAction::Thinking {
+                    depth: if args.is_empty() {
+                        None
+                    } else {
+                        Some(args.to_string())
+                    },
+                },
+                "Thinking depth.",
+            ),
             SlashActionTemplate::Resume => {
                 if args.is_empty() {
                     return Err(CoreError::invalid("usage: /resume <session_id>"));
@@ -255,17 +377,16 @@ impl SlashHandler for StaticHandler {
                     format!("Resumed session {args}."),
                 )
             }
-            SlashActionTemplate::Model => {
-                if args.is_empty() {
-                    return Err(CoreError::invalid("usage: /model <model_id>"));
-                }
-                CommandResult::new(
-                    SlashAction::Model {
-                        model_id: args.to_string(),
+            SlashActionTemplate::Model => CommandResult::new(
+                SlashAction::Model {
+                    model_id: if args.is_empty() {
+                        None
+                    } else {
+                        Some(args.to_string())
                     },
-                    format!("Switched chat model to {args}."),
-                )
-            }
+                },
+                "Model selection.",
+            ),
             SlashActionTemplate::Clear => {
                 CommandResult::new(SlashAction::Clear, "Cleared the chat surface.")
             }
@@ -289,7 +410,26 @@ mod tests {
     fn builtins_include_required_commands() {
         let names = SlashRegistry::with_builtins().names();
         for expected in [
-            "compact", "cost", "doctor", "plan", "execute", "resume", "model", "clear",
+            "compact",
+            "cost",
+            "doctor",
+            "help",
+            "status",
+            "settings",
+            "config",
+            "permissions",
+            "knowledge",
+            "memory",
+            "mcp",
+            "projects",
+            "sessions",
+            "thinking",
+            "effort",
+            "plan",
+            "execute",
+            "resume",
+            "model",
+            "clear",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
@@ -308,15 +448,39 @@ mod tests {
         let reg = SlashRegistry::with_builtins();
         let mut ctx = CommandContext::default();
         let out = reg
-            .execute_line("/model deepseek-reasoner", &mut ctx)
+            .execute_line("/model deepseek-v4-pro", &mut ctx)
             .unwrap()
             .unwrap();
         assert_eq!(
             out.action,
             SlashAction::Model {
-                model_id: "deepseek-reasoner".into()
+                model_id: Some("deepseek-v4-pro".into())
             }
         );
+    }
+
+    #[test]
+    fn thinking_with_args_maps_to_structured_action() {
+        let reg = SlashRegistry::with_builtins();
+        let mut ctx = CommandContext::default();
+        let out = reg
+            .execute_line("/thinking deep", &mut ctx)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            out.action,
+            SlashAction::Thinking {
+                depth: Some("deep".into())
+            }
+        );
+    }
+
+    #[test]
+    fn model_without_args_maps_to_selection_action() {
+        let reg = SlashRegistry::with_builtins();
+        let mut ctx = CommandContext::default();
+        let out = reg.execute_line("/model", &mut ctx).unwrap().unwrap();
+        assert_eq!(out.action, SlashAction::Model { model_id: None });
     }
 
     #[test]

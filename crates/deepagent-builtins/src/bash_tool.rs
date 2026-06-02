@@ -16,6 +16,9 @@ use deepagent_core::error::Result;
 use deepagent_tools::permission::{Permission, PermissionSet, RiskLevel};
 use deepagent_tools::{Tool, ToolDescriptor, ToolOutput};
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// Executes a shell command, returning (exit_code, stdout, stderr).
 #[async_trait]
 pub trait CommandExecutor: Send + Sync {
@@ -53,6 +56,11 @@ impl CommandExecutor for SystemExecutor {
                 c.args(["-c", &command]);
                 c
             };
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
             cmd.current_dir(&cwd).output()
         })
         .await

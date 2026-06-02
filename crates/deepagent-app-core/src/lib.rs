@@ -30,7 +30,7 @@ pub mod workspace_service;
 
 pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
 pub use chat_service::ChatService;
-pub use commands::{builtin_commands, filter_commands};
+pub use commands::{builtin_commands, commands_from_roots, filter_commands};
 pub use cost_service::{BudgetConfig, CostRecord, CostService, CostSummary, ModelPricing};
 pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
 pub use doctor::{format_diagnostics, run_diagnostics, DiagStatus, DiagnosticResult};

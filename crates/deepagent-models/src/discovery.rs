@@ -27,7 +27,7 @@ pub const MODELS_PATH: &str = "/models";
 /// One model entry as returned by the OpenAI-compatible `GET /models`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
-    /// Model id (e.g. `"deepseek-chat"`, `"deepseek-reasoner"`).
+    /// Model id (e.g. `"deepseek-v4-flash"`, `"deepseek-v4-pro"`).
     pub id: String,
     /// Object type (usually `"model"`).
     #[serde(default)]
@@ -84,32 +84,30 @@ impl ModelCatalog {
 
     /// Build a catalog by auto-selecting from a discovered model list.
     ///
-    /// Selection heuristic (no network): prefer the well-known DeepSeek ids when
-    /// present, otherwise fall back to the first reasoner-ish / chat-ish id, and
-    /// finally to the first model. This keeps the system usable even if DeepSeek
-    /// renames or adds models.
+    /// Selection heuristic (no network): use current DeepSeek v4 model ids and
+    /// ignore deprecated compatibility aliases. The UI displays the filtered
+    /// discovered set, so users choose from current official model ids only.
     pub fn auto_select(base_url: impl Into<String>, available: Vec<ModelInfo>) -> Result<Self> {
+        let available: Vec<ModelInfo> = available
+            .into_iter()
+            .filter(|m| !is_deprecated_model_id(&m.id))
+            .collect();
         if available.is_empty() {
             return Err(CoreError::other(
-                "model discovery returned no models (check API key / connectivity)",
+                "model discovery returned no current DeepSeek v4 models",
             ));
         }
 
         let ids: Vec<&str> = available.iter().map(|m| m.id.as_str()).collect();
 
-        // Reasoner: explicit "reasoner", else any id containing "reason"/"r1".
-        let reasoner = pick(&ids, "deepseek-reasoner")
-            .or_else(|| pick_contains(&ids, &["reason", "-r1", "thinking"]))
-            .map(str::to_string);
-
-        // Chat: explicit "chat", else any id containing "chat"/"v3", else first.
-        let chat = pick(&ids, "deepseek-chat")
-            .or_else(|| pick_contains(&ids, &["chat", "-v3", "coder"]))
+        let chat = pick(&ids, "deepseek-v4-flash")
+            .or_else(|| pick_contains(&ids, &["v4-flash", "flash"]))
             .map(str::to_string)
-            .unwrap_or_else(|| ids[0].to_string());
-
-        // Reasoner falls back to chat if the provider exposes no reasoner.
-        let reasoner_model = reasoner.unwrap_or_else(|| chat.clone());
+            .ok_or_else(|| CoreError::other("deepseek-v4-flash was not discovered"))?;
+        let reasoner_model = pick(&ids, "deepseek-v4-pro")
+            .or_else(|| pick_contains(&ids, &["v4-pro", "-pro", "_pro"]))
+            .map(str::to_string)
+            .ok_or_else(|| CoreError::other("deepseek-v4-pro was not discovered"))?;
 
         Ok(Self {
             base_url: base_url.into(),
@@ -131,6 +129,10 @@ fn pick_contains<'a>(ids: &[&'a str], needles: &[&str]) -> Option<&'a str> {
         let lower = id.to_lowercase();
         needles.iter().any(|n| lower.contains(n))
     })
+}
+
+fn is_deprecated_model_id(id: &str) -> bool {
+    matches!(id, "deepseek-chat" | "deepseek-reasoner")
 }
 
 /// Discovers models from a provider and builds an auto-selected catalog.
@@ -204,37 +206,39 @@ mod tests {
     fn auto_select_prefers_known_ids() {
         let cat = ModelCatalog::auto_select(
             DEEPSEEK_BASE_URL,
-            models(&["deepseek-chat", "deepseek-reasoner"]),
+            models(&["deepseek-v4-flash", "deepseek-v4-pro"]),
         )
         .unwrap();
-        assert_eq!(cat.chat_model, "deepseek-chat");
-        assert_eq!(cat.reasoner_model, "deepseek-reasoner");
-        assert_eq!(cat.model_for(ModelRole::Reasoner), "deepseek-reasoner");
+        assert_eq!(cat.chat_model, "deepseek-v4-flash");
+        assert_eq!(cat.reasoner_model, "deepseek-v4-pro");
+        assert_eq!(cat.model_for(ModelRole::Reasoner), "deepseek-v4-pro");
     }
 
     #[test]
     fn auto_select_falls_back_by_substring() {
         let cat = ModelCatalog::auto_select(
             DEEPSEEK_BASE_URL,
-            models(&["deepseek-v3-chat-latest", "deepseek-r1-latest"]),
+            models(&["provider-v4-flash-latest", "provider-v4-pro-latest"]),
         )
         .unwrap();
-        assert_eq!(cat.chat_model, "deepseek-v3-chat-latest");
-        assert_eq!(cat.reasoner_model, "deepseek-r1-latest");
+        assert_eq!(cat.chat_model, "provider-v4-flash-latest");
+        assert_eq!(cat.reasoner_model, "provider-v4-pro-latest");
     }
 
     #[test]
-    fn reasoner_falls_back_to_chat_when_absent() {
-        let cat = ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models(&["deepseek-chat"])).unwrap();
-        assert_eq!(cat.reasoner_model, "deepseek-chat");
+    fn deprecated_aliases_are_ignored() {
+        assert!(ModelCatalog::auto_select(
+            DEEPSEEK_BASE_URL,
+            models(&["deepseek-chat", "deepseek-reasoner"])
+        )
+        .is_err());
     }
 
     #[test]
-    fn unknown_provider_uses_first_model() {
-        let cat =
-            ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models(&["custom-model-1"])).unwrap();
-        assert_eq!(cat.chat_model, "custom-model-1");
-        assert!(cat.has_model("custom-model-1"));
+    fn missing_required_v4_role_errors() {
+        assert!(
+            ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models(&["deepseek-v4-flash"])).is_err()
+        );
     }
 
     #[test]
@@ -245,8 +249,8 @@ mod tests {
     #[tokio::test]
     async fn discover_through_transport() {
         let body = r#"{"object":"list","data":[
-            {"id":"deepseek-chat","object":"model","owned_by":"deepseek"},
-            {"id":"deepseek-reasoner","object":"model","owned_by":"deepseek"}
+            {"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"},
+            {"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}
         ]}"#;
         let transport = Arc::new(MockTransport::with_get_json(body));
         let discovery = ModelDiscovery::deepseek(transport);
@@ -255,8 +259,8 @@ mod tests {
             "https://api.deepseek.com/models"
         );
         let cat = discovery.discover("sk-test").await.unwrap();
-        assert_eq!(cat.chat_model, "deepseek-chat");
-        assert_eq!(cat.reasoner_model, "deepseek-reasoner");
+        assert_eq!(cat.chat_model, "deepseek-v4-flash");
+        assert_eq!(cat.reasoner_model, "deepseek-v4-pro");
         assert_eq!(cat.available.len(), 2);
     }
 

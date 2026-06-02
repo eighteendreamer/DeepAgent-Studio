@@ -72,6 +72,9 @@ use crate::hook::{DecisionSource, Hook, HookOutcome};
 use crate::lifecycle::{HookContext, HookData, HookPoint};
 use crate::registry::HookRegistry;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// Default command timeout when a hook omits `timeout` (seconds).
 pub const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 60;
 
@@ -299,6 +302,10 @@ impl HookCommandRunner for SystemHookRunner {
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
 
         let mut child = cmd
             .spawn()

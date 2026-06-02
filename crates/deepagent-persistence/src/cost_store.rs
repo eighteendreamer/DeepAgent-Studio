@@ -18,7 +18,7 @@ pub struct CostEntry<'a> {
     pub session_id: &'a str,
     /// Unix-millis timestamp of the call.
     pub timestamp: i64,
-    /// Model identifier (e.g. `deepseek-chat`).
+    /// Model identifier (e.g. `deepseek-v4-flash`).
     pub model: &'a str,
     /// Prompt tokens.
     pub input_tokens: u32,
@@ -28,7 +28,7 @@ pub struct CostEntry<'a> {
     pub cache_hit_tokens: u32,
     /// Total tokens reported by the provider.
     pub total_tokens: u32,
-    /// Computed cost in ¥.
+    /// Computed cost in USD (column kept as `cost_yuan` for schema compatibility).
     pub cost_yuan: f64,
 }
 
@@ -111,7 +111,7 @@ mod tests {
         CostEntry {
             session_id: session,
             timestamp: ts,
-            model: "deepseek-chat",
+            model: "deepseek-v4-flash",
             input_tokens: 100,
             output_tokens: 50,
             cache_hit_tokens: 0,

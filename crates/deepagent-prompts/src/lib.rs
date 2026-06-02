@@ -46,10 +46,10 @@ mod tests {
     #[test]
     fn end_to_end_assembly() {
         let agent = AgentDef::parse(
-            "---\nname: reviewer\ndescription: Reviews code\ntools: Read, Grep\nmodel: deepseek-reasoner\n---\nYou are a meticulous code reviewer.",
+            "---\nname: reviewer\ndescription: Reviews code\ntools: Read, Grep\nmodel: deepseek-v4-pro\n---\nYou are a meticulous code reviewer.",
         )
         .unwrap();
-        assert_eq!(agent.model, ModelPref::Named("deepseek-reasoner".into()));
+        assert_eq!(agent.model, ModelPref::Named("deepseek-v4-pro".into()));
 
         let cmd = parse_command(
             "review",

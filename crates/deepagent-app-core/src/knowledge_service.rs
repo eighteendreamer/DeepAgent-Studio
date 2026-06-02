@@ -8,7 +8,7 @@
 //! It loads two vaults — project-local and user-global — into one index, and
 //! exposes serializable DTOs the desktop app consumes.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use deepagent_core::clock::{Clock, SystemClock};
@@ -110,7 +110,13 @@ fn parse_scope(s: Option<&str>) -> Scope {
 
 /// UI- and runtime-facing knowledge base service.
 pub struct KnowledgeService {
-    inner: Mutex<KnowledgeBase<HashingEmbedder>>,
+    inner: Mutex<KnowledgeState>,
+    global_root: PathBuf,
+}
+
+struct KnowledgeState {
+    project_root: PathBuf,
+    base: KnowledgeBase<HashingEmbedder>,
 }
 
 impl KnowledgeService {
@@ -119,52 +125,88 @@ impl KnowledgeService {
     /// The project vault lives at `<project_root>/.deepagent/knowledge/`; the
     /// global vault at `<global_root>/knowledge/`. Neither needs to exist yet.
     pub fn open(project_root: &Path, global_root: &Path) -> Result<Self> {
+        let base = Self::build_base(project_root, global_root, KnowledgeConfig::default())?;
+        Ok(Self {
+            inner: Mutex::new(KnowledgeState {
+                project_root: project_root.to_path_buf(),
+                base,
+            }),
+            global_root: global_root.to_path_buf(),
+        })
+    }
+
+    fn build_base(
+        project_root: &Path,
+        global_root: &Path,
+        config: KnowledgeConfig,
+    ) -> Result<KnowledgeBase<HashingEmbedder>> {
         let project = Vault::new(
             project_root.join(".deepagent").join("knowledge"),
             Scope::Project,
         );
         let global = Vault::new(global_root.join("knowledge"), Scope::Global);
-        let mut base = KnowledgeBase::new(
-            vec![project, global],
-            HashingEmbedder::default(),
-            KnowledgeConfig::default(),
-        );
+        let mut base =
+            KnowledgeBase::new(vec![project, global], HashingEmbedder::default(), config);
         base.load_all()?;
-        Ok(Self {
-            inner: Mutex::new(base),
-        })
+        Ok(base)
     }
 
     /// Build over an already-constructed base (for tests / custom wiring).
     pub fn from_base(base: KnowledgeBase<HashingEmbedder>) -> Self {
         Self {
-            inner: Mutex::new(base),
+            inner: Mutex::new(KnowledgeState {
+                project_root: PathBuf::new(),
+                base,
+            }),
+            global_root: PathBuf::new(),
         }
+    }
+
+    /// Switch the project-local vault to `project_root`, preserving the global
+    /// vault and runtime toggles. This keeps project-scoped knowledge aligned
+    /// with the active project folder instead of the app launch directory.
+    pub fn activate_project(&self, project_root: &Path) -> Result<()> {
+        let mut state = self.lock();
+        if state.project_root == project_root {
+            return Ok(());
+        }
+        let config = state.base.config().clone();
+        let base = Self::build_base(project_root, &self.global_root, config)?;
+        *state = KnowledgeState {
+            project_root: project_root.to_path_buf(),
+            base,
+        };
+        Ok(())
     }
 
     /// Re-scan all vaults from disk and rebuild the index. Returns entry count.
     pub fn reload(&self) -> Result<usize> {
         let mut base = self.lock();
-        base.load_all()
+        base.base.load_all()
     }
 
     /// List all entries as DTOs.
     pub fn list(&self) -> Vec<KnowledgeDto> {
         let base = self.lock();
-        base.list().iter().map(KnowledgeDto::from_entry).collect()
+        base.base
+            .list()
+            .iter()
+            .map(KnowledgeDto::from_entry)
+            .collect()
     }
 
     /// Get one entry by composite id (`scope:slug`).
     pub fn get(&self, id: &str) -> Option<KnowledgeDto> {
         let base = self.lock();
-        base.get(id).map(KnowledgeDto::from_entry)
+        base.base.get(id).map(KnowledgeDto::from_entry)
     }
 
     /// Search the knowledge base, returning hit DTOs (best first).
     pub fn search(&self, query: &str, kind: Option<&str>, limit: usize) -> Vec<KnowledgeHitDto> {
         let kind = kind.filter(|s| !s.trim().is_empty()).map(EntryKind::parse);
         let base = self.lock();
-        base.search(query, kind, limit)
+        base.base
+            .search(query, kind, limit)
             .into_iter()
             .map(|hit| KnowledgeHitDto {
                 id: format!("{}:{}", hit.entry.scope.label(), hit.entry.id),
@@ -196,51 +238,52 @@ impl KnowledgeService {
             scope,
         };
         let mut base = self.lock();
-        let entry = base.write(kdraft, now_ms)?;
+        let entry = base.base.write(kdraft, now_ms)?;
         Ok(KnowledgeDto::from_entry(&entry))
     }
 
     /// Delete an entry by composite id. Returns whether it existed.
     pub fn delete(&self, id: &str) -> Result<bool> {
         let mut base = self.lock();
-        base.delete(id)
+        base.base.delete(id)
     }
 
     /// The passive-injection block for `query` (empty when nothing qualifies or
     /// passive injection is disabled).
     pub fn passive_block(&self, query: &str) -> String {
         let base = self.lock();
-        base.passive_block(query)
+        base.base.passive_block(query)
     }
 
     /// Toggle passive injection.
     pub fn set_passive_enabled(&self, on: bool) {
         let mut base = self.lock();
-        base.set_passive_enabled(on);
+        base.base.set_passive_enabled(on);
     }
 
     /// Whether passive injection is currently enabled.
     pub fn passive_enabled(&self) -> bool {
         let base = self.lock();
-        base.config().passive_enabled
+        base.base.config().passive_enabled
     }
 
     /// Toggle session auto-capture (recovery → draft).
     pub fn set_auto_capture(&self, on: bool) {
         let mut base = self.lock();
-        base.set_auto_capture_enabled(on);
+        base.base.set_auto_capture_enabled(on);
     }
 
     /// Whether session auto-capture is currently enabled.
     pub fn auto_capture_enabled(&self) -> bool {
         let base = self.lock();
-        base.config().auto_capture_enabled
+        base.base.config().auto_capture_enabled
     }
 
     /// List pending drafts as DTOs.
     pub fn list_drafts(&self) -> Vec<KnowledgeDto> {
         let base = self.lock();
-        base.list_drafts()
+        base.base
+            .list_drafts()
             .iter()
             .map(KnowledgeDto::from_entry)
             .collect()
@@ -250,21 +293,21 @@ impl KnowledgeService {
     pub fn accept_draft(&self, id: &str) -> Result<KnowledgeDto> {
         let now_ms = SystemClock.now().as_millis();
         let mut base = self.lock();
-        let entry = base.accept_draft(id, now_ms)?;
+        let entry = base.base.accept_draft(id, now_ms)?;
         Ok(KnowledgeDto::from_entry(&entry))
     }
 
     /// Discard a draft by composite id.
     pub fn discard_draft(&self, id: &str) -> Result<bool> {
         let mut base = self.lock();
-        base.discard_draft(id)
+        base.base.discard_draft(id)
     }
 
     /// Add a pending draft directly (used by auto-capture). Returns the draft.
     fn add_draft(&self, draft: KnowledgeDraft) -> Result<KnowledgeDto> {
         let now_ms = SystemClock.now().as_millis();
         let mut base = self.lock();
-        let entry = base.add_draft(draft, now_ms)?;
+        let entry = base.base.add_draft(draft, now_ms)?;
         Ok(KnowledgeDto::from_entry(&entry))
     }
 
@@ -308,7 +351,7 @@ impl KnowledgeService {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, KnowledgeBase<HashingEmbedder>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, KnowledgeState> {
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -317,7 +360,7 @@ impl KnowledgeService {
 
 impl std::fmt::Debug for KnowledgeService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let n = self.inner.lock().map(|b| b.len()).unwrap_or(0);
+        let n = self.inner.lock().map(|s| s.base.len()).unwrap_or(0);
         f.debug_struct("KnowledgeService")
             .field("entries", &n)
             .finish()
@@ -584,6 +627,34 @@ mod tests {
         assert_eq!(svc2.reload().unwrap(), 1);
     }
 
+    #[test]
+    fn activate_project_switches_project_vault_but_keeps_global() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global_root = tmp.path().join("glob");
+        let project_a = tmp.path().join("a");
+        let project_b = tmp.path().join("b");
+        let svc = KnowledgeService::open(&project_a, &global_root).unwrap();
+        svc.save(draft(
+            "Project A only",
+            "This note belongs to project A",
+            "note",
+            "project",
+        ))
+        .unwrap();
+        svc.save(draft(
+            "Global note",
+            "This note should follow every project",
+            "note",
+            "global",
+        ))
+        .unwrap();
+
+        svc.activate_project(&project_b).unwrap();
+        let titles: Vec<_> = svc.list().into_iter().map(|e| e.title).collect();
+        assert!(!titles.iter().any(|t| t == "Project A only"));
+        assert!(titles.iter().any(|t| t == "Global note"));
+    }
+
     // ---- auto-capture --------------------------------------------------
 
     use deepagent_core::clock::Timestamp;
@@ -673,7 +744,7 @@ mod tests {
         );
         let events = recovery_events();
         let dto = svc
-            .capture_from_session(client, "deepseek-chat".into(), &events, "ses_xyz")
+            .capture_from_session(client, "deepseek-v4-flash".into(), &events, "ses_xyz")
             .await;
         assert!(dto.is_some());
         let dto = dto.unwrap();
@@ -690,7 +761,7 @@ mod tests {
         let svc = service(tmp.path());
         let client = client_streaming(r#"{"worth_saving": false}"#);
         let dto = svc
-            .capture_from_session(client, "deepseek-chat".into(), &recovery_events(), "s")
+            .capture_from_session(client, "deepseek-v4-flash".into(), &recovery_events(), "s")
             .await;
         assert!(dto.is_none());
         assert!(svc.list_drafts().is_empty());
@@ -726,7 +797,7 @@ mod tests {
             ),
         ];
         let dto = svc
-            .capture_from_session(client, "deepseek-chat".into(), &events, "s")
+            .capture_from_session(client, "deepseek-v4-flash".into(), &events, "s")
             .await;
         assert!(dto.is_none());
         assert!(svc.list_drafts().is_empty());
@@ -740,7 +811,7 @@ mod tests {
         assert!(!svc.auto_capture_enabled());
         let client = client_streaming(r#"{"worth_saving": true, "title": "x", "body": "y"}"#);
         let dto = svc
-            .capture_from_session(client, "deepseek-chat".into(), &recovery_events(), "s")
+            .capture_from_session(client, "deepseek-v4-flash".into(), &recovery_events(), "s")
             .await;
         assert!(dto.is_none());
     }

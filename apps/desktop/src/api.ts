@@ -31,6 +31,18 @@ import type {
 
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
+export const SETTINGS_CHANGED_EVENT = "deepagent:settings-changed";
+
+function emitSettingsChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(SETTINGS_CHANGED_EVENT));
+}
+
+function promptMayChangeSettings(prompt: string): boolean {
+  const normalized = prompt.trim().toLowerCase();
+  return /^\/(model|thinking|effort)(?:\s|$)/.test(normalized);
+}
+
 function getInvoke(): InvokeFn | null {
   // Tauri injects __TAURI_INTERNALS__ / the api module at runtime.
   const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
@@ -87,7 +99,11 @@ export async function computeDiff(oldText: string, newText: string): Promise<Dif
  */
 export async function initializeProject(apiKey: string): Promise<SettingsView> {
   const invoke = getInvoke();
-  if (invoke) return invoke<SettingsView>("initialize_project", { apiKey });
+  if (invoke) {
+    const view = await invoke<SettingsView>("initialize_project", { apiKey });
+    emitSettingsChanged();
+    return view;
+  }
   throw new Error("connecting an API key requires the desktop app");
 }
 
@@ -101,14 +117,21 @@ export async function getSettings(): Promise<SettingsView | null> {
 /** Re-run model discovery with the stored key. */
 export async function refreshModels(): Promise<SettingsView> {
   const invoke = getInvoke();
-  if (invoke) return invoke<SettingsView>("refresh_models");
+  if (invoke) {
+    const view = await invoke<SettingsView>("refresh_models");
+    emitSettingsChanged();
+    return view;
+  }
   throw new Error("refresh requires the desktop app");
 }
 
 /** Clear the stored API key (sign out). */
 export async function clearApiKey(): Promise<void> {
   const invoke = getInvoke();
-  if (invoke) await invoke("clear_api_key");
+  if (invoke) {
+    await invoke("clear_api_key");
+    emitSettingsChanged();
+  }
 }
 
 /**
@@ -117,8 +140,25 @@ export async function clearApiKey(): Promise<void> {
  */
 export async function setChatModel(modelId: string): Promise<SettingsView> {
   const invoke = getInvoke();
-  if (invoke) return invoke<SettingsView>("set_chat_model", { modelId });
+  if (invoke) {
+    const view = await invoke<SettingsView>("set_chat_model", { modelId });
+    emitSettingsChanged();
+    return view;
+  }
   throw new Error("switching models requires the desktop app");
+}
+
+/** Set DeepSeek Thinking Mode depth for subsequent chat requests. */
+export async function setThinkingDepth(
+  depth: "simple" | "medium" | "deep"
+): Promise<SettingsView> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const view = await invoke<SettingsView>("set_thinking_depth", { depth });
+    emitSettingsChanged();
+    return view;
+  }
+  throw new Error("changing thinking depth requires the desktop app");
 }
 
 /**
@@ -357,6 +397,7 @@ const EMPTY_COST_SUMMARY: CostSummary = {
   today_cost: 0,
   month_cost: 0,
   total_cost: 0,
+  currency: "USD",
   budget: { daily_limit: null, monthly_limit: null },
 };
 
@@ -368,7 +409,7 @@ export async function getCostSummary(sessionId?: string): Promise<CostSummary> {
   return EMPTY_COST_SUMMARY;
 }
 
-/** Set the daily/monthly budget (¥); returns the refreshed summary. */
+/** Set the daily/monthly budget (USD); returns the refreshed summary. */
 export async function setBudget(
   dailyLimit: number | null,
   monthlyLimit: number | null,
@@ -458,7 +499,9 @@ export async function runChat(
       }
     );
     try {
-      return await invoke<string>("run_chat", { prompt, sessionId: sessionId ?? null, runId: actualRunId });
+      const nextSessionId = await invoke<string>("run_chat", { prompt, sessionId: sessionId ?? null, runId: actualRunId });
+      if (promptMayChangeSettings(prompt)) emitSettingsChanged();
+      return nextSessionId;
     } finally {
       unlistenEvent();
       unlistenApproval();
@@ -703,23 +746,35 @@ export function isTauri(): boolean {
 // ---- Mock data (browser/dev fallback) ------------------------------------
 
 const MOCK_COMMANDS: Command[] = [
-  { id: "session.new", title: "New Session", category: "Session", shortcut: "Ctrl+N" },
-  { id: "session.end", title: "End Session", category: "Session", shortcut: null },
-  { id: "session.refresh", title: "Refresh Sessions", category: "Session", shortcut: "Ctrl+R" },
-  { id: "view.timeline", title: "Show Timeline", category: "View", shortcut: "Ctrl+1" },
-  { id: "view.metrics", title: "Toggle Metrics Panel", category: "View", shortcut: "Ctrl+2" },
-  { id: "view.diff", title: "Open Diff View", category: "View", shortcut: "Ctrl+D" },
-  { id: "approvals.review", title: "Review Pending Approvals", category: "Approvals", shortcut: "Ctrl+Shift+A" },
-  { id: "mcp.list", title: "List MCP Servers", category: "MCP", shortcut: null },
-  { id: "theme.toggle", title: "Toggle Theme", category: "View", shortcut: null },
-  { id: "slash.compact", title: "/compact", category: "Slash", shortcut: null },
-  { id: "slash.cost", title: "/cost", category: "Slash", shortcut: null },
-  { id: "slash.doctor", title: "/doctor", category: "Slash", shortcut: null },
-  { id: "slash.plan", title: "/plan", category: "Slash", shortcut: null },
-  { id: "slash.execute", title: "/execute", category: "Slash", shortcut: null },
-  { id: "slash.resume", title: "/resume", category: "Slash", shortcut: null },
-  { id: "slash.model", title: "/model", category: "Slash", shortcut: null },
-  { id: "slash.clear", title: "/clear", category: "Slash", shortcut: null },
+  { id: "session.new", title: "New Session", description: "Start a fresh conversation.", category: "Session", shortcut: "Ctrl+N" },
+  { id: "session.end", title: "End Session", description: "Mark the current session as ended.", category: "Session", shortcut: null },
+  { id: "session.refresh", title: "Refresh Sessions", description: "Reload the session list.", category: "Session", shortcut: "Ctrl+R" },
+  { id: "view.timeline", title: "Show Timeline", description: "Open the event timeline for the current session.", category: "View", shortcut: "Ctrl+1" },
+  { id: "view.metrics", title: "Toggle Metrics Panel", description: "Show or hide session metrics.", category: "View", shortcut: "Ctrl+2" },
+  { id: "view.diff", title: "Open Diff View", description: "Open the text diff tool.", category: "View", shortcut: "Ctrl+D" },
+  { id: "approvals.review", title: "Review Pending Approvals", description: "Open pending tool approval requests.", category: "Approvals", shortcut: "Ctrl+Shift+A" },
+  { id: "mcp.list", title: "List MCP Servers", description: "Open the configured MCP server list.", category: "MCP", shortcut: null },
+  { id: "theme.toggle", title: "Toggle Theme", description: "Switch between light and dark UI themes.", category: "View", shortcut: null },
+  { id: "slash.compact", title: "/compact", description: "压缩当前会话上下文，降低后续请求的上下文体积", category: "内置命令", shortcut: null },
+  { id: "slash.cost", title: "/cost", description: "查看当前会话、当天、本月和累计费用", category: "内置命令", shortcut: null },
+  { id: "slash.doctor", title: "/doctor", description: "运行环境诊断，检查配置、数据库、权限和 API Key", category: "内置命令", shortcut: null },
+  { id: "slash.help", title: "/help", description: "查看可用的 slash 命令列表", category: "内置命令", shortcut: null },
+  { id: "slash.status", title: "/status", description: "查看当前项目、模型、思考深度和运行状态", category: "内置命令", shortcut: null },
+  { id: "slash.settings", title: "/settings", description: "查看 DeepSeek 配置、模型、权限和思考设置", category: "内置命令", shortcut: null },
+  { id: "slash.config", title: "/config", description: "/settings 的别名，查看当前配置摘要", category: "内置命令", shortcut: null },
+  { id: "slash.permissions", title: "/permissions", description: "查看当前工具权限策略和 allow/ask/deny 规则", category: "内置命令", shortcut: null },
+  { id: "slash.knowledge", title: "/knowledge", description: "查看项目知识库、草稿、被动注入和自动捕获状态", category: "内置命令", shortcut: null },
+  { id: "slash.memory", title: "/memory", description: "/knowledge 的别名，查看知识库状态", category: "内置命令", shortcut: null },
+  { id: "slash.mcp", title: "/mcp", description: "查看已配置的 MCP 服务及启用状态", category: "内置命令", shortcut: null },
+  { id: "slash.projects", title: "/projects", description: "查看已打开项目和当前激活项目", category: "内置命令", shortcut: null },
+  { id: "slash.sessions", title: "/sessions", description: "查看最近会话列表", category: "内置命令", shortcut: null },
+  { id: "slash.thinking", title: "/thinking", description: "查看或设置思考深度：simple、medium、deep", category: "内置命令", shortcut: null },
+  { id: "slash.effort", title: "/effort", description: "/thinking 的别名，查看或设置思考深度", category: "内置命令", shortcut: null },
+  { id: "slash.plan", title: "/plan", description: "进入只读 Plan 模式，先规划再执行", category: "内置命令", shortcut: null },
+  { id: "slash.execute", title: "/execute", description: "退出 Plan 模式，恢复正常执行权限", category: "内置命令", shortcut: null },
+  { id: "slash.resume", title: "/resume", description: "按会话 ID 恢复历史会话上下文", category: "内置命令", shortcut: null },
+  { id: "slash.model", title: "/model", description: "切换当前聊天模型，例如 /model deepseek-v4-pro", category: "内置命令", shortcut: null },
+  { id: "slash.clear", title: "/clear", description: "清空当前聊天输入界面提示", category: "内置命令", shortcut: null },
 ];
 
 function isSubsequence(needle: string, haystack: string): boolean {

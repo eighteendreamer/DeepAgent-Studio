@@ -300,6 +300,7 @@ dependencies = [
  "deepagent-models",
  "deepagent-observation",
  "deepagent-persistence",
+ "deepagent-prompts",
  "deepagent-runtime",
  "deepagent-session",
  "deepagent-skills",

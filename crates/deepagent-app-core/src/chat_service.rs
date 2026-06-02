@@ -26,9 +26,9 @@ use deepagent_core::message::Message;
 use deepagent_hooks::{
     HookCommandRunner, HookPoint, HookRegistry, PermissionRulesHook, SystemHookRunner,
 };
-use deepagent_intent::{CommandContext, SlashAction, SlashRegistry};
+use deepagent_intent::{CommandContext, CommandDef, SlashAction, SlashRegistry};
 use deepagent_models::transport::HttpTransport;
-use deepagent_models::{ModelClient, ModelConfig, ModelRole, ToolSchema};
+use deepagent_models::{ModelClient, ModelConfig, ModelRole, ThinkingDepth, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{
     Agent, ChannelSink, ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent, RuntimeEventSink,
@@ -314,6 +314,12 @@ impl ChatService {
         let mut ctx = CommandContext {
             session_id: continue_session.map(str::to_string),
         };
+        let Some((name, _)) = parse_slash_invocation(prompt) else {
+            return Ok(None);
+        };
+        if registry.get(name).is_none() {
+            return Ok(None);
+        }
         let Some(result) = registry.execute_line(prompt, &mut ctx) else {
             return Ok(None);
         };
@@ -372,6 +378,34 @@ impl ChatService {
         Ok(Some(session_id))
     }
 
+    fn dynamic_command_prompt(&self, prompt: &str) -> Result<Option<String>> {
+        let Some((name, args)) = parse_slash_invocation(prompt) else {
+            return Ok(None);
+        };
+        if SlashRegistry::with_builtins().get(name).is_some() {
+            return Ok(None);
+        }
+        let Some(def) = self.find_dynamic_command(name)? else {
+            return Err(CoreError::invalid(format!(
+                "unknown slash command: /{name}"
+            )));
+        };
+        Ok(Some(def.render(args)))
+    }
+
+    fn find_dynamic_command(&self, name: &str) -> Result<Option<CommandDef>> {
+        let mut roots = vec![self.effective_root(), self.workspace.clone()];
+        roots.dedup();
+        for dir in crate::commands::command_dirs(roots) {
+            let path = dir.join(format!("{name}.md"));
+            if !path.exists() {
+                continue;
+            }
+            return deepagent_prompts::load_command_file(path).map(Some);
+        }
+        Ok(None)
+    }
+
     async fn apply_slash_action(
         &self,
         session_id: &str,
@@ -411,7 +445,7 @@ impl ChatService {
                 Some(cost) => {
                     let s = cost.summary(session_id)?;
                     format!(
-                        "Cost summary: session ¥{:.4}, today ¥{:.4}, month ¥{:.4}, total ¥{:.4}.",
+                        "Cost summary: session ${:.4}, today ${:.4}, month ${:.4}, total ${:.4}.",
                         s.session_cost, s.today_cost, s.month_cost, s.total_cost
                     )
                 }
@@ -428,6 +462,163 @@ impl ChatService {
                 .await;
                 crate::doctor::format_diagnostics(&results)
             }
+            SlashAction::Help => {
+                let registry = SlashRegistry::with_builtins();
+                let mut lines = vec!["Available slash commands:".to_string()];
+                for name in registry.names() {
+                    if let Some(command) = registry.get(&name) {
+                        lines.push(format!("- /{}: {}", command.name, command.description));
+                    }
+                }
+                lines.join("\n")
+            }
+            SlashAction::Status => {
+                let root = self.effective_root();
+                let plan = if self.is_plan_mode(session_id) {
+                    "on"
+                } else {
+                    "off"
+                };
+                let settings = self.settings.view()?;
+                let (configured, chat_model, thinking_depth) = settings
+                    .as_ref()
+                    .map(|s| {
+                        (
+                            s.configured,
+                            s.chat_model.as_str(),
+                            s.thinking_depth.as_str(),
+                        )
+                    })
+                    .unwrap_or((false, "(not initialized)", "medium"));
+                let approval = self.settings.approval_policy()?.label();
+                format!(
+                    "Status:\n- project: {}\n- configured: {}\n- chat model: {}\n- thinking: {}\n- approvals: {}\n- plan mode: {}",
+                    root.display(),
+                    configured,
+                    chat_model,
+                    thinking_depth,
+                    approval,
+                    plan
+                )
+            }
+            SlashAction::Settings => match self.settings.view()? {
+                Some(s) => format!(
+                    "Settings:\n- configured: {}\n- api key: {}\n- base URL: {}\n- chat model: {}\n- reasoner model: {}\n- thinking: {}\n- approvals: {}\n- available models: {}",
+                    s.configured,
+                    s.api_key_masked,
+                    s.base_url,
+                    s.chat_model,
+                    s.reasoner_model,
+                    s.thinking_depth,
+                    s.approval_policy,
+                    if s.available_models.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        s.available_models.join(", ")
+                    }
+                ),
+                None => "Settings are not initialized. Add a DeepSeek API key first.".to_string(),
+            },
+            SlashAction::Permissions => {
+                let policy = self.settings.approval_policy()?;
+                let rules = self.settings.permission_rules()?;
+                format!(
+                    "Permissions:\n- policy: {}\n- allow rules: {}\n- ask rules: {}\n- deny rules: {}",
+                    policy.label(),
+                    format_rule_count(&rules.allow),
+                    format_rule_count(&rules.ask),
+                    format_rule_count(&rules.deny)
+                )
+            }
+            SlashAction::Knowledge => match &self.knowledge {
+                Some(knowledge) => format!(
+                    "Knowledge:\n- project entries: {}\n- pending drafts: {}\n- passive injection: {}\n- auto capture: {}",
+                    knowledge.list().len(),
+                    knowledge.list_drafts().len(),
+                    on_off(knowledge.passive_enabled()),
+                    on_off(knowledge.auto_capture_enabled())
+                ),
+                None => "Knowledge is not enabled for this runtime.".to_string(),
+            },
+            SlashAction::Mcp => match &self.mcp {
+                Some(mcp) => {
+                    let servers = mcp.list()?;
+                    let enabled = servers.iter().filter(|s| s.enabled).count();
+                    let names = servers
+                        .iter()
+                        .take(8)
+                        .map(|s| {
+                            format!(
+                                "{}:{}:{}",
+                                s.name,
+                                s.transport,
+                                if s.enabled { "enabled" } else { "disabled" }
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    format!(
+                        "MCP servers: {enabled}/{} enabled{}",
+                        servers.len(),
+                        if names.is_empty() {
+                            ".".to_string()
+                        } else {
+                            format!(".\n- {}", names.join("\n- "))
+                        }
+                    )
+                }
+                None => "MCP is not configured for this runtime.".to_string(),
+            },
+            SlashAction::Projects => match &self.projects {
+                Some(projects) => {
+                    let active = projects.active()?.unwrap_or_else(|| "(none)".to_string());
+                    let list = projects.list()?;
+                    let mut lines = vec![format!("Projects: {} open.", list.len())];
+                    lines.push(format!("- active: {active}"));
+                    for project in list.iter().take(8) {
+                        lines.push(format!(
+                            "- {} ({}) - {} session(s)",
+                            project.name, project.path, project.session_count
+                        ));
+                    }
+                    lines.join("\n")
+                }
+                None => format!("Active project: {}", self.effective_root().display()),
+            },
+            SlashAction::Sessions => {
+                let store = deepagent_persistence::event_store::EventStore::new(&self.db);
+                let sessions = store.list_sessions()?;
+                let mut lines = vec![format!("Recent sessions: {}", sessions.len())];
+                for record in sessions.iter().take(8) {
+                    let title = record.title.as_deref().unwrap_or("(untitled)");
+                    let project = record
+                        .project
+                        .as_deref()
+                        .map(crate::project_service::folder_name)
+                        .unwrap_or_else(|| "(no project)".to_string());
+                    lines.push(format!(
+                        "- {} - {} - {} - updated {}",
+                        record.id,
+                        title,
+                        project,
+                        record.updated_at.as_millis()
+                    ));
+                }
+                lines.join("\n")
+            }
+            SlashAction::Thinking { depth } => match depth {
+                Some(depth) => {
+                    let parsed = parse_thinking_depth(&depth)?;
+                    let view = self.settings.set_thinking_depth(parsed)?;
+                    format!("Thinking depth set to {}.", view.thinking_depth)
+                }
+                None => {
+                    let depth = self.settings.thinking_depth()?;
+                    format!(
+                        "Thinking depth is {}. Usage: /thinking <simple|medium|deep>.",
+                        depth.label()
+                    )
+                }
+            },
             SlashAction::Resume { session_id } => {
                 let store = deepagent_persistence::event_store::EventStore::new(&self.db);
                 let events = store.load_session(session.id())?;
@@ -461,10 +652,20 @@ impl ChatService {
                     events.len()
                 )
             }
-            SlashAction::Model { model_id } => {
-                self.settings.set_model(ModelRole::Chat, &model_id)?;
-                format!("Switched chat model to {model_id}.")
-            }
+            SlashAction::Model { model_id } => match model_id {
+                Some(model_id) => {
+                    self.settings.set_model(ModelRole::Chat, &model_id)?;
+                    format!("Switched chat model to {model_id}.")
+                }
+                None => match self.settings.view()? {
+                    Some(view) if !view.available_models.is_empty() => format!(
+                        "可用模型:\n- {}\n\n用法: /model <model_id>",
+                        view.available_models.join("\n- ")
+                    ),
+                    Some(_) => "没有发现可用模型。请先刷新 DeepSeek 模型列表。".to_string(),
+                    None => "设置尚未初始化。请先填写并验证 DeepSeek API Key。".to_string(),
+                },
+            },
             SlashAction::Clear => {
                 "Cleared the chat surface. Start a new chat from the sidebar for a fresh session."
                     .to_string()
@@ -598,7 +799,7 @@ impl ChatService {
 
     /// Build a model client for the given role from persisted settings + the
     /// stored API key.
-    fn build_model(&self, role: ModelRole) -> Result<(Arc<ModelClient>, String)> {
+    fn build_model(&self, role: ModelRole) -> Result<(Arc<ModelClient>, String, ThinkingDepth)> {
         let settings = self
             .settings
             .load()?
@@ -608,9 +809,10 @@ impl ChatService {
             .api_key()?
             .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
         let model = settings.catalog.model_for(role).to_string();
+        let thinking_depth = settings.thinking_depth;
         let config = ModelConfig::from_catalog(api_key, &settings.catalog, role);
         let client = Arc::new(ModelClient::new(self.transport.clone(), config));
-        Ok((client, model))
+        Ok((client, model, thinking_depth))
     }
 
     /// Run one streamed chat turn-loop for `prompt`, forwarding every
@@ -656,6 +858,11 @@ impl ChatService {
             return Ok(session_id);
         }
 
+        let model_prompt = self
+            .dynamic_command_prompt(prompt)?
+            .unwrap_or_else(|| prompt.to_string());
+        let prompt_for_model = model_prompt.as_str();
+
         // Budget gate: refuse a new run when a configured daily/monthly limit is
         // already exhausted. No-op when no cost tracker is attached or no budget
         // is set (Property 7: backward-compatible default).
@@ -664,6 +871,9 @@ impl ChatService {
         }
 
         let root = self.effective_root();
+        if let Some(knowledge) = &self.knowledge {
+            knowledge.activate_project(&root)?;
+        }
         let policy = self.settings.approval_policy()?;
         let access = Self::fs_access_for(policy);
         let plan = continue_session
@@ -676,7 +886,7 @@ impl ChatService {
         // re-rejected inside the tool. Sub-agents (below) have no interactive
         // gate, so their tools stay confined to the policy `access`.
         let registry = self.build_registry(&root, deepagent_builtins::FsAccess::Full)?;
-        let (client, model) = self.build_model(ModelRole::Chat)?;
+        let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
 
         // Live MCP tool registration: connect enabled servers and register their
         // namespaced tools into the runtime registry, so they are advertised to
@@ -717,6 +927,7 @@ impl ChatService {
             let runner = ChatSubagentRunner {
                 client: client.clone(),
                 model: model.clone(),
+                thinking_depth,
                 registry: sub_registry,
                 root: root.clone(),
             };
@@ -868,7 +1079,7 @@ impl ChatService {
             system_prompt.push_str(&git.to_prompt_block());
         }
         if let Some(knowledge) = &self.knowledge {
-            let block = knowledge.passive_block(prompt);
+            let block = knowledge.passive_block(prompt_for_model);
             if !block.trim().is_empty() {
                 system_prompt.push_str("\n\n");
                 system_prompt.push_str(&block);
@@ -883,7 +1094,8 @@ impl ChatService {
         // the agent below).
         let model_name_for_cost = model.clone();
 
-        let mut agent = ModelAgent::new(client, model, system_prompt, prompt, tools)
+        let mut agent = ModelAgent::new(client, model, system_prompt, prompt_for_model, tools)
+            .with_thinking_depth(thinking_depth)
             .with_history(history)
             .with_events(sink.clone());
 
@@ -927,7 +1139,7 @@ impl ChatService {
                         u.prompt_cache_hit_tokens,
                         u.total_tokens,
                     ) {
-                        Ok(yuan) => tracing::info!(cost_yuan = yuan, "recorded run cost"),
+                        Ok(usd) => tracing::info!(cost_usd = usd, "recorded run cost"),
                         Err(e) => tracing::warn!(error = %e, "failed to record run cost"),
                     }
                 }
@@ -998,6 +1210,7 @@ impl ChatService {
 struct ChatSubagentRunner {
     client: Arc<ModelClient>,
     model: String,
+    thinking_depth: ThinkingDepth,
     registry: Arc<ToolRegistry>,
     root: PathBuf,
 }
@@ -1040,7 +1253,8 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
             system,
             &request.prompt,
             tools,
-        );
+        )
+        .with_thinking_depth(self.thinking_depth);
         let config = RuntimeConfig {
             permissions: granted,
             ..Default::default()
@@ -1093,6 +1307,45 @@ fn conversation_from_events(events: &[deepagent_core::event::Event]) -> Vec<Mess
     out
 }
 
+fn parse_slash_invocation(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix('/')?;
+    let (name, args) = match rest.find(char::is_whitespace) {
+        Some(idx) => (&rest[..idx], rest[idx..].trim()),
+        None => (rest, ""),
+    };
+    if name.is_empty() {
+        None
+    } else {
+        Some((name, args))
+    }
+}
+
+fn parse_thinking_depth(depth: &str) -> Result<ThinkingDepth> {
+    match depth.trim().to_ascii_lowercase().as_str() {
+        "simple" => Ok(ThinkingDepth::Simple),
+        "medium" => Ok(ThinkingDepth::Medium),
+        "deep" => Ok(ThinkingDepth::Deep),
+        _ => Err(CoreError::invalid("usage: /thinking <simple|medium|deep>")),
+    }
+}
+
+fn format_rule_count(rules: &[String]) -> String {
+    if rules.is_empty() {
+        "0".to_string()
+    } else {
+        format!("{} ({})", rules.len(), rules.join(", "))
+    }
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value {
+        "on"
+    } else {
+        "off"
+    }
+}
+
 /// A conservative default bash allow-list (read-ish / build commands).
 fn default_bash_allow() -> Vec<String> {
     [
@@ -1124,7 +1377,7 @@ fn default_bash_allow() -> Vec<String> {
 mod tests {
     use super::*;
     use crate::secret_store::MemorySecretStore;
-    use deepagent_models::transport::MockTransport;
+    use deepagent_models::transport::{EventSink, MockTransport, TransportRequest};
 
     /// A transport that answers model discovery (GET) AND a streamed chat (the
     /// agent's first turn) so a full run completes offline.
@@ -1139,10 +1392,27 @@ mod tests {
         ]))
     }
 
+    #[derive(Debug, Default)]
+    struct RecordingTransport {
+        last_body: Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for RecordingTransport {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            *self.last_body.lock().unwrap() = Some(request.body);
+            sink.on_event(
+                r#"{"choices":[{"delta":{"content":"dynamic reply"},"finish_reason":"stop"}]}"#,
+            )?;
+            sink.on_event("[DONE]")?;
+            Ok(())
+        }
+    }
+
     fn discovery_transport() -> Arc<dyn HttpTransport> {
         let body = r#"{"object":"list","data":[
-            {"id":"deepseek-chat","object":"model","owned_by":"deepseek"},
-            {"id":"deepseek-reasoner","object":"model","owned_by":"deepseek"}
+            {"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"},
+            {"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}
         ]}"#;
         Arc::new(MockTransport::with_get_json(body))
     }
@@ -1219,6 +1489,94 @@ mod tests {
         assert!(history
             .iter()
             .any(|m| m.content.contains("Exited Plan mode")));
+    }
+
+    #[tokio::test]
+    async fn slash_help_and_thinking_are_handled_without_model() {
+        let (_db, settings, dir) = seeded().await;
+        let chat = ChatService::new(_db, settings.clone(), chat_transport(), dir.path());
+
+        let help_events = Arc::new(std::sync::Mutex::new(Vec::<RuntimeEvent>::new()));
+        let help_sink = help_events.clone();
+        chat.run(
+            "/help",
+            move |ev| {
+                help_sink.lock().unwrap().push(ev);
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(help_events.lock().unwrap().iter().any(|ev| {
+            matches!(ev, RuntimeEvent::RunCompleted { message } if message.contains("/thinking"))
+        }));
+
+        let thinking_events = Arc::new(std::sync::Mutex::new(Vec::<RuntimeEvent>::new()));
+        let thinking_sink = thinking_events.clone();
+        chat.run(
+            "/thinking deep",
+            move |ev| {
+                thinking_sink.lock().unwrap().push(ev);
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(settings.thinking_depth().unwrap(), ThinkingDepth::Deep);
+        assert!(thinking_events.lock().unwrap().iter().any(|ev| {
+            matches!(ev, RuntimeEvent::RunCompleted { message } if message.contains("deep"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn slash_model_without_args_lists_available_models() {
+        let (_db, settings, dir) = seeded().await;
+        let chat = ChatService::new(_db, settings, chat_transport(), dir.path());
+        let events = Arc::new(std::sync::Mutex::new(Vec::<RuntimeEvent>::new()));
+        let sink = events.clone();
+
+        chat.run(
+            "/model",
+            move |ev| {
+                sink.lock().unwrap().push(ev);
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        assert!(events.lock().unwrap().iter().any(|ev| {
+            matches!(
+                ev,
+                RuntimeEvent::RunCompleted { message }
+                    if message.contains("deepseek-v4-pro") && message.contains("/model <model_id>")
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn dynamic_slash_command_file_renders_into_model_prompt() {
+        let (db, settings, dir) = seeded().await;
+        let commands = dir.path().join("commands");
+        std::fs::create_dir_all(&commands).unwrap();
+        std::fs::write(
+            commands.join("triage.md"),
+            "---\ndescription: Triage a bug report\n---\nReview this bug:\n$ARGUMENTS",
+        )
+        .unwrap();
+
+        let last_body = Arc::new(std::sync::Mutex::new(None));
+        let transport = Arc::new(RecordingTransport {
+            last_body: last_body.clone(),
+        });
+        let chat = ChatService::new(db, settings, transport, dir.path());
+
+        chat.run("/triage issue-42", |_| {}, |_| {}).await.unwrap();
+
+        let body = last_body.lock().unwrap().clone().unwrap();
+        assert!(body.contains("Review this bug:"));
+        assert!(body.contains("issue-42"));
+        assert!(!body.contains("$ARGUMENTS"));
     }
 
     #[tokio::test]

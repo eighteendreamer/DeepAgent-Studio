@@ -564,7 +564,10 @@
     "edit": "Edit",
     "view": "View",
     "window": "Window",
-    "help": "Help"
+    "help": "Help",
+    "update": "Update",
+    "downloadUpdate": "Download update",
+    "updateReady": "Update downloaded. It will install when the app closes."
   },
   "startView": {
     "greeting": "What should we do in {{projectName}}?",
@@ -583,6 +586,11 @@
     "modelSwitched": "Switched model: {{model}}",
     "modelSwitchFailed": "Failed to switch model",
     "approvalSwitchFailed": "Failed to change permission level",
+    "selectThinking": "Thinking",
+    "thinkingSimple": "Simple",
+    "thinkingMedium": "Medium",
+    "thinkingDeep": "Deep",
+    "thinkingSwitchFailed": "Failed to change thinking level",
     "stop": "Stop",
     "models": {
       "lingsiAPI": "Lingsi API",

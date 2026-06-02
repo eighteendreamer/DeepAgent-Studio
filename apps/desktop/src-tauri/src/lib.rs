@@ -87,8 +87,13 @@ fn session_conversation(
 
 #[tauri::command]
 fn commands(state: State<'_, AppState>, query: String) -> Result<Vec<CommandDto>, String> {
+    let mut roots = Vec::new();
+    if let Ok(Some(active)) = state.projects.active() {
+        roots.push(std::path::PathBuf::from(active));
+    }
+    roots.push(std::path::PathBuf::from(state.workspace.root_display()));
     let svc = state.service.lock().map_err(|e| e.to_string())?;
-    Ok(svc.commands(&query))
+    Ok(svc.commands_with_roots(&query, roots))
 }
 
 #[tauri::command]
@@ -198,7 +203,10 @@ fn install_skill(state: State<'_, AppState>, source_dir: String) -> Result<Skill
 /// Install a skill from a `.zip` archive: extract to a temp dir, then install
 /// the unpacked source (the archive's single top-level folder when present).
 #[tauri::command]
-fn install_skill_from_zip(state: State<'_, AppState>, zip_path: String) -> Result<SkillDto, String> {
+fn install_skill_from_zip(
+    state: State<'_, AppState>,
+    zip_path: String,
+) -> Result<SkillDto, String> {
     let tmp = tempfile::tempdir().map_err(|e| format!("temp dir failed: {e}"))?;
     let source = extract_zip(&zip_path, tmp.path()).map_err(|e| e.to_string())?;
     let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
@@ -244,9 +252,7 @@ fn kb_search(
     limit: Option<usize>,
 ) -> Result<Vec<KnowledgeHitDto>, String> {
     let limit = limit.unwrap_or(10).clamp(1, 50);
-    Ok(state
-        .knowledge
-        .search(&query, kind.as_deref(), limit))
+    Ok(state.knowledge.search(&query, kind.as_deref(), limit))
 }
 
 #[tauri::command]
@@ -293,7 +299,10 @@ fn kb_accept_draft(state: State<'_, AppState>, id: String) -> Result<KnowledgeDt
 
 #[tauri::command]
 fn kb_discard_draft(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    state.knowledge.discard_draft(&id).map_err(|e| e.to_string())
+    state
+        .knowledge
+        .discard_draft(&id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -491,6 +500,20 @@ fn set_approval_policy(state: State<'_, AppState>, policy: String) -> Result<Set
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn set_thinking_depth(state: State<'_, AppState>, depth: String) -> Result<SettingsView, String> {
+    let parsed = match depth.as_str() {
+        "simple" => deepagent_models::ThinkingDepth::Simple,
+        "medium" => deepagent_models::ThinkingDepth::Medium,
+        "deep" => deepagent_models::ThinkingDepth::Deep,
+        other => return Err(format!("unknown thinking depth: {other}")),
+    };
+    state
+        .settings
+        .set_thinking_depth(parsed)
+        .map_err(|e| e.to_string())
+}
+
 // ---- MCP server management (visual config) --------------------------------
 
 #[tauri::command]
@@ -499,7 +522,10 @@ fn list_mcp_servers(state: State<'_, AppState>) -> Result<Vec<McpServerDto>, Str
 }
 
 #[tauri::command]
-fn save_mcp_server(state: State<'_, AppState>, server: McpServerDto) -> Result<McpServerDto, String> {
+fn save_mcp_server(
+    state: State<'_, AppState>,
+    server: McpServerDto,
+) -> Result<McpServerDto, String> {
     state.mcp.upsert(server).map_err(|e| e.to_string())
 }
 
@@ -574,20 +600,44 @@ fn active_project(state: State<'_, AppState>) -> Result<Option<String>, String> 
 
 #[tauri::command]
 fn add_project(state: State<'_, AppState>, path: String) -> Result<ProjectDto, String> {
-    state.projects.add_project(&path).map_err(|e| e.to_string())
+    let dto = state
+        .projects
+        .add_project(&path)
+        .map_err(|e| e.to_string())?;
+    state
+        .knowledge
+        .activate_project(std::path::Path::new(&path))
+        .map_err(|e| e.to_string())?;
+    Ok(dto)
 }
 
 #[tauri::command]
 fn set_active_project(state: State<'_, AppState>, path: String) -> Result<(), String> {
-    state.projects.set_active(&path).map_err(|e| e.to_string())
+    state
+        .projects
+        .set_active(&path)
+        .map_err(|e| e.to_string())?;
+    state
+        .knowledge
+        .activate_project(std::path::Path::new(&path))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn remove_project(state: State<'_, AppState>, path: String) -> Result<bool, String> {
-    state
+    let removed = state
         .projects
         .remove_project(&path)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if removed {
+        if let Some(active) = state.projects.active().map_err(|e| e.to_string())? {
+            state
+                .knowledge
+                .activate_project(std::path::Path::new(&active))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(removed)
 }
 
 // ---- terminal (interactive command in the active project) -----------------
@@ -647,6 +697,7 @@ fn extract_zip(zip_path: &str, dest: &std::path::Path) -> std::io::Result<std::p
 /// Entry point invoked by `main.rs`.
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app
@@ -782,6 +833,7 @@ pub fn run() {
             set_plan_mode,
             get_approval_policy,
             set_approval_policy,
+            set_thinking_depth,
             list_mcp_servers,
             save_mcp_server,
             remove_mcp_server,

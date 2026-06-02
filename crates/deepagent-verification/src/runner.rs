@@ -12,6 +12,9 @@ use async_trait::async_trait;
 
 use deepagent_core::error::Result;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// A command to execute as part of verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
@@ -126,6 +129,11 @@ impl CommandRunner for SystemCommandRunner {
             cmd.args(&args);
             if let Some(dir) = cwd {
                 cmd.current_dir(dir);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(CREATE_NO_WINDOW);
             }
             cmd.output()
         })

@@ -20,6 +20,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::PermissionRules;
 use deepagent_models::discovery::{ModelCatalog, ModelDiscovery};
 use deepagent_models::transport::HttpTransport;
+use deepagent_models::ThinkingDepth;
 use deepagent_persistence::document_store::DocumentStore;
 use deepagent_persistence::Database;
 
@@ -86,6 +87,9 @@ pub struct AppSettings {
     /// the runtime hook registry.
     #[serde(default)]
     pub hooks_json: String,
+    /// User-selected DeepSeek Thinking Mode depth.
+    #[serde(default)]
+    pub thinking_depth: ThinkingDepth,
 }
 
 /// A redacted view of settings safe to send to the UI (no secret material).
@@ -105,6 +109,8 @@ pub struct SettingsView {
     pub configured: bool,
     /// Current approval policy label (always_ask / auto_review / full_access).
     pub approval_policy: String,
+    /// Current DeepSeek Thinking Mode depth (simple / medium / deep).
+    pub thinking_depth: String,
 }
 
 /// Mask an API key to a non-leaking preview.
@@ -170,7 +176,11 @@ impl SettingsService {
                 .as_ref()
                 .map(|s| s.permission_rules.clone())
                 .unwrap_or_default(),
-            hooks_json: prior.map(|s| s.hooks_json).unwrap_or_default(),
+            hooks_json: prior
+                .as_ref()
+                .map(|s| s.hooks_json.clone())
+                .unwrap_or_default(),
+            thinking_depth: prior.as_ref().map(|s| s.thinking_depth).unwrap_or_default(),
         };
         self.save(&settings)?;
 
@@ -248,6 +258,22 @@ impl SettingsService {
     /// when uninitialized).
     pub fn approval_policy(&self) -> Result<ApprovalPolicy> {
         Ok(self.load()?.map(|s| s.approval_policy).unwrap_or_default())
+    }
+
+    /// The current DeepSeek Thinking Mode depth.
+    pub fn thinking_depth(&self) -> Result<ThinkingDepth> {
+        Ok(self.load()?.map(|s| s.thinking_depth).unwrap_or_default())
+    }
+
+    /// Set the Thinking Mode depth, persisting it. Returns the redacted view.
+    pub fn set_thinking_depth(&self, depth: ThinkingDepth) -> Result<SettingsView> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.thinking_depth = depth;
+        self.save(&settings)?;
+        let key = self.secrets.get(API_KEY_NAME)?;
+        self.view_with_key(key.as_deref(), &settings)
     }
 
     /// Set the approval policy, persisting it. Returns the redacted view.
@@ -333,6 +359,7 @@ impl SettingsService {
             configured: key.map(|k| !k.trim().is_empty()).unwrap_or(false)
                 && !settings.catalog.available.is_empty(),
             approval_policy: settings.approval_policy.label().to_string(),
+            thinking_depth: settings.thinking_depth.label().to_string(),
         })
     }
 
@@ -362,8 +389,8 @@ mod tests {
 
     fn transport_with_models() -> Arc<dyn HttpTransport> {
         let body = r#"{"object":"list","data":[
-            {"id":"deepseek-chat","object":"model","owned_by":"deepseek"},
-            {"id":"deepseek-reasoner","object":"model","owned_by":"deepseek"}
+            {"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"},
+            {"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}
         ]}"#;
         Arc::new(MockTransport::with_get_json(body))
     }
@@ -380,8 +407,9 @@ mod tests {
         let (svc, secrets) = service();
         let view = svc.initialize("sk-secret-1234").await.unwrap();
         assert!(view.configured);
-        assert_eq!(view.chat_model, "deepseek-chat");
-        assert_eq!(view.reasoner_model, "deepseek-reasoner");
+        assert_eq!(view.chat_model, "deepseek-v4-flash");
+        assert_eq!(view.reasoner_model, "deepseek-v4-pro");
+        assert_eq!(view.thinking_depth, "medium");
         assert_eq!(view.api_key_masked, "sk-…1234");
 
         // The key is in the secret store...
@@ -420,7 +448,7 @@ mod tests {
         let view = svc.view().unwrap().unwrap();
         assert!(!view.configured);
         assert_eq!(view.api_key_masked, "(not set)");
-        assert_eq!(view.chat_model, "deepseek-chat");
+        assert_eq!(view.chat_model, "deepseek-v4-flash");
     }
 
     #[tokio::test]
@@ -428,9 +456,20 @@ mod tests {
         let (svc, _) = service();
         svc.initialize("sk-abcd1234").await.unwrap();
         let view = svc
-            .set_model(deepagent_models::ModelRole::Chat, "deepseek-reasoner")
+            .set_model(deepagent_models::ModelRole::Chat, "deepseek-v4-pro")
             .unwrap();
-        assert_eq!(view.chat_model, "deepseek-reasoner");
+        assert_eq!(view.chat_model, "deepseek-v4-pro");
+    }
+
+    #[tokio::test]
+    async fn thinking_depth_roundtrips_and_survives_refresh() {
+        let (svc, _) = service();
+        svc.initialize("sk-abcd1234").await.unwrap();
+        let view = svc.set_thinking_depth(ThinkingDepth::Deep).unwrap();
+        assert_eq!(view.thinking_depth, "deep");
+        assert_eq!(svc.thinking_depth().unwrap(), ThinkingDepth::Deep);
+        let refreshed = svc.refresh_models().await.unwrap();
+        assert_eq!(refreshed.thinking_depth, "deep");
     }
 
     #[tokio::test]

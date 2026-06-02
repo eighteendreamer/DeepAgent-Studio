@@ -1,9 +1,11 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
-import { getSettings, setChatModel, getApprovalPolicy, setApprovalPolicy, getCommands } from "../api";
+import { SETTINGS_CHANGED_EVENT, getSettings, setChatModel, setThinkingDepth, getApprovalPolicy, setApprovalPolicy, getCommands } from "../api";
 import { message } from "./message";
 import type { Command } from "../types";
+
+type SlashChoice = Command & { insertText?: string };
 
 /** Map composer dropdown option id ↔ backend approval-policy label. */
 const OPTION_TO_POLICY: Record<string, string> = {
@@ -18,7 +20,7 @@ const POLICY_TO_OPTION: Record<string, string> = {
 };
 
 /** Split a model id into a two-tier {name, version} label for display.
- * e.g. "deepseek-chat" → {name:"deepseek", version:"chat"}. Ids without a
+ * e.g. "deepseek-v4-flash" -> {name:"deepseek", version:"v4-flash"}. Ids without a
  * hyphen render as a single name. */
 function labelFor(id: string): { name: string; version: string } {
   const dash = id.indexOf("-");
@@ -42,32 +44,43 @@ interface Props {
 export function Composer({ value, onChange, onSubmit, placeholder, busy = false, onStop, planMode = false }: Props) {
   const { t } = useTranslation();
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const [isThinkingDropdownOpen, setIsThinkingDropdownOpen] = useState(false);
   const [isApprovalDropdownOpen, setIsApprovalDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const thinkingDropdownRef = useRef<HTMLDivElement>(null);
   const approvalDropdownRef = useRef<HTMLDivElement>(null);
   // Real discovered models + the active chat model, loaded from the backend
   // settings (populated by API-key validation at login).
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
+  const [selectedThinking, setSelectedThinking] = useState<"simple" | "medium" | "deep">("medium");
   const [switching, setSwitching] = useState(false);
-  const [slashResults, setSlashResults] = useState<Command[]>([]);
+  const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
   const [slashSelected, setSlashSelected] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
+  const reloadSettings = useCallback((cancelled?: () => boolean) => {
     getSettings()
       .then((s) => {
-        if (cancelled || !s) return;
+        if (cancelled?.() || !s) return;
         setModels(s.available_models);
         setSelectedModel(s.chat_model);
+        setSelectedThinking(s.thinking_depth ?? "medium");
       })
       .catch(() => {
         /* browser preview / uninitialized: leave the list empty */
       });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    reloadSettings(() => cancelled);
+    const onSettingsChanged = () => reloadSettings();
+    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
     return () => {
       cancelled = true;
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
     };
-  }, []);
+  }, [reloadSettings]);
 
   const chooseModel = async (id: string) => {
     setIsModelDropdownOpen(false);
@@ -85,6 +98,29 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
       console.error("set_chat_model failed:", e);
     } finally {
       setSwitching(false);
+    }
+  };
+
+  const THINKING_OPTIONS = [
+    { id: "simple", label: "composer.thinkingSimple", icon: ["fas", "bolt"] as const },
+    { id: "medium", label: "composer.thinkingMedium", icon: ["fas", "lightbulb"] as const },
+    { id: "deep", label: "composer.thinkingDeep", icon: ["fas", "magnifying-glass"] as const },
+  ] as const;
+  const selectedThinkingOption =
+    THINKING_OPTIONS.find((o) => o.id === selectedThinking) ?? THINKING_OPTIONS[1];
+
+  const chooseThinking = async (id: "simple" | "medium" | "deep") => {
+    setIsThinkingDropdownOpen(false);
+    if (id === selectedThinking) return;
+    const prev = selectedThinking;
+    setSelectedThinking(id);
+    try {
+      const view = await setThinkingDepth(id);
+      setSelectedThinking(view.thinking_depth ?? id);
+    } catch (e) {
+      setSelectedThinking(prev);
+      message.error(t("composer.thinkingSwitchFailed"));
+      console.error("set_thinking_depth failed:", e);
     }
   };
 
@@ -157,21 +193,70 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   // The active model's two-tier label (empty until settings load).
   const selectedLabel = labelFor(selectedModel);
 
-  const slashQuery = value.startsWith("/") ? value.slice(1) : "";
-  const slashHasArgs = /\s/.test(slashQuery);
-  const slashOpen = value.startsWith("/") && !slashHasArgs && slashResults.length > 0;
+  const slashOpen = value.startsWith("/") && slashResults.length > 0;
 
   useEffect(() => {
-    if (!value.startsWith("/") || slashHasArgs) {
+    if (!value.startsWith("/")) {
       setSlashResults([]);
       setSlashSelected(0);
       return;
     }
+    const body = value.slice(1);
+    const firstSpace = body.search(/\s/);
+    const commandName = firstSpace >= 0 ? body.slice(0, firstSpace) : body;
+    const argQuery = firstSpace >= 0 ? body.slice(firstSpace + 1).trim().toLowerCase() : "";
+    const exactArgCommand = firstSpace < 0 && (commandName === "model" || commandName === "thinking");
+
+    if (commandName === "model" && (firstSpace >= 0 || exactArgCommand)) {
+      const choices = models
+        .filter((id) => id.toLowerCase().includes(argQuery))
+        .map((id) => ({
+          id: `slash-arg.model.${id}`,
+          title: id,
+          description: id === selectedModel ? "当前模型" : "切换到这个 DeepSeek 模型",
+          category: "模型",
+          shortcut: null,
+          insertText: `/model ${id} `,
+        }));
+      setSlashResults(choices);
+      setSlashSelected(0);
+      return;
+    }
+
+    if (commandName === "thinking" && (firstSpace >= 0 || exactArgCommand)) {
+      const choices = [
+        { id: "simple", title: "simple", description: "简单思考，响应更快", category: "思考" },
+        { id: "medium", title: "medium", description: "中度思考，默认平衡模式", category: "思考" },
+        { id: "deep", title: "deep", description: "深度思考，给复杂任务更多推理预算", category: "思考" },
+      ]
+        .filter((opt) => opt.title.includes(argQuery) || opt.description.includes(argQuery))
+        .map((opt) => ({
+          ...opt,
+          id: `slash-arg.thinking.${opt.id}`,
+          shortcut: null,
+          insertText: `/thinking ${opt.id} `,
+        }));
+      setSlashResults(choices);
+      setSlashSelected(0);
+      return;
+    }
+
+    if (firstSpace >= 0) {
+      setSlashResults([]);
+      setSlashSelected(0);
+      return;
+    }
+
     let cancelled = false;
-    getCommands(slashQuery)
+    getCommands("")
       .then((commands) => {
         if (cancelled) return;
-        const slash = commands.filter((c) => c.id.startsWith("slash."));
+        const q = body.trim().toLowerCase();
+        const slash = commands.filter((c) => {
+          if (!c.id.startsWith("slash.")) return false;
+          const name = c.title.replace(/^\//, "").toLowerCase();
+          return !q || name.includes(q);
+        });
         setSlashResults(slash);
         setSlashSelected(0);
       })
@@ -181,10 +266,10 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
     return () => {
       cancelled = true;
     };
-  }, [slashQuery, slashHasArgs, value]);
+  }, [models, selectedModel, value]);
 
-  const chooseSlash = (cmd: Command) => {
-    onChange(`${cmd.title} `);
+  const chooseSlash = (cmd: SlashChoice) => {
+    onChange(cmd.insertText ?? `${cmd.title} `);
     setSlashResults([]);
     setSlashSelected(0);
   };
@@ -194,15 +279,18 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setIsModelDropdownOpen(false);
       }
+      if (thinkingDropdownRef.current && !thinkingDropdownRef.current.contains(e.target as Node)) {
+        setIsThinkingDropdownOpen(false);
+      }
       if (approvalDropdownRef.current && !approvalDropdownRef.current.contains(e.target as Node)) {
         setIsApprovalDropdownOpen(false);
       }
     };
-    if (isModelDropdownOpen || isApprovalDropdownOpen) {
+    if (isModelDropdownOpen || isThinkingDropdownOpen || isApprovalDropdownOpen) {
       document.addEventListener("mousedown", handleClickOutside);
     }
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isModelDropdownOpen, isApprovalDropdownOpen]);
+  }, [isModelDropdownOpen, isThinkingDropdownOpen, isApprovalDropdownOpen]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashOpen && e.key === "ArrowDown") {
@@ -238,7 +326,7 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   return (
     <div className="relative w-full border border-border-theme rounded-xl shadow-[0_2px_10px_rgba(0,0,0,0.02)] bg-white p-3 flex flex-col transition-all focus-within:border-gray-300 focus-within:shadow-md">
       {slashOpen && (
-        <div className="absolute left-3 right-3 bottom-full mb-2 max-h-56 overflow-y-auto rounded-lg border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-50">
+        <div className="absolute left-3 right-3 bottom-full mb-2 max-h-72 overflow-y-auto rounded-lg border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-50">
           {slashResults.map((cmd, index) => (
             <button
               key={cmd.id}
@@ -248,12 +336,15 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
                 chooseSlash(cmd);
               }}
               onMouseEnter={() => setSlashSelected(index)}
-              className={`flex w-full items-center justify-between px-3 py-2 text-left text-[12px] transition-colors ${
+              className={`grid w-full grid-cols-[150px_minmax(0,1fr)_72px] items-center gap-3 px-3 py-2 text-left text-[12px] transition-colors ${
                 index === slashSelected ? "bg-gray-100 text-text-base" : "text-text-secondary"
               }`}
             >
-              <span className="font-medium text-text-base">{cmd.title}</span>
-              <span className="ml-3 truncate text-[11px] text-text-secondary">{cmd.category}</span>
+              <span className="truncate font-medium text-text-base">{cmd.title}</span>
+              <span className="truncate text-[12px] leading-snug text-text-secondary">
+                {cmd.description}
+              </span>
+              <span className="truncate text-right text-[11px] text-text-secondary">{cmd.category}</span>
             </button>
           ))}
         </div>
@@ -323,6 +414,35 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
         </div>
 
         <div className="flex items-center space-x-2">
+          <div className="relative" ref={thinkingDropdownRef}>
+            <div
+              className="flex items-center bg-gray-50 border border-border-theme rounded-full px-2.5 py-1 cursor-pointer hover:bg-gray-100 transition-colors text-xs text-text-base"
+              onClick={() => setIsThinkingDropdownOpen(!isThinkingDropdownOpen)}
+              title={t("composer.selectThinking")}
+            >
+              <FontAwesomeIcon icon={selectedThinkingOption.icon as any} className="text-text-secondary" />
+              <span className="ml-1.5 text-text-secondary">{t(selectedThinkingOption.label)}</span>
+              <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[10px] text-text-secondary" />
+            </div>
+
+            {isThinkingDropdownOpen && (
+              <div className="absolute bottom-full right-0 mb-2 w-full bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1">
+                <div className="px-3 py-2 text-[11px] text-text-secondary font-medium">{t("composer.selectThinking")}</div>
+                {THINKING_OPTIONS.map((opt) => (
+                  <div
+                    key={opt.id}
+                    className="flex items-center justify-between px-3 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base group transition-colors"
+                    onClick={() => chooseThinking(opt.id)}
+                  >
+                    <div className="flex items-center">
+                      <FontAwesomeIcon icon={opt.icon as any} className="w-4 text-text-secondary mr-2" />
+                      <span className="font-medium">{t(opt.label)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="relative" ref={dropdownRef}>
             <div 
               className="flex items-center bg-gray-50 border border-border-theme rounded-full px-3 py-1 cursor-pointer hover:bg-gray-100 transition-colors text-xs text-text-base"
@@ -340,7 +460,7 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
 
             {/* Model Dropdown */}
             {isModelDropdownOpen && (
-              <div className="absolute bottom-full right-0 mb-2 w-[220px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1">
+              <div className="absolute bottom-full right-0 mb-2 w-full bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1">
                 <div className="px-3 py-2 text-[11px] text-text-secondary font-medium">{t("composer.selectModel")}</div>
                 <div className="flex-1 max-h-[240px] overflow-y-auto py-1">
                   {models.length === 0 && (
@@ -353,16 +473,13 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
                     return (
                       <div
                         key={id}
-                        className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base group transition-colors"
+                        className="flex items-center justify-between px-3 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base group transition-colors"
                         onClick={() => chooseModel(id)}
                       >
                         <div className="flex items-center">
                           <span className="font-medium">{lbl.name}</span>
                           {lbl.version && <span className="text-text-secondary ml-1.5 text-[12px]">{lbl.version}</span>}
                         </div>
-                        {selectedModel === id && (
-                          <FontAwesomeIcon icon={["fas", "check"]} className="text-text-secondary text-[11px]" />
-                        )}
                       </div>
                     );
                   })}

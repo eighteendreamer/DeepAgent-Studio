@@ -149,7 +149,7 @@ mod tests {
         let client = client_with(events);
         let resp = client
             .stream_chat(ChatRequest::new(
-                "deepseek-reasoner",
+                "deepseek-v4-pro",
                 vec![Message::user("hi")],
             ))
             .await
@@ -172,7 +172,7 @@ mod tests {
         let client = client_with(events);
         let resp = client
             .stream_chat(ChatRequest::new(
-                "deepseek-chat",
+                "deepseek-v4-flash",
                 vec![Message::user("find rust")],
             ))
             .await

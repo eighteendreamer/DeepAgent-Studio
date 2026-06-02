@@ -40,6 +40,7 @@ export interface SessionDetail {
 export interface Command {
   id: string;
   title: string;
+  description: string;
   category: string;
   shortcut: string | null;
 }
@@ -144,6 +145,7 @@ export interface CostSummary {
   today_cost: number;
   month_cost: number;
   total_cost: number;
+  currency: string;
   budget: BudgetConfig;
 }
 
@@ -250,6 +252,7 @@ export interface SettingsView {
   reasoner_model: string;
   configured: boolean;
   approval_policy: string;
+  thinking_depth: "simple" | "medium" | "deep";
 }
 
 /** A project folder in the sidebar (mirrors deepagent-app-core::ProjectDto). */

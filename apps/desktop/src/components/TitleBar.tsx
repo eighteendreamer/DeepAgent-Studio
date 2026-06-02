@@ -1,6 +1,13 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { SidebarLeftIcon } from "./icons";
 import { useTranslation } from "react-i18next";
+import { useEffect, useState } from "react";
+import {
+  checkForAvailableUpdate,
+  downloadUpdateForNextShutdown,
+  hasDownloadedUpdate,
+  installDownloadedUpdate,
+} from "../update";
 
 interface Props {
   onToggleSidebar: () => void;
@@ -24,6 +31,8 @@ async function currentWindow() {
 
 export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForward, onBack, onForward }: Props) {
   const { t } = useTranslation();
+  const [downloadingUpdate, setDownloadingUpdate] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   const MENUS = [
     { key: "file", label: t("titleBar.file") },
     { key: "edit", label: t("titleBar.edit") },
@@ -38,9 +47,60 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
   const onToggleMaximize = () => {
     if (inTauri()) currentWindow().then((w) => w.toggleMaximize()).catch(() => {});
   };
-  const onClose = () => {
-    if (inTauri()) currentWindow().then((w) => w.close()).catch(() => {});
+
+  const installUpdateThenClose = async (closeWindow: () => Promise<void>) => {
+    if (hasDownloadedUpdate()) {
+      await installDownloadedUpdate();
+    }
+    await closeWindow();
   };
+
+  const onClose = () => {
+    if (!inTauri()) return;
+    currentWindow()
+      .then((w) => installUpdateThenClose(() => w.destroy()))
+      .catch(() => {});
+  };
+
+  const onDownloadUpdate = async () => {
+    if (downloadingUpdate || !updateAvailable) return;
+    setDownloadingUpdate(true);
+    const ready = await downloadUpdateForNextShutdown();
+    setUpdateAvailable(!ready);
+    setDownloadingUpdate(false);
+  };
+
+  useEffect(() => {
+    if (!inTauri()) return;
+    let disposed = false;
+    let installing = false;
+    let unlisten: (() => void) | undefined;
+
+    checkForAvailableUpdate()
+      .then((available) => {
+        if (!disposed) setUpdateAvailable(available);
+      })
+      .catch(() => {
+        if (!disposed) setUpdateAvailable(false);
+      });
+
+    currentWindow()
+      .then(async (w) => {
+        if (disposed) return;
+        unlisten = await w.onCloseRequested(async (event) => {
+          if (installing || !hasDownloadedUpdate()) return;
+          event.preventDefault();
+          installing = true;
+          await installUpdateThenClose(() => w.destroy());
+        });
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   return (
     <div
@@ -69,6 +129,20 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
               {m.label}
             </span>
           ))}
+          {updateAvailable && (
+            <button
+              type="button"
+              onClick={onDownloadUpdate}
+              disabled={downloadingUpdate}
+              title={t("titleBar.downloadUpdate")}
+              className="flex h-6 w-7 items-center justify-center rounded text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:cursor-default disabled:hover:bg-transparent transition-colors"
+            >
+              <FontAwesomeIcon
+                icon={["fas", downloadingUpdate ? "circle-notch" : "download"]}
+                className={downloadingUpdate ? "animate-spin text-[12px]" : "text-[12px]"}
+              />
+            </button>
+          )}
         </div>
       </div>
 
