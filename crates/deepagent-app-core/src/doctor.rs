@@ -4,7 +4,7 @@
 //! and paired with a concrete repair hint so the UI can render a scan-friendly
 //! green/yellow/red report.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -310,7 +310,7 @@ fn available_space_bytes(path: &Path) -> Result<u64> {
 
 #[cfg(windows)]
 fn drive_root(path: &Path) -> Option<String> {
-    let path = PathBuf::from(path);
+    let path = std::path::PathBuf::from(path);
     let mut components = path.components();
     match components.next()? {
         std::path::Component::Prefix(prefix) => Some(prefix.as_os_str().to_string_lossy().into()),
