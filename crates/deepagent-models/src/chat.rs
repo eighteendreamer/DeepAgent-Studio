@@ -14,12 +14,13 @@ use deepagent_core::message::Message;
 /// DeepSeek maps low/medium efforts to `high`, so simple and medium both use
 /// `reasoning_effort=high`; the runtime still differentiates them with output
 /// token ceilings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingDepth {
     /// Reasoning enabled with a conservative output budget.
     Simple,
     /// Reasoning enabled with the normal agent output budget.
+    #[default]
     Medium,
     /// Reasoning enabled at maximum effort.
     Deep,
@@ -33,12 +34,6 @@ impl ThinkingDepth {
             ThinkingDepth::Medium => "medium",
             ThinkingDepth::Deep => "deep",
         }
-    }
-}
-
-impl Default for ThinkingDepth {
-    fn default() -> Self {
-        ThinkingDepth::Medium
     }
 }
 
