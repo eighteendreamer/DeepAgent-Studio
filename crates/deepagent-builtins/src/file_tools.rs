@@ -3,8 +3,8 @@
 //! sensitive files). Each tool declares the right [`RiskLevel`] and required
 //! [`Permission`] so the capability registry gates it.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
@@ -12,22 +12,123 @@ use deepagent_core::error::Result;
 use deepagent_tools::permission::{Permission, PermissionSet, RiskLevel};
 use deepagent_tools::{Tool, ToolDescriptor, ToolOutput};
 
+use crate::file_cache::{CachedFile, FileStateCache};
 use crate::fs_guard::WorkspaceRoot;
 use crate::glob_match::glob_match;
+
+const LARGE_FILE_LINE_THRESHOLD: usize = 500;
+const DEFAULT_LARGE_FILE_LIMIT: usize = 200;
 
 fn arg_str<'a>(args: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
 }
 
+fn arg_usize(args: &serde_json::Value, key: &str) -> Option<std::result::Result<usize, String>> {
+    let value = args.get(key)?;
+    if let Some(n) = value.as_u64() {
+        return Some(usize::try_from(n).map_err(|_| format!("'{key}' is too large")));
+    }
+    Some(Err(format!("'{key}' must be a positive integer")))
+}
+
+type SharedFileStateCache = Arc<Mutex<FileStateCache>>;
+
+fn new_shared_cache() -> SharedFileStateCache {
+    Arc::new(Mutex::new(FileStateCache::new()))
+}
+
+fn cached_read(
+    cache: &SharedFileStateCache,
+    path: &Path,
+    metadata: &std::fs::Metadata,
+) -> Option<CachedFile> {
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_fresh(path, metadata)
+}
+
+fn cache_store(
+    cache: &SharedFileStateCache,
+    path: PathBuf,
+    content: String,
+    metadata: &std::fs::Metadata,
+) -> CachedFile {
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .store(path, content, metadata)
+}
+
+fn cache_invalidate(cache: &SharedFileStateCache, path: &Path) {
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .invalidate(path);
+}
+
+fn read_window(
+    content: &str,
+    total_lines: usize,
+    offset_arg: Option<usize>,
+    limit_arg: Option<usize>,
+) -> (String, usize, Option<usize>, bool, String) {
+    let start_line = offset_arg.unwrap_or(1).max(1);
+    let default_large_slice =
+        offset_arg.is_none() && limit_arg.is_none() && total_lines > LARGE_FILE_LINE_THRESHOLD;
+    let limit = if default_large_slice {
+        Some(DEFAULT_LARGE_FILE_LIMIT)
+    } else {
+        limit_arg
+    };
+
+    let selected: Vec<&str> = match limit {
+        Some(limit) => content.lines().skip(start_line - 1).take(limit).collect(),
+        None => content.lines().skip(start_line - 1).collect(),
+    };
+    let returned_lines = selected.len();
+    let next_offset = if returned_lines == 0 {
+        None
+    } else {
+        let next = start_line + returned_lines;
+        (next <= total_lines).then_some(next)
+    };
+    let truncated = start_line > 1 || next_offset.is_some();
+    let mut message = if returned_lines == 0 && start_line > total_lines {
+        format!("file has {total_lines} lines; offset {start_line} is past end")
+    } else {
+        format!("returned {returned_lines} of {total_lines} lines")
+    };
+    if let Some(next) = next_offset {
+        message.push_str(&format!(
+            "; output truncated; use offset {next} to read more"
+        ));
+    }
+
+    (
+        selected.join("\n"),
+        returned_lines,
+        next_offset,
+        truncated,
+        message,
+    )
+}
+
 /// `read_file` — read a UTF-8 text file within the workspace.
 pub struct ReadFileTool {
     root: WorkspaceRoot,
+    cache: SharedFileStateCache,
 }
 
 impl ReadFileTool {
     /// Build over a workspace root.
     pub fn new(root: WorkspaceRoot) -> Self {
-        Self { root }
+        Self::with_cache(root, new_shared_cache())
+    }
+
+    /// Build over a workspace root with a shared per-run cache.
+    pub(crate) fn with_cache(root: WorkspaceRoot, cache: SharedFileStateCache) -> Self {
+        Self { root, cache }
     }
 }
 
@@ -36,10 +137,22 @@ impl Tool for ReadFileTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "read_file".into(),
-            description: "Read a UTF-8 text file within the workspace. Args: { path }.".into(),
+            description: "Read a UTF-8 text file within the workspace. Args: { path, offset?, limit? }. offset is a 1-based line number; limit is a line count.".into(),
             parameters: serde_json::json!({
                 "type": "object",
-                "properties": { "path": { "type": "string" } },
+                "properties": {
+                    "path": { "type": "string" },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "1-based line number to start reading from."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Number of lines to return."
+                    }
+                },
                 "required": ["path"]
             }),
             risk: RiskLevel::Safe,
@@ -51,30 +164,77 @@ impl Tool for ReadFileTool {
         let Some(path) = arg_str(&args, "path") else {
             return Ok(ToolOutput::failure("missing 'path'"));
         };
+        let offset = match arg_usize(&args, "offset") {
+            Some(Ok(0)) => return Ok(ToolOutput::failure("'offset' must be >= 1")),
+            Some(Ok(n)) => Some(n),
+            Some(Err(e)) => return Ok(ToolOutput::failure(e)),
+            None => None,
+        };
+        let limit = match arg_usize(&args, "limit") {
+            Some(Ok(0)) => return Ok(ToolOutput::failure("'limit' must be >= 1")),
+            Some(Ok(n)) => Some(n),
+            Some(Err(e)) => return Ok(ToolOutput::failure(e)),
+            None => None,
+        };
         let resolved = match self.root.resolve_read(path) {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
-        match tokio::fs::read_to_string(&resolved).await {
-            Ok(content) => Ok(ToolOutput::success(serde_json::json!({
-                "path": self.root.relativize(&resolved),
-                "content": content,
-                "lines": content.lines().count(),
-            }))),
-            Err(e) => Ok(ToolOutput::failure(format!("read failed: {e}"))),
-        }
+        let metadata = match tokio::fs::metadata(&resolved).await {
+            Ok(m) => m,
+            Err(e) => return Ok(ToolOutput::failure(format!("metadata failed: {e}"))),
+        };
+        let (cached, cache_hit) = match cached_read(&self.cache, &resolved, &metadata) {
+            Some(file) => (file, true),
+            None => match tokio::fs::read_to_string(&resolved).await {
+                Ok(content) => {
+                    let metadata = match tokio::fs::metadata(&resolved).await {
+                        Ok(m) => m,
+                        Err(e) => return Ok(ToolOutput::failure(format!("metadata failed: {e}"))),
+                    };
+                    (
+                        cache_store(&self.cache, resolved.clone(), content, &metadata),
+                        false,
+                    )
+                }
+                Err(e) => return Ok(ToolOutput::failure(format!("read failed: {e}"))),
+            },
+        };
+
+        let (content, returned_lines, next_offset, truncated, message) =
+            read_window(&cached.content, cached.line_count, offset, limit);
+
+        Ok(ToolOutput::success(serde_json::json!({
+            "path": self.root.relativize(&resolved),
+            "content": content,
+            "lines": cached.line_count,
+            "offset": offset.unwrap_or(1),
+            "limit": limit,
+            "returned_lines": returned_lines,
+            "truncated": truncated,
+            "next_offset": next_offset,
+            "cache_hit": cache_hit,
+            "content_hash": cached.content_hash,
+            "message": message,
+        })))
     }
 }
 
 /// `write_file` — create or overwrite a file within the workspace.
 pub struct WriteFileTool {
     root: WorkspaceRoot,
+    cache: SharedFileStateCache,
 }
 
 impl WriteFileTool {
     /// Build over a workspace root.
     pub fn new(root: WorkspaceRoot) -> Self {
-        Self { root }
+        Self::with_cache(root, new_shared_cache())
+    }
+
+    /// Build over a workspace root with a shared per-run cache.
+    pub(crate) fn with_cache(root: WorkspaceRoot, cache: SharedFileStateCache) -> Self {
+        Self { root, cache }
     }
 }
 
@@ -113,10 +273,13 @@ impl Tool for WriteFileTool {
             }
         }
         match tokio::fs::write(&resolved, content).await {
-            Ok(()) => Ok(ToolOutput::success(serde_json::json!({
-                "path": self.root.relativize(&resolved),
-                "bytes": content.len(),
-            }))),
+            Ok(()) => {
+                cache_invalidate(&self.cache, &resolved);
+                Ok(ToolOutput::success(serde_json::json!({
+                    "path": self.root.relativize(&resolved),
+                    "bytes": content.len(),
+                })))
+            }
             Err(e) => Ok(ToolOutput::failure(format!("write failed: {e}"))),
         }
     }
@@ -126,12 +289,18 @@ impl Tool for WriteFileTool {
 /// Mirrors Claude Code's Edit: exact, unique-ish string replacement.
 pub struct EditFileTool {
     root: WorkspaceRoot,
+    cache: SharedFileStateCache,
 }
 
 impl EditFileTool {
     /// Build over a workspace root.
     pub fn new(root: WorkspaceRoot) -> Self {
-        Self { root }
+        Self::with_cache(root, new_shared_cache())
+    }
+
+    /// Build over a workspace root with a shared per-run cache.
+    pub(crate) fn with_cache(root: WorkspaceRoot, cache: SharedFileStateCache) -> Self {
+        Self { root, cache }
     }
 }
 
@@ -193,10 +362,13 @@ impl Tool for EditFileTool {
             content.replacen(old, new, 1)
         };
         match tokio::fs::write(&resolved, &updated).await {
-            Ok(()) => Ok(ToolOutput::success(serde_json::json!({
-                "path": self.root.relativize(&resolved),
-                "replacements": if replace_all { count } else { 1 },
-            }))),
+            Ok(()) => {
+                cache_invalidate(&self.cache, &resolved);
+                Ok(ToolOutput::success(serde_json::json!({
+                    "path": self.root.relativize(&resolved),
+                    "replacements": if replace_all { count } else { 1 },
+                })))
+            }
             Err(e) => Ok(ToolOutput::failure(format!("write failed: {e}"))),
         }
     }
@@ -208,12 +380,18 @@ impl Tool for EditFileTool {
 /// so later edits can target text introduced by earlier ones.
 pub struct MultiEditTool {
     root: WorkspaceRoot,
+    cache: SharedFileStateCache,
 }
 
 impl MultiEditTool {
     /// Build over a workspace root.
     pub fn new(root: WorkspaceRoot) -> Self {
-        Self { root }
+        Self::with_cache(root, new_shared_cache())
+    }
+
+    /// Build over a workspace root with a shared per-run cache.
+    pub(crate) fn with_cache(root: WorkspaceRoot, cache: SharedFileStateCache) -> Self {
+        Self { root, cache }
     }
 }
 
@@ -304,11 +482,14 @@ impl Tool for MultiEditTool {
         }
 
         match tokio::fs::write(&resolved, &content).await {
-            Ok(()) => Ok(ToolOutput::success(serde_json::json!({
-                "path": self.root.relativize(&resolved),
-                "edits_applied": edits.len(),
-                "replacements": total_replacements,
-            }))),
+            Ok(()) => {
+                cache_invalidate(&self.cache, &resolved);
+                Ok(ToolOutput::success(serde_json::json!({
+                    "path": self.root.relativize(&resolved),
+                    "edits_applied": edits.len(),
+                    "replacements": total_replacements,
+                })))
+            }
             Err(e) => Ok(ToolOutput::failure(format!("write failed: {e}"))),
         }
     }
@@ -539,11 +720,12 @@ fn walk_collect(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<String>, l
 
 /// Register all file tools into a registry over the given root (helper).
 pub fn file_tools(root: WorkspaceRoot) -> Vec<Arc<dyn Tool>> {
+    let cache = new_shared_cache();
     vec![
-        Arc::new(ReadFileTool::new(root.clone())),
-        Arc::new(WriteFileTool::new(root.clone())),
-        Arc::new(EditFileTool::new(root.clone())),
-        Arc::new(MultiEditTool::new(root.clone())),
+        Arc::new(ReadFileTool::with_cache(root.clone(), cache.clone())),
+        Arc::new(WriteFileTool::with_cache(root.clone(), cache.clone())),
+        Arc::new(EditFileTool::with_cache(root.clone(), cache.clone())),
+        Arc::new(MultiEditTool::with_cache(root.clone(), cache)),
         Arc::new(ListDirTool::new(root.clone())),
         Arc::new(GlobTool::new(root.clone())),
         Arc::new(GrepTool::new(root)),
@@ -595,6 +777,146 @@ mod tests {
                 .unwrap()
                 .ok
         );
+    }
+
+    #[tokio::test]
+    async fn read_large_file_defaults_to_first_200_lines() {
+        let (_d, root) = temp_root();
+        let content = (1..=600)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        WriteFileTool::new(root.clone())
+            .invoke(serde_json::json!({"path": "large.txt", "content": content}))
+            .await
+            .unwrap();
+
+        let out = ReadFileTool::new(root.clone())
+            .invoke(serde_json::json!({"path": "large.txt"}))
+            .await
+            .unwrap();
+
+        assert!(out.ok);
+        assert_eq!(out.value["lines"], 600);
+        assert_eq!(out.value["returned_lines"], 200);
+        assert_eq!(out.value["offset"], 1);
+        assert_eq!(out.value["next_offset"], 201);
+        assert_eq!(out.value["truncated"], true);
+        assert_eq!(out.value["content"].as_str().unwrap().lines().count(), 200);
+        assert!(out.value["content"].as_str().unwrap().contains("line 200"));
+        assert!(out.value["message"]
+            .as_str()
+            .unwrap()
+            .contains("use offset 201 to read more"));
+    }
+
+    #[tokio::test]
+    async fn read_offset_and_limit_returns_requested_window() {
+        let (_d, root) = temp_root();
+        let content = (1..=250)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        WriteFileTool::new(root.clone())
+            .invoke(serde_json::json!({"path": "window.txt", "content": content}))
+            .await
+            .unwrap();
+
+        let out = ReadFileTool::new(root.clone())
+            .invoke(serde_json::json!({
+                "path": "window.txt",
+                "offset": 101,
+                "limit": 5
+            }))
+            .await
+            .unwrap();
+
+        assert!(out.ok);
+        assert_eq!(out.value["lines"], 250);
+        assert_eq!(out.value["offset"], 101);
+        assert_eq!(out.value["limit"], 5);
+        assert_eq!(out.value["returned_lines"], 5);
+        assert_eq!(out.value["next_offset"], 106);
+        assert_eq!(
+            out.value["content"],
+            "line 101\nline 102\nline 103\nline 104\nline 105"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_small_file_returns_full_content() {
+        let (_d, root) = temp_root();
+        WriteFileTool::new(root.clone())
+            .invoke(serde_json::json!({"path": "small.txt", "content": "a\nb\nc"}))
+            .await
+            .unwrap();
+
+        let out = ReadFileTool::new(root.clone())
+            .invoke(serde_json::json!({"path": "small.txt"}))
+            .await
+            .unwrap();
+
+        assert!(out.ok);
+        assert_eq!(out.value["content"], "a\nb\nc");
+        assert_eq!(out.value["returned_lines"], 3);
+        assert_eq!(out.value["truncated"], false);
+        assert!(out.value["next_offset"].is_null());
+    }
+
+    #[tokio::test]
+    async fn repeated_read_uses_shared_cache() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "cached.txt", "content": "first\nsecond"}))
+            .await
+            .unwrap();
+        let r = ReadFileTool::with_cache(root.clone(), cache);
+
+        let first = r
+            .invoke(serde_json::json!({"path": "cached.txt"}))
+            .await
+            .unwrap();
+        let second = r
+            .invoke(serde_json::json!({"path": "cached.txt"}))
+            .await
+            .unwrap();
+
+        assert!(first.ok);
+        assert!(second.ok);
+        assert_eq!(first.value["cache_hit"], false);
+        assert_eq!(second.value["cache_hit"], true);
+        assert_eq!(first.value["content_hash"], second.value["content_hash"]);
+    }
+
+    #[tokio::test]
+    async fn write_invalidates_shared_read_cache() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        let w = WriteFileTool::with_cache(root.clone(), cache.clone());
+        let r = ReadFileTool::with_cache(root.clone(), cache);
+
+        w.invoke(serde_json::json!({"path": "cached.txt", "content": "old"}))
+            .await
+            .unwrap();
+        r.invoke(serde_json::json!({"path": "cached.txt"}))
+            .await
+            .unwrap();
+        let cached = r
+            .invoke(serde_json::json!({"path": "cached.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(cached.value["cache_hit"], true);
+
+        w.invoke(serde_json::json!({"path": "cached.txt", "content": "new"}))
+            .await
+            .unwrap();
+        let fresh = r
+            .invoke(serde_json::json!({"path": "cached.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(fresh.value["cache_hit"], false);
+        assert_eq!(fresh.value["content"], "new");
     }
 
     #[tokio::test]

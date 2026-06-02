@@ -60,6 +60,7 @@ const SYSTEM_PROMPT_BASE: &str = r#"You are DeepAgent, a verifiable, Rust-native
 # Using your tools
 - Prefer dedicated tools over the bash tool when one fits — it lets the user review your work:
   - read a file: use read_file (not cat/head/tail)
+  - for large files, use read_file with offset and limit to read focused slices instead of pulling the whole file
   - edit a file: use edit_file / multi_edit (not sed/awk)
   - create a file: use write_file (not echo redirection / heredoc)
   - find files: use glob (not find/ls)

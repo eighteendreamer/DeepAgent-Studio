@@ -45,6 +45,7 @@
 pub mod ask_user_tool;
 pub mod bash_tool;
 pub mod classifier;
+pub mod file_cache;
 pub mod file_tools;
 pub mod fs_guard;
 pub mod git_tools;
@@ -75,6 +76,7 @@ pub use bash_tool::{
 pub use classifier::{
     ClassifierConfig, ClassifierRule, SafetyClassifier, SafetyVerdict, VerdictKind,
 };
+pub use file_cache::{CachedFile, FileStateCache};
 pub use file_tools::{
     file_tools, EditFileTool, GlobTool, GrepTool, ListDirTool, MultiEditTool, ReadFileTool,
     WriteFileTool,
