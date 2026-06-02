@@ -294,6 +294,7 @@ dependencies = [
  "deepagent-context",
  "deepagent-core",
  "deepagent-hooks",
+ "deepagent-intent",
  "deepagent-knowledge",
  "deepagent-mcp",
  "deepagent-models",

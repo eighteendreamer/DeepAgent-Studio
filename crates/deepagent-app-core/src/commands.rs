@@ -40,6 +40,14 @@ pub fn builtin_commands() -> Vec<CommandDto> {
         ),
         c("mcp.list", "List MCP Servers", "MCP", None),
         c("theme.toggle", "Toggle Theme", "View", None),
+        c("slash.compact", "/compact", "Slash", None),
+        c("slash.cost", "/cost", "Slash", None),
+        c("slash.doctor", "/doctor", "Slash", None),
+        c("slash.plan", "/plan", "Slash", None),
+        c("slash.execute", "/execute", "Slash", None),
+        c("slash.resume", "/resume", "Slash", None),
+        c("slash.model", "/model", "Slash", None),
+        c("slash.clear", "/clear", "Slash", None),
     ]
 }
 
@@ -111,6 +119,15 @@ mod tests {
         let cmds = builtin_commands();
         let hits = filter_commands("mcp", &cmds);
         assert!(hits.iter().any(|c| c.id == "mcp.list"));
+    }
+
+    #[test]
+    fn includes_slash_commands_for_composer_completion() {
+        let cmds = builtin_commands();
+        assert!(cmds.iter().any(|c| c.id == "slash.plan"));
+        assert!(filter_commands("plan", &cmds)
+            .iter()
+            .any(|c| c.title == "/plan"));
     }
 
     #[test]

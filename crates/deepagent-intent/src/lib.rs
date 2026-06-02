@@ -34,11 +34,15 @@ pub mod attachment;
 pub mod command;
 pub mod request;
 pub mod router;
+pub mod slash;
 
 pub use attachment::{extract_mentions, Attachment, AttachmentKind};
 pub use command::{CommandDef, CommandRegistry, ARGUMENTS_PLACEHOLDER};
 pub use request::{ExecutionRequest, Intent};
 pub use router::IntentRouter;
+pub use slash::{
+    CommandContext, CommandResult, SlashAction, SlashCommand, SlashHandler, SlashRegistry,
+};
 
 #[cfg(test)]
 mod tests {
