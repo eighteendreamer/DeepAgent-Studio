@@ -280,9 +280,7 @@ impl ChatService {
     /// flag the first time this process sees the session.
     fn plan_mode_for_session(&self, session_id: &str) -> deepagent_builtins::PlanMode {
         let mut map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
-        map.entry(session_id.to_string())
-            .or_insert_with(deepagent_builtins::PlanMode::new)
-            .clone()
+        map.entry(session_id.to_string()).or_default().clone()
     }
 
     /// Whether the session is currently in read-only Plan mode.
@@ -670,7 +668,7 @@ impl ChatService {
         let access = Self::fs_access_for(policy);
         let plan = continue_session
             .map(|id| self.plan_mode_for_session(id))
-            .unwrap_or_else(deepagent_builtins::PlanMode::new);
+            .unwrap_or_default();
         // The main run's tools are built permissive (Full, sensitive-blocked):
         // the BeforeToolUse path guard is the SINGLE policy gate, asking/denying
         // per the policy-derived `access`. This way an out-of-workspace access
