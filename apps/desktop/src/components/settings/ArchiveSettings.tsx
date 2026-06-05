@@ -1,29 +1,72 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useTranslation } from "react-i18next";
+import {
+  deleteAllArchivedConversations,
+  deleteArchivedConversation,
+  listArchivedConversations,
+  unarchiveConversation,
+} from "../../api";
+import type { ArchivedConversation } from "../../types";
+import { message } from "../message";
+
+function formatArchiveDate(timestamp: number): string {
+  if (!timestamp) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
 
 export function ArchiveSettings() {
   const { t } = useTranslation();
-  const [archives, setArchives] = useState([
-    { id: 1, title: "开发", date: "2026年5月22日，14:52", project: "小红草" }
-  ]);
-  
-  const [showToast, setShowToast] = useState(false);
+  const [archives, setArchives] = useState<ArchivedConversation[]>([]);
 
-  const handleUnarchive = (id: number) => {
-    setArchives(archives.filter(a => a.id !== id));
-    setShowToast(true);
-    // Hide toast after 3 seconds
-    setTimeout(() => setShowToast(false), 3000);
+  const reload = useCallback(() => {
+    listArchivedConversations()
+      .then(setArchives)
+      .catch(() => {
+        setArchives([]);
+        message.error(t("settings.archive.loadFailed"));
+      });
+  }, [t]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const handleUnarchive = (sessionId: string) => {
+    unarchiveConversation(sessionId)
+      .then(() => {
+        setArchives((prev) => prev.filter((a) => a.session_id !== sessionId));
+        message.success(t("settings.archive.chatUnarchived"));
+      })
+      .catch(() => message.error(t("settings.archive.actionFailed")));
+  };
+
+  const handleDelete = (sessionId: string) => {
+    deleteArchivedConversation(sessionId)
+      .then(() => {
+        setArchives((prev) => prev.filter((a) => a.session_id !== sessionId));
+        message.success(t("settings.archive.archiveDeleted"));
+      })
+      .catch(() => message.error(t("settings.archive.actionFailed")));
   };
 
   const handleDeleteAll = () => {
-    setArchives([]);
+    deleteAllArchivedConversations()
+      .then(() => {
+        setArchives([]);
+        message.success(t("settings.archive.archiveCleared"));
+      })
+      .catch(() => message.error(t("settings.archive.actionFailed")));
   };
 
   return (
-    <>
       <div className="pb-20 relative">
         <div className="mb-10 max-w-[700px] flex items-end justify-between">
           <h1 className="text-2xl font-semibold text-text-base mb-1">{t("settings.archive.title")}</h1>
@@ -41,23 +84,25 @@ export function ArchiveSettings() {
           {archives.length > 0 ? (
             <div className="space-y-3">
               {archives.map((chat) => (
-                <div key={chat.id} className="border border-border-theme rounded-xl p-4 flex items-center justify-between bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)]">
+                <div key={chat.session_id} className="border border-border-theme rounded-xl p-4 flex items-center justify-between bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)]">
                   <div>
-                    <div className="text-[14px] font-medium text-text-base mb-0.5">{chat.title}</div>
+                    <div className="text-[14px] font-medium text-text-base mb-0.5">
+                      {chat.title || t("settings.archive.untitled")}
+                    </div>
                     <div className="text-[12px] text-text-secondary">
-                      {chat.date} • {chat.project}
+                      {formatArchiveDate(chat.archived_at)} • {chat.project || t("settings.archive.unknownProject")}
                     </div>
                   </div>
                   <div className="flex items-center space-x-4">
                     <button 
                       className="text-gray-400 hover:text-red-500 transition-colors"
-                      onClick={() => setArchives(archives.filter(a => a.id !== chat.id))}
+                      onClick={() => handleDelete(chat.session_id)}
                     >
                       <FontAwesomeIcon icon={["far", "trash-can"]} className="text-[14px]" />
                     </button>
                     <button 
                       className="px-4 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-full text-[12px] font-medium text-text-base transition-colors"
-                      onClick={() => handleUnarchive(chat.id)}
+                      onClick={() => handleUnarchive(chat.session_id)}
                     >
                       {t("settings.archive.unarchive")}
                     </button>
@@ -72,22 +117,5 @@ export function ArchiveSettings() {
           )}
         </div>
       </div>
-
-      {/* Global Toast Notification */}
-      {showToast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 animate-fade-in-down">
-          <div className="bg-white border border-border-theme rounded-full shadow-lg px-4 py-2 flex items-center space-x-3 text-[13px]">
-            <span className="text-text-base font-medium">{t("settings.archive.chatUnarchived")}</span>
-            <button className="text-blue-500 hover:underline font-medium">{t("settings.archive.viewNow")}</button>
-            <button 
-              className="text-gray-400 hover:text-gray-600 transition-colors ml-2"
-              onClick={() => setShowToast(false)}
-            >
-              <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[12px]" />
-            </button>
-          </div>
-        </div>
-      )}
-    </>
   );
 }

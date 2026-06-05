@@ -21,6 +21,7 @@ use crate::dto::{
     RewindResultDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto,
     TranscriptDto,
 };
+use crate::ArchiveService;
 
 /// The application service backing the UI.
 pub struct AppService {
@@ -60,9 +61,11 @@ impl AppService {
     /// List all sessions, newest first, as summaries for the sidebar.
     pub fn list_sessions(&self) -> Result<Vec<SessionSummaryDto>> {
         let store = EventStore::new(&self.db);
+        let archived = ArchiveService::new(self.db.clone()).archived_ids()?;
         let records = store.list_sessions()?;
         Ok(records
             .into_iter()
+            .filter(|r| !archived.contains(&r.id.to_string()))
             .map(|r| SessionSummaryDto {
                 id: r.id.to_string(),
                 project: r.project.as_deref().map(project_display_name),

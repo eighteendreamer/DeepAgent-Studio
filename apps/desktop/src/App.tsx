@@ -8,6 +8,7 @@ import {
   getActiveProject,
   setActiveProject,
   addProject,
+  archiveProjectConversations,
   pickProjectFolder,
   removeProject,
   clearApiKey,
@@ -369,6 +370,31 @@ export function App() {
       })
       .catch(() => {});
   }, []);
+
+  const onArchiveProject = useCallback(
+    (path: string, name: string) => {
+      archiveProjectConversations(path)
+        .then((result) => {
+          refreshSessions();
+          const activeSession = sessions.find((s) => s.id === activeId);
+          if (activeSession?.project === name) {
+            setActiveId(null);
+            setDetail(null);
+            setMessages([]);
+            setView("start");
+          }
+          message.success(
+            result.archived_count > 0
+              ? `已归档 ${result.archived_count} 个对话`
+              : "没有可归档的对话"
+          );
+        })
+        .catch((err) => {
+          message.error(`归档失败：${String(err)}`);
+        });
+    },
+    [activeId, refreshSessions, sessions]
+  );
 
   // Log out: delete the stored API key from the keychain, clear the local
   // onboarding flag, and return to the login (onboarding) screen.
@@ -875,6 +901,7 @@ export function App() {
                 onNewChat={onNewChat}
                 onAddProject={onAddProject}
                 onRemoveProject={onRemoveProject}
+                onArchiveProject={onArchiveProject}
                 onOpenSearch={() => setIsSearchOpen(true)}
                 onOpenSkills={() => navigateTo(activeId, "skills")}
                 onOpenKnowledge={() => navigateTo(activeId, "knowledge")}

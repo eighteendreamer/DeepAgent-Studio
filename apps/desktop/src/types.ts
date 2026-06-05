@@ -263,6 +263,21 @@ export interface Project {
   updated_at: number;
 }
 
+export interface ArchivedConversation {
+  session_id: string;
+  title: string | null;
+  project: string | null;
+  project_path: string | null;
+  archived_at: number;
+  updated_at: number;
+}
+
+export interface ArchiveProjectResult {
+  project_path: string;
+  project_name: string;
+  archived_count: number;
+}
+
 /** A knowledge entry (mirrors deepagent-app-core::KnowledgeDto). */
 export interface KnowledgeEntry {
   id: string;

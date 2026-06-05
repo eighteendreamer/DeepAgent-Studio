@@ -38,6 +38,34 @@ pub struct ProjectDto {
     pub updated_at: i64,
 }
 
+/// A conversation hidden from the live sidebar by app-level archive state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedConversationDto {
+    /// Session id.
+    pub session_id: String,
+    /// Optional session title.
+    pub title: Option<String>,
+    /// Project folder display name when known.
+    pub project: Option<String>,
+    /// Stable project path when known.
+    pub project_path: Option<String>,
+    /// When this conversation was archived, Unix ms.
+    pub archived_at: i64,
+    /// The session's last update time, Unix ms.
+    pub updated_at: i64,
+}
+
+/// Result of archiving a project's visible conversations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveProjectResultDto {
+    /// The project path that was archived.
+    pub project_path: String,
+    /// Display name for the project.
+    pub project_name: String,
+    /// Number of newly archived conversations.
+    pub archived_count: u32,
+}
+
 /// A timeline entry for the Codex-style timeline panel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimelineEntryDto {

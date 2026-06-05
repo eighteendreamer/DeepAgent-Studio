@@ -20,6 +20,7 @@ use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 
 use crate::dto::ProjectDto;
+use crate::ArchiveService;
 
 /// Document-store location for the project registry.
 const PROJECTS_COLLECTION: &str = "projects";
@@ -137,17 +138,17 @@ impl ProjectService {
     /// Build a [`ProjectDto`] for `path` with live session count + last update.
     fn enrich(&self, path: &str) -> Result<ProjectDto> {
         let store = EventStore::new(&self.db);
+        let archived = ArchiveService::new(self.db.clone()).archived_ids()?;
         let mut count = 0u32;
         let mut updated_at = 0i64;
-        for (proj, last) in store.distinct_projects()? {
-            if proj == path {
-                updated_at = last.as_millis();
-            }
-        }
         // Count sessions belonging to this project.
         for s in store.list_sessions()? {
             if s.project.as_deref() == Some(path) {
+                if archived.contains(&s.id.to_string()) {
+                    continue;
+                }
                 count += 1;
+                updated_at = updated_at.max(s.updated_at.as_millis());
             }
         }
         Ok(ProjectDto {

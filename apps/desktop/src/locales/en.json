@@ -27,6 +27,12 @@
     "openInExplorer": "Open in Explorer",
     "renameProject": "Rename project",
     "remove": "Remove",
+    "archiveProjectDialog": {
+      "title": "Archive this project's conversations?",
+      "description": "This will archive the conversations in {{project}}. You can find them later in Archived conversations.",
+      "cancel": "Cancel",
+      "confirm": "Archive"
+    },
     "loginApi": "Logged in via API Key",
     "logout": "Logout"
   },
@@ -538,7 +544,15 @@
     "archive": {
       "title": "Archive",
       "deleteAll": "Delete All",
-      "unarchive": "Unarchive"
+      "unarchive": "Unarchive",
+      "noArchivedChats": "No archived conversations",
+      "untitled": "Untitled conversation",
+      "unknownProject": "Unknown project",
+      "chatUnarchived": "Conversation unarchived",
+      "archiveDeleted": "Removed from archive",
+      "archiveCleared": "Archived conversations cleared",
+      "loadFailed": "Failed to load archived conversations",
+      "actionFailed": "Action failed"
     },
     "computer": {
       "title": "Computer Control",

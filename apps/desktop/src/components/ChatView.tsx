@@ -353,9 +353,12 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
         </div>
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
-          <div className="w-full max-w-4xl">
+          <div className="w-full max-w-4xl relative">
             {approval && (
-              <div className="mb-3">
+              <div
+                className="absolute left-0 right-0 z-30"
+                style={{ bottom: "calc(100% - 10px)" }}
+              >
                 <ApprovalDialog
                   request={approval}
                   queueCount={approvalQueueCount}

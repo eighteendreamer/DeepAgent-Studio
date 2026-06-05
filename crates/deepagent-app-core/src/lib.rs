@@ -12,6 +12,7 @@
 //! contract stays stable as the kernel evolves.
 
 pub mod approval_bridge;
+pub mod archive_service;
 pub mod chat_service;
 pub mod commands;
 pub mod cost_service;
@@ -29,16 +30,17 @@ pub mod terminal_service;
 pub mod workspace_service;
 
 pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
+pub use archive_service::ArchiveService;
 pub use chat_service::ChatService;
 pub use commands::{builtin_commands, commands_from_roots, filter_commands};
 pub use cost_service::{BudgetConfig, CostRecord, CostService, CostSummary, ModelPricing};
 pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
 pub use doctor::{format_diagnostics, run_diagnostics, DiagStatus, DiagnosticResult};
 pub use dto::{
-    ApprovalRequestDto, CommandDto, ConversationMessageDto, ConversationPartDto,
-    ConversationUsageDto, ForkResultDto, ProjectDto, RewindResultDto, SessionDetailDto,
-    SessionStatsDto, SessionSummaryDto, TerminalResultDto, TimelineEntryDto, TranscriptDto,
-    WorkspaceInfoDto,
+    ApprovalRequestDto, ArchiveProjectResultDto, ArchivedConversationDto, CommandDto,
+    ConversationMessageDto, ConversationPartDto, ConversationUsageDto, ForkResultDto, ProjectDto,
+    RewindResultDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto, TerminalResultDto,
+    TimelineEntryDto, TranscriptDto, WorkspaceInfoDto,
 };
 pub use knowledge_service::{
     KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, KnowledgeServiceBackend,

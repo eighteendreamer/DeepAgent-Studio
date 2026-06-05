@@ -7,6 +7,8 @@
 
 import type {
   ApprovalRequest,
+  ArchiveProjectResult,
+  ArchivedConversation,
   Command,
   ConversationMessage,
   CostSummary,
@@ -657,6 +659,45 @@ export async function removeProject(path: string): Promise<boolean> {
   const invoke = getInvoke();
   if (invoke) return invoke<boolean>("remove_project", { path });
   return true;
+}
+
+export async function archiveProjectConversations(
+  projectPath: string
+): Promise<ArchiveProjectResult> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<ArchiveProjectResult>("archive_project_conversations", {
+      projectPath,
+    });
+  return {
+    project_path: projectPath,
+    project_name: projectPath.split(/[\\/]/).pop() || projectPath,
+    archived_count: 0,
+  };
+}
+
+export async function listArchivedConversations(): Promise<ArchivedConversation[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ArchivedConversation[]>("list_archived_conversations");
+  return [];
+}
+
+export async function unarchiveConversation(sessionId: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("unarchive_conversation", { sessionId });
+  return true;
+}
+
+export async function deleteArchivedConversation(sessionId: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("delete_archived_conversation", { sessionId });
+  return true;
+}
+
+export async function deleteAllArchivedConversations(): Promise<number> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<number>("delete_all_archived_conversations");
+  return 0;
 }
 
 // ---- terminal (run commands in the active project) ------------------------

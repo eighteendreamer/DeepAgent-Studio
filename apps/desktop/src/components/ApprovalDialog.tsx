@@ -24,15 +24,55 @@ function riskClasses(risk: string): string {
   }
 }
 
+function formatArgumentValue(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(formatArgumentValue).filter(Boolean).join(", ");
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, nested]) => `${key}: ${formatArgumentValue(nested)}`)
+      .join("\n");
+  }
+  return String(value);
+}
+
+function approvalContent(argumentsText: string): string[] {
+  const raw = argumentsText.trim();
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const obj = parsed as Record<string, unknown>;
+      if (typeof obj.command === "string") return [obj.command];
+      if (typeof obj.path === "string") return [obj.path];
+
+      const entries = Object.entries(obj)
+        .map(([key, value]) => {
+          const formatted = formatArgumentValue(value);
+          return formatted ? `${key}: ${formatted}` : "";
+        })
+        .filter(Boolean);
+      if (entries.length > 0) return entries;
+    }
+
+    const formatted = formatArgumentValue(parsed);
+    return formatted ? [formatted] : [];
+  } catch {
+    return [raw];
+  }
+}
+
 /**
- * A compact approval card that floats directly above the composer (Codex-style)
- * rather than a fullscreen modal. Render it inside the composer's container so
- * it hovers over the input box; it animates in from below and shows the tool,
- * its risk, the reason, and the (collapsible) arguments.
+ * A compact approval card that floats directly above the composer rather than
+ * a fullscreen modal. It shows the tool, risk, reason, and a human-readable
+ * summary of the requested action without exposing raw JSON.
  */
 export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }: Props) {
   const { t } = useTranslation();
   const remaining = Math.max(0, queueCount - 1);
+  const content = request ? approvalContent(request.arguments) : [];
 
   return (
     <AnimatePresence>
@@ -72,9 +112,15 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
             {request.reason && (
               <p className="text-[12px] text-text-secondary mb-2">{request.reason}</p>
             )}
-            <pre className="text-[12px] font-mono text-text-base whitespace-pre-wrap break-words bg-gray-50 border border-border-theme rounded-lg p-2.5 max-h-44 overflow-y-auto">
-              {request.arguments}
-            </pre>
+            {content.length > 0 && (
+              <div className="text-[13px] text-text-base leading-relaxed bg-gray-50 border border-border-theme rounded-lg px-3 py-2.5 max-h-44 overflow-y-auto">
+                {content.map((line, index) => (
+                  <div key={`${request.call_id}-${index}`} className="break-words whitespace-pre-wrap">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="px-4 py-2.5 border-t border-border-theme flex justify-end gap-2 bg-[#FbFcFd]">

@@ -14,12 +14,13 @@
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
-    AppService, BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService,
-    CostSummary, DiagnosticResult, DiffResult, ForkResultDto, KeychainStore, KnowledgeDraftDto,
-    KnowledgeDto, KnowledgeHitDto, KnowledgeService, McpServerDto, McpService, ProjectDto,
-    ProjectService, RewindResultDto, SessionDetailDto, SessionSummaryDto, SettingsService,
-    SettingsView, SkillActivationDto, SkillDto, SkillsService, TerminalResultDto, TerminalService,
-    TranscriptDto, WorkspaceInfoDto, WorkspaceService,
+    AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, BudgetConfig,
+    ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary, DiagnosticResult,
+    DiffResult, ForkResultDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
+    KnowledgeService, McpServerDto, McpService, ProjectDto, ProjectService, RewindResultDto,
+    SessionDetailDto, SessionSummaryDto, SettingsService, SettingsView, SkillActivationDto,
+    SkillDto, SkillsService, TerminalResultDto, TerminalService, TranscriptDto, WorkspaceInfoDto,
+    WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use serde::Serialize;
@@ -37,6 +38,7 @@ struct AppState {
     mcp: Arc<McpService>,
     knowledge: Arc<KnowledgeService>,
     cost: Arc<CostService>,
+    archive: Arc<ArchiveService>,
     projects: Arc<ProjectService>,
     workspace: Arc<WorkspaceService>,
     terminal: Arc<TerminalService>,
@@ -640,6 +642,50 @@ fn remove_project(state: State<'_, AppState>, path: String) -> Result<bool, Stri
     Ok(removed)
 }
 
+// ---- archived conversations ----------------------------------------------
+
+#[tauri::command]
+fn archive_project_conversations(
+    state: State<'_, AppState>,
+    project_path: String,
+) -> Result<ArchiveProjectResultDto, String> {
+    state
+        .archive
+        .archive_project(&project_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_archived_conversations(
+    state: State<'_, AppState>,
+) -> Result<Vec<ArchivedConversationDto>, String> {
+    state.archive.list().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn unarchive_conversation(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    state
+        .archive
+        .unarchive_session(&session_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_archived_conversation(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<bool, String> {
+    state
+        .archive
+        .delete_archived_session(&session_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_all_archived_conversations(state: State<'_, AppState>) -> Result<u32, String> {
+    state.archive.delete_all().map_err(|e| e.to_string())
+}
+
 // ---- terminal (interactive command in the active project) -----------------
 
 #[tauri::command]
@@ -757,6 +803,10 @@ pub fn run() {
             // enforces optional daily/monthly budget limits.
             let cost = Arc::new(CostService::new(service.shared_database()));
 
+            // Archived conversations: app-level visibility index, separate from
+            // the append-only event log.
+            let archive = Arc::new(ArchiveService::new(service.shared_database()));
+
             // Chat: streamed runs; MCP servers connect + live-register tools, each
             // run is rooted at the active project's folder, and the knowledge base
             // is attached for passive injection + active tools.
@@ -782,6 +832,7 @@ pub fn run() {
                 mcp,
                 knowledge,
                 cost,
+                archive,
                 projects,
                 workspace,
                 terminal,
@@ -848,6 +899,11 @@ pub fn run() {
             add_project,
             set_active_project,
             remove_project,
+            archive_project_conversations,
+            list_archived_conversations,
+            unarchive_conversation,
+            delete_archived_conversation,
+            delete_all_archived_conversations,
             run_terminal,
             terminal_cwd
         ])

@@ -27,6 +27,12 @@
     "openInExplorer": "在资源管理器中打开",
     "renameProject": "重命名项目",
     "remove": "移除",
+    "archiveProjectDialog": {
+      "title": "归档当前项目对话？",
+      "description": "这会将 {{project}} 项目中的对话归档。之后你可以在已归档对话中找到它们。",
+      "cancel": "取消",
+      "confirm": "归档"
+    },
     "loginApi": "已通过 API 密钥登录",
     "logout": "退出登录"
   },
@@ -538,7 +544,15 @@
     "archive": {
       "title": "归档",
       "deleteAll": "全部删除",
-      "unarchive": "取消归档"
+      "unarchive": "取消归档",
+      "noArchivedChats": "暂无已归档对话",
+      "untitled": "未命名对话",
+      "unknownProject": "未知项目",
+      "chatUnarchived": "对话已取消归档",
+      "archiveDeleted": "已从归档中删除",
+      "archiveCleared": "已清空归档对话",
+      "loadFailed": "加载归档对话失败",
+      "actionFailed": "操作失败"
     },
     "computer": {
       "title": "电脑控制",

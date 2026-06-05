@@ -14,6 +14,7 @@ interface Props {
   onNewChat: () => void;
   onAddProject: () => void;
   onRemoveProject: (path: string) => void;
+  onArchiveProject: (path: string, name: string) => void;
   onOpenSearch: () => void;
   onOpenSkills: () => void;
   onOpenKnowledge: () => void;
@@ -50,12 +51,13 @@ function formatTimeAgo(timestamp: number) {
   return `${months} 个月`;
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onRemoveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onRemoveProject, onArchiveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isNewProjectMenuOpen, setIsNewProjectMenuOpen] = useState(false);
   const [activeProjectMenu, setActiveProjectMenu] = useState<string | null>(null);
+  const [archiveProject, setArchiveProject] = useState<{ path: string; name: string } | null>(null);
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(new Set());
   
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -364,7 +366,15 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                             {t("sidebar.renameProject")}
                           </button>
                           <div className="my-1 border-t border-border-theme"></div>
-                          <button className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left">
+                          <button
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            onClick={() => {
+                              const path = nameToPath[proj];
+                              if (!path) return;
+                              setActiveProjectMenu(null);
+                              setArchiveProject({ path, name: proj });
+                            }}
+                          >
                             <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-text-secondary mr-2.5 w-4" />
                             {t("sidebar.archive")}
                           </button>
@@ -454,6 +464,40 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           </div>
         )}
       </div>
+
+      {archiveProject && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/20 px-4">
+          <div className="w-full max-w-[420px] rounded-2xl border border-border-theme bg-white shadow-[0_20px_60px_rgba(15,23,42,0.18)]">
+            <div className="px-5 pt-5 pb-3">
+              <div className="text-[17px] font-semibold text-text-base">
+                {t("sidebar.archiveProjectDialog.title")}
+              </div>
+              <div className="mt-2 text-[13px] leading-6 text-text-secondary">
+                {t("sidebar.archiveProjectDialog.description", {
+                  project: archiveProject.name,
+                })}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border-theme px-5 py-3">
+              <button
+                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-gray-50 transition-colors"
+                onClick={() => setArchiveProject(null)}
+              >
+                {t("sidebar.archiveProjectDialog.cancel")}
+              </button>
+              <button
+                className="rounded-full bg-primary px-4 py-1.5 text-[13px] font-medium text-white hover:bg-opacity-90 transition-colors"
+                onClick={() => {
+                  onArchiveProject(archiveProject.path, archiveProject.name);
+                  setArchiveProject(null);
+                }}
+              >
+                {t("sidebar.archiveProjectDialog.confirm")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
