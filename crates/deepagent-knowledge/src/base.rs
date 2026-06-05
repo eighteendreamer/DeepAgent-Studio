@@ -29,7 +29,7 @@ pub struct KnowledgeConfig {
     pub max_inject_tokens: usize,
     /// Whether passive injection is enabled.
     pub passive_enabled: bool,
-    /// Whether session auto-capture (recovery → draft) is enabled.
+    /// Whether session auto-capture (recovery → active knowledge) is enabled.
     pub auto_capture_enabled: bool,
 }
 

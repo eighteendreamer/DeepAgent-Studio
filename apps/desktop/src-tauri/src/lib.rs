@@ -18,9 +18,9 @@ use deepagent_app_core::{
     ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary, DiagnosticResult,
     DiffResult, ForkResultDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
     KnowledgeService, McpServerDto, McpService, ProjectDto, ProjectService, RewindResultDto,
-    SessionDetailDto, SessionSummaryDto, SettingsService, SettingsView, SkillActivationDto,
-    SkillDto, SkillsService, TerminalResultDto, TerminalService, TranscriptDto, WorkspaceInfoDto,
-    WorkspaceService,
+    SessionDetailDto, SessionStateService, SessionSummaryDto, SettingsService, SettingsView,
+    SkillActivationDto, SkillDto, SkillsService, TerminalResultDto, TerminalService, TranscriptDto,
+    WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use serde::Serialize;
@@ -39,6 +39,7 @@ struct AppState {
     knowledge: Arc<KnowledgeService>,
     cost: Arc<CostService>,
     archive: Arc<ArchiveService>,
+    session_state: Arc<SessionStateService>,
     projects: Arc<ProjectService>,
     workspace: Arc<WorkspaceService>,
     terminal: Arc<TerminalService>,
@@ -84,6 +85,18 @@ fn session_conversation(
 ) -> Result<Vec<ConversationMessageDto>, String> {
     let svc = state.service.lock().map_err(|e| e.to_string())?;
     svc.session_conversation(&session_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_session_pinned(
+    state: State<'_, AppState>,
+    session_id: String,
+    pinned: bool,
+) -> Result<bool, String> {
+    state
+        .session_state
+        .set_pinned(&session_id, pinned)
         .map_err(|e| e.to_string())
 }
 
@@ -642,6 +655,57 @@ fn remove_project(state: State<'_, AppState>, path: String) -> Result<bool, Stri
     Ok(removed)
 }
 
+#[tauri::command]
+fn set_project_pinned(
+    state: State<'_, AppState>,
+    path: String,
+    pinned: bool,
+) -> Result<ProjectDto, String> {
+    state
+        .projects
+        .set_pinned(&path, pinned)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_project(
+    state: State<'_, AppState>,
+    path: String,
+    name: String,
+) -> Result<ProjectDto, String> {
+    state
+        .projects
+        .rename_project(&path, &name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_project_in_file_manager(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut cmd = std::process::Command::new("explorer");
+        cmd.arg(&path);
+        cmd
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(&path);
+        cmd
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(&path);
+        cmd
+    };
+
+    command.spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ---- archived conversations ----------------------------------------------
 
 #[tauri::command]
@@ -653,6 +717,44 @@ fn archive_project_conversations(
         .archive
         .archive_project(&project_path)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn archive_conversation(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    let archived = state
+        .archive
+        .archive_session(&session_id)
+        .map_err(|e| e.to_string())?;
+    if archived {
+        state
+            .session_state
+            .clear_session(&session_id)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(archived)
+}
+
+#[tauri::command]
+fn archive_all_conversations(state: State<'_, AppState>) -> Result<u32, String> {
+    let sessions = {
+        let svc = state.service.lock().map_err(|e| e.to_string())?;
+        svc.list_sessions().map_err(|e| e.to_string())?
+    };
+    let mut archived_count = 0u32;
+    for session in sessions {
+        if state
+            .archive
+            .archive_session(&session.id)
+            .map_err(|e| e.to_string())?
+        {
+            state
+                .session_state
+                .clear_session(&session.id)
+                .map_err(|e| e.to_string())?;
+            archived_count += 1;
+        }
+    }
+    Ok(archived_count)
 }
 
 #[tauri::command]
@@ -806,6 +908,7 @@ pub fn run() {
             // Archived conversations: app-level visibility index, separate from
             // the append-only event log.
             let archive = Arc::new(ArchiveService::new(service.shared_database()));
+            let session_state = Arc::new(SessionStateService::new(service.shared_database()));
 
             // Chat: streamed runs; MCP servers connect + live-register tools, each
             // run is rooted at the active project's folder, and the knowledge base
@@ -833,6 +936,7 @@ pub fn run() {
                 knowledge,
                 cost,
                 archive,
+                session_state,
                 projects,
                 workspace,
                 terminal,
@@ -844,6 +948,7 @@ pub fn run() {
             list_sessions,
             session_detail,
             session_conversation,
+            set_session_pinned,
             commands,
             compute_diff,
             fork_session,
@@ -899,7 +1004,12 @@ pub fn run() {
             add_project,
             set_active_project,
             remove_project,
+            set_project_pinned,
+            rename_project,
+            open_project_in_file_manager,
             archive_project_conversations,
+            archive_conversation,
+            archive_all_conversations,
             list_archived_conversations,
             unarchive_conversation,
             delete_archived_conversation,

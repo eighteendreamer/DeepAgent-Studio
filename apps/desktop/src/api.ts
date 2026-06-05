@@ -34,10 +34,16 @@ import type {
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
 export const SETTINGS_CHANGED_EVENT = "deepagent:settings-changed";
+export const ARCHIVE_CHANGED_EVENT = "deepagent:archive-changed";
 
 function emitSettingsChanged(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent(SETTINGS_CHANGED_EVENT));
+}
+
+function emitArchiveChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(ARCHIVE_CHANGED_EVENT));
 }
 
 function promptMayChangeSettings(prompt: string): boolean {
@@ -77,6 +83,12 @@ export async function getSessionConversation(id: string): Promise<ConversationMe
   const invoke = getInvoke();
   if (invoke) return invoke<ConversationMessage[]>("session_conversation", { sessionId: id });
   return [];
+}
+
+export async function setSessionPinned(sessionId: string, pinned: boolean): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("set_session_pinned", { sessionId, pinned });
+  return pinned;
 }
 
 export async function getCommands(query: string): Promise<Command[]> {
@@ -645,7 +657,13 @@ export async function getActiveProject(): Promise<string | null> {
 export async function addProject(path: string): Promise<Project> {
   const invoke = getInvoke();
   if (invoke) return invoke<Project>("add_project", { path });
-  return { name: path.split(/[\\/]/).pop() || path, path, session_count: 0, updated_at: Date.now() };
+  return {
+    name: path.split(/[\\/]/).pop() || path,
+    path,
+    pinned: false,
+    session_count: 0,
+    updated_at: Date.now(),
+  };
 }
 
 /** Set the active project. */
@@ -661,19 +679,74 @@ export async function removeProject(path: string): Promise<boolean> {
   return true;
 }
 
+export async function setProjectPinned(path: string, pinned: boolean): Promise<Project> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Project>("set_project_pinned", { path, pinned });
+  return {
+    name: path.split(/[\\/]/).pop() || path,
+    path,
+    pinned,
+    session_count: 0,
+    updated_at: Date.now(),
+  };
+}
+
+export async function renameProject(path: string, name: string): Promise<Project> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Project>("rename_project", { path, name });
+  return {
+    name,
+    path,
+    pinned: false,
+    session_count: 0,
+    updated_at: Date.now(),
+  };
+}
+
+export async function openProjectInFileManager(path: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("open_project_in_file_manager", { path });
+}
+
 export async function archiveProjectConversations(
   projectPath: string
 ): Promise<ArchiveProjectResult> {
   const invoke = getInvoke();
-  if (invoke)
-    return invoke<ArchiveProjectResult>("archive_project_conversations", {
+  if (invoke) {
+    const result = await invoke<ArchiveProjectResult>("archive_project_conversations", {
       projectPath,
     });
+    emitArchiveChanged();
+    return result;
+  }
+  emitArchiveChanged();
   return {
     project_path: projectPath,
     project_name: projectPath.split(/[\\/]/).pop() || projectPath,
     archived_count: 0,
   };
+}
+
+export async function archiveConversation(sessionId: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const result = await invoke<boolean>("archive_conversation", { sessionId });
+    emitArchiveChanged();
+    return result;
+  }
+  emitArchiveChanged();
+  return true;
+}
+
+export async function archiveAllConversations(): Promise<number> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const result = await invoke<number>("archive_all_conversations");
+    emitArchiveChanged();
+    return result;
+  }
+  emitArchiveChanged();
+  return 0;
 }
 
 export async function listArchivedConversations(): Promise<ArchivedConversation[]> {
@@ -684,19 +757,34 @@ export async function listArchivedConversations(): Promise<ArchivedConversation[
 
 export async function unarchiveConversation(sessionId: string): Promise<boolean> {
   const invoke = getInvoke();
-  if (invoke) return invoke<boolean>("unarchive_conversation", { sessionId });
+  if (invoke) {
+    const result = await invoke<boolean>("unarchive_conversation", { sessionId });
+    if (result) emitArchiveChanged();
+    return result;
+  }
+  emitArchiveChanged();
   return true;
 }
 
 export async function deleteArchivedConversation(sessionId: string): Promise<boolean> {
   const invoke = getInvoke();
-  if (invoke) return invoke<boolean>("delete_archived_conversation", { sessionId });
+  if (invoke) {
+    const result = await invoke<boolean>("delete_archived_conversation", { sessionId });
+    if (result) emitArchiveChanged();
+    return result;
+  }
+  emitArchiveChanged();
   return true;
 }
 
 export async function deleteAllArchivedConversations(): Promise<number> {
   const invoke = getInvoke();
-  if (invoke) return invoke<number>("delete_all_archived_conversations");
+  if (invoke) {
+    const result = await invoke<number>("delete_all_archived_conversations");
+    if (result > 0) emitArchiveChanged();
+    return result;
+  }
+  emitArchiveChanged();
   return 0;
 }
 

@@ -8,6 +8,7 @@ export interface SessionSummary {
   created_at: number;
   updated_at: number;
   ended: boolean;
+  pinned: boolean;
 }
 
 export interface TimelineEntry {
@@ -259,6 +260,7 @@ export interface SettingsView {
 export interface Project {
   name: string;
   path: string;
+  pinned: boolean;
   session_count: number;
   updated_at: number;
 }

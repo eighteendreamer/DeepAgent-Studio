@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
@@ -13,6 +13,7 @@ import { BrowserPlugin } from "./plugins/BrowserPlugin";
 import { TerminalPlugin } from "./plugins/TerminalPlugin";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import { useTranslation } from "react-i18next";
+import { runTerminal } from "../api";
 
 interface Props {
   messages: ChatMessage[];
@@ -23,6 +24,12 @@ interface Props {
   onRewind?: (toSeq: number) => void;
   /** Export the current session transcript. */
   onExport?: (format: "markdown" | "json") => void;
+  /** Pin or unpin the current session. */
+  onPin?: () => void;
+  /** Archive the current session. */
+  onArchive?: () => void;
+  /** Whether the current session is pinned. */
+  pinned?: boolean;
   /** The session timeline, used to offer rewind anchors. */
   timeline?: TimelineEntry[];
   /** Head-of-queue tool-approval request to show floating above the composer. */
@@ -37,6 +44,8 @@ interface Props {
   onStop?: () => void;
   /** Current session is in read-only Plan mode. */
   planMode?: boolean;
+  /** Explicitly selected project path. Empty means the chat is not project-bound. */
+  activeProjectPath?: string | null;
 }
 
 export type PluginType = "none" | "files" | "chat" | "browser" | "terminal";
@@ -48,6 +57,19 @@ export type Tab = {
   icon: IconProp;
 };
 
+type OutputItem = {
+  label: string;
+  kind: "url" | "file";
+};
+
+type EnvironmentPanelState = {
+  loading: boolean;
+  branch: string | null;
+  additions: number | null;
+  deletions: number | null;
+  ghAvailable: boolean | null;
+};
+
 export const TOOL_CARDS: { icon: IconProp; title: string; desc: string; type: PluginType }[] = [
   { icon: ["far", "folder-open"], title: "files", desc: "filesDesc", type: "files" },
   { icon: ["far", "comment-dots"], title: "chat", desc: "chatDesc", type: "chat" },
@@ -55,10 +77,59 @@ export const TOOL_CARDS: { icon: IconProp; title: string; desc: string; type: Pl
   { icon: ["fas", "terminal"], title: "terminal", desc: "terminalDesc", type: "terminal" },
 ];
 
-export function ChatView({ messages, onSend, onFork, onRewind, onExport, timeline = [], approval = null, approvalQueueCount = 0, onApprovalDecision, busy = false, onStop, planMode = false }: Props) {
+function parseGitShortstat(text: string): { additions: number; deletions: number } {
+  const additions = text.match(/(\d+)\s+insertion/)?.[1];
+  const deletions = text.match(/(\d+)\s+deletion/)?.[1];
+  return {
+    additions: additions ? Number(additions) : 0,
+    deletions: deletions ? Number(deletions) : 0,
+  };
+}
+
+function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
+  const chunks: string[] = [];
+  for (const message of messages) {
+    if (message.content) chunks.push(message.content);
+    for (const part of message.parts ?? []) {
+      if (part.kind === "text" || part.kind === "reasoning") chunks.push(part.text);
+      if (part.kind === "tool") {
+        if (part.tool.detail) chunks.push(part.tool.detail);
+        if (part.tool.args) chunks.push(part.tool.args);
+      }
+    }
+    for (const tool of message.tools ?? []) {
+      if (tool.detail) chunks.push(tool.detail);
+      if (tool.args) chunks.push(tool.args);
+    }
+  }
+
+  const seen = new Set<string>();
+  const items: OutputItem[] = [];
+  const add = (label: string, kind: OutputItem["kind"]) => {
+    const cleaned = label.replace(/[),.;\]}"']+$/, "");
+    if (!cleaned || seen.has(cleaned)) return;
+    seen.add(cleaned);
+    items.push({ label: cleaned, kind });
+  };
+  const text = chunks.join("\n");
+  const urlPattern = /\b(?:https?:\/\/)?(?:localhost|127\.0\.0\.1)(?::\d+)?(?:\/[^\s<>"'`)]*)?|\bhttps?:\/\/[^\s<>"'`)]+/gi;
+  const filePattern = /\b[\w.-]+\.(?:md|txt|json|csv|tsx?|jsx?|rs|py|html|css|ya?ml)\b/gi;
+  for (const match of text.matchAll(urlPattern)) add(match[0], "url");
+  for (const match of text.matchAll(filePattern)) add(match[0], "file");
+  return items.slice(0, 5);
+}
+
+export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, onArchive, pinned = false, timeline = [], approval = null, approvalQueueCount = 0, onApprovalDecision, busy = false, onStop, planMode = false, activeProjectPath = null }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
-  const [isOutputPanelOpen, setIsOutputPanelOpen] = useState(true);
+  const [isOutputPanelOpen, setIsOutputPanelOpen] = useState(false);
+  const [environment, setEnvironment] = useState<EnvironmentPanelState>({
+    loading: false,
+    branch: null,
+    additions: null,
+    deletions: null,
+    ghAvailable: null,
+  });
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
   const [isRewindOpen, setIsRewindOpen] = useState(false);
@@ -108,6 +179,67 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
   }, [isResizingSidebar]);
   const [sidebarTabs, setSidebarTabs] = useState<Tab[]>([]);
   const [activeSidebarTabId, setActiveSidebarTabId] = useState<string>("new");
+  const outputItems = useMemo(() => collectOutputItems(messages), [messages]);
+  const outputSignature = useMemo(
+    () => outputItems.map((item) => `${item.kind}:${item.label}`).join("|"),
+    [outputItems]
+  );
+  const lastAutoOpenedOutputRef = useRef<string>("");
+
+  useEffect(() => {
+    if (!outputSignature) {
+      lastAutoOpenedOutputRef.current = "";
+      return;
+    }
+    if (lastAutoOpenedOutputRef.current === outputSignature) return;
+    lastAutoOpenedOutputRef.current = outputSignature;
+    setIsOutputPanelOpen(true);
+  }, [outputSignature]);
+
+  useEffect(() => {
+    if (!isOutputPanelOpen) return;
+    if (!activeProjectPath) {
+      setEnvironment({
+        loading: false,
+        branch: null,
+        additions: null,
+        deletions: null,
+        ghAvailable: null,
+      });
+      return;
+    }
+
+    let cancelled = false;
+    setEnvironment((prev) => ({ ...prev, loading: true }));
+    Promise.allSettled([
+      runTerminal("git branch --show-current"),
+      runTerminal("git diff --shortstat HEAD"),
+      runTerminal("gh --version"),
+    ]).then(([branchResult, diffResult, ghResult]) => {
+      if (cancelled) return;
+      const branch =
+        branchResult.status === "fulfilled" && branchResult.value.exit_code === 0
+          ? branchResult.value.stdout.trim() || null
+          : null;
+      const diffText =
+        diffResult.status === "fulfilled" && diffResult.value.exit_code === 0
+          ? diffResult.value.stdout
+          : "";
+      const diff = parseGitShortstat(diffText);
+      setEnvironment({
+        loading: false,
+        branch,
+        additions: diff.additions,
+        deletions: diff.deletions,
+        ghAvailable:
+          ghResult.status === "fulfilled" ? ghResult.value.exit_code === 0 : false,
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectPath, isOutputPanelOpen]);
 
   // Auto-scroll the conversation to the bottom as messages/tokens stream in.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -173,10 +305,16 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
             {/* Dropdown Menu */}
             {isMenuOpen && (
               <div className="absolute top-10 left-0 w-60 bg-white border border-border-theme rounded-xl shadow-lg py-1.5 z-50 text-[13px] text-text-base font-normal">
-                <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group">
+                <div
+                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  onClick={() => {
+                    onPin?.();
+                    setIsMenuOpen(false);
+                  }}
+                >
                   <div className="flex items-center">
                     <FontAwesomeIcon icon={["fas", "thumbtack"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                    <span>{t("chatView.pinChat")}</span>
+                    <span>{pinned ? t("sidebar.unpin") : t("chatView.pinChat")}</span>
                   </div>
                   <span className="text-gray-400 text-[11px] font-sans">Ctrl+Alt+P</span>
                 </div>
@@ -187,7 +325,13 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
                   </div>
                   <span className="text-gray-400 text-[11px] font-sans">Ctrl+Alt+R</span>
                 </div>
-                <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group">
+                <div
+                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  onClick={() => {
+                    onArchive?.();
+                    setIsMenuOpen(false);
+                  }}
+                >
                   <div className="flex items-center">
                     <FontAwesomeIcon icon={["fas", "box-archive"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
                     <span>{t("chatView.archiveChat")}</span>
@@ -578,42 +722,102 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
         </>
       )}
       </div>
-      {/* Floating sticky note for Model Output State */}
+      {/* Floating sticky note for context state */}
         {isOutputPanelOpen && (
-          <div className="absolute top-16 right-6 w-[280px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.08)] flex flex-col z-10 max-h-[calc(100%-120px)]">
+          <div
+            className="absolute top-16 right-6 w-[300px] bg-white border border-border-theme rounded-2xl shadow-[0_12px_36px_rgb(0,0,0,0.10)] flex flex-col z-10"
+            style={{ maxHeight: "min(460px, calc(100% - 120px))" }}
+          >
             <div className="flex-1 flex flex-col p-5 overflow-y-auto">
-              {/* Outputs */}
-              <div className="mb-5">
-                <div className="text-xs text-text-secondary mb-3">{t("chatView.output")}</div>
-                <div className="space-y-2">
-                  <div className="flex items-center text-[13px] text-text-base hover:text-blue-500 cursor-pointer transition-colors truncate">
-                    <FontAwesomeIcon icon={["fas", "globe"]} className="w-4 mr-2 text-text-secondary" />
-                    127.0.0.1:5005
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-[14px] text-text-secondary">{t("chatView.environmentInfo")}</div>
+                <button
+                  type="button"
+                  className="w-7 h-7 rounded-md text-text-secondary hover:text-text-base hover:bg-gray-100 transition-colors"
+                  aria-label={t("chatView.environmentSettings")}
+                >
+                  <FontAwesomeIcon icon={["fas", "gear"]} />
+                </button>
+              </div>
+
+              <div className="space-y-3 text-[14px]">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center min-w-0 text-text-base">
+                    <FontAwesomeIcon icon={["fas", "list-check"]} className="w-4 mr-3 text-text-secondary" />
+                    <span>{t("chatView.changes")}</span>
                   </div>
-                  <div className="flex items-center text-[13px] text-text-base hover:text-blue-500 cursor-pointer transition-colors truncate">
-                    <FontAwesomeIcon icon={["fas", "globe"]} className="w-4 mr-2 text-text-secondary" />
-                    localhost:5018/api/trinity/entitlemen...
-                  </div>
-                  <div className="flex items-center text-[13px] text-text-base hover:text-blue-500 cursor-pointer transition-colors truncate">
-                    <FontAwesomeIcon icon={["far", "file-lines"]} className="w-4 mr-2 text-text-secondary" />
-                    new_arch_spec.md
-                  </div>
-                  <div className="flex items-center text-[13px] text-text-base hover:text-blue-500 cursor-pointer transition-colors truncate">
-                    <FontAwesomeIcon icon={["fas", "globe"]} className="w-4 mr-2 text-text-secondary" />
-                    localhost:5018/api/trinity/entitlement
-                  </div>
-                  <div className="flex items-center text-[13px] text-text-base hover:text-blue-500 cursor-pointer transition-colors truncate">
-                    <FontAwesomeIcon icon={["fas", "globe"]} className="w-4 mr-2 text-text-secondary" />
-                    localhost:3100/xhc/
-                  </div>
+                  {activeProjectPath ? (
+                    <div className="flex items-center gap-1.5 font-medium tabular-nums">
+                      <span className="text-green-600">
+                        +{environment.loading ? "..." : environment.additions ?? 0}
+                      </span>
+                      <span className="text-red-500">
+                        -{environment.loading ? "..." : environment.deletions ?? 0}
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="text-[13px] text-text-secondary">{t("chatView.noProject")}</span>
+                  )}
+                </div>
+
+                <div className="flex items-center min-w-0 text-text-base" title={activeProjectPath ?? undefined}>
+                  <FontAwesomeIcon icon={["fas", "desktop"]} className="w-4 mr-3 text-text-secondary" />
+                  <span className="truncate">{t("chatView.local")}</span>
+                  {activeProjectPath && <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[10px] text-text-secondary" />}
+                </div>
+
+                <div className="flex items-center min-w-0 text-text-base">
+                  <FontAwesomeIcon icon={["fas", "code-branch"]} className="w-4 mr-3 text-text-secondary" />
+                  <span className="truncate">
+                    {activeProjectPath
+                      ? environment.loading
+                        ? t("chatView.loading")
+                        : environment.branch ?? t("chatView.noGitRepository")
+                      : t("chatView.noProject")}
+                  </span>
+                  {activeProjectPath && environment.branch && <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[10px] text-text-secondary" />}
+                </div>
+
+                <div className="flex items-center min-w-0 text-text-base">
+                  <FontAwesomeIcon icon={["fas", "share-nodes"]} className="w-4 mr-3 text-text-secondary" />
+                  <span>{t("chatView.commitOrPush")}</span>
+                </div>
+
+                <div className="flex items-center min-w-0 text-text-secondary">
+                  <FontAwesomeIcon icon={["fab", "github"]} className="w-4 mr-3 text-text-secondary" />
+                  <span>
+                    {environment.ghAvailable ? t("chatView.githubCliAvailable") : t("chatView.githubCliUnavailable")}
+                  </span>
                 </div>
               </div>
 
-              <div className="w-full h-px bg-border-theme mb-5"></div>
+              <div className="w-full h-px bg-border-theme my-5"></div>
 
-              {/* Sources */}
+              <div className="mb-5">
+                <div className="text-[14px] text-text-secondary mb-3">{t("chatView.output")}</div>
+                {outputItems.length > 0 ? (
+                  <div className="space-y-2 max-h-28 overflow-y-auto custom-scrollbar pr-1">
+                    {outputItems.map((item) => (
+                      <div
+                        key={`${item.kind}:${item.label}`}
+                        className="flex items-center text-[13px] text-text-base hover:text-blue-500 cursor-pointer transition-colors min-w-0"
+                        title={item.label}
+                      >
+                        <FontAwesomeIcon
+                          icon={item.kind === "url" ? ["fas", "globe"] : ["far", "file-lines"]}
+                          className="w-4 mr-2 text-text-secondary flex-shrink-0"
+                        />
+                        <span className="truncate">{item.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[13px] text-text-secondary">{t("chatView.noOutput")}</div>
+                )}
+              </div>
+
               <div>
-                <div className="text-xs text-text-secondary mb-3">{t("chatView.sources")}</div>
+                <div className="text-[14px] text-text-secondary mb-3">{t("chatView.sources")}</div>
                 <div className="text-[13px] text-text-secondary">{t("chatView.noSources")}</div>
               </div>
             </div>
@@ -635,6 +839,14 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, timelin
 function AssistantTurn({ message: m, busy }: { message: ChatMessage; busy: boolean }) {
   const { t } = useTranslation();
   const parts = m.parts ?? [];
+  const hasLegacyVisibleContent =
+    !!m.content?.trim() ||
+    !!m.reasoning?.trim() ||
+    (m.tools?.length ?? 0) > 0;
+
+  if (!busy && parts.length === 0 && !hasLegacyVisibleContent) {
+    return null;
+  }
 
   // Split into process steps (reasoning + tools, plus any interleaved
   // intermediate text) and the final answer (the trailing run of text parts).
@@ -646,7 +858,7 @@ function AssistantTurn({ message: m, busy }: { message: ChatMessage; busy: boole
   const answerParts = lastNonText >= 0 ? parts.slice(lastNonText + 1) : parts;
 
   const toolCount = processParts.filter((p) => p.kind === "tool").length;
-  const hasProcess = processParts.length > 0 && toolCount > 0;
+  const hasProcess = processParts.length > 0;
   const hasAnswer = answerParts.some(
     (p) => p.kind === "text" && p.text.trim().length > 0
   );
@@ -720,6 +932,10 @@ function AssistantTurn({ message: m, busy }: { message: ChatMessage; busy: boole
             </div>
           )}
 
+          {!busy && hasProcess && !hasAnswer && (
+            <UsageFooter usage={m.usage} totalMs={m.runMs ?? totalToolMs} answer={m.content} />
+          )}
+
           {/* Working placeholder before any step/answer exists. */}
           {busy && !hasProcess && !hasAnswer && (
             <div className="w-full rounded-xl border border-border-theme bg-white px-4 py-3">
@@ -787,7 +1003,11 @@ function ProcessSteps({
           className="mr-2 text-[11px]"
         />
         <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-2 text-[12px]" />
-        <span className="font-medium">{t("chatView.processSteps", { count: toolCount })}</span>
+        <span className="font-medium">
+          {toolCount > 0
+            ? t("chatView.processSteps", { count: toolCount })
+            : t("chatView.processStepsNoTools")}
+        </span>
         {totalMs > 0 && (
           <span className="ml-2 text-[11px] text-text-secondary tabular-nums">· {formatMs(totalMs)}</span>
         )}

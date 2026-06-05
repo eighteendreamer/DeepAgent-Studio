@@ -19,7 +19,7 @@ import {
   faCircleCheck as faCircleCheckRegular, faSun, faFaceSmile, faKeyboard, faCompass, faTrashCan, faWindowMaximize
 } from "@fortawesome/free-regular-svg-icons";
 
-import { faChrome, faFigma, faGitAlt } from "@fortawesome/free-brands-svg-icons";
+import { faChrome, faFigma, faGitAlt, faGithub } from "@fortawesome/free-brands-svg-icons";
 
 const solidIcons = [
   faChevronDown, faMagnifyingGlassChart, faEllipsis, faThumbtack, faPen, faBoxArchive,
@@ -40,7 +40,7 @@ const regularIcons = [
 ];
 
 const brandIcons = [
-  faChrome, faFigma, faGitAlt
+  faChrome, faFigma, faGitAlt, faGithub
 ];
 
 solidIcons.forEach(icon => library.add(icon));

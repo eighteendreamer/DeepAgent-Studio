@@ -9,6 +9,7 @@
 //! event store. Sessions themselves carry their project path (the stable key);
 //! the folder *name* is derived for display.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -35,6 +36,12 @@ struct ProjectRegistry {
     /// The active project path (agent ops + new sessions attach here).
     #[serde(default)]
     active: Option<String>,
+    /// Project paths pinned to the top of the sidebar.
+    #[serde(default)]
+    pinned: HashSet<String>,
+    /// User-facing project names keyed by project path.
+    #[serde(default)]
+    names: HashMap<String, String>,
 }
 
 /// Derive the display name (last path component) from a folder path.
@@ -86,7 +93,8 @@ impl ProjectService {
         }
         reg.active = Some(norm.clone());
         self.save(&reg)?;
-        self.enrich(&norm)
+        let reg = self.load()?;
+        self.enrich(&norm, &reg)
     }
 
     /// Remove (close) a project from the registry. Its sessions are left intact
@@ -97,6 +105,8 @@ impl ProjectService {
         let mut reg = self.load()?;
         let before = reg.paths.len();
         reg.paths.retain(|p| p != path);
+        reg.pinned.remove(path);
+        reg.names.remove(path);
         let existed = reg.paths.len() != before;
         if reg.active.as_deref() == Some(path) {
             reg.active = reg.paths.first().cloned();
@@ -122,21 +132,63 @@ impl ProjectService {
         Ok(self.load()?.active)
     }
 
+    /// Registered project paths currently visible in the sidebar.
+    pub fn registered_paths(&self) -> Result<HashSet<String>> {
+        Ok(self.load()?.paths.into_iter().collect())
+    }
+
+    /// Set whether a project is pinned to the top of the sidebar.
+    pub fn set_pinned(&self, path: &str, pinned: bool) -> Result<ProjectDto> {
+        let mut reg = self.load()?;
+        if !reg.paths.iter().any(|p| p == path) {
+            return Err(CoreError::not_found(format!("project '{path}' not opened")));
+        }
+        if pinned {
+            reg.pinned.insert(path.to_string());
+        } else {
+            reg.pinned.remove(path);
+        }
+        self.save(&reg)?;
+        self.enrich(path, &reg)
+    }
+
+    /// Set a display alias for a project without renaming the folder on disk.
+    pub fn rename_project(&self, path: &str, name: &str) -> Result<ProjectDto> {
+        let clean = name.trim();
+        if clean.is_empty() {
+            return Err(CoreError::invalid("project name must not be empty"));
+        }
+        let mut reg = self.load()?;
+        if !reg.paths.iter().any(|p| p == path) {
+            return Err(CoreError::not_found(format!("project '{path}' not opened")));
+        }
+        reg.names.insert(path.to_string(), clean.to_string());
+        self.save(&reg)?;
+        self.enrich(path, &reg)
+    }
+
+    /// Display name for a path, honoring a user-provided alias when present.
+    pub fn display_name(&self, path: &str) -> Result<String> {
+        let reg = self.load()?;
+        Ok(display_name_from_registry(path, &reg))
+    }
+
     /// All registered projects as DTOs (enriched with session counts), ordered
     /// by most-recent session activity then registry order.
     pub fn list(&self) -> Result<Vec<ProjectDto>> {
         let reg = self.load()?;
         let mut out = Vec::with_capacity(reg.paths.len());
         for path in &reg.paths {
-            out.push(self.enrich(path)?);
+            out.push(self.enrich(path, &reg)?);
         }
-        // Most-recently-active project first; zero-session projects keep registry order at the end.
-        out.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
+        // Pinned projects first, then most-recent activity; zero-session projects
+        // keep registry order at the end because sort_by_key is stable.
+        out.sort_by_key(|p| (!p.pinned, std::cmp::Reverse(p.updated_at)));
         Ok(out)
     }
 
     /// Build a [`ProjectDto`] for `path` with live session count + last update.
-    fn enrich(&self, path: &str) -> Result<ProjectDto> {
+    fn enrich(&self, path: &str, reg: &ProjectRegistry) -> Result<ProjectDto> {
         let store = EventStore::new(&self.db);
         let archived = ArchiveService::new(self.db.clone()).archived_ids()?;
         let mut count = 0u32;
@@ -152,8 +204,9 @@ impl ProjectService {
             }
         }
         Ok(ProjectDto {
-            name: folder_name(path),
+            name: display_name_from_registry(path, reg),
             path: path.to_string(),
+            pinned: reg.pinned.contains(path),
             session_count: count,
             updated_at,
         })
@@ -178,6 +231,14 @@ impl ProjectService {
             SystemClock.now(),
         )
     }
+}
+
+fn display_name_from_registry(path: &str, reg: &ProjectRegistry) -> String {
+    reg.names
+        .get(path)
+        .filter(|name| !name.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| folder_name(path))
 }
 
 #[cfg(test)]
@@ -256,6 +317,25 @@ mod tests {
         // Active falls back to the remaining project.
         assert_eq!(svc.active().unwrap().as_deref(), Some("/work/a"));
         assert!(!svc.remove_project("/work/b").unwrap());
+    }
+
+    #[test]
+    fn pin_and_rename_project() {
+        let (svc, _db) = service();
+        svc.add_project("/work/a").unwrap();
+        svc.add_project("/work/b").unwrap();
+
+        let renamed = svc.rename_project("/work/b", "Backend").unwrap();
+        assert_eq!(renamed.name, "Backend");
+        assert_eq!(svc.display_name("/work/b").unwrap(), "Backend");
+
+        let pinned = svc.set_pinned("/work/b", true).unwrap();
+        assert!(pinned.pinned);
+        let listed = svc.list().unwrap();
+        assert_eq!(listed.first().unwrap().path, "/work/b");
+
+        let unpinned = svc.set_pinned("/work/b", false).unwrap();
+        assert!(!unpinned.pinned);
     }
 
     #[test]

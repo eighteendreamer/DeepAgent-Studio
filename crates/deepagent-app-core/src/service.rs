@@ -21,7 +21,7 @@ use crate::dto::{
     RewindResultDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto,
     TranscriptDto,
 };
-use crate::ArchiveService;
+use crate::{ArchiveService, ProjectService, SessionStateService};
 
 /// The application service backing the UI.
 pub struct AppService {
@@ -62,18 +62,32 @@ impl AppService {
     pub fn list_sessions(&self) -> Result<Vec<SessionSummaryDto>> {
         let store = EventStore::new(&self.db);
         let archived = ArchiveService::new(self.db.clone()).archived_ids()?;
+        let pinned = SessionStateService::new(self.db.clone()).pinned_ids()?;
+        let projects = ProjectService::new(self.db.clone());
+        let registered_projects = projects.registered_paths()?;
         let records = store.list_sessions()?;
         Ok(records
             .into_iter()
             .filter(|r| !archived.contains(&r.id.to_string()))
+            .filter(|r| {
+                r.project
+                    .as_deref()
+                    .map(|path| registered_projects.contains(path))
+                    .unwrap_or(true)
+            })
             .map(|r| SessionSummaryDto {
                 id: r.id.to_string(),
-                project: r.project.as_deref().map(project_display_name),
+                project: r.project.as_deref().map(|path| {
+                    projects
+                        .display_name(path)
+                        .unwrap_or_else(|_| project_display_name(path))
+                }),
                 title: r.title,
                 mode: r.mode.label().to_string(),
                 created_at: r.created_at.as_millis(),
                 updated_at: r.updated_at.as_millis(),
                 ended: r.ended_at.is_some(),
+                pinned: pinned.contains(&r.id.to_string()),
             })
             .collect())
     }
@@ -83,6 +97,8 @@ impl AppService {
         let id = SessionId::from_str(session_id)
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         let store = EventStore::new(&self.db);
+        let projects = ProjectService::new(self.db.clone());
+        let pinned = SessionStateService::new(self.db.clone()).pinned_ids()?;
         let record = store
             .get_session(id)?
             .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
@@ -116,12 +132,17 @@ impl AppService {
         Ok(SessionDetailDto {
             summary: SessionSummaryDto {
                 id: record.id.to_string(),
-                project: record.project.as_deref().map(project_display_name),
+                project: record.project.as_deref().map(|path| {
+                    projects
+                        .display_name(path)
+                        .unwrap_or_else(|_| project_display_name(path))
+                }),
                 title: record.title,
                 mode: record.mode.label().to_string(),
                 created_at: record.created_at.as_millis(),
                 updated_at: record.updated_at.as_millis(),
                 ended: record.ended_at.is_some(),
+                pinned: pinned.contains(&record.id.to_string()),
             },
             timeline,
             stats,
@@ -293,6 +314,21 @@ impl AppService {
             }
         }
 
+        messages.retain(|m| {
+            if m.role != "assistant" {
+                return true;
+            }
+            if !m.content.trim().is_empty() {
+                return true;
+            }
+            m.parts.iter().any(|p| match p {
+                ConversationPartDto::Text { text } | ConversationPartDto::Reasoning { text } => {
+                    !text.trim().is_empty()
+                }
+                ConversationPartDto::Tool { .. } => true,
+            })
+        });
+
         Ok(messages)
     }
 
@@ -420,6 +456,26 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, sid);
         assert_eq!(sessions[0].title.as_deref(), Some("demo"));
+    }
+
+    #[test]
+    fn list_sessions_hides_removed_project_sessions() {
+        let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let projects = ProjectService::new(db.clone());
+        projects.add_project("/work/a").unwrap();
+        projects.add_project("/work/b").unwrap();
+        Session::create_in_project(&db, &clock, Some("a"), Default::default(), Some("/work/a"))
+            .unwrap();
+        Session::create_in_project(&db, &clock, Some("b"), Default::default(), Some("/work/b"))
+            .unwrap();
+        let svc = AppService::from_shared(db);
+
+        assert_eq!(svc.list_sessions().unwrap().len(), 2);
+        projects.remove_project("/work/b").unwrap();
+        let sessions = svc.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].project.as_deref(), Some("a"));
     }
 
     #[test]

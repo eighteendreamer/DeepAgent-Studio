@@ -1159,10 +1159,10 @@ impl ChatService {
         drop(agent);
         let _ = pump.await;
 
-        // Session auto-capture (Requirement 9, 方案 A): if the run succeeded and
-        // a knowledge base with auto-capture is attached, summarize a recovery
-        // arc into a pending DRAFT in the background. Spawned detached so it
-        // never delays the user's answer (Property 12); all failures are silent.
+        // Session auto-capture: if the run succeeded and a knowledge base with
+        // auto-capture is attached, persist a reusable recovery lesson in the
+        // background. Spawned detached so it never delays the user's answer; all
+        // failures are silent.
         if run_result.is_ok() {
             if let Some(knowledge) = &self.knowledge {
                 if knowledge.auto_capture_enabled() {
@@ -1193,7 +1193,7 @@ impl ChatService {
                             .capture_from_session(client, model, &events, &sid)
                             .await
                         {
-                            tracing::info!(id = %dto.id, "auto-captured a knowledge draft");
+                            tracing::info!(id = %dto.id, "auto-captured knowledge");
                         }
                     });
                 }

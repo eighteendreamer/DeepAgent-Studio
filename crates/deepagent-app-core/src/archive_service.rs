@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use deepagent_core::clock::{Clock, SystemClock};
-use deepagent_core::error::Result;
+use deepagent_core::error::{CoreError, Result};
 use deepagent_persistence::document_store::DocumentStore;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::Database;
@@ -109,6 +109,36 @@ impl ArchiveService {
         })
     }
 
+    /// Archive one conversation by session id. Returns whether it was newly archived.
+    pub fn archive_session(&self, session_id: &str) -> Result<bool> {
+        if self.is_archived(session_id)? {
+            return Ok(false);
+        }
+
+        let session = EventStore::new(&self.db)
+            .list_sessions()?
+            .into_iter()
+            .find(|session| session.id.to_string() == session_id)
+            .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
+
+        let record = ArchivedConversationRecord {
+            session_id: session_id.to_string(),
+            title: session.title,
+            project: session.project.as_deref().map(folder_name),
+            project_path: session.project,
+            archived_at: SystemClock.now().as_millis(),
+            updated_at: session.updated_at.as_millis(),
+        };
+        DocumentStore::new(&self.db).put(
+            ARCHIVE_COLLECTION,
+            session_id,
+            &serde_json::to_string(&record)?,
+            None,
+            SystemClock.now(),
+        )?;
+        Ok(true)
+    }
+
     /// List archived conversations, newest archived first.
     pub fn list(&self) -> Result<Vec<ArchivedConversationDto>> {
         let mut out = Vec::new();
@@ -185,6 +215,22 @@ mod tests {
         assert_eq!(svc.archive_project("/work/p").unwrap().archived_count, 1);
         assert_eq!(svc.archive_project("/work/p").unwrap().archived_count, 0);
         assert_eq!(svc.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn archive_single_session_is_idempotent() {
+        let (svc, db) = service();
+        let clock = FixedClock::new(1_000);
+        let session =
+            Session::create_in_project(&db, &clock, Some("a"), Default::default(), Some("/work/p"))
+                .unwrap();
+        let session_id = session.id().to_string();
+
+        assert!(svc.archive_session(&session_id).unwrap());
+        assert!(!svc.archive_session(&session_id).unwrap());
+        let archived = svc.list().unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].session_id, session_id);
     }
 
     #[test]

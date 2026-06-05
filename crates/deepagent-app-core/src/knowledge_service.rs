@@ -267,7 +267,7 @@ impl KnowledgeService {
         base.base.config().passive_enabled
     }
 
-    /// Toggle session auto-capture (recovery → draft).
+    /// Toggle session auto-capture (recovery → active knowledge).
     pub fn set_auto_capture(&self, on: bool) {
         let mut base = self.lock();
         base.base.set_auto_capture_enabled(on);
@@ -303,7 +303,8 @@ impl KnowledgeService {
         base.base.discard_draft(id)
     }
 
-    /// Add a pending draft directly (used by auto-capture). Returns the draft.
+    /// Add a pending draft directly. Returns the draft.
+    #[cfg(test)]
     fn add_draft(&self, draft: KnowledgeDraft) -> Result<KnowledgeDto> {
         let now_ms = SystemClock.now().as_millis();
         let mut base = self.lock();
@@ -311,12 +312,13 @@ impl KnowledgeService {
         Ok(KnowledgeDto::from_entry(&entry))
     }
 
-    /// Auto-capture a worthwhile recovery from a finished session as a pending
-    /// **draft** (Requirement 9). Returns `None` — silently, never erroring — in
-    /// every "not worth it" case: auto-capture disabled, no failure/recovery
-    /// detected, the summarizer judged it not worth saving, or the model call /
-    /// JSON parse failed. This is called in the background after a run, so it
-    /// must never disturb the main turn (Property 12).
+    /// Auto-capture a worthwhile recovery from a finished session as an active
+    /// knowledge entry, so the lesson can be passively injected on the next
+    /// relevant turn. Returns `None` — silently, never erroring — when
+    /// auto-capture is disabled or no failure/recovery was detected. If the
+    /// summarizer fails or declines, a conservative fallback note is still
+    /// persisted; a recovered tool failure is useful even when the model cannot
+    /// summarize it cleanly.
     ///
     /// The `Mutex` is only held for the brief detect/insert steps, never across
     /// the `await` of the model call.
@@ -336,16 +338,19 @@ impl KnowledgeService {
             return None;
         }
 
-        // Summarize via a small, non-streaming model call (no lock held).
-        let draft = match summarize_recovery(&client, &model, &signal, session_id).await {
-            Some(d) => d,
-            None => return None,
-        };
+        // Summarize via a small, non-streaming model call (no lock held). If it
+        // fails or declines, keep the operational lesson with a deterministic
+        // fallback so failures are not rediscovered from scratch next time.
+        let draft = summarize_recovery(&client, &model, &signal, session_id)
+            .await
+            .unwrap_or_else(|| fallback_recovery_draft(&signal, session_id));
 
-        match self.add_draft(draft) {
-            Ok(dto) => Some(dto),
+        let now_ms = SystemClock.now().as_millis();
+        let mut base = self.lock();
+        match base.base.write(draft, now_ms) {
+            Ok(entry) => Some(KnowledgeDto::from_entry(&entry)),
             Err(e) => {
-                tracing::warn!(error = %e, "failed to persist auto-capture draft");
+                tracing::warn!(error = %e, "failed to persist auto-capture knowledge");
                 None
             }
         }
@@ -397,6 +402,50 @@ struct CaptureReply {
     tags: Vec<String>,
     #[serde(default)]
     body: String,
+}
+
+fn fallback_recovery_draft(signal: &capture::RecoverySignal, session_id: &str) -> KnowledgeDraft {
+    let tools = if signal.failed_tools.is_empty() {
+        "tool".to_string()
+    } else {
+        signal.failed_tools.join(", ")
+    };
+    let mut tags = vec!["auto-captured".to_string(), "failure-recovery".to_string()];
+    tags.extend(
+        signal
+            .failed_tools
+            .iter()
+            .map(|tool| tool.replace([' ', '_'], "-").to_lowercase()),
+    );
+
+    let mut body = format!(
+        "## Symptom\nA previous run hit failed tool calls while handling this request:\n\n{}\n\n## Failed tools\n{}\n\n## What worked\nThe run recovered and produced a final answer. On a similar failure, do not stop at the first failed tool call; inspect the error, try an alternate query/source/tool, and preserve the workaround for reuse.",
+        signal.user_goal.trim(),
+        tools
+    );
+
+    if signal.failed_tools.iter().any(|tool| tool == "web_search") {
+        body.push_str(
+            "\n\nFor `web_search` failures such as unparseable results or provider markup changes, retry with a different query/source or use `web_fetch` against a known authoritative URL.",
+        );
+    }
+    if !signal.final_answer.trim().is_empty() {
+        body.push_str("\n\n## Recovered answer\n");
+        body.push_str(signal.final_answer.trim());
+    }
+    if !signal.transcript_digest.trim().is_empty() {
+        body.push_str("\n\n## Evidence\n");
+        body.push_str(signal.transcript_digest.trim());
+    }
+
+    KnowledgeDraft {
+        title: format!("Recovered from {tools} failure"),
+        body,
+        kind: EntryKind::Pitfall,
+        tags,
+        source_session: Some(session_id.to_string()),
+        scope: Scope::Project,
+    }
 }
 
 /// Run the summarization model call and parse a draft, or `None` on any failure
@@ -736,7 +785,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capture_creates_draft_on_recovery() {
+    async fn capture_creates_active_knowledge_on_recovery() {
         let tmp = tempfile::tempdir().unwrap();
         let svc = service(tmp.path());
         let client = client_streaming(
@@ -750,20 +799,26 @@ mod tests {
         let dto = dto.unwrap();
         assert_eq!(dto.title, "Tauri exe lock on rebuild");
         assert_eq!(dto.source_session.as_deref(), Some("ses_xyz"));
-        // It is a DRAFT: not in the active list, present in drafts.
-        assert!(svc.list().is_empty());
-        assert_eq!(svc.list_drafts().len(), 1);
+        // Auto-captured knowledge is active so passive injection can reuse it
+        // on the next relevant turn.
+        assert_eq!(svc.list().len(), 1);
+        assert!(svc.list_drafts().is_empty());
     }
 
     #[tokio::test]
-    async fn capture_skips_when_model_declines() {
+    async fn capture_falls_back_when_model_declines() {
         let tmp = tempfile::tempdir().unwrap();
         let svc = service(tmp.path());
         let client = client_streaming(r#"{"worth_saving": false}"#);
         let dto = svc
             .capture_from_session(client, "deepseek-v4-flash".into(), &recovery_events(), "s")
             .await;
-        assert!(dto.is_none());
+        assert!(dto.is_some());
+        let dto = dto.unwrap();
+        assert_eq!(dto.title, "Recovered from bash failure");
+        assert_eq!(dto.kind, "pitfall");
+        assert!(dto.body.contains("os error 5"));
+        assert_eq!(svc.list().len(), 1);
         assert!(svc.list_drafts().is_empty());
     }
 

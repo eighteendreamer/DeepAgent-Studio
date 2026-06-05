@@ -110,7 +110,7 @@ impl Vault {
 
     /// Scan the drafts subdirectory for `*.md` files (same tolerant rules as
     /// [`Vault::scan`]). Entries are returned with [`crate::entry::EntryStatus`]
-    /// taken from their frontmatter (auto-capture writes `status: draft`).
+    /// taken from their frontmatter.
     pub fn scan_drafts(&self) -> Result<Vec<KnowledgeEntry>> {
         let dir = self.drafts_dir();
         if !dir.exists() {

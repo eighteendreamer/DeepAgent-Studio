@@ -8,8 +8,8 @@
 //!
 //! Deliberately conservative (Property 11): we only flag a run when at least one
 //! tool call FAILED and the task nonetheless reached completion — i.e. a real
-//! recovery happened. Trivial runs with no failures never produce a draft, so
-//! the knowledge base is not polluted with noise.
+//! recovery happened. Trivial runs with no failures never produce an auto-capture
+//! signal, so the knowledge base is not polluted with noise.
 
 use deepagent_core::event::{Event, EventPayload};
 use deepagent_core::message::Role;

@@ -13,7 +13,13 @@ interface Props {
   onSelectProject: (path: string) => void;
   onNewChat: () => void;
   onAddProject: () => void;
+  onPinSession: (id: string, pinned: boolean) => void;
+  onArchiveSession: (id: string) => void;
+  onArchiveAllSessions: () => void;
   onRemoveProject: (path: string) => void;
+  onPinProject: (path: string, pinned: boolean) => void;
+  onOpenProject: (path: string) => void;
+  onRenameProject: (path: string, name: string) => void;
   onArchiveProject: (path: string, name: string) => void;
   onOpenSearch: () => void;
   onOpenSkills: () => void;
@@ -51,14 +57,35 @@ function formatTimeAgo(timestamp: number) {
   return `${months} 个月`;
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onRemoveProject, onArchiveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
+type SidebarOrganizeMode = "project" | "recent" | "time" | "down";
+type SidebarSortCriterion = "updated" | "created";
+const SIDEBAR_ORGANIZE_MODES = ["project", "recent", "time", "down"] as const;
+const SIDEBAR_SORT_CRITERIA = ["updated", "created"] as const;
+
+function readSidebarPreference<T extends string>(key: string, fallback: T, allowed: readonly T[]): T {
+  if (typeof window === "undefined") return fallback;
+  const value = window.localStorage.getItem(key);
+  return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onRenameProject, onArchiveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+  const [activeMoreSubmenu, setActiveMoreSubmenu] = useState<"organize" | "sort" | null>(null);
+  const [moreSubmenuPosition, setMoreSubmenuPosition] = useState({ left: 252, top: 0 });
   const [isNewProjectMenuOpen, setIsNewProjectMenuOpen] = useState(false);
   const [activeProjectMenu, setActiveProjectMenu] = useState<string | null>(null);
   const [archiveProject, setArchiveProject] = useState<{ path: string; name: string } | null>(null);
-  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(new Set());
+  const [renameProject, setRenameProject] = useState<{ path: string; name: string } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [removeProject, setRemoveProject] = useState<{ path: string; name: string } | null>(null);
+  const [organizeMode, setOrganizeMode] = useState<SidebarOrganizeMode>(() =>
+    readSidebarPreference("deepagent:sidebar-organize-mode", "project", SIDEBAR_ORGANIZE_MODES)
+  );
+  const [sortCriterion, setSortCriterion] = useState<SidebarSortCriterion>(() =>
+    readSidebarPreference("deepagent:sidebar-sort-criterion", "updated", SIDEBAR_SORT_CRITERIA)
+  );
   
   const settingsRef = useRef<HTMLDivElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
@@ -72,6 +99,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
       }
       if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
         setIsMoreMenuOpen(false);
+        setActiveMoreSubmenu(null);
       }
       if (newProjectMenuRef.current && !newProjectMenuRef.current.contains(e.target as Node)) {
         setIsNewProjectMenuOpen(false);
@@ -84,6 +112,30 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    window.localStorage.setItem("deepagent:sidebar-organize-mode", organizeMode);
+  }, [organizeMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem("deepagent:sidebar-sort-criterion", sortCriterion);
+  }, [sortCriterion]);
+
+  const openMoreSubmenu = (submenu: "organize" | "sort") => {
+    const rect = moreMenuRef.current?.getBoundingClientRect();
+    const popupTop = (rect?.bottom ?? 0) + 4;
+    setMoreSubmenuPosition({
+      left: (rect?.right ?? 244) + 4,
+      top: popupTop + (submenu === "organize" ? 40 : 76),
+    });
+    setActiveMoreSubmenu(submenu);
+  };
+
+  const sessionSortValue = (session: SessionSummary) =>
+    sortCriterion === "created" ? session.created_at : session.updated_at;
+
+  const sortSessions = (items: SessionSummary[]) =>
+    [...items].sort((a, b) => sessionSortValue(b) - sessionSortValue(a));
+
   // Group sessions by their project (display name). Seed the map from the real
   // projects list so projects with no sessions yet still appear.
   const groupedSessions = useMemo(() => {
@@ -91,13 +143,14 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     for (const p of projects) {
       groups[p.name] = [];
     }
-    for (const s of sessions) {
+    for (const s of sortSessions(sessions)) {
+      if (s.pinned) continue;
       const proj = s.project || t("sidebar.noProjects");
       if (!groups[proj]) groups[proj] = [];
       groups[proj].push(s);
     }
     return groups;
-  }, [sessions, projects, t]);
+  }, [sessions, projects, sortCriterion, t]);
 
   // Map a project display name back to its path (for selecting the active one).
   const nameToPath = useMemo(() => {
@@ -106,18 +159,19 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     return m;
   }, [projects]);
 
-  const pinnedSessions = useMemo(() => {
-    return sessions.filter((s) => pinnedSessionIds.has(s.id));
-  }, [sessions, pinnedSessionIds]);
+  const projectByName = useMemo(() => {
+    const m: Record<string, Project> = {};
+    for (const p of projects) m[p.name] = p;
+    return m;
+  }, [projects]);
 
-  const togglePin = (id: string) => {
-    setPinnedSessionIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  const pinnedSessions = useMemo(() => {
+    return sessions.filter((s) => s.pinned);
+  }, [sessions]);
+
+  const pinnedProjectNames = useMemo(() => {
+    return new Set(projects.filter((p) => p.pinned).map((p) => p.name));
+  }, [projects]);
 
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
 
@@ -149,9 +203,48 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     }
   };
 
+  const chronologicalSessions = useMemo(
+    () => sortSessions(sessions.filter((s) => !s.pinned)),
+    [sessions, sortCriterion]
+  );
+
+  const orderProjectEntries = (entries: [string, SessionSummary[]][]) => {
+    const ordered = [...entries];
+    if (organizeMode === "recent") {
+      ordered.sort((a, b) => {
+        const aTime = Math.max(
+          projectByName[a[0]]?.updated_at ?? 0,
+          ...a[1].map((s) => sessionSortValue(s))
+        );
+        const bTime = Math.max(
+          projectByName[b[0]]?.updated_at ?? 0,
+          ...b[1].map((s) => sessionSortValue(s))
+        );
+        return bTime - aTime || a[0].localeCompare(b[0], "zh-CN");
+      });
+    } else if (organizeMode === "down") {
+      ordered.sort((a, b) => {
+        const aEmpty = a[1].filter((s) => s.title).length === 0 ? 1 : 0;
+        const bEmpty = b[1].filter((s) => s.title).length === 0 ? 1 : 0;
+        return aEmpty - bEmpty || a[0].localeCompare(b[0], "zh-CN");
+      });
+    }
+    return ordered;
+  };
+
+  const pinnedProjectEntries = orderProjectEntries(
+    Object.entries(groupedSessions).filter(([proj]) => pinnedProjectNames.has(proj))
+  );
+  const projectEntries =
+    organizeMode === "time"
+      ? []
+      : orderProjectEntries(
+          Object.entries(groupedSessions).filter(([proj]) => !pinnedProjectNames.has(proj))
+        );
+
   const renderSessionItem = (s: SessionSummary, isPinnedSection: boolean = false) => {
     const active = s.id === activeId;
-    const isPinned = pinnedSessionIds.has(s.id);
+    const isPinned = s.pinned;
     const isRunning = runningSessionIds?.has(s.id) ?? false;
     return (
       <div
@@ -192,14 +285,14 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               {/* Action Buttons (fades in on hover) */}
               <div className="col-start-1 row-start-1 flex items-center space-x-0.5 opacity-0 pointer-events-none group-hover/session:opacity-100 group-hover/session:pointer-events-auto transition-opacity justify-self-end">
                 <button
-                  onClick={(e) => { e.stopPropagation(); togglePin(s.id); }}
+                  onClick={(e) => { e.stopPropagation(); onPinSession(s.id, !isPinned); }}
                   className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded text-text-secondary"
                   title={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
                 >
                   <FontAwesomeIcon icon={["fas", "thumbtack"]} className="text-[10px]" />
                 </button>
                 <button
-                  onClick={(e) => { e.stopPropagation(); }}
+                  onClick={(e) => { e.stopPropagation(); onArchiveSession(s.id); }}
                   className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded text-text-secondary"
                   title={t("sidebar.archive")}
                 >
@@ -209,6 +302,134 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             </>
           )}
         </div>
+      </div>
+    );
+  };
+
+  const renderProjectGroup = (proj: string, projSessions: SessionSummary[]) => {
+    const isExpanded = expandedProjects[proj];
+    const project = projectByName[proj];
+    const isProjectPinned = project?.pinned ?? false;
+    return (
+      <div key={proj} className="flex flex-col">
+        <div
+          className={`flex items-center px-2.5 py-1.5 text-[13px] cursor-pointer hover:bg-black/5 rounded-md transition-colors group/proj ${activeProjectMenu === proj || nameToPath[proj] === activeProjectPath ? 'bg-black/5 text-text-base font-medium' : 'text-text-secondary'}`}
+          onClick={() => {
+            const path = nameToPath[proj];
+            if (path) onSelectProject(path);
+            toggleProject(proj);
+          }}
+        >
+          <FontAwesomeIcon icon={["far", "folder"]} className="w-4 text-left mr-2" />
+          <span className="truncate flex-1">{proj}</span>
+
+          <div className={`flex items-center space-x-0.5 transition-opacity ${activeProjectMenu === proj ? 'opacity-100' : 'opacity-0 group-hover/proj:opacity-100'}`}>
+            <div className="relative" ref={activeProjectMenu === proj ? projMenuRef : null}>
+              <button
+                className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded"
+                title="项目选项"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveProjectMenu(activeProjectMenu === proj ? null : proj);
+                }}
+              >
+                <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[10px]" />
+              </button>
+              {activeProjectMenu === proj && (
+                <div
+                  className="absolute top-full right-0 mt-1 w-44 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col font-normal"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    onClick={() => {
+                      const path = nameToPath[proj];
+                      if (!path) return;
+                      setActiveProjectMenu(null);
+                      onPinProject(path, !isProjectPinned);
+                    }}
+                  >
+                    <FontAwesomeIcon icon={["fas", "thumbtack"]} className="text-text-secondary mr-2.5 w-4" />
+                    {isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}
+                  </button>
+                  <button
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    onClick={() => {
+                      const path = nameToPath[proj];
+                      if (!path) return;
+                      setActiveProjectMenu(null);
+                      onOpenProject(path);
+                    }}
+                  >
+                    <FontAwesomeIcon icon={["far", "folder"]} className="text-text-secondary mr-2.5 w-4" />
+                    {t("sidebar.openInExplorer")}
+                  </button>
+                  <button
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    onClick={() => {
+                      const path = nameToPath[proj];
+                      if (!path) return;
+                      setActiveProjectMenu(null);
+                      setRenameProject({ path, name: proj });
+                      setRenameValue(proj);
+                    }}
+                  >
+                    <FontAwesomeIcon icon={["fas", "pen"]} className="text-text-secondary mr-2.5 w-4" />
+                    {t("sidebar.renameProject")}
+                  </button>
+                  <div className="my-1 border-t border-border-theme"></div>
+                  <button
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    onClick={() => {
+                      const path = nameToPath[proj];
+                      if (!path) return;
+                      setActiveProjectMenu(null);
+                      setArchiveProject({ path, name: proj });
+                    }}
+                  >
+                    <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-text-secondary mr-2.5 w-4" />
+                    {t("sidebar.archive")}
+                  </button>
+                  <button
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    onClick={() => {
+                      setActiveProjectMenu(null);
+                      const path = nameToPath[proj];
+                      if (path) setRemoveProject({ path, name: proj });
+                    }}
+                  >
+                    <FontAwesomeIcon icon={["fas", "xmark"]} className="text-text-secondary mr-2.5 w-4" />
+                    {t("sidebar.remove")}
+                  </button>
+                </div>
+              )}
+            </div>
+            <button
+              className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded"
+              title={t("sidebar.newChat")}
+              onClick={(e) => {
+                e.stopPropagation();
+                const path = nameToPath[proj];
+                if (path) onSelectProject(path);
+                onNewChat();
+              }}
+            >
+              <FontAwesomeIcon icon={["far", "pen-to-square"]} className="text-[10px]" />
+            </button>
+          </div>
+        </div>
+        {isExpanded && (
+          <div className="flex flex-col mt-0.5 space-y-0.5">
+            {projSessions.length === 0 || (projSessions.length === 1 && !projSessions[0].title) ? (
+              <div className="pl-8 py-1 text-[12px] text-gray-400">{t("sidebar.noChats")}</div>
+            ) : (
+              projSessions.map((s) => {
+                if (!s.title) return null;
+                return renderSessionItem(s);
+              })
+            )}
+          </div>
+        )}
       </div>
     );
   };
@@ -233,11 +454,14 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
 
       {/* Project / session list */}
       <div className="flex-1 overflow-y-auto px-2 mt-4 space-y-3 pb-2 custom-scrollbar">
-        {/* Pinned sessions */}
-        {pinnedSessions.length > 0 && (
+        {/* Pinned projects and sessions */}
+        {(pinnedProjectEntries.length > 0 || pinnedSessions.length > 0) && (
           <div className="flex flex-col">
             <div className="px-2 mb-1 text-[12px] text-text-secondary">{t("sidebar.pinned")}</div>
             <div className="space-y-0.5">
+              {pinnedProjectEntries.map(([proj, projSessions]) =>
+                renderProjectGroup(proj, projSessions)
+              )}
               {pinnedSessions.map((s) => renderSessionItem(s, true))}
             </div>
           </div>
@@ -259,31 +483,114 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 <button 
                   className="w-5 h-5 flex items-center justify-center hover:bg-black/5 rounded" 
                   title={t("sidebar.more")}
-                  onClick={() => { setIsMoreMenuOpen(!isMoreMenuOpen); setIsNewProjectMenuOpen(false); }}
+                  onClick={() => {
+                    setIsMoreMenuOpen(!isMoreMenuOpen);
+                    setActiveMoreSubmenu(null);
+                    setIsNewProjectMenuOpen(false);
+                  }}
                 >
                   <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[10px]" />
                 </button>
                 {isMoreMenuOpen && (
                   <div className="absolute top-full right-0 mt-1 w-48 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
-                    <button className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left">
+                    <button
+                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                      onClick={() => {
+                        setIsMoreMenuOpen(false);
+                        setActiveMoreSubmenu(null);
+                        onArchiveAllSessions();
+                      }}
+                    >
                       <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-text-secondary mr-2.5 w-4" />
                       {t("sidebar.archiveAll")}
                     </button>
                     <div className="my-1 border-t border-border-theme"></div>
-                    <button className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left">
+                    <button
+                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "organize" ? "bg-gray-50" : "hover:bg-gray-50"}`}
+                      onClick={() => {
+                        if (activeMoreSubmenu === "organize") setActiveMoreSubmenu(null);
+                        else openMoreSubmenu("organize");
+                      }}
+                    >
                       <div className="flex items-center">
                         <FontAwesomeIcon icon={["far", "folder"]} className="text-text-secondary mr-2.5 w-4" />
                         {t("sidebar.organizeSidebar")}
                       </div>
                       <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-text-secondary text-[10px]" />
                     </button>
-                    <button className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left">
+                    <button
+                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "sort" ? "bg-gray-50" : "hover:bg-gray-50"}`}
+                      onClick={() => {
+                        if (activeMoreSubmenu === "sort") setActiveMoreSubmenu(null);
+                        else openMoreSubmenu("sort");
+                      }}
+                    >
                       <div className="flex items-center">
                         <FontAwesomeIcon icon={["far", "clock"]} className="text-text-secondary mr-2.5 w-4" />
                         {t("sidebar.sortCriteria")}
                       </div>
                       <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-text-secondary text-[10px]" />
                     </button>
+                    {activeMoreSubmenu === "organize" && (
+                      <div
+                        className="fixed w-48 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-[200] flex flex-col"
+                        style={{ left: moreSubmenuPosition.left, top: moreSubmenuPosition.top }}
+                      >
+                        {[
+                          { id: "project" as const, icon: ["far", "folder"] as IconProp, label: t("sidebar.organizeByProject") },
+                          { id: "recent" as const, icon: ["far", "folder"] as IconProp, label: t("sidebar.organizeRecentProjects") },
+                          { id: "time" as const, icon: ["far", "clock"] as IconProp, label: t("sidebar.organizeByTime") },
+                          { id: "down" as const, icon: ["fas", "arrow-down"] as IconProp, label: t("sidebar.organizeMoveDown") },
+                        ].map((item) => (
+                          <button
+                            key={item.id}
+                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            onClick={() => {
+                              setOrganizeMode(item.id);
+                              setIsMoreMenuOpen(false);
+                              setActiveMoreSubmenu(null);
+                            }}
+                          >
+                            <div className="flex items-center">
+                              <FontAwesomeIcon icon={item.icon} className="text-text-secondary mr-2.5 w-4" />
+                              {item.label}
+                            </div>
+                            {organizeMode === item.id && (
+                              <FontAwesomeIcon icon={["fas", "check"]} className="text-text-secondary text-[11px]" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {activeMoreSubmenu === "sort" && (
+                      <div
+                        className="fixed w-44 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-[200] flex flex-col"
+                        style={{ left: moreSubmenuPosition.left, top: moreSubmenuPosition.top }}
+                      >
+                        {[
+                          { id: "created" as const, icon: ["far", "clock"] as IconProp, label: t("sidebar.sortByCreated") },
+                          { id: "updated" as const, icon: ["far", "clock"] as IconProp, label: t("sidebar.sortByUpdated") },
+                        ].map((item) => (
+                          <button
+                            key={item.id}
+                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            onClick={() => {
+                              setSortCriterion(item.id);
+                              setIsMoreMenuOpen(false);
+                              setActiveMoreSubmenu(null);
+                            }}
+                          >
+                            <div className="flex items-center">
+                              <FontAwesomeIcon icon={item.icon} className="text-text-secondary mr-2.5 w-4" />
+                              {item.label}
+                            </div>
+                            {sortCriterion === item.id && (
+                              <FontAwesomeIcon icon={["fas", "check"]} className="text-text-secondary text-[11px]" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -318,11 +625,18 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             </div>
           </div>
           <div className="space-y-0.5">
-            {Object.keys(groupedSessions).length === 0 && (
+            {projects.length === 0 && projectEntries.length === 0 && (
               <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noProjects")}</div>
             )}
-          {Object.entries(groupedSessions).map(([proj, projSessions]) => {
+            {organizeMode === "time" && chronologicalSessions.length === 0 && (
+              <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noChats")}</div>
+            )}
+            {organizeMode === "time" &&
+              chronologicalSessions.map((session) => renderSessionItem(session, true))}
+          {projectEntries.map(([proj, projSessions]) => {
             const isExpanded = expandedProjects[proj];
+            const project = projectByName[proj];
+            const isProjectPinned = project?.pinned ?? false;
             return (
               <div key={proj} className="flex flex-col">
                 <div
@@ -353,15 +667,40 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                           className="absolute top-full right-0 mt-1 w-44 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col font-normal"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          <button className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left">
+                          <button
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            onClick={() => {
+                              const path = nameToPath[proj];
+                              if (!path) return;
+                              setActiveProjectMenu(null);
+                              onPinProject(path, !isProjectPinned);
+                            }}
+                          >
                             <FontAwesomeIcon icon={["fas", "thumbtack"]} className="text-text-secondary mr-2.5 w-4" />
-                            {t("sidebar.pinProject")}
+                            {isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}
                           </button>
-                          <button className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left">
+                          <button
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            onClick={() => {
+                              const path = nameToPath[proj];
+                              if (!path) return;
+                              setActiveProjectMenu(null);
+                              onOpenProject(path);
+                            }}
+                          >
                             <FontAwesomeIcon icon={["far", "folder"]} className="text-text-secondary mr-2.5 w-4" />
                             {t("sidebar.openInExplorer")}
                           </button>
-                          <button className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left">
+                          <button
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            onClick={() => {
+                              const path = nameToPath[proj];
+                              if (!path) return;
+                              setActiveProjectMenu(null);
+                              setRenameProject({ path, name: proj });
+                              setRenameValue(proj);
+                            }}
+                          >
                             <FontAwesomeIcon icon={["fas", "pen"]} className="text-text-secondary mr-2.5 w-4" />
                             {t("sidebar.renameProject")}
                           </button>
@@ -383,7 +722,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                             onClick={() => {
                               setActiveProjectMenu(null);
                               const path = nameToPath[proj];
-                              if (path) onRemoveProject(path);
+                              if (path) setRemoveProject({ path, name: proj });
                             }}
                           >
                             <FontAwesomeIcon icon={["fas", "xmark"]} className="text-text-secondary mr-2.5 w-4" />
@@ -464,6 +803,88 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           </div>
         )}
       </div>
+
+      {renameProject && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/20 px-4">
+          <form
+            className="w-full max-w-[420px] rounded-2xl border border-border-theme bg-white shadow-[0_20px_60px_rgba(15,23,42,0.18)]"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const nextName = renameValue.trim();
+              if (!nextName) return;
+              onRenameProject(renameProject.path, nextName);
+              setRenameProject(null);
+              setRenameValue("");
+            }}
+          >
+            <div className="px-5 pt-5 pb-3">
+              <div className="text-[17px] font-semibold text-text-base">
+                {t("sidebar.renameProjectDialog.title")}
+              </div>
+              <input
+                autoFocus
+                className="mt-4 w-full rounded-xl border border-border-theme px-3 py-2 text-[14px] text-text-base outline-none focus:border-primary"
+                placeholder={t("sidebar.renameProjectDialog.placeholder")}
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+              />
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border-theme px-5 py-3">
+              <button
+                type="button"
+                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-gray-50 transition-colors"
+                onClick={() => {
+                  setRenameProject(null);
+                  setRenameValue("");
+                }}
+              >
+                {t("sidebar.renameProjectDialog.cancel")}
+              </button>
+              <button
+                type="submit"
+                disabled={!renameValue.trim()}
+                className="rounded-full bg-primary px-4 py-1.5 text-[13px] font-medium text-white hover:bg-opacity-90 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {t("sidebar.renameProjectDialog.confirm")}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {removeProject && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/20 px-4">
+          <div className="w-full max-w-[420px] rounded-2xl border border-border-theme bg-white shadow-[0_20px_60px_rgba(15,23,42,0.18)]">
+            <div className="px-5 pt-5 pb-3">
+              <div className="text-[17px] font-semibold text-text-base">
+                {t("sidebar.removeProjectDialog.title")}
+              </div>
+              <div className="mt-2 text-[13px] leading-6 text-text-secondary">
+                {t("sidebar.removeProjectDialog.description", {
+                  project: removeProject.name,
+                })}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border-theme px-5 py-3">
+              <button
+                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-gray-50 transition-colors"
+                onClick={() => setRemoveProject(null)}
+              >
+                {t("sidebar.removeProjectDialog.cancel")}
+              </button>
+              <button
+                className="rounded-full bg-primary px-4 py-1.5 text-[13px] font-medium text-white hover:bg-opacity-90 transition-colors"
+                onClick={() => {
+                  onRemoveProject(removeProject.path);
+                  setRemoveProject(null);
+                }}
+              >
+                {t("sidebar.removeProjectDialog.confirm")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {archiveProject && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/20 px-4">

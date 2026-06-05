@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  ARCHIVE_CHANGED_EVENT,
+  archiveAllConversations,
+  archiveConversation,
   getSessionDetail,
   getSessionConversation,
   listSessions,
@@ -9,8 +12,12 @@ import {
   setActiveProject,
   addProject,
   archiveProjectConversations,
+  openProjectInFileManager,
   pickProjectFolder,
+  renameProject,
   removeProject,
+  setProjectPinned,
+  setSessionPinned,
   clearApiKey,
   getSettings,
   runChat,
@@ -241,6 +248,10 @@ export function App() {
     const p = projects.find((p) => p.path === activeProjectPath);
     return p?.name ?? projects[0]?.name ?? "";
   }, [projects, activeProjectPath]);
+  const activeSession = useMemo(
+    () => sessions.find((s) => s.id === activeId) ?? null,
+    [activeId, sessions]
+  );
 
   const navigateTo = useCallback((newActiveId: string | null, newView: View) => {
     setActiveId(newActiveId);
@@ -339,6 +350,11 @@ export function App() {
     };
   }, [refreshSessions]);
 
+  useEffect(() => {
+    window.addEventListener(ARCHIVE_CHANGED_EVENT, refreshSessions);
+    return () => window.removeEventListener(ARCHIVE_CHANGED_EVENT, refreshSessions);
+  }, [refreshSessions]);
+
   // Switch the active project (agent ops + new sessions attach here).
   const onSelectProject = useCallback((path: string) => {
     setActiveProjectPath(path);
@@ -363,13 +379,110 @@ export function App() {
   // Refresh the project list and the active-project pointer afterwards.
   const onRemoveProject = useCallback((path: string) => {
     removeProject(path)
-      .then(() => Promise.all([listProjects(), getActiveProject()]))
-      .then(([ps, active]) => {
+      .then(() => Promise.all([listProjects(), getActiveProject(), listSessions()]))
+      .then(([ps, active, nextSessions]) => {
         setProjects(ps);
         setActiveProjectPath(active);
+        setSessions(nextSessions);
+        if (activeId && !nextSessions.some((s) => s.id === activeId)) {
+          setActiveId(null);
+          setDetail(null);
+          setMessages([]);
+          setView("start");
+        }
+        message.success("已移除项目");
       })
-      .catch(() => {});
+      .catch((err) => {
+        message.error(`移除失败：${String(err)}`);
+      });
+  }, [activeId]);
+
+  const onPinSession = useCallback(
+    (sessionId: string, pinned: boolean) => {
+      setSessionPinned(sessionId, pinned)
+        .then(() => refreshSessions())
+        .then(() => {
+          message.success(pinned ? "已置顶会话" : "已取消置顶会话");
+        })
+        .catch((err) => {
+          message.error(`更新置顶失败：${String(err)}`);
+        });
+    },
+    [refreshSessions]
+  );
+
+  const onArchiveSession = useCallback(
+    (sessionId: string) => {
+      archiveConversation(sessionId)
+        .then((archived) => {
+          refreshSessions();
+          if (activeId === sessionId) {
+            setActiveId(null);
+            setDetail(null);
+            setMessages([]);
+            setView("start");
+          }
+          message.success(archived ? "已归档对话" : "对话已在归档中");
+        })
+        .catch((err) => {
+          message.error(`归档失败：${String(err)}`);
+        });
+    },
+    [activeId, refreshSessions]
+  );
+
+  const onArchiveAllSessions = useCallback(() => {
+    archiveAllConversations()
+      .then((archivedCount) => {
+        refreshSessions();
+        if (activeId) {
+          setActiveId(null);
+          setDetail(null);
+          setMessages([]);
+          setView("start");
+        }
+        message.success(
+          archivedCount > 0 ? `已归档 ${archivedCount} 个对话` : "没有可归档的对话"
+        );
+      })
+      .catch((err) => {
+        message.error(`归档失败：${String(err)}`);
+      });
+  }, [activeId, refreshSessions]);
+
+  const onPinProject = useCallback(
+    (path: string, pinned: boolean) => {
+      setProjectPinned(path, pinned)
+        .then(() => refreshSessions())
+        .then(() => {
+          message.success(pinned ? "已置顶项目" : "已取消置顶项目");
+        })
+        .catch((err) => {
+          message.error(`更新置顶失败：${String(err)}`);
+        });
+    },
+    [refreshSessions]
+  );
+
+  const onOpenProject = useCallback((path: string) => {
+    openProjectInFileManager(path).catch((err) => {
+      message.error(`打开失败：${String(err)}`);
+    });
   }, []);
+
+  const onRenameProject = useCallback(
+    (path: string, name: string) => {
+      renameProject(path, name)
+        .then(() => refreshSessions())
+        .then(() => {
+          message.success("已重命名项目");
+        })
+        .catch((err) => {
+          message.error(`重命名失败：${String(err)}`);
+        });
+    },
+    [refreshSessions]
+  );
 
   const onArchiveProject = useCallback(
     (path: string, name: string) => {
@@ -593,6 +706,14 @@ export function App() {
           } else if (streamedText.length === 0 && fin.length > 0) {
             // No visible text streamed but the run has a final message: show it.
             parts.push({ kind: "text", text: fin });
+          } else if (streamedText.length === 0 && fin.length === 0) {
+            // The provider completed without any visible content. Keep the turn
+            // explicit instead of leaving a blank assistant block on screen.
+            parts.push({
+              kind: "text",
+              text: "模型未返回可见内容，请重试或切换模型。",
+              tone: "error",
+            });
           }
 
           // Keep a flat `content` mirror for transcript/export and copy.
@@ -900,7 +1021,13 @@ export function App() {
                 onSelectProject={onSelectProject}
                 onNewChat={onNewChat}
                 onAddProject={onAddProject}
+                onPinSession={onPinSession}
+                onArchiveSession={onArchiveSession}
+                onArchiveAllSessions={onArchiveAllSessions}
                 onRemoveProject={onRemoveProject}
+                onPinProject={onPinProject}
+                onOpenProject={onOpenProject}
+                onRenameProject={onRenameProject}
                 onArchiveProject={onArchiveProject}
                 onOpenSearch={() => setIsSearchOpen(true)}
                 onOpenSkills={() => navigateTo(activeId, "skills")}
@@ -966,6 +1093,13 @@ export function App() {
                   onFork={onForkSession}
                   onRewind={onRewindSession}
                   onExport={onExportSession}
+                  onPin={() => {
+                    if (activeSession) onPinSession(activeSession.id, !activeSession.pinned);
+                  }}
+                  onArchive={() => {
+                    if (activeSession) onArchiveSession(activeSession.id);
+                  }}
+                  pinned={activeSession?.pinned ?? false}
                   timeline={detail?.timeline ?? []}
                   approval={approvals[0] ?? null}
                   approvalQueueCount={approvals.length}
@@ -973,6 +1107,7 @@ export function App() {
                   busy={activeChatBusy}
                   onStop={onStopRun}
                   planMode={planMode}
+                  activeProjectPath={activeProjectPath}
                 />
               </motion.div>
             )}

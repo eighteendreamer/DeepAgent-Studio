@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useTranslation } from "react-i18next";
 import {
+  ARCHIVE_CHANGED_EVENT,
   deleteAllArchivedConversations,
   deleteArchivedConversation,
   listArchivedConversations,
@@ -37,6 +38,22 @@ export function ArchiveSettings() {
 
   useEffect(() => {
     reload();
+  }, [reload]);
+
+  useEffect(() => {
+    const handleArchiveChanged = () => reload();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") reload();
+    };
+
+    window.addEventListener(ARCHIVE_CHANGED_EVENT, handleArchiveChanged);
+    window.addEventListener("focus", handleArchiveChanged);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener(ARCHIVE_CHANGED_EVENT, handleArchiveChanged);
+      window.removeEventListener("focus", handleArchiveChanged);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [reload]);
 
   const handleUnarchive = (sessionId: string) => {

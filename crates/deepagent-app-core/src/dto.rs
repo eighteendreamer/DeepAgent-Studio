@@ -23,6 +23,8 @@ pub struct SessionSummaryDto {
     pub updated_at: i64,
     /// Whether the session has ended.
     pub ended: bool,
+    /// Whether this session is pinned to the top of the sidebar.
+    pub pinned: bool,
 }
 
 /// A project (a folder) the user has opened, with its session count.
@@ -32,6 +34,8 @@ pub struct ProjectDto {
     pub name: String,
     /// The absolute project root path (stable key).
     pub path: String,
+    /// Whether this project is pinned to the top of the sidebar.
+    pub pinned: bool,
     /// Number of sessions under this project.
     pub session_count: u32,
     /// Most-recent session update under this project, Unix ms (0 if none).
