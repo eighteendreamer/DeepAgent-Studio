@@ -3,7 +3,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { Composer } from "./Composer";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
-import type { SessionSummary } from "../types";
+import type { Project } from "../types";
 import { FilesPlugin } from "./plugins/FilesPlugin";
 import { SideChatPlugin } from "./plugins/SideChatPlugin";
 import { BrowserPlugin } from "./plugins/BrowserPlugin";
@@ -18,14 +18,13 @@ interface Props {
   projectName: string;
   activeProjectPath?: string | null;
   projectMapOpenSignal?: number;
-  sessions: SessionSummary[];
-  activeId: string | null;
-  onSelectSession: (id: string) => void;
-  suggestions: string[];
+  projects: Project[];
+  onSelectProject: (path: string) => void;
+  onAddProject: () => void;
   onSubmit: (text: string) => void;
 }
 
-export function StartView({ projectName, activeProjectPath = null, projectMapOpenSignal = 0, sessions, activeId, onSelectSession, suggestions, onSubmit }: Props) {
+export function StartView({ projectName, activeProjectPath = null, projectMapOpenSignal = 0, projects, onSelectProject, onAddProject, onSubmit }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -264,84 +263,88 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           {projectName ? t("startView.greeting", { projectName }) : t("startView.greetingNoProject")}
         </h1>
 
-        <Composer value={value} onChange={setValue} onSubmit={submit} placeholder={t("startView.placeholder")} />
-
-        {/* Current context tag with dropdown */}
-        <div className="w-full mt-3 pl-2 relative" ref={dropdownRef}>
-          <div 
-            className="inline-flex items-center text-xs text-text-secondary bg-gray-50 border border-border-theme px-2.5 py-1 rounded-md cursor-pointer hover:bg-gray-100 transition-colors"
-            onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-          >
-            <FontAwesomeIcon icon={["far", "folder"]} className="mr-1.5" />
-            {projectName}
-            <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
-          </div>
-
-          {/* Dropdown Menu */}
-          {isDropdownOpen && (
-            <div className="absolute top-full left-2 mt-2 w-[300px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1">
-              <div className="px-3 py-2 border-b border-transparent text-[13px] flex items-center text-text-secondary">
-                <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="mr-2" />
-                <input 
-                  type="text"
-                  placeholder={t("startView.searchProject")}
-                  className="bg-transparent outline-none w-full"
-                />
+        <Composer 
+          value={value} 
+          onChange={setValue} 
+          onSubmit={submit} 
+          placeholder={t("startView.placeholder")}
+          footer={
+            <div className="flex items-center space-x-4 w-full relative" ref={dropdownRef}>
+              <div 
+                className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors"
+                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+              >
+                <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-[13px]" />
+                {projectName}
+                <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
               </div>
-              
-              <div className="flex-1 max-h-[200px] overflow-y-auto py-1">
-                {sessions.map(s => (
-                  <div
-                    key={s.id}
-                    className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base group"
-                    onClick={() => {
-                      onSelectSession(s.id);
-                      setIsDropdownOpen(false);
-                    }}
-                  >
-                    <div className="flex items-center">
-                      <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
-                      <span className="truncate">{s.title ?? "Untitled session"}</span>
-                    </div>
-                    {s.id === activeId && (
-                      <FontAwesomeIcon icon={["fas", "check"]} className="text-text-secondary text-[11px]" />
-                    )}
+
+              <div className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors">
+                <FontAwesomeIcon icon={["fas", "desktop"]} className="mr-2 text-[13px]" />
+                本地模式
+                <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
+              </div>
+
+              <div className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors">
+                <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[13px]" />
+                main
+                <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
+              </div>
+
+              {/* Dropdown Menu */}
+              {isDropdownOpen && (
+                <div className="absolute bottom-full left-0 mb-2 w-[300px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1">
+                  <div className="px-3 py-2 border-b border-transparent text-[13px] flex items-center text-text-secondary">
+                    <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="mr-2" />
+                    <input 
+                      type="text"
+                      placeholder={t("startView.searchProject")}
+                      className="bg-transparent outline-none w-full"
+                    />
                   </div>
-                ))}
-              </div>
+                  
+                  <div className="flex-1 max-h-[200px] overflow-y-auto py-1">
+                    {projects.map(p => (
+                      <div
+                        key={p.path}
+                        className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base group"
+                        onClick={() => {
+                          onSelectProject(p.path);
+                          setIsDropdownOpen(false);
+                        }}
+                      >
+                        <div className="flex items-center">
+                          <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
+                          <span className="truncate">{p.name ?? "Untitled project"}</span>
+                        </div>
+                        {p.path === activeProjectPath && (
+                          <FontAwesomeIcon icon={["fas", "check"]} className="text-text-secondary text-[11px]" />
+                        )}
+                      </div>
+                    ))}
+                  </div>
 
-              <div className="w-full h-px bg-border-theme my-1"></div>
+                  <div className="w-full h-px bg-border-theme my-1"></div>
 
-              <div className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base">
-                <div className="flex items-center">
-                  <FontAwesomeIcon icon={["fas", "plus"]} className="mr-2 text-text-secondary w-4" />
-                  {t("startView.addNewProject")}
+                  <div className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base" onClick={() => { onAddProject(); setIsDropdownOpen(false); }}>
+                    <div className="flex items-center">
+                      <FontAwesomeIcon icon={["fas", "plus"]} className="mr-2 text-text-secondary w-4" />
+                      {t("startView.addNewProject")}
+                    </div>
+                    <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
+                  </div>
+                  <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base">
+                    <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
+                    {t("startView.noProject")}
+                  </div>
                 </div>
-                <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
-              </div>
-              <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base">
-                <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
-                {t("startView.noProject")}
-              </div>
+              )}
             </div>
-          )}
-        </div>
+          }
+        />
 
-        {/* Suggestions */}
+        {/* Suggestions removed as they are no longer in Props */}
         <div className="w-full mt-6 space-y-1">
-          {suggestions.map((s, i) => (
-            <div
-              key={i}
-              onClick={() => onSubmit(s)}
-              className="flex items-center px-3 py-2.5 text-[13px] text-text-secondary hover:bg-gray-50 rounded-lg cursor-pointer transition-colors group"
-            >
-              <FontAwesomeIcon
-                icon={["far", "message"]}
-                className="w-6 text-gray-400 group-hover:text-text-base transition-colors"
-              />
-              {s}
-            </div>
-          ))}
           <div className="flex items-center px-3 py-2.5 text-[13px] text-text-secondary hover:bg-gray-50 rounded-lg cursor-pointer transition-colors group">
             <FontAwesomeIcon
               icon={["fas", "border-all"]}
@@ -435,11 +438,13 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                       <div
                         key={c.title}
                         onClick={() => handleOpenBottomPlugin(c)}
-                        className="bg-gray-50 rounded-2xl p-5 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-100 transition-colors h-[110px] w-[140px] border border-transparent hover:border-gray-200"
+                        className="group flex-shrink-0 w-[200px] bg-bg-base rounded-2xl p-4 flex flex-col items-start cursor-pointer hover:shadow-lg hover:-translate-y-1 border border-border-theme hover:border-primary/50 transition-all duration-300"
                       >
-                        <FontAwesomeIcon icon={c.icon} className="text-[22px] text-text-base mb-2.5" />
-                        <div className="text-[13px] font-medium text-text-base mb-1">{getTranslatedToolName(c.title, c.type)}</div>
-                        <div className="text-[11px] text-text-secondary">{getTranslatedToolDesc(c.type)}</div>
+                        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary mb-3 group-hover:scale-110 transition-transform">
+                          <FontAwesomeIcon icon={c.icon} className="text-[18px]" />
+                        </div>
+                        <div className="text-[14px] font-semibold text-text-base mb-1 group-hover:text-primary transition-colors line-clamp-1 w-full text-left">{getTranslatedToolName(c.title, c.type)}</div>
+                        <div className="text-[12px] text-text-secondary leading-snug line-clamp-2 text-left">{getTranslatedToolDesc(c.type)}</div>
                       </div>
                     ))}
                   </div>
@@ -527,16 +532,21 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             {activeSidebarTabId === "new" && (
               <div className="w-full h-full flex flex-col relative overflow-y-auto bg-white">
                 <div className="flex-1 flex flex-col p-6">
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="flex flex-col space-y-3">
                     {TOOL_CARDS.map((c) => (
                       <div
                         key={c.title}
                         onClick={() => handleOpenSidebarPlugin(c)}
-                        className="bg-gray-50 rounded-2xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-100 transition-colors border border-transparent hover:border-gray-200 aspect-square"
+                        className="group flex items-center p-4 rounded-2xl bg-bg-base border border-border-theme cursor-pointer hover:shadow-md hover:border-primary/50 transition-all duration-200"
                       >
-                        <FontAwesomeIcon icon={c.icon} className="text-[20px] text-text-base mb-2" />
-                        <div className="text-[12px] font-medium text-text-base mb-1">{getTranslatedToolName(c.title, c.type)}</div>
-                        <div className="text-[10px] text-text-secondary leading-tight line-clamp-2">{getTranslatedToolDesc(c.type)}</div>
+                        <div className="w-11 h-11 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0 mr-4 group-hover:scale-105 transition-transform">
+                          <FontAwesomeIcon icon={c.icon} className="text-[18px]" />
+                        </div>
+                        <div className="flex-1 text-left min-w-0">
+                          <div className="text-[14px] font-semibold text-text-base mb-0.5 group-hover:text-primary transition-colors truncate">{getTranslatedToolName(c.title, c.type)}</div>
+                          <div className="text-[12px] text-text-secondary leading-snug line-clamp-1">{getTranslatedToolDesc(c.type)}</div>
+                        </div>
+                        <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-text-secondary opacity-0 group-hover:opacity-100 group-hover:-translate-x-1 transition-all ml-2 text-sm" />
                       </div>
                     ))}
                   </div>

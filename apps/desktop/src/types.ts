@@ -253,6 +253,7 @@ export interface SettingsView {
   reasoner_model: string;
   configured: boolean;
   approval_policy: string;
+  sandbox_mode: "read_only" | "workspace_write" | "full_access";
   thinking_depth: "simple" | "medium" | "deep";
 }
 

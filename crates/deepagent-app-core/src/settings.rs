@@ -68,6 +68,32 @@ impl ApprovalPolicy {
     }
 }
 
+/// Maximum filesystem boundary for tools. This is separate from
+/// [`ApprovalPolicy`]: sandbox mode decides what the system may touch at all,
+/// while approval policy decides whether risky calls need a human decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxMode {
+    /// Tools may read project files but cannot write files.
+    ReadOnly,
+    /// Tools may read and write inside the active project only.
+    #[default]
+    WorkspaceWrite,
+    /// Tools may read and write outside the active project as well.
+    FullAccess,
+}
+
+impl SandboxMode {
+    /// Stable label.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            SandboxMode::ReadOnly => "read_only",
+            SandboxMode::WorkspaceWrite => "workspace_write",
+            SandboxMode::FullAccess => "full_access",
+        }
+    }
+}
+
 /// Persisted, **non-secret** application settings (safe to store on disk).
 /// The API key is intentionally absent — it lives in the [`SecretStore`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +105,8 @@ pub struct AppSettings {
     /// How tool approvals are resolved.
     #[serde(default)]
     pub approval_policy: ApprovalPolicy,
+    /// Maximum filesystem boundary for tool execution.
+    pub sandbox_mode: SandboxMode,
     /// Declarative permission rules (allow/ask/deny patterns).
     #[serde(default)]
     pub permission_rules: PermissionRules,
@@ -109,6 +137,8 @@ pub struct SettingsView {
     pub configured: bool,
     /// Current approval policy label (always_ask / auto_review / full_access).
     pub approval_policy: String,
+    /// Current sandbox mode label (read_only / workspace_write / full_access).
+    pub sandbox_mode: String,
     /// Current DeepSeek Thinking Mode depth (simple / medium / deep).
     pub thinking_depth: String,
 }
@@ -172,6 +202,7 @@ impl SettingsService {
                 .as_ref()
                 .map(|s| s.approval_policy)
                 .unwrap_or_default(),
+            sandbox_mode: prior.as_ref().map(|s| s.sandbox_mode).unwrap_or_default(),
             permission_rules: prior
                 .as_ref()
                 .map(|s| s.permission_rules.clone())
@@ -260,6 +291,11 @@ impl SettingsService {
         Ok(self.load()?.map(|s| s.approval_policy).unwrap_or_default())
     }
 
+    /// The current sandbox mode.
+    pub fn sandbox_mode(&self) -> Result<SandboxMode> {
+        Ok(self.load()?.map(|s| s.sandbox_mode).unwrap_or_default())
+    }
+
     /// The current DeepSeek Thinking Mode depth.
     pub fn thinking_depth(&self) -> Result<ThinkingDepth> {
         Ok(self.load()?.map(|s| s.thinking_depth).unwrap_or_default())
@@ -282,6 +318,17 @@ impl SettingsService {
             .load()?
             .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
         settings.approval_policy = policy;
+        self.save(&settings)?;
+        let key = self.secrets.get(API_KEY_NAME)?;
+        self.view_with_key(key.as_deref(), &settings)
+    }
+
+    /// Set the sandbox mode, persisting it. Returns the redacted view.
+    pub fn set_sandbox_mode(&self, mode: SandboxMode) -> Result<SettingsView> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.sandbox_mode = mode;
         self.save(&settings)?;
         let key = self.secrets.get(API_KEY_NAME)?;
         self.view_with_key(key.as_deref(), &settings)
@@ -359,6 +406,7 @@ impl SettingsService {
             configured: key.map(|k| !k.trim().is_empty()).unwrap_or(false)
                 && !settings.catalog.available.is_empty(),
             approval_policy: settings.approval_policy.label().to_string(),
+            sandbox_mode: settings.sandbox_mode.label().to_string(),
             thinking_depth: settings.thinking_depth.label().to_string(),
         })
     }
@@ -470,6 +518,21 @@ mod tests {
         assert_eq!(svc.thinking_depth().unwrap(), ThinkingDepth::Deep);
         let refreshed = svc.refresh_models().await.unwrap();
         assert_eq!(refreshed.thinking_depth, "deep");
+    }
+
+    #[tokio::test]
+    async fn sandbox_mode_roundtrips_and_survives_refresh() {
+        let (svc, _) = service();
+        let initial = svc.initialize("sk-abcd1234").await.unwrap();
+        assert_eq!(initial.sandbox_mode, "workspace_write");
+        assert_eq!(svc.sandbox_mode().unwrap(), SandboxMode::WorkspaceWrite);
+
+        let view = svc.set_sandbox_mode(SandboxMode::ReadOnly).unwrap();
+        assert_eq!(view.sandbox_mode, "read_only");
+        assert_eq!(svc.sandbox_mode().unwrap(), SandboxMode::ReadOnly);
+
+        let refreshed = svc.refresh_models().await.unwrap();
+        assert_eq!(refreshed.sandbox_mode, "read_only");
     }
 
     #[tokio::test]

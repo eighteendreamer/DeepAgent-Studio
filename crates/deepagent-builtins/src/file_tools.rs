@@ -31,6 +31,23 @@ fn arg_usize(args: &serde_json::Value, key: &str) -> Option<std::result::Result<
     Some(Err(format!("'{key}' must be a positive integer")))
 }
 
+fn dominant_newline(content: &str) -> &'static str {
+    if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+fn adapt_newlines(value: &str, newline: &str) -> String {
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    if newline == "\n" {
+        normalized
+    } else {
+        normalized.replace('\n', newline)
+    }
+}
+
 type SharedFileStateCache = Arc<Mutex<FileStateCache>>;
 
 fn new_shared_cache() -> SharedFileStateCache {
@@ -347,9 +364,14 @@ impl Tool for EditFileTool {
             Ok(c) => c,
             Err(e) => return Ok(ToolOutput::failure(format!("read failed: {e}"))),
         };
-        let count = content.matches(old).count();
+        let newline = dominant_newline(&content);
+        let old = adapt_newlines(old, newline);
+        let new = adapt_newlines(new, newline);
+        let count = content.matches(&old).count();
         if count == 0 {
-            return Ok(ToolOutput::failure("the 'old' string was not found"));
+            return Ok(ToolOutput::failure(
+                "the 'old' string was not found after normalizing line endings",
+            ));
         }
         if count > 1 && !replace_all {
             return Ok(ToolOutput::failure(format!(
@@ -357,9 +379,9 @@ impl Tool for EditFileTool {
             )));
         }
         let updated = if replace_all {
-            content.replace(old, new)
+            content.replace(&old, &new)
         } else {
-            content.replacen(old, new, 1)
+            content.replacen(&old, &new, 1)
         };
         match tokio::fs::write(&resolved, &updated).await {
             Ok(()) => {
@@ -460,10 +482,13 @@ impl Tool for MultiEditTool {
                 .get("replace_all")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let count = content.matches(old).count();
+            let newline = dominant_newline(&content);
+            let old = adapt_newlines(old, newline);
+            let new = adapt_newlines(new, newline);
+            let count = content.matches(&old).count();
             if count == 0 {
                 return Ok(ToolOutput::failure(format!(
-                    "edit[{i}]: the 'old' string was not found (no edits applied)"
+                    "edit[{i}]: the 'old' string was not found after normalizing line endings (no edits applied)"
                 )));
             }
             if count > 1 && !replace_all {
@@ -474,10 +499,10 @@ impl Tool for MultiEditTool {
             }
             content = if replace_all {
                 total_replacements += count;
-                content.replace(old, new)
+                content.replace(&old, &new)
             } else {
                 total_replacements += 1;
-                content.replacen(old, new, 1)
+                content.replacen(&old, &new, 1)
             };
         }
 
@@ -937,6 +962,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(content.value["content"], "foo QUX baz");
+    }
+
+    #[tokio::test]
+    async fn edit_matches_lf_old_against_crlf_file() {
+        let (dir, root) = temp_root();
+        WriteFileTool::new(root.clone())
+            .invoke(serde_json::json!({
+                "path": "application.yml",
+                "content": "logging:\r\n  level:\r\n    root: info\r\n"
+            }))
+            .await
+            .unwrap();
+        let e = EditFileTool::new(root.clone());
+        let out = e
+            .invoke(serde_json::json!({
+                "path": "application.yml",
+                "old": "logging:\n  level:\n    root: info",
+                "new": "logging:\n  level:\n    root: debug"
+            }))
+            .await
+            .unwrap();
+        assert!(out.ok);
+        let content = tokio::fs::read_to_string(dir.path().join("application.yml"))
+            .await
+            .unwrap();
+        assert_eq!(content, "logging:\r\n  level:\r\n    root: debug\r\n");
     }
 
     #[tokio::test]

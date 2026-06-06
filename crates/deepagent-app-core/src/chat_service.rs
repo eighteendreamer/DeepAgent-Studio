@@ -14,6 +14,7 @@ use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use deepagent_builtins::WorkspaceRoot;
 use deepagent_context::{
     CompactionPolicy, HeuristicSummarizer, HeuristicTokenizer, ModelCompactor, Summarizer,
@@ -35,7 +36,6 @@ use deepagent_runtime::{
 };
 use deepagent_session::Session;
 use deepagent_tools::{PermissionSet, ToolRegistry};
-use async_trait::async_trait;
 
 use crate::approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
 use crate::dto::ApprovalRequestDto;
@@ -91,6 +91,7 @@ const SYSTEM_PROMPT_BASE: &str = r#"You are DeepAgent, a verifiable, Rust-native
 # Tone and style
 - Be concise and direct. Lead with the answer or action, not the reasoning. Skip filler and preamble.
 - Match response length to the task: a simple question gets a direct answer, not headers and sections.
+- Match the user's language: reply in the same natural language as the user's latest message by default. If the user writes Chinese, answer in Chinese; if the user writes English, answer in English. Preserve code, commands, file paths, logs, API names, and quoted text in their original language. Only switch languages when the user explicitly asks.
 - When referencing code locations, use the file_path:line_number format so the user can navigate to them.
 - Only use emojis if the user asks.
 
@@ -789,18 +790,18 @@ impl ChatService {
         compacted
     }
 
-    /// Map the approval policy to the filesystem access mode used by the
-    /// built-in file tools and the path guard:
+    /// Map the sandbox mode to the filesystem access mode used by the built-in
+    /// file tools and the path guard:
     /// - 默认权限 (AlwaysAsk) → workspace-confined (out-of-workspace asks).
     /// - 自动审核 (AutoReview) → reads anywhere; writes confined; bash asks.
     /// - 完全访问 (FullAccess) → unrestricted reads + writes.
-    fn fs_access_for(policy: crate::settings::ApprovalPolicy) -> deepagent_builtins::FsAccess {
-        use crate::settings::ApprovalPolicy;
+    fn fs_access_for(mode: crate::settings::SandboxMode) -> deepagent_builtins::FsAccess {
+        use crate::settings::SandboxMode;
         use deepagent_builtins::FsAccess;
-        match policy {
-            ApprovalPolicy::AlwaysAsk => FsAccess::Workspace,
-            ApprovalPolicy::AutoReview => FsAccess::ReadAnywhere,
-            ApprovalPolicy::FullAccess => FsAccess::Full,
+        match mode {
+            SandboxMode::ReadOnly => FsAccess::ReadOnly,
+            SandboxMode::WorkspaceWrite => FsAccess::Workspace,
+            SandboxMode::FullAccess => FsAccess::Full,
         }
     }
 
@@ -944,16 +945,17 @@ impl ChatService {
             knowledge.activate_project(&root)?;
         }
         let policy = self.settings.approval_policy()?;
-        let access = Self::fs_access_for(policy);
+        let sandbox_mode = self.settings.sandbox_mode()?;
+        let access = Self::fs_access_for(sandbox_mode);
         let plan = continue_session
             .map(|id| self.plan_mode_for_session(id))
             .unwrap_or_default();
         // The main run's tools are built permissive (Full, sensitive-blocked):
         // the BeforeToolUse path guard is the SINGLE policy gate, asking/denying
-        // per the policy-derived `access`. This way an out-of-workspace access
-        // the user *approves* in the dialog actually executes, instead of being
+        // per the sandbox-derived `access`. This way an out-of-workspace access
+        // the sandbox allows actually executes, instead of being
         // re-rejected inside the tool. Sub-agents (below) have no interactive
-        // gate, so their tools stay confined to the policy `access`.
+        // gate, so their tools stay confined to the sandbox `access`.
         let registry = self.build_registry(&root, deepagent_builtins::FsAccess::Full)?;
         let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
 
@@ -1807,6 +1809,8 @@ mod tests {
         // Core agentic guidance is present.
         assert!(prompt.contains("web_search"));
         assert!(prompt.contains("status\":\"error\""));
+        assert!(prompt.contains("Match the user's language"));
+        assert!(prompt.contains("same natural language as the user's latest message"));
         // Frontend renderer contract: model output must stay parseable by the
         // Markdown/LaTeX/ECharts renderer without backend rewriting.
         assert!(prompt.contains("language `echarts`"));
@@ -1967,7 +1971,7 @@ mod tests {
     // resolves a tool call to one of three terminal outcomes.
 
     use crate::approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
-    use crate::settings::ApprovalPolicy;
+    use crate::settings::{ApprovalPolicy, SandboxMode};
     use deepagent_builtins::{register_guard_hooks, WorkspaceRoot};
     use deepagent_hooks::{HookData, HookOutcome, HookPoint, HookRegistry};
     use deepagent_runtime::{ApprovalDecision, ApprovalGate, ApprovalRequest};
@@ -1984,9 +1988,14 @@ mod tests {
 
     /// Resolve one tool call through the guards + policy gate exactly as a run
     /// would, reporting whether it was auto-allowed, denied, or prompted.
-    async fn decide(policy: ApprovalPolicy, tool: &str, args: serde_json::Value) -> Outcome {
+    async fn decide(
+        policy: ApprovalPolicy,
+        sandbox: SandboxMode,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Outcome {
         let root = "/work/proj";
-        let access = ChatService::fs_access_for(policy);
+        let access = ChatService::fs_access_for(sandbox);
 
         // Compose the BeforeToolUse guards exactly like run_in_session.
         let mut hooks = HookRegistry::new();
@@ -2052,50 +2061,93 @@ mod tests {
     }
 
     /// 默认权限 (AlwaysAsk): workspace edits free; computer ops + out-of-workspace
-    /// access prompt the user; sensitive files are denied.
+    /// access is denied by the sandbox; sensitive files are denied.
     #[tokio::test]
     async fn permission_default_prompts_for_computer_ops_and_outside_access() {
         let p = ApprovalPolicy::AlwaysAsk;
         // Editing a file inside the workspace → no prompt.
         assert_eq!(
-            decide(p, "write_file", serde_json::json!({"path": "src/a.rs"})).await,
+            decide(
+                p,
+                SandboxMode::WorkspaceWrite,
+                "write_file",
+                serde_json::json!({"path": "src/a.rs"})
+            )
+            .await,
             Outcome::AutoAllow
         );
         // Running a (non-allow-listed) computer command → prompt.
         assert_eq!(
-            decide(p, "bash", serde_json::json!({"command": "rm -rf build"})).await,
+            decide(
+                p,
+                SandboxMode::WorkspaceWrite,
+                "bash",
+                serde_json::json!({"command": "rm -rf build"})
+            )
+            .await,
             Outcome::Prompted
         );
-        // Reading a file outside the workspace → prompt.
+        // Reading a file outside the workspace is blocked by WorkspaceWrite.
         assert_eq!(
-            decide(p, "read_file", serde_json::json!({"path": "/etc/hosts"})).await,
-            Outcome::Prompted
+            decide(
+                p,
+                SandboxMode::WorkspaceWrite,
+                "read_file",
+                serde_json::json!({"path": "/etc/hosts"})
+            )
+            .await,
+            Outcome::Denied
         );
         // Sensitive credential file → hard denied regardless.
         assert_eq!(
-            decide(p, "read_file", serde_json::json!({"path": ".env"})).await,
+            decide(
+                p,
+                SandboxMode::WorkspaceWrite,
+                "read_file",
+                serde_json::json!({"path": ".env"})
+            )
+            .await,
             Outcome::Denied
         );
     }
 
-    /// 自动审核 (AutoReview): out-of-workspace reads auto-approve; computer ops
-    /// still prompt the user; sensitive files denied.
+    /// 自动审核 (AutoReview): with FullAccess sandbox, out-of-workspace reads
+    /// are allowed without prompting; computer ops still prompt the user;
+    /// sensitive files are denied.
     #[tokio::test]
     async fn permission_auto_review_allows_outside_reads_but_prompts_computer_ops() {
         let p = ApprovalPolicy::AutoReview;
         // Reading another directory's file → auto-approved (no prompt).
         assert_eq!(
-            decide(p, "read_file", serde_json::json!({"path": "/etc/hosts"})).await,
+            decide(
+                p,
+                SandboxMode::FullAccess,
+                "read_file",
+                serde_json::json!({"path": "/etc/hosts"})
+            )
+            .await,
             Outcome::AutoAllow
         );
         // Running a computer command → still prompts the user.
         assert_eq!(
-            decide(p, "bash", serde_json::json!({"command": "rm -rf build"})).await,
+            decide(
+                p,
+                SandboxMode::WorkspaceWrite,
+                "bash",
+                serde_json::json!({"command": "rm -rf build"})
+            )
+            .await,
             Outcome::Prompted
         );
         // Sensitive credential file → still denied.
         assert_eq!(
-            decide(p, "read_file", serde_json::json!({"path": "id_rsa"})).await,
+            decide(
+                p,
+                SandboxMode::FullAccess,
+                "read_file",
+                serde_json::json!({"path": "id_rsa"})
+            )
+            .await,
             Outcome::Denied
         );
     }
@@ -2107,18 +2159,31 @@ mod tests {
         let p = ApprovalPolicy::FullAccess;
         // Computer command → no prompt.
         assert_eq!(
-            decide(p, "bash", serde_json::json!({"command": "rm -rf build"})).await,
+            decide(
+                p,
+                SandboxMode::FullAccess,
+                "bash",
+                serde_json::json!({"command": "rm -rf build"})
+            )
+            .await,
             Outcome::AutoAllow
         );
         // Writing outside the workspace → no prompt.
         assert_eq!(
-            decide(p, "write_file", serde_json::json!({"path": "/tmp/out.txt"})).await,
+            decide(
+                p,
+                SandboxMode::FullAccess,
+                "write_file",
+                serde_json::json!({"path": "/tmp/out.txt"})
+            )
+            .await,
             Outcome::AutoAllow
         );
         // Sensitive credential file → still denied even at full access.
         assert_eq!(
             decide(
                 p,
+                SandboxMode::FullAccess,
                 "read_file",
                 serde_json::json!({"path": "config/.env.production"})
             )

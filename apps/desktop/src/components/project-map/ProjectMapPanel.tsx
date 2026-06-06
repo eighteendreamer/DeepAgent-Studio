@@ -659,15 +659,6 @@ function edgeColor(type: string): string {
   return "#94a3b8";
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-lg border border-border-theme bg-gray-50 px-2 py-1.5">
-      <div className="text-[11px] text-text-secondary">{label}</div>
-      <div className="text-[14px] font-medium text-text-base tabular-nums">{value}</div>
-    </div>
-  );
-}
-
 function RelationBlock({
   title,
   items,

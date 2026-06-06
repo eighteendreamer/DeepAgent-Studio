@@ -17,12 +17,12 @@ use deepagent_app_core::{
     AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, BudgetConfig,
     ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary, DiagnosticResult,
     DiffResult, ForkResultDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
-    KnowledgeService, McpServerDto, McpService, ProjectDto, ProjectMapGraphDto,
-    ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto,
-    ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService,
-    RewindResultDto, SessionDetailDto, SessionStateService, SessionSummaryDto, SettingsService,
-    SettingsView, SkillActivationDto, SkillDto, SkillsService, TerminalResultDto, TerminalService,
-    TranscriptDto, WorkspaceInfoDto, WorkspaceService,
+    KnowledgeService, McpServerDto, McpService, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
+    ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
+    ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, RewindResultDto,
+    SessionDetailDto, SessionStateService, SessionSummaryDto, SettingsService, SettingsView,
+    SkillActivationDto, SkillDto, SkillsService, TerminalResultDto, TerminalService, TranscriptDto,
+    WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use serde::Serialize;
@@ -515,6 +515,29 @@ fn set_approval_policy(state: State<'_, AppState>, policy: String) -> Result<Set
     state
         .settings
         .set_approval_policy(parsed)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_sandbox_mode(state: State<'_, AppState>) -> Result<String, String> {
+    state
+        .settings
+        .sandbox_mode()
+        .map(|m| m.label().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_sandbox_mode(state: State<'_, AppState>, mode: String) -> Result<SettingsView, String> {
+    let parsed = match mode.as_str() {
+        "read_only" => deepagent_app_core::SandboxMode::ReadOnly,
+        "workspace_write" => deepagent_app_core::SandboxMode::WorkspaceWrite,
+        "full_access" => deepagent_app_core::SandboxMode::FullAccess,
+        other => return Err(format!("unknown sandbox mode: {other}")),
+    };
+    state
+        .settings
+        .set_sandbox_mode(parsed)
         .map_err(|e| e.to_string())
 }
 
@@ -1110,6 +1133,8 @@ pub fn run() {
             set_plan_mode,
             get_approval_policy,
             set_approval_policy,
+            get_sandbox_mode,
+            set_sandbox_mode,
             set_thinking_depth,
             list_mcp_servers,
             save_mcp_server,

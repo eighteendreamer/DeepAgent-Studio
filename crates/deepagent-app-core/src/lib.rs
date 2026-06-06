@@ -21,8 +21,8 @@ pub mod doctor;
 pub mod dto;
 pub mod knowledge_service;
 pub mod mcp_service;
-pub mod project_service;
 pub mod project_map_service;
+pub mod project_service;
 pub mod secret_store;
 pub mod service;
 pub mod session_state_service;
@@ -48,16 +48,16 @@ pub use knowledge_service::{
     KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, KnowledgeServiceBackend,
 };
 pub use mcp_service::{McpServerDto, McpService};
-pub use project_service::{folder_name, ProjectService};
 pub use project_map_service::{
     ProjectMapEdgeDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto,
     ProjectMapNeighborDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
     ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
 };
+pub use project_service::{folder_name, ProjectService};
 pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore};
 pub use service::AppService;
 pub use session_state_service::SessionStateService;
-pub use settings::{AppSettings, ApprovalPolicy, SettingsService, SettingsView};
+pub use settings::{AppSettings, ApprovalPolicy, SandboxMode, SettingsService, SettingsView};
 pub use skills_service::{SkillActivationDto, SkillDto, SkillsService};
 pub use terminal_service::TerminalService;
 pub use workspace_service::WorkspaceService;

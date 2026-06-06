@@ -60,12 +60,6 @@ interface SessionCompletedPayload {
   error?: string | null;
 }
 
-const SUGGESTIONS = [
-  "Fix XHC Trinity production config before the next server deploy",
-  "Sync the new prompt packs into XHC's admin prompt manager",
-  "Make Trinity quota charging consistent after yesterday's call-logic reset",
-];
-
 export function App() {
 
   const [showOnboarding, setShowOnboarding] = useState(
@@ -908,11 +902,13 @@ export function App() {
           });
           setActivePendingRunKey((current) => (current === pendingKey ? null : current));
           setApprovals((prev) => prev.filter((a) => a.run_id !== runId));
-          // Drop the live buffer for the finished session: future visits load
-          // the authoritative styled conversation from the DB. Keep the pending
-          // key clean too.
-          liveTranscripts.current.delete(runKey);
-          liveTranscripts.current.delete(pendingKey);
+          // Keep the finished session's live transcript in memory so returning
+          // to it preserves streamed reasoning deltas. The DB replay currently
+          // reconstructs tool cards and final messages, but tool-call reasoning
+          // only exists in the live stream. Only clear the temporary pending key.
+          if (pendingKey !== runKey) {
+            liveTranscripts.current.delete(pendingKey);
+          }
         });
     },
     [activeId, view, refreshSessions, runningSessionIds, activePendingRunKey]
@@ -1083,10 +1079,9 @@ export function App() {
                   projectName={activeProjectName} 
                   activeProjectPath={activeProjectPath}
                   projectMapOpenSignal={projectMapOpenSignal}
-                  sessions={sessions}
-                  activeId={activeId}
-                  onSelectSession={onSelect}
-                  suggestions={SUGGESTIONS} 
+                  projects={projects}
+                  onSelectProject={onSelectProject}
+                  onAddProject={onAddProject}
                   onSubmit={onSubmit} 
                 />
               </motion.div>

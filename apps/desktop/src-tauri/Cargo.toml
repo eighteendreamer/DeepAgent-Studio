@@ -12,6 +12,13 @@ license = "Apache-2.0"
 # it's in a workspace when it's not".
 [workspace]
 
+[profile.dev]
+# Windows often keeps files in target/debug/incremental locked while Tauri dev,
+# rust-analyzer, or antivirus/indexing is active. Disabling incremental for the
+# desktop shell avoids noisy "error finalizing incremental compilation session"
+# warnings and failed rebuilds caused by transient OS file locks.
+incremental = false
+
 [lib]
 name = "deepagent_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

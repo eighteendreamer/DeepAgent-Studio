@@ -44,6 +44,8 @@ type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 export const SETTINGS_CHANGED_EVENT = "deepagent:settings-changed";
 export const ARCHIVE_CHANGED_EVENT = "deepagent:archive-changed";
 
+export type SandboxMode = "read_only" | "workspace_write" | "full_access";
+
 function emitSettingsChanged(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent(SETTINGS_CHANGED_EVENT));
@@ -574,6 +576,24 @@ export async function getApprovalPolicy(): Promise<string> {
 export async function setApprovalPolicy(policy: string): Promise<void> {
   const invoke = getInvoke();
   if (invoke) await invoke("set_approval_policy", { policy });
+}
+
+/** Get the current sandbox mode label. */
+export async function getSandboxMode(): Promise<SandboxMode> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SandboxMode>("get_sandbox_mode");
+  return "workspace_write";
+}
+
+/** Set the sandbox mode ("read_only" | "workspace_write" | "full_access"). */
+export async function setSandboxMode(mode: SandboxMode): Promise<SettingsView> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const view = await invoke<SettingsView>("set_sandbox_mode", { mode });
+    emitSettingsChanged();
+    return view;
+  }
+  throw new Error("changing sandbox mode requires the desktop app");
 }
 
 // ---- MCP servers (visual config) ------------------------------------------

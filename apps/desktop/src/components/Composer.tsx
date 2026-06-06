@@ -39,9 +39,11 @@ interface Props {
   onStop?: () => void;
   /** True when the current session is in read-only Plan mode. */
   planMode?: boolean;
+  /** Optional footer content rendered seamlessly at the bottom of the composer. */
+  footer?: React.ReactNode;
 }
 
-export function Composer({ value, onChange, onSubmit, placeholder, busy = false, onStop, planMode = false }: Props) {
+export function Composer({ value, onChange, onSubmit, placeholder, busy = false, onStop, planMode = false, footer }: Props) {
   const { t } = useTranslation();
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const [isThinkingDropdownOpen, setIsThinkingDropdownOpen] = useState(false);
@@ -324,7 +326,8 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   };
 
   return (
-    <div className="relative w-full border border-border-theme rounded-xl shadow-[0_2px_10px_rgba(0,0,0,0.02)] bg-white p-3 flex flex-col transition-all focus-within:border-gray-300 focus-within:shadow-md">
+    <div className="relative w-full border border-border-theme rounded-2xl shadow-[0_2px_10px_rgba(0,0,0,0.02)] bg-white flex flex-col transition-all focus-within:border-gray-300 focus-within:shadow-md">
+      <div className="p-3 pb-2 flex flex-col relative w-full">
       {slashOpen && (
         <div className="absolute left-3 right-3 bottom-full mb-2 max-h-72 overflow-y-auto rounded-lg border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-50">
           {slashResults.map((cmd, index) => (
@@ -511,6 +514,13 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
           </button>
         </div>
       </div>
+      </div>
+      
+      {footer && (
+        <div className="w-full bg-gray-50 border-t border-border-theme px-3 py-1.5 flex items-center min-h-[32px] rounded-b-2xl">
+          {footer}
+        </div>
+      )}
     </div>
   );
 }

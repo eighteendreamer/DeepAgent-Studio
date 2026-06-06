@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { motion, AnimatePresence } from "framer-motion";
-import { initializeProject, isTauri } from "../api";
+import { initializeProject, isTauri, setSandboxMode, type SandboxMode } from "../api";
 import { message } from "./message";
-
+import { useTranslation } from "react-i18next";
+import { useTheme } from "../hooks/useTheme";
 interface Props {
   onComplete: () => void;
 }
@@ -25,14 +26,19 @@ const SUPPORTED_LANGUAGES = [
 ];
 
 export function OnboardingWizard({ onComplete }: Props) {
-  const [step, setStep] = useState<0 | 1 | 2 | 3>(0);
+  const [step, setStep] = useState<0 | 1 | 2 | 3 | 4>(0);
   const [apiKey, setApiKey] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isFinishing, setIsFinishing] = useState(false);
+  
+  const { i18n } = useTranslation();
+  const { updateConfig } = useTheme();
   
   const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
   const [language, setLanguage] = useState("zh");
   const [isLangDropdownOpen, setIsLangDropdownOpen] = useState(false);
   const [workMode, setWorkMode] = useState<"code" | "daily">("code");
+  const [sandboxMode, setSandboxModeState] = useState<SandboxMode>("workspace_write");
 
   const handleConnect = async () => {
     const key = apiKey.trim();
@@ -62,32 +68,61 @@ export function OnboardingWizard({ onComplete }: Props) {
     }
   };
 
-  const handleFinish = () => {
-    // Save settings locally
-    localStorage.setItem("theme", theme);
-    localStorage.setItem("language", language);
+  const handleFinish = async () => {
+    if (isFinishing) return;
+    setIsFinishing(true);
+
+    try {
+      await setSandboxMode(sandboxMode);
+    } catch (e) {
+      message.error("沙箱设置保存失败，请重试");
+      console.error("set_sandbox_mode failed:", e);
+      setIsFinishing(false);
+      return;
+    }
+
+    // Save settings locally with the correct keys used by the rest of the app
+    
+    // Theme uses codex-theme-config object
+    try {
+      const stored = localStorage.getItem("codex-theme-config");
+      const config = stored ? JSON.parse(stored) : { mode: "system" };
+      config.mode = theme;
+      localStorage.setItem("codex-theme-config", JSON.stringify(config));
+    } catch (e) {
+      localStorage.setItem("codex-theme-config", JSON.stringify({ mode: theme }));
+    }
+    
+    // Language uses appLanguage
+    localStorage.setItem("appLanguage", language);
+    
+    // Work mode uses workMode
     localStorage.setItem("workMode", workMode);
+    
     localStorage.setItem("onboarding_complete", "true");
     onComplete();
+    
+    // Reload the app to ensure all contexts (i18n, theme, App) start with the new defaults
+    window.location.reload();
   };
 
-  const nextStep = () => setStep((s) => Math.min(s + 1, 3) as any);
+  const nextStep = () => setStep((s) => Math.min(s + 1, 4) as any);
   const prevStep = () => setStep((s) => Math.max(s - 1, 1) as any);
 
   // Custom theme classes based on user request
   const themeStyles = {
-    primaryBg: "bg-[#111827] hover:bg-[#000000]",
-    primaryText: "text-white",
-    textBase: "text-[#1F2937]",
-    textSecondary: "text-[#6B7280]",
-    borderTheme: "border-[#E5E7EB]",
-    selectedBorder: "border-[#111827]",
-    selectedBg: "bg-gray-50",
+    primaryBg: "bg-text-base hover:opacity-90",
+    primaryText: "text-bg-base",
+    textBase: "text-text-base",
+    textSecondary: "text-text-secondary",
+    borderTheme: "border-border-theme",
+    selectedBorder: "border-text-base",
+    selectedBg: "bg-sidebar-bg",
   };
 
   return (
-    <div className="absolute top-10 inset-x-0 bottom-0 z-50 flex items-center justify-center bg-gray-50/95 backdrop-blur-md overflow-hidden">
-      <div className={`w-full max-w-lg bg-white rounded-3xl shadow-2xl border ${themeStyles.borderTheme} relative min-h-[400px]`}>
+    <div className="absolute top-10 inset-x-0 bottom-0 z-50 flex items-center justify-center bg-sidebar-bg/95 backdrop-blur-md overflow-hidden">
+      <div className={`w-full max-w-lg bg-bg-base rounded-3xl shadow-2xl border ${themeStyles.borderTheme} relative min-h-[400px]`}>
         <AnimatePresence mode="wait">
           {/* STEP 0: API Key */}
           {step === 0 && (
@@ -109,14 +144,14 @@ export function OnboardingWizard({ onComplete }: Props) {
                   <label className={`block text-sm font-medium ${themeStyles.textBase} mb-2`}>API Key</label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                      <FontAwesomeIcon icon={["fas", "lock"]} className="text-gray-400 text-sm" />
+                      <FontAwesomeIcon icon={["fas", "lock"]} className="text-text-secondary opacity-70 text-sm" />
                     </div>
                     <input
                       type="password"
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
                       placeholder="sk-..."
-                      className={`block w-full pl-10 pr-4 py-3 border ${themeStyles.borderTheme} rounded-xl text-sm focus:ring-2 focus:ring-[#111827]/20 focus:border-[#111827] bg-gray-50/50 outline-none transition-all ${themeStyles.textBase}`}
+                      className={`block w-full pl-10 pr-4 py-3 border ${themeStyles.borderTheme} rounded-xl text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary bg-transparent outline-none transition-all ${themeStyles.textBase}`}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") handleConnect();
                       }}
@@ -152,8 +187,8 @@ export function OnboardingWizard({ onComplete }: Props) {
               className="p-10 flex flex-col h-full"
             >
               <div className="text-center mb-8">
-                <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-gray-200">
-                  <FontAwesomeIcon icon={["fas", "desktop"]} className="text-[#111827] text-2xl" />
+                <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
+                  <FontAwesomeIcon icon={["fas", "desktop"]} className="text-text-base text-2xl" />
                 </div>
                 <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>选择系统主题</h1>
                 <p className={`${themeStyles.textSecondary} text-sm`}>自定义界面的外观</p>
@@ -165,18 +200,21 @@ export function OnboardingWizard({ onComplete }: Props) {
                     { id: "light", icon: ["far", "sun"], label: "浅色" },
                     { id: "dark", icon: ["fas", "moon"], label: "深色" },
                     { id: "system", icon: ["fas", "desktop"], label: "系统" },
-                  ].map((t) => (
+                  ].map((tItem) => (
                     <button
-                      key={t.id}
-                      onClick={() => setTheme(t.id as any)}
+                      key={tItem.id}
+                      onClick={() => {
+                        setTheme(tItem.id as any);
+                        updateConfig({ mode: tItem.id as any });
+                      }}
                       className={`flex-1 flex flex-col items-center justify-center py-6 border rounded-xl text-sm transition-all ${
-                        theme === t.id
-                          ? `${themeStyles.selectedBorder} ${themeStyles.selectedBg} text-[#111827] shadow-sm`
-                          : `${themeStyles.borderTheme} bg-white ${themeStyles.textSecondary} hover:bg-gray-50`
+                        theme === tItem.id
+                          ? `${themeStyles.selectedBorder} ${themeStyles.selectedBg} text-text-base shadow-sm`
+                          : `${themeStyles.borderTheme} bg-transparent ${themeStyles.textSecondary} hover:bg-sidebar-bg`
                       }`}
                     >
-                      <FontAwesomeIcon icon={t.icon as any} className="mb-2 text-lg" />
-                      <span className="font-medium">{t.label}</span>
+                      <FontAwesomeIcon icon={tItem.icon as any} className="mb-2 text-lg" />
+                      <span className="font-medium">{tItem.label}</span>
                     </button>
                   ))}
                 </div>
@@ -203,8 +241,8 @@ export function OnboardingWizard({ onComplete }: Props) {
               className="p-10 flex flex-col h-full"
             >
               <div className="text-center mb-8">
-                <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-gray-200">
-                  <FontAwesomeIcon icon={["fas", "globe"]} className="text-[#111827] text-2xl" />
+                <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
+                  <FontAwesomeIcon icon={["fas", "globe"]} className="text-text-base text-2xl" />
                 </div>
                 <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>选择语言</h1>
                 <p className={`${themeStyles.textSecondary} text-sm`}>请选择你熟悉的系统语言</p>
@@ -215,12 +253,12 @@ export function OnboardingWizard({ onComplete }: Props) {
                   <button
                     type="button"
                     onClick={() => setIsLangDropdownOpen(!isLangDropdownOpen)}
-                    className={`relative w-full pl-4 pr-10 py-3 text-left text-base border ${themeStyles.borderTheme} focus:outline-none focus:ring-2 focus:ring-[#111827] focus:border-[#111827] sm:text-sm rounded-xl bg-gray-50/50 ${themeStyles.textBase} transition-all`}
+                    className={`relative w-full pl-4 pr-10 py-3 text-left text-base border ${themeStyles.borderTheme} focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary sm:text-sm rounded-xl bg-transparent ${themeStyles.textBase} transition-all`}
                   >
                     <span className="block truncate">
                       {SUPPORTED_LANGUAGES.find((l) => l.id === language)?.label}
                     </span>
-                    <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-4 text-gray-500">
+                    <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-4 text-text-secondary opacity-70">
                       <FontAwesomeIcon icon={["fas", "chevron-down"]} className={`text-sm transition-transform duration-200 ${isLangDropdownOpen ? "rotate-180" : ""}`} />
                     </span>
                   </button>
@@ -237,7 +275,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, y: -10 }}
                           transition={{ duration: 0.15 }}
-                          className={`absolute z-50 mt-2 w-full bg-white rounded-xl shadow-lg border ${themeStyles.borderTheme} overflow-hidden max-h-60 overflow-y-auto`}
+                          className={`absolute z-50 mt-2 w-full bg-bg-base rounded-xl shadow-lg border ${themeStyles.borderTheme} overflow-hidden max-h-60 overflow-y-auto`}
                         >
                           <ul className="py-1">
                             {SUPPORTED_LANGUAGES.map((l) => (
@@ -246,14 +284,15 @@ export function OnboardingWizard({ onComplete }: Props) {
                                 onClick={() => {
                                   setLanguage(l.id);
                                   setIsLangDropdownOpen(false);
+                                  i18n.changeLanguage(l.id);
                                 }}
-                                className={`cursor-pointer select-none relative py-2.5 pl-4 pr-9 hover:bg-gray-100 transition-colors ${
-                                  language === l.id ? "bg-gray-50 text-[#111827] font-medium" : themeStyles.textBase
+                                className={`cursor-pointer select-none relative py-2.5 pl-4 pr-9 hover:bg-sidebar-bg transition-colors ${
+                                  language === l.id ? "bg-sidebar-bg text-text-base font-medium" : themeStyles.textBase
                                 }`}
                               >
                                 <span className="block truncate">{l.label}</span>
                                 {language === l.id && (
-                                  <span className="absolute inset-y-0 right-0 flex items-center pr-4 text-[#111827]">
+                                  <span className="absolute inset-y-0 right-0 flex items-center pr-4 text-text-base">
                                     <FontAwesomeIcon icon={["fas", "check"]} className="text-sm" />
                                   </span>
                                 )}
@@ -284,7 +323,7 @@ export function OnboardingWizard({ onComplete }: Props) {
             </motion.div>
           )}
 
-          {/* STEP 3: Work Mode */}
+          {/* STEP 3: Sandbox */}
           {step === 3 && (
             <motion.div
               key="step3"
@@ -294,8 +333,75 @@ export function OnboardingWizard({ onComplete }: Props) {
               className="p-10 flex flex-col h-full"
             >
               <div className="text-center mb-8">
-                <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-gray-200">
-                  <FontAwesomeIcon icon={["fas", "sliders"]} className="text-[#111827] text-2xl" />
+                <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
+                  <FontAwesomeIcon icon={["fas", "shield-halved"]} className="text-text-base text-2xl" />
+                </div>
+                <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>沙箱权限</h1>
+                <p className={`${themeStyles.textSecondary} text-sm`}>设置工具最多可以访问和修改哪里</p>
+              </div>
+
+              <div className="flex-1 space-y-3">
+                {[
+                  { id: "read_only", title: "只读模式", desc: "只能阅读当前项目文件，不能修改文件。", icon: "eye" },
+                  { id: "workspace_write", title: "项目内读写", desc: "允许读取和修改当前项目，推荐日常开发使用。", icon: "folder-open" },
+                  { id: "full_access", title: "完全访问", desc: "允许读写项目外文件，适合明确需要跨目录操作时使用。", icon: "unlock" },
+                ].map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setSandboxModeState(m.id as SandboxMode)}
+                    className={`w-full flex items-start gap-3 p-4 border rounded-xl text-left transition-all ${
+                      sandboxMode === m.id
+                        ? `${themeStyles.selectedBorder} ${themeStyles.selectedBg} shadow-sm`
+                        : `${themeStyles.borderTheme} bg-transparent hover:bg-sidebar-bg`
+                    }`}
+                  >
+                    <div className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${sandboxMode === m.id ? "border-text-base" : "border-border-theme"}`}>
+                      {sandboxMode === m.id && <div className="w-2.5 h-2.5 rounded-full bg-text-base" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-sm font-medium mb-1 ${sandboxMode === m.id ? "text-text-base" : themeStyles.textBase}`}>
+                        {m.title}
+                        {m.id === "workspace_write" && <span className="ml-2 text-[11px] text-text-secondary opacity-80">推荐</span>}
+                      </div>
+                      <div className={`text-xs leading-5 ${sandboxMode === m.id ? "text-text-base" : themeStyles.textSecondary}`}>
+                        {m.desc}
+                      </div>
+                    </div>
+                    <FontAwesomeIcon icon={["fas", m.icon as any]} className={`mt-0.5 ${sandboxMode === m.id ? "text-text-base" : "text-text-secondary opacity-70"}`} />
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex space-x-3 mt-8">
+                <button
+                  onClick={prevStep}
+                  className={`px-6 py-3 rounded-xl text-sm font-medium border ${themeStyles.borderTheme} ${themeStyles.textSecondary} hover:bg-sidebar-bg transition-colors`}
+                >
+                  上一步
+                </button>
+                <button
+                  onClick={nextStep}
+                  className={`flex-1 py-3 px-4 rounded-xl text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} transition-colors`}
+                >
+                  下一步
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* STEP 4: Work Mode */}
+          {step === 4 && (
+            <motion.div
+              key="step4"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="p-10 flex flex-col h-full"
+            >
+              <div className="text-center mb-8">
+                <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
+                  <FontAwesomeIcon icon={["fas", "sliders"]} className="text-text-base text-2xl" />
                 </div>
                 <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>工作模式</h1>
                 <p className={`${themeStyles.textSecondary} text-sm`}>选择 Codex 显示多少技术细节</p>
@@ -312,19 +418,19 @@ export function OnboardingWizard({ onComplete }: Props) {
                     className={`flex-1 flex flex-col items-start p-4 border rounded-xl cursor-pointer transition-all ${
                       workMode === m.id
                         ? `${themeStyles.selectedBorder} ${themeStyles.selectedBg} shadow-sm`
-                        : `${themeStyles.borderTheme} bg-white hover:bg-gray-50`
+                        : `${themeStyles.borderTheme} bg-transparent hover:bg-sidebar-bg`
                     }`}
                   >
                     <div className="flex items-center w-full mb-3">
-                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${workMode === m.id ? 'border-[#111827]' : 'border-gray-300'}`}>
-                        {workMode === m.id && <div className="w-2.5 h-2.5 rounded-full bg-[#111827]" />}
+                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${workMode === m.id ? 'border-text-base' : 'border-border-theme'}`}>
+                        {workMode === m.id && <div className="w-2.5 h-2.5 rounded-full bg-text-base" />}
                       </div>
-                      <FontAwesomeIcon icon={["fas", m.icon as any]} className={`ml-auto ${workMode === m.id ? 'text-[#111827]' : 'text-gray-400'}`} />
+                      <FontAwesomeIcon icon={["fas", m.icon as any]} className={`ml-auto ${workMode === m.id ? 'text-text-base' : 'text-text-secondary opacity-70'}`} />
                     </div>
-                    <div className={`text-sm font-medium mb-1 ${workMode === m.id ? 'text-[#111827]' : themeStyles.textBase}`}>
+                    <div className={`text-sm font-medium mb-1 ${workMode === m.id ? 'text-text-base' : themeStyles.textBase}`}>
                       {m.title}
                     </div>
-                    <div className={`text-xs ${workMode === m.id ? 'text-gray-700' : themeStyles.textSecondary}`}>
+                    <div className={`text-xs ${workMode === m.id ? 'text-text-base' : themeStyles.textSecondary}`}>
                       {m.desc}
                     </div>
                   </div>
@@ -334,16 +440,17 @@ export function OnboardingWizard({ onComplete }: Props) {
               <div className="flex space-x-3 mt-8">
                 <button
                   onClick={prevStep}
-                  className={`px-6 py-3 rounded-xl text-sm font-medium border ${themeStyles.borderTheme} ${themeStyles.textSecondary} hover:bg-gray-50 transition-colors`}
+                  className={`px-6 py-3 rounded-xl text-sm font-medium border ${themeStyles.borderTheme} ${themeStyles.textSecondary} hover:bg-sidebar-bg transition-colors`}
                 >
                   上一步
                 </button>
                 <button
                   onClick={handleFinish}
-                  className={`flex-1 flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} transition-colors`}
+                  disabled={isFinishing}
+                  className={`flex-1 flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} transition-colors disabled:opacity-50 disabled:cursor-not-allowed`}
                 >
-                  <FontAwesomeIcon icon={["fas", "check"]} className="mr-2" />
-                  进入系统
+                  <FontAwesomeIcon icon={["fas", isFinishing ? "circle-notch" : "check"]} className={`mr-2 ${isFinishing ? "animate-spin" : ""}`} />
+                  {isFinishing ? "保存中..." : "进入系统"}
                 </button>
               </div>
             </motion.div>

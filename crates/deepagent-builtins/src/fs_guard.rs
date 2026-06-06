@@ -20,6 +20,8 @@ use deepagent_core::error::{CoreError, Result};
 ///   (sensitive files still blocked to avoid silent credential leaks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FsAccess {
+    /// Confine reads to the workspace root and deny all file writes.
+    ReadOnly,
     /// Confine reads and writes to the workspace root (the safe default).
     #[default]
     Workspace,
@@ -86,7 +88,7 @@ impl WorkspaceRoot {
     /// files are always rejected.
     pub fn resolve_read(&self, input: &str) -> Result<PathBuf> {
         match self.access {
-            FsAccess::Workspace => self.resolve(input),
+            FsAccess::ReadOnly | FsAccess::Workspace => self.resolve(input),
             FsAccess::ReadAnywhere | FsAccess::Full => self.resolve_unconfined(input),
         }
     }
@@ -96,6 +98,9 @@ impl WorkspaceRoot {
     /// are always rejected.
     pub fn resolve_write(&self, input: &str) -> Result<PathBuf> {
         match self.access {
+            FsAccess::ReadOnly => Err(CoreError::invalid(format!(
+                "file writes are denied by the current sandbox mode: {input}"
+            ))),
             FsAccess::Workspace | FsAccess::ReadAnywhere => self.resolve(input),
             FsAccess::Full => self.resolve_unconfined(input),
         }
@@ -235,5 +240,12 @@ mod tests {
         assert!(r.resolve("my_secret_config.json").is_err());
         // ordinary files are fine
         assert!(r.resolve("config/app.toml").is_ok());
+    }
+
+    #[test]
+    fn read_only_access_allows_reads_but_denies_writes() {
+        let r = WorkspaceRoot::new("/work/proj").with_access(FsAccess::ReadOnly);
+        assert!(r.resolve_read("src/lib.rs").is_ok());
+        assert!(r.resolve_write("src/lib.rs").is_err());
     }
 }

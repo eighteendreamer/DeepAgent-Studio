@@ -1,5 +1,7 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getSettings, setSandboxMode, type SandboxMode } from "../../api";
+import { message } from "../message";
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
@@ -75,7 +77,21 @@ export function ConfigSettings() {
   const { t } = useTranslation();
   const [dependencies, setDependencies] = useState(true);
   const [approvalStrategy, setApprovalStrategy] = useState("onDemand");
-  const [sandboxSetting, setSandboxSetting] = useState("readOnly");
+  const [sandboxSetting, setSandboxSetting] = useState<SandboxMode>("workspace_write");
+
+  useEffect(() => {
+    let cancelled = false;
+    getSettings()
+      .then((settings) => {
+        if (!cancelled && settings?.sandbox_mode) {
+          setSandboxSetting(settings.sandbox_mode);
+        }
+      })
+      .catch((e) => console.error("get_settings failed:", e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const approvalOptions = [
     { title: "untrusted", description: t("settings.config.untrustedDesc"), displayTitle: t("settings.config.untrusted") },
@@ -85,9 +101,9 @@ export function ConfigSettings() {
   ];
 
   const sandboxOptions = [
-    { title: "readOnly", description: t("settings.config.readOnlyDesc"), displayTitle: t("settings.config.readOnly") },
-    { title: "workspaceWrite", description: t("settings.config.workspaceWriteDesc"), displayTitle: t("settings.config.workspaceWrite") },
-    { title: "fullAccess", description: t("settings.config.fullAccessDesc"), displayTitle: t("settings.config.fullAccess") }
+    { title: "read_only", description: t("settings.config.readOnlyDesc"), displayTitle: t("settings.config.readOnly") },
+    { title: "workspace_write", description: t("settings.config.workspaceWriteDesc"), displayTitle: t("settings.config.workspaceWrite") },
+    { title: "full_access", description: t("settings.config.fullAccessDesc"), displayTitle: t("settings.config.fullAccess") }
   ];
 
   return (
@@ -129,9 +145,20 @@ export function ConfigSettings() {
               <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.config.sandboxSettings")}</div>
               <div className="text-[12px] text-text-secondary">{t("settings.config.sandboxDesc")}</div>
             </div>
-            <ComplexDropdown options={sandboxOptions} selectedTitle={sandboxOptions.find(o => o.title === sandboxSetting)?.displayTitle || ""} onChange={(t) => {
+            <ComplexDropdown options={sandboxOptions} selectedTitle={sandboxOptions.find(o => o.title === sandboxSetting)?.displayTitle || ""} onChange={async (t) => {
               const opt = sandboxOptions.find(o => o.displayTitle === t);
-              if (opt) setSandboxSetting(opt.title);
+              if (!opt) return;
+              const next = opt.title as SandboxMode;
+              const previous = sandboxSetting;
+              setSandboxSetting(next);
+              try {
+                const view = await setSandboxMode(next);
+                setSandboxSetting(view.sandbox_mode);
+              } catch (e) {
+                setSandboxSetting(previous);
+                message.error("沙箱设置保存失败");
+                console.error("set_sandbox_mode failed:", e);
+              }
             }} />
           </div>
         </div>

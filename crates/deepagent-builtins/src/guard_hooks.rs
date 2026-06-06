@@ -36,12 +36,11 @@ fn is_read_tool(name: &str) -> bool {
 ///
 /// - Sensitive credential files are **always denied**.
 /// - In-workspace paths always **continue**.
-/// - Out-of-workspace **reads** continue under `ReadAnywhere`/`Full`, else ask.
-/// - Out-of-workspace **writes** continue under `Full`, else ask.
+/// - Out-of-workspace **reads** continue under `ReadAnywhere`/`Full`, else deny.
+/// - Out-of-workspace **writes** continue under `Full`, else deny.
 ///
-/// Returning `Ask` (rather than `Deny`) lets the approval policy decide: under
-/// 默认权限 the user is prompted; under 自动审核 reads auto-approve and writes
-/// are prompted; under 完全访问 everything is pre-allowed.
+/// Returning `Deny` makes the filesystem sandbox a hard boundary: approval
+/// policy cannot expand the selected sandbox mode.
 ///
 /// [`HookPoint::BeforeToolUse`]: deepagent_hooks::HookPoint::BeforeToolUse
 pub struct PathGuardHook {
@@ -69,10 +68,6 @@ impl Hook for PathGuardHook {
             let read_tool = is_read_tool(name);
             for key in PATH_KEYS {
                 if let Some(path) = arguments.get(*key).and_then(|v| v.as_str()) {
-                    // First: in-workspace + non-sensitive always passes.
-                    if self.root.resolve(path).is_ok() {
-                        continue;
-                    }
                     // Sensitive files are always denied outright, regardless of
                     // mode (never silently read/leak credentials).
                     if crate::fs_guard::is_sensitive_path(path) {
@@ -90,11 +85,9 @@ impl Hook for PathGuardHook {
                     if allowed {
                         continue;
                     }
-                    // Otherwise ask the user (the policy gate decides whether to
-                    // prompt or auto-handle).
                     let verb = if read_tool { "read" } else { "modify" };
-                    return Ok(HookOutcome::ask_from(
-                        format!("{verb} outside the workspace: '{path}' needs approval"),
+                    return Ok(HookOutcome::deny_from(
+                        format!("{verb} is blocked by the current sandbox mode: '{path}'"),
                         DecisionSource::Policy,
                     ));
                 }
@@ -202,9 +195,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn path_guard_denies_sensitive_asks_outside_workspace() {
+    async fn path_guard_denies_sensitive_and_outside_workspace() {
         let guard = PathGuardHook::new(WorkspaceRoot::new("/work"));
-        // Out-of-workspace read under the default (Workspace) mode → ask.
+        // Out-of-workspace read under the default (Workspace) mode is denied.
         let out = guard
             .run(&tool_ctx(
                 "read_file",
@@ -212,7 +205,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert!(out.is_ask());
+        assert!(out.is_deny());
 
         // Sensitive credential file → always denied.
         let out = guard
@@ -244,7 +237,21 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert!(out.is_ask());
+        assert!(out.is_deny());
+    }
+
+    #[tokio::test]
+    async fn path_guard_read_only_denies_in_workspace_writes() {
+        use crate::fs_guard::FsAccess;
+        let guard = PathGuardHook::new(WorkspaceRoot::new("/work").with_access(FsAccess::ReadOnly));
+        let out = guard
+            .run(&tool_ctx(
+                "write_file",
+                serde_json::json!({"path": "src/main.rs"}),
+            ))
+            .await
+            .unwrap();
+        assert!(out.is_deny());
     }
 
     #[tokio::test]
