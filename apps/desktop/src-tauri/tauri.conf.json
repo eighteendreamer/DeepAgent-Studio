@@ -1,6 +1,6 @@
 {
   "productName": "DeepAgent Studio",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "identifier": "com.deepagent.studio",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -38,9 +38,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI1ODZGRTlCRjNGNDVENzcKUldSM1hmVHptLzZHdGFZdGVENU5rbmprZHRyYkwwbW96a3J4RGg0RUtiRFFCRlZNcHRKcko0TlUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY3NzgxMEYyODM3MzIwN0EKUldSNklIT0Q4aEI0WjQ0RXppYTRpK1NXTWxYVEUzRUFMeHdHQzBLZVYwMXprRVNVNnZwQVlXREgK",
       "endpoints": [
-        "https://github.com/deepagent-studio/deepagent-studio/releases/latest/download/latest.json",
+        "https://github.com/eighteendreamer/DeepAgent-Studio/releases/latest/download/latest.json",
         "https://download.deepagent.studio/releases/latest.json"
       ],
       "windows": {
