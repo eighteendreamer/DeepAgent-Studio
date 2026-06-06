@@ -153,6 +153,7 @@
       "worktree": "Worktree",
       "browser": "Browser",
       "computer": "Computer Control",
+      "project_map_debug": "Project Map Debug",
       "archive": "Archived Chats"
     },
     "hooks": {

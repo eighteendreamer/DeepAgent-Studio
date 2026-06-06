@@ -13,6 +13,7 @@ import { WorktreeSettings } from "./settings/WorktreeSettings";
 import { BrowserSettings } from "./settings/BrowserSettings";
 import { ComputerSettings } from "./settings/ComputerSettings";
 import { ArchiveSettings } from "./settings/ArchiveSettings";
+import { ProjectMapDebugSettings } from "./settings/ProjectMapDebugSettings";
 
 interface Props {
   activeCategoryId: string;
@@ -34,6 +35,7 @@ export function SettingsView({ activeCategoryId }: Props) {
       case "worktree": return <WorktreeSettings />;
       case "browser": return <BrowserSettings />;
       case "computer": return <ComputerSettings />;
+      case "project_map_debug": return <ProjectMapDebugSettings />;
       case "archive": return <ArchiveSettings />;
       default: return <GeneralSettings />;
     }

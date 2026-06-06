@@ -7,7 +7,7 @@ interface BrowserPluginProps {
 
 function normalizeUrl(input: string): string {
   const trimmed = input.trim();
-  if (!trimmed) return "https://www.baidu.com";
+  if (!trimmed) return "";
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   if (/^(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/i.test(trimmed)) {
     return `http://${trimmed}`;
@@ -16,6 +16,7 @@ function normalizeUrl(input: string): string {
 }
 
 function titleFromUrl(url: string): string {
+  if (!url) return "";
   try {
     return new URL(normalizeUrl(url)).host;
   } catch {
@@ -23,7 +24,7 @@ function titleFromUrl(url: string): string {
   }
 }
 
-export function BrowserPlugin({ initialUrl = "https://www.baidu.com" }: BrowserPluginProps) {
+export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
   const [url, setUrl] = useState(() => normalizeUrl(initialUrl));
   const [draftUrl, setDraftUrl] = useState(() => normalizeUrl(initialUrl));
   const [reloadKey, setReloadKey] = useState(0);
@@ -41,7 +42,7 @@ export function BrowserPlugin({ initialUrl = "https://www.baidu.com" }: BrowserP
   }, [initialUrl]);
 
   useEffect(() => {
-    if (!canUseNativeWebview) return;
+    if (!canUseNativeWebview || !url) return;
     const container = contentRef.current;
     if (!container) return;
 
@@ -155,19 +156,28 @@ export function BrowserPlugin({ initialUrl = "https://www.baidu.com" }: BrowserP
           <input
             value={draftUrl}
             onChange={(event) => setDraftUrl(event.target.value)}
-            onBlur={() => setDraftUrl(normalizeUrl(draftUrl))}
+            onBlur={() => setDraftUrl(draftUrl.trim() ? normalizeUrl(draftUrl) : "")}
             className="w-full rounded-lg border border-border-theme bg-gray-50 px-3 py-1.5 text-[13px] text-text-base outline-none focus:border-blue-400 focus:bg-white"
+            placeholder="输入 URL"
             spellCheck={false}
             aria-label="浏览器地址"
           />
         </form>
-        <div className="hidden max-w-[160px] truncate text-[12px] text-text-secondary md:block" title={host}>
-          {host}
-        </div>
+        {host && (
+          <div className="hidden max-w-[160px] truncate text-[12px] text-text-secondary md:block" title={host}>
+            {host}
+          </div>
+        )}
       </div>
 
       <div ref={contentRef} className="relative flex-1 overflow-hidden bg-white">
-        {!canUseNativeWebview && (
+        {!url ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-white px-6 text-center">
+            <FontAwesomeIcon icon={["fas", "globe"]} className="mb-3 text-2xl text-text-secondary" />
+            <div className="mb-1 text-[14px] font-medium text-text-base">浏览器</div>
+            <div className="text-[12px] text-text-secondary">输入 URL 后打开页面</div>
+          </div>
+        ) : !canUseNativeWebview && (
           <iframe title="browser" src={url} className="h-full w-full border-0 bg-white" />
         )}
         {nativeError && (

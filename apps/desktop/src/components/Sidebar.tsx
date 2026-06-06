@@ -19,6 +19,7 @@ interface Props {
   onRemoveProject: (path: string) => void;
   onPinProject: (path: string, pinned: boolean) => void;
   onOpenProject: (path: string) => void;
+  onOpenProjectMap: (path: string) => void;
   onRenameProject: (path: string, name: string) => void;
   onArchiveProject: (path: string, name: string) => void;
   onOpenSearch: () => void;
@@ -68,7 +69,7 @@ function readSidebarPreference<T extends string>(key: string, fallback: T, allow
   return allowed.includes(value as T) ? (value as T) : fallback;
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onRenameProject, onArchiveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
@@ -363,6 +364,18 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   >
                     <FontAwesomeIcon icon={["far", "folder"]} className="text-text-secondary mr-2.5 w-4" />
                     {t("sidebar.openInExplorer")}
+                  </button>
+                  <button
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    onClick={() => {
+                      const path = nameToPath[proj];
+                      if (!path) return;
+                      setActiveProjectMenu(null);
+                      onOpenProjectMap(path);
+                    }}
+                  >
+                    <FontAwesomeIcon icon={["fas", "share-nodes"]} className="text-text-secondary mr-2.5 w-4" />
+                    项目地图
                   </button>
                   <button
                     className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
@@ -690,6 +703,18 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                           >
                             <FontAwesomeIcon icon={["far", "folder"]} className="text-text-secondary mr-2.5 w-4" />
                             {t("sidebar.openInExplorer")}
+                          </button>
+                          <button
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            onClick={() => {
+                              const path = nameToPath[proj];
+                              if (!path) return;
+                              setActiveProjectMenu(null);
+                              onOpenProjectMap(path);
+                            }}
+                          >
+                            <FontAwesomeIcon icon={["fas", "share-nodes"]} className="text-text-secondary mr-2.5 w-4" />
+                            项目地图
                           </button>
                           <button
                             className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"

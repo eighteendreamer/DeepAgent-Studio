@@ -53,6 +53,7 @@ pub mod glob_match;
 pub mod guard_hooks;
 pub mod knowledge_tools;
 pub mod plan_mode;
+pub mod project_map_tools;
 pub mod task_tool;
 pub mod todo_tool;
 pub mod web_tools;
@@ -92,6 +93,11 @@ pub use knowledge_tools::{
 };
 pub use plan_mode::{
     is_plan_safe_tool, EnterPlanModeTool, ExitPlanModeTool, PlanMode, PlanModeHook, PLAN_SAFE_TOOLS,
+};
+pub use project_map_tools::{
+    CodeMapImpactTool, CodeMapNeighborsTool, CodeMapOverviewTool, CodeMapSearchTool,
+    ProjectMapBackend, CODE_MAP_IMPACT_TOOL_NAME, CODE_MAP_NEIGHBORS_TOOL_NAME,
+    CODE_MAP_OVERVIEW_TOOL_NAME, CODE_MAP_SEARCH_TOOL_NAME,
 };
 pub use task_tool::{
     SubagentRequest, SubagentRunner, TaskTool, UnavailableSubagentRunner, TASK_TOOL_NAME,

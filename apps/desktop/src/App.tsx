@@ -74,6 +74,7 @@ export function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectPath, setActiveProjectPath] = useState<string | null>(null);
+  const [projectMapOpenSignal, setProjectMapOpenSignal] = useState(0);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [view, setView] = useState<View>("start");
@@ -469,6 +470,15 @@ export function App() {
       message.error(`打开失败：${String(err)}`);
     });
   }, []);
+
+  const onOpenProjectMap = useCallback((path: string) => {
+    setActiveProjectPath(path);
+    setActiveProject(path).catch(() => {});
+    setProjectMapOpenSignal((n) => n + 1);
+    if (view !== "chat" && view !== "start") {
+      setView("start");
+    }
+  }, [view]);
 
   const onRenameProject = useCallback(
     (path: string, name: string) => {
@@ -1027,6 +1037,7 @@ export function App() {
                 onRemoveProject={onRemoveProject}
                 onPinProject={onPinProject}
                 onOpenProject={onOpenProject}
+                onOpenProjectMap={onOpenProjectMap}
                 onRenameProject={onRenameProject}
                 onArchiveProject={onArchiveProject}
                 onOpenSearch={() => setIsSearchOpen(true)}
@@ -1070,6 +1081,8 @@ export function App() {
               >
                 <StartView 
                   projectName={activeProjectName} 
+                  activeProjectPath={activeProjectPath}
+                  projectMapOpenSignal={projectMapOpenSignal}
                   sessions={sessions}
                   activeId={activeId}
                   onSelectSession={onSelect}
@@ -1108,6 +1121,7 @@ export function App() {
                   onStop={onStopRun}
                   planMode={planMode}
                   activeProjectPath={activeProjectPath}
+                  projectMapOpenSignal={projectMapOpenSignal}
                 />
               </motion.div>
             )}

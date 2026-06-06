@@ -153,6 +153,7 @@
       "worktree": "工作树",
       "browser": "浏览器",
       "computer": "电脑操控",
+      "project_map_debug": "项目地图调试",
       "archive": "已归档对话"
     },
     "hooks": {

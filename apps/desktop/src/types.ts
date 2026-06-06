@@ -280,6 +280,95 @@ export interface ArchiveProjectResult {
   archived_count: number;
 }
 
+export interface ProjectMapStatus {
+  status: "missing" | "ready" | "stale" | "updating" | "failed" | string;
+  source: string | null;
+  graph_path: string | null;
+  updated_at: number | null;
+  nodes: number;
+  edges: number;
+  files: number;
+  functions: number;
+  classes: number;
+  last_error: string | null;
+}
+
+export interface ProjectMapHit {
+  node_id: string;
+  node_type: string;
+  name: string;
+  file_path: string | null;
+  summary: string;
+  complexity: "simple" | "moderate" | "complex" | string;
+  score: number;
+}
+
+export interface ProjectMapEdge {
+  source: string;
+  target: string;
+  edge_type: string;
+  weight: number;
+}
+
+export interface ProjectMapGraph {
+  nodes: ProjectMapHit[];
+  edges: ProjectMapEdge[];
+}
+
+export interface ProjectMapOverview {
+  status: ProjectMapStatus;
+  project_name: string | null;
+  description: string | null;
+  languages: string[];
+  frameworks: string[];
+  complex_nodes: ProjectMapHit[];
+}
+
+export interface ProjectMapNode {
+  id: string;
+  node_type: string;
+  name: string;
+  file_path: string | null;
+  line_range: [number, number] | null;
+  summary: string;
+  tags: string[];
+  complexity: string;
+  language_notes: string | null;
+}
+
+export interface ProjectMapNeighbor {
+  edge_type: string;
+  direction: string;
+  node: ProjectMapHit;
+}
+
+export interface ProjectMapNeighbors {
+  node: ProjectMapNode | null;
+  imports: ProjectMapNeighbor[];
+  imported_by: ProjectMapNeighbor[];
+  calls: ProjectMapNeighbor[];
+  called_by: ProjectMapNeighbor[];
+  related: ProjectMapNeighbor[];
+}
+
+export interface ProjectMapImpact {
+  target: ProjectMapNode | null;
+  direct: ProjectMapHit[];
+  indirect: ProjectMapHit[];
+}
+
+export interface ProjectMapRefresh {
+  ok: boolean;
+  graph_path: string;
+  files: number;
+  nodes: number;
+  edges: number;
+  duration_ms: number;
+  truncated: boolean;
+  message: string;
+  status: ProjectMapStatus;
+}
+
 /** A knowledge entry (mirrors deepagent-app-core::KnowledgeDto). */
 export interface KnowledgeEntry {
   id: string;

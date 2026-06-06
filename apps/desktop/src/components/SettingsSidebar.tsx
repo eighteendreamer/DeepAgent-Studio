@@ -22,6 +22,7 @@ const CATEGORIES: Category[] = [
   { id: "worktree", label: "工作树", icon: ["fas", "code-branch"] },
   { id: "browser", label: "浏览器", icon: ["far", "compass"] },
   { id: "computer", label: "电脑操控", icon: ["fas", "desktop"] },
+  { id: "project_map_debug", label: "项目地图调试", icon: ["fas", "share-nodes"] },
   { id: "archive", label: "已归档对话", icon: ["fas", "box-archive"] },
 ];
 

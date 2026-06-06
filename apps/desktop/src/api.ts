@@ -21,6 +21,14 @@ import type {
   McpServer,
   PermissionRules,
   Project,
+  ProjectMapHit,
+  ProjectMapGraph,
+  ProjectMapImpact,
+  ProjectMapNeighbors,
+  ProjectMapNode,
+  ProjectMapOverview,
+  ProjectMapRefresh,
+  ProjectMapStatus,
   RewindResult,
   SessionDetail,
   SessionSummary,
@@ -708,6 +716,146 @@ export async function openProjectInFileManager(path: string): Promise<void> {
   if (invoke) await invoke("open_project_in_file_manager", { path });
 }
 
+// ---- project map ----------------------------------------------------------
+
+export async function projectMapStatus(projectPath?: string | null): Promise<ProjectMapStatus> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ProjectMapStatus>("project_map_status", { projectPath: projectPath ?? null });
+  return mockProjectMapOverview().status;
+}
+
+export async function projectMapOverview(projectPath?: string | null): Promise<ProjectMapOverview> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ProjectMapOverview>("project_map_overview", { projectPath: projectPath ?? null });
+  return mockProjectMapOverview();
+}
+
+export async function projectMapSearch(
+  query: string,
+  limit?: number,
+  projectPath?: string | null
+): Promise<ProjectMapHit[]> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<ProjectMapHit[]>("project_map_search", {
+      projectPath: projectPath ?? null,
+      query,
+      limit: limit ?? null,
+    });
+  const q = query.trim().toLowerCase();
+  return mockProjectMapHits().filter((h) =>
+    !q || `${h.name} ${h.file_path ?? ""} ${h.summary}`.toLowerCase().includes(q)
+  ).slice(0, limit ?? 20);
+}
+
+export async function projectMapNode(
+  nodeId: string,
+  projectPath?: string | null
+): Promise<ProjectMapNode | null> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<ProjectMapNode | null>("project_map_node", {
+      projectPath: projectPath ?? null,
+      nodeId,
+    });
+  const hit = mockProjectMapHits().find((h) => h.node_id === nodeId);
+  return hit
+    ? {
+        id: hit.node_id,
+        node_type: hit.node_type,
+        name: hit.name,
+        file_path: hit.file_path,
+        line_range: null,
+        summary: hit.summary,
+        tags: ["mock"],
+        complexity: hit.complexity,
+        language_notes: null,
+      }
+    : null;
+}
+
+export async function projectMapNeighbors(
+  nodeId: string,
+  projectPath?: string | null
+): Promise<ProjectMapNeighbors> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<ProjectMapNeighbors>("project_map_neighbors", {
+      projectPath: projectPath ?? null,
+      nodeId,
+    });
+  const node = await projectMapNode(nodeId, projectPath);
+  const hits = mockProjectMapHits().filter((h) => h.node_id !== nodeId);
+  return {
+    node,
+    imports: hits.slice(0, 2).map((node) => ({ edge_type: "imports", direction: "out", node })),
+    imported_by: hits.slice(2, 4).map((node) => ({ edge_type: "imports", direction: "in", node })),
+    calls: [],
+    called_by: [],
+    related: [],
+  };
+}
+
+export async function projectMapGraph(
+  limit?: number,
+  projectPath?: string | null
+): Promise<ProjectMapGraph> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<ProjectMapGraph>("project_map_graph", {
+      projectPath: projectPath ?? null,
+      limit: limit ?? null,
+    });
+  const nodes = mockProjectMapHits();
+  return {
+    nodes,
+    edges: nodes.slice(1).map((node, index) => ({
+      source: nodes[0].node_id,
+      target: node.node_id,
+      edge_type: index % 2 === 0 ? "imports" : "contains",
+      weight: 0.7,
+    })),
+  };
+}
+
+export async function projectMapImpact(
+  target: string,
+  projectPath?: string | null
+): Promise<ProjectMapImpact> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<ProjectMapImpact>("project_map_impact", {
+      projectPath: projectPath ?? null,
+      target,
+    });
+  return {
+    target: await projectMapNode(target, projectPath),
+    direct: mockProjectMapHits().slice(0, 3),
+    indirect: mockProjectMapHits().slice(3, 6),
+  };
+}
+
+export async function projectMapRefreshDeep(projectPath?: string | null): Promise<ProjectMapRefresh> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<ProjectMapRefresh>("project_map_refresh_deep", {
+      projectPath: projectPath ?? null,
+    });
+  }
+  const overview = mockProjectMapOverview();
+  return {
+    ok: true,
+    graph_path: ".understand-anything/knowledge-graph.json",
+    files: overview.status.files,
+    nodes: overview.status.nodes,
+    edges: overview.status.edges,
+    duration_ms: 420,
+    truncated: false,
+    message: "Understand-Anything 深度项目地图已生成。",
+    status: { ...overview.status, source: "understand-anything" },
+  };
+}
+
 export async function archiveProjectConversations(
   projectPath: string
 ): Promise<ArchiveProjectResult> {
@@ -850,6 +998,69 @@ function mockMcpServers(): McpServer[] {
       headers: {},
     },
   ];
+}
+
+function mockProjectMapHits(): ProjectMapHit[] {
+  return [
+    {
+      node_id: "file:apps/desktop/src/App.tsx",
+      node_type: "file",
+      name: "App.tsx",
+      file_path: "apps/desktop/src/App.tsx",
+      summary: "Application shell, project/session state, and main view routing.",
+      complexity: "complex",
+      score: 0.95,
+    },
+    {
+      node_id: "file:apps/desktop/src/components/ChatView.tsx",
+      node_type: "file",
+      name: "ChatView.tsx",
+      file_path: "apps/desktop/src/components/ChatView.tsx",
+      summary: "Conversation view, composer, tool cards, and side panels.",
+      complexity: "complex",
+      score: 0.9,
+    },
+    {
+      node_id: "file:crates/deepagent-app-core/src/chat_service.rs",
+      node_type: "file",
+      name: "chat_service.rs",
+      file_path: "crates/deepagent-app-core/src/chat_service.rs",
+      summary: "Runs streamed chat sessions and assembles the tool registry.",
+      complexity: "complex",
+      score: 0.88,
+    },
+    {
+      node_id: "file:crates/deepagent-builtins/src/file_tools.rs",
+      node_type: "file",
+      name: "file_tools.rs",
+      file_path: "crates/deepagent-builtins/src/file_tools.rs",
+      summary: "Workspace-confined read/write/edit/list/glob/grep tools.",
+      complexity: "moderate",
+      score: 0.76,
+    },
+  ];
+}
+
+function mockProjectMapOverview(): ProjectMapOverview {
+  return {
+    status: {
+      status: "ready",
+      source: "mock",
+      graph_path: null,
+      updated_at: Date.now(),
+      nodes: 240,
+      edges: 510,
+      files: 92,
+      functions: 118,
+      classes: 30,
+      last_error: null,
+    },
+    project_name: "DeepAgent-Studio",
+    description: "Mock project map preview.",
+    languages: ["typescript", "rust"],
+    frameworks: ["react", "tauri"],
+    complex_nodes: mockProjectMapHits(),
+  };
 }
 
 async function mockChatStream(

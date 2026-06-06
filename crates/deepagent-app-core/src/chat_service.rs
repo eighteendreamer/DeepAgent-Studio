@@ -35,9 +35,11 @@ use deepagent_runtime::{
 };
 use deepagent_session::Session;
 use deepagent_tools::{PermissionSet, ToolRegistry};
+use async_trait::async_trait;
 
 use crate::approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
 use crate::dto::ApprovalRequestDto;
+use crate::project_map_service::ProjectMapService;
 use crate::settings::SettingsService;
 
 /// The base system prompt seeded into every chat run, modeled on Claude Code's
@@ -72,6 +74,7 @@ const SYSTEM_PROMPT_BASE: &str = r#"You are DeepAgent, a verifiable, Rust-native
 - todo_write / task_list: break down and track multi-step work so progress survives across turns.
 - knowledge_search: look up accumulated, project-specific experience — pitfalls already hit, fixes that worked, frequently used commands, important configs. Check it BEFORE guessing when you face an unfamiliar error, a recurring problem, or need a project convention. An empty result just means nothing relevant is recorded yet.
 - knowledge_write: after you solve a non-obvious problem or confirm something worth reusing (a fix, a command, a config, a pitfall), save a clear, self-contained note so it isn't rediscovered the hard way next time. Relevant saved knowledge is also injected automatically, so you may already see a "相关知识 (knowledge base)" block — build on it.
+- code_map_overview / code_map_search / code_map_neighbors / code_map_impact: when a project map is available, use these before broad glob/grep/read_file exploration. Search the map to locate likely files/functions, inspect neighbors to understand upstream/downstream dependencies, and check impact before editing shared or complex files.
 - You can call multiple tools in one response. If independent, call them in parallel for efficiency; if one depends on another's result, call them sequentially.
 - Work in PARALLEL by default to stay fast. When you need several independent reads (multiple files, several directories, a few searches), emit all those tool calls in ONE response so they run concurrently instead of one-at-a-time. Only serialize when a later call genuinely depends on an earlier result.
 - For broad exploration (understand a whole project, survey many files), launch MULTIPLE `task` sub-agents in a single response — one per area/subdirectory — so they investigate concurrently and each returns a focused summary. This is far faster than walking everything yourself, turn by turn.
@@ -136,6 +139,35 @@ fn current_date_string() -> String {
         .unwrap_or_else(|_| format!("{}", now.year()))
 }
 
+#[derive(Clone)]
+struct ProjectMapToolBackend {
+    service: Arc<ProjectMapService>,
+    root: PathBuf,
+}
+
+#[async_trait]
+impl deepagent_builtins::ProjectMapBackend for ProjectMapToolBackend {
+    async fn overview(&self) -> Result<serde_json::Value> {
+        serde_json::to_value(self.service.overview(&self.root)).map_err(Into::into)
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<serde_json::Value> {
+        let hits = self.service.search(&self.root, query, limit)?;
+        Ok(serde_json::json!({
+            "count": hits.len(),
+            "hits": hits,
+        }))
+    }
+
+    async fn neighbors(&self, node_id: &str) -> Result<serde_json::Value> {
+        serde_json::to_value(self.service.neighbors(&self.root, node_id)?).map_err(Into::into)
+    }
+
+    async fn impact(&self, target: &str) -> Result<serde_json::Value> {
+        serde_json::to_value(self.service.impact(&self.root, target)?).map_err(Into::into)
+    }
+}
+
 /// Orchestrates streamed chat runs over the kernel.
 pub struct ChatService {
     db: Arc<Database>,
@@ -159,6 +191,10 @@ pub struct ChatService {
     /// are registered. When unset, behavior is identical to before the feature
     /// (no injection, no tools) — preserving backward compatibility.
     knowledge: Option<Arc<crate::knowledge_service::KnowledgeService>>,
+    /// Optional project-map reader. When set, read-only `code_map_*` tools are
+    /// registered for the active project so the model can locate code before
+    /// broad file reads.
+    project_map: Option<Arc<ProjectMapService>>,
     /// Optional cost tracker: when set, each completed run records its token
     /// cost and runs are refused when a configured budget is exhausted. When
     /// unset, behavior is identical to before the feature (no recording, no
@@ -200,6 +236,7 @@ impl ChatService {
             mcp: None,
             projects: None,
             knowledge: None,
+            project_map: None,
             cost: None,
             tool_results_dir,
             plan_modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -244,6 +281,13 @@ impl ChatService {
         knowledge: Arc<crate::knowledge_service::KnowledgeService>,
     ) -> Self {
         self.knowledge = Some(knowledge);
+        self
+    }
+
+    /// Attach a [`ProjectMapService`] so runs expose read-only `code_map_*`
+    /// tools for the active project.
+    pub fn with_project_map(mut self, project_map: Arc<ProjectMapService>) -> Self {
+        self.project_map = Some(project_map);
         self
     }
 
@@ -799,6 +843,19 @@ impl ChatService {
             use deepagent_builtins::KnowledgeSearchTool;
             let backend = crate::knowledge_service::KnowledgeServiceBackend::new(knowledge.clone());
             registry.register(Arc::new(KnowledgeSearchTool::new(backend)))?;
+        }
+        if let Some(project_map) = &self.project_map {
+            use deepagent_builtins::{
+                CodeMapImpactTool, CodeMapNeighborsTool, CodeMapOverviewTool, CodeMapSearchTool,
+            };
+            let backend = ProjectMapToolBackend {
+                service: project_map.clone(),
+                root: root.to_path_buf(),
+            };
+            registry.register(Arc::new(CodeMapOverviewTool::new(backend.clone())))?;
+            registry.register(Arc::new(CodeMapSearchTool::new(backend.clone())))?;
+            registry.register(Arc::new(CodeMapNeighborsTool::new(backend.clone())))?;
+            registry.register(Arc::new(CodeMapImpactTool::new(backend)))?;
         }
         Ok(registry)
     }

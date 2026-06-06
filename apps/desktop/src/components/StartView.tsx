@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { Composer } from "./Composer";
@@ -8,10 +8,16 @@ import { FilesPlugin } from "./plugins/FilesPlugin";
 import { SideChatPlugin } from "./plugins/SideChatPlugin";
 import { BrowserPlugin } from "./plugins/BrowserPlugin";
 import { TerminalPlugin } from "./plugins/TerminalPlugin";
+import { ProjectMapPanel } from "./project-map/ProjectMapPanel";
 import { Tab, TOOL_CARDS } from "./ChatView";
+
+const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
+const PROJECT_MAP_TAB_ID = "project-map";
 
 interface Props {
   projectName: string;
+  activeProjectPath?: string | null;
+  projectMapOpenSignal?: number;
   sessions: SessionSummary[];
   activeId: string | null;
   onSelectSession: (id: string) => void;
@@ -19,7 +25,7 @@ interface Props {
   onSubmit: (text: string) => void;
 }
 
-export function StartView({ projectName, sessions, activeId, onSelectSession, suggestions, onSubmit }: Props) {
+export function StartView({ projectName, activeProjectPath = null, projectMapOpenSignal = 0, sessions, activeId, onSelectSession, suggestions, onSubmit }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -79,14 +85,20 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
   const [activeSidebarTabId, setActiveSidebarTabId] = useState<string>("new");
 
   const getTranslatedToolName = (_title: string, type: string) => {
+    if (type === "project_map") return "项目地图";
     return t(`chatView.tools.${type}`);
+  };
+
+  const getTranslatedToolDesc = (type: string) => {
+    if (type === "project_map") return "查看模块关系";
+    return t(`chatView.tools.${type}Desc`);
   };
 
   const handleOpenBottomPlugin = (c: typeof TOOL_CARDS[0]) => {
     const newTab: Tab = {
       id: Date.now().toString(),
       type: c.type,
-      title: c.title === "terminal" ? "C:\WINDOWS\System32\..." : 
+      title: c.title === "terminal" ? "C:\\WINDOWS\\System32\\..." : 
              c.title === "files" ? "AUTH_SPEC.md" : getTranslatedToolName(c.title, c.type),
       icon: c.title === "terminal" ? ["fas", "terminal"] :
             c.title === "files" ? ["far", "file-lines"] : c.icon
@@ -99,7 +111,7 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
     const newTab: Tab = {
       id: Date.now().toString(),
       type: c.type,
-      title: c.title === "terminal" ? "C:\WINDOWS\System32\..." : 
+      title: c.title === "terminal" ? "C:\\WINDOWS\\System32\\..." : 
              c.title === "files" ? "AUTH_SPEC.md" : getTranslatedToolName(c.title, c.type),
       icon: c.title === "terminal" ? ["fas", "terminal"] :
             c.title === "files" ? ["far", "file-lines"] : c.icon
@@ -107,6 +119,34 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
     setSidebarTabs([...sidebarTabs, newTab]);
     setActiveSidebarTabId(newTab.id);
   };
+
+  const openProjectMapSidebar = useCallback(() => {
+    const existingTab = sidebarTabs.find((tab) => tab.type === "project_map");
+    setIsRightSidebarOpen(true);
+    setActiveSidebarTabId(existingTab?.id ?? PROJECT_MAP_TAB_ID);
+    setSidebarTabs((tabs) => {
+      if (tabs.some((tab) => tab.type === "project_map")) return tabs;
+      return [
+        ...tabs,
+        {
+          id: PROJECT_MAP_TAB_ID,
+          type: "project_map",
+          title: "项目地图",
+          icon: ["fas", "share-nodes"],
+        },
+      ];
+    });
+  }, [sidebarTabs]);
+
+  useEffect(() => {
+    if (projectMapOpenSignal > 0) openProjectMapSidebar();
+  }, [openProjectMapSidebar, projectMapOpenSignal]);
+
+  useEffect(() => {
+    const onOpen = () => openProjectMapSidebar();
+    window.addEventListener(PROJECT_MAP_OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(PROJECT_MAP_OPEN_EVENT, onOpen);
+  }, [openProjectMapSidebar]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -399,7 +439,7 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
                       >
                         <FontAwesomeIcon icon={c.icon} className="text-[22px] text-text-base mb-2.5" />
                         <div className="text-[13px] font-medium text-text-base mb-1">{getTranslatedToolName(c.title, c.type)}</div>
-                        <div className="text-[11px] text-text-secondary">{t(`chatView.tools.${c.type}Desc`)}</div>
+                        <div className="text-[11px] text-text-secondary">{getTranslatedToolDesc(c.type)}</div>
                       </div>
                     ))}
                   </div>
@@ -413,6 +453,7 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "chat" && <SideChatPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "browser" && <BrowserPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "terminal" && <TerminalPlugin />}
+            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} />}
           </div>
         </div>
       )}
@@ -495,7 +536,7 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
                       >
                         <FontAwesomeIcon icon={c.icon} className="text-[20px] text-text-base mb-2" />
                         <div className="text-[12px] font-medium text-text-base mb-1">{getTranslatedToolName(c.title, c.type)}</div>
-                        <div className="text-[10px] text-text-secondary leading-tight line-clamp-2">{t(`chatView.tools.${c.type}Desc`)}</div>
+                        <div className="text-[10px] text-text-secondary leading-tight line-clamp-2">{getTranslatedToolDesc(c.type)}</div>
                       </div>
                     ))}
                   </div>
@@ -508,6 +549,7 @@ export function StartView({ projectName, sessions, activeId, onSelectSession, su
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "chat" && <SideChatPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "browser" && <BrowserPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "terminal" && <TerminalPlugin />}
+            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} />}
           </div>
         </div>
         </>

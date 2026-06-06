@@ -22,6 +22,7 @@ pub mod dto;
 pub mod knowledge_service;
 pub mod mcp_service;
 pub mod project_service;
+pub mod project_map_service;
 pub mod secret_store;
 pub mod service;
 pub mod session_state_service;
@@ -48,6 +49,11 @@ pub use knowledge_service::{
 };
 pub use mcp_service::{McpServerDto, McpService};
 pub use project_service::{folder_name, ProjectService};
+pub use project_map_service::{
+    ProjectMapEdgeDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto,
+    ProjectMapNeighborDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
+    ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
+};
 pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore};
 pub use service::AppService;
 pub use session_state_service::SessionStateService;

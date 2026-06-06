@@ -17,10 +17,12 @@ use deepagent_app_core::{
     AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, BudgetConfig,
     ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary, DiagnosticResult,
     DiffResult, ForkResultDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
-    KnowledgeService, McpServerDto, McpService, ProjectDto, ProjectService, RewindResultDto,
-    SessionDetailDto, SessionStateService, SessionSummaryDto, SettingsService, SettingsView,
-    SkillActivationDto, SkillDto, SkillsService, TerminalResultDto, TerminalService, TranscriptDto,
-    WorkspaceInfoDto, WorkspaceService,
+    KnowledgeService, McpServerDto, McpService, ProjectDto, ProjectMapGraphDto,
+    ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto,
+    ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService,
+    RewindResultDto, SessionDetailDto, SessionStateService, SessionSummaryDto, SettingsService,
+    SettingsView, SkillActivationDto, SkillDto, SkillsService, TerminalResultDto, TerminalService,
+    TranscriptDto, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use serde::Serialize;
@@ -41,6 +43,7 @@ struct AppState {
     archive: Arc<ArchiveService>,
     session_state: Arc<SessionStateService>,
     projects: Arc<ProjectService>,
+    project_map: Arc<ProjectMapService>,
     workspace: Arc<WorkspaceService>,
     terminal: Arc<TerminalService>,
     /// Tokio runtime for async calls invoked from sync commands.
@@ -601,6 +604,121 @@ fn workspace_info(state: State<'_, AppState>) -> Result<WorkspaceInfoDto, String
     Ok(state.workspace.info())
 }
 
+fn resolve_project_root(
+    state: &State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<std::path::PathBuf, String> {
+    if let Some(path) = project_path.filter(|p| !p.trim().is_empty()) {
+        return Ok(std::path::PathBuf::from(path));
+    }
+    Ok(state
+        .projects
+        .active()
+        .map_err(|e| e.to_string())?
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(state.workspace.info().path)))
+}
+
+// ---- project map -----------------------------------------------------------
+
+#[tauri::command]
+fn project_map_status(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<ProjectMapStatusDto, String> {
+    let root = resolve_project_root(&state, project_path)?;
+    Ok(state.project_map.status(&root))
+}
+
+#[tauri::command]
+fn project_map_overview(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<ProjectMapOverviewDto, String> {
+    let root = resolve_project_root(&state, project_path)?;
+    Ok(state.project_map.overview(&root))
+}
+
+#[tauri::command]
+fn project_map_search(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<ProjectMapHitDto>, String> {
+    let root = resolve_project_root(&state, project_path)?;
+    state
+        .project_map
+        .search(&root, &query, limit.unwrap_or(20).clamp(1, 50))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn project_map_node(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+    node_id: String,
+) -> Result<Option<ProjectMapNodeDto>, String> {
+    let root = resolve_project_root(&state, project_path)?;
+    state
+        .project_map
+        .node(&root, &node_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn project_map_neighbors(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+    node_id: String,
+) -> Result<ProjectMapNeighborsDto, String> {
+    let root = resolve_project_root(&state, project_path)?;
+    state
+        .project_map
+        .neighbors(&root, &node_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn project_map_graph(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+    limit: Option<usize>,
+) -> Result<ProjectMapGraphDto, String> {
+    let root = resolve_project_root(&state, project_path)?;
+    state
+        .project_map
+        .graph(&root, limit.unwrap_or(80))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn project_map_impact(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+    target: String,
+) -> Result<ProjectMapImpactDto, String> {
+    let root = resolve_project_root(&state, project_path)?;
+    state
+        .project_map
+        .impact(&root, &target)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn project_map_refresh_deep(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<ProjectMapRefreshDto, String> {
+    let root = resolve_project_root(&state, project_path)?;
+    let project_map = Arc::clone(&state.project_map);
+    tauri::async_runtime::spawn_blocking(move || {
+        project_map.refresh_deep(&root).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ---- projects (sidebar: folders → sessions) -------------------------------
 
 #[tauri::command]
@@ -886,6 +1004,7 @@ pub fn run() {
             let workspace = Arc::new(WorkspaceService::new(workspace_root.clone()));
             let projects = Arc::new(ProjectService::new(service.shared_database()));
             let _ = projects.ensure_default(&workspace_root.to_string_lossy());
+            let project_map = Arc::new(ProjectMapService::new());
 
             // Knowledge base: a project-local vault (`<project>/.deepagent/knowledge`)
             // plus a user-global vault (under the app data dir), loaded into one
@@ -923,6 +1042,7 @@ pub fn run() {
                 .with_mcp(mcp.clone())
                 .with_projects(projects.clone())
                 .with_knowledge(knowledge.clone())
+                .with_project_map(project_map.clone())
                 .with_cost(cost.clone())
                 .with_tool_results_dir(dir.join("tool_results")),
             );
@@ -938,6 +1058,7 @@ pub fn run() {
                 archive,
                 session_state,
                 projects,
+                project_map,
                 workspace,
                 terminal,
                 rt,
@@ -999,6 +1120,14 @@ pub fn run() {
             get_hooks_json,
             set_hooks_json,
             workspace_info,
+            project_map_status,
+            project_map_overview,
+            project_map_search,
+            project_map_node,
+            project_map_neighbors,
+            project_map_graph,
+            project_map_impact,
+            project_map_refresh_deep,
             list_projects,
             active_project,
             add_project,

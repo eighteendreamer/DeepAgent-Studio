@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
-import type { ChatMessage, MessagePart, TokenUsage, TimelineEntry, ApprovalRequest } from "../types";
+import type { ChatMessage, MessagePart, TokenUsage, TimelineEntry, ApprovalRequest, ProjectMapStatus } from "../types";
 import { Composer } from "./Composer";
 import { ToolCallCard } from "./ToolCallCard";
 import { ApprovalDialog } from "./ApprovalDialog";
@@ -11,9 +11,10 @@ import { FilesPlugin } from "./plugins/FilesPlugin";
 import { SideChatPlugin } from "./plugins/SideChatPlugin";
 import { BrowserPlugin } from "./plugins/BrowserPlugin";
 import { TerminalPlugin } from "./plugins/TerminalPlugin";
+import { ProjectMapPanel, ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import { useTranslation } from "react-i18next";
-import { runTerminal } from "../api";
+import { projectMapRefreshDeep, projectMapStatus, runTerminal } from "../api";
 
 interface Props {
   messages: ChatMessage[];
@@ -46,9 +47,11 @@ interface Props {
   planMode?: boolean;
   /** Explicitly selected project path. Empty means the chat is not project-bound. */
   activeProjectPath?: string | null;
+  /** Incremented by parent when another UI surface asks to open the project map. */
+  projectMapOpenSignal?: number;
 }
 
-export type PluginType = "none" | "files" | "chat" | "browser" | "terminal";
+export type PluginType = "none" | "files" | "chat" | "browser" | "terminal" | "project_map";
 
 export type Tab = {
   id: string;
@@ -71,11 +74,15 @@ type EnvironmentPanelState = {
   ghAvailable: boolean | null;
 };
 
+const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
+const PROJECT_MAP_TAB_ID = "project-map";
+
 export const TOOL_CARDS: { icon: IconProp; title: string; desc: string; type: PluginType }[] = [
   { icon: ["far", "folder-open"], title: "files", desc: "filesDesc", type: "files" },
   { icon: ["far", "comment-dots"], title: "chat", desc: "chatDesc", type: "chat" },
   { icon: ["fas", "globe"], title: "browser", desc: "browserDesc", type: "browser" },
   { icon: ["fas", "terminal"], title: "terminal", desc: "terminalDesc", type: "terminal" },
+  { icon: ["fas", "share-nodes"], title: "project_map", desc: "projectMapDesc", type: "project_map" },
 ];
 
 function parseGitShortstat(text: string): { additions: number; deletions: number } {
@@ -136,7 +143,7 @@ function browserTitle(url: string): string {
   }
 }
 
-export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, onArchive, pinned = false, timeline = [], approval = null, approvalQueueCount = 0, onApprovalDecision, busy = false, onStop, planMode = false, activeProjectPath = null }: Props) {
+export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, onArchive, pinned = false, timeline = [], approval = null, approvalQueueCount = 0, onApprovalDecision, busy = false, onStop, planMode = false, activeProjectPath = null, projectMapOpenSignal = 0 }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
   const [isOutputPanelOpen, setIsOutputPanelOpen] = useState(false);
@@ -148,6 +155,8 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     ghAvailable: null,
   });
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isProjectMapMenuOpen, setIsProjectMapMenuOpen] = useState(false);
+  const projectMapMenuRef = useRef<HTMLDivElement>(null);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
   const [isRewindOpen, setIsRewindOpen] = useState(false);
   const [bottomTabs, setBottomTabs] = useState<Tab[]>([]);
@@ -196,6 +205,11 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
   }, [isResizingSidebar]);
   const [sidebarTabs, setSidebarTabs] = useState<Tab[]>([]);
   const [activeSidebarTabId, setActiveSidebarTabId] = useState<string>("new");
+  const [mapStatus, setMapStatus] = useState<ProjectMapStatus | null>(null);
+  const activeProjectLabel = useMemo(() => {
+    if (!activeProjectPath) return "";
+    return activeProjectPath.split(/[\\/]/).filter(Boolean).pop() ?? activeProjectPath;
+  }, [activeProjectPath]);
   const outputItems = useMemo(() => collectOutputItems(messages), [messages]);
   const outputSignature = useMemo(
     () => outputItems.map((item) => `${item.kind}:${item.label}`).join("|"),
@@ -266,14 +280,20 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
   }, [messages]);
 
   const getTranslatedToolName = (_title: string, type: string) => {
+    if (type === "project_map") return "项目地图";
     return t(`chatView.tools.${type}`);
+  };
+
+  const getTranslatedToolDesc = (type: string) => {
+    if (type === "project_map") return "查看模块关系";
+    return t(`chatView.tools.${type}Desc`);
   };
 
   const handleOpenBottomPlugin = (c: typeof TOOL_CARDS[0]) => {
     const newTab: Tab = {
       id: Date.now().toString(),
       type: c.type,
-      title: c.title === "terminal" ? "C:\WINDOWS\System32\..." : 
+      title: c.title === "terminal" ? "C:\\WINDOWS\\System32\\..." : 
              c.title === "files" ? "AUTH_SPEC.md" : getTranslatedToolName(c.title, c.type),
       icon: c.title === "terminal" ? ["fas", "terminal"] :
             c.title === "files" ? ["far", "file-lines"] : c.icon
@@ -286,7 +306,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     const newTab: Tab = {
       id: Date.now().toString(),
       type: c.type,
-      title: c.title === "terminal" ? "C:\WINDOWS\System32\..." : 
+      title: c.title === "terminal" ? "C:\\WINDOWS\\System32\\..." : 
              c.title === "files" ? "AUTH_SPEC.md" : getTranslatedToolName(c.title, c.type),
       icon: c.title === "terminal" ? ["fas", "terminal"] :
             c.title === "files" ? ["far", "file-lines"] : c.icon
@@ -294,6 +314,73 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     setSidebarTabs([...sidebarTabs, newTab]);
     setActiveSidebarTabId(newTab.id);
   };
+
+  const openProjectMapSidebar = useCallback(() => {
+    const existingTab = sidebarTabs.find((tab) => tab.type === "project_map");
+    setIsRightSidebarOpen(true);
+    setActiveSidebarTabId(existingTab?.id ?? PROJECT_MAP_TAB_ID);
+    setSidebarTabs((tabs) => {
+      if (tabs.some((tab) => tab.type === "project_map")) return tabs;
+      return [
+        ...tabs,
+        {
+          id: PROJECT_MAP_TAB_ID,
+          type: "project_map",
+          title: "项目地图",
+          icon: ["fas", "share-nodes"],
+        },
+      ];
+    });
+  }, [sidebarTabs]);
+
+  useEffect(() => {
+    if (projectMapOpenSignal > 0) openProjectMapSidebar();
+  }, [openProjectMapSidebar, projectMapOpenSignal]);
+
+  useEffect(() => {
+    const onOpen = () => openProjectMapSidebar();
+    window.addEventListener(PROJECT_MAP_OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(PROJECT_MAP_OPEN_EVENT, onOpen);
+  }, [openProjectMapSidebar]);
+
+  useEffect(() => {
+    if (!isProjectMapMenuOpen) return;
+    const onMouseDown = (event: MouseEvent) => {
+      if (projectMapMenuRef.current?.contains(event.target as Node)) return;
+      setIsProjectMapMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [isProjectMapMenuOpen]);
+
+  const refreshProjectMap = async () => {
+    if (!activeProjectPath) return;
+    setMapStatus((current) => current ? { ...current, status: "updating" } : current);
+    try {
+      const result = await projectMapRefreshDeep(activeProjectPath);
+      setMapStatus(result.status);
+      openProjectMapSidebar();
+    } catch {
+      const next = await projectMapStatus(activeProjectPath).catch(() => null);
+      setMapStatus(next);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setMapStatus(null);
+    if (!activeProjectPath) return;
+    projectMapStatus(activeProjectPath)
+      .then((next) => {
+        if (!cancelled) setMapStatus(next);
+      })
+      .catch(() => {
+        if (!cancelled) setMapStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectPath]);
 
   const openUrlInSidebarBrowser = (rawUrl: string) => {
     const url = normalizeBrowserUrl(rawUrl);
@@ -482,6 +569,49 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
             )}
           </div>
           <div className="flex items-center space-x-3 text-text-secondary">
+            {activeProjectPath && (
+              <div className="relative" ref={projectMapMenuRef}>
+                <button
+                  type="button"
+                  className="h-7 max-w-[220px] flex items-center rounded-md px-2 text-[12px] text-text-secondary hover:bg-gray-100 hover:text-text-base transition-colors"
+                  title={activeProjectPath}
+                  onClick={() => setIsProjectMapMenuOpen((v) => !v)}
+                >
+                  <FontAwesomeIcon icon={["far", "folder"]} className="mr-1.5 text-[11px]" />
+                  <span className="truncate">{activeProjectLabel}</span>
+                  <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
+                </button>
+                {isProjectMapMenuOpen && (
+                  <div className="absolute top-full right-0 mt-1 w-48 rounded-xl border border-border-theme bg-white py-1 shadow-[0_4px_24px_rgb(0,0,0,0.12)] z-50">
+                    <button
+                      type="button"
+                      className="w-full flex items-center px-3 py-2 text-left text-[13px] text-text-base hover:bg-gray-50"
+                      onClick={() => {
+                        setIsProjectMapMenuOpen(false);
+                        openProjectMapSidebar();
+                      }}
+                    >
+                      <FontAwesomeIcon icon={["fas", "share-nodes"]} className="text-text-secondary mr-2.5 w-4" />
+                      查看项目地图
+                    </button>
+                    <button
+                      type="button"
+                      className="w-full flex items-center px-3 py-2 text-left text-[13px] text-text-base hover:bg-gray-50"
+                      onClick={() => {
+                        setIsProjectMapMenuOpen(false);
+                        refreshProjectMap();
+                      }}
+                    >
+                      <FontAwesomeIcon icon={["fas", "rotate-right"]} className="text-text-secondary mr-2.5 w-4" />
+                      重新生成项目地图
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            {activeProjectPath && (
+              <ProjectMapStatusBadge status={mapStatus} onClick={openProjectMapSidebar} />
+            )}
             <FontAwesomeIcon 
               icon={["fas", "sliders"]} 
               className={`cursor-pointer transition-colors text-sm ${isOutputPanelOpen ? "text-text-base" : "hover:text-text-base"}`}
@@ -654,7 +784,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
                       >
                         <FontAwesomeIcon icon={c.icon} className="text-[22px] text-text-base mb-2.5" />
                         <div className="text-[13px] font-medium text-text-base mb-1">{getTranslatedToolName(c.title, c.type)}</div>
-                        <div className="text-[11px] text-text-secondary">{t(`chatView.tools.${c.type}Desc`)}</div>
+                        <div className="text-[11px] text-text-secondary">{getTranslatedToolDesc(c.type)}</div>
                       </div>
                     ))}
                   </div>
@@ -670,6 +800,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
               <BrowserPlugin initialUrl={bottomTabs.find(t => t.id === activeBottomTabId)?.url} />
             )}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "terminal" && <TerminalPlugin />}
+            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} onStatusChange={setMapStatus} />}
           </div>
         </div>
       )}
@@ -752,7 +883,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
                       >
                         <FontAwesomeIcon icon={c.icon} className="text-[20px] text-text-base mb-2" />
                         <div className="text-[12px] font-medium text-text-base mb-1">{getTranslatedToolName(c.title, c.type)}</div>
-                        <div className="text-[10px] text-text-secondary leading-tight line-clamp-2">{t(`chatView.tools.${c.type}Desc`)}</div>
+                        <div className="text-[10px] text-text-secondary leading-tight line-clamp-2">{getTranslatedToolDesc(c.type)}</div>
                       </div>
                     ))}
                   </div>
@@ -767,6 +898,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
               <BrowserPlugin initialUrl={sidebarTabs.find(t => t.id === activeSidebarTabId)?.url} />
             )}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "terminal" && <TerminalPlugin />}
+            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} onStatusChange={setMapStatus} />}
           </div>
         </div>
         </>
