@@ -1,6 +1,8 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useState } from "react";
 import { getSettings, setSandboxMode, type SandboxMode } from "../../api";
+import packageJson from "../../../package.json";
 import { message } from "../message";
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
@@ -78,6 +80,7 @@ export function ConfigSettings() {
   const [dependencies, setDependencies] = useState(true);
   const [approvalStrategy, setApprovalStrategy] = useState("onDemand");
   const [sandboxSetting, setSandboxSetting] = useState<SandboxMode>("workspace_write");
+  const [appVersion, setAppVersion] = useState(packageJson.version);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,6 +95,21 @@ export function ConfigSettings() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let cancelled = false;
+    getVersion()
+      .then((version) => {
+        if (!cancelled) setAppVersion(version);
+      })
+      .catch((e) => console.error("get app version failed:", e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const displayVersion = `v${appVersion.replace(/^v/i, "")}`;
 
   const approvalOptions = [
     { title: "untrusted", description: t("settings.config.untrustedDesc"), displayTitle: t("settings.config.untrusted") },
@@ -170,7 +188,7 @@ export function ConfigSettings() {
         <div className="border border-border-theme rounded-xl overflow-hidden shadow-[0_1px_2px_rgb(0,0,0,0.02)] bg-white">
           <div className="flex items-center justify-between p-4 border-b border-border-theme">
             <div className="text-[14px] font-medium text-text-base">{t("settings.config.currentVersion")}</div>
-            <div className="text-[13px] text-text-secondary font-mono">26.521.10419</div>
+            <div className="text-[13px] text-text-secondary font-mono">{displayVersion}</div>
           </div>
           <div className="flex items-center justify-between p-4 border-b border-border-theme">
             <div>
