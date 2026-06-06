@@ -211,6 +211,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     return activeProjectPath.split(/[\\/]/).filter(Boolean).pop() ?? activeProjectPath;
   }, [activeProjectPath]);
   const outputItems = useMemo(() => collectOutputItems(messages), [messages]);
+  const hasConversation = messages.length > 0;
   const outputSignature = useMemo(
     () => outputItems.map((item) => `${item.kind}:${item.label}`).join("|"),
     [outputItems]
@@ -218,6 +219,11 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
   const lastAutoOpenedOutputRef = useRef<string>("");
 
   useEffect(() => {
+    if (!hasConversation) {
+      lastAutoOpenedOutputRef.current = "";
+      setIsOutputPanelOpen(false);
+      return;
+    }
     if (!outputSignature) {
       lastAutoOpenedOutputRef.current = "";
       return;
@@ -225,7 +231,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     if (lastAutoOpenedOutputRef.current === outputSignature) return;
     lastAutoOpenedOutputRef.current = outputSignature;
     setIsOutputPanelOpen(true);
-  }, [outputSignature]);
+  }, [hasConversation, outputSignature]);
 
   useEffect(() => {
     if (!isOutputPanelOpen) return;
@@ -612,11 +618,13 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
             {activeProjectPath && (
               <ProjectMapStatusBadge status={mapStatus} onClick={openProjectMapSidebar} />
             )}
-            <FontAwesomeIcon 
-              icon={["fas", "sliders"]} 
-              className={`cursor-pointer transition-colors text-sm ${isOutputPanelOpen ? "text-text-base" : "hover:text-text-base"}`}
-              onClick={() => setIsOutputPanelOpen(!isOutputPanelOpen)}
-            />
+            {hasConversation && (
+              <FontAwesomeIcon
+                icon={["fas", "sliders"]}
+                className={`cursor-pointer transition-colors text-sm ${isOutputPanelOpen ? "text-text-base" : "hover:text-text-base"}`}
+                onClick={() => setIsOutputPanelOpen(!isOutputPanelOpen)}
+              />
+            )}
             <BottomPanelIcon 
               className="cursor-pointer transition-colors hover:text-text-base"
               onClick={() => {

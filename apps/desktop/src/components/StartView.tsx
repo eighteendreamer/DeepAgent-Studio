@@ -34,7 +34,6 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   const modeDropdownRef = useRef<HTMLDivElement>(null);
   const [workMode, setWorkMode] = useState<"code" | "daily">(() => (localStorage.getItem("workMode") as any) || "code");
 
-  const [isOutputPanelOpen, setIsOutputPanelOpen] = useState(false);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
   const [bottomTabs, setBottomTabs] = useState<Tab[]>([]);
   const [activeBottomTabId, setActiveBottomTabId] = useState<string>("new");
@@ -227,11 +226,6 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             </div>
           )}
         </div>
-        <FontAwesomeIcon 
-          icon={["fas", "sliders"]} 
-          className={`cursor-pointer transition-colors text-sm ${isOutputPanelOpen ? "text-text-base" : "hover:text-text-base"}`}
-          onClick={() => setIsOutputPanelOpen(!isOutputPanelOpen)}
-        />
         <BottomPanelIcon 
           className="cursor-pointer transition-colors hover:text-text-base"
           onClick={() => {
