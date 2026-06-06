@@ -1,0 +1,235 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1900" viewBox="0 0 1500 1900">
+  <defs>
+    <pattern id="smallGrid" width="16" height="16" patternUnits="userSpaceOnUse">
+      <path d="M 16 0 L 0 0 0 16" fill="none" stroke="#eeeeee" stroke-width="1"/>
+    </pattern>
+    <pattern id="grid" width="80" height="80" patternUnits="userSpaceOnUse">
+      <rect width="80" height="80" fill="url(#smallGrid)"/>
+      <path d="M 80 0 L 0 0 0 80" fill="none" stroke="#dddddd" stroke-width="1.2"/>
+    </pattern>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#374151"/>
+    </marker>
+    <style>
+      .title { font: 700 32px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #111827; }
+      .node { fill: #ffffff; stroke: #1f2937; stroke-width: 2; rx: 8; }
+      .sub { fill: #fbfbfb; stroke: #374151; stroke-width: 1.7; rx: 8; }
+      .decision { fill: #ffffff; stroke: #1f2937; stroke-width: 2; }
+      .text { font: 18px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #111827; }
+      .small { font: 15px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #374151; }
+      .tiny { font: 13px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #4b5563; }
+      .label { font: 13px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #374151; }
+      .lane { font: 700 20px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #374151; }
+      .line { fill: none; stroke: #374151; stroke-width: 1.8; marker-end: url(#arrow); }
+      .thin { fill: none; stroke: #4b5563; stroke-width: 1.4; marker-end: url(#arrow); }
+      .dash { fill: none; stroke: #9ca3af; stroke-width: 1.4; stroke-dasharray: 8 6; }
+      .note { fill: #ffffff; stroke: #9ca3af; stroke-width: 1.5; rx: 8; }
+    </style>
+  </defs>
+
+  <rect width="1500" height="1900" fill="url(#grid)"/>
+  <text x="70" y="58" class="title">DeepAgent Studio 系统业务流程图</text>
+
+  <!-- swimlane separators -->
+  <path d="M365 85 V1810" class="dash"/>
+  <path d="M875 85 V1810" class="dash"/>
+  <path d="M1190 85 V1810" class="dash"/>
+  <text x="175" y="94" text-anchor="middle" class="lane">用户 / 前端</text>
+  <text x="620" y="94" text-anchor="middle" class="lane">Tauri / 应用服务</text>
+  <text x="1032" y="94" text-anchor="middle" class="lane">运行时内核</text>
+  <text x="1335" y="94" text-anchor="middle" class="lane">存储 / 外部系统</text>
+
+  <!-- start and init -->
+  <rect x="95" y="130" width="160" height="48" class="node"/>
+  <text x="175" y="160" text-anchor="middle" class="text">启动应用</text>
+
+  <rect x="445" y="130" width="300" height="48" class="node"/>
+  <text x="595" y="160" text-anchor="middle" class="text">加载基础状态</text>
+  <text x="595" y="178" text-anchor="middle" class="tiny">settings / projects / sessions</text>
+
+  <rect x="1235" y="130" width="210" height="48" class="node"/>
+  <text x="1340" y="160" text-anchor="middle" class="text">读取 SQLite / Keychain</text>
+
+  <path d="M255 154 H445" class="line"/>
+  <path d="M745 154 H1235" class="line"/>
+
+  <!-- project/login check -->
+  <polygon points="595,230 670,280 595,330 520,280" class="decision"/>
+  <text x="595" y="275" text-anchor="middle" class="small">是否已初始化</text>
+  <text x="595" y="295" text-anchor="middle" class="small">API Key?</text>
+
+  <path d="M595 178 V230" class="line"/>
+  <rect x="95" y="256" width="160" height="48" class="node"/>
+  <text x="175" y="285" text-anchor="middle" class="text">登录 / 引导</text>
+  <path d="M520 280 H255" class="line"/>
+  <text x="390" y="268" class="label">否</text>
+
+  <rect x="445" y="370" width="300" height="54" class="node"/>
+  <text x="595" y="395" text-anchor="middle" class="text">进入主界面</text>
+  <text x="595" y="414" text-anchor="middle" class="tiny">侧边栏 + 对话 + 设置 + 知识库</text>
+  <path d="M595 330 V370" class="line"/>
+  <text x="610" y="354" class="label">是</text>
+
+  <rect x="1235" y="246" width="210" height="68" class="node"/>
+  <text x="1340" y="273" text-anchor="middle" class="text">校验 DeepSeek Key</text>
+  <text x="1340" y="293" text-anchor="middle" class="tiny">模型发现并保存密钥</text>
+  <path d="M255 280 H445" class="thin"/>
+  <path d="M745 280 H1235" class="line"/>
+  <path d="M1340 314 V397 H745" class="line"/>
+
+  <!-- choose action -->
+  <polygon points="595,480 690,540 595,600 500,540" class="decision"/>
+  <text x="595" y="533" text-anchor="middle" class="small">用户选择</text>
+  <text x="595" y="553" text-anchor="middle" class="small">业务动作</text>
+  <path d="M595 424 V480" class="line"/>
+
+  <!-- project management branch -->
+  <rect x="90" y="660" width="170" height="58" class="node"/>
+  <text x="175" y="684" text-anchor="middle" class="text">项目管理</text>
+  <text x="175" y="704" text-anchor="middle" class="tiny">添加/切换/置顶/移除</text>
+  <path d="M500 540 H175 V660" class="line"/>
+  <text x="285" y="528" class="label">项目</text>
+
+  <rect x="445" y="660" width="300" height="58" class="node"/>
+  <text x="595" y="684" text-anchor="middle" class="text">ProjectService</text>
+  <text x="595" y="704" text-anchor="middle" class="tiny">更新项目注册表与 activeProject</text>
+  <path d="M260 689 H445" class="line"/>
+
+  <rect x="1235" y="660" width="210" height="58" class="node"/>
+  <text x="1340" y="684" text-anchor="middle" class="text">Document Store</text>
+  <text x="1340" y="704" text-anchor="middle" class="tiny">projects registry</text>
+  <path d="M745 689 H1235" class="line"/>
+
+  <!-- settings branch -->
+  <rect x="90" y="760" width="170" height="58" class="node"/>
+  <text x="175" y="784" text-anchor="middle" class="text">设置管理</text>
+  <text x="175" y="804" text-anchor="middle" class="tiny">模型/审批/hooks/MCP</text>
+  <path d="M535 584 H300 V789 H260" class="line"/>
+  <text x="320" y="572" class="label">设置</text>
+
+  <rect x="445" y="760" width="300" height="58" class="node"/>
+  <text x="595" y="784" text-anchor="middle" class="text">Settings / MCP / Skills</text>
+  <text x="595" y="804" text-anchor="middle" class="tiny">保存配置，影响后续运行</text>
+  <path d="M260 789 H445" class="line"/>
+
+  <rect x="1235" y="760" width="210" height="58" class="node"/>
+  <text x="1340" y="784" text-anchor="middle" class="text">配置持久化</text>
+  <text x="1340" y="804" text-anchor="middle" class="tiny">SQLite / Keychain / hooks.json</text>
+  <path d="M745 789 H1235" class="line"/>
+
+  <!-- knowledge branch -->
+  <rect x="90" y="860" width="170" height="58" class="node"/>
+  <text x="175" y="884" text-anchor="middle" class="text">知识库管理</text>
+  <text x="175" y="904" text-anchor="middle" class="tiny">搜索/新增/编辑/删除</text>
+  <path d="M655 584 H790 V889 H260" class="line"/>
+  <text x="725" y="572" class="label">知识库</text>
+
+  <rect x="445" y="860" width="300" height="58" class="node"/>
+  <text x="595" y="884" text-anchor="middle" class="text">KnowledgeService</text>
+  <text x="595" y="904" text-anchor="middle" class="tiny">检索 / 保存 / 自动注入开关</text>
+  <path d="M260 889 H445" class="line"/>
+
+  <rect x="1235" y="860" width="210" height="58" class="node"/>
+  <text x="1340" y="884" text-anchor="middle" class="text">Markdown Vault</text>
+  <text x="1340" y="904" text-anchor="middle" class="tiny">.deepagent/knowledge</text>
+  <path d="M745 889 H1235" class="line"/>
+
+  <!-- chat branch -->
+  <rect x="90" y="1010" width="170" height="58" class="node"/>
+  <text x="175" y="1034" text-anchor="middle" class="text">发送消息</text>
+  <text x="175" y="1054" text-anchor="middle" class="tiny">新会话或继续会话</text>
+  <path d="M595 600 V970 H175 V1010" class="line"/>
+  <text x="610" y="635" class="label">对话</text>
+
+  <rect x="445" y="1010" width="300" height="58" class="node"/>
+  <text x="595" y="1034" text-anchor="middle" class="text">run_chat</text>
+  <text x="595" y="1054" text-anchor="middle" class="tiny">Tauri IPC + chat://event 监听</text>
+  <path d="M260 1039 H445" class="line"/>
+
+  <polygon points="595,1110 685,1165 595,1220 505,1165" class="decision"/>
+  <text x="595" y="1160" text-anchor="middle" class="small">是否继续</text>
+  <text x="595" y="1180" text-anchor="middle" class="small">已有会话?</text>
+  <path d="M595 1068 V1110" class="line"/>
+
+  <rect x="410" y="1270" width="190" height="58" class="node"/>
+  <text x="505" y="1294" text-anchor="middle" class="text">创建新会话</text>
+  <text x="505" y="1314" text-anchor="middle" class="tiny">绑定 active project</text>
+  <path d="M555 1208 L505 1270" class="line"/>
+  <text x="507" y="1238" class="label">否</text>
+
+  <rect x="630" y="1270" width="190" height="58" class="node"/>
+  <text x="725" y="1294" text-anchor="middle" class="text">恢复旧会话</text>
+  <text x="725" y="1314" text-anchor="middle" class="tiny">replay events + history</text>
+  <path d="M635 1208 L725 1270" class="line"/>
+  <text x="690" y="1238" class="label">是</text>
+
+  <rect x="1235" y="1270" width="210" height="58" class="node"/>
+  <text x="1340" y="1294" text-anchor="middle" class="text">Event Log</text>
+  <text x="1340" y="1314" text-anchor="middle" class="tiny">SessionStarted / replay</text>
+  <path d="M600 1299 H630" class="thin"/>
+  <path d="M820 1299 H1235" class="line"/>
+  <path d="M600 1299 H1235" class="line"/>
+
+  <rect x="445" y="1370" width="300" height="70" class="node"/>
+  <text x="595" y="1395" text-anchor="middle" class="text">组装运行上下文</text>
+  <text x="595" y="1416" text-anchor="middle" class="tiny">系统提示 / Git / 知识注入 / 工具注册 / MCP</text>
+  <path d="M505 1328 V1350 H595 V1370" class="line"/>
+  <path d="M725 1328 V1350 H595" class="thin"/>
+
+  <rect x="935" y="1370" width="210" height="70" class="node"/>
+  <text x="1040" y="1395" text-anchor="middle" class="text">RuntimeEngine</text>
+  <text x="1040" y="1416" text-anchor="middle" class="tiny">THINK / EXECUTE / OBSERVE</text>
+  <path d="M745 1405 H935" class="line"/>
+
+  <rect x="1235" y="1370" width="210" height="70" class="node"/>
+  <text x="1340" y="1395" text-anchor="middle" class="text">DeepSeek / Tools</text>
+  <text x="1340" y="1416" text-anchor="middle" class="tiny">模型流式输出 + 工具执行</text>
+  <path d="M1145 1405 H1235" class="line"/>
+
+  <polygon points="1040,1495 1135,1555 1040,1615 945,1555" class="decision"/>
+  <text x="1040" y="1548" text-anchor="middle" class="small">工具调用</text>
+  <text x="1040" y="1568" text-anchor="middle" class="small">需要审批?</text>
+  <path d="M1040 1440 V1495" class="line"/>
+
+  <rect x="90" y="1530" width="170" height="58" class="node"/>
+  <text x="175" y="1554" text-anchor="middle" class="text">审批弹窗</text>
+  <text x="175" y="1574" text-anchor="middle" class="tiny">允许 / 拒绝</text>
+  <path d="M945 1555 H260" class="line"/>
+  <text x="602" y="1543" class="label">是</text>
+  <path d="M175 1588 V1640 H1040 V1615" class="line"/>
+
+  <rect x="935" y="1660" width="210" height="58" class="node"/>
+  <text x="1040" y="1684" text-anchor="middle" class="text">写入事件并回传</text>
+  <text x="1040" y="1704" text-anchor="middle" class="tiny">reasoning / text / tool / usage</text>
+  <path d="M1040 1615 V1660" class="line"/>
+  <text x="1052" y="1638" class="label">否或审批完成</text>
+
+  <rect x="445" y="1660" width="300" height="58" class="node"/>
+  <text x="595" y="1684" text-anchor="middle" class="text">前端流式渲染</text>
+  <text x="595" y="1704" text-anchor="middle" class="tiny">消息 / 工具卡 / token / 输出面板</text>
+  <path d="M935 1689 H745" class="line"/>
+
+  <polygon points="1040,1760 1125,1815 1040,1870 955,1815" class="decision"/>
+  <text x="1040" y="1810" text-anchor="middle" class="small">会话结束?</text>
+  <path d="M1040 1718 V1760" class="line"/>
+  <path d="M955 1815 H895 V1458 H1040 V1495" class="line"/>
+  <text x="910" y="1803" class="label">否，继续循环</text>
+
+  <rect x="1235" y="1786" width="210" height="58" class="node"/>
+  <text x="1340" y="1810" text-anchor="middle" class="text">收尾持久化</text>
+  <text x="1340" y="1830" text-anchor="middle" class="tiny">成本 / 知识沉淀 / 会话完成</text>
+  <path d="M1125 1815 H1235" class="line"/>
+  <text x="1140" y="1803" class="label">是</text>
+
+  <rect x="445" y="1790" width="300" height="58" class="node"/>
+  <text x="595" y="1814" text-anchor="middle" class="text">刷新侧边栏</text>
+  <text x="595" y="1834" text-anchor="middle" class="tiny">sessions / projects / plan mode</text>
+  <path d="M1235 1815 H745" class="line"/>
+
+  <rect x="90" y="1790" width="170" height="58" class="node"/>
+  <text x="175" y="1814" text-anchor="middle" class="text">用户查看结果</text>
+  <text x="175" y="1834" text-anchor="middle" class="tiny">继续追问或切换功能</text>
+  <path d="M445 1819 H260" class="line"/>
+
+  <text x="70" y="1876" class="tiny">说明：主对话路径以 append-only Event Log 回放为准；失败后恢复的经验在自动沉淀开启时写入知识库，下次相关对话会被自动注入。</text>
+</svg>

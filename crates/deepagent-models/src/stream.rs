@@ -346,6 +346,23 @@ mod tests {
     }
 
     #[test]
+    fn preserves_markdown_latex_and_chart_characters() {
+        let mut acc = DeltaAccumulator::new();
+        let delta = r#"```echarts
+{"title":{"text":"$E=mc^2$ \ce{H2O}"}}
+```"#;
+        acc.push_chunk(&chunk(serde_json::json!({
+            "choices": [{ "delta": { "content": delta } }]
+        })));
+
+        let resp = acc.finish().unwrap();
+        assert_eq!(resp.message.content, delta);
+        assert!(resp.message.content.contains("```echarts"));
+        assert!(resp.message.content.contains("$E=mc^2$"));
+        assert!(resp.message.content.contains("\\ce{H2O}"));
+    }
+
+    #[test]
     fn preserves_reasoning_content() {
         let mut acc = DeltaAccumulator::new();
         acc.push_chunk(&chunk(serde_json::json!({

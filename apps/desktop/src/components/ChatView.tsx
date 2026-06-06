@@ -55,6 +55,7 @@ export type Tab = {
   type: PluginType;
   title: string;
   icon: IconProp;
+  url?: string;
 };
 
 type OutputItem = {
@@ -117,6 +118,22 @@ function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
   for (const match of text.matchAll(urlPattern)) add(match[0], "url");
   for (const match of text.matchAll(filePattern)) add(match[0], "file");
   return items.slice(0, 5);
+}
+
+function normalizeBrowserUrl(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/i.test(trimmed)) return `http://${trimmed}`;
+  return `https://${trimmed}`;
+}
+
+function browserTitle(url: string): string {
+  try {
+    return new URL(normalizeBrowserUrl(url)).host;
+  } catch {
+    return "浏览器";
+  }
 }
 
 export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, onArchive, pinned = false, timeline = [], approval = null, approvalQueueCount = 0, onApprovalDecision, busy = false, onStop, planMode = false, activeProjectPath = null }: Props) {
@@ -275,6 +292,34 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
             c.title === "files" ? ["far", "file-lines"] : c.icon
     };
     setSidebarTabs([...sidebarTabs, newTab]);
+    setActiveSidebarTabId(newTab.id);
+  };
+
+  const openUrlInSidebarBrowser = (rawUrl: string) => {
+    const url = normalizeBrowserUrl(rawUrl);
+    if (!url) return;
+    const existingBrowserTab = sidebarTabs.find((tab) => tab.type === "browser");
+    setIsRightSidebarOpen(true);
+    if (existingBrowserTab) {
+      setSidebarTabs((tabs) =>
+        tabs.map((tab) =>
+          tab.id === existingBrowserTab.id
+            ? { ...tab, title: browserTitle(url), url }
+            : tab
+        )
+      );
+      setActiveSidebarTabId(existingBrowserTab.id);
+      return;
+    }
+
+    const newTab: Tab = {
+      id: `browser-${Date.now()}`,
+      type: "browser",
+      title: browserTitle(url),
+      icon: ["fas", "globe"],
+      url,
+    };
+    setSidebarTabs((tabs) => [...tabs, newTab]);
     setActiveSidebarTabId(newTab.id);
   };
 
@@ -491,6 +536,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
                 key={i}
                 message={m}
                 busy={busy && i === messages.length - 1}
+                onOpenUrl={openUrlInSidebarBrowser}
               />
             )
           )}
@@ -620,7 +666,9 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
 
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "files" && <FilesPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "chat" && <SideChatPlugin />}
-            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "browser" && <BrowserPlugin />}
+            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "browser" && (
+              <BrowserPlugin initialUrl={bottomTabs.find(t => t.id === activeBottomTabId)?.url} />
+            )}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "terminal" && <TerminalPlugin />}
           </div>
         </div>
@@ -715,7 +763,9 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
 
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "files" && <FilesPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "chat" && <SideChatPlugin />}
-            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "browser" && <BrowserPlugin />}
+            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "browser" && (
+              <BrowserPlugin initialUrl={sidebarTabs.find(t => t.id === activeSidebarTabId)?.url} />
+            )}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "terminal" && <TerminalPlugin />}
           </div>
         </div>
@@ -802,6 +852,9 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
                         key={`${item.kind}:${item.label}`}
                         className="flex items-center text-[13px] text-text-base hover:text-blue-500 cursor-pointer transition-colors min-w-0"
                         title={item.label}
+                        onClick={() => {
+                          if (item.kind === "url") openUrlInSidebarBrowser(item.label);
+                        }}
                       >
                         <FontAwesomeIcon
                           icon={item.kind === "url" ? ["fas", "globe"] : ["far", "file-lines"]}
@@ -836,7 +889,15 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
  * run is still working with no answer yet, the steps stay expanded for live
  * progress.
  */
-function AssistantTurn({ message: m, busy }: { message: ChatMessage; busy: boolean }) {
+function AssistantTurn({
+  message: m,
+  busy,
+  onOpenUrl,
+}: {
+  message: ChatMessage;
+  busy: boolean;
+  onOpenUrl?: (url: string) => void;
+}) {
   const { t } = useTranslation();
   const parts = m.parts ?? [];
   const hasLegacyVisibleContent =
@@ -886,6 +947,7 @@ function AssistantTurn({ message: m, busy }: { message: ChatMessage; busy: boole
         text={part.text}
         tone={part.tone}
         className="mb-1"
+        onOpenUrl={onOpenUrl}
       />
     );
   };
@@ -958,7 +1020,7 @@ function AssistantTurn({ message: m, busy }: { message: ChatMessage; busy: boole
           )}
           {m.reasoning && <ReasoningBlock text={m.reasoning} />}
           {m.content ? (
-            <MarkdownText text={m.content} tone={m.tone} />
+            <MarkdownText text={m.content} tone={m.tone} onOpenUrl={onOpenUrl} />
           ) : (
             busy && (
               <div className="flex items-center text-text-secondary text-[14px]">

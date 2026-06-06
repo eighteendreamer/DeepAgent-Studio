@@ -1164,7 +1164,13 @@ export function App() {
       </div>
 
       {/* Overlays */}
-      <SearchModal isOpen={isSearchOpen} onClose={() => setIsSearchOpen(false)} />
+      <SearchModal
+        isOpen={isSearchOpen}
+        onClose={() => setIsSearchOpen(false)}
+        sessions={sessions}
+        projects={projects}
+        onSelectSession={onSelect}
+      />
 
       {showOnboarding && (
         <OnboardingWizard

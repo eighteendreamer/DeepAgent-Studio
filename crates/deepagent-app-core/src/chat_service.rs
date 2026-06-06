@@ -89,7 +89,13 @@ const SYSTEM_PROMPT_BASE: &str = r#"You are DeepAgent, a verifiable, Rust-native
 - Be concise and direct. Lead with the answer or action, not the reasoning. Skip filler and preamble.
 - Match response length to the task: a simple question gets a direct answer, not headers and sections.
 - When referencing code locations, use the file_path:line_number format so the user can navigate to them.
-- Only use emojis if the user asks."#;
+- Only use emojis if the user asks.
+
+# Renderable output
+- The frontend renders Markdown, tables, LaTeX math, chemistry notation, and ECharts blocks directly from your raw text. Preserve standard Markdown syntax and do not escape backticks (`), dollar signs ($), or backslashes (\) unless the target syntax itself requires it.
+- For charts or visualizations, output exactly one fenced code block with language `echarts`. The block content must be a pure, valid JSON object for ECharts options: no JavaScript expressions, functions, comments, imports, markdown prose, or trailing commas inside the block.
+- Use standard LaTeX for formulas. Inline math must use `$...$`; display math must use `$$...$$`; chemistry equations must use `\ce{...}` inside math delimiters, for example `$\ce{2H2 + O2 -> 2H2O}$` or `$$\ce{LiCoO2 <=> Li+ + e-}$$`.
+- Use normal Markdown tables for tabular data unless the user explicitly asks for another format."#;
 
 /// Build the effective system prompt for a run: the layered base plus a dynamic
 /// Marker separating the **static** (prefix-cacheable) portion of the system
@@ -798,7 +804,8 @@ impl ChatService {
     }
 
     /// Build a model client for the given role from persisted settings + the
-    /// stored API key.
+    /// stored API key. Deep thinking uses the catalog's reasoner model; lighter
+    /// thinking keeps the requested role so normal chat stays fast.
     fn build_model(&self, role: ModelRole) -> Result<(Arc<ModelClient>, String, ThinkingDepth)> {
         let settings = self
             .settings
@@ -808,9 +815,14 @@ impl ChatService {
             .settings
             .api_key()?
             .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
-        let model = settings.catalog.model_for(role).to_string();
         let thinking_depth = settings.thinking_depth;
-        let config = ModelConfig::from_catalog(api_key, &settings.catalog, role);
+        let effective_role = if role == ModelRole::Chat && thinking_depth == ThinkingDepth::Deep {
+            ModelRole::Reasoner
+        } else {
+            role
+        };
+        let model = settings.catalog.model_for(effective_role).to_string();
+        let config = ModelConfig::from_catalog(api_key, &settings.catalog, effective_role);
         let client = Arc::new(ModelClient::new(self.transport.clone(), config));
         Ok((client, model, thinking_depth))
     }
@@ -1580,6 +1592,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deep_thinking_uses_reasoner_model_in_request_body() {
+        let (db, settings, dir) = seeded().await;
+        settings
+            .set_thinking_depth(ThinkingDepth::Deep)
+            .expect("thinking depth can be updated");
+
+        let last_body = Arc::new(std::sync::Mutex::new(None));
+        let transport = Arc::new(RecordingTransport {
+            last_body: last_body.clone(),
+        });
+        let chat = ChatService::new(db, settings, transport, dir.path());
+
+        chat.run("solve a complex task", |_| {}, |_| {})
+            .await
+            .unwrap();
+
+        let body = last_body.lock().unwrap().clone().unwrap();
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["model"], "deepseek-v4-pro");
+        assert_eq!(json["thinking"]["type"], "enabled");
+        assert_eq!(json["reasoning_effort"], "max");
+        assert_eq!(json["max_tokens"], 65_536);
+    }
+
+    #[tokio::test]
     async fn run_without_init_errors() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let secrets = Arc::new(MemorySecretStore::new());
@@ -1713,6 +1750,14 @@ mod tests {
         // Core agentic guidance is present.
         assert!(prompt.contains("web_search"));
         assert!(prompt.contains("status\":\"error\""));
+        // Frontend renderer contract: model output must stay parseable by the
+        // Markdown/LaTeX/ECharts renderer without backend rewriting.
+        assert!(prompt.contains("language `echarts`"));
+        assert!(prompt.contains("pure, valid JSON object"));
+        assert!(prompt.contains("$...$"));
+        assert!(prompt.contains("$$...$$"));
+        assert!(prompt.contains("\\ce{...}"));
+        assert!(prompt.contains("do not escape backticks"));
         // The dynamic boundary separates the cacheable prefix from the volatile
         // env block; the date must come AFTER it and the base before it.
         let boundary = prompt
