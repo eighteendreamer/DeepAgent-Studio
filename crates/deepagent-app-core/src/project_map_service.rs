@@ -587,52 +587,6 @@ fn hide_command_window(command: &mut Command) {
 #[cfg(not(target_os = "windows"))]
 fn hide_command_window(_command: &mut Command) {}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn complex_hits_falls_back_to_file_nodes() {
-        let graph = RawGraph {
-            project: None,
-            nodes: vec![
-                RawNode {
-                    id: "file:src/app.tsx".to_string(),
-                    node_type: "file".to_string(),
-                    name: "app.tsx".to_string(),
-                    file_path: Some("src/app.tsx".to_string()),
-                    line_range: None,
-                    summary: "App shell".to_string(),
-                    tags: Vec::new(),
-                    complexity: "simple".to_string(),
-                    language_notes: None,
-                },
-                RawNode {
-                    id: "file:src/api.ts".to_string(),
-                    node_type: "file".to_string(),
-                    name: "api.ts".to_string(),
-                    file_path: Some("src/api.ts".to_string()),
-                    line_range: None,
-                    summary: "API client".to_string(),
-                    tags: Vec::new(),
-                    complexity: "simple".to_string(),
-                    language_notes: None,
-                },
-            ],
-            edges: Vec::new(),
-        };
-
-        let hits = complex_hits(&graph, 10);
-        assert_eq!(hits.len(), 2);
-        assert!(hits
-            .iter()
-            .any(|h| h.file_path.as_deref() == Some("src/app.tsx")));
-        assert!(hits
-            .iter()
-            .any(|h| h.file_path.as_deref() == Some("src/api.ts")));
-    }
-}
-
 fn load_graph_file(project_root: &Path, source: &str, graph_path: PathBuf) -> Result<LoadedGraph> {
     let updated_at = std::fs::metadata(&graph_path)
         .ok()
@@ -990,4 +944,50 @@ fn neighbors_from_graph(graph: &RawGraph, node_id: &str) -> ProjectMapNeighborsD
     out.called_by.truncate(50);
     out.related.truncate(50);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complex_hits_falls_back_to_file_nodes() {
+        let graph = RawGraph {
+            project: None,
+            nodes: vec![
+                RawNode {
+                    id: "file:src/app.tsx".to_string(),
+                    node_type: "file".to_string(),
+                    name: "app.tsx".to_string(),
+                    file_path: Some("src/app.tsx".to_string()),
+                    line_range: None,
+                    summary: "App shell".to_string(),
+                    tags: Vec::new(),
+                    complexity: "simple".to_string(),
+                    language_notes: None,
+                },
+                RawNode {
+                    id: "file:src/api.ts".to_string(),
+                    node_type: "file".to_string(),
+                    name: "api.ts".to_string(),
+                    file_path: Some("src/api.ts".to_string()),
+                    line_range: None,
+                    summary: "API client".to_string(),
+                    tags: Vec::new(),
+                    complexity: "simple".to_string(),
+                    language_notes: None,
+                },
+            ],
+            edges: Vec::new(),
+        };
+
+        let hits = complex_hits(&graph, 10);
+        assert_eq!(hits.len(), 2);
+        assert!(hits
+            .iter()
+            .any(|h| h.file_path.as_deref() == Some("src/app.tsx")));
+        assert!(hits
+            .iter()
+            .any(|h| h.file_path.as_deref() == Some("src/api.ts")));
+    }
 }
