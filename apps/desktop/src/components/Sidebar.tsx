@@ -62,11 +62,32 @@ type SidebarOrganizeMode = "project" | "recent" | "time" | "down";
 type SidebarSortCriterion = "updated" | "created";
 const SIDEBAR_ORGANIZE_MODES = ["project", "recent", "time", "down"] as const;
 const SIDEBAR_SORT_CRITERIA = ["updated", "created"] as const;
+const SIDEBAR_EXPANDED_PROJECTS_KEY = "deepagent:sidebar-expanded-projects";
 
 function readSidebarPreference<T extends string>(key: string, fallback: T, allowed: readonly T[]): T {
   if (typeof window === "undefined") return fallback;
   const value = window.localStorage.getItem(key);
   return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function readExpandedProjects(): Record<string, boolean> {
+  if (typeof window === "undefined") return {};
+  try {
+    const value = window.localStorage.getItem(SIDEBAR_EXPANDED_PROJECTS_KEY);
+    if (!value) return {};
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean")
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeExpandedProjects(value: Record<string, boolean>) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SIDEBAR_EXPANDED_PROJECTS_KEY, JSON.stringify(value));
 }
 
 export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
@@ -174,34 +195,54 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     return new Set(projects.filter((p) => p.pinned).map((p) => p.name));
   }, [projects]);
 
-  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>(() => readExpandedProjects());
 
-  // Default every project to expanded as projects load.
+  // Default only newly discovered projects to expanded; preserve user-collapsed state across view changes.
+  // During view switches the sidebar can mount before projects are loaded. Do not treat
+  // that transient empty list as a signal to clear the persisted expansion map.
   useEffect(() => {
+    if (projects.length === 0) return;
     setExpandedProjects((prev) => {
-      const next = { ...prev };
+      let changed = false;
+      const next: Record<string, boolean> = {};
       for (const p of projects) {
-        if (!(p.name in next)) next[p.name] = true;
+        if (p.name in prev) {
+          next[p.name] = prev[p.name];
+        } else {
+          next[p.name] = true;
+          changed = true;
+        }
       }
+      if (Object.keys(prev).some((name) => !projects.some((p) => p.name === name))) changed = true;
+      if (changed) writeExpandedProjects(next);
       return next;
     });
   }, [projects]);
 
   const toggleProject = (proj: string) => {
-    setExpandedProjects((prev) => ({ ...prev, [proj]: !prev[proj] }));
+    setExpandedProjects((prev) => {
+      const next = { ...prev, [proj]: !prev[proj] };
+      writeExpandedProjects(next);
+      return next;
+    });
   };
 
   const toggleExpandAll = () => {
     const allExpanded = Object.keys(groupedSessions).every((proj) => expandedProjects[proj]);
+    let next: Record<string, boolean>;
     if (allExpanded) {
-      setExpandedProjects({});
-    } else {
-      const all: Record<string, boolean> = {};
+      next = {};
       Object.keys(groupedSessions).forEach((proj) => {
-        all[proj] = true;
+        next[proj] = false;
       });
-      setExpandedProjects(all);
+    } else {
+      next = {};
+      Object.keys(groupedSessions).forEach((proj) => {
+        next[proj] = true;
+      });
     }
+    writeExpandedProjects(next);
+    setExpandedProjects(next);
   };
 
   const chronologicalSessions = useMemo(
