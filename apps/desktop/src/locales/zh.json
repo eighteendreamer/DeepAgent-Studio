@@ -633,6 +633,16 @@
     "defaultPermission": "默认权限",
     "fullAccess": "完全访问权限"
   },
+  "balanceChip": {
+    "label": "余额",
+    "loading": "查询余额…",
+    "unavailable": "余额不可用",
+    "notSet": "请先配置 API Key",
+    "granted": "赠送额度",
+    "toppedUp": "充值额度",
+    "depleted": "余额已用尽，请充值后再继续",
+    "refreshHint": "点击刷新余额"
+  },
   "toolCard": {
     "running": "执行中",
     "ok": "完成",

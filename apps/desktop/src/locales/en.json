@@ -633,6 +633,16 @@
     "defaultPermission": "Default Permissions",
     "fullAccess": "Full Access"
   },
+  "balanceChip": {
+    "label": "Balance",
+    "loading": "Loading balance…",
+    "unavailable": "Balance unavailable",
+    "notSet": "Set API key to see balance",
+    "granted": "Granted",
+    "toppedUp": "Topped up",
+    "depleted": "Balance is depleted; top up to continue",
+    "refreshHint": "Click to refresh"
+  },
   "toolCard": {
     "running": "Running",
     "ok": "Done",

@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use deepagent_core::clock::Timestamp;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::PermissionRules;
+use deepagent_models::balance::{fetch_balance, BalanceResponse};
 use deepagent_models::discovery::{ModelCatalog, ModelDiscovery};
 use deepagent_models::transport::HttpTransport;
 use deepagent_models::ThinkingDepth;
@@ -141,6 +142,46 @@ pub struct SettingsView {
     pub sandbox_mode: String,
     /// Current DeepSeek Thinking Mode depth (simple / medium / deep).
     pub thinking_depth: String,
+}
+
+/// One per-currency balance row exposed to the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BalanceInfoDto {
+    /// Currency code (e.g. `"CNY"`, `"USD"`).
+    pub currency: String,
+    /// Total spendable balance (granted + topped-up).
+    pub total_balance: String,
+    /// Granted (free credit) portion.
+    pub granted_balance: String,
+    /// Topped-up (paid) portion.
+    pub topped_up_balance: String,
+}
+
+/// Account balance summary from the DeepSeek `/user/balance` endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BalanceDto {
+    /// Whether the account currently has any spendable balance.
+    pub is_available: bool,
+    /// Per-currency balance breakdown.
+    pub infos: Vec<BalanceInfoDto>,
+}
+
+impl BalanceDto {
+    fn from_response(resp: BalanceResponse) -> Self {
+        Self {
+            is_available: resp.is_available,
+            infos: resp
+                .balance_infos
+                .into_iter()
+                .map(|i| BalanceInfoDto {
+                    currency: i.currency,
+                    total_balance: i.total_balance,
+                    granted_balance: i.granted_balance,
+                    topped_up_balance: i.topped_up_balance,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Mask an API key to a non-leaking preview.
@@ -283,6 +324,22 @@ impl SettingsService {
             ));
         }
         Ok(models.len())
+    }
+
+    /// Fetch the user's DeepSeek account balance via `GET /user/balance` using
+    /// the stored API key. Returns a UI-safe DTO. Errors when the key is not
+    /// set, the catalog is missing, or the network/auth fails — the caller
+    /// surfaces the error message verbatim.
+    pub async fn query_balance(&self) -> Result<BalanceDto> {
+        let key = self
+            .secrets
+            .get(API_KEY_NAME)?
+            .ok_or_else(|| CoreError::not_found("API key not set; initialize first"))?;
+        let settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        let resp = fetch_balance(self.transport.clone(), &settings.catalog.base_url, &key).await?;
+        Ok(BalanceDto::from_response(resp))
     }
 
     /// The current approval policy (defaults to [`ApprovalPolicy::AlwaysAsk`]
@@ -577,5 +634,65 @@ mod tests {
         svc.set_hooks_json(json).unwrap();
         svc.refresh_models().await.unwrap();
         assert_eq!(svc.hooks_json().unwrap(), json);
+    }
+
+    #[tokio::test]
+    async fn query_balance_without_key_errors_cleanly() {
+        let (svc, _) = service();
+        let err = svc.query_balance().await.unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn query_balance_parses_response() {
+        // A bespoke service whose mock transport returns a balance body so we
+        // can exercise the parsing path without going through `initialize`
+        // (which expects the models body).
+        let body = r#"{
+            "is_available": true,
+            "balance_infos": [
+                {"currency":"CNY","total_balance":"42.50","granted_balance":"2.50","topped_up_balance":"40.00"}
+            ]
+        }"#;
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let secrets: Arc<dyn crate::secret_store::SecretStore> = Arc::new(MemorySecretStore::new());
+        secrets.set("deepseek_api_key", "sk-test").unwrap();
+        let transport: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(body));
+        let svc = SettingsService::new(db, transport, secrets);
+        // Seed a minimal AppSettings so query_balance can read the base_url.
+        let settings = AppSettings {
+            catalog: ModelCatalog::auto_select(
+                deepagent_models::DEEPSEEK_BASE_URL.to_string(),
+                vec![
+                    deepagent_models::ModelInfo {
+                        id: "deepseek-v4-flash".into(),
+                        object: "model".into(),
+                        owned_by: "deepseek".into(),
+                    },
+                    deepagent_models::ModelInfo {
+                        id: "deepseek-v4-pro".into(),
+                        object: "model".into(),
+                        owned_by: "deepseek".into(),
+                    },
+                ],
+            )
+            .unwrap(),
+            discovered_at: 0,
+            approval_policy: ApprovalPolicy::AlwaysAsk,
+            sandbox_mode: SandboxMode::WorkspaceWrite,
+            thinking_depth: ThinkingDepth::Medium,
+            permission_rules: PermissionRules::default(),
+            hooks_json: String::new(),
+        };
+        svc.save(&settings).unwrap();
+
+        let dto = svc.query_balance().await.unwrap();
+        assert!(dto.is_available);
+        assert_eq!(dto.infos.len(), 1);
+        let info = &dto.infos[0];
+        assert_eq!(info.currency, "CNY");
+        assert_eq!(info.total_balance, "42.50");
+        assert_eq!(info.granted_balance, "2.50");
+        assert_eq!(info.topped_up_balance, "40.00");
     }
 }

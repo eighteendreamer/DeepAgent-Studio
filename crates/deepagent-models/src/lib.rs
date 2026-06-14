@@ -23,6 +23,7 @@
 //! logic is tested offline via [`transport::MockTransport`]. The real
 //! `reqwest`-based transport is compiled only with `--features http`.
 
+pub mod balance;
 pub mod chat;
 pub mod client;
 pub mod discovery;
@@ -34,6 +35,7 @@ pub mod wire;
 #[cfg(feature = "http")]
 pub mod reqwest_transport;
 
+pub use balance::{fetch_balance, BalanceInfo, BalanceResponse, BALANCE_PATH};
 pub use chat::{
     ChatRequest, ChatResponse, FinishReason, FunctionSchema, StreamOptions, ThinkingConfig,
     ThinkingDepth, ThinkingToggle, ToolSchema, Usage,

@@ -9,6 +9,7 @@ import type {
   ApprovalRequest,
   ArchiveProjectResult,
   ArchivedConversation,
+  Balance,
   Command,
   ConversationMessage,
   CostSummary,
@@ -147,6 +148,18 @@ export async function refreshModels(): Promise<SettingsView> {
     return view;
   }
   throw new Error("refresh requires the desktop app");
+}
+
+/**
+ * Fetch the user's DeepSeek account balance (CNY, including granted +
+ * topped-up portions). Hits the live `GET /user/balance` endpoint with the
+ * stored API key. Throws on network/auth errors so the UI can show a clear
+ * "—" indicator with the message in a tooltip.
+ */
+export async function getBalance(): Promise<Balance> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Balance>("get_balance");
+  return { is_available: false, infos: [] };
 }
 
 /** Clear the stored API key (sign out). */

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { Composer } from "./Composer";
+import { BalanceChip } from "./BalanceChip";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import type { Project } from "../types";
 import { FilesPlugin } from "./plugins/FilesPlugin";
@@ -263,7 +264,8 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           onSubmit={submit} 
           placeholder={t("startView.placeholder")}
           footer={
-            <div className="flex items-center space-x-4 w-full relative" ref={dropdownRef}>
+            <div className="flex items-center w-full relative" ref={dropdownRef}>
+              <div className="flex items-center space-x-4">
               <div 
                 className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors"
                 onClick={() => setIsDropdownOpen(!isDropdownOpen)}
@@ -283,6 +285,12 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                 <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[13px]" />
                 main
                 <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
+              </div>
+              </div>
+
+              {/* Right-aligned: live DeepSeek balance chip. */}
+              <div className="ml-auto">
+                <BalanceChip />
               </div>
 
               {/* Dropdown Menu */}

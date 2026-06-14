@@ -14,15 +14,15 @@
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
-    AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, BudgetConfig,
-    ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary, DiagnosticResult,
-    DiffResult, ForkResultDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
-    KnowledgeService, McpServerDto, McpService, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
-    ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
-    ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, RewindResultDto,
-    SessionDetailDto, SessionStateService, SessionSummaryDto, SettingsService, SettingsView,
-    SkillActivationDto, SkillDto, SkillsService, TerminalResultDto, TerminalService, TranscriptDto,
-    WorkspaceInfoDto, WorkspaceService,
+    AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, BalanceDto,
+    BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary,
+    DiagnosticResult, DiffResult, ForkResultDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto,
+    KnowledgeHitDto, KnowledgeService, McpServerDto, McpService, ProjectDto, ProjectMapGraphDto,
+    ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto,
+    ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
+    ProjectService, RewindResultDto, SessionDetailDto, SessionStateService, SessionSummaryDto,
+    SettingsService, SettingsView, SkillActivationDto, SkillDto, SkillsService, TerminalResultDto,
+    TerminalService, TranscriptDto, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use serde::Serialize;
@@ -180,6 +180,15 @@ fn refresh_models(state: State<'_, AppState>) -> Result<SettingsView, String> {
         .rt
         .block_on(async move { settings.refresh_models().await })
         .map_err(|e| e.to_string())
+}
+
+/// Query the user's DeepSeek balance via the official `GET /user/balance`
+/// endpoint, using the API key from the secret store. Async so the network
+/// call doesn't block the main thread.
+#[tauri::command]
+async fn get_balance(state: State<'_, AppState>) -> Result<BalanceDto, String> {
+    let settings = state.settings.clone();
+    settings.query_balance().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1101,6 +1110,7 @@ pub fn run() {
             initialize_project,
             get_settings,
             refresh_models,
+            get_balance,
             clear_api_key,
             set_chat_model,
             list_skills,

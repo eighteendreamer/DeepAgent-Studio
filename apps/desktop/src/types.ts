@@ -150,6 +150,20 @@ export interface CostSummary {
   budget: BudgetConfig;
 }
 
+/** One per-currency balance row (mirrors deepagent-app-core::BalanceInfoDto). */
+export interface BalanceInfo {
+  currency: string;
+  total_balance: string;
+  granted_balance: string;
+  topped_up_balance: string;
+}
+
+/** Account balance summary (mirrors deepagent-app-core::BalanceDto). */
+export interface Balance {
+  is_available: boolean;
+  infos: BalanceInfo[];
+}
+
 export type DiagStatus = "ok" | "warning" | "error";
 
 export interface DiagnosticResult {

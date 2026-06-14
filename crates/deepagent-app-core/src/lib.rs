@@ -57,7 +57,10 @@ pub use project_service::{folder_name, ProjectService};
 pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore};
 pub use service::AppService;
 pub use session_state_service::SessionStateService;
-pub use settings::{AppSettings, ApprovalPolicy, SandboxMode, SettingsService, SettingsView};
+pub use settings::{
+    AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, SandboxMode, SettingsService,
+    SettingsView,
+};
 pub use skills_service::{SkillActivationDto, SkillDto, SkillsService};
 pub use terminal_service::TerminalService;
 pub use workspace_service::WorkspaceService;
