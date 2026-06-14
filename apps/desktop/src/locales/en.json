@@ -601,7 +601,9 @@
     "help": "Help",
     "update": "Update",
     "downloadUpdate": "Download update",
-    "updateReady": "Update downloaded. It will install when the app closes."
+    "updateReady": "Update downloaded. It will install automatically when the app closes.",
+    "updateDownloadFailed": "Failed to download update. Please try again.",
+    "updateInstallFailed": "Failed to install update. Please close the app and try again."
   },
   "startView": {
     "greeting": "What should we do in {{projectName}}?",

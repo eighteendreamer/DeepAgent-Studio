@@ -8,7 +8,7 @@ The desktop installer version is controlled by:
 - `apps/desktop/src-tauri/Cargo.toml`
 - `apps/desktop/src-tauri/tauri.conf.json`
 
-For the first installer release these are set to `0.0.1`.
+This release should set all three to `0.0.3`.
 
 ## Updater signing
 
@@ -29,8 +29,8 @@ Run the GitHub Actions workflow `Release Desktop Installers`, or push a version
 tag such as:
 
 ```bash
-git tag v0.0.1
-git push origin v0.0.1
+git tag v0.0.3
+git push origin v0.0.3
 ```
 
 The workflow builds installers on native runners:
@@ -45,7 +45,7 @@ It uploads release assets and updater metadata to a draft GitHub Release.
 
 The app checks updater metadata from:
 
-- GitHub Release: `https://github.com/deepagent-studio/deepagent-studio/releases/latest/download/latest.json`
+- GitHub Release: `https://github.com/eighteendreamer/DeepAgent-Studio/releases/latest/download/latest.json`
 - Mirror: `https://download.deepagent.studio/releases/latest.json`
 
 If users cannot connect to GitHub, mirror the release assets and `latest.json`
@@ -59,6 +59,11 @@ For environments with an HTTP proxy, set either:
 
 The title-bar update button downloads an update now and installs it silently
 when the app closes.
+
+On Windows, auto-update should target the NSIS `.exe` artifact. The workflow is
+already configured with `uploadUpdaterJson: true` and
+`updaterJsonPreferNsis: true`, so MSI remains available for manual install
+while `latest.json` points the updater at the NSIS package.
 
 ## Skill Marketplace
 

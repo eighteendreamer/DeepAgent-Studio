@@ -601,7 +601,9 @@
     "help": "帮助",
     "update": "更新",
     "downloadUpdate": "下载更新",
-    "updateReady": "更新已下载，关闭应用后静默安装"
+    "updateReady": "更新已下载，关闭应用后将自动安装",
+    "updateDownloadFailed": "下载更新失败，请稍后重试",
+    "updateInstallFailed": "安装更新失败，请关闭应用后重试"
   },
   "startView": {
     "greeting": "我们应该在{{projectName}}中做些什么？",

@@ -89,14 +89,16 @@ export async function installDownloadedUpdate(): Promise<boolean> {
   const update = downloadedUpdate;
   if (!update) return false;
 
-  downloadedUpdate = null;
   try {
     await update.install();
+    downloadedUpdate = null;
     return true;
   } catch (error) {
     console.warn("update install failed", error);
     return false;
   } finally {
-    update.close().catch(() => {});
+    if (downloadedUpdate === null) {
+      update.close().catch(() => {});
+    }
   }
 }

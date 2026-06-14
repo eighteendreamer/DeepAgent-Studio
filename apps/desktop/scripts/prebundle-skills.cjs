@@ -93,11 +93,16 @@ const SUPERPOWERS_OUTER_SKIP_FILES = new Set([
 
 const counters = {
   filesCopied: 0,
+  nonAsciiSkipped: 0,
   symlinksSkipped: 0,
 };
 
 function logVerbose(msg) {
   if (VERBOSE) console.log(msg);
+}
+
+function hasOnlyAsciiName(name) {
+  return /^[\x20-\x7E]+$/.test(name);
 }
 
 /**
@@ -123,6 +128,17 @@ function copyDirRecursive(src, dest, opts) {
   for (const dirent of entries) {
     const srcPath = path.join(src, dirent.name);
     const destPath = path.join(dest, dirent.name);
+
+    // WiX v3 uses MSI code page 1252 by default; non-ASCII resource names can
+    // make `light.exe` fail even though NSIS succeeds. Skip those auxiliary
+    // paths so Windows MSI packaging remains reliable.
+    if (!hasOnlyAsciiName(dirent.name)) {
+      counters.nonAsciiSkipped++;
+      console.warn(
+        `[prebundle-skills] WARN: skipping non-ASCII path ${srcPath}`,
+      );
+      continue;
+    }
 
     // Never follow symlinks — skill bundles must be self-contained.
     if (dirent.isSymbolicLink()) {
@@ -380,6 +396,9 @@ function main() {
   );
   for (const line of summary) console.log(line);
   console.log(`  files copied: ${counters.filesCopied}`);
+  if (counters.nonAsciiSkipped > 0) {
+    console.log(`  non-ASCII paths skipped: ${counters.nonAsciiSkipped}`);
+  }
   if (counters.symlinksSkipped > 0) {
     console.log(`  symlinks skipped: ${counters.symlinksSkipped}`);
   }

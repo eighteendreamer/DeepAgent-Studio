@@ -8,6 +8,7 @@ import {
   hasDownloadedUpdate,
   installDownloadedUpdate,
 } from "../update";
+import { message } from "./message";
 
 interface Props {
   onToggleSidebar: () => void;
@@ -48,17 +49,10 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
     if (inTauri()) currentWindow().then((w) => w.toggleMaximize()).catch(() => {});
   };
 
-  const installUpdateThenClose = async (closeWindow: () => Promise<void>) => {
-    if (hasDownloadedUpdate()) {
-      await installDownloadedUpdate();
-    }
-    await closeWindow();
-  };
-
   const onClose = () => {
     if (!inTauri()) return;
     currentWindow()
-      .then((w) => installUpdateThenClose(() => w.destroy()))
+      .then((w) => w.close())
       .catch(() => {});
   };
 
@@ -67,6 +61,11 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
     setDownloadingUpdate(true);
     const ready = await downloadUpdateForNextShutdown();
     setUpdateAvailable(!ready);
+    if (ready) {
+      message.success(t("titleBar.updateReady"));
+    } else {
+      message.error(t("titleBar.updateDownloadFailed"));
+    }
     setDownloadingUpdate(false);
   };
 
@@ -91,7 +90,13 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
           if (installing || !hasDownloadedUpdate()) return;
           event.preventDefault();
           installing = true;
-          await installUpdateThenClose(() => w.destroy());
+          const installed = await installDownloadedUpdate();
+          if (!installed) {
+            installing = false;
+            message.error(t("titleBar.updateInstallFailed"));
+            return;
+          }
+          await w.close();
         });
       })
       .catch(() => {});
@@ -135,12 +140,13 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
               onClick={onDownloadUpdate}
               disabled={downloadingUpdate}
               title={t("titleBar.downloadUpdate")}
-              className="flex h-6 w-7 items-center justify-center rounded text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:cursor-default disabled:hover:bg-transparent transition-colors"
+              className="ml-1 inline-flex h-7 items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 text-[12px] font-medium text-blue-700 shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-100 disabled:cursor-default disabled:border-blue-100 disabled:bg-blue-50/60 disabled:text-blue-500"
             >
               <FontAwesomeIcon
                 icon={["fas", downloadingUpdate ? "circle-notch" : "download"]}
-                className={downloadingUpdate ? "animate-spin text-[12px]" : "text-[12px]"}
+                className={downloadingUpdate ? "animate-spin text-[11px]" : "text-[11px]"}
               />
+              <span>{t("titleBar.downloadUpdate")}</span>
             </button>
           )}
         </div>
