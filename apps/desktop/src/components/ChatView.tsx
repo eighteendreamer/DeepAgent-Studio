@@ -331,10 +331,16 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     [outputItems]
   );
   const lastAutoOpenedOutputRef = useRef<string>("");
+  // Sticky user override: once the user explicitly closes the panel within a
+  // conversation, subsequent new outputs will not pop it back open. Cleared
+  // when the conversation resets (e.g. switch to an empty session) or when
+  // the user opens it again manually.
+  const userClosedOutputPanelRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (!hasConversation) {
       lastAutoOpenedOutputRef.current = "";
+      userClosedOutputPanelRef.current = false;
       setIsOutputPanelOpen(false);
       return;
     }
@@ -344,8 +350,19 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     }
     if (lastAutoOpenedOutputRef.current === outputSignature) return;
     lastAutoOpenedOutputRef.current = outputSignature;
+    if (userClosedOutputPanelRef.current) return;
     setIsOutputPanelOpen(true);
   }, [hasConversation, outputSignature]);
+
+  const toggleOutputPanel = useCallback(() => {
+    setIsOutputPanelOpen((prev) => {
+      const next = !prev;
+      // Closing → record the user's intent so future outputs respect it.
+      // Opening → user is engaging again, clear the override.
+      userClosedOutputPanelRef.current = !next;
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (!isOutputPanelOpen) return;
@@ -736,7 +753,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
               <FontAwesomeIcon
                 icon={["fas", "sliders"]}
                 className={`cursor-pointer transition-colors text-sm ${isOutputPanelOpen ? "text-text-base" : "hover:text-text-base"}`}
-                onClick={() => setIsOutputPanelOpen(!isOutputPanelOpen)}
+                onClick={toggleOutputPanel}
               />
             )}
             <BottomPanelIcon 
