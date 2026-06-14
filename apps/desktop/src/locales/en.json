@@ -721,6 +721,8 @@
     "loading": "Loading...",
     "output": "Output",
     "noOutput": "No output yet",
+    "outputCreated": "created",
+    "outputEdited": "edited",
     "sources": "Sources",
     "noSources": "No sources yet",
     "recommended": "Recommended"

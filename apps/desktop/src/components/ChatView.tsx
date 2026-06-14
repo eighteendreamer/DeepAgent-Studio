@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
-import type { ChatMessage, MessagePart, TokenUsage, TimelineEntry, ApprovalRequest, ProjectMapStatus } from "../types";
+import type { ChatMessage, MessagePart, ToolCall, TokenUsage, TimelineEntry, ApprovalRequest, ProjectMapStatus } from "../types";
 import { Composer } from "./Composer";
 import { ToolCallCard } from "./ToolCallCard";
 import { ApprovalDialog } from "./ApprovalDialog";
@@ -61,10 +61,18 @@ export type Tab = {
   url?: string;
 };
 
-type OutputItem = {
-  label: string;
-  kind: "url" | "file";
-};
+type OutputItem =
+  | { kind: "url"; label: string }
+  | { kind: "file"; label: string; action: "write" | "edit" }
+  | { kind: "image"; label: string; source: "tool" | "url" }
+  | {
+      kind: "todo";
+      label: string;
+      total: number;
+      pending: number;
+      inProgress: number;
+      completed: number;
+    };
 
 type EnvironmentPanelState = {
   loading: boolean;
@@ -94,7 +102,103 @@ function parseGitShortstat(text: string): { additions: number; deletions: number
   };
 }
 
+/// Image-file extension matcher: covers the formats a model can plausibly
+/// generate or reference. Anchored to the end (or to ?/# query/fragment) so
+/// it doesn't false-positive on names that happen to contain `.png` mid-path.
+const IMAGE_EXT_PATTERN = /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?|avif)(?:[?#]|$)/i;
+
+/// Tools that materialize a file on disk. We pull the `path` field from
+/// `tool.args` (always full JSON; `tool.detail` is truncated to ≤200 chars
+/// upstream and isn't reliable for parsing).
+const FILE_GENERATING_TOOLS: ReadonlySet<string> = new Set([
+  "write_file",
+  "edit_file",
+  "multi_edit",
+]);
+
+function parseFieldFromArgs(argsJson: string | undefined, field: string): string | null {
+  if (!argsJson) return null;
+  try {
+    const obj = JSON.parse(argsJson);
+    const v = obj?.[field];
+    return typeof v === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseTodoSnapshotFromArgs(argsJson: string | undefined): OutputItem | null {
+  if (!argsJson) return null;
+  try {
+    const obj = JSON.parse(argsJson);
+    if (!Array.isArray(obj?.todos)) return null;
+    let pending = 0;
+    let inProgress = 0;
+    let completed = 0;
+    for (const t of obj.todos) {
+      const status = String(t?.status ?? "");
+      if (status === "pending") pending++;
+      else if (status === "in_progress" || status === "in-progress" || status === "inprogress")
+        inProgress++;
+      else if (status === "completed" || status === "complete" || status === "done")
+        completed++;
+    }
+    const total = obj.todos.length;
+    const parts: string[] = [];
+    if (completed > 0) parts.push(`已完成 ${completed}`);
+    if (inProgress > 0) parts.push(`进行中 ${inProgress}`);
+    if (pending > 0) parts.push(`待办 ${pending}`);
+    const label = `Todo · ${total}${parts.length ? " · " + parts.join(" · ") : ""}`;
+    return { kind: "todo", label, total, pending, inProgress, completed };
+  } catch {
+    return null;
+  }
+}
+
 function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
+  // Walk every tool call once (legacy `tools` array + ordered `parts`).
+  const allTools: ToolCall[] = [];
+  for (const message of messages) {
+    if (message.tools) allTools.push(...message.tools);
+    for (const part of message.parts ?? []) {
+      if (part.kind === "tool") allTools.push(part.tool);
+    }
+  }
+
+  const seen = new Set<string>();
+  const items: OutputItem[] = [];
+  let latestTodo: OutputItem | null = null;
+
+  // Phase 1: file/image generation + todo snapshots from tool calls.
+  for (const tool of allTools) {
+    // Only count completed-OK tools — running calls aren't done, errored
+    // calls didn't materialize their effect.
+    if (tool.status !== "ok") continue;
+
+    if (FILE_GENERATING_TOOLS.has(tool.name)) {
+      const path = parseFieldFromArgs(tool.args, "path");
+      if (!path) continue;
+      const isImage = IMAGE_EXT_PATTERN.test(path);
+      const key = `${isImage ? "image" : "file"}:${path}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (isImage) {
+        items.push({ kind: "image", label: path, source: "tool" });
+      } else {
+        const action: "write" | "edit" = tool.name === "write_file" ? "write" : "edit";
+        items.push({ kind: "file", label: path, action });
+      }
+    }
+
+    if (tool.name === "todo_write") {
+      const snap = parseTodoSnapshotFromArgs(tool.args);
+      // Always overwrite — only the latest snapshot is shown.
+      if (snap) latestTodo = snap;
+    }
+  }
+
+  // Phase 2: URL extraction from message text. URLs ending in image
+  // extensions get classified as images so the UI uses the picture icon.
   const chunks: string[] = [];
   for (const message of messages) {
     if (message.content) chunks.push(message.content);
@@ -110,21 +214,31 @@ function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
       if (tool.args) chunks.push(tool.args);
     }
   }
-
-  const seen = new Set<string>();
-  const items: OutputItem[] = [];
-  const add = (label: string, kind: OutputItem["kind"]) => {
-    const cleaned = label.replace(/[),.;\]}"']+$/, "");
-    if (!cleaned || seen.has(cleaned)) return;
-    seen.add(cleaned);
-    items.push({ label: cleaned, kind });
-  };
   const text = chunks.join("\n");
-  const urlPattern = /\b(?:https?:\/\/)?(?:localhost|127\.0\.0\.1)(?::\d+)?(?:\/[^\s<>"'`)]*)?|\bhttps?:\/\/[^\s<>"'`)]+/gi;
-  const filePattern = /\b[\w.-]+\.(?:md|txt|json|csv|tsx?|jsx?|rs|py|html|css|ya?ml)\b/gi;
-  for (const match of text.matchAll(urlPattern)) add(match[0], "url");
-  for (const match of text.matchAll(filePattern)) add(match[0], "file");
-  return items.slice(0, 5);
+  const urlPattern =
+    /\b(?:https?:\/\/)?(?:localhost|127\.0\.0\.1)(?::\d+)?(?:\/[^\s<>"'`)]*)?|\bhttps?:\/\/[^\s<>"'`)]+/gi;
+  for (const match of text.matchAll(urlPattern)) {
+    const cleaned = match[0].replace(/[),.;\]}"']+$/, "");
+    if (!cleaned) continue;
+    if (IMAGE_EXT_PATTERN.test(cleaned)) {
+      const key = `image:${cleaned}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({ kind: "image", label: cleaned, source: "url" });
+    } else {
+      const key = `url:${cleaned}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({ kind: "url", label: cleaned });
+    }
+  }
+
+  // Phase 3: todo lands first — it's the most actionable summary.
+  if (latestTodo) items.unshift(latestTodo);
+
+  // Cap at 15 — enough to surface a turn's worth of output without crowding
+  // the floating panel.
+  return items.slice(0, 15);
 }
 
 function normalizeBrowserUrl(input: string): string {
@@ -993,23 +1107,64 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
               <div className="mb-5">
                 <div className="text-[14px] text-text-secondary mb-3">{t("chatView.output")}</div>
                 {outputItems.length > 0 ? (
-                  <div className="space-y-2 max-h-28 overflow-y-auto custom-scrollbar pr-1">
-                    {outputItems.map((item) => (
-                      <div
-                        key={`${item.kind}:${item.label}`}
-                        className="flex items-center text-[13px] text-text-base hover:text-blue-500 cursor-pointer transition-colors min-w-0"
-                        title={item.label}
-                        onClick={() => {
-                          if (item.kind === "url") openUrlInSidebarBrowser(item.label);
-                        }}
-                      >
-                        <FontAwesomeIcon
-                          icon={item.kind === "url" ? ["fas", "globe"] : ["far", "file-lines"]}
-                          className="w-4 mr-2 text-text-secondary flex-shrink-0"
-                        />
-                        <span className="truncate">{item.label}</span>
-                      </div>
-                    ))}
+                  <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-1">
+                    {outputItems.map((item) => {
+                      const key =
+                        item.kind === "todo"
+                          ? `todo:${item.total}:${item.pending}:${item.inProgress}:${item.completed}`
+                          : `${item.kind}:${item.label}`;
+                      const icon: IconProp =
+                        item.kind === "url"
+                          ? ["fas", "globe"]
+                          : item.kind === "image"
+                          ? ["far", "image"]
+                          : item.kind === "todo"
+                          ? ["fas", "list-check"]
+                          : ["far", "file-lines"];
+                      const iconColor =
+                        item.kind === "todo"
+                          ? "text-blue-500"
+                          : item.kind === "image"
+                          ? "text-purple-500"
+                          : item.kind === "file"
+                          ? item.action === "write"
+                            ? "text-green-600"
+                            : "text-amber-600"
+                          : "text-text-secondary";
+                      const clickable =
+                        item.kind === "url" || (item.kind === "image" && item.source === "url");
+                      const onClick = () => {
+                        if (item.kind === "url") openUrlInSidebarBrowser(item.label);
+                        else if (item.kind === "image" && item.source === "url")
+                          openUrlInSidebarBrowser(item.label);
+                      };
+                      return (
+                        <div
+                          key={key}
+                          className={`flex items-center text-[13px] text-text-base min-w-0 transition-colors ${
+                            clickable ? "hover:text-blue-500 cursor-pointer" : "cursor-default"
+                          }`}
+                          title={item.label}
+                          onClick={clickable ? onClick : undefined}
+                        >
+                          <FontAwesomeIcon
+                            icon={icon}
+                            className={`w-4 mr-2 flex-shrink-0 ${iconColor}`}
+                          />
+                          <span className="truncate flex-1">{item.label}</span>
+                          {item.kind === "file" && (
+                            <span className="ml-2 text-[10px] text-text-secondary flex-shrink-0 px-1.5 py-0.5 bg-gray-100 rounded">
+                              {item.action === "write" ? t("chatView.outputCreated") : t("chatView.outputEdited")}
+                            </span>
+                          )}
+                          {item.kind === "image" && item.source === "tool" && (
+                            <span className="ml-2 text-[10px] text-text-secondary flex-shrink-0 px-1.5 py-0.5 bg-gray-100 rounded">
+                              {t("chatView.outputCreated")}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="text-[13px] text-text-secondary">{t("chatView.noOutput")}</div>

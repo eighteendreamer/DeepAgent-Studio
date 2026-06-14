@@ -721,6 +721,8 @@
     "loading": "加载中…",
     "output": "输出",
     "noOutput": "暂无输出",
+    "outputCreated": "新建",
+    "outputEdited": "修改",
     "sources": "来源",
     "noSources": "暂无来源",
     "recommended": "推荐"
