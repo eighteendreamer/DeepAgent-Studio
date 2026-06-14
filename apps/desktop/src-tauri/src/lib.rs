@@ -12,6 +12,7 @@
 //! - [`TerminalService`] — interactive terminal in the active project dir.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
@@ -94,6 +95,87 @@ struct PendingScan {
     report: deepagent_app_core::ScanReport,
     /// When the scan was initiated. Stale entries (>30 min) are reaped.
     created_at: std::time::Instant,
+}
+
+/// Locate the bundled built-in skills directory at runtime, defending
+/// against the per-platform / per-bundle layouts Tauri's
+/// [`tauri::path::PathResolver::resource_dir`] can produce.
+///
+/// Production-tested layout (Windows NSIS / standard Tauri 2 desktop bundle)
+/// is `<resource_dir>/resources/skills/`. But:
+///
+/// - macOS `.app` bundles can land at
+///   `<resource_dir>/_up_/resources/skills/` when `tauri-bundler` rewrites
+///   `..`-rooted resource entries — the `_up_` shim shifts the layout one
+///   level deeper and the prebundle copy ends up there instead.
+/// - Some Linux packaging tools (notably AppImage variants) flatten the
+///   `resources/` prefix and place the assets directly under
+///   `<resource_dir>/skills/`.
+/// - A manual zip distribution (user just drops the .exe + resources next
+///   to each other) can hoist things to the resource root itself.
+///
+/// Probes the candidates in priority order and returns the first directory
+/// that *looks like a skills collection* (per [`dir_has_skill_md`]). When
+/// nothing matches it returns the production-layout candidate plus a
+/// `stderr` warning naming every path tried, so the loader can still
+/// surface a clean "no built-in skills found" rather than panic — and ops
+/// has actionable info to file a bug.
+fn locate_builtin_skills_dir(resource_dir: &Path) -> PathBuf {
+    let candidates: [PathBuf; 4] = [
+        resource_dir.join("resources").join("skills"),
+        resource_dir.join("skills"),
+        resource_dir.join("_up_").join("resources").join("skills"),
+        resource_dir.to_path_buf(),
+    ];
+
+    for c in &candidates {
+        if dir_has_skill_md(c) {
+            return c.clone();
+        }
+    }
+
+    eprintln!(
+        "[builtin-skills] no SKILL.md found under any of {} candidate paths; \
+         falling back to the production layout. Candidates: {}",
+        candidates.len(),
+        candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    );
+    candidates.into_iter().next().expect("non-empty candidate list")
+}
+
+/// True iff `dir` is a directory and *looks like a skills collection root*.
+///
+/// Two shapes count:
+/// 1. **Single-skill root** — `dir/SKILL.md` exists. Used by per-skill
+///    layouts (e.g. when a user mounts one skill subdir directly).
+/// 2. **Multi-skill collection root** — at least one immediate
+///    subdirectory contains a `SKILL.md`. Matches the production
+///    `<resource_dir>/resources/skills/<id>/SKILL.md` layout and the
+///    bundled `superpowers` parent.
+///
+/// Cheap (at most one `read_dir` + per-entry `is_file` stat) and only runs
+/// during app startup, so the syscalls don't move the needle.
+fn dir_has_skill_md(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    if dir.join("SKILL.md").is_file() {
+        return true;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_dir() && p.join("SKILL.md").is_file() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Drop entries older than [`PENDING_SCAN_TTL`] from `pending`. Pull-based:
@@ -1617,11 +1699,16 @@ pub fn run() {
             //
             // _Validates: Requirements R1.1, R1.2, R1.4, R2.1, R2.4, R2.5, R2.6,
             // R8.1._
-            let resource_skills_dir = app
-                .path()
-                .resource_dir()
-                .map(|d| d.join("resources").join("skills"))
-                .unwrap_or_else(|_| std::env::temp_dir().join("deepagent-builtin-skills-missing"));
+            let resource_skills_dir = match app.path().resource_dir() {
+                Ok(dir) => locate_builtin_skills_dir(&dir),
+                Err(e) => {
+                    eprintln!(
+                        "[builtin-skills] resource_dir() failed ({e}); built-in \
+                         skills will be unavailable for this run."
+                    );
+                    std::env::temp_dir().join("deepagent-builtin-skills-missing")
+                }
+            };
 
             let user_root = app
                 .path()
@@ -1836,4 +1923,164 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running DeepAgent Studio");
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for the built-in skills resource-path resolver.
+    //!
+    //! These exercise [`locate_builtin_skills_dir`] / [`dir_has_skill_md`]
+    //! directly without spinning up a Tauri app, so they're cheap and
+    //! deterministic. The integration scenarios they pin down map 1-to-1 to
+    //! the real per-platform bundle layouts (Windows NSIS, macOS `.app`'s
+    //! `_up_/` shim, AppImage's flattened `skills/`, and the all-miss case).
+
+    use super::*;
+    use std::fs;
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, b"---\nname: x\ndescription: \"test fixture\"\n---\nbody").unwrap();
+    }
+
+    /// Production layout (Windows / standard Tauri 2 desktop bundle):
+    /// `<resource_dir>/resources/skills/<id>/SKILL.md`. The resolver MUST
+    /// return that exact path.
+    #[test]
+    fn locate_builtin_skills_dir_picks_production_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prod = tmp.path().join("resources").join("skills").join("foo");
+        touch(&prod.join("SKILL.md"));
+
+        let picked = locate_builtin_skills_dir(tmp.path());
+        assert_eq!(picked, tmp.path().join("resources").join("skills"));
+    }
+
+    /// AppImage / flattened-bundle layout: `<resource_dir>/skills/<id>/SKILL.md`
+    /// without the `resources/` prefix. The resolver MUST fall through to
+    /// candidate #2.
+    #[test]
+    fn locate_builtin_skills_dir_falls_through_to_flattened_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let flat = tmp.path().join("skills").join("foo");
+        touch(&flat.join("SKILL.md"));
+
+        let picked = locate_builtin_skills_dir(tmp.path());
+        assert_eq!(picked, tmp.path().join("skills"));
+    }
+
+    /// macOS `.app` `_up_/` quirk: bundler sometimes shifts resources into
+    /// `<resource_dir>/_up_/resources/skills/`. Candidate #3 catches it.
+    #[test]
+    fn locate_builtin_skills_dir_handles_macos_up_shim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let macos = tmp
+            .path()
+            .join("_up_")
+            .join("resources")
+            .join("skills")
+            .join("foo");
+        touch(&macos.join("SKILL.md"));
+
+        let picked = locate_builtin_skills_dir(tmp.path());
+        assert_eq!(
+            picked,
+            tmp.path().join("_up_").join("resources").join("skills")
+        );
+    }
+
+    /// All candidates miss → resolver MUST return the production-layout
+    /// path (so logs surface a useful "expected here, found nothing" trail)
+    /// rather than panic.
+    #[test]
+    fn locate_builtin_skills_dir_falls_back_when_nothing_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No SKILL.md anywhere under tmp — all four candidates are empty.
+
+        let picked = locate_builtin_skills_dir(tmp.path());
+        assert_eq!(picked, tmp.path().join("resources").join("skills"));
+    }
+
+    /// Production layout takes priority even when a flattened or `_up_/`
+    /// shim is also present — the candidates' declaration order is the
+    /// contract.
+    #[test]
+    fn locate_builtin_skills_dir_priority_order_is_stable() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Both production AND flattened populated; production must win.
+        touch(
+            &tmp.path()
+                .join("resources")
+                .join("skills")
+                .join("foo")
+                .join("SKILL.md"),
+        );
+        touch(&tmp.path().join("skills").join("bar").join("SKILL.md"));
+        touch(
+            &tmp.path()
+                .join("_up_")
+                .join("resources")
+                .join("skills")
+                .join("baz")
+                .join("SKILL.md"),
+        );
+
+        let picked = locate_builtin_skills_dir(tmp.path());
+        assert_eq!(picked, tmp.path().join("resources").join("skills"));
+    }
+
+    // --- dir_has_skill_md edge cases ---------------------------------------
+
+    /// SKILL.md sitting at the directory root (single-skill mount) counts.
+    #[test]
+    fn dir_has_skill_md_accepts_root_skill_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("SKILL.md"));
+        assert!(dir_has_skill_md(tmp.path()));
+    }
+
+    /// SKILL.md one level deep (multi-skill collection) counts.
+    #[test]
+    fn dir_has_skill_md_accepts_one_level_deep() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("foo").join("SKILL.md"));
+        assert!(dir_has_skill_md(tmp.path()));
+    }
+
+    /// Empty directory — not a skills root.
+    #[test]
+    fn dir_has_skill_md_rejects_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!dir_has_skill_md(tmp.path()));
+    }
+
+    /// A directory full of subdirs that have OTHER files but no SKILL.md
+    /// is rejected. The probe is specifically about SKILL.md.
+    #[test]
+    fn dir_has_skill_md_rejects_dir_without_skill_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("foo")).unwrap();
+        fs::write(tmp.path().join("foo").join("README.md"), b"hi").unwrap();
+        assert!(!dir_has_skill_md(tmp.path()));
+    }
+
+    /// A non-existent directory — not a skills root, no panic.
+    #[test]
+    fn dir_has_skill_md_rejects_missing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!dir_has_skill_md(&tmp.path().join("does-not-exist")));
+    }
+
+    /// SKILL.md two levels deep is NOT recognized — the probe is
+    /// intentionally shallow so we don't false-positive on a totally
+    /// different resource tree that happens to bury a SKILL.md fixture
+    /// somewhere deep (e.g. a .git checkout of an unrelated repo).
+    #[test]
+    fn dir_has_skill_md_rejects_two_levels_deep() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("foo").join("bar").join("SKILL.md"));
+        assert!(!dir_has_skill_md(tmp.path()));
+    }
 }
