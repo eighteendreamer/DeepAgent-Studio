@@ -564,6 +564,28 @@ fn set_thinking_depth(state: State<'_, AppState>, depth: String) -> Result<Setti
         .map_err(|e| e.to_string())
 }
 
+// ---- post-edit verification policy (Phase 4C) ------------------------------
+
+#[tauri::command]
+fn get_verification_policy(state: State<'_, AppState>) -> Result<String, String> {
+    state
+        .settings
+        .verification_policy()
+        .map(|p| p.label().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_verification_policy(state: State<'_, AppState>, policy: String) -> Result<String, String> {
+    let parsed = deepagent_app_core::VerificationPolicy::parse(&policy)
+        .ok_or_else(|| format!("unknown verification policy: {policy}"))?;
+    state
+        .settings
+        .set_verification_policy(parsed)
+        .map_err(|e| e.to_string())?;
+    Ok(parsed.label().to_string())
+}
+
 // ---- MCP server management (visual config) --------------------------------
 
 #[tauri::command]
@@ -1146,6 +1168,8 @@ pub fn run() {
             get_sandbox_mode,
             set_sandbox_mode,
             set_thinking_depth,
+            get_verification_policy,
+            set_verification_policy,
             list_mcp_servers,
             save_mcp_server,
             remove_mcp_server,

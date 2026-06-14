@@ -21,6 +21,7 @@ pub mod doctor;
 pub mod dto;
 pub mod knowledge_service;
 pub mod mcp_service;
+pub mod plan_mode_reminder;
 pub mod project_map_service;
 pub mod project_service;
 pub mod secret_store;
@@ -28,7 +29,12 @@ pub mod service;
 pub mod session_state_service;
 pub mod settings;
 pub mod skills_service;
+pub mod system_prompt;
+pub mod system_reminder;
 pub mod terminal_service;
+pub mod todo_snapshot_reminder;
+pub mod verification_decorator;
+pub mod verification_dispatcher;
 pub mod workspace_service;
 
 pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
@@ -59,7 +65,7 @@ pub use service::AppService;
 pub use session_state_service::SessionStateService;
 pub use settings::{
     AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, SandboxMode, SettingsService,
-    SettingsView,
+    SettingsView, VerificationPolicy,
 };
 pub use skills_service::{SkillActivationDto, SkillDto, SkillsService};
 pub use terminal_service::TerminalService;

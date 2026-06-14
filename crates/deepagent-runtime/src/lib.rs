@@ -20,11 +20,13 @@
 
 pub mod agent;
 pub mod approval;
+pub mod empty_stub;
 pub mod events;
 pub mod loop_engine;
 pub mod model_agent;
 pub mod phase;
 pub mod tool_budget;
+pub mod tool_result_decorator;
 
 pub use agent::{Agent, AgentDecision, Observation};
 pub use approval::{
@@ -35,3 +37,4 @@ pub use loop_engine::{PromptDecision, RunOutcome, RuntimeConfig, RuntimeEngine, 
 pub use model_agent::ModelAgent;
 pub use phase::LoopPhase;
 pub use tool_budget::ToolResultBudgetConfig;
+pub use tool_result_decorator::{ChainDecorator, ToolResultDecorator};

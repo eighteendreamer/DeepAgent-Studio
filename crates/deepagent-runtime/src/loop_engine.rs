@@ -24,10 +24,12 @@ use deepagent_verification::{CommandRunner, ReflectionEngine, VerificationStep, 
 
 use crate::agent::{Agent, AgentDecision, Observation};
 use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyGate};
+use crate::empty_stub::ensure_non_empty_output;
 use crate::events::{NullEventSink, RuntimeEvent, RuntimeEventSink};
 use crate::tool_budget::{
     apply_tool_result_budget, cleanup_tool_result_paths, saved_path, ToolResultBudgetConfig,
 };
+use crate::tool_result_decorator::ToolResultDecorator;
 
 /// An optional post-completion verification plan (开发计划.md Phase 7).
 ///
@@ -127,6 +129,12 @@ pub struct RuntimeConfig {
     pub auto_approve: bool,
     /// Tool result truncation and persistence budget.
     pub tool_result_budget: ToolResultBudgetConfig,
+    /// Optional decorator that mutates each tool result after invocation.
+    /// Higher-level crates (e.g. `deepagent-app-core`) plug in plan-mode
+    /// reminders, todo snapshots, and verification annotations through this
+    /// extension point. `None` means "no decoration" — keeps zero overhead
+    /// for embed contexts that don't need it.
+    pub tool_result_decorator: Option<std::sync::Arc<dyn ToolResultDecorator>>,
 }
 
 impl Default for RuntimeConfig {
@@ -136,6 +144,7 @@ impl Default for RuntimeConfig {
             permissions: PermissionSet::developer(),
             auto_approve: false,
             tool_result_budget: ToolResultBudgetConfig::default(),
+            tool_result_decorator: None,
         }
     }
 }
@@ -529,11 +538,12 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             let budget = self.config.tool_result_budget.clone();
             let session_id_str = session_id.to_string();
             let created_paths = self.created_tool_result_paths.clone();
+            let decorator = self.config.tool_result_decorator.clone();
             futs.push(async move {
                 let start = std::time::Instant::now();
                 let result = match registry.invoke(&name, args, &perms, auto).await {
                     Ok(out) => {
-                        let out = apply_tool_result_budget(
+                        let mut out = apply_tool_result_budget(
                             &budget,
                             &session_id_str,
                             &name,
@@ -541,6 +551,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             out,
                         )
                         .await;
+                        ensure_non_empty_output(&mut out, &name);
+                        if let Some(decorator) = decorator.as_ref() {
+                            decorator.decorate(&name, &mut out).await;
+                        }
                         if let Some(path) = saved_path(&out) {
                             created_paths
                                 .lock()
@@ -831,7 +845,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
 
         let observation = match output {
             Ok(out) => {
-                let out = apply_tool_result_budget(
+                let mut out = apply_tool_result_budget(
                     &self.config.tool_result_budget,
                     &session_id.to_string(),
                     &tool_name,
@@ -839,6 +853,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     out,
                 )
                 .await;
+                ensure_non_empty_output(&mut out, &tool_name);
+                if let Some(decorator) = self.config.tool_result_decorator.as_ref() {
+                    decorator.decorate(&tool_name, &mut out).await;
+                }
                 self.remember_tool_result_path(&out);
                 if !out.ok {
                     self.metrics.incr(names::TOOL_FAILURES, 1);

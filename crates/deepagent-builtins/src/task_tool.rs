@@ -86,13 +86,30 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
         ToolDescriptor {
             name: TASK_TOOL_NAME.into(),
             description: format!(
-                "Delegate a self-contained task to a sub-agent that runs autonomously and returns \
-                 a single result. Use this to (a) protect your context from large intermediate \
-                 output (broad searches, file dumps) and (b) parallelize independent research by \
-                 launching several tasks. The sub-agent is STATELESS: its `prompt` must contain \
-                 everything it needs and state exactly what to return. You will not see its \
-                 intermediate steps, only its final answer, so request a complete summary. Do not \
-                 delegate trivial work you can do directly in one or two tool calls. {types_note}"
+                "Delegate a self-contained task to a sub-agent that runs autonomously and returns a single result. Brief the sub-agent like a colleague who just walked into the room: include all context they need (files, prior decisions, expected output shape) — they have NONE of your conversation history.\n\
+                \n\
+                ## When to use\n\
+                - Broad exploration where intermediate output would flood your context (audit a whole subsystem, survey many files, gather background on an unfamiliar area).\n\
+                - Multiple independent investigation threads that can run concurrently — issue several `task` calls in a SINGLE assistant message and they execute in parallel.\n\
+                - Long-output tasks where only the final summary matters (test runs, large diffs, exhaustive searches).\n\
+                \n\
+                ## When NOT to use\n\
+                - You already know the specific file path → call `read_file` directly.\n\
+                - A single `grep` / `glob` / `code_map_search` would answer the question.\n\
+                - You're modifying a known small set of files → drive the edits yourself.\n\
+                - The next step is one tool call away — sub-agent overhead is wasted there.\n\
+                \n\
+                ## Hard rule: never delegate understanding\n\
+                Do NOT phrase prompts like \"based on your findings, fix the bug\" / \"based on your research, implement the feature\". Synthesizing across multiple sources is YOUR job; the sub-agent should return raw observations, summaries, or single-step results that you can then reason over. Delegating the comprehension step robs you of the context needed to make good decisions on the next turn.\n\
+                \n\
+                ## Concurrency example\n\
+                User: \"check the auth, billing, and notifications modules in parallel.\"\n\
+                Correct: emit THREE `task` tool_calls in one assistant message — one per module — each with its own focused prompt and expected return shape. The runtime drives them concurrently; you receive three separate summaries on the next turn.\n\
+                \n\
+                ## Sub-agent statelessness\n\
+                The sub-agent has no memory of your conversation, no access to your todo list, and no view of files you've read. The `prompt` field MUST be self-contained: name the file paths, restate the goal, and specify EXACTLY what the sub-agent should return (a JSON shape, a list of file paths, a written summary in 5 bullets, etc.). Vague prompts produce vague answers.\n\
+                \n\
+                {types_note}"
             ),
             parameters: serde_json::json!({
                 "type": "object",
@@ -236,5 +253,27 @@ mod tests {
         assert_eq!(d.name, TASK_TOOL_NAME);
         assert!(d.description.contains("explore"));
         assert!(d.description.contains("review"));
+    }
+
+    #[test]
+    fn descriptor_carries_phase_5b_guidance() {
+        // Phase 5B: the task tool description must surface the four key
+        // signals so the model uses sub-agents correctly and only when warranted.
+        let tool = TaskTool::new(EchoRunner, ["explore".to_string()]);
+        let d = tool.descriptor();
+        // "Brief like a colleague" framing.
+        assert!(d.description.contains("colleague"));
+        // When-NOT-to-use section with concrete signals.
+        assert!(d.description.contains("When NOT to use"));
+        assert!(d.description.contains("read_file"));
+        assert!(d.description.contains("grep"));
+        // Hard rule: never delegate understanding.
+        assert!(d.description.contains("never delegate understanding"));
+        assert!(d.description.contains("based on your"));
+        // Concurrency example.
+        assert!(d.description.contains("THREE `task` tool_calls"));
+        // Statelessness contract.
+        assert!(d.description.contains("STATELESS") || d.description.contains("statelessness"));
+        assert!(d.description.contains("self-contained"));
     }
 }

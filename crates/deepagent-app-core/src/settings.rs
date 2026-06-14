@@ -95,6 +95,65 @@ impl SandboxMode {
     }
 }
 
+/// Post-edit verification policy (Phase 4C of coding-amplifier spec).
+///
+/// Decides what happens when [`crate::verification_dispatcher`] reports a
+/// failure on a write/edit tool result:
+///
+/// - [`VerificationPolicy::Disabled`] — verification doesn't run at all
+///   (zero overhead path, fully backward-compatible with pre-Phase-4 behavior).
+/// - [`VerificationPolicy::Enabled`] — default — verification runs and a
+///   `<system-reminder>` describes the outcome, but `ok` stays as the tool
+///   reported it. The model sees the failure and *may* choose to fix it.
+/// - [`VerificationPolicy::Strict`] — verification failure flips the tool
+///   result's `ok` to `false`, which triggers the runtime's reflection /
+///   recovery path so the next THINK step is forced to address the failure.
+///   `TimedOut` and `Skipped` outcomes do NOT flip `ok` (conservative: only
+///   confirmed failures are escalated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationPolicy {
+    /// Verification is off (legacy / opt-out).
+    Disabled,
+    /// Verification runs and surfaces a reminder; `ok` is preserved.
+    #[default]
+    Enabled,
+    /// Verification runs and a confirmed failure flips `ok` to `false`.
+    Strict,
+}
+
+impl VerificationPolicy {
+    /// Stable label.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            VerificationPolicy::Disabled => "disabled",
+            VerificationPolicy::Enabled => "enabled",
+            VerificationPolicy::Strict => "strict",
+        }
+    }
+
+    /// Parse from a wire string (UI / Tauri command argument).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "disabled" => Some(Self::Disabled),
+            "enabled" => Some(Self::Enabled),
+            "strict" => Some(Self::Strict),
+            _ => None,
+        }
+    }
+
+    /// Whether this policy permits the verifier to flip `ok = false` on
+    /// confirmed failures.
+    pub fn flips_ok_on_failure(&self) -> bool {
+        matches!(self, VerificationPolicy::Strict)
+    }
+
+    /// Whether this policy runs the verifier at all.
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self, VerificationPolicy::Disabled)
+    }
+}
+
 /// Persisted, **non-secret** application settings (safe to store on disk).
 /// The API key is intentionally absent — it lives in the [`SecretStore`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +178,11 @@ pub struct AppSettings {
     /// User-selected DeepSeek Thinking Mode depth.
     #[serde(default)]
     pub thinking_depth: ThinkingDepth,
+    /// Post-edit verification policy (Phase 4C of coding-amplifier spec).
+    /// Controls whether failed verifications stay informative reminders or
+    /// flip the tool result's `ok` flag to drive automatic retry.
+    #[serde(default)]
+    pub verification_policy: VerificationPolicy,
 }
 
 /// A redacted view of settings safe to send to the UI (no secret material).
@@ -253,6 +317,10 @@ impl SettingsService {
                 .map(|s| s.hooks_json.clone())
                 .unwrap_or_default(),
             thinking_depth: prior.as_ref().map(|s| s.thinking_depth).unwrap_or_default(),
+            verification_policy: prior
+                .as_ref()
+                .map(|s| s.verification_policy)
+                .unwrap_or_default(),
         };
         self.save(&settings)?;
 
@@ -356,6 +424,24 @@ impl SettingsService {
     /// The current DeepSeek Thinking Mode depth.
     pub fn thinking_depth(&self) -> Result<ThinkingDepth> {
         Ok(self.load()?.map(|s| s.thinking_depth).unwrap_or_default())
+    }
+
+    /// The current post-edit verification policy.
+    pub fn verification_policy(&self) -> Result<VerificationPolicy> {
+        Ok(self
+            .load()?
+            .map(|s| s.verification_policy)
+            .unwrap_or_default())
+    }
+
+    /// Set the post-edit verification policy, persisting it.
+    pub fn set_verification_policy(&self, policy: VerificationPolicy) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.verification_policy = policy;
+        self.save(&settings)?;
+        Ok(())
     }
 
     /// Set the Thinking Mode depth, persisting it. Returns the redacted view.
@@ -683,6 +769,7 @@ mod tests {
             thinking_depth: ThinkingDepth::Medium,
             permission_rules: PermissionRules::default(),
             hooks_json: String::new(),
+            verification_policy: VerificationPolicy::default(),
         };
         svc.save(&settings).unwrap();
 

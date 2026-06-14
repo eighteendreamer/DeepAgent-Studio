@@ -138,8 +138,36 @@ impl<E: CommandExecutor> Tool for BashTool<E> {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "bash".into(),
-            description: "Run an allow-listed shell command in the workspace. Args: { command }."
-                .into(),
+            description: "Run an allow-listed shell command in the workspace. Args: { command }.\n\
+                \n\
+                ## Tool priority — prefer dedicated tools when one fits\n\
+                - read a file → use `read_file` (NOT `cat` / `head` / `tail`)\n\
+                - edit a file → use `edit_file` / `multi_edit` (NOT `sed` / `awk`)\n\
+                - create a file → use `write_file` (NOT echo redirection / heredoc)\n\
+                - find files → use `glob` (NOT `find` / `ls`)\n\
+                - search file contents → use `grep` (NOT `grep` / `rg` on the shell)\n\
+                - explore project structure → use `code_map_*` tools (NOT recursive shell walks)\n\
+                Reserve `bash` for build / test / install / git / system inspection that no dedicated tool covers.\n\
+                \n\
+                ## Multi-command guidance\n\
+                - Independent commands → emit them as PARALLEL tool_calls in one assistant message; each becomes its own `bash` invocation. Do NOT pack independent commands into one shell line.\n\
+                - Genuinely sequential dependent commands → join with `&&` so a failure short-circuits (e.g. `cd repo && git pull && cargo build`). Do NOT use newline-separated multi-line commands; they're harder to parse and less portable.\n\
+                - Avoid sleep / poll loops (`while true; sleep`) — write a single targeted check and let the agent loop drive retries.\n\
+                \n\
+                ## Git safety protocol\n\
+                - Never modify `git config` settings.\n\
+                - Never `--no-verify` or `--no-gpg-sign` to skip hooks; fix the actual issue instead.\n\
+                - Never force-push to `main` / `master` (force-push to a feature branch is OK after explicit approval).\n\
+                - Prefer NEW commits over `git commit --amend` (amend rewrites history; new commits are reversible).\n\
+                - Stage with `git add <specific files>` rather than `git add -A` so you commit only the intended changes.\n\
+                \n\
+                ## Path quoting & navigation\n\
+                - Quote paths containing spaces or non-ASCII characters: `\"C:\\\\Program Files\\\\...\"`, `\"a path/with spaces\"`.\n\
+                - Prefer absolute paths over `cd <dir> && ...` when the dedicated tools won't do; the working directory is reset every invocation.\n\
+                - Before creating a new directory with `mkdir`, run `ls <parent>` first so you don't overwrite an existing non-directory or write outside the workspace.\n\
+                \n\
+                ## Silent success\n\
+                - A command that exits 0 with empty stdout/stderr is success. The runtime substitutes a stub payload so the model doesn't mistake an empty body for a stop signal — do NOT retry just because the output was empty.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": { "command": { "type": "string" } },
@@ -273,5 +301,30 @@ mod tests {
             .unwrap();
         assert!(!out.ok);
         assert!(out.value["error"].as_str().unwrap().contains("high-risk"));
+    }
+
+    #[test]
+    fn descriptor_carries_phase_5a_guidance() {
+        // Phase 5A: the bash tool description must surface tool-priority,
+        // multi-command guidance, git safety protocol, path quoting, and the
+        // silent-success contract so the model self-routes correctly.
+        let tool = BashTool::new(RecordingExecutor::default(), "/work", ["git".to_string()]);
+        let d = tool.descriptor();
+        // Tool-priority routing.
+        assert!(d.description.contains("read_file"));
+        assert!(d.description.contains("edit_file"));
+        assert!(d.description.contains("code_map_"));
+        // Multi-command guidance.
+        assert!(d.description.contains("PARALLEL tool_calls"));
+        assert!(d.description.contains("&&"));
+        // Git safety.
+        assert!(d.description.contains("Never modify `git config`"));
+        assert!(d.description.contains("force-push"));
+        assert!(d.description.contains("--no-verify"));
+        // Path quoting + parent ls-before-mkdir.
+        assert!(d.description.contains("Quote paths"));
+        assert!(d.description.contains("Before creating a new directory"));
+        // Silent success.
+        assert!(d.description.contains("Silent success"));
     }
 }

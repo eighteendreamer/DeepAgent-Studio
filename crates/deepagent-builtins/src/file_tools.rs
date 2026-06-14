@@ -16,8 +16,8 @@ use crate::file_cache::{CachedFile, FileStateCache};
 use crate::fs_guard::WorkspaceRoot;
 use crate::glob_match::glob_match;
 
-const LARGE_FILE_LINE_THRESHOLD: usize = 500;
-const DEFAULT_LARGE_FILE_LIMIT: usize = 200;
+const LARGE_FILE_LINE_THRESHOLD: usize = 2000;
+const DEFAULT_LARGE_FILE_LIMIT: usize = 2000;
 
 fn arg_str<'a>(args: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
@@ -84,6 +84,47 @@ fn cache_invalidate(cache: &SharedFileStateCache, path: &Path) {
         .invalidate(path);
 }
 
+fn cache_last_read_matches(
+    cache: &SharedFileStateCache,
+    path: &Path,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> bool {
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .last_read_matches(path, offset, limit)
+}
+
+fn cache_record_read(
+    cache: &SharedFileStateCache,
+    path: &Path,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) {
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .record_read(path, offset, limit);
+}
+
+fn cache_has_been_read(cache: &SharedFileStateCache, path: &Path) -> bool {
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .has_been_read(path)
+}
+
+/// Failure message for the read-before-edit invariant. Mirrors Claude Code's
+/// wording so the model recognizes the pattern and self-corrects.
+const READ_BEFORE_EDIT_MSG: &str =
+    "You must call read_file on this path before editing it. This guarantees you've seen the current contents.";
+
+/// Sentinel content returned by `read_file` when the model re-reads an
+/// unchanged file with the same `(offset, limit)` parameters. Replaces the
+/// real content to save tokens — the model has already seen it this turn.
+const FILE_UNCHANGED_STUB: &str = "<FILE_UNCHANGED_STUB: file unchanged since last read; content omitted to save tokens. To force a fresh read, change offset/limit, edit the file first, or use grep/list_dir.>";
+
 fn read_window(
     content: &str,
     total_lines: usize,
@@ -123,12 +164,27 @@ fn read_window(
     }
 
     (
-        selected.join("\n"),
+        format_with_line_numbers(&selected, start_line),
         returned_lines,
         next_offset,
         truncated,
         message,
     )
+}
+
+/// Render a `cat -n`-style view of `lines`, where the first line carries
+/// `start_line` as its line number. The format mirrors GNU `cat -n`:
+/// `<6-wide right-aligned line number>\t<line content>`. The line-number
+/// prefix is for the model to reference code locations precisely; it is NOT
+/// part of the file content. Subsequent edit_file calls must strip the prefix
+/// from `old_string` and preserve the file's original indentation.
+fn format_with_line_numbers<S: AsRef<str>>(lines: &[S], start_line: usize) -> String {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| format!("{:>6}\t{}", start_line + i, line.as_ref()))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `read_file` — read a UTF-8 text file within the workspace.
@@ -154,7 +210,13 @@ impl Tool for ReadFileTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "read_file".into(),
-            description: "Read a UTF-8 text file within the workspace. Args: { path, offset?, limit? }. offset is a 1-based line number; limit is a line count.".into(),
+            description: "Read a UTF-8 text file within the workspace. Args: { path, offset?, limit? }.\n\
+                - The path must be workspace-relative or workspace-absolute.\n\
+                - By default reads up to 2000 lines from the start. Use `offset` (1-based starting line) and `limit` (line count) to read a window for very large files.\n\
+                - Output format: each line is prefixed by `<line_number>\\t<content>` (cat -n style; line number right-padded to 6 chars). Line numbers start at 1, or at `offset` when given.\n\
+                - IMPORTANT: When you later use edit_file, the `old_string` parameter must contain the exact content AFTER the line-number prefix. NEVER include the line-number prefix itself in old_string. Preserve the EXACT indentation (tabs/spaces) of the original file content.\n\
+                - Files over 2000 lines auto-truncate; the response carries `next_offset` so you can continue reading.\n\
+                - If you call read_file twice on the same path with the same offset/limit and the file hasn't changed, the second call returns a short FILE_UNCHANGED_STUB instead of the body — re-reading is wasted tokens. To force a fresh read, change `offset`/`limit`, modify the file, or use `grep`/`list_dir`.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -218,8 +280,33 @@ impl Tool for ReadFileTool {
             },
         };
 
+        // FILE_UNCHANGED_STUB: when the cache hit *and* the previous read used
+        // the exact same (offset, limit), the model has seen this content and
+        // doesn't need it again. Returning the stub saves tokens and prevents
+        // accidental re-thinking on stale data.
+        let unchanged = cache_hit && cache_last_read_matches(&self.cache, &resolved, offset, limit);
+        if unchanged {
+            return Ok(ToolOutput::success(serde_json::json!({
+                "path": self.root.relativize(&resolved),
+                "content": FILE_UNCHANGED_STUB,
+                "lines": cached.line_count,
+                "offset": offset.unwrap_or(1),
+                "limit": limit,
+                "returned_lines": 0,
+                "truncated": false,
+                "next_offset": serde_json::Value::Null,
+                "cache_hit": true,
+                "content_hash": cached.content_hash,
+                "unchanged_stub": true,
+                "message": "file unchanged since last read with same offset/limit; content omitted to save tokens",
+            })));
+        }
+
         let (content, returned_lines, next_offset, truncated, message) =
             read_window(&cached.content, cached.line_count, offset, limit);
+
+        // Record this read so a subsequent identical call returns the stub.
+        cache_record_read(&self.cache, &resolved, offset, limit);
 
         Ok(ToolOutput::success(serde_json::json!({
             "path": self.root.relativize(&resolved),
@@ -261,7 +348,9 @@ impl Tool for WriteFileTool {
         ToolDescriptor {
             name: "write_file".into(),
             description:
-                "Create or overwrite a file within the workspace. Args: { path, content }.".into(),
+                "Create or overwrite a file within the workspace. Args: { path, content }.\n\
+                - Creating a NEW file (path does not exist): no prior read required.\n\
+                - Overwriting an EXISTING file: you must call read_file on this path first in this session, otherwise the call fails. This forces you to see the current contents before clobbering them.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -284,6 +373,13 @@ impl Tool for WriteFileTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
+        // Read-before-edit invariant: only when the file already exists.
+        // Brand-new files don't require a prior read.
+        if tokio::fs::metadata(&resolved).await.is_ok()
+            && !cache_has_been_read(&self.cache, &resolved)
+        {
+            return Ok(ToolOutput::failure(READ_BEFORE_EDIT_MSG));
+        }
         if let Some(parent) = resolved.parent() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
                 return Ok(ToolOutput::failure(format!("mkdir failed: {e}")));
@@ -327,14 +423,21 @@ impl Tool for EditFileTool {
         ToolDescriptor {
             name: "edit_file".into(),
             description:
-                "Replace an exact string in a file. Args: { path, old, new, replace_all? }.".into(),
+                "Replace an exact string in a file. Args: { path, old, new, replace_all? }.\n\
+                - INVARIANT: you must call read_file on this path first in this session. The cache is shared across read_file/edit_file/multi_edit/write_file, so a single read suffices for all subsequent edits to that path.\n\
+                - `old` must match exactly (whitespace, indentation). Do NOT include the cat -n line-number prefix from read_file output.\n\
+                - Pick the smallest unique `old` (2–4 surrounding lines is usually enough). If `old` matches multiple times, pass `replace_all: true` (typical for variable renames) or extend `old` with more context.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
                     "old": { "type": "string" },
                     "new": { "type": "string" },
-                    "replace_all": { "type": "boolean" }
+                    "replace_all": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Replace ALL occurrences (true) or require old to be unique (false). Default false."
+                    }
                 },
                 "required": ["path", "old", "new"]
             }),
@@ -360,6 +463,9 @@ impl Tool for EditFileTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
+        if !cache_has_been_read(&self.cache, &resolved) {
+            return Ok(ToolOutput::failure(READ_BEFORE_EDIT_MSG));
+        }
         let content = match tokio::fs::read_to_string(&resolved).await {
             Ok(c) => c,
             Err(e) => return Ok(ToolOutput::failure(format!("read failed: {e}"))),
@@ -375,7 +481,7 @@ impl Tool for EditFileTool {
         }
         if count > 1 && !replace_all {
             return Ok(ToolOutput::failure(format!(
-                "'old' matches {count} times; pass replace_all=true or provide more context"
+                "old_string appears {count} times in this file. Provide more context (more surrounding lines) to uniquely identify the match, or pass replace_all: true to replace every occurrence."
             )));
         }
         let updated = if replace_all {
@@ -423,7 +529,10 @@ impl Tool for MultiEditTool {
         ToolDescriptor {
             name: "multi_edit".into(),
             description: "Apply an ordered list of exact-string replacements to a single file \
-                atomically (all-or-nothing). Args: { path, edits: [{ old, new, replace_all? }] }."
+                atomically (all-or-nothing). Args: { path, edits: [{ old, new, replace_all? }] }.\n\
+                - INVARIANT: you must call read_file on this path first in this session.\n\
+                - Each edit's `old` matches against the result of all preceding edits — chain edits when later ones depend on earlier rewrites.\n\
+                - If any edit fails (string not found / ambiguous match without replace_all) NOTHING is written."
                 .into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -436,7 +545,10 @@ impl Tool for MultiEditTool {
                             "properties": {
                                 "old": { "type": "string" },
                                 "new": { "type": "string" },
-                                "replace_all": { "type": "boolean" }
+                                "replace_all": {
+                                    "type": "boolean",
+                                    "default": false
+                                }
                             },
                             "required": ["old", "new"]
                         }
@@ -464,6 +576,9 @@ impl Tool for MultiEditTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
+        if !cache_has_been_read(&self.cache, &resolved) {
+            return Ok(ToolOutput::failure(READ_BEFORE_EDIT_MSG));
+        }
         let mut content = match tokio::fs::read_to_string(&resolved).await {
             Ok(c) => c,
             Err(e) => return Ok(ToolOutput::failure(format!("read failed: {e}"))),
@@ -493,8 +608,7 @@ impl Tool for MultiEditTool {
             }
             if count > 1 && !replace_all {
                 return Ok(ToolOutput::failure(format!(
-                    "edit[{i}]: 'old' matches {count} times; pass replace_all=true or add context \
-                     (no edits applied)"
+                    "edit[{i}]: old_string appears {count} times. Provide more context or pass replace_all: true (no edits applied)"
                 )));
             }
             content = if replace_all {
@@ -767,6 +881,33 @@ mod tests {
         (dir, root)
     }
 
+    #[test]
+    fn format_with_line_numbers_pads_to_six_chars() {
+        // Single-digit, three-digit, and a deliberately empty line all get the
+        // 6-wide right-aligned line number plus a TAB separator.
+        let lines: Vec<&str> = vec!["alpha", "", "beta"];
+        let rendered = format_with_line_numbers(&lines, 1);
+        assert_eq!(rendered, "     1\talpha\n     2\t\n     3\tbeta");
+    }
+
+    #[test]
+    fn format_with_line_numbers_uses_offset_for_first_line_number() {
+        // When the caller is rendering an offset window starting at line 100,
+        // the first emitted line carries 100, not 1.
+        let lines: Vec<&str> = vec!["x", "y"];
+        let rendered = format_with_line_numbers(&lines, 100);
+        assert_eq!(rendered, "   100\tx\n   101\ty");
+    }
+
+    #[test]
+    fn format_with_line_numbers_does_not_clip_long_lines() {
+        // The format prefixes a header but never modifies the line content
+        // itself, even when the line is far longer than 80 chars.
+        let long_line = "x".repeat(500);
+        let rendered = format_with_line_numbers(std::slice::from_ref(&long_line), 7);
+        assert_eq!(rendered, format!("     7\t{}", long_line));
+    }
+
     #[tokio::test]
     async fn write_then_read_roundtrip() {
         let (_d, root) = temp_root();
@@ -783,7 +924,7 @@ mod tests {
             .await
             .unwrap();
         assert!(out.ok);
-        assert_eq!(out.value["content"], "hello");
+        assert_eq!(out.value["content"], "     1\thello");
     }
 
     #[tokio::test]
@@ -805,9 +946,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_large_file_defaults_to_first_200_lines() {
+    async fn read_large_file_defaults_to_first_2000_lines() {
         let (_d, root) = temp_root();
-        let content = (1..=600)
+        let content = (1..=3000)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -820,19 +961,20 @@ mod tests {
             .invoke(serde_json::json!({"path": "large.txt"}))
             .await
             .unwrap();
-
         assert!(out.ok);
-        assert_eq!(out.value["lines"], 600);
-        assert_eq!(out.value["returned_lines"], 200);
-        assert_eq!(out.value["offset"], 1);
-        assert_eq!(out.value["next_offset"], 201);
+        assert_eq!(out.value["next_offset"], 2001);
         assert_eq!(out.value["truncated"], true);
-        assert_eq!(out.value["content"].as_str().unwrap().lines().count(), 200);
-        assert!(out.value["content"].as_str().unwrap().contains("line 200"));
+        assert_eq!(out.value["content"].as_str().unwrap().lines().count(), 2000);
+        // Each rendered line carries the cat -n prefix; the last line in the
+        // default window should appear with its line number 2000.
+        assert!(out.value["content"]
+            .as_str()
+            .unwrap()
+            .contains("  2000\tline 2000"));
         assert!(out.value["message"]
             .as_str()
             .unwrap()
-            .contains("use offset 201 to read more"));
+            .contains("output truncated"));
     }
 
     #[tokio::test]
@@ -864,7 +1006,7 @@ mod tests {
         assert_eq!(out.value["next_offset"], 106);
         assert_eq!(
             out.value["content"],
-            "line 101\nline 102\nline 103\nline 104\nline 105"
+            "   101\tline 101\n   102\tline 102\n   103\tline 103\n   104\tline 104\n   105\tline 105"
         );
     }
 
@@ -882,7 +1024,7 @@ mod tests {
             .unwrap();
 
         assert!(out.ok);
-        assert_eq!(out.value["content"], "a\nb\nc");
+        assert_eq!(out.value["content"], "     1\ta\n     2\tb\n     3\tc");
         assert_eq!(out.value["returned_lines"], 3);
         assert_eq!(out.value["truncated"], false);
         assert!(out.value["next_offset"].is_null());
@@ -910,8 +1052,135 @@ mod tests {
         assert!(first.ok);
         assert!(second.ok);
         assert_eq!(first.value["cache_hit"], false);
+        // Second read with same args hits the cache *and* triggers the
+        // FILE_UNCHANGED_STUB path: cache_hit is true, content is the stub.
         assert_eq!(second.value["cache_hit"], true);
+        assert_eq!(second.value["unchanged_stub"], true);
         assert_eq!(first.value["content_hash"], second.value["content_hash"]);
+    }
+
+    #[tokio::test]
+    async fn repeat_read_returns_file_unchanged_stub() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "stub.txt", "content": "alpha\nbeta\ngamma"}))
+            .await
+            .unwrap();
+        let r = ReadFileTool::with_cache(root.clone(), cache);
+
+        let first = r
+            .invoke(serde_json::json!({"path": "stub.txt"}))
+            .await
+            .unwrap();
+        assert!(first.ok);
+        assert_eq!(first.value["unchanged_stub"], serde_json::Value::Null);
+        let body = first.value["content"].as_str().unwrap();
+        assert!(body.contains("alpha"));
+
+        let second = r
+            .invoke(serde_json::json!({"path": "stub.txt"}))
+            .await
+            .unwrap();
+        assert!(second.ok);
+        assert_eq!(second.value["unchanged_stub"], true);
+        assert_eq!(second.value["returned_lines"], 0);
+        let stub_body = second.value["content"].as_str().unwrap();
+        assert!(stub_body.starts_with("<FILE_UNCHANGED_STUB"));
+        // The file's line count is still reported so the model knows the size.
+        assert_eq!(second.value["lines"], 3);
+        // No content_hash mutation across stubbed reads.
+        assert_eq!(first.value["content_hash"], second.value["content_hash"]);
+    }
+
+    #[tokio::test]
+    async fn repeat_read_with_different_offset_skips_stub() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({
+                "path": "win.txt",
+                "content": "a\nb\nc\nd\ne",
+            }))
+            .await
+            .unwrap();
+        let r = ReadFileTool::with_cache(root.clone(), cache);
+
+        let first = r
+            .invoke(serde_json::json!({"path": "win.txt", "offset": 1, "limit": 2}))
+            .await
+            .unwrap();
+        let second_diff_offset = r
+            .invoke(serde_json::json!({"path": "win.txt", "offset": 3, "limit": 2}))
+            .await
+            .unwrap();
+        let third_same_as_first = r
+            .invoke(serde_json::json!({"path": "win.txt", "offset": 1, "limit": 2}))
+            .await
+            .unwrap();
+
+        // first and second use different windows → both return content.
+        assert_eq!(first.value["unchanged_stub"], serde_json::Value::Null);
+        assert_eq!(
+            second_diff_offset.value["unchanged_stub"],
+            serde_json::Value::Null
+        );
+        // third repeats first's window — but second already overwrote the
+        // recorded last_read with (3, 2), so third does NOT match and returns
+        // content again.
+        assert_eq!(
+            third_same_as_first.value["unchanged_stub"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[tokio::test]
+    async fn repeat_read_returns_content_after_write() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        let w = WriteFileTool::with_cache(root.clone(), cache.clone());
+        let r = ReadFileTool::with_cache(root.clone(), cache);
+
+        w.invoke(serde_json::json!({"path": "live.txt", "content": "old"}))
+            .await
+            .unwrap();
+        let _first = r
+            .invoke(serde_json::json!({"path": "live.txt"}))
+            .await
+            .unwrap();
+        let second_stub = r
+            .invoke(serde_json::json!({"path": "live.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(second_stub.value["unchanged_stub"], true);
+
+        // Write invalidates the cache → next read returns full content again.
+        w.invoke(serde_json::json!({"path": "live.txt", "content": "new"}))
+            .await
+            .unwrap();
+        let after_write = r
+            .invoke(serde_json::json!({"path": "live.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(after_write.value["unchanged_stub"], serde_json::Value::Null);
+        assert_eq!(after_write.value["content"], "     1\tnew");
+    }
+
+    #[tokio::test]
+    async fn first_read_never_returns_stub() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "f.txt", "content": "x\ny"}))
+            .await
+            .unwrap();
+        let r = ReadFileTool::with_cache(root.clone(), cache);
+        let out = r
+            .invoke(serde_json::json!({"path": "f.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(out.value["unchanged_stub"], serde_json::Value::Null);
+        assert!(out.value["content"].as_str().unwrap().contains("x"));
     }
 
     #[tokio::test]
@@ -941,40 +1210,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(fresh.value["cache_hit"], false);
-        assert_eq!(fresh.value["content"], "new");
+        assert_eq!(fresh.value["content"], "     1\tnew");
     }
 
     #[tokio::test]
     async fn edit_replaces_unique_string() {
         let (_d, root) = temp_root();
-        WriteFileTool::new(root.clone())
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
             .invoke(serde_json::json!({"path": "x.txt", "content": "foo bar baz"}))
             .await
             .unwrap();
-        let e = EditFileTool::new(root.clone());
+        let r = ReadFileTool::with_cache(root.clone(), cache.clone());
+        r.invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        let e = EditFileTool::with_cache(root.clone(), cache.clone());
         let out = e
             .invoke(serde_json::json!({"path": "x.txt", "old": "bar", "new": "QUX"}))
             .await
             .unwrap();
         assert!(out.ok);
-        let content = ReadFileTool::new(root.clone())
+        // Edit invalidates the cache → read again to satisfy invariant for
+        // subsequent reads (here we just verify content from disk via tool).
+        let content = ReadFileTool::with_cache(root.clone(), cache)
             .invoke(serde_json::json!({"path": "x.txt"}))
             .await
             .unwrap();
-        assert_eq!(content.value["content"], "foo QUX baz");
+        assert_eq!(content.value["content"], "     1\tfoo QUX baz");
     }
 
     #[tokio::test]
     async fn edit_matches_lf_old_against_crlf_file() {
         let (dir, root) = temp_root();
-        WriteFileTool::new(root.clone())
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
             .invoke(serde_json::json!({
                 "path": "application.yml",
                 "content": "logging:\r\n  level:\r\n    root: info\r\n"
             }))
             .await
             .unwrap();
-        let e = EditFileTool::new(root.clone());
+        ReadFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "application.yml"}))
+            .await
+            .unwrap();
+        let e = EditFileTool::with_cache(root.clone(), cache);
         let out = e
             .invoke(serde_json::json!({
                 "path": "application.yml",
@@ -993,18 +1274,28 @@ mod tests {
     #[tokio::test]
     async fn edit_ambiguous_match_requires_replace_all() {
         let (_d, root) = temp_root();
-        WriteFileTool::new(root.clone())
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
             .invoke(serde_json::json!({"path": "x.txt", "content": "a a a"}))
             .await
             .unwrap();
-        let e = EditFileTool::new(root.clone());
+        ReadFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        let e = EditFileTool::with_cache(root.clone(), cache.clone());
         // Without replace_all, 3 matches => failure.
         let out = e
             .invoke(serde_json::json!({"path": "x.txt", "old": "a", "new": "b"}))
             .await
             .unwrap();
         assert!(!out.ok);
-        // With replace_all, succeeds.
+        // With replace_all, succeeds. (Edit invalidates the cache; read again
+        // to satisfy the invariant for the second edit call.)
+        ReadFileTool::with_cache(root.clone(), cache)
+            .invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
         let out = e
             .invoke(
                 serde_json::json!({"path": "x.txt", "old": "a", "new": "b", "replace_all": true}),
@@ -1070,11 +1361,16 @@ mod tests {
     #[tokio::test]
     async fn multi_edit_applies_all_atomically() {
         let (_d, root) = temp_root();
-        WriteFileTool::new(root.clone())
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
             .invoke(serde_json::json!({"path": "x.txt", "content": "alpha beta gamma"}))
             .await
             .unwrap();
-        let m = MultiEditTool::new(root.clone());
+        ReadFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        let m = MultiEditTool::with_cache(root.clone(), cache.clone());
         let out = m
             .invoke(serde_json::json!({
                 "path": "x.txt",
@@ -1087,21 +1383,26 @@ mod tests {
             .unwrap();
         assert!(out.ok);
         assert_eq!(out.value["edits_applied"], 2);
-        let content = ReadFileTool::new(root.clone())
+        let content = ReadFileTool::with_cache(root.clone(), cache)
             .invoke(serde_json::json!({"path": "x.txt"}))
             .await
             .unwrap();
-        assert_eq!(content.value["content"], "ONE beta THREE");
+        assert_eq!(content.value["content"], "     1\tONE beta THREE");
     }
 
     #[tokio::test]
     async fn multi_edit_is_atomic_on_failure() {
-        let (_d, root) = temp_root();
-        WriteFileTool::new(root.clone())
+        let (dir, root) = temp_root();
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
             .invoke(serde_json::json!({"path": "x.txt", "content": "keep this"}))
             .await
             .unwrap();
-        let m = MultiEditTool::new(root.clone());
+        ReadFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        let m = MultiEditTool::with_cache(root.clone(), cache);
         // Second edit's 'old' is absent → whole op fails, nothing written.
         let out = m
             .invoke(serde_json::json!({
@@ -1114,22 +1415,29 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.ok);
-        let content = ReadFileTool::new(root.clone())
-            .invoke(serde_json::json!({"path": "x.txt"}))
+        // Verify the file on disk directly — atomic failure means the partial
+        // first edit was NOT persisted. We read from the filesystem to bypass
+        // the FILE_UNCHANGED_STUB path that would shadow content on a repeat
+        // read with identical args.
+        let on_disk = tokio::fs::read_to_string(dir.path().join("x.txt"))
             .await
             .unwrap();
-        // Unchanged: the first edit was NOT persisted.
-        assert_eq!(content.value["content"], "keep this");
+        assert_eq!(on_disk, "keep this");
     }
 
     #[tokio::test]
     async fn multi_edit_sequential_edits_see_prior_results() {
         let (_d, root) = temp_root();
-        WriteFileTool::new(root.clone())
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
             .invoke(serde_json::json!({"path": "x.txt", "content": "a"}))
             .await
             .unwrap();
-        let m = MultiEditTool::new(root.clone());
+        ReadFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        let m = MultiEditTool::with_cache(root.clone(), cache.clone());
         // Second edit targets text the first introduced.
         let out = m
             .invoke(serde_json::json!({
@@ -1142,10 +1450,243 @@ mod tests {
             .await
             .unwrap();
         assert!(out.ok);
-        let content = ReadFileTool::new(root.clone())
+        let content = ReadFileTool::with_cache(root.clone(), cache)
             .invoke(serde_json::json!({"path": "x.txt"}))
             .await
             .unwrap();
-        assert_eq!(content.value["content"], "c");
+        assert_eq!(content.value["content"], "     1\tc");
+    }
+
+    // ----- Read-before-edit invariant (Phase 2C) -----
+
+    #[tokio::test]
+    async fn edit_without_prior_read_fails() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        // Set up a file directly on disk; no read_file call has happened.
+        WriteFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt", "content": "hi"}))
+            .await
+            .unwrap();
+        let e = EditFileTool::with_cache(root.clone(), cache);
+        let out = e
+            .invoke(serde_json::json!({"path": "x.txt", "old": "hi", "new": "yo"}))
+            .await
+            .unwrap();
+        assert!(!out.ok);
+        let err = out.value["error"].as_str().unwrap();
+        assert!(err.contains("read_file"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn edit_after_read_succeeds() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt", "content": "hi"}))
+            .await
+            .unwrap();
+        ReadFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        let e = EditFileTool::with_cache(root.clone(), cache);
+        let out = e
+            .invoke(serde_json::json!({"path": "x.txt", "old": "hi", "new": "yo"}))
+            .await
+            .unwrap();
+        assert!(out.ok);
+    }
+
+    #[tokio::test]
+    async fn multi_edit_without_prior_read_fails() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt", "content": "a b"}))
+            .await
+            .unwrap();
+        let m = MultiEditTool::with_cache(root.clone(), cache);
+        let out = m
+            .invoke(serde_json::json!({
+                "path": "x.txt",
+                "edits": [{"old": "a", "new": "A"}],
+            }))
+            .await
+            .unwrap();
+        assert!(!out.ok);
+        assert!(out.value["error"].as_str().unwrap().contains("read_file"));
+    }
+
+    #[tokio::test]
+    async fn write_to_new_path_does_not_require_read() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        let w = WriteFileTool::with_cache(root.clone(), cache);
+        let out = w
+            .invoke(serde_json::json!({"path": "fresh.txt", "content": "hi"}))
+            .await
+            .unwrap();
+        // Brand-new file: no prior read needed.
+        assert!(out.ok);
+    }
+
+    #[tokio::test]
+    async fn write_overwrite_without_prior_read_fails() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        let w = WriteFileTool::with_cache(root.clone(), cache.clone());
+        // First write creates the file (allowed).
+        w.invoke(serde_json::json!({"path": "x.txt", "content": "v1"}))
+            .await
+            .unwrap();
+        // Second write would CLOBBER existing content — must read first.
+        let out = w
+            .invoke(serde_json::json!({"path": "x.txt", "content": "v2"}))
+            .await
+            .unwrap();
+        assert!(!out.ok);
+        assert!(out.value["error"].as_str().unwrap().contains("read_file"));
+    }
+
+    #[tokio::test]
+    async fn write_overwrite_after_read_succeeds() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        let w = WriteFileTool::with_cache(root.clone(), cache.clone());
+        let r = ReadFileTool::with_cache(root.clone(), cache);
+        w.invoke(serde_json::json!({"path": "x.txt", "content": "v1"}))
+            .await
+            .unwrap();
+        r.invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        let out = w
+            .invoke(serde_json::json!({"path": "x.txt", "content": "v2"}))
+            .await
+            .unwrap();
+        assert!(out.ok);
+    }
+
+    #[tokio::test]
+    async fn edit_after_write_invalidation_requires_re_read() {
+        // Write invalidates the cache → a previous read no longer counts.
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        let w = WriteFileTool::with_cache(root.clone(), cache.clone());
+        let r = ReadFileTool::with_cache(root.clone(), cache.clone());
+        let e = EditFileTool::with_cache(root.clone(), cache);
+
+        w.invoke(serde_json::json!({"path": "x.txt", "content": "first"}))
+            .await
+            .unwrap();
+        r.invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        // First edit is allowed.
+        let ok = e
+            .invoke(serde_json::json!({"path": "x.txt", "old": "first", "new": "second"}))
+            .await
+            .unwrap();
+        assert!(ok.ok);
+        // Edit invalidated the cache. A second edit without re-reading fails.
+        let blocked = e
+            .invoke(serde_json::json!({"path": "x.txt", "old": "second", "new": "third"}))
+            .await
+            .unwrap();
+        assert!(!blocked.ok);
+        assert!(blocked.value["error"]
+            .as_str()
+            .unwrap()
+            .contains("read_file"));
+    }
+
+    // ----- replace_all parameter (Phase 2D) -----
+
+    #[tokio::test]
+    async fn edit_with_replace_all_true_on_unique_match_works() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt", "content": "only one match here"}))
+            .await
+            .unwrap();
+        ReadFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        let e = EditFileTool::with_cache(root.clone(), cache);
+        let out = e
+            .invoke(serde_json::json!({
+                "path": "x.txt",
+                "old": "match",
+                "new": "MATCH",
+                "replace_all": true,
+            }))
+            .await
+            .unwrap();
+        assert!(out.ok);
+        assert_eq!(out.value["replacements"], 1);
+    }
+
+    #[tokio::test]
+    async fn edit_ambiguous_failure_message_mentions_replace_all_and_count() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt", "content": "x x x x"}))
+            .await
+            .unwrap();
+        ReadFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        let e = EditFileTool::with_cache(root.clone(), cache);
+        let out = e
+            .invoke(serde_json::json!({"path": "x.txt", "old": "x", "new": "y"}))
+            .await
+            .unwrap();
+        assert!(!out.ok);
+        let err = out.value["error"].as_str().unwrap();
+        // Failure message must surface the count, point to replace_all, and
+        // suggest more context — the model uses these three signals to choose
+        // between extending old_string or flipping the flag.
+        assert!(err.contains("4"), "missing count: {err}");
+        assert!(err.contains("replace_all"), "missing flag hint: {err}");
+        assert!(
+            err.to_lowercase().contains("context"),
+            "missing context hint: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_edit_per_edit_replace_all_works() {
+        let (_d, root) = temp_root();
+        let cache = new_shared_cache();
+        WriteFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({
+                "path": "x.txt",
+                "content": "FOO BAR FOO BAR",
+            }))
+            .await
+            .unwrap();
+        ReadFileTool::with_cache(root.clone(), cache.clone())
+            .invoke(serde_json::json!({"path": "x.txt"}))
+            .await
+            .unwrap();
+        let m = MultiEditTool::with_cache(root.clone(), cache);
+        let out = m
+            .invoke(serde_json::json!({
+                "path": "x.txt",
+                "edits": [
+                    {"old": "FOO", "new": "foo", "replace_all": true},
+                    {"old": "BAR", "new": "bar", "replace_all": true},
+                ],
+            }))
+            .await
+            .unwrap();
+        assert!(out.ok);
+        // 2 + 2 = 4 replacements across the two edits.
+        assert_eq!(out.value["replacements"], 4);
     }
 }

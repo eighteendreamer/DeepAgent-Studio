@@ -57,6 +57,8 @@ pub enum SlashAction {
     },
     /// Clear the current chat surface.
     Clear,
+    /// Run post-edit verification across the current workspace (Phase 4C).
+    Verify,
 }
 
 /// Mutable context passed to slash handlers.
@@ -247,6 +249,11 @@ impl SlashRegistry {
                 "clear",
                 "清空当前聊天输入界面提示",
                 StaticHandler::new(SlashActionTemplate::Clear),
+            ))
+            .register_command(SlashCommand::new(
+                "verify",
+                "对当前工作区跑一次 post-edit verifier（Rust / TS / Python / JSON）",
+                StaticHandler::new(SlashActionTemplate::Verify),
             ));
         registry
     }
@@ -302,6 +309,7 @@ enum SlashActionTemplate {
     Resume,
     Model,
     Clear,
+    Verify,
 }
 
 #[derive(Debug, Clone)]
@@ -390,6 +398,10 @@ impl SlashHandler for StaticHandler {
             SlashActionTemplate::Clear => {
                 CommandResult::new(SlashAction::Clear, "Cleared the chat surface.")
             }
+            SlashActionTemplate::Verify => CommandResult::new(
+                SlashAction::Verify,
+                "Running post-edit verification on the workspace…",
+            ),
         };
         Ok(result)
     }
