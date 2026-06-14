@@ -126,6 +126,25 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with the given JSON arguments.
     async fn invoke(&self, arguments: serde_json::Value) -> Result<ToolOutput>;
+
+    /// Whether this tool should be **deferred**: hidden from the per-request
+    /// `tools` array until the model explicitly discovers it via `tool_search`.
+    /// Default: `false` (always loaded, current behavior).
+    ///
+    /// MCP tools override this to `true` so a server with dozens of tools
+    /// doesn't burn token budget on every request. Built-ins generally stay
+    /// `false` so the model sees the core toolset upfront.
+    fn should_defer(&self) -> bool {
+        false
+    }
+
+    /// Whether this tool MUST always be loaded — overrides `should_defer`.
+    /// Default: `false`. Used by `tool_search` itself (the discovery channel
+    /// can never be deferred behind itself) and by escape-hatch built-ins
+    /// that need to be reachable before any discovery roundtrip.
+    fn always_load(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -139,5 +158,37 @@ mod tests {
         let err = ToolOutput::failure("boom");
         assert!(!err.ok);
         assert_eq!(err.value["error"], "boom");
+    }
+
+    /// A minimal stub tool that takes the trait defaults so we can verify the
+    /// defer / always-load defaults are `false` without touching a live
+    /// built-in. (Built-ins inherit these defaults; the explicit overrides
+    /// live in the MCP adapter and `ToolSearchTool`.)
+    struct StubTool;
+
+    #[async_trait]
+    impl Tool for StubTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "stub".into(),
+                description: "stub".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                risk: RiskLevel::Safe,
+                required_permissions: PermissionSet::read_only(),
+            }
+        }
+        async fn invoke(&self, _: serde_json::Value) -> Result<ToolOutput> {
+            Ok(ToolOutput::success(serde_json::json!(null)))
+        }
+    }
+
+    #[test]
+    fn deferral_defaults_are_false() {
+        let t = StubTool;
+        assert!(
+            !t.should_defer(),
+            "Tool::should_defer must default to false"
+        );
+        assert!(!t.always_load(), "Tool::always_load must default to false");
     }
 }

@@ -183,6 +183,19 @@ pub struct AppSettings {
     /// flip the tool result's `ok` flag to drive automatic retry.
     #[serde(default)]
     pub verification_policy: VerificationPolicy,
+    /// Tool-search / lazy-tool-loading mode (tool-search spec).
+    /// Decides whether deferrable tools (MCP + `should_defer == true`) are
+    /// hidden from each request's `tools` array until discovered through the
+    /// `tool_search` built-in. Default `Disabled` is byte-equivalent to the
+    /// pre-feature behavior.
+    #[serde(default)]
+    pub tool_search_mode: deepagent_builtins::ToolSearchMode,
+    /// Auto-mode threshold in characters: total deferred-tool schema size at
+    /// or above which `Auto` mode flips on. `None` falls back to the
+    /// dispatcher's hard-coded default (8000). Persisted as an `Option` so
+    /// older settings docs without this field round-trip cleanly.
+    #[serde(default)]
+    pub tool_search_auto_threshold_chars: Option<usize>,
 }
 
 /// A redacted view of settings safe to send to the UI (no secret material).
@@ -321,6 +334,13 @@ impl SettingsService {
                 .as_ref()
                 .map(|s| s.verification_policy)
                 .unwrap_or_default(),
+            tool_search_mode: prior
+                .as_ref()
+                .map(|s| s.tool_search_mode)
+                .unwrap_or_default(),
+            tool_search_auto_threshold_chars: prior
+                .as_ref()
+                .and_then(|s| s.tool_search_auto_threshold_chars),
         };
         self.save(&settings)?;
 
@@ -440,6 +460,48 @@ impl SettingsService {
             .load()?
             .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
         settings.verification_policy = policy;
+        self.save(&settings)?;
+        Ok(())
+    }
+
+    /// The current tool-search mode (default `Disabled`).
+    pub fn tool_search_mode(&self) -> Result<deepagent_builtins::ToolSearchMode> {
+        Ok(self.load()?.map(|s| s.tool_search_mode).unwrap_or_default())
+    }
+
+    /// Set the tool-search mode, persisting it.
+    pub fn set_tool_search_mode(&self, mode: deepagent_builtins::ToolSearchMode) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.tool_search_mode = mode;
+        self.save(&settings)?;
+        Ok(())
+    }
+
+    /// Hard-coded fallback threshold (in characters) used when the user
+    /// hasn't customized the value. Mirrors the constant the chat_service
+    /// dispatcher applies — exposed here so the desktop UI can show the
+    /// effective default in placeholder text.
+    pub const DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS: usize = 8_000;
+
+    /// The Auto-mode threshold currently in effect. Returns the persisted
+    /// value when set, otherwise [`Self::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS`].
+    pub fn tool_search_auto_threshold(&self) -> Result<usize> {
+        Ok(self
+            .load()?
+            .and_then(|s| s.tool_search_auto_threshold_chars)
+            .unwrap_or(Self::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS))
+    }
+
+    /// Persist a new Auto-mode threshold. `None` reverts to the default.
+    /// Values below 1 are clamped to 1 (zero would mean "Auto always
+    /// activates", which is what `Enabled` already does).
+    pub fn set_tool_search_auto_threshold(&self, value: Option<usize>) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.tool_search_auto_threshold_chars = value.map(|v| v.max(1));
         self.save(&settings)?;
         Ok(())
     }
@@ -687,6 +749,48 @@ mod tests {
             .is_err());
     }
 
+    #[tokio::test]
+    async fn tool_search_mode_default_is_disabled_and_round_trips() {
+        // Default after initialize is Disabled (preserve byte-equivalent
+        // pre-feature behavior). Setting / getting roundtrips through the
+        // SQLite-backed settings doc, and survives a discovery refresh.
+        let (svc, _) = service();
+        svc.initialize("sk-abcd1234").await.unwrap();
+        assert_eq!(
+            svc.tool_search_mode().unwrap(),
+            deepagent_builtins::ToolSearchMode::Disabled
+        );
+
+        svc.set_tool_search_mode(deepagent_builtins::ToolSearchMode::Enabled)
+            .unwrap();
+        assert_eq!(
+            svc.tool_search_mode().unwrap(),
+            deepagent_builtins::ToolSearchMode::Enabled
+        );
+
+        svc.set_tool_search_mode(deepagent_builtins::ToolSearchMode::Auto)
+            .unwrap();
+        assert_eq!(
+            svc.tool_search_mode().unwrap(),
+            deepagent_builtins::ToolSearchMode::Auto
+        );
+
+        svc.refresh_models().await.unwrap();
+        assert_eq!(
+            svc.tool_search_mode().unwrap(),
+            deepagent_builtins::ToolSearchMode::Auto
+        );
+    }
+
+    #[test]
+    fn tool_search_mode_set_before_initialize_errors() {
+        let (svc, _) = service();
+        let err = svc
+            .set_tool_search_mode(deepagent_builtins::ToolSearchMode::Enabled)
+            .unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
     #[test]
     fn view_before_init_is_none() {
         let (svc, _) = service();
@@ -770,6 +874,8 @@ mod tests {
             permission_rules: PermissionRules::default(),
             hooks_json: String::new(),
             verification_policy: VerificationPolicy::default(),
+            tool_search_mode: deepagent_builtins::ToolSearchMode::default(),
+            tool_search_auto_threshold_chars: None,
         };
         svc.save(&settings).unwrap();
 

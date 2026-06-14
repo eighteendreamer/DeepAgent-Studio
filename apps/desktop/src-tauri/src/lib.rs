@@ -586,6 +586,54 @@ fn set_verification_policy(state: State<'_, AppState>, policy: String) -> Result
     Ok(parsed.label().to_string())
 }
 
+// ---- tool-search lazy loading (tool-search spec) --------------------------
+
+#[tauri::command]
+fn get_tool_search_mode(state: State<'_, AppState>) -> Result<String, String> {
+    state
+        .settings
+        .tool_search_mode()
+        .map(|m| m.label().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_tool_search_mode(state: State<'_, AppState>, mode: String) -> Result<String, String> {
+    let parsed = deepagent_app_core::ToolSearchMode::parse(&mode)
+        .ok_or_else(|| format!("unknown tool-search mode: {mode}"))?;
+    state
+        .settings
+        .set_tool_search_mode(parsed)
+        .map_err(|e| e.to_string())?;
+    Ok(parsed.label().to_string())
+}
+
+#[tauri::command]
+fn get_tool_search_threshold(state: State<'_, AppState>) -> Result<usize, String> {
+    state
+        .settings
+        .tool_search_auto_threshold()
+        .map_err(|e| e.to_string())
+}
+
+/// Persist the Auto-mode threshold (characters of deferred-tool schema). Pass
+/// `None` to revert to the built-in default. Negative or zero values are
+/// rejected; the backend itself clamps via `set_tool_search_auto_threshold`.
+#[tauri::command]
+fn set_tool_search_threshold(
+    state: State<'_, AppState>,
+    value: Option<usize>,
+) -> Result<usize, String> {
+    state
+        .settings
+        .set_tool_search_auto_threshold(value)
+        .map_err(|e| e.to_string())?;
+    state
+        .settings
+        .tool_search_auto_threshold()
+        .map_err(|e| e.to_string())
+}
+
 // ---- MCP server management (visual config) --------------------------------
 
 #[tauri::command]
@@ -1170,6 +1218,10 @@ pub fn run() {
             set_thinking_depth,
             get_verification_policy,
             set_verification_policy,
+            get_tool_search_mode,
+            set_tool_search_mode,
+            get_tool_search_threshold,
+            set_tool_search_threshold,
             list_mcp_servers,
             save_mcp_server,
             remove_mcp_server,

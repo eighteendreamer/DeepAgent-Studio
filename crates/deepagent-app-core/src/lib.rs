@@ -68,6 +68,11 @@ pub use settings::{
     SettingsView, VerificationPolicy,
 };
 pub use skills_service::{SkillActivationDto, SkillDto, SkillsService};
+
+// Tool-search lazy loading (tool-search spec): re-exposed via app-core so the
+// desktop Tauri layer + downstream callers don't have to depend on
+// `deepagent-builtins` directly to get the user-facing config enum.
+pub use deepagent_builtins::ToolSearchMode;
 pub use terminal_service::TerminalService;
 pub use workspace_service::WorkspaceService;
 

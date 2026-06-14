@@ -92,6 +92,13 @@ impl ToolRegistry {
         self.tools.get(name)
     }
 
+    /// Iterate over every registered [`ToolSpec`]. Used by the lazy-tool-
+    /// loading layer (`tool_search`) to discover deferred tools by reading
+    /// their descriptor + invoking trait methods like `should_defer`.
+    pub fn iter_specs(&self) -> impl Iterator<Item = &ToolSpec> {
+        self.tools.values()
+    }
+
     /// List descriptors of all tools the given permission set can access. This
     /// is the *Tool Router* dynamic-filtering behaviour: the model is only told
     /// about tools the current agent is allowed to use.

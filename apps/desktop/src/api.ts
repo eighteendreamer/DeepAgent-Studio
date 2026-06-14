@@ -609,6 +609,53 @@ export async function setSandboxMode(mode: SandboxMode): Promise<SettingsView> {
   throw new Error("changing sandbox mode requires the desktop app");
 }
 
+// ---- tool-search lazy loading (tool-search spec) --------------------------
+
+export type ToolSearchMode = "disabled" | "enabled" | "auto";
+
+/** Get the current tool-search mode label. Default `disabled` outside Tauri. */
+export async function getToolSearchMode(): Promise<ToolSearchMode> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ToolSearchMode>("get_tool_search_mode");
+  return "disabled";
+}
+
+/** Set the tool-search mode. Returns the persisted label on success. */
+export async function setToolSearchMode(
+  mode: ToolSearchMode,
+): Promise<ToolSearchMode> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const label = await invoke<ToolSearchMode>("set_tool_search_mode", { mode });
+    emitSettingsChanged();
+    return label;
+  }
+  throw new Error("changing tool-search mode requires the desktop app");
+}
+
+/** The current Auto-mode threshold in characters. Falls back to the
+ *  backend default (8000) when no override is persisted. */
+export async function getToolSearchThreshold(): Promise<number> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<number>("get_tool_search_threshold");
+  return 8000;
+}
+
+/** Persist the Auto-mode threshold. Pass `null` to revert to the default. */
+export async function setToolSearchThreshold(
+  value: number | null,
+): Promise<number> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const v = await invoke<number>("set_tool_search_threshold", {
+      value: value === null || value === undefined ? null : Math.max(1, Math.floor(value)),
+    });
+    emitSettingsChanged();
+    return v;
+  }
+  throw new Error("changing tool-search threshold requires the desktop app");
+}
+
 // ---- MCP servers (visual config) ------------------------------------------
 
 export async function listMcpServers(): Promise<McpServer[]> {

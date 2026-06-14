@@ -56,6 +56,15 @@ impl Tool for McpToolAdapter {
             })))
         }
     }
+
+    /// MCP tools are workflow-specific and frequently arrive in large batches
+    /// (one server can advertise dozens). Defer them so the per-request
+    /// `tools` array stays small until the model uses `tool_search` to pick
+    /// the ones it actually needs. Honored by `is_deferred_tool` in
+    /// `deepagent-builtins::tool_search`.
+    fn should_defer(&self) -> bool {
+        true
+    }
 }
 
 /// Build adapters for every tool currently in `registry`, sharing the registry
@@ -101,6 +110,19 @@ mod tests {
         assert_eq!(d.name, "mcp__docs__search");
         assert_eq!(d.risk, RiskLevel::Medium);
         assert!(d.required_permissions.contains(Permission::Network));
+    }
+
+    #[tokio::test]
+    async fn adapter_overrides_should_defer_to_true() {
+        // The MCP adapter must report `should_defer == true` so the tool-search
+        // dispatcher recognizes MCP tools as deferrable. Built-ins keep the
+        // trait default of `false`.
+        let reg = registry_with_tools().await;
+        let adapters = adapters_for(reg);
+        assert!(adapters[0].should_defer());
+        // always_load uses the trait default and stays false (MCP tools are
+        // never escape-hatch always-loaded).
+        assert!(!adapters[0].always_load());
     }
 
     #[tokio::test]

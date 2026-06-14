@@ -56,6 +56,7 @@ pub mod plan_mode;
 pub mod project_map_tools;
 pub mod task_tool;
 pub mod todo_tool;
+pub mod tool_search;
 pub mod web_tools;
 
 #[cfg(feature = "http")]
@@ -103,6 +104,11 @@ pub use task_tool::{
     SubagentRequest, SubagentRunner, TaskTool, UnavailableSubagentRunner, TASK_TOOL_NAME,
 };
 pub use todo_tool::{TaskListTool, TodoItem, TodoStatus, TodoStore, TodoWriteTool};
+pub use tool_search::{
+    is_deferred_tool, parse_tool_name, score_tool, DeferredToolSnapshot, ToolSearchMode,
+    ToolSearchTool, TOOL_SEARCH_DEFAULT_MAX_RESULTS, TOOL_SEARCH_MAX_RESULTS_CAP,
+    TOOL_SEARCH_TOOL_NAME,
+};
 pub use web_tools::{SearchResult, WebClient, WebFetchTool, WebSearchTool};
 
 #[cfg(feature = "http")]

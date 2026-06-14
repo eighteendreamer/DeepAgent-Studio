@@ -168,7 +168,20 @@ pub struct ChatService {
     /// [`ChatService::cancel_session`] to stop a run; the engine checks it at
     /// each step boundary.
     cancellations: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+    /// Per-session discovered-tool sets for lazy tool loading (tool-search
+    /// spec). Each entry is the set of deferred tool names the model has
+    /// already pulled into its active toolset via `tool_search`. Sessions
+    /// without entries default to empty (= no deferred tool loaded).
+    discovered_tools: DiscoveredToolsMap,
 }
+
+/// One session's discovered-tool set: shared between the runtime tool
+/// (`ToolSearchTool`) and the chat-service's per-turn tools-array assembly.
+type DiscoveredToolSet = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
+/// Per-session map of [`DiscoveredToolSet`]s, keyed by session id.
+type DiscoveredToolsMap =
+    Arc<std::sync::Mutex<std::collections::HashMap<String, DiscoveredToolSet>>>;
 
 impl ChatService {
     /// Build a chat service over the shared DB, settings, model transport, and
@@ -196,6 +209,7 @@ impl ChatService {
             tool_results_dir,
             plan_modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cancellations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            discovered_tools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -301,6 +315,38 @@ impl ChatService {
         let plan = self.plan_mode_for_session(session_id);
         plan.set(active);
         plan.is_active()
+    }
+
+    /// Return the shared discovered-tools set for a session, creating an
+    /// empty one the first time this process sees the session. Used by the
+    /// `tool_search` built-in (it captures the handle at registration time)
+    /// and by the per-turn tools-array assembly (it reads the names back).
+    fn discovered_tools_for_session(&self, session_id: &str) -> DiscoveredToolSet {
+        let mut map = self
+            .discovered_tools
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        map.entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())))
+            .clone()
+    }
+
+    /// Snapshot the names currently in a session's discovered set
+    /// (read-only). Mostly for tests / diagnostics.
+    pub fn discovered_tool_names(&self, session_id: &str) -> Vec<String> {
+        let map = self
+            .discovered_tools
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        match map.get(session_id) {
+            Some(set) => {
+                let names = set.lock().unwrap_or_else(|p| p.into_inner());
+                let mut out: Vec<String> = names.iter().cloned().collect();
+                out.sort();
+                out
+            }
+            None => Vec::new(),
+        }
     }
 
     /// Handle slash commands locally. They create/continue a session and append
@@ -878,7 +924,27 @@ impl ChatService {
             registry.register(Arc::new(CodeMapNeighborsTool::new(backend.clone())))?;
             registry.register(Arc::new(CodeMapImpactTool::new(backend)))?;
         }
+
         Ok((registry, todo_store))
+    }
+
+    /// Wire the `tool_search` built-in into a registry that already contains
+    /// every other tool (built-ins + MCP + knowledge + code-map). No-op when
+    /// `mode == Disabled` or when `Auto` mode's deferred-tool schema budget
+    /// is below the threshold.
+    ///
+    /// Returns the **names** of every deferred tool captured in the snapshot
+    /// (empty vec when no-op). The caller uses this list to produce the
+    /// `<available-deferred-tools>` system-prompt block: undiscovered names
+    /// = `returned_names \ discovered_set`.
+    fn maybe_register_tool_search(
+        &self,
+        registry: &mut ToolRegistry,
+        mode: deepagent_builtins::ToolSearchMode,
+        discovered: DiscoveredToolSet,
+        auto_threshold_chars: usize,
+    ) -> Result<Vec<String>> {
+        register_tool_search_into(registry, mode, discovered, auto_threshold_chars)
     }
 
     /// Build a model client for the given role from persisted settings + the
@@ -980,6 +1046,50 @@ impl ChatService {
             self.build_registry(&root, deepagent_builtins::FsAccess::Full)?;
         let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
 
+        let clock = SystemClock;
+        // Bind the session to the active project (its folder path) so the
+        // sidebar groups it under the right project folder.
+        let project = root.to_string_lossy().into_owned();
+        // Continuation vs new session: when `continue_session` names an existing
+        // session, recover it and append the new turn (so one chat thread keeps
+        // accumulating); otherwise start a fresh session. Recovery also lets us
+        // rebuild the prior conversation to seed the model with context.
+        let (mut session, history, prior_events) = match continue_session {
+            Some(id_str) => {
+                let id = deepagent_core::id::SessionId::from_str(id_str)
+                    .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+                let session = Session::recover(&self.db, &clock, id)?;
+                let store = deepagent_persistence::event_store::EventStore::new(&self.db);
+                let events = store.load_session(id)?;
+                let history = conversation_from_events(&events);
+                (session, history, events)
+            }
+            None => {
+                let session = Session::create_in_project(
+                    &self.db,
+                    &clock,
+                    Some(prompt),
+                    Default::default(),
+                    Some(&project),
+                )?;
+                (session, Vec::new(), Vec::new())
+            }
+        };
+        let session_id_str = session.id().to_string();
+
+        // Restore previously-discovered tools from the event log (Phase 3C).
+        // `ToolsDiscovered` events carry deltas; the cumulative set is the
+        // union across every such event in the session history. Matters only
+        // for resumed sessions; fresh sessions have an empty `prior_events`.
+        let restored_discovered = collect_discovered_tools_from_events(&prior_events);
+        if !restored_discovered.is_empty() {
+            let set = self.discovered_tools_for_session(&session_id_str);
+            let mut guard = set.lock().unwrap_or_else(|p| p.into_inner());
+            for name in restored_discovered {
+                guard.insert(name);
+            }
+        }
+
         // Live MCP tool registration: connect enabled servers and register their
         // namespaced tools into the runtime registry, so they are advertised to
         // the model and routed like built-ins. Connection failures are
@@ -1007,21 +1117,46 @@ impl ChatService {
             }
         }
 
+        // Tool-search settings (read once per run) — used both for the main
+        // run's tool-search wiring and for seeding the sub-agent runner with
+        // the parent's discovered tool set.
+        let tool_search_mode = self.settings.tool_search_mode().unwrap_or_default();
+        let tool_search_threshold = self
+            .settings
+            .tool_search_auto_threshold()
+            .unwrap_or(SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS);
+        let tool_search_discovered = self.discovered_tools_for_session(&session_id_str);
+
         // Sub-agent orchestration (Claude-Code parity): register the `task`
         // tool into the MAIN run's registry only. Its runner executes a nested
         // agent loop over a fresh sub-registry (the same built-ins, minus
         // `task` itself) so a sub-agent cannot spawn further sub-agents. The
         // nested run uses an ephemeral in-memory session and returns only its
         // final message, keeping intermediate output out of the main context.
+        //
+        // Tool-search inheritance: the runner captures a snapshot of the
+        // parent's discovered set (cloned out of the Mutex) so the sub-agent
+        // starts with the parent's active toolset. Each sub-agent invocation
+        // gets its own fresh `Arc<Mutex<HashSet>>` seeded from that snapshot,
+        // so discoveries inside a sub-agent don't leak back into the parent
+        // (Req 4.6 default behavior, now extended with snapshot inheritance).
         {
             use deepagent_builtins::TaskTool;
             let sub_registry = Arc::new(self.build_registry(&root, access)?.0);
+            let parent_discovered_snapshot: std::collections::HashSet<String> =
+                tool_search_discovered
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
             let runner = ChatSubagentRunner {
                 client: client.clone(),
                 model: model.clone(),
                 thinking_depth,
                 registry: sub_registry,
                 root: root.clone(),
+                tool_search_mode,
+                tool_search_auto_threshold: tool_search_threshold,
+                parent_discovered_snapshot,
             };
             registry.register(Arc::new(TaskTool::new(runner, Vec::<String>::new())))?;
         }
@@ -1042,13 +1177,25 @@ impl ChatService {
             plan.clone(),
         )))?;
 
+        // Tool-search wiring (lazy tool loading). Snapshot deferred tools
+        // AFTER built-ins, MCP, knowledge, code-map, and plan-mode tools are
+        // all registered. No-op when the user hasn't enabled tool-search
+        // mode (default Disabled is byte-equivalent to the old behavior).
+        let deferred_tool_names = self.maybe_register_tool_search(
+            &mut registry,
+            tool_search_mode,
+            tool_search_discovered.clone(),
+            tool_search_threshold,
+        )?;
+
         // Advertise the registry's visible tools to the model.
         let granted = PermissionSet::developer();
-        let tools: Vec<ToolSchema> = registry
-            .visible_to(&granted)
-            .into_iter()
-            .map(|d| ToolSchema::function(d.name, d.description, d.parameters))
-            .collect();
+        let tools: Vec<ToolSchema> = build_visible_tool_schemas(
+            &registry,
+            &granted,
+            tool_search_mode,
+            &tool_search_discovered,
+        );
 
         // Wire the event sink: a channel the loop emits into, drained by a task
         // that calls `on_event`.
@@ -1105,36 +1252,6 @@ impl ChatService {
             self.bash_allow.clone(),
         );
 
-        let clock = SystemClock;
-        // Bind the session to the active project (its folder path) so the
-        // sidebar groups it under the right project folder.
-        let project = root.to_string_lossy().into_owned();
-        // Continuation vs new session: when `continue_session` names an existing
-        // session, recover it and append the new turn (so one chat thread keeps
-        // accumulating); otherwise start a fresh session. Recovery also lets us
-        // rebuild the prior conversation to seed the model with context.
-        let (mut session, history) = match continue_session {
-            Some(id_str) => {
-                let id = deepagent_core::id::SessionId::from_str(id_str)
-                    .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
-                let session = Session::recover(&self.db, &clock, id)?;
-                let store = deepagent_persistence::event_store::EventStore::new(&self.db);
-                let events = store.load_session(id)?;
-                let history = conversation_from_events(&events);
-                (session, history)
-            }
-            None => {
-                let session = Session::create_in_project(
-                    &self.db,
-                    &clock,
-                    Some(prompt),
-                    Default::default(),
-                    Some(&project),
-                )?;
-                (session, Vec::new())
-            }
-        };
-
         // Model-driven context compaction (Phase 2B): when the recovered history
         // is large (token pressure over the policy threshold), compress the
         // older turns into a structured summary and seed the agent with
@@ -1170,6 +1287,27 @@ impl ChatService {
         if let Some(git) = deepagent_workspace::detect_git_context(&root) {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&git.to_prompt_block());
+        }
+        // Tool-search announcement (Phase 3B). Lists the deferred tool names
+        // the model can `tool_search` for. Lives in the dynamic section so
+        // the static prefix stays cache-stable; emitted only when at least
+        // one deferred tool is currently undiscovered.
+        let undiscovered_deferred_names: Vec<String> = {
+            let set = tool_search_discovered
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let mut out: Vec<String> = deferred_tool_names
+                .iter()
+                .filter(|n| !set.contains(n.as_str()))
+                .cloned()
+                .collect();
+            out.sort();
+            out.dedup();
+            out
+        };
+        if let Some(block) = deferred_tools_announcement(&undiscovered_deferred_names) {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&block);
         }
         let knowledge_reminder = self
             .knowledge
@@ -1239,9 +1377,42 @@ impl ChatService {
             .with_hooks(&hooks)
             .with_cancel(cancel);
 
+        // Snapshot the current discovered set before the engine starts so we
+        // can compute the delta after — only newly-discovered names get
+        // appended to the event log (Phase 3C). The set may have been
+        // pre-populated above from prior `ToolsDiscovered` events.
+        let discovered_before_run: std::collections::HashSet<String> = tool_search_discovered
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+
         // Run the loop. Errors are surfaced as a terminal RunFailed event so the
         // UI always gets a clean end, then returned to the caller.
         let run_result = engine.run(&mut session, task, &mut agent).await;
+
+        // Persist the discovered-tools delta (Phase 3C). Anything in the
+        // current set that wasn't there before the run is new — append it as
+        // a `ToolsDiscovered` event so a future resume reconstructs the same
+        // active toolset without forcing the model to re-issue `tool_search`.
+        let new_discovered: Vec<String> = {
+            let now = tool_search_discovered
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let mut out: Vec<String> = now
+                .iter()
+                .filter(|n| !discovered_before_run.contains(n.as_str()))
+                .cloned()
+                .collect();
+            out.sort();
+            out
+        };
+        if !new_discovered.is_empty() {
+            if let Err(e) = session.append(EventPayload::ToolsDiscovered {
+                names: new_discovered,
+            }) {
+                tracing::warn!(error = %e, "failed to persist ToolsDiscovered event");
+            }
+        }
 
         // Cost recording: persist this run's token cost (Phase 1B). Done before
         // dropping the agent so `cumulative_usage()` is still reachable. No-op
@@ -1331,6 +1502,16 @@ struct ChatSubagentRunner {
     thinking_depth: ThinkingDepth,
     registry: Arc<ToolRegistry>,
     root: PathBuf,
+    /// Tool-search mode at the time the parent session built this runner.
+    /// Captured per-runner (not per-call) so swapping the user setting
+    /// mid-run doesn't change behavior of an in-flight sub-agent.
+    tool_search_mode: deepagent_builtins::ToolSearchMode,
+    /// Auto-mode threshold inherited from the parent.
+    tool_search_auto_threshold: usize,
+    /// Snapshot of parent's discovered tool names at runner construction.
+    /// Each `run()` call seeds a fresh `Arc<Mutex<HashSet>>` from this
+    /// snapshot — sub-agent discoveries DON'T propagate back to the parent.
+    parent_discovered_snapshot: std::collections::HashSet<String>,
 }
 
 #[async_trait::async_trait]
@@ -1338,14 +1519,36 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
     async fn run(&self, request: deepagent_builtins::SubagentRequest) -> Result<String> {
         use deepagent_runtime::{ModelAgent, RunOutcome, RuntimeConfig, RuntimeEngine};
 
-        // A sub-agent gets the same tool schemas (minus task) advertised to it.
+        // Sub-agent gets a CLONE of the parent's discovered set so it starts
+        // with the same active toolset, but writes here don't affect the
+        // parent (independent context — Req 4.6).
+        let sub_discovered: DiscoveredToolSet = Arc::new(std::sync::Mutex::new(
+            self.parent_discovered_snapshot.clone(),
+        ));
+
+        // Clone the (shared) parent sub-registry so we can register the
+        // sub-agent's own `tool_search` tool without mutating the Arc the
+        // chat_service hands out to every sub-agent invocation. ToolRegistry
+        // is a `BTreeMap<String, ToolSpec>` clone — cheap by Rust standards
+        // and amortized over the entire sub-agent run.
+        let mut sub_registry: ToolRegistry = (*self.registry).clone();
+        let _ = register_tool_search_into(
+            &mut sub_registry,
+            self.tool_search_mode,
+            sub_discovered.clone(),
+            self.tool_search_auto_threshold,
+        );
+
+        // A sub-agent gets the same tool schemas (minus task) advertised to
+        // it, with deferred-but-not-yet-discovered tools filtered out exactly
+        // like the main run.
         let granted = PermissionSet::developer();
-        let tools: Vec<ToolSchema> = self
-            .registry
-            .visible_to(&granted)
-            .into_iter()
-            .map(|d| ToolSchema::function(d.name, d.description, d.parameters))
-            .collect();
+        let tools: Vec<ToolSchema> = build_visible_tool_schemas(
+            &sub_registry,
+            &granted,
+            self.tool_search_mode,
+            &sub_discovered,
+        );
 
         let system = format!(
             "{base}{boundary}# Sub-agent task\nYou are a focused sub-agent. Do exactly the \
@@ -1377,7 +1580,7 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
             permissions: granted,
             ..Default::default()
         };
-        let engine = RuntimeEngine::new(&self.registry, Default::default(), config);
+        let engine = RuntimeEngine::new(&sub_registry, Default::default(), config);
         match engine.run(&mut session, task, &mut agent).await? {
             RunOutcome::Completed(msg) => Ok(msg),
             RunOutcome::AwaitingApproval(msg) => {
@@ -1462,6 +1665,169 @@ fn on_off(value: bool) -> &'static str {
     } else {
         "off"
     }
+}
+
+/// Decide whether to actually activate tool-search for this registry.
+/// `Disabled` is rejected upstream; `Enabled` is always active; `Auto` is
+/// active only when the deferred-tool schema size meets `threshold_chars`.
+fn should_activate_tool_search(
+    registry: &ToolRegistry,
+    mode: deepagent_builtins::ToolSearchMode,
+    threshold_chars: usize,
+) -> bool {
+    match mode {
+        deepagent_builtins::ToolSearchMode::Disabled => false,
+        deepagent_builtins::ToolSearchMode::Enabled => true,
+        deepagent_builtins::ToolSearchMode::Auto => {
+            let total: usize = registry
+                .iter_specs()
+                .filter(|spec| deepagent_builtins::is_deferred_tool(spec.tool.as_ref(), mode))
+                .map(|spec| {
+                    spec.descriptor.name.len()
+                        + spec.descriptor.description.len()
+                        + spec.descriptor.parameters.to_string().len()
+                })
+                .sum();
+            total >= threshold_chars
+        }
+    }
+}
+
+/// Register the `tool_search` built-in into `registry` if `mode` activates
+/// (subject to the threshold for `Auto`). Returns the names of every
+/// deferred tool the snapshot captured (or empty when the mode short-
+/// circuits / no tools are eligible).
+///
+/// Free function so both the main session (via `ChatService`) and the
+/// sub-agent runner (`ChatSubagentRunner`) can call it without sharing
+/// service-level state.
+fn register_tool_search_into(
+    registry: &mut ToolRegistry,
+    mode: deepagent_builtins::ToolSearchMode,
+    discovered: DiscoveredToolSet,
+    auto_threshold_chars: usize,
+) -> Result<Vec<String>> {
+    if !mode.is_active() || !should_activate_tool_search(registry, mode, auto_threshold_chars) {
+        return Ok(Vec::new());
+    }
+    let deferred: Vec<deepagent_builtins::DeferredToolSnapshot> = registry
+        .iter_specs()
+        .filter(|spec| deepagent_builtins::is_deferred_tool(spec.tool.as_ref(), mode))
+        .map(|spec| deepagent_builtins::DeferredToolSnapshot {
+            name: spec.descriptor.name.clone(),
+            description: spec.descriptor.description.clone(),
+        })
+        .collect();
+    if deferred.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names: Vec<String> = deferred.iter().map(|s| s.name.clone()).collect();
+    registry.register(Arc::new(deepagent_builtins::ToolSearchTool::new(
+        deferred, discovered,
+    )))?;
+    Ok(names)
+}
+
+/// Extract the cumulative set of discovered-tool names from a session's
+/// event stream. Walks every `ToolsDiscovered` payload (each carrying a
+/// delta) and returns the union, preserving first-seen order. Used at the
+/// start of `run_in_session` to seed `tool_search_discovered` on resume.
+fn collect_discovered_tools_from_events(events: &[deepagent_core::event::Event]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for e in events {
+        if let EventPayload::ToolsDiscovered { names } = &e.payload {
+            for name in names {
+                if seen.insert(name.clone()) {
+                    out.push(name.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Render the dynamic-section "available deferred tools" block.
+///
+/// Returned only when `undiscovered` is non-empty; otherwise `None` so the
+/// caller can skip the append and avoid burning cache on an empty section.
+/// The block lives in the dynamic section (after `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`)
+/// so the static prefix stays byte-stable across turns and across modes.
+fn deferred_tools_announcement(undiscovered: &[String]) -> Option<String> {
+    if undiscovered.is_empty() {
+        return None;
+    }
+    let mut out =
+        String::with_capacity(256 + undiscovered.iter().map(|n| n.len() + 4).sum::<usize>());
+    out.push_str(
+        "## Lazy-loaded tools
+
+The tools below are NOT yet loaded in this session — only their names are visible. To call one, first invoke `tool_search` to fetch its full schema:
+- `select:Name1,Name2` — load these specific names.
+- `slack send` — keyword search; returns the best matches by name + description.
+- `+slack send` — `+`-prefixed terms are required (must appear in name or description).
+
+Once the matching schema lands, the tool becomes callable on the next turn.
+
+<available-deferred-tools>
+",
+    );
+    for name in undiscovered {
+        out.push_str("- ");
+        out.push_str(name);
+        out.push('\n');
+    }
+    out.push_str("</available-deferred-tools>");
+    Some(out)
+}
+
+/// Build the per-turn `tools` array sent to the model.
+///
+/// When `mode == Disabled`, this is byte-identical to the pre-feature
+/// implementation: every tool returned by `registry.visible_to(granted)` is
+/// converted to a `ToolSchema`.
+///
+/// When `mode.is_active()`, deferred tools whose name is NOT in `discovered`
+/// are filtered out — the model only sees their names via the
+/// `<available-deferred-tools>` block (Phase 3B / Task 5) and pulls schemas
+/// in on demand through `tool_search`.
+fn build_visible_tool_schemas(
+    registry: &ToolRegistry,
+    granted: &PermissionSet,
+    mode: deepagent_builtins::ToolSearchMode,
+    discovered: &DiscoveredToolSet,
+) -> Vec<ToolSchema> {
+    let active = mode.is_active();
+    let descriptors = registry.visible_to(granted);
+    if !active {
+        return descriptors
+            .into_iter()
+            .map(|d| ToolSchema::function(d.name, d.description, d.parameters))
+            .collect();
+    }
+    let discovered_snapshot: std::collections::HashSet<String> = discovered
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .cloned()
+        .collect();
+    descriptors
+        .into_iter()
+        .filter(|d| {
+            // Look up the live tool spec to apply `is_deferred_tool` (which
+            // touches `should_defer` / `always_load`). If the tool isn't in
+            // the registry (race with concurrent edits) keep it visible
+            // — that matches the pre-feature default.
+            let Some(spec) = registry.get(&d.name) else {
+                return true;
+            };
+            if !deepagent_builtins::is_deferred_tool(spec.tool.as_ref(), mode) {
+                return true;
+            }
+            discovered_snapshot.contains(&d.name)
+        })
+        .map(|d| ToolSchema::function(d.name, d.description, d.parameters))
+        .collect()
 }
 
 /// Collect up to `cap` verifier-eligible files from `root`, walking one
@@ -2049,6 +2415,451 @@ mod tests {
         assert!(kb
             .passive_block("how do I bake a chocolate cake")
             .is_empty());
+    }
+
+    // ----- Tool-search per-turn tools-array filter (Phase 3A) -----
+
+    /// A stub tool with configurable name + `should_defer` so we can build a
+    /// registry that mixes deferred and non-deferred tools without dragging
+    /// in the full builtins set.
+    #[derive(Debug)]
+    struct FilterTestTool {
+        name: String,
+        should_defer: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl deepagent_tools::Tool for FilterTestTool {
+        fn descriptor(&self) -> deepagent_tools::ToolDescriptor {
+            deepagent_tools::ToolDescriptor {
+                name: self.name.clone(),
+                description: format!("test tool {}", self.name),
+                parameters: serde_json::json!({"type": "object"}),
+                risk: deepagent_tools::permission::RiskLevel::Safe,
+                required_permissions: deepagent_tools::PermissionSet::read_only(),
+            }
+        }
+        async fn invoke(
+            &self,
+            _: serde_json::Value,
+        ) -> deepagent_core::error::Result<deepagent_tools::ToolOutput> {
+            Ok(deepagent_tools::ToolOutput::success(serde_json::json!(
+                null
+            )))
+        }
+        fn should_defer(&self) -> bool {
+            self.should_defer
+        }
+    }
+
+    fn registry_with(tools: Vec<(String, bool)>) -> ToolRegistry {
+        let mut reg = ToolRegistry::new();
+        for (name, defer) in tools {
+            reg.register(Arc::new(FilterTestTool {
+                name,
+                should_defer: defer,
+            }))
+            .unwrap();
+        }
+        reg
+    }
+
+    #[test]
+    fn disabled_mode_passes_every_visible_tool_through() {
+        // With ToolSearchMode::Disabled, build_visible_tool_schemas must
+        // behave byte-for-byte like the pre-feature implementation: every
+        // visible tool gets a ToolSchema, no filtering on `should_defer`.
+        let reg = registry_with(vec![
+            ("read_file".into(), false),
+            ("mcp__svc__one".into(), true),
+            ("mcp__svc__two".into(), true),
+        ]);
+        let granted = PermissionSet::developer();
+        let discovered = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let tools = build_visible_tool_schemas(
+            &reg,
+            &granted,
+            deepagent_builtins::ToolSearchMode::Disabled,
+            &discovered,
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.function.name.as_str()).collect();
+        // All three present; names sorted deterministically by registry's BTreeMap.
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"mcp__svc__one"));
+        assert!(names.contains(&"mcp__svc__two"));
+        assert_eq!(tools.len(), 3);
+    }
+
+    #[test]
+    fn enabled_mode_with_empty_discovered_set_hides_deferred_tools() {
+        let reg = registry_with(vec![
+            ("read_file".into(), false),
+            ("mcp__svc__one".into(), true),
+            ("mcp__svc__two".into(), true),
+        ]);
+        let granted = PermissionSet::developer();
+        let discovered = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let tools = build_visible_tool_schemas(
+            &reg,
+            &granted,
+            deepagent_builtins::ToolSearchMode::Enabled,
+            &discovered,
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.function.name.as_str()).collect();
+        assert!(names.contains(&"read_file"));
+        assert!(!names.contains(&"mcp__svc__one"));
+        assert!(!names.contains(&"mcp__svc__two"));
+    }
+
+    #[test]
+    fn enabled_mode_surfaces_discovered_deferred_tools() {
+        let reg = registry_with(vec![
+            ("read_file".into(), false),
+            ("mcp__svc__one".into(), true),
+            ("mcp__svc__two".into(), true),
+        ]);
+        let granted = PermissionSet::developer();
+        let mut set = std::collections::HashSet::new();
+        set.insert("mcp__svc__one".to_string());
+        let discovered = Arc::new(std::sync::Mutex::new(set));
+        let tools = build_visible_tool_schemas(
+            &reg,
+            &granted,
+            deepagent_builtins::ToolSearchMode::Enabled,
+            &discovered,
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.function.name.as_str()).collect();
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"mcp__svc__one"));
+        // The non-discovered deferred tool stays hidden.
+        assert!(!names.contains(&"mcp__svc__two"));
+    }
+
+    #[test]
+    fn auto_threshold_short_circuits_when_below_8000_chars() {
+        // Three tiny MCP tools whose total schema is well below 8 KB → Auto
+        // mode should NOT activate (function returns false).
+        let reg = registry_with(vec![
+            ("mcp__a__op".into(), true),
+            ("mcp__b__op".into(), true),
+            ("mcp__c__op".into(), true),
+        ]);
+        assert!(!should_activate_tool_search(
+            &reg,
+            deepagent_builtins::ToolSearchMode::Auto,
+            SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS,
+        ));
+    }
+
+    #[test]
+    fn auto_threshold_activates_when_schema_size_exceeds_threshold() {
+        // Build one tool with a description big enough to exceed the threshold
+        // on its own (the test threshold is 8000; we push 10K of description).
+        let reg = registry_with(vec![("mcp__svc__heavy".into(), true)]);
+        // Replace the descriptor's description directly via a hand-rolled tool.
+        // Easier: register a fresh tool whose descriptor is enormous.
+        #[derive(Debug)]
+        struct HeavyTool;
+        #[async_trait::async_trait]
+        impl deepagent_tools::Tool for HeavyTool {
+            fn descriptor(&self) -> deepagent_tools::ToolDescriptor {
+                deepagent_tools::ToolDescriptor {
+                    name: "mcp__svc__bulky".into(),
+                    description: "x".repeat(10_000),
+                    parameters: serde_json::json!({"type": "object"}),
+                    risk: deepagent_tools::permission::RiskLevel::Safe,
+                    required_permissions: deepagent_tools::PermissionSet::read_only(),
+                }
+            }
+            async fn invoke(
+                &self,
+                _: serde_json::Value,
+            ) -> deepagent_core::error::Result<deepagent_tools::ToolOutput> {
+                Ok(deepagent_tools::ToolOutput::success(serde_json::json!(
+                    null
+                )))
+            }
+            fn should_defer(&self) -> bool {
+                true
+            }
+        }
+        let mut reg = reg;
+        reg.register(Arc::new(HeavyTool)).unwrap();
+        assert!(should_activate_tool_search(
+            &reg,
+            deepagent_builtins::ToolSearchMode::Auto,
+            SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS,
+        ));
+    }
+
+    #[test]
+    fn enabled_mode_always_activates() {
+        let reg = registry_with(vec![("mcp__a__op".into(), true)]);
+        assert!(should_activate_tool_search(
+            &reg,
+            deepagent_builtins::ToolSearchMode::Enabled,
+            SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS,
+        ));
+    }
+
+    #[test]
+    fn disabled_mode_never_activates() {
+        let reg = registry_with(vec![("mcp__a__op".into(), true)]);
+        assert!(!should_activate_tool_search(
+            &reg,
+            deepagent_builtins::ToolSearchMode::Disabled,
+            SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS,
+        ));
+    }
+
+    #[test]
+    fn auto_threshold_honors_custom_value() {
+        // With a tighter threshold, a small registry that wouldn't trip the
+        // default 8000 must activate Auto.
+        let reg = registry_with(vec![
+            ("mcp__a__op".into(), true),
+            ("mcp__b__op".into(), true),
+            ("mcp__c__op".into(), true),
+        ]);
+        assert!(!should_activate_tool_search(
+            &reg,
+            deepagent_builtins::ToolSearchMode::Auto,
+            SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS,
+        ));
+        assert!(should_activate_tool_search(
+            &reg,
+            deepagent_builtins::ToolSearchMode::Auto,
+            100,
+        ));
+    }
+
+    // ----- register_tool_search_into (free function — used by both main + sub-agent paths) -----
+
+    #[test]
+    fn register_tool_search_into_no_op_when_disabled() {
+        let mut reg = registry_with(vec![
+            ("read_file".into(), false),
+            ("mcp__svc__one".into(), true),
+        ]);
+        let discovered = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let names = register_tool_search_into(
+            &mut reg,
+            deepagent_builtins::ToolSearchMode::Disabled,
+            discovered,
+            SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS,
+        )
+        .unwrap();
+        // No tool_search registered, no names returned.
+        assert!(names.is_empty());
+        assert!(reg.get(deepagent_builtins::TOOL_SEARCH_TOOL_NAME).is_none());
+    }
+
+    #[test]
+    fn register_tool_search_into_registers_when_enabled() {
+        let mut reg = registry_with(vec![
+            ("read_file".into(), false),
+            ("mcp__svc__one".into(), true),
+            ("mcp__svc__two".into(), true),
+        ]);
+        let discovered = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let names = register_tool_search_into(
+            &mut reg,
+            deepagent_builtins::ToolSearchMode::Enabled,
+            discovered,
+            SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS,
+        )
+        .unwrap();
+        // Two MCP tools deferred; tool_search now registered.
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"mcp__svc__one".to_string()));
+        assert!(names.contains(&"mcp__svc__two".to_string()));
+        assert!(reg.get(deepagent_builtins::TOOL_SEARCH_TOOL_NAME).is_some());
+    }
+
+    #[test]
+    fn register_tool_search_into_seeds_discovered_set_for_writes() {
+        // Verifies the wired `tool_search` tool actually mutates the
+        // discovered set we passed in. Sub-agent inheritance relies on
+        // sub-agent's writes going into a *separate* set from the parent's.
+        let mut reg = registry_with(vec![("mcp__svc__a".into(), true)]);
+        let discovered = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        register_tool_search_into(
+            &mut reg,
+            deepagent_builtins::ToolSearchMode::Enabled,
+            discovered.clone(),
+            SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS,
+        )
+        .unwrap();
+        // Invoke tool_search to add mcp__svc__a to discovered.
+        let tool_search = reg
+            .get(deepagent_builtins::TOOL_SEARCH_TOOL_NAME)
+            .unwrap()
+            .tool
+            .clone();
+        let out = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(tool_search.invoke(serde_json::json!({"query": "select:mcp__svc__a"})))
+            .unwrap();
+        assert!(out.ok);
+        assert!(discovered.lock().unwrap().contains("mcp__svc__a"));
+    }
+
+    // ----- deferred_tools_announcement (Phase 3B) -----
+
+    #[test]
+    fn announcement_is_none_when_undiscovered_is_empty() {
+        // Disabled mode / no deferred tools / fully discovered → no block at
+        // all so the dynamic section stays clean.
+        assert!(deferred_tools_announcement(&[]).is_none());
+    }
+
+    #[test]
+    fn announcement_lists_names_in_order() {
+        let names = vec!["mcp__alpha__one".to_string(), "mcp__beta__two".to_string()];
+        let block = deferred_tools_announcement(&names).unwrap();
+        // Has the explanatory header.
+        assert!(block.starts_with("## Lazy-loaded tools"));
+        // Lists each name on its own bullet line inside the XML envelope.
+        assert!(block.contains("- mcp__alpha__one"));
+        assert!(block.contains("- mcp__beta__two"));
+        // Envelope tags are present and ordered correctly.
+        let open_idx = block.find("<available-deferred-tools>").unwrap();
+        let close_idx = block.find("</available-deferred-tools>").unwrap();
+        assert!(open_idx < close_idx);
+        // The first bullet must be inside the envelope (between open and close).
+        let first_bullet = block.find("- mcp__alpha__one").unwrap();
+        assert!(first_bullet > open_idx && first_bullet < close_idx);
+    }
+
+    #[test]
+    fn announcement_explains_select_and_keyword_syntax() {
+        let names = vec!["x".to_string()];
+        let block = deferred_tools_announcement(&names).unwrap();
+        assert!(block.contains("select:"));
+        assert!(block.contains("keyword search"));
+        assert!(block.contains("+"));
+        assert!(block.contains("required"));
+    }
+
+    #[test]
+    fn announcement_does_not_appear_in_static_prompt_for_disabled_mode() {
+        // The static prefix must NOT mention deferred-tool machinery — that's
+        // the whole point of putting the block in the dynamic section. This
+        // test guards against accidental leakage into `system_prompt_base`.
+        let base = crate::system_prompt::system_prompt_base();
+        assert!(!base.contains("<available-deferred-tools>"));
+        assert!(!base.contains("Lazy-loaded tools"));
+    }
+
+    // ----- Phase 3C: ToolsDiscovered persistence + restore -----
+
+    fn ev(seq: u64, payload: EventPayload) -> deepagent_core::event::Event {
+        deepagent_core::event::Event {
+            id: deepagent_core::id::EventId::new(),
+            session_id: deepagent_core::id::SessionId::nil(),
+            sequence: seq,
+            timestamp: deepagent_core::clock::Timestamp::from_millis(0),
+            payload,
+        }
+    }
+
+    #[test]
+    fn collect_discovered_returns_empty_for_no_events() {
+        assert!(collect_discovered_tools_from_events(&[]).is_empty());
+    }
+
+    #[test]
+    fn collect_discovered_unions_across_events_preserving_order() {
+        // Two ToolsDiscovered events. Resume must yield the union, with
+        // first-seen order preserved so the tools-array assembly is stable.
+        let events = vec![
+            ev(
+                0,
+                EventPayload::ToolsDiscovered {
+                    names: vec!["mcp__a__one".into(), "mcp__b__two".into()],
+                },
+            ),
+            ev(
+                1,
+                EventPayload::MessageAppended {
+                    message: deepagent_core::message::Message::user("hi"),
+                },
+            ),
+            ev(
+                2,
+                EventPayload::ToolsDiscovered {
+                    names: vec!["mcp__b__two".into(), "mcp__c__three".into()],
+                },
+            ),
+        ];
+        let out = collect_discovered_tools_from_events(&events);
+        assert_eq!(
+            out,
+            vec![
+                "mcp__a__one".to_string(),
+                "mcp__b__two".to_string(),
+                "mcp__c__three".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_discovered_skips_unrelated_payloads() {
+        let events = vec![
+            ev(
+                0,
+                EventPayload::SessionStarted {
+                    title: None,
+                    mode: Default::default(),
+                },
+            ),
+            ev(
+                1,
+                EventPayload::Note {
+                    text: "hello".into(),
+                },
+            ),
+        ];
+        assert!(collect_discovered_tools_from_events(&events).is_empty());
+    }
+
+    #[test]
+    fn tools_discovered_event_kind_label() {
+        // Kind label is the discriminant string used by analytics / DB
+        // indexing. Stability matters — be loud if anyone changes it.
+        let payload = EventPayload::ToolsDiscovered { names: vec![] };
+        assert_eq!(payload.kind(), "tools_discovered");
+    }
+
+    #[tokio::test]
+    async fn discovered_tools_for_session_persists_across_reads() {
+        // The per-session set is keyed by id and shared via Arc; the same id
+        // returns the same Arc instance.
+        let (db, settings, dir) = seeded().await;
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path());
+        let s1 = chat.discovered_tools_for_session("ses_x");
+        let s2 = chat.discovered_tools_for_session("ses_x");
+        s1.lock().unwrap().insert("mcp__svc__op".to_string());
+        // Same id → writes through one handle visible via the other.
+        assert!(s2.lock().unwrap().contains("mcp__svc__op"));
+        // Different id → separate set.
+        let s3 = chat.discovered_tools_for_session("ses_y");
+        assert!(!s3.lock().unwrap().contains("mcp__svc__op"));
+    }
+
+    #[tokio::test]
+    async fn discovered_tool_names_returns_sorted_snapshot() {
+        let (db, settings, dir) = seeded().await;
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path());
+        let set = chat.discovered_tools_for_session("ses_x");
+        {
+            let mut g = set.lock().unwrap();
+            g.insert("zeta".into());
+            g.insert("alpha".into());
+            g.insert("beta".into());
+        }
+        let names = chat.discovered_tool_names("ses_x");
+        assert_eq!(names, vec!["alpha", "beta", "zeta"]);
     }
 
     #[tokio::test]

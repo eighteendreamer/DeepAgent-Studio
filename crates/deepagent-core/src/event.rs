@@ -141,6 +141,19 @@ pub enum EventPayload {
         /// Wall-clock duration of the run in milliseconds.
         duration_ms: u64,
     },
+
+    /// One or more deferred tools were discovered via the `tool_search`
+    /// built-in (tool-search spec, Phase 3C). Persisted append-only so a
+    /// session that's resumed can rebuild its active tool set without the
+    /// model re-issuing `tool_search` for tools it already has access to.
+    ///
+    /// The payload carries only the **delta** (names newly added in this
+    /// turn), not the full set; the resume path accumulates across all
+    /// `ToolsDiscovered` events to reconstruct the cumulative state.
+    ToolsDiscovered {
+        /// Tool names added to the active set in this turn.
+        names: Vec<String>,
+    },
 }
 
 impl EventPayload {
@@ -158,6 +171,7 @@ impl EventPayload {
             EventPayload::ContextCompacted { .. } => "context_compacted",
             EventPayload::Note { .. } => "note",
             EventPayload::UsageRecorded { .. } => "usage_recorded",
+            EventPayload::ToolsDiscovered { .. } => "tools_discovered",
         }
     }
 }
