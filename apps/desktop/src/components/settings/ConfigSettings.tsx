@@ -10,9 +10,23 @@ import {
   type ToolSearchMode,
   getToolSearchThreshold,
   setToolSearchThreshold,
+  getSkillCatalogEnabled,
+  setSkillCatalogEnabled,
+  getSkillCatalogCharBudget,
+  setSkillCatalogCharBudget,
+  getSkillInstallAiReviewEnabled,
+  setSkillInstallAiReviewEnabled,
+  getSkillInstallAiReviewModel,
+  setSkillInstallAiReviewModel,
 } from "../../api";
 import packageJson from "../../../package.json";
 import { message } from "../message";
+
+// Sentinel "default model" option for the AI review model dropdown. Maps to
+// `null` on the backend (R10.4: "default = follow chat model").
+const SKILL_REVIEW_MODEL_DEFAULT = "__default__";
+// Hard cap on the catalog reminder character budget input (R10.2 / task 21).
+const SKILL_CATALOG_BUDGET_MAX = 32000;
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
@@ -95,12 +109,24 @@ export function ConfigSettings() {
   const [toolSearchThresholdState, setToolSearchThresholdState] = useState<number>(8000);
   const [thresholdInput, setThresholdInput] = useState<string>("8000");
 
+  // Skill marketplace settings (R10.1-R10.5 / task 21).
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [skillCatalogEnabled, setSkillCatalogEnabledState] = useState<boolean>(true);
+  const [skillCatalogBudget, setSkillCatalogBudgetState] = useState<number>(8000);
+  const [skillCatalogBudgetInput, setSkillCatalogBudgetInput] = useState<string>("8000");
+  const [skillReviewEnabled, setSkillReviewEnabledState] = useState<boolean>(true);
+  const [skillReviewModel, setSkillReviewModelState] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     getSettings()
       .then((settings) => {
-        if (!cancelled && settings?.sandbox_mode) {
+        if (cancelled) return;
+        if (settings?.sandbox_mode) {
           setSandboxSetting(settings.sandbox_mode);
+        }
+        if (settings?.available_models) {
+          setAvailableModels(settings.available_models);
         }
       })
       .catch((e) => console.error("get_settings failed:", e));
@@ -118,6 +144,30 @@ export function ConfigSettings() {
         }
       })
       .catch((e) => console.error("get_tool_search_threshold failed:", e));
+    // Skill marketplace settings (R10).
+    getSkillCatalogEnabled()
+      .then((v) => {
+        if (!cancelled) setSkillCatalogEnabledState(v);
+      })
+      .catch((e) => console.error("get_skill_catalog_enabled failed:", e));
+    getSkillCatalogCharBudget()
+      .then((v) => {
+        if (!cancelled) {
+          setSkillCatalogBudgetState(v);
+          setSkillCatalogBudgetInput(String(v));
+        }
+      })
+      .catch((e) => console.error("get_skill_catalog_char_budget failed:", e));
+    getSkillInstallAiReviewEnabled()
+      .then((v) => {
+        if (!cancelled) setSkillReviewEnabledState(v);
+      })
+      .catch((e) => console.error("get_skill_install_ai_review_enabled failed:", e));
+    getSkillInstallAiReviewModel()
+      .then((v) => {
+        if (!cancelled) setSkillReviewModelState(v);
+      })
+      .catch((e) => console.error("get_skill_install_ai_review_model failed:", e));
     return () => {
       cancelled = true;
     };
@@ -308,6 +358,164 @@ export function ConfigSettings() {
               />
               <span className="text-[12px] text-text-secondary">chars</span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Section: 技能 (skill marketplace) */}
+      <div className="mb-12 max-w-[700px]">
+        <h2 className="text-[15px] font-medium text-text-base mb-1">技能</h2>
+        <div className="text-[12px] text-text-secondary mb-6">
+          控制 skill 目录 reminder 的注入与字符预算,以及第三方 skill 安装前的 AI 安全复审。
+        </div>
+        <div className="border border-border-theme rounded-xl shadow-[0_1px_2px_rgb(0,0,0,0.02)] bg-white">
+          <div className="flex items-center justify-between p-4 border-b border-border-theme">
+            <div>
+              <div className="text-[14px] font-medium text-text-base mb-1">技能目录 reminder</div>
+              <div className="text-[12px] text-text-secondary">
+                关闭后系统消息不再注入 <code className="font-mono px-1 py-0.5 bg-gray-100 rounded">&lt;available-skills&gt;</code> 块,SkillTool 仍可被模型主动调用。
+              </div>
+            </div>
+            <ToggleSwitch
+              checked={skillCatalogEnabled}
+              onChange={async () => {
+                const next = !skillCatalogEnabled;
+                const previous = skillCatalogEnabled;
+                setSkillCatalogEnabledState(next);
+                try {
+                  const persisted = await setSkillCatalogEnabled(next);
+                  setSkillCatalogEnabledState(persisted);
+                } catch (e) {
+                  setSkillCatalogEnabledState(previous);
+                  message.error("技能目录 reminder 保存失败");
+                  console.error("set_skill_catalog_enabled failed:", e);
+                }
+              }}
+            />
+          </div>
+          <div
+            className={`flex items-center justify-between p-4 border-b border-border-theme ${
+              skillCatalogEnabled ? "" : "opacity-50 pointer-events-none"
+            }`}
+          >
+            <div>
+              <div className="text-[14px] font-medium text-text-base mb-1">字符预算</div>
+              <div className="text-[12px] text-text-secondary">
+                目录 reminder 总字符上限。范围 0 - {SKILL_CATALOG_BUDGET_MAX};设为 0 等价于关闭 reminder。建议 4000 - 16000。
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                max={SKILL_CATALOG_BUDGET_MAX}
+                step={500}
+                disabled={!skillCatalogEnabled}
+                value={skillCatalogBudgetInput}
+                onChange={(e) => setSkillCatalogBudgetInput(e.target.value)}
+                onBlur={async () => {
+                  const trimmed = skillCatalogBudgetInput.trim();
+                  const previous = skillCatalogBudget;
+                  if (trimmed === "") {
+                    setSkillCatalogBudgetInput(String(previous));
+                    return;
+                  }
+                  const parsed = Number.parseInt(trimmed, 10);
+                  if (Number.isNaN(parsed) || parsed < 0 || parsed > SKILL_CATALOG_BUDGET_MAX) {
+                    setSkillCatalogBudgetInput(String(previous));
+                    message.error(`字符预算必须在 0 - ${SKILL_CATALOG_BUDGET_MAX} 之间`);
+                    return;
+                  }
+                  try {
+                    const persisted = await setSkillCatalogCharBudget(parsed);
+                    setSkillCatalogBudgetState(persisted);
+                    setSkillCatalogBudgetInput(String(persisted));
+                  } catch (e) {
+                    setSkillCatalogBudgetInput(String(previous));
+                    message.error("字符预算保存失败");
+                    console.error("set_skill_catalog_char_budget failed:", e);
+                  }
+                }}
+                className="w-[110px] px-2 py-1 text-[13px] font-mono border border-border-theme rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:bg-gray-50"
+              />
+              <span className="text-[12px] text-text-secondary">chars</span>
+            </div>
+          </div>
+          <div className="flex items-center justify-between p-4 border-b border-border-theme">
+            <div>
+              <div className="text-[14px] font-medium text-text-base mb-1">安装前 AI 安全复审</div>
+              <div className="text-[12px] text-text-secondary">
+                从市场安装第三方 skill 时,在静态扫描之外额外调一次 LLM 评估风险。关闭后只看扫描报告。
+              </div>
+            </div>
+            <ToggleSwitch
+              checked={skillReviewEnabled}
+              onChange={async () => {
+                const next = !skillReviewEnabled;
+                const previous = skillReviewEnabled;
+                setSkillReviewEnabledState(next);
+                try {
+                  const persisted = await setSkillInstallAiReviewEnabled(next);
+                  setSkillReviewEnabledState(persisted);
+                } catch (e) {
+                  setSkillReviewEnabledState(previous);
+                  message.error("AI 安全复审开关保存失败");
+                  console.error("set_skill_install_ai_review_enabled failed:", e);
+                }
+              }}
+            />
+          </div>
+          <div
+            className={`flex items-center justify-between p-4 ${
+              skillReviewEnabled ? "" : "opacity-50 pointer-events-none"
+            }`}
+          >
+            <div>
+              <div className="text-[14px] font-medium text-text-base mb-1">复审使用的模型</div>
+              <div className="text-[12px] text-text-secondary">
+                选择默认时,AI 复审跟随当前 chat 模型;否则固定使用所选模型。
+              </div>
+            </div>
+            {(() => {
+              const reviewOptions: DropdownOption[] = [
+                {
+                  title: SKILL_REVIEW_MODEL_DEFAULT,
+                  description: "复审跟随当前 chat 模型",
+                  ...({ displayTitle: "默认（跟随 chat 模型）" } as object),
+                },
+                ...availableModels.map((m) => ({
+                  title: m,
+                  description: `固定使用 ${m}`,
+                  ...({ displayTitle: m } as object),
+                })),
+              ];
+              const selectedTitle =
+                skillReviewModel === null
+                  ? "默认（跟随 chat 模型）"
+                  : (reviewOptions.find(
+                      (o) => (o as { displayTitle?: string }).displayTitle === skillReviewModel
+                    ) as { displayTitle?: string } | undefined)?.displayTitle ?? skillReviewModel;
+              return (
+                <ComplexDropdown
+                  options={reviewOptions}
+                  selectedTitle={selectedTitle}
+                  onChange={async (display) => {
+                    const next: string | null =
+                      display === "默认（跟随 chat 模型）" ? null : display;
+                    const previous = skillReviewModel;
+                    setSkillReviewModelState(next);
+                    try {
+                      const persisted = await setSkillInstallAiReviewModel(next);
+                      setSkillReviewModelState(persisted);
+                    } catch (e) {
+                      setSkillReviewModelState(previous);
+                      message.error("复审模型保存失败");
+                      console.error("set_skill_install_ai_review_model failed:", e);
+                    }
+                  }}
+                />
+              );
+            })()}
           </div>
         </div>
       </div>

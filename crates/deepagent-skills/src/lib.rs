@@ -42,7 +42,9 @@
 pub mod frontmatter;
 pub mod installer;
 pub mod loader;
+pub mod marketplace;
 pub mod registry;
+pub mod scanner;
 pub mod skill;
 
 use std::path::PathBuf;
@@ -52,8 +54,44 @@ use deepagent_core::error::Result;
 
 pub use frontmatter::Frontmatter;
 pub use installer::SkillInstaller;
-pub use registry::{SkillMatch, SkillRegistry};
-pub use skill::{ResourceKind, Skill, SkillMeta, SkillOrigin, SkillResource};
+pub use marketplace::{
+    build_download_candidates, resolve_api_key, ApiKeySource, GitTreeEntry, GitTreeResponse,
+    GithubLocator, MarketSearchData, MarketSkill, Pagination, SearchQuery, SkillsMpClient,
+    SkillsMpClientHandle, SortBy, TempSkillDir, BROWSE_FALLBACK_QUERY, BUILTIN_SKILLSMP_API_KEY,
+    DEFAULT_GITHUB_MIRRORS, GITHUB_API_BASE,
+};
+pub use registry::{
+    BodyForInvokeError, SkillMatch, SkillRegistry, MAX_LISTING_DESC_CHARS, MIN_DESC_LENGTH,
+};
+pub use scanner::{
+    scan_dir, FileInfo, RiskCategory, RiskItem, RiskSeverity, ScanReport, MAX_TEXT_FILE_BYTES,
+};
+pub use skill::{ResourceKind, Skill, SkillMeta, SkillOrigin, SkillResource, SkillToolOutput};
+
+/// The four storage roots that the marketplace-aware loader walks. Each root
+/// corresponds to one [`SkillOrigin`]:
+///
+/// | Field | Origin | Typical path |
+/// |-------|--------|--------------|
+/// | `builtin` | [`SkillOrigin::BuiltIn`] | `<exe>/resources/skills/` (Tauri resource) |
+/// | `user` | [`SkillOrigin::User`] | `~/.deepagent/skills/` (user-level, top-level skills) |
+/// | `marketplace` | [`SkillOrigin::Installed`] | `~/.deepagent/skills/marketplace/` |
+/// | `workspace` | [`SkillOrigin::Workspace`] | `<project>/.deepagent/skills/` (optional) |
+///
+/// Used by `SkillsService::open_v2` (in `deepagent-app-core`) to assemble a
+/// single registry with conflict precedence
+/// `Workspace > User > Installed > BuiltIn`.
+#[derive(Debug, Clone)]
+pub struct SkillsRoots {
+    /// Built-in skills shipped with the application binary.
+    pub builtin: PathBuf,
+    /// User-level skills (top-level directories under this root).
+    pub user: PathBuf,
+    /// Marketplace-installed skills (typically nested under `user`).
+    pub marketplace: PathBuf,
+    /// Optional workspace-scoped skills directory.
+    pub workspace: Option<PathBuf>,
+}
 
 /// A façade composing auto-discovery, installation, and the live registry.
 ///

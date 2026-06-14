@@ -11,6 +11,7 @@
 //! - [`WorkspaceService`] — active-project identity (folder name/path).
 //! - [`TerminalService`] — interactive terminal in the active project dir.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
@@ -20,9 +21,10 @@ use deepagent_app_core::{
     KnowledgeHitDto, KnowledgeService, McpServerDto, McpService, ProjectDto, ProjectMapGraphDto,
     ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto,
     ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
-    ProjectService, RewindResultDto, SessionDetailDto, SessionStateService, SessionSummaryDto,
-    SettingsService, SettingsView, SkillActivationDto, SkillDto, SkillsService, TerminalResultDto,
-    TerminalService, TranscriptDto, WorkspaceInfoDto, WorkspaceService,
+    ProjectService, RewindResultDto, SecretStore, SessionDetailDto, SessionStateService,
+    SessionSummaryDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
+    SkillsMpClientHandle, SkillsRoots, SkillsService, TerminalResultDto, TerminalService,
+    TranscriptDto, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use serde::Serialize;
@@ -31,11 +33,34 @@ use tauri::{Emitter, Manager, State};
 /// Service name used for keychain entries.
 const KEYCHAIN_SERVICE: &str = "deepagent-studio";
 
+/// Keychain entry name for the user-supplied SkillsMP API key. Stored under
+/// the same `KEYCHAIN_SERVICE` as the DeepSeek API key, so both live together
+/// in Windows Credential Manager / macOS Keychain / Linux Secret Service.
+const KEYCHAIN_SKILLSMP_KEY_NAME: &str = "skillsmp_api_key";
+
 /// Shared application state.
 struct AppState {
     service: Mutex<AppService>,
     settings: Arc<SettingsService>,
-    skills: Mutex<SkillsService>,
+    /// Shared skills service. Wrapped in `Arc<Mutex>` so the chat service
+    /// (`with_skills`) and the Tauri command layer share the same registry —
+    /// installing a skill via `install_skill` / `skill_market_install`
+    /// becomes visible to the next chat run on its first turn (subject to
+    /// the per-session send-once tracker, which the install paths reset
+    /// via [`ChatService::reset_all_sent_skills`] so the new skill is
+    /// announced in the next turn's catalog reminder).
+    skills: Arc<Mutex<SkillsService>>,
+    /// SkillsMP marketplace client wrapped in a swap-able handle so the Tauri
+    /// command layer can replace the inner `SkillsMpClient` (rebuilt with a
+    /// different API key) without rebuilding the rest of `AppState`.
+    skillsmp: Arc<SkillsMpClientHandle>,
+    /// Holders for downloaded-but-not-yet-installed skill scans. Keyed by an
+    /// opaque temp_id returned from `skill_market_scan`; the entry owns the
+    /// `TempSkillDir` so the extracted files survive on disk until the user
+    /// confirms install (`skill_market_install`) or cancels
+    /// (`skill_market_cancel`). Stale entries (>30 min) are reaped lazily by
+    /// every command that touches the map.
+    pending_scans: Arc<Mutex<HashMap<String, PendingScan>>>,
     chat: Arc<ChatService>,
     mcp: Arc<McpService>,
     knowledge: Arc<KnowledgeService>,
@@ -48,6 +73,56 @@ struct AppState {
     terminal: Arc<TerminalService>,
     /// Tokio runtime for async calls invoked from sync commands.
     rt: tokio::runtime::Runtime,
+}
+
+/// Maximum idle time for an entry in [`AppState::pending_scans`] before the
+/// reaper drops it.
+const PENDING_SCAN_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// One entry in [`AppState::pending_scans`].
+///
+/// Owns the [`TempSkillDir`] handle so the extracted skill files stay on disk
+/// until the user confirms or cancels — dropping `temp` removes the temp
+/// directory. Caches the [`ScanReport`] produced by the scanner so a second
+/// frontend read (e.g. when re-rendering the install dialog) does not have to
+/// re-scan the disk.
+struct PendingScan {
+    /// Owning handle to the temp dir — kept alive so the extracted files
+    /// stay on disk until the user confirms or cancels.
+    temp: deepagent_app_core::TempSkillDir,
+    /// Cached scan report (so multiple frontend reads don't re-scan).
+    report: deepagent_app_core::ScanReport,
+    /// When the scan was initiated. Stale entries (>30 min) are reaped.
+    created_at: std::time::Instant,
+}
+
+/// Drop entries older than [`PENDING_SCAN_TTL`] from `pending`. Pull-based:
+/// every `skill_market_*` command that touches the map calls this first, so
+/// no background tokio task is needed (no thread leak at shutdown).
+fn reap_pending_scans(pending: &Arc<Mutex<HashMap<String, PendingScan>>>) {
+    if let Ok(mut map) = pending.lock() {
+        let now = std::time::Instant::now();
+        map.retain(|_, scan| {
+            now.checked_duration_since(scan.created_at)
+                .map(|elapsed| elapsed < PENDING_SCAN_TTL)
+                .unwrap_or(true)
+        });
+    }
+}
+
+/// Generate an opaque temp-id for a `skill_market_scan` entry.
+///
+/// Uses `SystemTime` millis + a process-local atomic counter so we don't pull
+/// in `uuid` as a direct dependency. The id is opaque to the frontend; only
+/// uniqueness within the running process matters (the map is in-memory).
+fn new_temp_id() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("scan-{millis}-{n}")
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -218,13 +293,21 @@ fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillDto>, String> {
 fn reload_skills(state: State<'_, AppState>) -> Result<Vec<SkillDto>, String> {
     let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
     svc.reload().map_err(|e| e.to_string())?;
-    Ok(svc.list())
+    let dtos = svc.list();
+    drop(svc);
+    // Skill set may have changed — clear every session's send-once
+    // tracker so the next turn re-announces the full visible registry.
+    state.chat.reset_all_sent_skills();
+    Ok(dtos)
 }
 
 #[tauri::command]
 fn install_skill(state: State<'_, AppState>, source_dir: String) -> Result<SkillDto, String> {
     let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
-    svc.install_from_dir(&source_dir).map_err(|e| e.to_string())
+    let dto = svc.install_from_dir(&source_dir).map_err(|e| e.to_string())?;
+    drop(svc);
+    state.chat.reset_all_sent_skills();
+    Ok(dto)
 }
 
 /// Install a skill from a `.zip` archive: extract to a temp dir, then install
@@ -237,13 +320,21 @@ fn install_skill_from_zip(
     let tmp = tempfile::tempdir().map_err(|e| format!("temp dir failed: {e}"))?;
     let source = extract_zip(&zip_path, tmp.path()).map_err(|e| e.to_string())?;
     let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
-    svc.install_from_dir(&source).map_err(|e| e.to_string())
+    let dto = svc.install_from_dir(&source).map_err(|e| e.to_string())?;
+    drop(svc);
+    state.chat.reset_all_sent_skills();
+    Ok(dto)
 }
 
 #[tauri::command]
 fn uninstall_skill(state: State<'_, AppState>, id: String) -> Result<bool, String> {
     let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
-    svc.uninstall(&id).map_err(|e| e.to_string())
+    let removed = svc.uninstall(&id).map_err(|e| e.to_string())?;
+    drop(svc);
+    if removed {
+        state.chat.reset_all_sent_skills();
+    }
+    Ok(removed)
 }
 
 #[tauri::command]
@@ -262,6 +353,311 @@ fn activate_skill(
 ) -> Result<Option<SkillActivationDto>, String> {
     let svc = state.skills.lock().map_err(|e| e.to_string())?;
     Ok(svc.activate(&id))
+}
+
+// ---- skill marketplace (skillsmp.com + GitHub) ----------------------------
+//
+// The 9 `skill_market_*` commands implement the marketplace install flow
+// described in design.md §Tauri 命令清单 (R3.1, R4.1, R4.9-R4.12, R9.1, R9.2,
+// R9.4-R9.6).
+//
+// Async-safe lock discipline: `SkillsMpClientHandle::with_client` holds a
+// `std::sync::Mutex` for the duration of its closure. Every async command
+// here clones the inner `SkillsMpClient` *out* of the closure (cheap — the
+// reqwest client is `Arc`-backed and the rate-limit cache is shared via
+// `Arc<Mutex<…>>`) so the handle's mutex is always released before any
+// `.await`. Holding a sync mutex across an await would stall the executor.
+
+/// Search-side input passed by the frontend `skillMarketSearch` wrapper.
+/// Empty / `None` fields are dropped on the wire by [`SkillsMpClient::search`]
+/// so the SkillsMP defaults apply.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketSearchInput {
+    q: Option<String>,
+    page: Option<u32>,
+    limit: Option<u32>,
+    sort_by: Option<deepagent_app_core::SortBy>,
+    category: Option<String>,
+    occupation: Option<String>,
+}
+
+impl From<MarketSearchInput> for deepagent_app_core::SearchQuery {
+    fn from(input: MarketSearchInput) -> Self {
+        deepagent_app_core::SearchQuery {
+            q: input.q.unwrap_or_default(),
+            page: input.page,
+            limit: input.limit,
+            sort_by: input.sort_by,
+            category: input.category,
+            occupation: input.occupation,
+        }
+    }
+}
+
+/// `GET https://skillsmp.com/api/v1/skills/search` — used by both the Market
+/// tab's first paint (empty `q`, `sortBy=stars`) and live search-as-you-type.
+///
+/// _Validates: Requirements R3.1._
+#[tauri::command]
+async fn skill_market_search(
+    state: State<'_, AppState>,
+    input: MarketSearchInput,
+) -> Result<deepagent_app_core::MarketSearchData, String> {
+    // Clone the inner client so we drop the handle's std::sync::Mutex BEFORE
+    // awaiting the HTTP call.
+    let client = state.skillsmp.with_client(|c| c.clone());
+    let query: deepagent_app_core::SearchQuery = input.into();
+    client.search(&query).await.map_err(|e| e.to_string())
+}
+
+/// Result of [`skill_market_test_key`].
+///
+/// Renders the "Test connection" outcome in the Provider Config popover.
+/// `daily_remaining` is the value of the most recent
+/// `X-RateLimit-Daily-Remaining` header observed by the client (returned for
+/// both success and failure responses, when present).
+#[derive(Debug, serde::Serialize)]
+struct TestKeyResult {
+    ok: bool,
+    daily_remaining: Option<u32>,
+    error: Option<String>,
+}
+
+/// Run a tiny `search` to exercise the configured SkillsMP API key.
+///
+/// _Validates: Requirements R9.5._
+#[tauri::command]
+async fn skill_market_test_key(state: State<'_, AppState>) -> Result<TestKeyResult, String> {
+    let client = state.skillsmp.with_client(|c| c.clone());
+    let query = deepagent_app_core::SearchQuery {
+        q: "test".to_string(),
+        limit: Some(1),
+        ..Default::default()
+    };
+    match client.search(&query).await {
+        Ok(_) => Ok(TestKeyResult {
+            ok: true,
+            daily_remaining: client.last_daily_remaining(),
+            error: None,
+        }),
+        Err(e) => Ok(TestKeyResult {
+            ok: false,
+            daily_remaining: client.last_daily_remaining(),
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+/// API-key state surfaced to the Provider Config popover.
+///
+/// **Never** carries the key value itself — only the boolean / source label
+/// the UI needs to render the "using built-in / using custom" badge. The key
+/// stays in the OS keychain + the backend `SkillsMpClient::api_key` field.
+#[derive(Debug, serde::Serialize)]
+struct ApiKeyInfo {
+    has_user_key: bool,
+    source: deepagent_app_core::ApiKeySource,
+}
+
+/// Inspect the current SkillsMP API-key configuration.
+///
+/// _Validates: Requirements R9.4._
+#[tauri::command]
+fn skill_market_get_api_key(state: State<'_, AppState>) -> Result<ApiKeyInfo, String> {
+    let source = state.skillsmp.source();
+    Ok(ApiKeyInfo {
+        has_user_key: source == deepagent_app_core::ApiKeySource::User,
+        source,
+    })
+}
+
+/// Save a user-supplied SkillsMP API key to the OS keychain and rebuild the
+/// in-memory client so subsequent calls use it.
+///
+/// _Validates: Requirements R9.2._
+#[tauri::command]
+fn skill_market_set_api_key(state: State<'_, AppState>, key: String) -> Result<(), String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Err("API key cannot be empty".into());
+    }
+    let keychain = KeychainStore::new(KEYCHAIN_SERVICE);
+    SecretStore::set(&keychain, KEYCHAIN_SKILLSMP_KEY_NAME, trimmed).map_err(|e| e.to_string())?;
+    state.skillsmp.set_user_key(Some(trimmed.to_string()));
+    Ok(())
+}
+
+/// Delete the user-supplied SkillsMP API key from the keychain and fall the
+/// in-memory client back to the built-in / anonymous tier.
+///
+/// _Validates: Requirements R9.6._
+#[tauri::command]
+fn skill_market_clear_api_key(state: State<'_, AppState>) -> Result<(), String> {
+    let keychain = KeychainStore::new(KEYCHAIN_SERVICE);
+    // Best-effort delete: ignore "no entry" errors. If the user never set a
+    // custom key, the keychain has no entry to remove and we still want the
+    // in-memory client to fall back to the built-in tier.
+    let _ = SecretStore::delete(&keychain, KEYCHAIN_SKILLSMP_KEY_NAME);
+    state.skillsmp.set_user_key(None);
+    Ok(())
+}
+
+/// Result of [`skill_market_scan`]: an opaque temp-id (used as the install
+/// confirmation handle) plus the static-scan report rendered by the install
+/// dialog.
+#[derive(Debug, serde::Serialize)]
+struct ScanResult {
+    temp_id: String,
+    report: deepagent_app_core::ScanReport,
+}
+
+/// Download a skill from GitHub via codeload, run the static safety scan,
+/// and stash the unpacked tempdir keyed by an opaque temp-id. The frontend
+/// renders `ScanResult.report` in the install dialog and passes `temp_id`
+/// back to [`skill_market_install`] / [`skill_market_cancel`] /
+/// [`skill_market_ai_review`].
+///
+/// _Validates: Requirements R3.1, R4.1, R4.2._
+#[tauri::command]
+async fn skill_market_scan(
+    state: State<'_, AppState>,
+    github_url: String,
+) -> Result<ScanResult, String> {
+    reap_pending_scans(&state.pending_scans);
+    let client = state.skillsmp.with_client(|c| c.clone());
+    let locator = deepagent_app_core::SkillsMpClient::parse_github_url(&github_url)
+        .map_err(|e| e.to_string())?;
+    let temp = client
+        .download_skill_to_temp(&locator)
+        .await
+        .map_err(|e| e.to_string())?;
+    let report = deepagent_app_core::scan_dir(&temp.root).map_err(|e| e.to_string())?;
+    let temp_id = new_temp_id();
+    {
+        let mut map = state.pending_scans.lock().map_err(|e| e.to_string())?;
+        map.insert(
+            temp_id.clone(),
+            PendingScan {
+                temp,
+                report: report.clone(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+    }
+    Ok(ScanResult { temp_id, report })
+}
+
+/// Kick off the streaming AI security review for a pending scan. The review
+/// runs on a background task that emits two Tauri events with the
+/// `temp_id` carried in the payload:
+///   - `skill-ai-review`       — one event per token, payload `{ temp_id, token }`
+///   - `skill-ai-review-done`  — one event when the review settles, payload
+///     `{ temp_id, result, error }` (`result` is the parsed [`AiReviewResult`]
+///     or `null`; `error` carries a string when the review failed).
+///
+/// `re_review = Some(true)` switches the call from the default
+/// [`ReviewDepth::Initial`] (Simple thinking, 2K reply cap) to
+/// [`ReviewDepth::ReReview`] (Medium thinking, 3K reply cap), so the
+/// frontend can offer a "更深入复审" button without a separate command.
+///
+/// Returns immediately so the install dialog can stay responsive.
+///
+/// _Validates: Requirements R4.6, R4.7, R4.8._
+#[tauri::command]
+async fn skill_market_ai_review(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    temp_id: String,
+    re_review: Option<bool>,
+) -> Result<(), String> {
+    // Snapshot the report so the background task does not need to take the
+    // pending_scans mutex during the (potentially long) AI call.
+    let report = {
+        reap_pending_scans(&state.pending_scans);
+        let map = state.pending_scans.lock().map_err(|e| e.to_string())?;
+        let entry = map.get(&temp_id).ok_or("temp_id not found or expired")?;
+        entry.report.clone()
+    };
+    let chat = state.chat.clone();
+    let id = temp_id.clone();
+    let app_handle = app.clone();
+    let depth = if re_review.unwrap_or(false) {
+        deepagent_app_core::ReviewDepth::ReReview
+    } else {
+        deepagent_app_core::ReviewDepth::Initial
+    };
+    tokio::spawn(async move {
+        let id_for_token = id.clone();
+        let app_for_token = app_handle.clone();
+        let result =
+            deepagent_app_core::ai_security_review(&chat, &report, depth, move |tok| {
+                let _ = app_for_token.emit(
+                    "skill-ai-review",
+                    serde_json::json!({ "temp_id": id_for_token.clone(), "token": tok }),
+                );
+            })
+            .await;
+        let payload = match &result {
+            Ok(r) => serde_json::json!({
+                "temp_id": id,
+                "result": r,
+                "error": serde_json::Value::Null,
+            }),
+            Err(e) => serde_json::json!({
+                "temp_id": id,
+                "result": serde_json::Value::Null,
+                "error": e.to_string(),
+            }),
+        };
+        let _ = app_handle.emit("skill-ai-review-done", payload);
+    });
+    Ok(())
+}
+
+/// Confirm-and-install: take the pending scan keyed by `temp_id` out of the
+/// map, copy its tempdir into the marketplace install root, and return the
+/// freshly registered [`SkillDto`]. Dropping the entry's `TempSkillDir`
+/// after install removes the tempdir on disk.
+///
+/// _Validates: Requirements R4.10, R4.11._
+#[tauri::command]
+fn skill_market_install(state: State<'_, AppState>, temp_id: String) -> Result<SkillDto, String> {
+    reap_pending_scans(&state.pending_scans);
+    // Remove the entry BEFORE installing so we own the `TempSkillDir`. The
+    // tempdir on disk lives until `pending` is dropped at the end of this
+    // function; `install_from_temp` copies the contents into marketplace,
+    // so dropping the temp afterwards is safe.
+    let pending = {
+        let mut map = state.pending_scans.lock().map_err(|e| e.to_string())?;
+        map.remove(&temp_id).ok_or(
+            "temp_id not found or expired (the install dialog has timed out — please re-download)",
+        )?
+    };
+    let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
+    let dto = svc
+        .install_from_temp(&pending.temp.root)
+        .map_err(|e| e.to_string())?;
+    drop(svc);
+    // Skill set has materially changed — clear every session's send-once
+    // tracker so the next turn re-announces the new skill via channel A
+    // (skill-marketplace task 14).
+    state.chat.reset_all_sent_skills();
+    // `pending` is dropped here → temp dir removed from disk.
+    Ok(dto)
+}
+
+/// User cancelled the install dialog: drop the pending scan (and its
+/// tempdir). Idempotent: a missing `temp_id` is treated as already-cleared
+/// (e.g. the entry was reaped or already installed).
+///
+/// _Validates: Requirements R4.9._
+#[tauri::command]
+fn skill_market_cancel(state: State<'_, AppState>, temp_id: String) -> Result<(), String> {
+    reap_pending_scans(&state.pending_scans);
+    let mut map = state.pending_scans.lock().map_err(|e| e.to_string())?;
+    map.remove(&temp_id);
+    Ok(())
 }
 
 // ---- knowledge base -------------------------------------------------------
@@ -631,6 +1027,105 @@ fn set_tool_search_threshold(
     state
         .settings
         .tool_search_auto_threshold()
+        .map_err(|e| e.to_string())
+}
+
+// ---- Skill marketplace settings (Skill Marketplace spec, R10) -------------
+
+#[tauri::command]
+fn get_skill_catalog_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    state
+        .settings
+        .skill_catalog_enabled()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_skill_catalog_enabled(state: State<'_, AppState>, enabled: bool) -> Result<bool, String> {
+    state
+        .settings
+        .set_skill_catalog_enabled(enabled)
+        .map_err(|e| e.to_string())?;
+    state
+        .settings
+        .skill_catalog_enabled()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_skill_catalog_char_budget(state: State<'_, AppState>) -> Result<usize, String> {
+    state
+        .settings
+        .skill_catalog_char_budget()
+        .map_err(|e| e.to_string())
+}
+
+/// Persist the catalog character budget. `0` is allowed and is treated as
+/// "disabled" by the consumer site (R10.5).
+#[tauri::command]
+fn set_skill_catalog_char_budget(
+    state: State<'_, AppState>,
+    budget: usize,
+) -> Result<usize, String> {
+    state
+        .settings
+        .set_skill_catalog_char_budget(budget)
+        .map_err(|e| e.to_string())?;
+    state
+        .settings
+        .skill_catalog_char_budget()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_skill_install_ai_review_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    state
+        .settings
+        .skill_install_ai_review_enabled()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_skill_install_ai_review_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    state
+        .settings
+        .set_skill_install_ai_review_enabled(enabled)
+        .map_err(|e| e.to_string())?;
+    state
+        .settings
+        .skill_install_ai_review_enabled()
+        .map_err(|e| e.to_string())
+}
+
+/// Returns the AI review model override, or `None` to mean "follow chat model".
+#[tauri::command]
+fn get_skill_install_ai_review_model(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    state
+        .settings
+        .skill_install_ai_review_model()
+        .map_err(|e| e.to_string())
+}
+
+/// Persist the AI review model override. Pass `None` (or an empty string,
+/// which is normalized to `None` by the service) to fall back to the chat
+/// model.
+#[tauri::command]
+fn set_skill_install_ai_review_model(
+    state: State<'_, AppState>,
+    model: Option<String>,
+) -> Result<Option<String>, String> {
+    state
+        .settings
+        .set_skill_install_ai_review_model(model)
+        .map_err(|e| e.to_string())?;
+    state
+        .settings
+        .skill_install_ai_review_model()
         .map_err(|e| e.to_string())
 }
 
@@ -1086,17 +1581,77 @@ pub fn run() {
                 Arc::new(KeychainStore::new(KEYCHAIN_SERVICE)),
             ));
 
+            // SkillsMP API key: read from the OS keychain at boot. Errors and
+            // missing entries are non-fatal — the handle falls through to the
+            // built-in key (or anonymous if no built-in is configured).
+            let user_skillsmp_key = {
+                let kc = KeychainStore::new(KEYCHAIN_SERVICE);
+                match kc.get(KEYCHAIN_SKILLSMP_KEY_NAME) {
+                    Ok(opt) => opt,
+                    Err(e) => {
+                        eprintln!("skillsmp keychain read failed (falling back to builtin): {e}");
+                        None
+                    }
+                }
+            };
+            let skillsmp = Arc::new(SkillsMpClientHandle::new(user_skillsmp_key));
+
             let rt = tokio::runtime::Runtime::new()
                 .map_err(|e| format!("failed to create tokio runtime: {e}"))?;
 
-            // Skills: discover from the project's `.deepagent/skills` (cwd) and
-            // manage installs under the app data dir.
+            // Skills: four-tier storage layout (built-in + user + marketplace +
+            // workspace).
+            //
+            // - BuiltIn:   Tauri resource dir → `<exe>/resources/skills/` (the
+            //              7 skills bundled by `prebundle-skills.cjs`)
+            // - User:      `~/.deepagent/skills/` (top-level, hand-managed by
+            //              the user; compatible with Claude Code's
+            //              `~/.claude/skills/` convention)
+            // - Installed: `~/.deepagent/skills/marketplace/` (managed by the
+            //              marketplace install flow; lives under the user dir
+            //              so app reinstalls don't wipe it)
+            // - Workspace: `<cwd>/.deepagent/skills/` (project-scoped, optional)
+            //
+            // Conflict precedence (high → low):
+            //   Workspace > User > Installed > BuiltIn.
+            //
+            // _Validates: Requirements R1.1, R1.2, R1.4, R2.1, R2.4, R2.5, R2.6,
+            // R8.1._
+            let resource_skills_dir = app
+                .path()
+                .resource_dir()
+                .map(|d| d.join("resources").join("skills"))
+                .unwrap_or_else(|_| std::env::temp_dir().join("deepagent-builtin-skills-missing"));
+
+            let user_root = app
+                .path()
+                .home_dir()
+                .unwrap_or_else(|_| std::env::temp_dir())
+                .join(".deepagent")
+                .join("skills");
+            let marketplace_dir = user_root.join("marketplace");
+            // Make sure both dirs exist so first-run on a clean machine doesn't
+            // error when the loader tries to canonicalize them.
+            let _ = std::fs::create_dir_all(&user_root);
+            let _ = std::fs::create_dir_all(&marketplace_dir);
+
             let workspace_skills = std::env::current_dir()
                 .ok()
                 .map(|c| c.join(".deepagent").join("skills"));
-            let install_dir = dir.join("skills");
-            let skills = SkillsService::open(workspace_skills, install_dir)
-                .map_err(|e| format!("failed to open skills service: {e}"))?;
+
+            let skills = SkillsService::open_v2(SkillsRoots {
+                builtin: resource_skills_dir,
+                user: user_root,
+                marketplace: marketplace_dir,
+                workspace: workspace_skills,
+            })
+            .map_err(|e| format!("failed to open skills service: {e}"))?;
+            // Wrap in Arc<Mutex> so the chat service shares the same handle.
+            // The Tauri command layer locks this mutex on every skill command
+            // (list / install / uninstall / reload) and the chat service
+            // snapshots the registry from it once per run for catalog
+            // reminder + `skill` tool wiring (skill-marketplace task 14).
+            let skills = Arc::new(Mutex::new(skills));
 
             // MCP: visual server management over the shared DB.
             let mcp = Arc::new(McpService::new(service.shared_database()));
@@ -1132,8 +1687,10 @@ pub fn run() {
             let session_state = Arc::new(SessionStateService::new(service.shared_database()));
 
             // Chat: streamed runs; MCP servers connect + live-register tools, each
-            // run is rooted at the active project's folder, and the knowledge base
-            // is attached for passive injection + active tools.
+            // run is rooted at the active project's folder, the knowledge base
+            // is attached for passive injection + active tools, and the skill
+            // service powers channel-A catalog reminders + the channel-B
+            // `skill` tool (skill-marketplace task 14).
             let chat = Arc::new(
                 ChatService::new(
                     service.shared_database(),
@@ -1146,13 +1703,16 @@ pub fn run() {
                 .with_knowledge(knowledge.clone())
                 .with_project_map(project_map.clone())
                 .with_cost(cost.clone())
+                .with_skills(skills.clone())
                 .with_tool_results_dir(dir.join("tool_results")),
             );
 
             app.manage(AppState {
                 service: Mutex::new(service),
                 settings: settings_arc,
-                skills: Mutex::new(skills),
+                skills,
+                skillsmp,
+                pending_scans: Arc::new(Mutex::new(HashMap::new())),
                 chat,
                 mcp,
                 knowledge,
@@ -1190,6 +1750,15 @@ pub fn run() {
             uninstall_skill,
             preview_skill_activation,
             activate_skill,
+            skill_market_search,
+            skill_market_test_key,
+            skill_market_get_api_key,
+            skill_market_set_api_key,
+            skill_market_clear_api_key,
+            skill_market_scan,
+            skill_market_ai_review,
+            skill_market_install,
+            skill_market_cancel,
             kb_list,
             kb_search,
             kb_get,
@@ -1222,6 +1791,14 @@ pub fn run() {
             set_tool_search_mode,
             get_tool_search_threshold,
             set_tool_search_threshold,
+            get_skill_catalog_enabled,
+            set_skill_catalog_enabled,
+            get_skill_catalog_char_budget,
+            set_skill_catalog_char_budget,
+            get_skill_install_ai_review_enabled,
+            set_skill_install_ai_review_enabled,
+            get_skill_install_ai_review_model,
+            set_skill_install_ai_review_model,
             list_mcp_servers,
             save_mcp_server,
             remove_mcp_server,

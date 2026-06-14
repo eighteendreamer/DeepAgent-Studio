@@ -78,6 +78,15 @@ pub struct SkillMeta {
     /// Where the skill came from.
     #[serde(default)]
     pub origin: SkillOrigin,
+    /// If `true`, the skill is hidden from the model: it is excluded from the
+    /// catalog reminder and the `skill` tool refuses to invoke it. The skill
+    /// can still be activated by the user (slash command / UI button).
+    ///
+    /// Sourced from the SKILL.md frontmatter key `disable-model-invocation`
+    /// (the underscore form `disable_model_invocation` is also accepted for
+    /// compatibility). Defaults to `false`.
+    #[serde(default)]
+    pub disable_model_invocation: bool,
 }
 
 impl SkillMeta {
@@ -85,6 +94,33 @@ impl SkillMeta {
     pub fn blurb(&self) -> String {
         format!("- {} — {}", self.name, self.description)
     }
+}
+
+/// Output of [`crate::registry::SkillRegistry::body_for_invoke`] — the payload
+/// returned to the model when it invokes the `skill` tool (channel B per
+/// design.md §Auto-Activation).
+///
+/// Carries the disclosed Level-2 body (the SKILL.md content with `${ARGS}` /
+/// `$ARGS` substituted) plus the on-disk base directory and any known Level-3
+/// resource paths so the model can use `read_file` / `grep` to pull deeper
+/// context as it needs it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillToolOutput {
+    /// Skill id (slug).
+    pub id: String,
+    /// Display name (frontmatter `name`).
+    pub name: String,
+    /// Disclosed Level-2 body with `${ARGS}` / `$ARGS` substituted.
+    pub body: String,
+    /// Absolute path to the skill directory on disk, when known. Used by the
+    /// model to address Level-3 references via `read_file` / `grep`. `None`
+    /// when the skill was registered programmatically (e.g. test fixtures
+    /// without a backing directory) or when the path is otherwise unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_dir: Option<String>,
+    /// Forward-slashed paths (relative to `base_dir`) of the skill's known
+    /// Level-3 resources (`references/`, `examples/`, `scripts/`, `assets/`).
+    pub resources: Vec<String>,
 }
 
 /// A fully-parsed skill: metadata + body + resource manifest.
@@ -101,6 +137,12 @@ pub struct Skill {
     /// matching).
     #[serde(default)]
     pub triggers: Vec<String>,
+    /// Absolute path to the skill's source directory, when discovered from
+    /// disk. `None` for programmatically registered skills (built-in fixtures,
+    /// tests). Set by [`crate::loader::load_skill_dir`] using the canonical
+    /// path of the skill directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_dir: Option<std::path::PathBuf>,
 }
 
 impl Skill {
@@ -117,6 +159,13 @@ impl Skill {
             return None;
         }
         let triggers = extract_triggers(&description);
+        // Accept both the canonical kebab-case key and the underscore variant
+        // for compatibility with hand-edited SKILL.md files.
+        let disable_model_invocation = fm
+            .get("disable-model-invocation")
+            .or_else(|| fm.get("disable_model_invocation"))
+            .map(|v| v.trim().eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         Some(Self {
             meta: SkillMeta {
                 id: id.into(),
@@ -124,11 +173,21 @@ impl Skill {
                 description,
                 version: fm.get("version").map(|s| s.to_string()),
                 origin,
+                disable_model_invocation,
             },
             body: fm.body.clone(),
             resources: Vec::new(),
             triggers,
+            base_dir: None,
         })
+    }
+
+    /// Builder helper: set the on-disk base directory of the skill. Used by
+    /// the loader so the `skill` tool can surface Level-3 resource paths to
+    /// the model.
+    pub fn with_base_dir(mut self, base_dir: impl Into<std::path::PathBuf>) -> Self {
+        self.base_dir = Some(base_dir.into());
+        self
     }
 
     /// Approximate word count of the body (for budget reporting).
@@ -221,7 +280,42 @@ mod tests {
             description: "does x".into(),
             version: None,
             origin: SkillOrigin::BuiltIn,
+            disable_model_invocation: false,
         };
         assert_eq!(meta.blurb(), "- X — does x");
+    }
+
+    #[test]
+    fn parses_disable_model_invocation_true() {
+        let fm = frontmatter::parse(
+            "---\nname: Hidden\ndescription: \"only via /hidden\"\ndisable-model-invocation: true\n---\nbody",
+        );
+        let skill = Skill::from_frontmatter("hidden", &fm, SkillOrigin::Workspace).unwrap();
+        assert!(skill.meta.disable_model_invocation);
+    }
+
+    #[test]
+    fn parses_disable_model_invocation_false() {
+        let fm = frontmatter::parse(
+            "---\nname: Visible\ndescription: \"normal skill\"\ndisable-model-invocation: false\n---\nbody",
+        );
+        let skill = Skill::from_frontmatter("visible", &fm, SkillOrigin::Workspace).unwrap();
+        assert!(!skill.meta.disable_model_invocation);
+    }
+
+    #[test]
+    fn defaults_disable_model_invocation_when_absent() {
+        let fm = frontmatter::parse("---\nname: Plain\ndescription: \"no flag\"\n---\nbody");
+        let skill = Skill::from_frontmatter("plain", &fm, SkillOrigin::Workspace).unwrap();
+        assert!(!skill.meta.disable_model_invocation);
+    }
+
+    #[test]
+    fn accepts_underscore_disable_model_invocation_alias() {
+        let fm = frontmatter::parse(
+            "---\nname: Hidden\ndescription: \"underscore form\"\ndisable_model_invocation: true\n---\nbody",
+        );
+        let skill = Skill::from_frontmatter("hidden", &fm, SkillOrigin::Workspace).unwrap();
+        assert!(skill.meta.disable_model_invocation);
     }
 }

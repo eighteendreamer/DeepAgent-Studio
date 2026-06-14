@@ -416,3 +416,168 @@ export interface KnowledgeDraft {
   scope?: string | null;
   source_session?: string | null;
 }
+
+// ===========================================================================
+// Skill Marketplace (skillsmp.com + GitHub install flow)
+// ---------------------------------------------------------------------------
+// Mirrors the Rust types reachable via the `skill_market_*` Tauri commands.
+// Field-naming is verified against the actual `#[serde(...)]` attributes:
+//   - MarketSkill / Pagination use field-level `rename = "camelCase"` for a
+//     handful of keys (the rest stay snake_case).
+//   - ScanReport / FileInfo / RiskItem stay snake_case (no crate-wide rename),
+//     except `FileInfo` renames its Rust field `kind` to `type` on the wire.
+//   - RiskCategory / RiskSeverity / SortBy / SkillsMpKeySource serialize as
+//     lowercase string variants (`#[serde(rename_all = "lowercase")]`).
+//   - MarketSearchInput is the only marketplace command struct with crate-wide
+//     `rename_all = "camelCase"` — so its `sortBy` field is camelCase on the
+//     wire.
+// ===========================================================================
+
+/** One row from `GET /api/v1/skills/search` (mirrors deepagent-skills::MarketSkill). */
+export interface MarketSkill {
+  id: string;
+  name: string;
+  author: string;
+  description: string;
+  /** GitHub source URL (`https://github.com/{owner}/{repo}/tree/{branch}/{path}`). */
+  githubUrl: string;
+  /** Canonical skillsmp.com page URL for the "view on web" link. */
+  skillUrl: string;
+  stars: number;
+  /** Last update — unix epoch seconds. */
+  updatedAt: number;
+}
+
+/** Pagination block from `data.pagination` (mirrors deepagent-skills::Pagination). */
+export interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+}
+
+/** Search-response body envelope (mirrors deepagent-skills::MarketSearchData). */
+export interface MarketSearchData {
+  skills: MarketSkill[];
+  pagination: Pagination;
+}
+
+/** Sort order. Lowercased on the wire. */
+export type SortBy = "stars" | "recent";
+
+/** Input to `skillMarketSearch`. Mirrors the desktop-side
+ *  `MarketSearchInput` struct, which is `#[serde(rename_all = "camelCase")]`,
+ *  so `sortBy` is camelCase on the wire. */
+export interface MarketSearchInput {
+  q?: string;
+  page?: number;
+  limit?: number;
+  sortBy?: SortBy;
+  category?: string;
+  occupation?: string;
+}
+
+/** Coarse category of a static-scan finding. */
+export type RiskCategory =
+  | "shell"
+  | "execution"
+  | "network"
+  | "credential"
+  | "filesystem"
+  | "exfiltration";
+
+/** Severity tier of a static-scan finding. */
+export type RiskSeverity = "safe" | "warning" | "danger";
+
+/** One file entry (mirrors deepagent-skills::FileInfo).
+ *  The Rust field `kind` is `#[serde(rename = "type")]` on the wire. */
+export interface FileInfo {
+  name: string;
+  /** Lower-cased extension including the leading dot (e.g. `.py`), or `""`. */
+  type: string;
+  size: number;
+}
+
+/** One scan finding (mirrors deepagent-skills::RiskItem). */
+export interface RiskItem {
+  category: RiskCategory;
+  severity: RiskSeverity;
+  /** Forward-slashed path relative to the skill root. */
+  file: string;
+  /** 1-based line number; `null` for file-level rules. */
+  line: number | null;
+  detail: string;
+}
+
+/** Static-scan summary (mirrors deepagent-skills::ScanReport).
+ *  All field names are snake_case to match the Rust struct (no rename). */
+export interface ScanReport {
+  name: string;
+  skill_md_content: string;
+  files: FileInfo[];
+  risks: RiskItem[];
+}
+
+/** Result of `skill_market_scan` (mirrors the desktop-side `ScanResult`).
+ *  Snake_case on the wire — no crate-wide rename. */
+export interface ScanResult {
+  temp_id: string;
+  report: ScanReport;
+}
+
+/** AI security review verdict (mirrors deepagent-app-core::AiReviewResult).
+ *  Snake_case on the wire. */
+export interface AiReviewResult {
+  passed: boolean;
+  /** Full LLM output (analysis + verdict line). */
+  raw_text: string;
+  /** Captured one-line reason after `FAIL:`; `null` on PASS / parse error. */
+  failure_reason: string | null;
+}
+
+/** Streaming-token event payload (Tauri event `skill-ai-review`). */
+export interface SkillAiReviewToken {
+  temp_id: string;
+  token: string;
+}
+
+/** Final review event payload (Tauri event `skill-ai-review-done`).
+ *  Exactly one of `result` / `error` is non-null. */
+export interface SkillAiReviewDone {
+  temp_id: string;
+  result: AiReviewResult | null;
+  error: string | null;
+}
+
+/** Provenance of the SkillsMP API key currently in use.
+ *  Lowercased on the wire (mirrors deepagent-skills::ApiKeySource). */
+export type SkillsMpKeySource = "user" | "builtin" | "none";
+
+/** Result of `skill_market_get_api_key` (mirrors the desktop-side `ApiKeyInfo`).
+ *  Never carries the key value itself. Snake_case on the wire. */
+export interface ApiKeyInfo {
+  has_user_key: boolean;
+  source: SkillsMpKeySource;
+}
+
+/** Result of `skill_market_test_key` (mirrors the desktop-side `TestKeyResult`).
+ *  Snake_case on the wire. */
+export interface TestKeyResult {
+  ok: boolean;
+  /** `X-RateLimit-Daily-Remaining` from the most recent response, or `null`. */
+  daily_remaining: number | null;
+  /** Error message when `ok === false`; `null` on success. */
+  error: string | null;
+}
+
+/** Tool-call result shape disclosed by the `skill` tool (channel B).
+ *  Mirrors deepagent-skills::SkillToolOutput. `base_dir` is omitted on the
+ *  wire when the skill carries no on-disk root. */
+export interface SkillToolOutput {
+  id: string;
+  name: string;
+  body: string;
+  base_dir?: string;
+  resources: string[];
+}

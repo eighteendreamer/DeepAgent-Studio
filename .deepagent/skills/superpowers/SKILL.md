@@ -1,42 +1,67 @@
 ---
-name: Superpowers
-description: This skill should be used when the user wants to "write a skill", "create a new skill", "improve a skill", or asks how to structure skills, apply progressive disclosure, or follow disciplined engineering workflows (brainstorming, planning, test-driven development) before implementing. A meta-skill for authoring high-quality skills and following rigorous development process.
-version: 0.1.0
+name: superpowers
+description: Use when starting any non-trivial development work — bundles brainstorming, plan writing, plan execution, TDD, systematic debugging, verification, code review (requesting & receiving), parallel agent dispatch, subagent-driven dev, git worktrees, branch completion, and skill authoring. The 14 sub-skills live under skills/<sub>/SKILL.md inside this skill's base_dir.
 ---
 
 # Superpowers
 
-A meta-skill for authoring effective skills and following a disciplined
-engineering workflow. Use it to turn vague intentions into well-structured
-skills with strong trigger descriptions and progressive disclosure, and to keep
-implementation work rigorous (brainstorm → plan → test-first → implement →
-review).
+This skill is a **bundle / index**, not a workflow itself. It registers a
+single catalog entry covering 14 specialized agent sub-skills sourced from
+the upstream [obra/superpowers](https://github.com/obra/superpowers) project,
+and points you at the specific sub-skill's `SKILL.md` you need for any given
+task.
 
-## When to use
+You MUST `read_file` the relevant sub-skill's `SKILL.md` (relative to this
+skill's `base_dir`) before acting on its domain — this index does not
+substitute for the sub-skill's own instructions.
 
-Use when creating or improving a skill, or when starting a non-trivial task that
-benefits from explicit process discipline rather than jumping straight to code.
+## Sub-skill index
 
-## Skill authoring checklist
+Pick the entry whose "Use when" matches the work in front of you, then read
+the file in the right column.
 
-1. **Concrete examples** — collect real user phrasings that should trigger it.
-2. **Frontmatter** — third-person `description` packed with exact trigger
-   phrases; `name` clear and specific.
-3. **Lean body** — imperative voice, 1,500–2,000 words; move depth to
-   `references/`.
-4. **Progressive disclosure** — metadata always resident, body on activation,
-   resources on demand.
-5. **Validate** — triggers fire on expected queries; referenced files exist.
+- `skills/using-superpowers/SKILL.md` — Use when starting any conversation;
+  establishes how to find and use skills.
+- `skills/brainstorming/SKILL.md` — Use before any creative work (creating
+  features, building components, modifying behavior); explores intent and
+  requirements before implementation.
+- `skills/writing-plans/SKILL.md` — Use when you have a spec or requirements
+  for a multi-step task, before touching code.
+- `skills/executing-plans/SKILL.md` — Use when you have a written plan to
+  execute in a separate session with review checkpoints.
+- `skills/subagent-driven-development/SKILL.md` — Use when executing
+  implementation plans with independent tasks in the current session.
+- `skills/dispatching-parallel-agents/SKILL.md` — Use when facing 2+
+  independent tasks that can be worked on in parallel without shared state.
+- `skills/test-driven-development/SKILL.md` — Use when implementing any
+  feature or bugfix, before writing implementation code.
+- `skills/systematic-debugging/SKILL.md` — Use when encountering any bug,
+  test failure, or unexpected behavior, before proposing fixes.
+- `skills/verification-before-completion/SKILL.md` — Use when about to claim
+  work is complete, fixed, or passing, before committing or opening PRs.
+- `skills/requesting-code-review/SKILL.md` — Use when completing tasks,
+  implementing major features, or before merging.
+- `skills/receiving-code-review/SKILL.md` — Use when receiving code review
+  feedback, before implementing suggestions.
+- `skills/using-git-worktrees/SKILL.md` — Use when starting feature work
+  that needs isolation from the current workspace.
+- `skills/finishing-a-development-branch/SKILL.md` — Use when implementation
+  is complete and you need to decide how to integrate the work.
+- `skills/writing-skills/SKILL.md` — Use when creating new skills, editing
+  existing skills, or verifying skills work before deployment.
 
-## Development discipline
+## How to consult a sub-skill
 
-- **Brainstorm** the approach and alternatives before committing.
-- **Plan** the steps; write them down.
-- **Test first** where feasible; let failing tests define "done".
-- **Implement** in small, verifiable increments.
-- **Review** against the original intent and quality gates.
+```
+read_file(<base_dir>/skills/<sub-skill-id>/SKILL.md)
+```
 
-## Bundled resources
+Each sub-skill's directory may also carry its own `references/`, `examples/`,
+`scripts/`, and `assets/` subdirs — read or execute those by absolute path
+as the sub-skill instructs.
 
-- `references/workflow.md` — the brainstorm → plan → TDD → review loop in
-  detail, with checkpoints.
+## Provenance & license
+
+Sub-skills are vendored from
+[obra/superpowers](https://github.com/obra/superpowers). See `LICENSE` and
+`README.md` in this directory for the upstream attribution and license terms.

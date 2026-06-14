@@ -93,13 +93,97 @@ export const TOOL_CARDS: { icon: IconProp; title: string; desc: string; type: Pl
   { icon: ["fas", "share-nodes"], title: "project_map", desc: "projectMapDesc", type: "project_map" },
 ];
 
-function parseGitShortstat(text: string): { additions: number; deletions: number } {
-  const additions = text.match(/(\d+)\s+insertion/)?.[1];
-  const deletions = text.match(/(\d+)\s+deletion/)?.[1];
-  return {
-    additions: additions ? Number(additions) : 0,
-    deletions: deletions ? Number(deletions) : 0,
-  };
+/// Count the number of lines in `s`, treating an empty string as 0 lines and
+/// not double-counting a trailing newline (so `"a\nb\n"` → 2, `"a"` → 1, `""` → 0).
+/// Used by [`computeChatChanges`] to score `edit_file` / `multi_edit` /
+/// `write_file` tool calls into a `+N -M` summary.
+function countLines(s: string): number {
+  if (!s) return 0;
+  let n = 0;
+  let lastWasNewline = true;
+  for (const ch of s) {
+    if (lastWasNewline) n++;
+    lastWasNewline = ch === "\n";
+  }
+  return n;
+}
+
+/// Aggregate `+lines / -lines` across all `write_file` / `edit_file` /
+/// `multi_edit` tool calls in the conversation.
+///
+/// This is the **agent-driven** changeset (what this conversation has
+/// actually written to disk via tool calls), not git's working-tree diff.
+/// We surface it in the env panel because:
+/// - In a freshly-opened project that isn't yet a git repo, `git diff
+///   --shortstat HEAD` returns nothing → the panel used to show `+0 -0`
+///   regardless of how much the agent had touched the workspace.
+/// - The "what did this conversation do" framing is more directly useful
+///   for an AI-driven UX than "what's uncommitted in your filesystem"
+///   (which the user can always inspect via the terminal).
+///
+/// Mirrors `claudecode/restored-src/src/components/StructuredDiff.tsx`'s
+/// per-edit `+/-` accounting, summed across the session.
+///
+/// Tool wire-format (from `crates/deepagent-builtins/src/file_tools.rs`):
+///   - `write_file` → `{ path, content }`
+///   - `edit_file`  → `{ path, old, new, replace_all? }`
+///   - `multi_edit` → `{ path, edits: [{ old, new, replace_all? }, …] }`
+///
+/// Notes / known undercounting:
+///   - `write_file` deletions are 0 because the agent doesn't ship the prior
+///     file content; an overwrite of a long file shows only additions.
+///   - Failed (`status !== "ok"`) tool calls are skipped — they didn't
+///     materialize a change.
+function computeChatChanges(messages: ChatMessage[]): {
+  additions: number;
+  deletions: number;
+} {
+  const allTools: ToolCall[] = [];
+  for (const msg of messages) {
+    if (msg.tools) allTools.push(...msg.tools);
+    for (const part of msg.parts ?? []) {
+      if (part.kind === "tool") allTools.push(part.tool);
+    }
+  }
+
+  let additions = 0;
+  let deletions = 0;
+
+  for (const tool of allTools) {
+    if (tool.status !== "ok") continue;
+    if (!tool.args) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(tool.args);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const args = parsed as { [k: string]: unknown };
+
+    if (tool.name === "write_file") {
+      const content = typeof args.content === "string" ? args.content : "";
+      additions += countLines(content);
+      // Deletions undercount: prior file content isn't carried on the wire.
+    } else if (tool.name === "edit_file") {
+      const oldStr = typeof args.old === "string" ? args.old : "";
+      const newStr = typeof args.new === "string" ? args.new : "";
+      additions += countLines(newStr);
+      deletions += countLines(oldStr);
+    } else if (tool.name === "multi_edit") {
+      const edits = Array.isArray(args.edits) ? (args.edits as unknown[]) : [];
+      for (const e of edits) {
+        if (!e || typeof e !== "object") continue;
+        const edit = e as { [k: string]: unknown };
+        const oldStr = typeof edit.old === "string" ? edit.old : "";
+        const newStr = typeof edit.new === "string" ? edit.new : "";
+        additions += countLines(newStr);
+        deletions += countLines(oldStr);
+      }
+    }
+  }
+
+  return { additions, deletions };
 }
 
 /// Image-file extension matcher: covers the formats a model can plausibly
@@ -325,6 +409,12 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     return activeProjectPath.split(/[\\/]/).filter(Boolean).pop() ?? activeProjectPath;
   }, [activeProjectPath]);
   const outputItems = useMemo(() => collectOutputItems(messages), [messages]);
+  // Agent-driven changeset (`write_file` / `edit_file` / `multi_edit`).
+  // Replaces the legacy `git diff --shortstat HEAD` source so the env
+  // panel's "+N -M" reflects what THIS conversation actually wrote, even
+  // when the workspace isn't a git repo. See `computeChatChanges` for
+  // wire-format + undercounting notes.
+  const chatChanges = useMemo(() => computeChatChanges(messages), [messages]);
   const hasConversation = messages.length > 0;
   const outputSignature = useMemo(
     () => outputItems.map((item) => `${item.kind}:${item.label}`).join("|"),
@@ -381,24 +471,22 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     setEnvironment((prev) => ({ ...prev, loading: true }));
     Promise.allSettled([
       runTerminal("git branch --show-current"),
-      runTerminal("git diff --shortstat HEAD"),
       runTerminal("gh --version"),
-    ]).then(([branchResult, diffResult, ghResult]) => {
+    ]).then(([branchResult, ghResult]) => {
       if (cancelled) return;
       const branch =
         branchResult.status === "fulfilled" && branchResult.value.exit_code === 0
           ? branchResult.value.stdout.trim() || null
           : null;
-      const diffText =
-        diffResult.status === "fulfilled" && diffResult.value.exit_code === 0
-          ? diffResult.value.stdout
-          : "";
-      const diff = parseGitShortstat(diffText);
       setEnvironment({
         loading: false,
         branch,
-        additions: diff.additions,
-        deletions: diff.deletions,
+        // `additions` / `deletions` are derived from the chat tool calls
+        // (see `chatChanges` / `computeChatChanges`). They stay `null` on
+        // the environment state object so a future revival of the
+        // git-shortstat source can drop back in without renaming fields.
+        additions: null,
+        deletions: null,
         ghAvailable:
           ghResult.status === "fulfilled" ? ghResult.value.exit_code === 0 : false,
       });
@@ -1075,13 +1163,12 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
                     <span>{t("chatView.changes")}</span>
                   </div>
                   {activeProjectPath ? (
-                    <div className="flex items-center gap-1.5 font-medium tabular-nums">
-                      <span className="text-green-600">
-                        +{environment.loading ? "..." : environment.additions ?? 0}
-                      </span>
-                      <span className="text-red-500">
-                        -{environment.loading ? "..." : environment.deletions ?? 0}
-                      </span>
+                    <div
+                      className="flex items-center gap-1.5 font-medium tabular-nums"
+                      title={t("chatView.changes")}
+                    >
+                      <span className="text-green-600">+{chatChanges.additions}</span>
+                      <span className="text-red-500">-{chatChanges.deletions}</span>
                     </div>
                   ) : (
                     <span className="text-[13px] text-text-secondary">{t("chatView.noProject")}</span>

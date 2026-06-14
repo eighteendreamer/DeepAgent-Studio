@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
-import type { Skill, SkillActivation } from "../types";
+import type { MarketSkill, Skill, SkillActivation, SortBy } from "../types";
 import {
   listSkills,
   reloadSkills,
@@ -10,7 +10,12 @@ import {
   activateSkill,
   installSkillFromZip,
   isTauri,
+  skillMarketSearch,
+  getSkillInstallAiReviewEnabled,
 } from "../api";
+import { MarketSkillCard } from "./skills/MarketSkillCard";
+import { SkillInstallDialog } from "./skills/SkillInstallDialog";
+import { SkillsMarketProviderConfig } from "./skills/SkillsMarketProviderConfig";
 
 // Map a skill id (or name) to an icon + accent color, falling back to a cube.
 function visualFor(skill: Skill): { icon: IconProp; bg: string } {
@@ -45,31 +50,53 @@ function useOriginLabel() {
   };
 }
 
-const RECOMMENDED_SKILLS = [
-  { id: "aspnet-core", name: ".NET Aspnet Core", description: "[Windows only] Build and review ASP.NET...", iconText: ".NET", bg: "bg-[#512bd4] text-white" },
-  { id: "chatgpt-apps", name: "Chatgpt Apps", description: "Build and scaffold ChatGPT apps", icon: ["fas", "cube"] as any, bg: "bg-gradient-to-br from-yellow-400 to-orange-500 text-white" },
-  { id: "cli-creator", name: "CLI Creator", description: "Build CLIs for Codex", icon: ["fas", "cube"] as any, bg: "bg-gradient-to-br from-purple-400 to-blue-500 text-white" },
-  { id: "cloudflare-deploy", name: "Cloudflare Deploy", description: "Deploy Workers, Pages, and platform service...", icon: ["fas", "cloud"] as any, bg: "bg-[#f38020] text-white" },
-  { id: "define-goal", name: "Define Goal", description: "Shape clear measurable goals", icon: ["fas", "cube"] as any, bg: "bg-gradient-to-br from-pink-400 to-purple-500 text-white" },
-  { id: "figma", name: "Figma", description: "Use Figma MCP for design-to-code work", icon: ["fab", "figma"] as any, bg: "bg-black text-white" },
-  { id: "figma-code-connect", name: "Figma Code Connect Components", description: "Map Figma components to code with Code...", icon: ["fab", "figma"] as any, bg: "bg-black text-white" },
-  { id: "figma-design-system", name: "Figma Create Design System Rules", description: "Generate design system rules for your...", icon: ["fab", "figma"] as any, bg: "bg-black text-white" },
-  { id: "figma-implement-design", name: "Figma Implement Design", description: "Turn Figma designs into production-ready...", icon: ["fab", "figma"] as any, bg: "bg-black text-white" },
-  { id: "gh-address-comments", name: "GH Address Comments", description: "Address comments in a GitHub PR review", icon: ["fab", "github"] as any, bg: "bg-white text-gray-800 border border-border-theme shadow-sm" },
-  { id: "gh-fix-ci", name: "GH Fix CI", description: "Debug failing GitHub Actions CI", icon: ["fab", "github"] as any, bg: "bg-white text-gray-800 border border-border-theme shadow-sm" },
-  { id: "jupyter-notebook", name: "Jupyter Notebook", description: "Create Jupyter notebooks for experiments...", icon: ["fas", "circle-notch"] as any, bg: "bg-white text-orange-500 border border-border-theme shadow-sm" },
-  { id: "linear", name: "Linear", description: "Manage Linear issues in Codex", icon: ["fas", "chart-gantt"] as any, bg: "bg-black text-white" },
-  { id: "migrate-to-codex", name: "Migrate to Codex", description: "Migrate supported instruction files, skills,...", icon: ["fas", "clock"] as any, bg: "bg-gray-100 text-gray-500" },
-];
+type MarketTab = "market" | "installed";
+
+const MARKET_PAGE_LIMIT = 24;
+const MARKET_SORT_BY: SortBy = "stars"; // hardcoded for v1; settings UI is task 21
 
 export function SkillsView() {
   const { t } = useTranslation();
   const originLabel = useOriginLabel();
+
+  // ---------------- shared state ----------------
+  const [marketTab, setMarketTab] = useState<MarketTab>("installed"); // R8.1: default = installed
   const [search, setSearch] = useState("");
+
+  // ---------------- installed-tab state ----------------
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Skill | null>(null);
   const [activation, setActivation] = useState<SkillActivation | null>(null);
+
+  // ---------------- market-tab state ----------------
+  const [marketSkills, setMarketSkills] = useState<MarketSkill[]>([]);
+  const [marketTotal, setMarketTotal] = useState(0);
+  const [marketPage, setMarketPage] = useState(1);
+  const [marketHasNext, setMarketHasNext] = useState(false);
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [marketError, setMarketError] = useState<string | null>(null);
+  // Track whether the market tab has run its first search yet, so we trigger
+  // the empty-q stars-sorted load lazily on first switch (R8.2).
+  const marketLoadedOnce = useRef(false);
+
+  // ---------------- install-dialog state ----------------
+  // `installSource` drives the controlled SkillInstallDialog: non-null = open
+  // and scanning, null = hidden. `aiReviewEnabled` mirrors the persisted
+  // AppSettings value (R10.3 / R10.4) so the dialog can skip the review block
+  // entirely when the user opted out.
+  const [installSource, setInstallSource] = useState<{
+    githubUrl: string;
+    skill: MarketSkill;
+  } | null>(null);
+  const [aiReviewEnabled, setAiReviewEnabled] = useState(true);
+
+  // Provider Config popover toggle (R9.2 / R9.4-R9.6).
+  const [providerConfigOpen, setProviderConfigOpen] = useState(false);
+
+  useEffect(() => {
+    void getSkillInstallAiReviewEnabled().then(setAiReviewEnabled);
+  }, []);
 
   async function refresh(rescan = false) {
     setLoading(true);
@@ -85,6 +112,54 @@ export function SkillsView() {
     refresh(false);
   }, []);
 
+  // -- Market: lazy first-load on tab switch; debounced re-search on query --
+  useEffect(() => {
+    if (marketTab !== "market") return;
+    if (!marketLoadedOnce.current) {
+      marketLoadedOnce.current = true;
+      void runMarketSearch(search, 1, /* append */ false);
+      return;
+    }
+    // Debounce 300ms when the search box changes while we're on the market tab.
+    const handle = window.setTimeout(() => {
+      void runMarketSearch(search, 1, /* append */ false);
+    }, 300);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketTab, search]);
+
+  async function runMarketSearch(q: string, page: number, append: boolean) {
+    setMarketLoading(true);
+    setMarketError(null);
+    try {
+      const data = await skillMarketSearch({
+        q: q.trim() || undefined,
+        page,
+        limit: MARKET_PAGE_LIMIT,
+        sortBy: MARKET_SORT_BY,
+      });
+      setMarketSkills((prev) => (append ? [...prev, ...data.skills] : data.skills));
+      setMarketTotal(data.pagination.total);
+      setMarketHasNext(data.pagination.hasNext);
+      setMarketPage(data.pagination.page);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setMarketError(msg);
+      if (!append) {
+        setMarketSkills([]);
+        setMarketTotal(0);
+        setMarketHasNext(false);
+      }
+    } finally {
+      setMarketLoading(false);
+    }
+  }
+
+  async function handleLoadMore() {
+    if (!marketHasNext || marketLoading) return;
+    await runMarketSearch(search, marketPage + 1, /* append */ true);
+  }
+
   async function handleInstallZip() {
     if (!isTauri()) {
       alert("ZIP install requires the desktop app");
@@ -92,32 +167,78 @@ export function SkillsView() {
     }
     try {
       const mod = await import("@tauri-apps/plugin-dialog");
-      const selected = await mod.open({
+      const sel = await mod.open({
         multiple: false,
         filters: [{ name: "Zip Archives", extensions: ["zip"] }],
         title: "Select Skill ZIP",
       });
-      if (typeof selected === "string") {
+      if (typeof sel === "string") {
         setLoading(true);
-        await installSkillFromZip(selected);
+        await installSkillFromZip(sel);
         await refresh(true);
       }
-    } catch (e: any) {
-      alert("Failed to install ZIP: " + e.message);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      alert("Failed to install ZIP: " + msg);
       setLoading(false);
     }
   }
 
-  const filtered = useMemo(() => {
+  function handleProviderConfig() {
+    setProviderConfigOpen((v) => !v);
+  }
+
+  function handleMarketInstall(skill: MarketSkill) {
+    // Open the controlled SkillInstallDialog. The dialog kicks off
+    // skillMarketScan internally and surfaces the static-scan + AI review.
+    setInstallSource({ githubUrl: skill.githubUrl, skill });
+  }
+
+  function handleInstallDialogClose(installed: Skill | null) {
+    setInstallSource(null);
+    if (installed) {
+      // Re-list so the freshly installed skill appears in the Installed tab
+      // and the market card flips to "✓ Installed".
+      void refresh(true);
+    }
+  }
+
+  // -- Installed tab: client-side filter --
+  const filteredInstalled = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return skills;
     return skills.filter(
       (s) =>
         s.name.toLowerCase().includes(q) ||
         s.description.toLowerCase().includes(q) ||
-        s.triggers.some((t) => t.includes(q))
+        s.triggers.some((tp) => tp.toLowerCase().includes(q))
     );
   }, [skills, search]);
+
+  // Lookup of installed skill ids (lowercased) for marking market cards as
+  // already-installed (R8.4).
+  //
+  // SkillsMP returns synthesized ids that look like the GitHub slug
+  // (`aidotnet-opencowork-resources-skills-md-to-office-skill-md`), while a
+  // locally registered Skill carries a clean id (`md-to-office`). For v1 we
+  // fall back to a name-based match: a market skill is considered installed
+  // when its `name` equals one of the installed skill ids, lowercased.
+  // TODO: revisit when SkillsService.install_from_temp emits a stable cross-
+  // origin id mapping.
+  const installedNamesSet = useMemo(
+    () =>
+      new Set<string>(
+        skills.flatMap((s) => [s.id.toLowerCase(), s.name.toLowerCase()])
+      ),
+    [skills]
+  );
+
+  function isMarketSkillInstalled(s: MarketSkill): boolean {
+    return (
+      installedNamesSet.has(s.id.toLowerCase()) ||
+      installedNamesSet.has(s.name.toLowerCase())
+    );
+  }
 
   async function onSelect(skill: Skill) {
     setSelected(skill);
@@ -133,136 +254,142 @@ export function SkillsView() {
     await refresh(false);
   }
 
+  // ---------------- render ----------------
   return (
     <div className="w-full h-full flex bg-white overflow-hidden">
-      {/* Left: skill catalog */}
       <div className="flex-1 flex flex-col overflow-y-auto px-12 py-10">
-        {/* Header */}
-        <div className="flex items-start justify-between mb-8 w-full max-w-4xl mx-auto">
-          <div>
-            <h1 className="text-3xl font-semibold text-text-base mb-2">{t("skillsView.title")}</h1>
-            <p className="text-sm text-text-secondary">
-              {t("skillsView.subtitle1")}<code className="text-[12px] bg-gray-100 px-1.5 py-0.5 rounded">.deepagent/skills</code>{t("skillsView.subtitle2")}
-            </p>
-          </div>
-          <div className="flex items-center space-x-3">
+        {/* Page header */}
+        <div className="mb-6 w-full max-w-5xl mx-auto">
+          <h1 className="text-3xl font-semibold text-text-base mb-2">{t("skillsView.title")}</h1>
+          <p className="text-sm text-text-secondary">
+            {t("skillsView.subtitle1")}
+            <code className="text-[12px] bg-gray-100 px-1.5 py-0.5 rounded">.deepagent/skills</code>
+            {t("skillsView.subtitle2")}
+          </p>
+        </div>
+
+        {/* Top toolbar: tab pills + search + tab-specific actions */}
+        <div className="flex items-center justify-between gap-3 w-full max-w-5xl mx-auto mb-6 flex-wrap">
+          {/* Tab pills */}
+          <div className="inline-flex items-center bg-gray-100 rounded-full p-1">
             <button
-              onClick={() => refresh(true)}
-              className="flex items-center text-text-secondary hover:text-text-base cursor-pointer text-sm transition-colors"
+              onClick={() => setMarketTab("market")}
+              className={`px-4 py-1.5 text-sm rounded-full transition-colors ${
+                marketTab === "market"
+                  ? "bg-white text-text-base shadow-sm"
+                  : "text-text-secondary hover:text-text-base"
+              }`}
             >
-              <FontAwesomeIcon icon={["fas", "rotate-right"]} className={`mr-1.5 ${loading ? "animate-spin" : ""}`} />
-              {t("skillsView.refresh")}
+              {t("skillsView.tab_market")}
             </button>
+            <button
+              onClick={() => {
+                setMarketTab("installed");
+                setProviderConfigOpen(false);
+              }}
+              className={`px-4 py-1.5 text-sm rounded-full transition-colors ${
+                marketTab === "installed"
+                  ? "bg-white text-text-base shadow-sm"
+                  : "text-text-secondary hover:text-text-base"
+              }`}
+            >
+              {t("skillsView.tab_installed")}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 ml-auto">
+            {/* Shared search box */}
             <div className="flex items-center bg-gray-50 border border-border-theme rounded-full px-3 py-1.5 w-64 focus-within:border-gray-300 focus-within:bg-white transition-all">
-              <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="text-text-secondary text-sm mr-2" />
+              <FontAwesomeIcon
+                icon={["fas", "magnifying-glass"]}
+                className="text-text-secondary text-sm mr-2"
+              />
               <input
                 type="text"
-                placeholder={t("skillsView.searchPlaceholder")}
+                placeholder={t("skillsView.market_search_placeholder")}
                 className="bg-transparent outline-none w-full text-sm text-text-base"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
-            <button
-              onClick={handleInstallZip}
-              className="flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-gray-50 transition-colors"
-              title="Upload ZIP Skill"
-            >
-              <FontAwesomeIcon icon={["fas", "upload"]} className="text-sm" />
-            </button>
-          </div>
-        </div>
 
-        <div className="w-full max-w-4xl mx-auto">
-          <h2 className="text-base font-medium text-text-base mb-1">
-            {t("skillsView.discoveredCount", { count: filtered.length })}
-          </h2>
-          <p className="text-xs text-text-secondary mb-4">
-            {t("skillsView.clickToView")}
-          </p>
+            {/* Installed-only: refresh */}
+            {marketTab === "installed" && (
+              <button
+                onClick={() => refresh(true)}
+                title={t("skillsView.refresh")}
+                className="flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-gray-50 transition-colors"
+              >
+                <FontAwesomeIcon
+                  icon={["fas", "rotate-right"]}
+                  className={`text-sm ${loading ? "animate-spin" : ""}`}
+                />
+              </button>
+            )}
 
-          {loading && skills.length === 0 ? (
-            <div className="text-sm text-text-secondary py-10 text-center">{t("skillsView.loading")}</div>
-          ) : filtered.length === 0 ? (
-            <div className="text-sm text-text-secondary py-10 text-center">
-              {t("skillsView.noSkills")}
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-              {filtered.map((skill) => {
-                const v = visualFor(skill);
-                const active = selected?.id === skill.id;
-                return (
-                  <div
-                    key={skill.id}
-                    onClick={() => onSelect(skill)}
-                    className={`flex items-center p-3 rounded-xl cursor-pointer transition-colors group ${
-                      active ? "bg-gray-100" : "hover:bg-gray-50"
-                    }`}
-                  >
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 mr-4 ${v.bg}`}>
-                      <FontAwesomeIcon icon={v.icon} className="text-lg" />
-                    </div>
-                    <div className="flex-1 min-w-0 pr-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[14px] font-medium text-text-base truncate">{skill.name}</span>
-                        <span className="text-[10px] text-text-secondary border border-border-theme rounded-full px-1.5 py-0.5 flex-shrink-0">
-                          {originLabel(skill.origin)}
-                        </span>
-                      </div>
-                      <div className="text-[12px] text-text-secondary truncate mt-0.5">{skill.description}</div>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onUninstall(skill);
-                      }}
-                      title={t("skillsView.uninstall")}
-                      className="w-7 h-7 rounded-full border border-border-theme flex items-center justify-center text-text-secondary hover:bg-white hover:text-red-500 transition-all bg-gray-50 opacity-0 group-hover:opacity-100"
-                    >
-                      <FontAwesomeIcon icon={["fas", "minus"]} className="text-xs" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+            {/* Installed-only: upload zip */}
+            {marketTab === "installed" && (
+              <button
+                onClick={handleInstallZip}
+                className="flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-gray-50 transition-colors"
+                title="Upload ZIP Skill"
+              >
+                <FontAwesomeIcon icon={["fas", "upload"]} className="text-sm" />
+              </button>
+            )}
 
-          {/* Recommended Skills */}
-          <div className="mt-10 pt-6">
-            <h2 className="text-base font-medium text-text-base mb-4">{t("skillsView.recommended")}</h2>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-              {RECOMMENDED_SKILLS.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center p-3 rounded-xl cursor-pointer transition-colors group hover:bg-gray-100"
+            {/* Market-only: provider config gear (R9.2, R9.4-R9.6). The
+                popover hangs off the button via `absolute right-0 top-full`,
+                so we wrap both in a `relative` container. */}
+            {marketTab === "market" && (
+              <div className="relative">
+                <button
+                  onClick={handleProviderConfig}
+                  className={`flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-gray-50 transition-colors ${
+                    providerConfigOpen ? "bg-gray-100 text-text-base" : ""
+                  }`}
+                  title={t("skillsView.market_provider_config")}
+                  aria-haspopup="dialog"
+                  aria-expanded={providerConfigOpen}
                 >
-                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 mr-4 ${item.bg}`}>
-                    {item.iconText ? (
-                      <span className="text-[10px] font-bold tracking-wider">{item.iconText}</span>
-                    ) : item.icon ? (
-                      <FontAwesomeIcon icon={item.icon} className="text-lg" />
-                    ) : null}
-                  </div>
-                  <div className="flex-1 min-w-0 pr-3">
-                    <div className="text-[14px] font-medium text-text-base truncate">{item.name}</div>
-                    <div className="text-[12px] text-text-secondary truncate mt-0.5">{item.description}</div>
-                  </div>
-                  <button
-                    className="w-7 h-7 rounded-full border border-border-theme flex items-center justify-center text-text-secondary bg-gray-50 hover:bg-white hover:text-text-base transition-all"
-                    title={t("skillsView.add")}
-                  >
-                    <FontAwesomeIcon icon={["fas", "plus"]} className="text-xs" />
-                  </button>
-                </div>
-              ))}
-            </div>
+                  <FontAwesomeIcon icon={["fas", "gear"]} className="text-sm" />
+                </button>
+                <SkillsMarketProviderConfig
+                  open={providerConfigOpen}
+                  onClose={() => setProviderConfigOpen(false)}
+                />
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Body */}
+        {marketTab === "installed" ? (
+          <InstalledBody
+            loading={loading}
+            skills={skills}
+            filtered={filteredInstalled}
+            selected={selected}
+            originLabel={originLabel}
+            onSelect={onSelect}
+            onUninstall={onUninstall}
+          />
+        ) : (
+          <MarketBody
+            marketSkills={marketSkills}
+            marketTotal={marketTotal}
+            marketHasNext={marketHasNext}
+            marketLoading={marketLoading}
+            marketError={marketError}
+            onLoadMore={handleLoadMore}
+            onInstall={handleMarketInstall}
+            isInstalled={isMarketSkillInstalled}
+          />
+        )}
       </div>
 
-      {/* Right: detail / disclosed body */}
-      {selected && (
+      {/* Right-side detail pane (Installed tab only) */}
+      {marketTab === "installed" && selected && (
         <div className="w-96 border-l border-border-theme flex flex-col overflow-hidden bg-gray-50/50">
           <div className="px-6 py-5 border-b border-border-theme flex items-start justify-between">
             <div>
@@ -272,24 +399,40 @@ export function SkillsView() {
                 {selected.version ? ` · v${selected.version}` : ""}
               </div>
             </div>
-            <button
-              onClick={() => {
-                setSelected(null);
-                setActivation(null);
-              }}
-              className="text-text-secondary hover:text-text-base"
-            >
-              <FontAwesomeIcon icon={["fas", "xmark"]} />
-            </button>
+            <div className="flex items-center gap-2">
+              {/* R8.7 / R8.8: hide uninstall for built-in skills */}
+              {selected.origin !== "built_in" && (
+                <button
+                  onClick={() => onUninstall(selected)}
+                  title={t("skillsView.uninstall")}
+                  className="w-7 h-7 rounded-full border border-border-theme flex items-center justify-center text-text-secondary hover:bg-white hover:text-red-500 transition-all bg-white"
+                >
+                  <FontAwesomeIcon icon={["fas", "xmark"]} className="text-xs" />
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setSelected(null);
+                  setActivation(null);
+                }}
+                className="text-text-secondary hover:text-text-base"
+                title="Close"
+              >
+                <FontAwesomeIcon icon={["fas", "xmark"]} />
+              </button>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto px-6 py-4">
             <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">
               {t("skillsView.triggerPhrases", { count: selected.triggers.length })}
             </div>
             <div className="flex flex-wrap gap-1.5 mb-5">
-              {selected.triggers.map((t) => (
-                <span key={t} className="text-[11px] bg-white border border-border-theme rounded-full px-2 py-0.5 text-text-secondary">
-                  {t}
+              {selected.triggers.map((tp) => (
+                <span
+                  key={tp}
+                  className="text-[11px] bg-white border border-border-theme rounded-full px-2 py-0.5 text-text-secondary"
+                >
+                  {tp}
                 </span>
               ))}
             </div>
@@ -301,6 +444,181 @@ export function SkillsView() {
             </pre>
           </div>
         </div>
+      )}
+
+      {/* Install dialog (controlled by `installSource`) — visible across tabs
+          so a transient tab switch doesn't drop a pending scan / review. */}
+      <SkillInstallDialog
+        source={installSource}
+        aiReviewEnabled={aiReviewEnabled}
+        onClose={handleInstallDialogClose}
+      />
+    </div>
+  );
+}
+
+// =============================================================================
+// Installed tab body
+// =============================================================================
+
+interface InstalledBodyProps {
+  loading: boolean;
+  skills: Skill[];
+  filtered: Skill[];
+  selected: Skill | null;
+  originLabel: (o: string) => string;
+  onSelect: (s: Skill) => void;
+  onUninstall: (s: Skill) => void;
+}
+
+function InstalledBody({
+  loading,
+  skills,
+  filtered,
+  selected,
+  originLabel,
+  onSelect,
+  onUninstall,
+}: InstalledBodyProps) {
+  const { t } = useTranslation();
+  return (
+    <div className="w-full max-w-5xl mx-auto">
+      <h2 className="text-base font-medium text-text-base mb-1">
+        {t("skillsView.discoveredCount", { count: filtered.length })}
+      </h2>
+      <p className="text-xs text-text-secondary mb-4">{t("skillsView.clickToView")}</p>
+
+      {loading && skills.length === 0 ? (
+        <div className="text-sm text-text-secondary py-10 text-center">
+          {t("skillsView.loading")}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-sm text-text-secondary py-10 text-center">
+          {t("skillsView.noSkills")}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+          {filtered.map((skill) => {
+            const v = visualFor(skill);
+            const active = selected?.id === skill.id;
+            const builtIn = skill.origin === "built_in";
+            return (
+              <div
+                key={skill.id}
+                onClick={() => onSelect(skill)}
+                className={`flex items-center p-3 rounded-xl cursor-pointer transition-colors group ${
+                  active ? "bg-gray-100" : "hover:bg-gray-50"
+                }`}
+              >
+                <div
+                  className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 mr-4 ${v.bg}`}
+                >
+                  <FontAwesomeIcon icon={v.icon} className="text-lg" />
+                </div>
+                <div className="flex-1 min-w-0 pr-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[14px] font-medium text-text-base truncate">
+                      {skill.name}
+                    </span>
+                    <span className="text-[10px] text-text-secondary border border-border-theme rounded-full px-1.5 py-0.5 flex-shrink-0">
+                      {originLabel(skill.origin)}
+                    </span>
+                  </div>
+                  <div className="text-[12px] text-text-secondary truncate mt-0.5">
+                    {skill.description}
+                  </div>
+                </div>
+                {/* R8.7 / R8.8: hide uninstall (✕) for built-in skills */}
+                {!builtIn && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onUninstall(skill);
+                    }}
+                    title={t("skillsView.uninstall")}
+                    className="w-7 h-7 rounded-full border border-border-theme flex items-center justify-center text-text-secondary hover:bg-white hover:text-red-500 transition-all bg-gray-50 opacity-0 group-hover:opacity-100"
+                  >
+                    <FontAwesomeIcon icon={["fas", "xmark"]} className="text-xs" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
+// Market tab body
+// =============================================================================
+
+interface MarketBodyProps {
+  marketSkills: MarketSkill[];
+  marketTotal: number;
+  marketHasNext: boolean;
+  marketLoading: boolean;
+  marketError: string | null;
+  onLoadMore: () => void;
+  onInstall: (s: MarketSkill) => void;
+  isInstalled: (s: MarketSkill) => boolean;
+}
+
+function MarketBody({
+  marketSkills,
+  marketTotal,
+  marketHasNext,
+  marketLoading,
+  marketError,
+  onLoadMore,
+  onInstall,
+  isInstalled,
+}: MarketBodyProps) {
+  const { t } = useTranslation();
+  return (
+    <div className="w-full max-w-6xl mx-auto">
+      {marketError && (
+        <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3 mb-4">
+          {marketError}
+        </div>
+      )}
+
+      {marketLoading && marketSkills.length === 0 ? (
+        <div className="text-sm text-text-secondary py-10 text-center">
+          {t("skillsView.market_loading")}
+        </div>
+      ) : marketSkills.length === 0 ? (
+        <div className="text-sm text-text-secondary py-10 text-center">
+          {t("skillsView.market_no_results")}
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {marketSkills.map((skill) => (
+              <MarketSkillCard
+                key={skill.id}
+                skill={skill}
+                installed={isInstalled(skill)}
+                onInstall={onInstall}
+              />
+            ))}
+          </div>
+
+          {marketHasNext && (
+            <div className="flex items-center justify-center mt-6">
+              <button
+                onClick={onLoadMore}
+                disabled={marketLoading}
+                className="px-4 py-2 text-sm rounded-full border border-border-theme bg-white text-text-base hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {marketLoading
+                  ? t("skillsView.market_loading")
+                  : `${t("skillsView.market_load_more")} (${marketSkills.length}/${marketTotal})`}
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

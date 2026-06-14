@@ -196,6 +196,43 @@ pub struct AppSettings {
     /// older settings docs without this field round-trip cleanly.
     #[serde(default)]
     pub tool_search_auto_threshold_chars: Option<usize>,
+    /// Master switch for skill-catalog `<available-skills>` reminder injection
+    /// (channel A of the auto-activation design). When `false`, the chat
+    /// service skips the reminder entirely (saves tokens for users who run
+    /// the assistant as a pure chatbot). The `skill` tool itself remains
+    /// callable. Default `true`. `#[serde(default)]` falls back to
+    /// [`default_skill_catalog_enabled`] for older settings docs without
+    /// the field.
+    #[serde(default = "default_skill_catalog_enabled")]
+    pub skill_catalog_enabled: bool,
+    /// Character budget for the rendered `<available-skills>` reminder
+    /// block. The catalog renderer truncates non-builtin descriptions when
+    /// the total exceeds this budget. Default `8000`. A value of `0` is
+    /// treated as disabled (consumer side; see R10.5).
+    #[serde(default = "default_skill_catalog_char_budget")]
+    pub skill_catalog_char_budget: usize,
+    /// Whether the `SkillInstallDialog` runs the streaming AI security
+    /// review before allowing the user to confirm install. When `false`,
+    /// only the static scan report is shown and the install button is not
+    /// gated on review verdict. Default `true`.
+    #[serde(default = "default_skill_install_ai_review_enabled")]
+    pub skill_install_ai_review_enabled: bool,
+    /// Optional model override for the AI security review. `None` (the
+    /// default) means "use the currently selected chat model".
+    #[serde(default)]
+    pub skill_install_ai_review_model: Option<String>,
+}
+
+fn default_skill_catalog_enabled() -> bool {
+    true
+}
+
+fn default_skill_catalog_char_budget() -> usize {
+    8_000
+}
+
+fn default_skill_install_ai_review_enabled() -> bool {
+    true
 }
 
 /// A redacted view of settings safe to send to the UI (no secret material).
@@ -341,6 +378,21 @@ impl SettingsService {
             tool_search_auto_threshold_chars: prior
                 .as_ref()
                 .and_then(|s| s.tool_search_auto_threshold_chars),
+            skill_catalog_enabled: prior
+                .as_ref()
+                .map(|s| s.skill_catalog_enabled)
+                .unwrap_or_else(default_skill_catalog_enabled),
+            skill_catalog_char_budget: prior
+                .as_ref()
+                .map(|s| s.skill_catalog_char_budget)
+                .unwrap_or_else(default_skill_catalog_char_budget),
+            skill_install_ai_review_enabled: prior
+                .as_ref()
+                .map(|s| s.skill_install_ai_review_enabled)
+                .unwrap_or_else(default_skill_install_ai_review_enabled),
+            skill_install_ai_review_model: prior
+                .as_ref()
+                .and_then(|s| s.skill_install_ai_review_model.clone()),
         };
         self.save(&settings)?;
 
@@ -502,6 +554,93 @@ impl SettingsService {
             .load()?
             .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
         settings.tool_search_auto_threshold_chars = value.map(|v| v.max(1));
+        self.save(&settings)?;
+        Ok(())
+    }
+
+    // ---- Skill marketplace settings (Skill Marketplace spec, R10) ---------
+
+    /// Default character budget for the `<available-skills>` reminder block.
+    /// Mirrors the [`default_skill_catalog_char_budget`] free function so
+    /// callers (UI placeholder text, integration tests) can refer to it via
+    /// the service surface without poking at private items.
+    pub const DEFAULT_SKILL_CATALOG_CHAR_BUDGET: usize = 8_000;
+
+    /// Whether the skill-catalog reminder (channel A) is enabled. Default
+    /// `true` when uninitialized.
+    pub fn skill_catalog_enabled(&self) -> Result<bool> {
+        Ok(self
+            .load()?
+            .map(|s| s.skill_catalog_enabled)
+            .unwrap_or_else(default_skill_catalog_enabled))
+    }
+
+    /// Persist the master switch for the skill-catalog reminder.
+    pub fn set_skill_catalog_enabled(&self, enabled: bool) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.skill_catalog_enabled = enabled;
+        self.save(&settings)?;
+        Ok(())
+    }
+
+    /// Character budget for the rendered `<available-skills>` reminder.
+    /// Returns the persisted value (default 8000) when uninitialized.
+    pub fn skill_catalog_char_budget(&self) -> Result<usize> {
+        Ok(self
+            .load()?
+            .map(|s| s.skill_catalog_char_budget)
+            .unwrap_or_else(default_skill_catalog_char_budget))
+    }
+
+    /// Persist the catalog character budget. The value is stored as-is;
+    /// consumers are expected to honor R10.5 (treat `0` as disabled) at the
+    /// rendering site, not here.
+    pub fn set_skill_catalog_char_budget(&self, budget: usize) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.skill_catalog_char_budget = budget;
+        self.save(&settings)?;
+        Ok(())
+    }
+
+    /// Whether the `SkillInstallDialog` runs the AI security review before
+    /// allowing install confirmation. Default `true` when uninitialized.
+    pub fn skill_install_ai_review_enabled(&self) -> Result<bool> {
+        Ok(self
+            .load()?
+            .map(|s| s.skill_install_ai_review_enabled)
+            .unwrap_or_else(default_skill_install_ai_review_enabled))
+    }
+
+    /// Persist the AI-review master switch.
+    pub fn set_skill_install_ai_review_enabled(&self, enabled: bool) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.skill_install_ai_review_enabled = enabled;
+        self.save(&settings)?;
+        Ok(())
+    }
+
+    /// Optional model override for the AI security review. `None` means
+    /// "use the currently selected chat model".
+    pub fn skill_install_ai_review_model(&self) -> Result<Option<String>> {
+        Ok(self.load()?.and_then(|s| s.skill_install_ai_review_model))
+    }
+
+    /// Persist the AI-review model override. Pass `None` (or an empty
+    /// string, which is normalized to `None`) to fall back to the chat
+    /// model.
+    pub fn set_skill_install_ai_review_model(&self, model: Option<String>) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.skill_install_ai_review_model = model
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
         self.save(&settings)?;
         Ok(())
     }
@@ -791,6 +930,149 @@ mod tests {
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
+    // ---- Skill marketplace settings (R10) ---------------------------------
+
+    #[tokio::test]
+    async fn skill_marketplace_settings_have_documented_defaults() {
+        // R10.1: defaults after initialize are: enabled=true, budget=8000,
+        // ai_review=true, ai_review_model=None.
+        let (svc, _) = service();
+        svc.initialize("sk-abcd1234").await.unwrap();
+
+        assert!(
+            svc.skill_catalog_enabled().unwrap(),
+            "catalog default is on"
+        );
+        assert_eq!(svc.skill_catalog_char_budget().unwrap(), 8_000);
+        assert!(
+            svc.skill_install_ai_review_enabled().unwrap(),
+            "AI review default is on"
+        );
+        assert!(svc.skill_install_ai_review_model().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn skill_marketplace_settings_round_trip_and_survive_refresh() {
+        // R10.2: persistence round-trips and changes take effect without
+        // needing a fresh initialize. We use refresh_models() (the closest
+        // thing to a "restart" available to a unit test) to confirm the
+        // values survive a re-discovery cycle.
+        let (svc, _) = service();
+        svc.initialize("sk-abcd1234").await.unwrap();
+
+        svc.set_skill_catalog_enabled(false).unwrap();
+        svc.set_skill_catalog_char_budget(0).unwrap();
+        svc.set_skill_install_ai_review_enabled(false).unwrap();
+        svc.set_skill_install_ai_review_model(Some("deepseek-v4-pro".into()))
+            .unwrap();
+
+        assert!(!svc.skill_catalog_enabled().unwrap());
+        assert_eq!(svc.skill_catalog_char_budget().unwrap(), 0);
+        assert!(!svc.skill_install_ai_review_enabled().unwrap());
+        assert_eq!(
+            svc.skill_install_ai_review_model().unwrap().as_deref(),
+            Some("deepseek-v4-pro")
+        );
+
+        // Refresh models (re-runs discovery and persists). Skill settings
+        // must carry over via the `prior` path in `initialize`.
+        svc.refresh_models().await.unwrap();
+
+        assert!(!svc.skill_catalog_enabled().unwrap());
+        assert_eq!(svc.skill_catalog_char_budget().unwrap(), 0);
+        assert!(!svc.skill_install_ai_review_enabled().unwrap());
+        assert_eq!(
+            svc.skill_install_ai_review_model().unwrap().as_deref(),
+            Some("deepseek-v4-pro")
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_install_ai_review_model_normalizes_empty_to_none() {
+        // Pass an empty / whitespace-only string and the setter falls back
+        // to None, so the consumer site reads "use the chat model".
+        let (svc, _) = service();
+        svc.initialize("sk-abcd1234").await.unwrap();
+
+        svc.set_skill_install_ai_review_model(Some("   ".into()))
+            .unwrap();
+        assert!(svc.skill_install_ai_review_model().unwrap().is_none());
+
+        svc.set_skill_install_ai_review_model(Some("custom-model".into()))
+            .unwrap();
+        svc.set_skill_install_ai_review_model(None).unwrap();
+        assert!(svc.skill_install_ai_review_model().unwrap().is_none());
+    }
+
+    #[test]
+    fn skill_settings_set_before_initialize_errors() {
+        // Mirrors `tool_search_mode_set_before_initialize_errors` so the
+        // failure mode is consistent across all post-init settings.
+        let (svc, _) = service();
+        assert!(matches!(
+            svc.set_skill_catalog_enabled(false).unwrap_err(),
+            CoreError::NotFound(_)
+        ));
+        assert!(matches!(
+            svc.set_skill_catalog_char_budget(0).unwrap_err(),
+            CoreError::NotFound(_)
+        ));
+        assert!(matches!(
+            svc.set_skill_install_ai_review_enabled(false).unwrap_err(),
+            CoreError::NotFound(_)
+        ));
+        assert!(matches!(
+            svc.set_skill_install_ai_review_model(Some("m".into()))
+                .unwrap_err(),
+            CoreError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn old_settings_payload_decodes_with_skill_defaults() {
+        // R10.1 backwards-compatibility: a settings JSON written by an
+        // older build (no skill_* keys) must decode cleanly with the
+        // documented defaults. This is the contract that `#[serde(default
+        // = "...")]` provides; we lock it in with an explicit test.
+        let json = r#"{
+            "catalog": {
+                "base_url": "https://api.deepseek.com/v1",
+                "available": [
+                    {"id": "deepseek-v4-flash", "object": "model", "owned_by": "deepseek"}
+                ],
+                "chat_model": "deepseek-v4-flash",
+                "reasoner_model": "deepseek-v4-flash"
+            },
+            "discovered_at": 0,
+            "sandbox_mode": "workspace_write"
+        }"#;
+        let parsed: AppSettings = serde_json::from_str(json).expect("decode old payload");
+
+        assert!(parsed.skill_catalog_enabled);
+        assert_eq!(parsed.skill_catalog_char_budget, 8_000);
+        assert!(parsed.skill_install_ai_review_enabled);
+        assert!(parsed.skill_install_ai_review_model.is_none());
+    }
+
+    #[tokio::test]
+    async fn skill_settings_serialize_with_new_fields() {
+        // Round-trip: persisted JSON must contain all four new keys
+        // (snake_case, matching the field names) so the desktop layer's
+        // Tauri commands can decode + re-encode them without lossiness.
+        let (svc, _) = service();
+        svc.initialize("sk-abcd1234").await.unwrap();
+        svc.set_skill_catalog_char_budget(123).unwrap();
+        svc.set_skill_install_ai_review_model(Some("m".into()))
+            .unwrap();
+
+        let persisted = svc.load().unwrap().unwrap();
+        let json = serde_json::to_string(&persisted).unwrap();
+        assert!(json.contains("\"skill_catalog_enabled\":true"));
+        assert!(json.contains("\"skill_catalog_char_budget\":123"));
+        assert!(json.contains("\"skill_install_ai_review_enabled\":true"));
+        assert!(json.contains("\"skill_install_ai_review_model\":\"m\""));
+    }
+
     #[test]
     fn view_before_init_is_none() {
         let (svc, _) = service();
@@ -876,6 +1158,10 @@ mod tests {
             verification_policy: VerificationPolicy::default(),
             tool_search_mode: deepagent_builtins::ToolSearchMode::default(),
             tool_search_auto_threshold_chars: None,
+            skill_catalog_enabled: default_skill_catalog_enabled(),
+            skill_catalog_char_budget: default_skill_catalog_char_budget(),
+            skill_install_ai_review_enabled: default_skill_install_ai_review_enabled(),
+            skill_install_ai_review_model: None,
         };
         svc.save(&settings).unwrap();
 

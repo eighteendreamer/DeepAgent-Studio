@@ -1,0 +1,389 @@
+#!/usr/bin/env node
+/**
+ * prebundle-skills.cjs
+ *
+ * Copies the 7 in-repo skills from `<repo>/.deepagent/skills/` into
+ * `apps/desktop/src-tauri/resources/skills/` (Tauri resources tree),
+ * normalizing three different on-disk layouts into a uniform shape so the
+ * Rust-side `discover_recursive` loader can pick them up.
+ *
+ * Layouts handled:
+ *   1. Double-shell (`<id>/<id>/SKILL.md`)  → unwrap to `<id>/SKILL.md`
+ *   2. Nested skills (`superpowers/skills/<sub>/SKILL.md`) → keep tree,
+ *      strip project-management chrome at the outer dir
+ *   3. Custom skill.json (`ui-ux-pro-max-skill/`) → synthesize a minimal
+ *      `SKILL.md` from `skill.json` + `README.md` if missing
+ *
+ * Pure Node — uses only built-in fs/path. No new dependencies.
+ *
+ * Usage:
+ *   node scripts/prebundle-skills.cjs           # quiet: only summary
+ *   node scripts/prebundle-skills.cjs --verbose # log every copied file
+ *
+ * Spec: .kiro/specs/skill-marketplace/ — Task 9 (R1.1, R1.5, R1.6, R1.7)
+ */
+
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const VERBOSE = process.argv.includes('--verbose');
+
+// apps/desktop/scripts/prebundle-skills.cjs → repo root is two levels up
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+const SOURCE_ROOT = path.join(REPO_ROOT, '.deepagent', 'skills');
+const DEST_ROOT = path.resolve(
+  __dirname,
+  '..',
+  'src-tauri',
+  'resources',
+  'skills',
+);
+
+// Junk dirs we never want to copy into the bundled resources tree.
+const JUNK_DIRS = new Set([
+  '.git',
+  '.github',
+  '.idea',
+  '.vscode',
+  '.deepagent',
+  '.claude',
+  '.claude-plugin',
+  '.codex-plugin',
+  '.cursor-plugin',
+  '.opencode',
+  'node_modules',
+  '__pycache__',
+  '.venv',
+  'venv',
+  'target',
+  'dist',
+]);
+
+// Junk files at any level.
+const JUNK_FILES = new Set([
+  '.gitignore',
+  '.gitattributes',
+  '.nojekyll',
+  '.DS_Store',
+  'Thumbs.db',
+]);
+
+// Extra junk specific to the superpowers outer dir (project-management chrome).
+const SUPERPOWERS_OUTER_SKIP_DIRS = new Set([
+  ...JUNK_DIRS,
+  'tests',
+  'docs',
+  'hooks',
+  'assets',
+  'scripts',
+]);
+const SUPERPOWERS_OUTER_SKIP_FILES = new Set([
+  ...JUNK_FILES,
+  'package.json',
+  'gemini-extension.json',
+  'CODE_OF_CONDUCT.md',
+  'RELEASE-NOTES.md',
+  '.version-bump.json',
+  'AGENTS.md',
+  'CLAUDE.md',
+  'GEMINI.md',
+]);
+
+const counters = {
+  filesCopied: 0,
+  symlinksSkipped: 0,
+};
+
+function logVerbose(msg) {
+  if (VERBOSE) console.log(msg);
+}
+
+/**
+ * Recursively copy `src` → `dest`, skipping configured junk dirs/files
+ * and never following symlinks. Always creates `dest` if missing.
+ */
+function copyDirRecursive(src, dest, opts) {
+  const skipDirs = opts && opts.skipDirs ? opts.skipDirs : JUNK_DIRS;
+  const skipFiles = opts && opts.skipFiles ? opts.skipFiles : JUNK_FILES;
+
+  fs.mkdirSync(dest, { recursive: true });
+
+  let entries;
+  try {
+    entries = fs.readdirSync(src, { withFileTypes: true });
+  } catch (err) {
+    console.warn(
+      `[prebundle-skills] WARN: cannot read ${src}: ${err.message}`,
+    );
+    return;
+  }
+
+  for (const dirent of entries) {
+    const srcPath = path.join(src, dirent.name);
+    const destPath = path.join(dest, dirent.name);
+
+    // Never follow symlinks — skill bundles must be self-contained.
+    if (dirent.isSymbolicLink()) {
+      counters.symlinksSkipped++;
+      console.warn(
+        `[prebundle-skills] WARN: skipping symlink ${srcPath}`,
+      );
+      continue;
+    }
+
+    if (dirent.isDirectory()) {
+      if (skipDirs.has(dirent.name)) {
+        logVerbose(`  skip dir   ${srcPath}`);
+        continue;
+      }
+      copyDirRecursive(srcPath, destPath, { skipDirs, skipFiles });
+      continue;
+    }
+
+    if (dirent.isFile()) {
+      if (skipFiles.has(dirent.name)) {
+        logVerbose(`  skip file  ${srcPath}`);
+        continue;
+      }
+      fs.copyFileSync(srcPath, destPath);
+      counters.filesCopied++;
+      logVerbose(`  copy       ${srcPath} → ${destPath}`);
+      continue;
+    }
+
+    // Other dirent types (sockets, fifos, char devices, etc.) → skip.
+    logVerbose(`  skip other ${srcPath}`);
+  }
+}
+
+/**
+ * For skills using the double-shell layout (`<id>/<id>/SKILL.md`), unwrap
+ * the outer directory; if the outer already has a SKILL.md, copy as-is.
+ * Returns a label describing the action, or null if no SKILL.md found.
+ */
+function unwrapDoubleShell(skillId, sourceRoot, destRoot) {
+  const src = path.join(sourceRoot, skillId);
+  const inner = path.join(src, skillId);
+  const innerSkillMd = path.join(inner, 'SKILL.md');
+  const outerSkillMd = path.join(src, 'SKILL.md');
+  const dest = path.join(destRoot, skillId);
+
+  if (fs.existsSync(innerSkillMd)) {
+    copyDirRecursive(inner, dest, {
+      skipDirs: JUNK_DIRS,
+      skipFiles: JUNK_FILES,
+    });
+    return 'double-shell unwrapped';
+  }
+  if (fs.existsSync(outerSkillMd)) {
+    copyDirRecursive(src, dest, {
+      skipDirs: JUNK_DIRS,
+      skipFiles: JUNK_FILES,
+    });
+    return 'flat';
+  }
+  console.warn(
+    `[prebundle-skills] WARN: ${skillId} has no SKILL.md (skipping)`,
+  );
+  return null;
+}
+
+/**
+ * Process the superpowers monorepo:
+ * - Copy each `skills/<sub>/` that contains SKILL.md
+ * - Copy LICENSE / README.md at the outer dir for attribution
+ * - Filter all the project-management chrome (.git, tests/, hooks/, ...)
+ * Returns the list of sub-skill names found.
+ */
+function processSuperpowers(sourceRoot, destRoot) {
+  const src = path.join(sourceRoot, 'superpowers');
+  const skillsDir = path.join(src, 'skills');
+  if (!fs.existsSync(skillsDir)) {
+    console.warn('[prebundle-skills] WARN: superpowers/skills/ missing');
+    return [];
+  }
+
+  const dest = path.join(destRoot, 'superpowers');
+  fs.mkdirSync(dest, { recursive: true });
+
+  // Attribution + bundle index files at the outer dir.
+  // - LICENSE / README.md → upstream attribution
+  // - SKILL.md → the bundle's index that shadows the 14 nested sub-skills
+  //   under "parent wins over child" loader rule, so the UI shows a single
+  //   `superpowers` entry instead of 14 individual sub-skill rows.
+  for (const fname of ['SKILL.md', 'LICENSE', 'README.md']) {
+    const fp = path.join(src, fname);
+    if (fs.existsSync(fp) && fs.statSync(fp).isFile()) {
+      fs.copyFileSync(fp, path.join(dest, fname));
+      counters.filesCopied++;
+      logVerbose(`  copy       ${fp} → ${path.join(dest, fname)}`);
+    }
+  }
+
+  // Walk skills/<sub>/ and copy each subdir that contains a SKILL.md.
+  const subSkills = [];
+  const subEntries = fs.readdirSync(skillsDir, { withFileTypes: true });
+  for (const sub of subEntries) {
+    if (!sub.isDirectory()) continue;
+    if (JUNK_DIRS.has(sub.name)) continue;
+    const subSrc = path.join(skillsDir, sub.name);
+    const subSkillMd = path.join(subSrc, 'SKILL.md');
+    if (!fs.existsSync(subSkillMd)) continue;
+    const subDest = path.join(dest, 'skills', sub.name);
+    copyDirRecursive(subSrc, subDest, {
+      skipDirs: JUNK_DIRS,
+      skipFiles: JUNK_FILES,
+    });
+    subSkills.push(sub.name);
+  }
+
+  // The other project-management chrome at the outer dir (.git, .github,
+  // hooks/, tests/, docs/, scripts/, package.json, etc.) is intentionally
+  // NOT copied — that's not skill content.
+
+  return subSkills;
+}
+
+/**
+ * Process ui-ux-pro-max-skill:
+ * - Copy main content (README, LICENSE, src/, cli/, docs/, screenshots/,
+ *   preview/), excluding `.claude/`, `.claude-plugin/`, `.git/`, `.github/`.
+ * - If no SKILL.md at root, synthesize one from skill.json + README.md.
+ */
+function processUiUxProMax(sourceRoot, destRoot) {
+  const src = path.join(sourceRoot, 'ui-ux-pro-max-skill');
+  const dest = path.join(destRoot, 'ui-ux-pro-max-skill');
+  if (!fs.existsSync(src)) {
+    console.warn(
+      '[prebundle-skills] WARN: ui-ux-pro-max-skill source missing',
+    );
+    return null;
+  }
+
+  copyDirRecursive(src, dest, {
+    skipDirs: JUNK_DIRS,
+    skipFiles: JUNK_FILES,
+  });
+
+  // Synthesize SKILL.md if the upstream package didn't ship one.
+  const destSkillMd = path.join(dest, 'SKILL.md');
+  if (fs.existsSync(destSkillMd)) {
+    return 'flat (already had SKILL.md)';
+  }
+
+  let skillName = 'ui-ux-pro-max';
+  let description =
+    'Use when designing or generating polished UI/UX components, ' +
+    'design systems, dashboards, web apps, or visual design materials. ' +
+    'Trigger phrases: "design ui", "build a dashboard", "create a ' +
+    'landing page", "generate ui mockup", "ux design".';
+
+  const skillJsonPath = path.join(src, 'skill.json');
+  if (fs.existsSync(skillJsonPath)) {
+    try {
+      const j = JSON.parse(fs.readFileSync(skillJsonPath, 'utf-8'));
+      if (j && typeof j.name === 'string' && j.name.trim().length > 0) {
+        skillName = j.name.trim();
+      }
+      if (
+        j &&
+        typeof j.description === 'string' &&
+        j.description.trim().length > 0
+      ) {
+        description = j.description.trim();
+      }
+    } catch (err) {
+      console.warn(
+        '[prebundle-skills] WARN: failed to parse ui-ux-pro-max-skill/skill.json — using defaults',
+      );
+    }
+  }
+
+  let body = '';
+  const readmePath = path.join(src, 'README.md');
+  if (fs.existsSync(readmePath)) {
+    const md = fs.readFileSync(readmePath, 'utf-8');
+    body =
+      md.length > 5000
+        ? md.slice(0, 5000) + '\n\n... (truncated for skill bundle)\n'
+        : md;
+  } else {
+    body =
+      'See README.md and the cli/ directory in this skill for full usage.\n';
+  }
+
+  // YAML frontmatter must be single-line for description to keep parser happy.
+  const flatDesc = description.replace(/\s+/g, ' ').trim();
+  const synthesized =
+    '---\n' +
+    `name: ${skillName}\n` +
+    `description: ${flatDesc}\n` +
+    '---\n' +
+    body;
+
+  fs.writeFileSync(destSkillMd, synthesized, 'utf-8');
+  counters.filesCopied++;
+  logVerbose(`  synth      ${destSkillMd}`);
+
+  return 'synthesized SKILL.md';
+}
+
+function main() {
+  if (!fs.existsSync(SOURCE_ROOT)) {
+    console.error(
+      `[prebundle-skills] ERROR: source not found: ${SOURCE_ROOT}`,
+    );
+    process.exit(1);
+  }
+
+  // 1. Wipe destination so re-runs are deterministic.
+  if (fs.existsSync(DEST_ROOT)) {
+    fs.rmSync(DEST_ROOT, { recursive: true, force: true });
+  }
+  fs.mkdirSync(DEST_ROOT, { recursive: true });
+
+  const summary = [];
+
+  // 5 double-shell skills.
+  const doubleShellIds = [
+    'agent-browser',
+    'code-review-skill',
+    'mcp-builder',
+    'planning-with-files',
+    'webapp-testing',
+  ];
+  for (const id of doubleShellIds) {
+    const action = unwrapDoubleShell(id, SOURCE_ROOT, DEST_ROOT);
+    if (action) summary.push(`  - ${id} (${action})`);
+  }
+
+  // superpowers nested.
+  const superpowersSubs = processSuperpowers(SOURCE_ROOT, DEST_ROOT);
+  if (superpowersSubs.length > 0) {
+    const hasIndex = fs.existsSync(
+      path.join(DEST_ROOT, 'superpowers', 'SKILL.md'),
+    );
+    const shape = hasIndex
+      ? `bundled — ${superpowersSubs.length} sub-skills shadowed by parent SKILL.md`
+      : `${superpowersSubs.length} sub-skills (no parent SKILL.md, will appear flat)`;
+    summary.push(`  - superpowers (${shape}: ${superpowersSubs.join(', ')})`);
+  }
+
+  // ui-ux-pro-max custom layout.
+  const uiAction = processUiUxProMax(SOURCE_ROOT, DEST_ROOT);
+  if (uiAction) summary.push(`  - ui-ux-pro-max-skill (${uiAction})`);
+
+  console.log(
+    `[prebundle-skills] processed ${summary.length} top-level skills:`,
+  );
+  for (const line of summary) console.log(line);
+  console.log(`  files copied: ${counters.filesCopied}`);
+  if (counters.symlinksSkipped > 0) {
+    console.log(`  symlinks skipped: ${counters.symlinksSkipped}`);
+  }
+  console.log(`  output: ${DEST_ROOT}`);
+}
+
+main();

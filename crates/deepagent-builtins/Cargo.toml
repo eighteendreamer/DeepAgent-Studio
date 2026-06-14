@@ -18,6 +18,10 @@ http = ["dep:reqwest", "dep:url"]
 deepagent-core.workspace = true
 deepagent-tools.workspace = true
 deepagent-hooks.workspace = true
+# `skill_tool` (channel B of the skill-marketplace auto-activation design)
+# delegates to `SkillRegistry::body_for_invoke` from the skills crate. The
+# skills crate has no edge back to builtins, so this stays cycle-free.
+deepagent-skills.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

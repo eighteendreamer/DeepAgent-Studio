@@ -28,6 +28,7 @@ pub mod secret_store;
 pub mod service;
 pub mod session_state_service;
 pub mod settings;
+pub mod skill_catalog_reminder;
 pub mod skills_service;
 pub mod system_prompt;
 pub mod system_reminder;
@@ -67,7 +68,19 @@ pub use settings::{
     AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, SandboxMode, SettingsService,
     SettingsView, VerificationPolicy,
 };
-pub use skills_service::{SkillActivationDto, SkillDto, SkillsService};
+pub use skill_catalog_reminder::SkillCatalogSendState;
+pub use skills_service::{
+    ai_security_review, parse_verdict, AiReviewResult, ReviewDepth, SkillActivationDto, SkillDto,
+    SkillsService, AI_SECURITY_REVIEW_SYSTEM_PROMPT,
+};
+
+// Re-export marketplace types from `deepagent-skills` so the desktop Tauri
+// layer can plumb the SkillsMP client handle into `AppState` without taking a
+// direct dependency on the skills crate.
+pub use deepagent_skills::{
+    scan_dir, ApiKeySource, GithubLocator, MarketSearchData, MarketSkill, Pagination, ScanReport,
+    SearchQuery, SkillsMpClient, SkillsMpClientHandle, SkillsRoots, SortBy, TempSkillDir,
+};
 
 // Tool-search lazy loading (tool-search spec): re-exposed via app-core so the
 // desktop Tauri layer + downstream callers don't have to depend on

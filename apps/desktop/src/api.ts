@@ -6,6 +6,7 @@
 // mock data so the UI is always runnable and the build never breaks.
 
 import type {
+  ApiKeyInfo,
   ApprovalRequest,
   ArchiveProjectResult,
   ArchivedConversation,
@@ -19,6 +20,8 @@ import type {
   KnowledgeDraft,
   KnowledgeEntry,
   KnowledgeHit,
+  MarketSearchData,
+  MarketSearchInput,
   McpServer,
   PermissionRules,
   Project,
@@ -31,11 +34,15 @@ import type {
   ProjectMapRefresh,
   ProjectMapStatus,
   RewindResult,
+  ScanResult,
   SessionDetail,
   SessionSummary,
   SettingsView,
   Skill,
   SkillActivation,
+  SkillAiReviewDone,
+  SkillAiReviewToken,
+  TestKeyResult,
   Transcript,
   WorkspaceInfo,
 } from "./types";
@@ -297,6 +304,204 @@ export async function activateSkill(id: string): Promise<SkillActivation | null>
   if (invoke) return invoke<SkillActivation | null>("activate_skill", { id });
   const s = mockSkills().find((x) => x.id === id);
   return s ? { id, body: `# Skill: ${s.name}\n\n${s.description}` } : null;
+}
+
+// ---- skill marketplace (skillsmp.com + GitHub install flow) ---------------
+//
+// Wire-format notes (verified against `apps/desktop/src-tauri/src/lib.rs` and
+// the Rust types in `crates/deepagent-skills/`):
+//   - Tauri auto-converts snake_case command argument names to camelCase, so
+//     `github_url` → `githubUrl`, `temp_id` → `tempId` on the JS call site.
+//   - `MarketSearchInput` carries `#[serde(rename_all = "camelCase")]` so its
+//     `sortBy` field is camelCase.
+//   - Result structs (`ScanResult`, `ApiKeyInfo`, `TestKeyResult`,
+//     `AiReviewResult`, `ScanReport`, …) stay snake_case on the wire.
+
+/** `GET /api/v1/skills/search` via the SkillsMP REST client. */
+export async function skillMarketSearch(
+  input: MarketSearchInput
+): Promise<MarketSearchData> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<MarketSearchData>("skill_market_search", { input });
+  return { skills: [], pagination: { page: 1, limit: 20, total: 0, hasNext: false, hasPrev: false } };
+}
+
+/** Run a tiny search to exercise the configured SkillsMP API key. */
+export async function skillMarketTestKey(): Promise<TestKeyResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<TestKeyResult>("skill_market_test_key");
+  return { ok: false, daily_remaining: null, error: "desktop runtime is unavailable" };
+}
+
+/** Inspect the current API-key configuration (never returns the key value). */
+export async function skillMarketGetApiKey(): Promise<ApiKeyInfo> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ApiKeyInfo>("skill_market_get_api_key");
+  return { has_user_key: false, source: "none" };
+}
+
+/** Save a user-supplied API key to the OS keychain. */
+export async function skillMarketSetApiKey(key: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("skill_market_set_api_key", { key });
+}
+
+/** Delete the user-supplied API key; the client falls back to the built-in
+ *  / anonymous tier. */
+export async function skillMarketClearApiKey(): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("skill_market_clear_api_key");
+}
+
+/** Download a skill from GitHub via codeload, run the static safety scan,
+ *  and stash the unpacked tempdir keyed by an opaque temp-id. */
+export async function skillMarketScan(githubUrl: string): Promise<ScanResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ScanResult>("skill_market_scan", { githubUrl });
+  throw new Error("skill marketplace requires the desktop app");
+}
+
+/** Subscribe to the streaming AI security review for `tempId`.
+ *
+ *  Two Tauri events are emitted, both carrying the temp_id in the payload so
+ *  multiple concurrent installs can be filtered apart:
+ *    - `skill-ai-review`      → one per token (`{ temp_id, token }`)
+ *    - `skill-ai-review-done` → one final settle (`{ temp_id, result, error }`)
+ *
+ *  Returns an unlisten function that stops both listeners. Call it from the
+ *  install dialog's cleanup path (cancel / install / unmount). */
+export async function skillMarketAiReviewSubscribe(
+  tempId: string,
+  onToken: (payload: SkillAiReviewToken) => void,
+  onDone: (payload: SkillAiReviewDone) => void
+): Promise<() => Promise<void>> {
+  if (!isTauri()) {
+    return async () => {};
+  }
+  const mod = await import("@tauri-apps/api/event");
+  const unlistenToken = await mod.listen<SkillAiReviewToken>(
+    "skill-ai-review",
+    (event) => {
+      if (event.payload && event.payload.temp_id === tempId) onToken(event.payload);
+    }
+  );
+  const unlistenDone = await mod.listen<SkillAiReviewDone>(
+    "skill-ai-review-done",
+    (event) => {
+      if (event.payload && event.payload.temp_id === tempId) onDone(event.payload);
+    }
+  );
+  return async () => {
+    unlistenToken();
+    unlistenDone();
+  };
+}
+
+/** Kick off the background AI review task. Tokens / verdict flow through the
+ *  events subscribed via {@link skillMarketAiReviewSubscribe}.
+ *
+ *  Pass `reReview = true` to request a deeper second pass (Medium thinking
+ *  budget + 3K reply cap on the backend). The default `false` runs the
+ *  faster initial pass (Simple thinking + 2K reply cap). */
+export async function skillMarketAiReview(
+  tempId: string,
+  reReview: boolean = false,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("skill_market_ai_review", { tempId, reReview });
+}
+
+/** Confirm-and-install: copy the staged tempdir into the marketplace install
+ *  root and return the freshly registered skill DTO. */
+export async function skillMarketInstall(tempId: string): Promise<Skill> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Skill>("skill_market_install", { tempId });
+  throw new Error("skill marketplace requires the desktop app");
+}
+
+/** Drop the pending scan (and its tempdir on disk). Idempotent — a missing
+ *  `tempId` is treated as already-cleared. */
+export async function skillMarketCancel(tempId: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("skill_market_cancel", { tempId });
+}
+
+// ---- skill marketplace settings (R10) -------------------------------------
+
+/** Whether the auto-activation catalog reminder is injected (R10.1). */
+export async function getSkillCatalogEnabled(): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("get_skill_catalog_enabled");
+  return true;
+}
+
+export async function setSkillCatalogEnabled(enabled: boolean): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const value = await invoke<boolean>("set_skill_catalog_enabled", { enabled });
+    emitSettingsChanged();
+    return value;
+  }
+  return enabled;
+}
+
+/** Character budget for the catalog reminder block (R10.2). `0` disables it. */
+export async function getSkillCatalogCharBudget(): Promise<number> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<number>("get_skill_catalog_char_budget");
+  return 8000;
+}
+
+export async function setSkillCatalogCharBudget(budget: number): Promise<number> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const value = await invoke<number>("set_skill_catalog_char_budget", { budget });
+    emitSettingsChanged();
+    return value;
+  }
+  return budget;
+}
+
+/** Whether the AI security review runs before install (R10.3). */
+export async function getSkillInstallAiReviewEnabled(): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("get_skill_install_ai_review_enabled");
+  return true;
+}
+
+export async function setSkillInstallAiReviewEnabled(
+  enabled: boolean
+): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const value = await invoke<boolean>("set_skill_install_ai_review_enabled", {
+      enabled,
+    });
+    emitSettingsChanged();
+    return value;
+  }
+  return enabled;
+}
+
+/** Override model id for the AI review (R10.4). `null` = follow chat model. */
+export async function getSkillInstallAiReviewModel(): Promise<string | null> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string | null>("get_skill_install_ai_review_model");
+  return null;
+}
+
+export async function setSkillInstallAiReviewModel(
+  model: string | null
+): Promise<string | null> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const value = await invoke<string | null>("set_skill_install_ai_review_model", {
+      model,
+    });
+    emitSettingsChanged();
+    return value;
+  }
+  return model;
 }
 
 // ---- knowledge base -------------------------------------------------------

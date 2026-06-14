@@ -173,6 +173,23 @@ pub struct ChatService {
     /// already pulled into its active toolset via `tool_search`. Sessions
     /// without entries default to empty (= no deferred tool loaded).
     discovered_tools: DiscoveredToolsMap,
+    /// Optional skills service: when set, the chat run registers the
+    /// `skill` tool (channel B of the auto-activation design) and injects
+    /// the `<available-skills>` catalog reminder (channel A) on each turn.
+    /// When unset, behavior is identical to before this feature existed —
+    /// preserving backward compatibility (Property 9).
+    skills: Option<Arc<std::sync::Mutex<crate::skills_service::SkillsService>>>,
+    /// Per-session catalog send-once tracker. The chat service consults
+    /// (and mutates) this each turn to figure out the delta to inject into
+    /// the system prompt. Mutation of the registry (install / uninstall /
+    /// reload / marketplace install) clears entries via
+    /// [`ChatService::reset_sent_skills`] / [`reset_all_sent_skills`] so
+    /// the next turn re-announces the changed entries.
+    skill_catalog_state: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, crate::skill_catalog_reminder::SkillCatalogSendState>,
+        >,
+    >,
 }
 
 /// One session's discovered-tool set: shared between the runtime tool
@@ -210,6 +227,8 @@ impl ChatService {
             plan_modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cancellations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             discovered_tools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            skills: None,
+            skill_catalog_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -267,6 +286,51 @@ impl ChatService {
     pub fn with_cost(mut self, cost: Arc<crate::cost_service::CostService>) -> Self {
         self.cost = Some(cost);
         self
+    }
+
+    /// Attach a shared [`SkillsService`](crate::skills_service::SkillsService)
+    /// so each run:
+    ///
+    /// - registers the `skill` built-in tool (channel B of the auto-activation
+    ///   design) over a fresh [`SkillRegistry`][deepagent_skills::SkillRegistry]
+    ///   snapshot, and
+    /// - injects the `<available-skills>` catalog reminder (channel A) into
+    ///   the system prompt whenever the per-session send-once tracker shows
+    ///   a non-empty delta.
+    ///
+    /// Without it, runs behave exactly as before this feature existed: no
+    /// `skill` tool, no catalog reminder. This preserves the byte-equivalent
+    /// default behavior for callers that don't opt in.
+    pub fn with_skills(
+        mut self,
+        skills: Arc<std::sync::Mutex<crate::skills_service::SkillsService>>,
+    ) -> Self {
+        self.skills = Some(skills);
+        self
+    }
+
+    /// Forget the per-session catalog send-once state for `session_id` so
+    /// the next turn re-announces the full visible registry.
+    ///
+    /// The Tauri command layer calls this after `reload_skills` /
+    /// `install_skill` / `uninstall_skill` / `skill_market_install` succeed
+    /// — anything that materially changes the skill set. Without the reset,
+    /// a freshly-installed skill would not appear in the next turn's
+    /// reminder until the session restarted.
+    pub fn reset_sent_skills(&self, session_id: &str) {
+        if let Ok(mut map) = self.skill_catalog_state.lock() {
+            map.remove(session_id);
+        }
+    }
+
+    /// Forget every session's catalog send-once state. Used by the Tauri
+    /// command layer when a global change to the skill registry has
+    /// happened (e.g. `reload_skills`, marketplace install): the next turn
+    /// of every active session re-announces the full visible registry.
+    pub fn reset_all_sent_skills(&self) {
+        if let Ok(mut map) = self.skill_catalog_state.lock() {
+            map.clear();
+        }
     }
 
     /// Store oversized tool results under `dir` (usually app_data/tool_results).
@@ -947,6 +1011,37 @@ impl ChatService {
         register_tool_search_into(registry, mode, discovered, auto_threshold_chars)
     }
 
+    /// Wire the `skill` built-in into a registry. No-op when no
+    /// [`SkillsService`](crate::skills_service::SkillsService) was attached
+    /// via [`ChatService::with_skills`] (the byte-equivalent default for
+    /// callers that don't opt in).
+    ///
+    /// The registry held by [`SkillTool`][deepagent_builtins::SkillTool] is
+    /// an immutable [`Arc`]-wrapped snapshot. We clone the live
+    /// [`SkillRegistry`][deepagent_skills::SkillRegistry] once per run
+    /// (cheap — `SkillRegistry` is a `BTreeMap` of `Skill`s and is
+    /// `Clone`); subsequent installs / uninstalls / reloads take effect on
+    /// the NEXT run, not this one. That matches
+    /// [`ToolSearchTool`][deepagent_builtins::ToolSearchTool]'s
+    /// deferred-tool snapshot semantics and keeps the in-flight loop
+    /// stable.
+    ///
+    /// _Validates: Requirements R6.1, R6.2, R6.3, R6.4, R6.5, R6.6._
+    fn maybe_register_skill_tool(&self, registry: &mut ToolRegistry) -> Result<()> {
+        if let Some(skills) = &self.skills {
+            let registry_snapshot = {
+                let svc = skills
+                    .lock()
+                    .map_err(|_| CoreError::invalid("skills service mutex poisoned"))?;
+                Arc::new(svc.manager().registry().clone())
+            };
+            registry.register(Arc::new(deepagent_builtins::SkillTool::new(
+                registry_snapshot,
+            )))?;
+        }
+        Ok(())
+    }
+
     /// Build a model client for the given role from persisted settings + the
     /// stored API key. Deep thinking uses the catalog's reasoner model; lighter
     /// thinking keeps the requested role so normal chat stays fast.
@@ -969,6 +1064,132 @@ impl ChatService {
         let config = ModelConfig::from_catalog(api_key, &settings.catalog, effective_role);
         let client = Arc::new(ModelClient::new(self.transport.clone(), config));
         Ok((client, model, thinking_depth))
+    }
+
+    /// Run a single non-session, non-tool, streaming LLM completion.
+    ///
+    /// Used by [`crate::skills_service::ai_security_review`] (skill-marketplace
+    /// task 5) and any other ephemeral one-shot prompt needing the user's
+    /// configured chat model + API key without polluting the session log,
+    /// running tools, or starting the runtime engine. Each visible content
+    /// fragment streamed by the provider is forwarded through `on_token`; the
+    /// fully assembled assistant text is returned at the end.
+    ///
+    /// Reuses [`ChatService::build_model`] so model selection (incl. Deep
+    /// thinking → reasoner role), API-key resolution, and the persisted
+    /// `ThinkingDepth` profile stay consistent with the regular chat run.
+    pub async fn run_oneshot_streaming<F>(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        on_token: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) + Send + 'static,
+    {
+        let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
+        let messages = vec![
+            deepagent_core::message::Message::system(system_prompt),
+            deepagent_core::message::Message::user(user_prompt),
+        ];
+        let request = deepagent_models::chat::ChatRequest::new(model, messages)
+            .streaming()
+            .with_thinking_depth(thinking_depth);
+
+        struct CallbackObserver<F: FnMut(&str) + Send> {
+            on_token: F,
+        }
+        impl<F: FnMut(&str) + Send> deepagent_models::stream::DeltaObserver for CallbackObserver<F> {
+            fn on_content(&mut self, delta: &str) {
+                (self.on_token)(delta);
+            }
+        }
+
+        let mut observer = CallbackObserver { on_token };
+        let response = client.stream_chat_observed(request, &mut observer).await?;
+        Ok(response.message.content)
+    }
+
+    /// Specialized one-shot streaming variant for the **AI skill review** path.
+    ///
+    /// Differs from [`Self::run_oneshot_streaming`] in three deliberate ways
+    /// to keep skill installs snappy without sacrificing the structured
+    /// PASS / FAIL audit (per skill-marketplace QA feedback: 32K reasoning
+    /// budgets and Reasoner-model swaps are wasted overhead for what is
+    /// essentially a yes/no security classification):
+    ///
+    /// 1. **Model selection respects the user's `skill_install_ai_review_model`
+    ///    override** (already a public R10.4 setting). When that's `None`
+    ///    the call falls back to the catalog's chat model (Flash by
+    ///    default) — never the Reasoner. The Deep-thinking → Reasoner
+    ///    swap that [`Self::build_model`] applies for normal chat is
+    ///    intentionally skipped here because skill audits don't benefit
+    ///    from that role change.
+    /// 2. **Caller picks the [`ThinkingDepth`]** explicitly (typically
+    ///    `Simple` for the install-dialog initial pass and `Medium` for an
+    ///    explicit re-review). The user's persisted global thinking depth
+    ///    is intentionally NOT consulted.
+    /// 3. **Output token ceiling is set explicitly** via `max_output_tokens`
+    ///    BEFORE [`with_thinking_depth`][deepagent_models::ChatRequest::with_thinking_depth]
+    ///    is applied — that helper only fills `max_tokens` when it's still
+    ///    `None`, so the explicit ceiling survives and acts as a hard cap
+    ///    on the model's combined reasoning + reply budget.
+    pub async fn run_review_streaming<F>(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        thinking_depth: ThinkingDepth,
+        max_output_tokens: u32,
+        on_token: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) + Send + 'static,
+    {
+        let settings = self
+            .settings
+            .load()?
+            .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?;
+        let api_key = self
+            .settings
+            .api_key()?
+            .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
+
+        // Model resolution: user override > catalog chat model. Never
+        // promote to the Reasoner — skill review is a structured task, not a
+        // long-form reasoning workload.
+        let configured = self.settings.skill_install_ai_review_model()?;
+        let chat_model = settings.catalog.model_for(ModelRole::Chat).to_string();
+        let review_model = configured
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or(chat_model);
+
+        let config = ModelConfig::from_catalog(api_key, &settings.catalog, ModelRole::Chat);
+        let client = Arc::new(ModelClient::new(self.transport.clone(), config));
+
+        let messages = vec![
+            deepagent_core::message::Message::system(system_prompt),
+            deepagent_core::message::Message::user(user_prompt),
+        ];
+        // Order matters: `with_max_tokens` must come BEFORE
+        // `with_thinking_depth` so the explicit cap survives. The depth
+        // helper only fills `max_tokens` when it's still `None`.
+        let request = deepagent_models::chat::ChatRequest::new(review_model, messages)
+            .streaming()
+            .with_max_tokens(max_output_tokens)
+            .with_thinking_depth(thinking_depth);
+
+        struct CallbackObserver<F: FnMut(&str) + Send> {
+            on_token: F,
+        }
+        impl<F: FnMut(&str) + Send> deepagent_models::stream::DeltaObserver for CallbackObserver<F> {
+            fn on_content(&mut self, delta: &str) {
+                (self.on_token)(delta);
+            }
+        }
+
+        let mut observer = CallbackObserver { on_token };
+        let response = client.stream_chat_observed(request, &mut observer).await?;
+        Ok(response.message.content)
     }
 
     /// Run one streamed chat turn-loop for `prompt`, forwarding every
@@ -1177,10 +1398,17 @@ impl ChatService {
             plan.clone(),
         )))?;
 
+        // Skill tool (channel B of the auto-activation design). Only wired
+        // when a `SkillsService` was attached via [`ChatService::with_skills`]
+        // — without it, the chat runtime has no way to look up skills and
+        // the catalog reminder injection below is also a no-op (Property 9).
+        self.maybe_register_skill_tool(&mut registry)?;
+
         // Tool-search wiring (lazy tool loading). Snapshot deferred tools
-        // AFTER built-ins, MCP, knowledge, code-map, and plan-mode tools are
-        // all registered. No-op when the user hasn't enabled tool-search
-        // mode (default Disabled is byte-equivalent to the old behavior).
+        // AFTER built-ins, MCP, knowledge, code-map, plan-mode, and skill
+        // tools are all registered. No-op when the user hasn't enabled
+        // tool-search mode (default Disabled is byte-equivalent to the old
+        // behavior).
         let deferred_tool_names = self.maybe_register_tool_search(
             &mut registry,
             tool_search_mode,
@@ -1308,6 +1536,45 @@ impl ChatService {
         if let Some(block) = deferred_tools_announcement(&undiscovered_deferred_names) {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&block);
+        }
+        // Skill-catalog reminder injection (channel A of the auto-activation
+        // design). Only when a `SkillsService` is attached AND the catalog
+        // master switch is on AND something new has appeared since the last
+        // turn. The state-tracker mutates per-session so a fresh session
+        // sees the full visible registry on turn 0; subsequent turns only
+        // see deltas (Property 11). The block is wrapped in
+        // `<system-reminder>` so the model treats it as meta-channel
+        // commentary rather than authentic user wording — the rendered
+        // body is itself an `<available-skills>` envelope produced by
+        // [`SkillRegistry::formatted_catalog`]
+        // (deepagent-skills/src/registry.rs).
+        if let Some(skills) = &self.skills {
+            let settings = self.settings.load().ok().flatten();
+            let catalog_block = if let Some(settings) = settings {
+                let svc = skills
+                    .lock()
+                    .map_err(|_| CoreError::invalid("skills service mutex poisoned"))?;
+                let mut state_map = self.skill_catalog_state.lock().unwrap_or_else(|p| {
+                    // Poisoned guard: clear the inner map so subsequent
+                    // turns recover. The current turn re-announces the full
+                    // catalog (default state).
+                    let mut inner = p.into_inner();
+                    inner.clear();
+                    inner
+                });
+                let entry = state_map.entry(session_id.clone()).or_default();
+                entry.next_delta(svc.manager().registry(), &settings)
+            } else {
+                // Settings not initialized yet (the user hasn't set an API
+                // key). The chat run won't actually reach the model — it'll
+                // fail upstream — but we still don't want to crash the
+                // catalog injection here.
+                None
+            };
+            if let Some(block) = catalog_block {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&crate::system_reminder::wrap(&block));
+            }
         }
         let knowledge_reminder = self
             .knowledge
@@ -3107,5 +3374,149 @@ mod tests {
             .await,
             Outcome::Denied
         );
+    }
+
+    // ----------------------------------------------------------------------
+    // Skill marketplace task 14 — with_skills + reset hooks.
+    // ----------------------------------------------------------------------
+
+    use crate::skills_service::SkillsService;
+    use deepagent_skills::{frontmatter, Skill, SkillManager, SkillOrigin};
+
+    /// Build a [`SkillsService`] backed by an in-memory manager seeded with
+    /// the given skills. Wraps it in the `Arc<Mutex<…>>` shape the chat
+    /// service expects from [`ChatService::with_skills`].
+    fn skills_with(
+        tmp: &std::path::Path,
+        skills: Vec<(&str, &str, &str, SkillOrigin)>,
+    ) -> Arc<std::sync::Mutex<SkillsService>> {
+        let mut manager = SkillManager::new(None, tmp.join("inst"));
+        for (id, name, desc, origin) in skills {
+            let fm = frontmatter::parse(&format!(
+                "---\nname: {name}\ndescription: \"{desc}\"\n---\nbody"
+            ));
+            let skill =
+                Skill::from_frontmatter(id, &fm, origin).expect("valid frontmatter for test");
+            manager.register(skill);
+        }
+        Arc::new(std::sync::Mutex::new(SkillsService::from_manager(manager)))
+    }
+
+    /// _Validates: Requirements R6.1, R6.2._
+    #[tokio::test]
+    async fn with_skills_registers_skill_tool_in_run_registry() {
+        let (db, settings, dir) = seeded().await;
+        let skills = skills_with(
+            dir.path(),
+            vec![
+                ("alpha", "Alpha", "alpha skill", SkillOrigin::User),
+                ("bravo", "Bravo", "bravo skill", SkillOrigin::Installed),
+            ],
+        );
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path())
+            .with_skills(skills.clone());
+
+        // Build the same registry the run uses (built-ins shared between
+        // main and sub-agents) and apply the skill-tool wiring helper.
+        let (mut registry, _todo) = chat
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full)
+            .unwrap();
+        chat.maybe_register_skill_tool(&mut registry).unwrap();
+
+        assert!(
+            registry.get(deepagent_builtins::SKILL_TOOL_NAME).is_some(),
+            "skill tool must be registered when SkillsService is attached"
+        );
+    }
+
+    /// _Validates: Requirements 8.1, 10.3 (Property 9 — backward-compatible
+    /// default for callers that don't opt in)._
+    #[tokio::test]
+    async fn without_skills_does_not_register_skill_tool() {
+        let (db, settings, dir) = seeded().await;
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path());
+
+        let (mut registry, _todo) = chat
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full)
+            .unwrap();
+        chat.maybe_register_skill_tool(&mut registry).unwrap();
+
+        assert!(
+            registry.get(deepagent_builtins::SKILL_TOOL_NAME).is_none(),
+            "skill tool must NOT be registered when no SkillsService is attached"
+        );
+    }
+
+    /// _Validates: Requirements 5.6 (reset triggers re-announce on next turn)._
+    #[tokio::test]
+    async fn reset_all_sent_skills_clears_every_session() {
+        let (db, settings, dir) = seeded().await;
+        let skills = skills_with(
+            dir.path(),
+            vec![("alpha", "Alpha", "alpha skill", SkillOrigin::User)],
+        );
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path()).with_skills(skills);
+
+        // Seed two sessions' worth of state directly on the inner map.
+        {
+            let mut map = chat.skill_catalog_state.lock().unwrap();
+            map.insert(
+                "ses-1".into(),
+                crate::skill_catalog_reminder::SkillCatalogSendState::default(),
+            );
+            map.insert(
+                "ses-2".into(),
+                crate::skill_catalog_reminder::SkillCatalogSendState::default(),
+            );
+        }
+
+        chat.reset_all_sent_skills();
+
+        let map = chat.skill_catalog_state.lock().unwrap();
+        assert!(
+            map.is_empty(),
+            "reset_all_sent_skills must drop every session entry"
+        );
+    }
+
+    /// _Validates: Requirements 5.6 (per-session reset path)._
+    #[tokio::test]
+    async fn reset_sent_skills_only_clears_named_session() {
+        let (db, settings, dir) = seeded().await;
+        let skills = skills_with(
+            dir.path(),
+            vec![("alpha", "Alpha", "alpha skill", SkillOrigin::User)],
+        );
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path()).with_skills(skills);
+
+        {
+            let mut map = chat.skill_catalog_state.lock().unwrap();
+            map.insert(
+                "ses-1".into(),
+                crate::skill_catalog_reminder::SkillCatalogSendState::default(),
+            );
+            map.insert(
+                "ses-2".into(),
+                crate::skill_catalog_reminder::SkillCatalogSendState::default(),
+            );
+        }
+
+        chat.reset_sent_skills("ses-1");
+
+        let map = chat.skill_catalog_state.lock().unwrap();
+        assert!(!map.contains_key("ses-1"));
+        assert!(map.contains_key("ses-2"), "untouched session must survive");
+    }
+
+    /// _Validates: Requirements 5.6 — calling the reset hook with a
+    /// nonexistent session id is a benign no-op (no panic, no allocation
+    /// on the absent entry)._
+    #[tokio::test]
+    async fn reset_sent_skills_handles_unknown_session() {
+        let (db, settings, dir) = seeded().await;
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path());
+        // Idempotent: should not panic even with no skills attached.
+        chat.reset_sent_skills("never-existed");
+        chat.reset_all_sent_skills();
     }
 }

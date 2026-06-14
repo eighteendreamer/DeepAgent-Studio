@@ -1,11 +1,24 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
-import { SETTINGS_CHANGED_EVENT, getSettings, setChatModel, setThinkingDepth, getApprovalPolicy, setApprovalPolicy, getCommands } from "../api";
+import { SETTINGS_CHANGED_EVENT, getSettings, setChatModel, setThinkingDepth, getApprovalPolicy, setApprovalPolicy, getCommands, listSkills } from "../api";
 import { message } from "./message";
-import type { Command } from "../types";
+import type { Command, Skill } from "../types";
 
-type SlashChoice = Command & { insertText?: string };
+/** A slash-dropdown row. `insertText` is used for built-in slash commands;
+ *  `skillName` (when set) marks the row as a skill picker — `chooseSlash`
+ *  rewrites the textarea to a natural-language request instead of inserting
+ *  the literal command string (Channel C v1, see design.md §Auto-Activation). */
+type SlashChoice = Command & { insertText?: string; skillName?: string };
+
+/** Channel C v1: rewrite the composer to a plain user message so the model
+ *  picks up the catalog reminder and invokes the `skill` tool itself.
+ *  `args` is the substring after the matched `/<token>` prefix. */
+function rewriteToSkillRequest(skillName: string, args: string): string {
+  const trimmed = args.trim();
+  if (trimmed.length === 0) return `Please use the ${skillName} skill.`;
+  return `Please use the ${skillName} skill: ${trimmed}`;
+}
 
 /** Map composer dropdown option id ↔ backend approval-policy label. */
 const OPTION_TO_POLICY: Record<string, string> = {
@@ -59,6 +72,10 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   const [switching, setSwitching] = useState(false);
   const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
   const [slashSelected, setSlashSelected] = useState(0);
+  // Skill registry mirror, used to populate slash candidates (Channel C v1).
+  // Reloads on `SETTINGS_CHANGED_EVENT` so install/uninstall mid-session is
+  // reflected without a chat-page refresh.
+  const [skills, setSkills] = useState<Skill[]>([]);
 
   const reloadSettings = useCallback((cancelled?: () => boolean) => {
     getSettings()
@@ -83,6 +100,28 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
       window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
     };
   }, [reloadSettings]);
+
+  // Load the skill registry for the slash-command candidate list, and refresh
+  // when settings change (catches install / uninstall / reload mid-session).
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      listSkills()
+        .then((list) => {
+          if (!cancelled) setSkills(list);
+        })
+        .catch(() => {
+          /* browser preview / uninitialized: keep prior list */
+        });
+    };
+    load();
+    const onSettingsChanged = () => load();
+    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+    };
+  }, []);
 
   const chooseModel = async (id: string) => {
     setIsModelDropdownOpen(false);
@@ -250,28 +289,64 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
     }
 
     let cancelled = false;
+    const q = body.trim().toLowerCase();
+    // Build skill candidates: filter on id + name, sort alphabetically by id,
+    // cap at 8 (R7.5). Hidden when no slash command is being typed (handled
+    // by the `firstSpace >= 0` early-return above).
+    const skillChoices: SlashChoice[] = skills
+      .filter(
+        (sk) =>
+          !q ||
+          sk.id.toLowerCase().includes(q) ||
+          sk.name.toLowerCase().includes(q),
+      )
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .slice(0, 8)
+      .map((sk) => ({
+        id: `slash-skill.${sk.id}`,
+        title: `/${sk.id}`,
+        description: sk.description,
+        category: "Skill",
+        shortcut: null,
+        skillName: sk.name,
+      }));
     getCommands("")
       .then((commands) => {
         if (cancelled) return;
-        const q = body.trim().toLowerCase();
         const slash = commands.filter((c) => {
           if (!c.id.startsWith("slash.")) return false;
           const name = c.title.replace(/^\//, "").toLowerCase();
           return !q || name.includes(q);
         });
-        setSlashResults(slash);
+        // Built-in slash commands first, skills second (R7.1: name + description
+        // sourced from the live registry).
+        setSlashResults([...slash, ...skillChoices]);
         setSlashSelected(0);
       })
       .catch(() => {
-        if (!cancelled) setSlashResults([]);
+        if (!cancelled) {
+          // Even if the built-in command index is unavailable (e.g. browser
+          // preview), still surface skill suggestions so Channel C v1 works.
+          setSlashResults(skillChoices);
+          setSlashSelected(0);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [models, selectedModel, value]);
+  }, [models, selectedModel, skills, value]);
 
   const chooseSlash = (cmd: SlashChoice) => {
-    onChange(cmd.insertText ?? `${cmd.title} `);
+    if (cmd.skillName !== undefined) {
+      // Channel C v1: rewrite to plain text (R7.2 / R7.3). Args = whatever
+      // the user typed after `/<token>`; in practice empty since the dropdown
+      // hides once a space is typed, but we still respect any pre-typed tail.
+      const slashMatch = /^\/(\S*)\s*([\s\S]*)$/.exec(value);
+      const argsAfter = slashMatch ? slashMatch[2] : "";
+      onChange(rewriteToSkillRequest(cmd.skillName, argsAfter));
+    } else {
+      onChange(cmd.insertText ?? `${cmd.title} `);
+    }
     setSlashResults([]);
     setSlashSelected(0);
   };

@@ -29,6 +29,9 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "icon": ["icons/icon.ico", "icons/icon.icns", "icons/icon.png"],
+    "resources": [
+      "resources/skills/**/*"
+    ],
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",

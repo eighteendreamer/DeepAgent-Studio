@@ -6,7 +6,8 @@
   "description": "DeepAgent Studio desktop UI (Codex-style) built on Tauri v2 + React.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "prebundle-skills": "node scripts/prebundle-skills.cjs",
+    "build": "npm run prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },
