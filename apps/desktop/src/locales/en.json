@@ -751,7 +751,7 @@
     "passiveOn": "Auto-injection enabled",
     "passiveOff": "Auto-injection disabled",
     "autoCapture": "Auto-capture",
-    "autoCaptureHint": "When on, a run that recovers from a failure is saved as reusable knowledge and can be injected into later relevant chats.",
+    "autoCaptureHint": "When on, every substantive session is reviewed at end-of-run: recovery arcs auto-save, and the model decides whether anything else is worth saving (nothing is saved for trivial chatter).",
     "autoCaptureOn": "Auto-capture enabled",
     "autoCaptureOff": "Auto-capture disabled",
     "graphView": "Graph",

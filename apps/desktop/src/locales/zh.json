@@ -751,7 +751,7 @@
     "passiveOn": "已开启自动注入",
     "passiveOff": "已关闭自动注入",
     "autoCapture": "自动沉淀",
-    "autoCaptureHint": "开启后，一次「报错→排查→解决」的对话会自动保存为可复用知识，之后相关时会注入上下文。",
+    "autoCaptureHint": "开启后，每一次实质性的会话结束都会让模型判断是否有可复用经验：报错→恢复弧自动沉淀，普通会话由模型决定是否保存（无价值的不存）。",
     "autoCaptureOn": "已开启自动沉淀",
     "autoCaptureOff": "已关闭自动沉淀",
     "graphView": "图谱",

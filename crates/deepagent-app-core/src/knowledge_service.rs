@@ -92,7 +92,8 @@ pub struct KnowledgeDraftDto {
     /// Tags.
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Target scope label (`project` or `global`); defaults to project.
+    /// Target scope label (`project` or `global`); defaults to global so
+    /// knowledge follows the user across projects unless explicitly scoped.
     #[serde(default)]
     pub scope: Option<String>,
     /// Originating session id, if any.
@@ -100,11 +101,13 @@ pub struct KnowledgeDraftDto {
     pub source_session: Option<String>,
 }
 
-/// Parse a scope label, defaulting to [`Scope::Project`].
+/// Parse a scope label, defaulting to [`Scope::Global`] so saved knowledge is
+/// shared across every project unless the caller explicitly opts into the
+/// project-local vault.
 fn parse_scope(s: Option<&str>) -> Scope {
     match s.map(|x| x.trim().to_lowercase()).as_deref() {
-        Some("global") => Scope::Global,
-        _ => Scope::Project,
+        Some("project") => Scope::Project,
+        _ => Scope::Global,
     }
 }
 
@@ -312,16 +315,23 @@ impl KnowledgeService {
         Ok(KnowledgeDto::from_entry(&entry))
     }
 
-    /// Auto-capture a worthwhile recovery from a finished session as an active
-    /// knowledge entry, so the lesson can be passively injected on the next
-    /// relevant turn. Returns `None` — silently, never erroring — when
-    /// auto-capture is disabled or no failure/recovery was detected. If the
-    /// summarizer fails or declines, a conservative fallback note is still
-    /// persisted; a recovered tool failure is useful even when the model cannot
-    /// summarize it cleanly.
+    /// Auto-capture a worthwhile session as an active knowledge entry so the
+    /// lesson can be passively injected next time. Two paths run on every
+    /// completed session, in order:
     ///
-    /// The `Mutex` is only held for the brief detect/insert steps, never across
-    /// the `await` of the model call.
+    /// 1. **Recovery arc** — if the run had a tool failure that was overcome,
+    ///    summarize that arc (with a deterministic fallback if the model
+    ///    declines). Operationally important; never silently dropped.
+    /// 2. **Generic session digest** — for any other substantive run, ask the
+    ///    model whether anything is worth saving. The model's `worth_saving`
+    ///    reply is the only gate; trivial chats are filtered locally before
+    ///    any model call to avoid spend.
+    ///
+    /// Returns `None` (silently, never erroring) when auto-capture is off, the
+    /// session is not substantive, or both paths declined.
+    ///
+    /// The `Mutex` is only held for the brief insert step, never across the
+    /// `await` of a model call.
     pub async fn capture_from_session(
         &self,
         client: Arc<ModelClient>,
@@ -333,18 +343,32 @@ impl KnowledgeService {
         if !self.auto_capture_enabled() {
             return None;
         }
+
+        // Path 1: recovery arc. Strong signal with a deterministic fallback so
+        // a recovered failure is never lost even when the model declines.
         let signal = capture::detect_recovery(events);
-        if !capture::is_worth_capturing(&signal) {
-            return None;
+        if capture::is_worth_capturing(&signal) {
+            let draft = summarize_recovery(&client, &model, &signal, session_id)
+                .await
+                .unwrap_or_else(|| fallback_recovery_draft(&signal, session_id));
+            return self.persist_capture(draft);
         }
 
-        // Summarize via a small, non-streaming model call (no lock held). If it
-        // fails or declines, keep the operational lesson with a deterministic
-        // fallback so failures are not rediscovered from scratch next time.
-        let draft = summarize_recovery(&client, &model, &signal, session_id)
-            .await
-            .unwrap_or_else(|| fallback_recovery_draft(&signal, session_id));
+        // Path 2: generic session digest. Local substantiveness gate filters
+        // out trivial chatter before any network call; the model's
+        // `worth_saving` reply is the only quality gate (no fallback so the
+        // vault stays clean).
+        let digest = capture::detect_session_digest(events);
+        if !capture::is_session_substantive(&digest) {
+            return None;
+        }
+        let draft = summarize_session_digest(&client, &model, &digest, session_id).await?;
+        self.persist_capture(draft)
+    }
 
+    /// Persist an auto-capture draft into the vault. Returns the persisted
+    /// entry DTO, or `None` (with a warning log) on a write error.
+    fn persist_capture(&self, draft: KnowledgeDraft) -> Option<KnowledgeDto> {
         let now_ms = SystemClock.now().as_millis();
         let mut base = self.lock();
         match base.base.write(draft, now_ms) {
@@ -444,7 +468,9 @@ fn fallback_recovery_draft(signal: &capture::RecoverySignal, session_id: &str) -
         kind: EntryKind::Pitfall,
         tags,
         source_session: Some(session_id.to_string()),
-        scope: Scope::Project,
+        // Auto-captured recovery experience is reusable across every project,
+        // so it lands in the global vault.
+        scope: Scope::Global,
     }
 }
 
@@ -492,7 +518,9 @@ async fn summarize_recovery(
         kind,
         tags: reply.tags,
         source_session: Some(session_id.to_string()),
-        scope: Scope::Project,
+        // Lessons distilled from a recovery arc are reusable across every
+        // project; they belong in the global vault.
+        scope: Scope::Global,
     })
 }
 
@@ -506,6 +534,71 @@ fn parse_capture_reply(raw: &str) -> Option<CaptureReply> {
     }
     let json = &raw[start..=end];
     serde_json::from_str::<CaptureReply>(json).ok()
+}
+
+/// Generic session-digest summarization prompt. Used by the second auto-capture
+/// path that runs on every substantive session, regardless of whether failures
+/// happened. The model is biased toward NOT saving and decides via the
+/// `worth_saving` field; the bar is concrete, transferable knowledge.
+const DIGEST_SYSTEM_PROMPT: &str = r#"You distill a coding session into AT MOST ONE reusable knowledge note for a knowledge base. Decide whether anything in this session is genuinely worth saving for future reuse — a non-obvious pitfall, a fix that worked, a useful command, an important config, or a notable design decision. Mundane chatter, one-off questions, and things easily rediscovered are NOT worth saving.
+
+Bias toward NOT saving. Only save when there is concrete, transferable knowledge that a future session would benefit from seeing automatically.
+
+Respond with ONLY a single JSON object, no prose, no code fences:
+{"worth_saving": true|false, "title": "...", "kind": "pitfall|solution|command|config|note", "tags": ["..."], "body": "..."}
+
+- If not worth saving, return {"worth_saving": false} and nothing else.
+- title: specific and searchable; never generic ("session summary", "knowledge", etc.).
+- body: concise Markdown — the situation, the fact/fix, and how to apply it. Self-contained.
+- Keep it short. Do not invent details that are not in the session."#;
+
+/// Run the generic session-digest summarization model call. Returns `None` on
+/// any failure or when the model declines (`worth_saving: false`). Never
+/// fabricates a fallback — the model is the only quality gate for this path.
+async fn summarize_session_digest(
+    client: &ModelClient,
+    model: &str,
+    digest: &capture::SessionDigest,
+    session_id: &str,
+) -> Option<KnowledgeDraft> {
+    let user = format!(
+        "Here is the session digest:\n\n{}\n\nReturn the JSON now.",
+        digest.transcript_digest
+    );
+    let request = ChatRequest::new(
+        model,
+        vec![Message::system(DIGEST_SYSTEM_PROMPT), Message::user(&user)],
+    )
+    .with_temperature(0.2)
+    .with_max_tokens(600);
+
+    let response = match client.stream_chat(request).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "session-digest summarization call failed");
+            return None;
+        }
+    };
+
+    let reply = parse_capture_reply(&response.message.content)?;
+    if !reply.worth_saving || reply.title.trim().is_empty() || reply.body.trim().is_empty() {
+        return None;
+    }
+    let kind = reply
+        .kind
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(EntryKind::parse)
+        .unwrap_or(EntryKind::Note);
+    Some(KnowledgeDraft {
+        title: reply.title,
+        body: reply.body,
+        kind,
+        tags: reply.tags,
+        source_session: Some(session_id.to_string()),
+        // Distilled session knowledge is reusable across projects — global vault.
+        scope: Scope::Global,
+    })
 }
 
 /// Adapts an [`Arc<KnowledgeService>`] to the built-in [`KnowledgeBackend`]
@@ -552,7 +645,7 @@ impl deepagent_builtins::KnowledgeBackend for KnowledgeServiceBackend {
             body: draft.content,
             kind: draft.kind,
             tags: draft.tags,
-            scope: None, // tool-captured knowledge lands in the project vault
+            scope: None, // None → parse_scope defaults to Global, so tool-captured knowledge follows the user across projects
             source_session: None,
         })?;
         Ok(dto.id)
@@ -869,6 +962,100 @@ mod tests {
             .capture_from_session(client, "deepseek-v4-flash".into(), &recovery_events(), "s")
             .await;
         assert!(dto.is_none());
+    }
+
+    /// A non-recovery (no failure) but substantive session with a tool call.
+    /// Should reach the digest path; if the model says `worth_saving: true`,
+    /// an active entry is persisted.
+    fn substantive_no_failure_events() -> Vec<Event> {
+        use deepagent_core::message::ToolCall;
+        vec![
+            ev(
+                0,
+                EventPayload::MessageAppended {
+                    message: Message::user(
+                        "fix tauri exe lock by closing the desktop window before rebuild",
+                    ),
+                },
+            ),
+            ev(
+                1,
+                EventPayload::ToolCallRequested {
+                    call: ToolCall {
+                        id: "c1".into(),
+                        name: "read_file".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                },
+            ),
+            ev(
+                2,
+                EventPayload::ToolCallCompleted {
+                    call_id: "c1".into(),
+                    ok: true,
+                    output: serde_json::json!({"content": "..."}),
+                    duration_ms: 4,
+                },
+            ),
+            ev(
+                3,
+                EventPayload::MessageAppended {
+                    message: Message::assistant(
+                        "Documented: close the running window before `pnpm tauri dev` to avoid os error 5.",
+                    ),
+                },
+            ),
+            ev(
+                4,
+                EventPayload::TaskStateChanged {
+                    task_id: TaskId::new(),
+                    from: TaskState::Running,
+                    to: TaskState::Completed,
+                },
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn digest_path_saves_when_model_says_worth_saving() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+        let client = client_streaming(
+            r#"{"worth_saving": true, "title": "Tauri exe lock workaround", "kind": "pitfall", "tags": ["tauri","windows"], "body": "Close the running window before `pnpm tauri dev`."}"#,
+        );
+        let dto = svc
+            .capture_from_session(
+                client,
+                "deepseek-v4-flash".into(),
+                &substantive_no_failure_events(),
+                "ses_digest",
+            )
+            .await;
+        assert!(dto.is_some());
+        let dto = dto.unwrap();
+        assert_eq!(dto.title, "Tauri exe lock workaround");
+        assert_eq!(dto.scope, "global");
+        assert_eq!(dto.source_session.as_deref(), Some("ses_digest"));
+        assert_eq!(svc.list().len(), 1);
+        assert!(svc.list_drafts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn digest_path_skips_when_model_declines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = service(tmp.path());
+        // Model returns worth_saving: false → no fallback in the digest path.
+        let client = client_streaming(r#"{"worth_saving": false}"#);
+        let dto = svc
+            .capture_from_session(
+                client,
+                "deepseek-v4-flash".into(),
+                &substantive_no_failure_events(),
+                "ses_digest",
+            )
+            .await;
+        assert!(dto.is_none());
+        assert!(svc.list().is_empty());
     }
 
     #[test]

@@ -35,7 +35,10 @@ pub mod entry;
 pub mod vault;
 
 pub use base::{KnowledgeBase, KnowledgeConfig, KnowledgeDraft, KnowledgeHit};
-pub use capture::{detect_recovery, is_worth_capturing, RecoverySignal};
+pub use capture::{
+    detect_recovery, detect_session_digest, is_session_substantive, is_worth_capturing,
+    RecoverySignal, SessionDigest, SUBSTANTIVE_CHAR_THRESHOLD,
+};
 pub use entry::{EntryKind, EntryStatus, KnowledgeEntry, Scope};
 pub use vault::Vault;
 

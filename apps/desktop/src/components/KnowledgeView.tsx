@@ -48,7 +48,7 @@ const EMPTY_DRAFT: KnowledgeDraft = {
   body: "",
   kind: "note",
   tags: [],
-  scope: "project",
+  scope: "global",
 };
 
 type ViewMode = "graph" | "list";
@@ -493,7 +493,7 @@ export function KnowledgeView() {
                     </div>
                     <select
                       className="w-full text-sm bg-white border border-border-theme rounded-lg px-3 py-2 outline-none focus:border-gray-300 text-text-base"
-                      value={draft.scope ?? "project"}
+                      value={draft.scope ?? "global"}
                       onChange={(e) => setDraft({ ...draft, scope: e.target.value })}
                       disabled={!!selected}
                     >
