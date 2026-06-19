@@ -123,6 +123,148 @@ impl deepagent_builtins::ProjectMapBackend for ProjectMapToolBackend {
     }
 }
 
+#[derive(Clone)]
+struct CodeGraphToolBackend {
+    root: PathBuf,
+}
+
+#[async_trait]
+impl deepagent_builtins::CodeGraphBackend for CodeGraphToolBackend {
+    async fn search(
+        &self,
+        query: &str,
+        kind: Option<String>,
+        limit: usize,
+    ) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            let kind = kind
+                .as_deref()
+                .and_then(deepagent_codegraph::types::NodeKind::try_parse);
+            serde_json::to_value(graph.search(query, kind, limit)?).map_err(Into::into)
+        })
+    }
+
+    async fn explore(
+        &self,
+        symbols: &[String],
+        budget: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            serde_json::to_value(graph.explore(symbols, parse_explore_budget(&budget))?)
+                .map_err(Into::into)
+        })
+    }
+
+    async fn callers(&self, symbol: &str, limit: usize) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            serde_json::to_value(graph.callers(symbol, limit)?).map_err(Into::into)
+        })
+    }
+
+    async fn callees(&self, symbol: &str, limit: usize) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            serde_json::to_value(graph.callees(symbol, limit)?).map_err(Into::into)
+        })
+    }
+
+    async fn impact(&self, symbol: &str, depth: usize) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            serde_json::to_value(graph.impact(symbol, depth)?).map_err(Into::into)
+        })
+    }
+
+    async fn node(&self, target: &str) -> Result<serde_json::Value> {
+        self.with_graph(|graph| serde_json::to_value(graph.node(target)?).map_err(Into::into))
+    }
+
+    async fn node_at_location(&self, file: &str, line: u32) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            serde_json::to_value(graph.store().node_at_location(file, line)?).map_err(Into::into)
+        })
+    }
+
+    async fn locate(&self, text: &str) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            let files = graph
+                .store()
+                .all_file_nodes()?
+                .into_iter()
+                .map(|node| node.file_path)
+                .collect();
+            let parser =
+                deepagent_codegraph::error_locator::ErrorParser::with_project(&self.root, files);
+            let frames = parser.parse(text);
+            let mut located = Vec::new();
+            let mut external = Vec::new();
+            for frame in frames {
+                let frame_json = serde_json::json!({
+                    "file": frame.file,
+                    "line": frame.line,
+                    "col": frame.col,
+                    "symbol": frame.symbol,
+                    "errorCode": frame.error_code,
+                    "isProject": frame.is_project,
+                });
+                if !frame.is_project {
+                    external.push(frame_json);
+                    continue;
+                }
+                let node = graph.store().node_at_location(&frame.file, frame.line)?;
+                let detail = match &node {
+                    Some(node) => graph.node(&node.id)?,
+                    None => None,
+                };
+                located.push(serde_json::json!({
+                    "frame": frame_json,
+                    "node": node,
+                    "detail": detail,
+                }));
+            }
+            Ok(serde_json::json!({
+                "indexed": true,
+                "located": located,
+                "externalFrames": external,
+            }))
+        })
+    }
+}
+
+impl CodeGraphToolBackend {
+    fn with_graph<F>(&self, f: F) -> Result<serde_json::Value>
+    where
+        F: FnOnce(&deepagent_codegraph::CodeGraph) -> Result<serde_json::Value>,
+    {
+        let graph = deepagent_codegraph::CodeGraph::open(&self.root)?;
+        if !graph.has_existing_index() {
+            return Ok(codegraph_not_indexed());
+        }
+        f(&graph)
+    }
+}
+
+fn codegraph_not_indexed() -> serde_json::Value {
+    serde_json::json!({
+        "indexed": false,
+        "message": "Code graph is not indexed yet. Run project map refresh/deep indexing for this workspace, then retry the codegraph tool.",
+    })
+}
+
+fn parse_explore_budget(value: &serde_json::Value) -> deepagent_codegraph::query::ExploreBudget {
+    let mut budget = deepagent_codegraph::query::ExploreBudget::default();
+    set_usize(value, "maxHitsPerSymbol", &mut budget.max_hits_per_symbol);
+    set_usize(value, "maxBridgeHops", &mut budget.max_bridge_hops);
+    set_usize(value, "maxFiles", &mut budget.max_files);
+    set_usize(value, "maxSymbolsPerFile", &mut budget.max_symbols_per_file);
+    set_usize(value, "maxFlowHops", &mut budget.max_flow_hops);
+    budget
+}
+
+fn set_usize(value: &serde_json::Value, key: &str, target: &mut usize) {
+    if let Some(n) = value.get(key).and_then(|v| v.as_u64()) {
+        *target = n as usize;
+    }
+}
+
 /// Orchestrates streamed chat runs over the kernel.
 pub struct ChatService {
     db: Arc<Database>,
@@ -987,6 +1129,22 @@ impl ChatService {
             registry.register(Arc::new(CodeMapSearchTool::new(backend.clone())))?;
             registry.register(Arc::new(CodeMapNeighborsTool::new(backend.clone())))?;
             registry.register(Arc::new(CodeMapImpactTool::new(backend)))?;
+        }
+        {
+            use deepagent_builtins::{
+                CodeGraphCalleesTool, CodeGraphCallersTool, CodeGraphExploreTool,
+                CodeGraphImpactTool, CodeGraphLocateTool, CodeGraphNodeTool, CodeGraphSearchTool,
+            };
+            let backend = CodeGraphToolBackend {
+                root: root.to_path_buf(),
+            };
+            registry.register(Arc::new(CodeGraphSearchTool::new(backend.clone())))?;
+            registry.register(Arc::new(CodeGraphExploreTool::new(backend.clone())))?;
+            registry.register(Arc::new(CodeGraphCallersTool::new(backend.clone())))?;
+            registry.register(Arc::new(CodeGraphCalleesTool::new(backend.clone())))?;
+            registry.register(Arc::new(CodeGraphImpactTool::new(backend.clone())))?;
+            registry.register(Arc::new(CodeGraphNodeTool::new(backend.clone())))?;
+            registry.register(Arc::new(CodeGraphLocateTool::new(backend)))?;
         }
 
         Ok((registry, todo_store))

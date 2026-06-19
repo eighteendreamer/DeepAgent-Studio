@@ -31,6 +31,7 @@ members = [
     "crates/deepagent-security",
     "crates/deepagent-app-core",
     "crates/deepagent-mcp",
+    "crates/deepagent-codegraph",
     "apps/cli",
 ]
 # The Tauri desktop shell is its own workspace root (it carries the WebView
@@ -83,6 +84,7 @@ deepagent-observation = { path = "crates/deepagent-observation" }
 deepagent-security = { path = "crates/deepagent-security" }
 deepagent-app-core = { path = "crates/deepagent-app-core" }
 deepagent-mcp = { path = "crates/deepagent-mcp" }
+deepagent-codegraph = { path = "crates/deepagent-codegraph" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -107,6 +109,21 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"
 
 # Persistence
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Code graph: tree-sitter parsing + pure-Rust-compilable grammars (C grammar
+# built locally via cc; no Node.js, no runtime grammar download).
+tree-sitter = "0.25"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
+
+# File walking + .gitignore handling
+ignore = "0.4"
+
+# Content hashing (incremental change detection)
+blake3 = "1"
 
 # Testing
 tempfile = "3"

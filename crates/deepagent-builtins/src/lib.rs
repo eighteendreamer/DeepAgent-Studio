@@ -45,6 +45,7 @@
 pub mod ask_user_tool;
 pub mod bash_tool;
 pub mod classifier;
+pub mod codegraph_tools;
 pub mod file_cache;
 pub mod file_tools;
 pub mod fs_guard;
@@ -78,6 +79,13 @@ pub use bash_tool::{
 };
 pub use classifier::{
     ClassifierConfig, ClassifierRule, SafetyClassifier, SafetyVerdict, VerdictKind,
+};
+pub use codegraph_tools::{
+    CodeGraphBackend, CodeGraphCalleesTool, CodeGraphCallersTool, CodeGraphExploreTool,
+    CodeGraphImpactTool, CodeGraphLocateTool, CodeGraphNodeTool, CodeGraphSearchTool,
+    CODEGRAPH_CALLEES_TOOL_NAME, CODEGRAPH_CALLERS_TOOL_NAME, CODEGRAPH_EXPLORE_TOOL_NAME,
+    CODEGRAPH_IMPACT_TOOL_NAME, CODEGRAPH_LOCATE_TOOL_NAME, CODEGRAPH_NODE_TOOL_NAME,
+    CODEGRAPH_SEARCH_TOOL_NAME,
 };
 pub use file_cache::{CachedFile, FileStateCache};
 pub use file_tools::{

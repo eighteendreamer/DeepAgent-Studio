@@ -211,6 +211,7 @@ impl Tool for ReadFileTool {
         ToolDescriptor {
             name: "read_file".into(),
             description: "Read a UTF-8 text file within the workspace. Args: { path, offset?, limit? }.\n\
+                - For understanding code behavior, call chains, impact, or symbol context, prefer codegraph_node/codegraph_explore first; use read_file for known paths, non-code files, pre-edit inspection, or when codegraph is unavailable.\n\
                 - The path must be workspace-relative or workspace-absolute.\n\
                 - By default reads up to 2000 lines from the start. Use `offset` (1-based starting line) and `limit` (line count) to read a window for very large files.\n\
                 - Output format: each line is prefixed by `<line_number>\\t<content>` (cat -n style; line number right-padded to 6 chars). Line numbers start at 1, or at `offset` when given.\n\
@@ -756,7 +757,7 @@ impl Tool for GrepTool {
         ToolDescriptor {
             name: "grep".into(),
             description:
-                "Search file contents for a literal substring. Args: { query, glob? (default **) }."
+                "Search file contents for a literal substring. Args: { query, glob? (default **) }. For code symbols, prefer codegraph_search first; use grep for comments, config text, non-symbol literals, or when codegraph is unavailable."
                     .into(),
             parameters: serde_json::json!({
                 "type": "object",

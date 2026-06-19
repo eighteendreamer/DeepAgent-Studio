@@ -1,0 +1,348 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1. 创建 `deepagent-codegraph` crate 骨架并接入 workspace": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745177861
+      },
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745195028
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781745264291
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781745760921
+      }
+    ],
+    "2. 实现核心数据类型 `types.rs`": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745177996
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781745765736
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781745962441
+      }
+    ],
+    "3. 实现 `FileScanner`（扫描 + 过滤 + 语言识别 + hash）": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178235
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781745977752
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781746289161
+      }
+    ],
+    "4. 实现 GraphStore schema 与建表迁移": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178276
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781746294416
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781746577093
+      }
+    ],
+    "5. 实现 GraphStore CRUD 与增量比对": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178322
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781746583224
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781746943926
+      }
+    ],
+    "6. 实现 tree-sitter 提取框架与 Language grammar 注册": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178365
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781746949318
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781747531763
+      }
+    ],
+    "7. 实现 Rust 语言提取器": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178416
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781747536718
+      },
+      {
+        "executionId": "ec0191dc-21ff-4110-a446-428d6db71319",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781748230181
+      },
+      {
+        "executionId": "310b6042-fc89-4764-a8db-d78d84e477e9",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781748317782
+      },
+      {
+        "executionId": "310b6042-fc89-4764-a8db-d78d84e477e9",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781749149174
+      },
+      {
+        "executionId": "e8759017-85c6-4bd0-a746-3839fc891836",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781749323120
+      }
+    ],
+    "8. 实现 TypeScript/JavaScript 提取器": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178476
+      },
+      {
+        "executionId": "310b6042-fc89-4764-a8db-d78d84e477e9",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781748318082
+      },
+      {
+        "executionId": "310b6042-fc89-4764-a8db-d78d84e477e9",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781748343973
+      }
+    ],
+    "9. 实现 Python 与 Go 提取器": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178514
+      }
+    ],
+    "10. 实现 import 解析器（一期跨文件 imports）": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178557
+      }
+    ],
+    "11. 实现 Projector 层级分类与导览生成": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178598
+      }
+    ],
+    "12. 实现 Projector 主体（富图谱 → UA JSON）": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178640
+      },
+      {
+        "executionId": "be7074af-f6ec-4315-b91f-fedf48b399bf",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781756415782
+      },
+      {
+        "executionId": "be7074af-f6ec-4315-b91f-fedf48b399bf",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781757072097
+      }
+    ],
+    "13. 实现 CodeGraph 门面 + IndexOrchestrator + 集成到 ProjectMapService": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178687
+      },
+      {
+        "executionId": "be7074af-f6ec-4315-b91f-fedf48b399bf",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781757085853
+      },
+      {
+        "executionId": "2a2025fd-51ed-42c4-8913-e2c7238c3946",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781758703645
+      }
+    ],
+    "14. 实现调用引用名称匹配解析器（跨文件 calls）": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178729
+      },
+      {
+        "executionId": "843164ad-be3f-468c-a8e5-41e80185b231",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781758757911
+      },
+      {
+        "executionId": "843164ad-be3f-468c-a8e5-41e80185b231",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781759472794
+      }
+    ],
+    "15. 实现图遍历器 Traverser": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178772
+      },
+      {
+        "executionId": "843164ad-be3f-468c-a8e5-41e80185b231",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781759481293
+      }
+    ],
+    "16. 实现 FTS5 搜索与 explore 算法": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178822
+      },
+      {
+        "executionId": "e6cad847-f1d6-4e8c-8aa3-3f209060a785",
+        "chatSessionId": "sess_ad70b45b-567d-418a-9b8b-2df2c98f913b",
+        "timestamp": 1781760761671
+      }
+    ],
+    "17b. 实现 GraphStore 按位置查询": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178872
+      }
+    ],
+    "19c. 实现 ErrorParser（报错文本 → 栈帧引用）": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178911
+      }
+    ],
+    "19d. 实现 codegraph_locate 工具": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178951
+      }
+    ],
+    "18. 在 CodeGraph 门面暴露查询 API": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745178994
+      }
+    ],
+    "19. 定义 CodeGraphBackend trait 与 6 个 AI 工具": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745179035
+      }
+    ],
+    "20. 实现 host 端 CodeGraphBackend 桥接": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745179078
+      }
+    ],
+    "21. 注册 AI 工具并补强系统提示（codegraph 优先引导）": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745179118
+      }
+    ],
+    "21b. read_file/grep 工具描述补充 codegraph 优先引导（软引导）": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745179158
+      }
+    ],
+    "22. 二期性能优化与质量门禁": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745179203
+      }
+    ],
+    "23. 实现文件 watcher 自动增量同步": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745179262
+      }
+    ],
+    "24. 实现框架路由识别": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745179303
+      }
+    ],
+    "25. 扩展语言支持到 20+": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745179343
+      }
+    ],
+    "26. 三期全量回归与文档": [
+      {
+        "executionId": "4d4a16ec-2bea-4166-b8f3-5f6f1eca0037",
+        "chatSessionId": "sess_6fdcdaf3-dddf-4f0d-862f-78f56a735f4a",
+        "timestamp": 1781745179385
+      }
+    ]
+  }
+}

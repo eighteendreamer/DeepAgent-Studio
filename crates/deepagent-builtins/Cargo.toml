@@ -16,6 +16,7 @@ http = ["dep:reqwest", "dep:url"]
 
 [dependencies]
 deepagent-core.workspace = true
+deepagent-codegraph.workspace = true
 deepagent-tools.workspace = true
 deepagent-hooks.workspace = true
 # `skill_tool` (channel B of the skill-marketplace auto-activation design)

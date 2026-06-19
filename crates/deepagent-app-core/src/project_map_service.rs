@@ -5,9 +5,9 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Instant;
 
+use deepagent_codegraph::CodeGraph;
 use deepagent_core::error::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -363,66 +363,41 @@ impl ProjectMapService {
             )));
         }
 
-        let plugin_root = locate_understand_plugin_root().ok_or_else(|| {
-            CoreError::invalid(
-                "Understand-Anything plugin root not found. Set DEEPAGENT_UNDERSTAND_PLUGIN_ROOT to the understand-anything-plugin directory.",
-            )
-        })?;
-        ensure_understand_core_built(&plugin_root)?;
-
-        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("scripts")
-            .join("understand-deep-map.mjs");
-        if !script.is_file() {
-            return Err(CoreError::Persistence(format!(
-                "Understand-Anything bridge script not found: {}",
-                script.display()
-            )));
-        }
+        // Native code-graph engine: extract with tree-sitter into SQLite, then
+        // project the UA knowledge-graph.json the front-end panel consumes. No
+        // external Node.js process is involved.
+        let mut graph = CodeGraph::open(&root)?;
+        let index = if graph.has_existing_index() {
+            graph.sync()?
+        } else {
+            graph.index_all()?
+        };
 
         let graph_path = root.join(UA_GRAPH);
-        if let Some(parent) = graph_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| CoreError::Persistence(format!("create understand map dir: {e}")))?;
-        }
-
-        let mut command = Command::new("node");
-        hide_command_window(&mut command);
-        let output = command
-            .arg(&script)
-            .arg(&plugin_root)
-            .arg(&root)
-            .arg(&graph_path)
-            .current_dir(&root)
-            .output()
-            .map_err(|e| {
-                CoreError::Persistence(format!("run Understand-Anything deep map: {e}"))
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(CoreError::Persistence(format!(
-                "Understand-Anything deep map failed: {}{}",
-                stderr.trim(),
-                if stdout.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!(" stdout: {}", stdout.trim())
-                }
-            )));
-        }
+        let projection = graph.project_ua_json(&graph_path)?;
 
         let status = self.status(&root);
+        let message = if index.is_incremental {
+            format!(
+                "Project map synced incrementally: {} file(s) re-indexed, {} nodes, {} edges.",
+                index.files_indexed, projection.nodes, projection.edges
+            )
+        } else {
+            format!(
+                "Project map generated: {} files, {} nodes, {} edges.",
+                index.files_indexed, projection.nodes, projection.edges
+            )
+        };
+
         Ok(ProjectMapRefreshDto {
             ok: true,
             graph_path: graph_path.to_string_lossy().to_string(),
             files: status.files,
-            nodes: status.nodes,
-            edges: status.edges,
+            nodes: projection.nodes,
+            edges: projection.edges,
             duration_ms: start.elapsed().as_millis() as u64,
             truncated: false,
-            message: "Understand-Anything deep project map generated.".to_string(),
+            message,
             status,
         })
     }
@@ -475,117 +450,6 @@ impl ProjectMapService {
         }
     }
 }
-
-fn locate_understand_plugin_root() -> Option<PathBuf> {
-    let mut candidates = Vec::<PathBuf>::new();
-    for key in [
-        "DEEPAGENT_UNDERSTAND_PLUGIN_ROOT",
-        "UNDERSTAND_ANYTHING_PLUGIN_ROOT",
-        "CLAUDE_PLUGIN_ROOT",
-    ] {
-        if let Ok(value) = std::env::var(key) {
-            if !value.trim().is_empty() {
-                candidates.push(PathBuf::from(value));
-            }
-        }
-    }
-    if let Ok(user_profile) = std::env::var("USERPROFILE") {
-        let home = PathBuf::from(user_profile);
-        candidates.extend([
-            home.join(".understand-anything-plugin"),
-            home.join(".codex/understand-anything/understand-anything-plugin"),
-            home.join("understand-anything/understand-anything-plugin"),
-        ]);
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let home = PathBuf::from(home);
-        candidates.extend([
-            home.join(".understand-anything-plugin"),
-            home.join(".codex/understand-anything/understand-anything-plugin"),
-            home.join("understand-anything/understand-anything-plugin"),
-        ]);
-    }
-    candidates.push(PathBuf::from(
-        r"G:\Code_UZIP\Understand-Anything\understand-anything-plugin",
-    ));
-
-    candidates.into_iter().find(|candidate| {
-        candidate.join("package.json").is_file()
-            && candidate.join("pnpm-workspace.yaml").is_file()
-            && candidate.join("packages/core").is_dir()
-    })
-}
-
-fn ensure_understand_core_built(plugin_root: &Path) -> Result<()> {
-    let dist = plugin_root.join("packages/core/dist/index.js");
-    if dist.is_file() {
-        return Ok(());
-    }
-
-    let mut install_command = Command::new(pnpm_command());
-    hide_command_window(&mut install_command);
-    let install = install_command
-        .arg("install")
-        .arg("--frozen-lockfile")
-        .current_dir(plugin_root)
-        .output();
-    if install
-        .as_ref()
-        .map(|o| !o.status.success())
-        .unwrap_or(true)
-    {
-        let mut retry_command = Command::new(pnpm_command());
-        hide_command_window(&mut retry_command);
-        let retry = retry_command
-            .arg("install")
-            .current_dir(plugin_root)
-            .output()
-            .map_err(|e| CoreError::Persistence(format!("run pnpm install: {e}")))?;
-        if !retry.status.success() {
-            return Err(CoreError::Persistence(format!(
-                "Understand-Anything dependencies are not installed and pnpm install failed: {}",
-                String::from_utf8_lossy(&retry.stderr).trim()
-            )));
-        }
-    }
-
-    let mut build_command = Command::new(pnpm_command());
-    hide_command_window(&mut build_command);
-    let build = build_command
-        .arg("--filter")
-        .arg("@understand-anything/core")
-        .arg("build")
-        .current_dir(plugin_root)
-        .output()
-        .map_err(|e| CoreError::Persistence(format!("build Understand-Anything core: {e}")))?;
-    if !build.status.success() {
-        return Err(CoreError::Persistence(format!(
-            "Understand-Anything core build failed: {}",
-            String::from_utf8_lossy(&build.stderr).trim()
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn pnpm_command() -> &'static str {
-    "pnpm.cmd"
-}
-
-#[cfg(not(target_os = "windows"))]
-fn pnpm_command() -> &'static str {
-    "pnpm"
-}
-
-#[cfg(target_os = "windows")]
-fn hide_command_window(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(target_os = "windows"))]
-fn hide_command_window(_command: &mut Command) {}
 
 fn load_graph_file(project_root: &Path, source: &str, graph_path: PathBuf) -> Result<LoadedGraph> {
     let updated_at = std::fs::metadata(&graph_path)
@@ -949,6 +813,57 @@ fn neighbors_from_graph(graph: &RawGraph, node_id: &str) -> ProjectMapNeighborsD
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_file(root: &Path, rel: &str, contents: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn refresh_deep_generates_graph_without_node_js() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        write_file(
+            root,
+            "src/main.rs",
+            "fn main() {\n    helper();\n}\n\nfn helper() {\n    println!(\"hi\");\n}\n",
+        );
+        write_file(
+            root,
+            "web/app.ts",
+            "export function start(): void {\n    console.log('go');\n}\n",
+        );
+
+        let service = ProjectMapService::new();
+
+        // First run: full index. Produces the UA knowledge-graph.json natively.
+        let refresh = service.refresh_deep(root).unwrap();
+        assert!(refresh.ok);
+        assert!(refresh.nodes > 0, "graph should have nodes");
+        assert!(
+            Path::new(&refresh.graph_path).is_file(),
+            "knowledge-graph.json must be written"
+        );
+
+        // The existing query API loads the freshly generated graph.
+        let status = service.status(root);
+        assert_eq!(status.status, "ready");
+        assert!(status.nodes > 0);
+        assert!(status.files >= 2);
+
+        let overview = service.overview(root);
+        assert!(overview.status.nodes > 0);
+
+        // Second run: incremental sync over an unchanged tree still succeeds.
+        let again = service.refresh_deep(root).unwrap();
+        assert!(again.ok);
+        assert!(again.nodes > 0);
+    }
 
     #[test]
     fn complex_hits_falls_back_to_file_nodes() {

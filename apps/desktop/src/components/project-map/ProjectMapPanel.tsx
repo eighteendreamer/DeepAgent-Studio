@@ -107,7 +107,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
         setOverview(next);
         onStatusChange?.(next.status);
         setHits(next.complex_nodes);
-        setSelected(next.complex_nodes[0] ?? null);
+        setSelected(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -212,7 +212,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
       setGraph(graphNext);
       onStatusChange?.(next.status);
       setHits(next.complex_nodes);
-      setSelected(next.complex_nodes[0] ?? null);
+      setSelected(null);
       setNotice(
         `${result.message} ${result.nodes} 个节点 / ${result.edges} 条关系，耗时 ${result.duration_ms}ms。`
       );

@@ -19,6 +19,7 @@ deepagent-runtime.workspace = true
 deepagent-context.workspace = true
 deepagent-tools.workspace = true
 deepagent-builtins.workspace = true
+deepagent-codegraph.workspace = true
 deepagent-workspace.workspace = true
 deepagent-hooks.workspace = true
 deepagent-mcp.workspace = true

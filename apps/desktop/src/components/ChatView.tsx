@@ -426,6 +426,10 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
   // when the conversation resets (e.g. switch to an empty session) or when
   // the user opens it again manually.
   const userClosedOutputPanelRef = useRef<boolean>(false);
+  // Caches which project path the environment info was last successfully
+  // fetched for, so repeatedly toggling the dropdown for the same project
+  // reuses the cached result instead of re-running git/gh every time.
+  const envFetchedForRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!hasConversation) {
@@ -464,8 +468,12 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
         deletions: null,
         ghAvailable: null,
       });
+      envFetchedForRef.current = null;
       return;
     }
+
+    // Cache hit: already fetched for this project, reuse existing state.
+    if (envFetchedForRef.current === activeProjectPath) return;
 
     let cancelled = false;
     setEnvironment((prev) => ({ ...prev, loading: true }));
@@ -490,6 +498,9 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
         ghAvailable:
           ghResult.status === "fulfilled" ? ghResult.value.exit_code === 0 : false,
       });
+      // Mark this project as fetched only after a successful (non-cancelled)
+      // update so failures/cancellations retry on the next open.
+      envFetchedForRef.current = activeProjectPath;
     });
 
     return () => {

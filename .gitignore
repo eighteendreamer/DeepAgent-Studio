@@ -23,6 +23,10 @@ apps/desktop/src-tauri/resources/skills
 *.sqlite
 /.deepagent/runtime
 /data
+# Native code-graph engine artifacts (SQLite db lives alongside the projected
+# knowledge-graph.json under .understand-anything/).
+**/.understand-anything/codegraph.db
+**/.codegraph/
 
 # Logs
 *.log
@@ -53,6 +57,5 @@ Claude_Code_UI_Agent_全流程复刻规范.md
 logo.png
 codex.html
 venv/
-.kiro/
 kb_p3a.txt
 OFFICE_REALITY_DEVELOPMENT_PLAN.md
