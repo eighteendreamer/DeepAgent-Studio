@@ -169,9 +169,7 @@ impl CodeGraph {
         self.store.insert_nodes(&nodes)?;
         self.store.insert_edges(&edges)?;
         self.store.insert_unresolved_refs(&refs)?;
-        for file in &files {
-            self.store.upsert_file(file)?;
-        }
+        self.store.upsert_files(&files)?;
 
         // Resolve cross-file imports over the freshly extracted node set and
         // persist the file -> file `imports` edges.
@@ -243,9 +241,7 @@ impl CodeGraph {
         self.store.insert_nodes(&nodes)?;
         self.store.insert_edges(&edges)?;
         self.store.insert_unresolved_refs(&refs)?;
-        for file in &files {
-            self.store.upsert_file(file)?;
-        }
+        self.store.upsert_files(&files)?;
 
         // Local import resolution: resolve over the full current node set (so
         // targets in unchanged files are visible) but only persist edges whose

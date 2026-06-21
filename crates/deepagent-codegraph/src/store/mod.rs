@@ -220,6 +220,39 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Batch upsert tracked file records in one transaction.
+    ///
+    /// Full indexing can touch hundreds or thousands of files; committing each
+    /// file row separately is especially slow on Windows CI filesystems.
+    pub fn upsert_files(&self, files: &[FileRecord]) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction().map_err(map_sqlite)?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT OR REPLACE INTO files
+                     (path, content_hash, language, size, modified_at, indexed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .map_err(map_sqlite)?;
+            for file in files {
+                stmt.execute(params![
+                    file.path,
+                    file.content_hash,
+                    file.language.as_str(),
+                    file.size as i64,
+                    file.modified_at,
+                    file.indexed_at,
+                ])
+                .map_err(map_sqlite)?;
+            }
+        }
+        tx.commit().map_err(map_sqlite)?;
+        Ok(())
+    }
+
     /// Batch-insert nodes inside a single transaction with a reused prepared
     /// statement.
     ///
