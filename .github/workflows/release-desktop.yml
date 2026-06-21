@@ -60,6 +60,7 @@ jobs:
             librsvg2-dev \
             patchelf \
             pkg-config \
+            libasound2-dev \
             libdbus-1-dev
 
       - name: Install frontend dependencies
