@@ -172,9 +172,7 @@ impl Skill {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .or_else(|| first_markdown_paragraph(&fm.body));
-        let Some(description) = description else {
-            return None;
-        };
+        let description = description?;
         let triggers = extract_triggers(&description);
         // Accept both the canonical kebab-case key and the underscore variant
         // for compatibility with hand-edited SKILL.md files.
