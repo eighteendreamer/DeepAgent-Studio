@@ -2719,7 +2719,7 @@ fn invoked_skills_reminder(records: &[InvokedSkillRecord]) -> Option<String> {
         }
         out.push('\n');
         out.push_str(&record.body);
-        out.push_str("\n");
+        out.push('\n');
     }
     out.push_str("\n</invoked-skills>");
     Some(out)

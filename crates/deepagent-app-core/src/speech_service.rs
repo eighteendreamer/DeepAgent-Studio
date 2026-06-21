@@ -135,11 +135,11 @@ impl TranscriptionEngine for WhisperSidecarEngine {
     }
 }
 
-fn configure_hidden_process(cmd: &mut Command) {
+fn configure_hidden_process(_cmd: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        _cmd.creation_flags(CREATE_NO_WINDOW);
     }
 }
 
