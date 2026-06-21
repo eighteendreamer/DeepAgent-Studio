@@ -41,7 +41,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI1ODZGRTlCRjNGNDVENzcKUldSM1hmVHptLzZHdGFZdGVENU5rbmprZHRyYkwwbW96a3J4RGg0RUtiRFFCRlZNcHRKcko0TlUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMyREFERkY1ODhGMkRDMzgKUldRNDNQS0k5ZC9hd21UTWNHUWJGSFRnZWd1S200NktGWG8rSnIzdjJGc2pjV0xVVU05QXRLNCsK",
       "endpoints": [
         "https://github.com/eighteendreamer/DeepAgent-Studio/releases/latest/download/latest.json",
         "https://download.deepagent.studio/releases/latest.json"

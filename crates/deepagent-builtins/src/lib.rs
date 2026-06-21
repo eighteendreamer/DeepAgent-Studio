@@ -102,12 +102,12 @@ pub use knowledge_tools::{
     KnowledgeWriteTool, UnavailableKnowledgeBackend, KNOWLEDGE_SEARCH_TOOL_NAME,
     KNOWLEDGE_WRITE_TOOL_NAME,
 };
-pub use plan_mode::{
-    is_plan_safe_tool, EnterPlanModeTool, ExitPlanModeTool, PlanMode, PlanModeHook, PLAN_SAFE_TOOLS,
-};
 pub use office_tools::{
     OfficeBackend, OfficeDocxCreateTool, OfficeReadTool, OfficeXlsxCreateTool,
     OFFICE_DOCX_CREATE_TOOL_NAME, OFFICE_READ_TOOL_NAME, OFFICE_XLSX_CREATE_TOOL_NAME,
+};
+pub use plan_mode::{
+    is_plan_safe_tool, EnterPlanModeTool, ExitPlanModeTool, PlanMode, PlanModeHook, PLAN_SAFE_TOOLS,
 };
 pub use project_map_tools::{
     CodeMapImpactTool, CodeMapNeighborsTool, CodeMapOverviewTool, CodeMapSearchTool,

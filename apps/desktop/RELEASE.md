@@ -8,7 +8,7 @@ The desktop installer version is controlled by:
 - `apps/desktop/src-tauri/Cargo.toml`
 - `apps/desktop/src-tauri/tauri.conf.json`
 
-This release should set all three to `0.0.3`.
+This release should set all three to the release version, for example `0.0.4`.
 
 ## Updater signing
 
@@ -20,7 +20,7 @@ Set these GitHub Actions secrets before publishing:
 - `TAURI_SIGNING_PRIVATE_KEY`: contents of the private updater key
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: optional; leave empty for the current no-password key
 
-The locally generated private key is in `.tmp/deepagent-studio-updater.key`.
+The locally generated private key is in `apps/desktop/.tmp/deepagent-studio-updater.key`.
 Copy its contents into the secret, then keep or delete the local file.
 
 ## Publishing installers
@@ -29,8 +29,8 @@ Run the GitHub Actions workflow `Release Desktop Installers`, or push a version
 tag such as:
 
 ```bash
-git tag v0.0.3
-git push origin v0.0.3
+git tag v0.0.4
+git push origin v0.0.4
 ```
 
 The workflow builds installers on native runners:
