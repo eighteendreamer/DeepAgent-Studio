@@ -60,6 +60,31 @@ For environments with an HTTP proxy, set either:
 The title-bar update button downloads an update now and installs it silently
 when the app closes.
 
+## On-demand speech runtimes
+
+Speech models and the `whisper-cli` sidecar are managed runtimes. They must not
+be bundled into the desktop installer; users download them on demand from the
+runtime manager.
+
+Linux uses the official whisper.cpp `v1.9.1` `whisper-bin-ubuntu-x64.tar.gz`
+and `whisper-bin-ubuntu-arm64.tar.gz` assets with pinned SHA-256 hashes.
+
+macOS needs DeepAgent-hosted CLI sidecar archives because upstream whisper.cpp
+only publishes an `xcframework` for macOS, not a command-line `whisper-cli`
+runtime. Publish these assets to the `runtime-whisper-cli-v1.9.1` GitHub
+Release before building macOS installers:
+
+- `deepagent-whisper-cli-macos-x64.tar.gz`
+- `deepagent-whisper-cli-macos-arm64.tar.gz`
+
+Then build the macOS desktop app with:
+
+- `DEEPAGENT_WHISPER_CLI_MACOS_X64_SHA256`
+- `DEEPAGENT_WHISPER_CLI_MACOS_ARM64_SHA256`
+
+If the hash for the current macOS architecture is missing, the runtime remains
+visible but installation is blocked fail-closed.
+
 On Windows, auto-update should target the NSIS `.exe` artifact. The workflow is
 already configured with `uploadUpdaterJson: true` and
 `updaterJsonPreferNsis: true`, so MSI remains available for manual install

@@ -30,25 +30,55 @@ use crate::dto::{RuntimeProgressDto, RuntimeStatusDto};
 /// Target platform of a runtime artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Platform {
-    Windows,
-    MacOs,
-    Linux,
+    WindowsX64,
+    WindowsArm64,
+    MacOsX64,
+    MacOsArm64,
+    LinuxX64,
+    LinuxArm64,
 }
 
 impl Platform {
     /// The platform this binary was built for.
     pub fn current() -> Platform {
-        #[cfg(target_os = "windows")]
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         {
-            Platform::Windows
+            Platform::WindowsX64
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
         {
-            Platform::MacOs
+            Platform::WindowsArm64
         }
-        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        #[cfg(all(
+            target_os = "windows",
+            not(any(target_arch = "x86_64", target_arch = "aarch64"))
+        ))]
         {
-            Platform::Linux
+            Platform::WindowsX64
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            Platform::MacOsArm64
+        }
+        #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+        {
+            Platform::MacOsX64
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            Platform::LinuxArm64
+        }
+        #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+        {
+            Platform::LinuxX64
+        }
+        #[cfg(all(
+            not(target_os = "windows"),
+            not(target_os = "macos"),
+            not(target_os = "linux")
+        ))]
+        {
+            Platform::LinuxX64
         }
     }
 }
@@ -80,6 +110,8 @@ pub struct RuntimeArtifact {
     pub file_name: String,
     /// Whether the artifact is a zip to extract or a raw file to copy.
     pub archive: ArchiveKind,
+    /// Optional platform-specific probe path relative to `dest_subdir`.
+    pub probe: Option<String>,
 }
 
 /// A managed runtime: an id, the capability it provides, and per-platform
@@ -185,7 +217,7 @@ impl RuntimeService {
         let entry = self.registry.iter().find(|e| e.id == id)?;
         let artifact = entry.artifact()?;
         let dir = self.install_root.join(&artifact.dest_subdir);
-        let probe = dir.join(&entry.probe);
+        let probe = dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
         if probe.exists() {
             Some(dir)
         } else {
@@ -249,7 +281,7 @@ impl RuntimeService {
             return Ok(false);
         };
         let dir = self.install_root.join(&artifact.dest_subdir);
-        let probe = dir.join(&entry.probe);
+        let probe = dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
         if !probe.exists() {
             return Ok(false);
         }
@@ -499,7 +531,14 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
         // per platform. For now we register the common (data) artifacts for all
         // platforms and leave OS-specific binaries to be filled per platform.
         let mut m = HashMap::new();
-        for p in [Platform::Windows, Platform::MacOs, Platform::Linux] {
+        for p in [
+            Platform::WindowsX64,
+            Platform::WindowsArm64,
+            Platform::MacOsX64,
+            Platform::MacOsArm64,
+            Platform::LinuxX64,
+            Platform::LinuxArm64,
+        ] {
             m.insert(
                 p,
                 RuntimeArtifact {
@@ -509,11 +548,82 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
                     dest_subdir: dest.to_string(),
                     file_name: file.to_string(),
                     archive,
+                    probe: None,
                 },
             );
         }
         m
     }
+
+    let mut whisper_cli_artifacts = per_platform_pinned([
+        (
+            Platform::WindowsX64,
+            "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
+            &[
+                "https://gh.llkk.cc/https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
+                "https://gh-proxy.com/https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
+            ],
+            "7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539",
+            "speech/whisper-cli",
+            "whisper-bin-x64.zip",
+            ArchiveKind::Zip,
+            "Release/whisper-cli.exe",
+        ),
+        (
+            Platform::LinuxX64,
+            "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-ubuntu-x64.tar.gz",
+            &[
+                "https://gh.llkk.cc/https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-ubuntu-x64.tar.gz",
+                "https://gh-proxy.com/https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-ubuntu-x64.tar.gz",
+            ],
+            "f3bf3b4369a99b54665b0f19b88483b30de27f25963b0414235dea03198515c5",
+            "speech/whisper-cli",
+            "whisper-bin-ubuntu-x64.tar.gz",
+            ArchiveKind::TarGz,
+            "whisper-bin-ubuntu-x64/whisper-cli",
+        ),
+        (
+            Platform::LinuxArm64,
+            "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-ubuntu-arm64.tar.gz",
+            &[
+                "https://gh.llkk.cc/https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-ubuntu-arm64.tar.gz",
+                "https://gh-proxy.com/https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-ubuntu-arm64.tar.gz",
+            ],
+            "e0b66cd551ff6f2a28fabe3c6e89691eea037bb76833493abb9a71ca788994b3",
+            "speech/whisper-cli",
+            "whisper-bin-ubuntu-arm64.tar.gz",
+            ArchiveKind::TarGz,
+            "whisper-bin-ubuntu-arm64/whisper-cli",
+        ),
+    ]);
+    insert_platform_artifact(
+        &mut whisper_cli_artifacts,
+        Platform::MacOsX64,
+        "https://github.com/eighteendreamer/DeepAgent-Studio/releases/download/runtime-whisper-cli-v1.9.1/deepagent-whisper-cli-macos-x64.tar.gz",
+        &[
+            "https://gh.llkk.cc/https://github.com/eighteendreamer/DeepAgent-Studio/releases/download/runtime-whisper-cli-v1.9.1/deepagent-whisper-cli-macos-x64.tar.gz",
+            "https://gh-proxy.com/https://github.com/eighteendreamer/DeepAgent-Studio/releases/download/runtime-whisper-cli-v1.9.1/deepagent-whisper-cli-macos-x64.tar.gz",
+        ],
+        option_env!("DEEPAGENT_WHISPER_CLI_MACOS_X64_SHA256"),
+        "speech/whisper-cli",
+        "deepagent-whisper-cli-macos-x64.tar.gz",
+        ArchiveKind::TarGz,
+        "deepagent-whisper-cli-macos-x64/whisper-cli",
+    );
+    insert_platform_artifact(
+        &mut whisper_cli_artifacts,
+        Platform::MacOsArm64,
+        "https://github.com/eighteendreamer/DeepAgent-Studio/releases/download/runtime-whisper-cli-v1.9.1/deepagent-whisper-cli-macos-arm64.tar.gz",
+        &[
+            "https://gh.llkk.cc/https://github.com/eighteendreamer/DeepAgent-Studio/releases/download/runtime-whisper-cli-v1.9.1/deepagent-whisper-cli-macos-arm64.tar.gz",
+            "https://gh-proxy.com/https://github.com/eighteendreamer/DeepAgent-Studio/releases/download/runtime-whisper-cli-v1.9.1/deepagent-whisper-cli-macos-arm64.tar.gz",
+        ],
+        option_env!("DEEPAGENT_WHISPER_CLI_MACOS_ARM64_SHA256"),
+        "speech/whisper-cli",
+        "deepagent-whisper-cli-macos-arm64.tar.gz",
+        ArchiveKind::TarGz,
+        "deepagent-whisper-cli-macos-arm64/whisper-cli",
+    );
 
     vec![
         RuntimeEntry {
@@ -555,19 +665,8 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
             version: "v1.9.1".to_string(),
             capability: "speech-engine".to_string(),
             size_bytes: 8 * 1024 * 1024,
-            artifacts: per_platform_pinned([(
-                Platform::Windows,
-                "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
-                &[
-                    "https://gh.llkk.cc/https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
-                    "https://gh-proxy.com/https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
-                ],
-                "7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539",
-                "speech/whisper-cli",
-                "whisper-bin-x64.zip",
-                ArchiveKind::Zip,
-            )]),
-            probe: "Release/whisper-cli.exe".to_string(),
+            artifacts: whisper_cli_artifacts,
+            probe: "whisper-cli".to_string(),
         },
         RuntimeEntry {
             id: "pandoc".to_string(),
@@ -577,21 +676,21 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
             size_bytes: 180 * 1024 * 1024,
             artifacts: per_platform([
                 (
-                    Platform::Windows,
+                    Platform::WindowsX64,
                     "https://github.com/jgm/pandoc/releases/download/3.1.11/pandoc-3.1.11-windows-x86_64.zip",
                     "office/pandoc",
                     "pandoc.zip",
                     ArchiveKind::Zip,
                 ),
                 (
-                    Platform::MacOs,
+                    Platform::MacOsX64,
                     "https://github.com/jgm/pandoc/releases/download/3.1.11/pandoc-3.1.11-x86_64-macOS.zip",
                     "office/pandoc",
                     "pandoc.zip",
                     ArchiveKind::Zip,
                 ),
                 (
-                    Platform::Linux,
+                    Platform::LinuxX64,
                     "https://github.com/jgm/pandoc/releases/download/3.1.11/pandoc-3.1.11-linux-amd64.tar.gz",
                     "office/pandoc",
                     "pandoc.tar.gz",
@@ -611,21 +710,21 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
             size_bytes: 12 * 1024 * 1024,
             artifacts: per_platform([
                 (
-                    Platform::Windows,
+                    Platform::WindowsX64,
                     "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F6666/pdfium-win-x64.tgz",
                     "office/pdfium",
                     "pdfium.tgz",
                     ArchiveKind::TarGz,
                 ),
                 (
-                    Platform::MacOs,
+                    Platform::MacOsX64,
                     "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F6666/pdfium-mac-x64.tgz",
                     "office/pdfium",
                     "pdfium.tgz",
                     ArchiveKind::TarGz,
                 ),
                 (
-                    Platform::Linux,
+                    Platform::LinuxX64,
                     "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F6666/pdfium-linux-x64.tgz",
                     "office/pdfium",
                     "pdfium.tgz",
@@ -645,14 +744,14 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
             size_bytes: 380 * 1024 * 1024,
             artifacts: per_platform([
                 (
-                    Platform::Windows,
+                    Platform::WindowsX64,
                     "https://download.documentfoundation.org/libreoffice/portable/24.8/LibreOfficePortable_24.8.zip",
                     "office/libreoffice",
                     "libreoffice.zip",
                     ArchiveKind::Zip,
                 ),
                 (
-                    Platform::Linux,
+                    Platform::LinuxX64,
                     "https://download.documentfoundation.org/libreoffice/stable/24.8.0/deb/x86_64/LibreOffice_24.8.0_Linux_x86-64_deb.tar.gz",
                     "office/libreoffice",
                     "libreoffice.tar.gz",
@@ -680,6 +779,7 @@ fn per_platform<const N: usize>(
                 dest_subdir: dest.to_string(),
                 file_name: file.to_string(),
                 archive,
+                probe: None,
             },
         );
     }
@@ -694,26 +794,53 @@ type PinnedPlatformArtifact<'a> = (
     &'a str,
     &'a str,
     ArchiveKind,
+    &'a str,
 );
 
 fn per_platform_pinned<const N: usize>(
     entries: [PinnedPlatformArtifact<'_>; N],
 ) -> HashMap<Platform, RuntimeArtifact> {
     let mut m = HashMap::new();
-    for (platform, url, mirrors, sha256, dest, file, archive) in entries {
-        m.insert(
+    for (platform, url, mirrors, sha256, dest, file, archive, probe) in entries {
+        insert_platform_artifact(
+            &mut m,
             platform,
-            RuntimeArtifact {
-                url: url.to_string(),
-                mirror_urls: mirrors.iter().map(|u| (*u).to_string()).collect(),
-                sha256: Some(sha256.to_string()),
-                dest_subdir: dest.to_string(),
-                file_name: file.to_string(),
-                archive,
-            },
+            url,
+            mirrors,
+            Some(sha256),
+            dest,
+            file,
+            archive,
+            probe,
         );
     }
     m
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_platform_artifact(
+    artifacts: &mut HashMap<Platform, RuntimeArtifact>,
+    platform: Platform,
+    url: &str,
+    mirrors: &[&str],
+    sha256: Option<&str>,
+    dest: &str,
+    file: &str,
+    archive: ArchiveKind,
+    probe: &str,
+) {
+    artifacts.insert(
+        platform,
+        RuntimeArtifact {
+            url: url.to_string(),
+            mirror_urls: mirrors.iter().map(|u| (*u).to_string()).collect(),
+            sha256: sha256.map(str::to_string),
+            dest_subdir: dest.to_string(),
+            file_name: file.to_string(),
+            archive,
+            probe: Some(probe.to_string()),
+        },
+    );
 }
 
 // ---- reqwest-backed downloader (behind the `runtimes` feature) ------------
@@ -872,6 +999,7 @@ mod tests {
                 dest_subdir: "speech/models".to_string(),
                 file_name: "model.bin".to_string(),
                 archive: ArchiveKind::Raw,
+                probe: None,
             },
         );
         RuntimeEntry {
@@ -999,6 +1127,7 @@ mod tests {
                 dest_subdir: "tool".to_string(),
                 file_name: "tool.zip".to_string(),
                 archive: ArchiveKind::Zip,
+                probe: None,
             },
         );
         let entry = RuntimeEntry {
@@ -1051,6 +1180,7 @@ mod tests {
                 dest_subdir: "tool".to_string(),
                 file_name: "tool.tgz".to_string(),
                 archive: ArchiveKind::TarGz,
+                probe: None,
             },
         );
         let entry = RuntimeEntry {
@@ -1087,8 +1217,28 @@ mod tests {
         let whisper_cli = svc.status("whisper-cli").unwrap();
         assert!(whisper_base.checksum_pinned);
         assert!(whisper_small.checksum_pinned);
-        assert!(whisper_cli.checksum_pinned);
         assert_eq!(whisper_cli.capability, "speech-engine");
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        {
+            assert!(whisper_cli.available_for_platform);
+            assert!(whisper_cli.checksum_pinned);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(whisper_cli.available_for_platform);
+            #[cfg(target_arch = "aarch64")]
+            if option_env!("DEEPAGENT_WHISPER_CLI_MACOS_ARM64_SHA256").is_some() {
+                assert!(whisper_cli.checksum_pinned);
+            } else {
+                assert!(!whisper_cli.checksum_pinned);
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            if option_env!("DEEPAGENT_WHISPER_CLI_MACOS_X64_SHA256").is_some() {
+                assert!(whisper_cli.checksum_pinned);
+            } else {
+                assert!(!whisper_cli.checksum_pinned);
+            }
+        }
         // Tier R binaries are fail-closed until a checksum is pinned.
         let pandoc = svc.status("pandoc").unwrap();
         assert!(!pandoc.checksum_pinned);
