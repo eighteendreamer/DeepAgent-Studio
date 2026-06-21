@@ -18,14 +18,15 @@ use std::sync::{Arc, Mutex};
 use deepagent_app_core::{
     AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, BalanceDto,
     BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary,
-    DiagnosticResult, DiffResult, ForkResultDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto,
-    KnowledgeHitDto, KnowledgeService, McpServerDto, McpService, ProjectDto, ProjectMapGraphDto,
+    DiagnosticResult, DiffResult, FilePreviewService, ForkResultDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto,
+    KnowledgeHitDto, KnowledgeService, McpServerDto, McpService, OfficeService, PdfRenderResultDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto,
     ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto,
     ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
-    ProjectService, RewindResultDto, SecretStore, SessionDetailDto, SessionStateService,
+    ProjectService, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeProgressDto, RuntimeService,
+    RuntimeStatusDto, SecretStore, SessionDetailDto, SessionStateService,
     SessionSummaryDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
-    SkillsMpClientHandle, SkillsRoots, SkillsService, TerminalResultDto, TerminalService,
-    TranscriptDto, WorkspaceInfoDto, WorkspaceService,
+    SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, TerminalResultDto, TerminalService,
+    TranscriptDto, TranscriptSegmentDto, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use serde::Serialize;
@@ -72,6 +73,16 @@ struct AppState {
     project_map: Arc<ProjectMapService>,
     workspace: Arc<WorkspaceService>,
     terminal: Arc<TerminalService>,
+    /// File preview for the desktop "File Preview" panel (office-agent).
+    preview: Arc<FilePreviewService>,
+    /// Microphone recording for the desktop recording panel (office-agent).
+    recording: Arc<RecordingService>,
+    /// Managed-runtime download/install manager (office-agent).
+    runtime: Arc<RuntimeService>,
+    /// Speech transcription + meeting-minutes (office-agent).
+    speech: Arc<SpeechService>,
+    /// Office document read/generate (office-agent).
+    office: Arc<OfficeService>,
     /// Tokio runtime for async calls invoked from sync commands.
     rt: tokio::runtime::Runtime,
 }
@@ -1112,6 +1123,31 @@ fn set_tool_search_threshold(
         .map_err(|e| e.to_string())
 }
 
+// ---- web-search provider settings ----------------------------------------
+
+#[tauri::command]
+fn get_web_search_settings(state: State<'_, AppState>) -> Result<WebSearchSettings, String> {
+    state
+        .settings
+        .web_search_settings()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_web_search_settings(
+    state: State<'_, AppState>,
+    settings: WebSearchSettings,
+) -> Result<WebSearchSettings, String> {
+    state
+        .settings
+        .set_web_search_settings(settings)
+        .map_err(|e| e.to_string())?;
+    state
+        .settings
+        .web_search_settings()
+        .map_err(|e| e.to_string())
+}
+
 // ---- Skill marketplace settings (Skill Marketplace spec, R10) -------------
 
 #[tauri::command]
@@ -1601,6 +1637,236 @@ fn terminal_cwd(state: State<'_, AppState>) -> String {
     state.terminal.current_dir()
 }
 
+// ---- file preview (office-agent: preview office files in the panel) -------
+
+/// Read metadata (name / extension / size / classified kind) for a file.
+#[tauri::command]
+fn preview_get_metadata(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<PreviewMetadataDto, String> {
+    state.preview.get_metadata(&path).map_err(|e| e.to_string())
+}
+
+/// Extract a previewable representation of a file (text / xlsx sheets).
+#[tauri::command]
+fn preview_extract_text(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<PreviewResultDto, String> {
+    state.preview.extract_text(&path).map_err(|e| e.to_string())
+}
+
+/// Open a file for preview — returns the full preview result (metadata +
+/// extracted content). The primary entry point the File Preview panel calls.
+#[tauri::command]
+fn preview_open_file(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<PreviewResultDto, String> {
+    state.preview.extract_text(&path).map_err(|e| e.to_string())
+}
+
+/// Read an image file as a base64 `data:` URL so the webview can display it
+/// without the asset protocol.
+#[tauri::command]
+fn preview_read_data_url(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    state.preview.read_data_url(&path).map_err(|e| e.to_string())
+}
+
+/// Render PDF pages. Tier C degrades to text extraction (with a note that
+/// pdfium is needed for page images); full rasterization is a Tier R upgrade.
+#[tauri::command]
+fn preview_render_pages(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<PdfRenderResultDto, String> {
+    let out_dir = std::env::temp_dir().join("deepagent-pdf-pages");
+    state
+        .office
+        .render_pdf_pages(&path, &out_dir.to_string_lossy(), 50)
+        .map_err(|e| e.to_string())
+}
+
+// ---- recording (office-agent: microphone capture for the recording panel) -
+
+#[tauri::command]
+fn audio_list_input_devices(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    state.recording.list_input_devices().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn audio_start_recording(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<RecordingSessionDto, String> {
+    state.recording.start_recording(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn audio_pause_recording(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<RecordingSessionDto, String> {
+    state.recording.pause_recording(&session_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn audio_resume_recording(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<RecordingSessionDto, String> {
+    state.recording.resume_recording(&session_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn audio_stop_recording(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<RecordingSessionDto, String> {
+    state.recording.stop_recording(&session_id).map_err(|e| e.to_string())
+}
+
+// ---- managed runtimes (office-agent: on-demand download into app dir) -----
+
+#[tauri::command]
+fn runtime_list(state: State<'_, AppState>) -> Result<Vec<RuntimeStatusDto>, String> {
+    Ok(state.runtime.list())
+}
+
+#[tauri::command]
+fn runtime_status(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<RuntimeStatusDto>, String> {
+    Ok(state.runtime.status(&id))
+}
+
+/// Download + verify + install a managed runtime, emitting `runtime:progress`
+/// events. High-risk (downloads + writes an executable/data file) — the UI
+/// requires explicit user consent before calling this.
+#[tauri::command]
+async fn runtime_install(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<RuntimeStatusDto, String> {
+    let runtime = state.runtime.clone();
+    let id_for_progress = id.clone();
+    let progress: std::sync::Arc<deepagent_app_core::runtime_service::ProgressFn> =
+        std::sync::Arc::new(move |downloaded: u64, total: Option<u64>| {
+            let _ = app.emit(
+                "runtime:progress",
+                RuntimeProgressDto {
+                    id: id_for_progress.clone(),
+                    downloaded,
+                    total,
+                    phase: "downloading".to_string(),
+                },
+            );
+        });
+    runtime.install(&id, progress).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn runtime_cancel(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.runtime.cancel(&id);
+    Ok(())
+}
+
+#[tauri::command]
+fn runtime_uninstall(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    state.runtime.uninstall(&id).map_err(|e| e.to_string())
+}
+
+// ---- speech (office-agent: transcription + meeting minutes) ---------------
+
+/// Transcribe a recorded WAV to timestamped segments (writes `<stem>_转写.json`).
+/// Errors clearly when the model isn't installed or the engine isn't enabled.
+#[tauri::command]
+async fn speech_transcribe_file(
+    state: State<'_, AppState>,
+    wav_path: String,
+) -> Result<Vec<TranscriptSegmentDto>, String> {
+    let speech = state.speech.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        speech.transcribe_file(&wav_path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("speech transcription task failed: {e}"))?
+}
+
+/// Whether a speech model is installed (so the UI can decide to prompt a
+/// download before transcribing).
+#[tauri::command]
+fn speech_model_installed(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.speech.model_installed())
+}
+
+/// Whether the local whisper.cpp sidecar engine is installed.
+#[tauri::command]
+fn speech_engine_installed(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.speech.engine_installed())
+}
+
+/// Generate a structured Markdown meeting-minutes document from a transcript.
+#[tauri::command]
+async fn speech_generate_meeting_minutes(
+    state: State<'_, AppState>,
+    transcript: String,
+) -> Result<String, String> {
+    let speech = state.speech.clone();
+    speech
+        .generate_meeting_minutes(&transcript)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---- office documents (office-agent: read + generate) ---------------------
+
+/// Read readable text from an office/text file (Tier C, pure Rust).
+#[tauri::command]
+fn office_read_text(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    state.office.read_text(&path).map_err(|e| e.to_string())
+}
+
+/// Create a `.docx` from a Markdown source at an explicit path (Tier C).
+#[tauri::command]
+fn office_create_docx_from_markdown(
+    state: State<'_, AppState>,
+    markdown: String,
+    title: Option<String>,
+    out_path: String,
+) -> Result<String, String> {
+    state
+        .office
+        .create_docx_from_markdown(&markdown, title.as_deref(), &out_path)
+        .map_err(|e| e.to_string())?;
+    Ok(out_path)
+}
+
+/// Export Markdown meeting-minutes to a `.docx` in the recordings folder,
+/// returning the written path. (New-file write — medium risk, no overwrite.)
+#[tauri::command]
+fn office_export_minutes_docx(
+    state: State<'_, AppState>,
+    markdown: String,
+) -> Result<String, String> {
+    let dir = state.recording.recordings_dir().to_path_buf();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = dir.join(format!("{stamp}_会议纪要.docx"));
+    let out = path.to_string_lossy().into_owned();
+    state
+        .office
+        .create_docx_from_markdown(&markdown, Some("会议纪要"), &out)
+        .map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
 /// Extract `zip_path` into `dest`, returning the directory to install from: the
 /// single top-level folder if the archive has exactly one, else `dest` itself.
 fn extract_zip(zip_path: &str, dest: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
@@ -1764,6 +2030,34 @@ pub fn run() {
                 workspace_root.to_string_lossy().into_owned(),
             ));
 
+            // File preview: stateless office-file previewer for the desktop
+            // "File Preview" panel (office-agent). Pure-Rust, no external runtime.
+            let preview = Arc::new(FilePreviewService::new());
+
+            // Recording: microphone capture for the recording panel. Real cpal
+            // recorder; WAVs land under <app_data>/recordings.
+            let recordings_dir = dir.join("recordings");
+            let recording = Arc::new(RecordingService::new(
+                recordings_dir,
+                Arc::new(deepagent_app_core::recording_service::CpalRecorder::new()),
+            ));
+
+            // Managed runtimes: download into the app's own dir. Prefer a
+            // `runtimes/` next to the executable (writable for per-user
+            // installs); fall back to <app_data>/runtimes when the exe dir is
+            // read-only (e.g. Program Files). Never the OS program dir / PATH.
+            let mut runtime_roots = Vec::new();
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(exe_dir) = exe.parent() {
+                    runtime_roots.push(exe_dir.join("runtimes"));
+                }
+            }
+            runtime_roots.push(dir.join("runtimes"));
+            let runtime = Arc::new(RuntimeService::new(
+                &runtime_roots,
+                Arc::new(deepagent_app_core::runtime_service::ReqwestDownloader::default()),
+            ));
+
             // Cost tracking: records per-run token cost over the shared DB and
             // enforces optional daily/monthly budget limits.
             let cost = Arc::new(CostService::new(service.shared_database()));
@@ -1772,6 +2066,10 @@ pub fn run() {
             // the append-only event log.
             let archive = Arc::new(ArchiveService::new(service.shared_database()));
             let session_state = Arc::new(SessionStateService::new(service.shared_database()));
+
+            // Office: pure-Rust read + docx/xlsx generation (Tier C), with
+            // Tier R conversion when a doc-convert runtime is installed.
+            let office = Arc::new(OfficeService::new(runtime.clone()));
 
             // Chat: streamed runs; MCP servers connect + live-register tools, each
             // run is rooted at the active project's folder, the knowledge base
@@ -1791,8 +2089,18 @@ pub fn run() {
                 .with_project_map(project_map.clone())
                 .with_cost(cost.clone())
                 .with_skills(skills.clone())
+                .with_office(office.clone())
                 .with_tool_results_dir(dir.join("tool_results")),
             );
+
+            // Speech: transcription engine (whisper when the `whisper` feature
+            // is enabled, else an "engine unavailable" guide) + the runtime
+            // manager (to locate the model) + chat (for meeting minutes).
+            let speech = Arc::new(SpeechService::new(
+                deepagent_app_core::speech_service::default_engine(),
+                runtime.clone(),
+                chat.clone(),
+            ));
 
             app.manage(AppState {
                 service: Mutex::new(service),
@@ -1810,6 +2118,11 @@ pub fn run() {
                 project_map,
                 workspace,
                 terminal,
+                preview,
+                recording,
+                runtime,
+                speech,
+                office,
                 rt,
             });
             Ok(())
@@ -1878,6 +2191,8 @@ pub fn run() {
             set_tool_search_mode,
             get_tool_search_threshold,
             set_tool_search_threshold,
+            get_web_search_settings,
+            set_web_search_settings,
             get_skill_catalog_enabled,
             set_skill_catalog_enabled,
             get_skill_catalog_char_budget,
@@ -1919,7 +2234,29 @@ pub fn run() {
             delete_archived_conversation,
             delete_all_archived_conversations,
             run_terminal,
-            terminal_cwd
+            terminal_cwd,
+            preview_get_metadata,
+            preview_extract_text,
+            preview_open_file,
+            preview_read_data_url,
+            preview_render_pages,
+            audio_list_input_devices,
+            audio_start_recording,
+            audio_pause_recording,
+            audio_resume_recording,
+            audio_stop_recording,
+            runtime_list,
+            runtime_status,
+            runtime_install,
+            runtime_cancel,
+            runtime_uninstall,
+            speech_transcribe_file,
+            speech_model_installed,
+            speech_engine_installed,
+            speech_generate_meeting_minutes,
+            office_read_text,
+            office_create_docx_from_markdown,
+            office_export_minutes_docx
         ])
         .run(tauri::generate_context!())
         .expect("error while running DeepAgent Studio");

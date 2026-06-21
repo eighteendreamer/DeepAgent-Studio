@@ -23,8 +23,10 @@ interface Props {
   onRenameProject: (path: string, name: string) => void;
   onArchiveProject: (path: string, name: string) => void;
   onOpenSearch: () => void;
+  activeSurface?: "skills" | "knowledge" | "plugins" | "automation" | null;
   onOpenSkills: () => void;
   onOpenKnowledge: () => void;
+  onOpenPlugins: () => void;
   onOpenAutomation: () => void;
   onOpenSettings: () => void;
   onLogout: () => void;
@@ -32,10 +34,12 @@ interface Props {
   runningSessionIds?: Set<string>;
 }
 
-function NavButton({ icon, label, onClick }: { icon: IconProp; label: string; onClick?: () => void }) {
+function NavButton({ icon, label, active = false, onClick }: { icon: IconProp; label: string; active?: boolean; onClick?: () => void }) {
   return (
     <button 
-      className="w-full flex items-center px-2.5 py-1.5 rounded-md text-sm text-text-base hover:bg-black/5 transition-colors"
+      className={`w-full flex items-center px-2.5 py-1.5 rounded-md text-sm transition-colors ${
+        active ? "bg-black/5 text-text-base font-medium" : "text-text-base hover:bg-black/5"
+      }`}
       onClick={onClick}
     >
       <FontAwesomeIcon icon={icon} className="w-5 text-left text-text-secondary" />
@@ -90,7 +94,7 @@ function writeExpandedProjects(value: Record<string, boolean>) {
   window.localStorage.setItem(SIDEBAR_EXPANDED_PROJECTS_KEY, JSON.stringify(value));
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, onOpenSkills, onOpenKnowledge, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
@@ -500,10 +504,10 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           <span className="ml-0.5">{t("sidebar.newChat")}</span>
         </button>
         <NavButton icon={["fas", "magnifying-glass"]} label={t("sidebar.search")} onClick={onOpenSearch} />
-        <NavButton icon={["fas", "layer-group"]} label={t("sidebar.skills")} onClick={onOpenSkills} />
-        <NavButton icon={["fas", "book"]} label={t("sidebar.knowledge")} onClick={onOpenKnowledge} />
-        <NavButton icon={["fas", "puzzle-piece"]} label={t("sidebar.plugins")} />
-        <NavButton icon={["far", "clock"]} label={t("sidebar.automation")} onClick={onOpenAutomation} />
+        <NavButton icon={["fas", "layer-group"]} label={t("sidebar.skills")} active={activeSurface === "skills"} onClick={onOpenSkills} />
+        <NavButton icon={["fas", "book"]} label={t("sidebar.knowledge")} active={activeSurface === "knowledge"} onClick={onOpenKnowledge} />
+        <NavButton icon={["fas", "puzzle-piece"]} label={t("sidebar.plugins")} active={activeSurface === "plugins"} onClick={onOpenPlugins} />
+        <NavButton icon={["far", "clock"]} label={t("sidebar.automation")} active={activeSurface === "automation"} onClick={onOpenAutomation} />
       </div>
 
       {/* Project / session list */}

@@ -11,13 +11,14 @@ import {
   faCircleCheck as faCircleCheckSolid, faLaptop, faCompress, faFolderPlus, faFileExport, faClockRotateLeft,
   faKey, faLock, faMoon, faCircleNotch, faHand, faCircleExclamation, faWrench, faListCheck, faShieldHalved,
   faBook, faToggleOn, faToggleOff, faTriangleExclamation, faNoteSticky, faTrash, faShareNodes, faList, faInbox, faLightbulb, faStop, faBolt, faCoins, faWallet,
-  faStar, faPlay, faFolderTree
+  faStar, faPlay, faFolderTree, faMicrophone, faPause, faDownload, faTable
 } from "@fortawesome/free-solid-svg-icons";
 
 import {
   faClock, faBell, faCalendarCheck, faWindowRestore, faCopy, faFileLines as faFileLinesRegular,
   faFolderOpen, faCommentDots, faComments, faPenToSquare, faFolder, faMessage, faSquare,
-  faCircleCheck as faCircleCheckRegular, faSun, faFaceSmile, faKeyboard, faCompass, faTrashCan, faWindowMaximize
+  faCircleCheck as faCircleCheckRegular, faSun, faFaceSmile, faKeyboard, faCompass, faTrashCan, faWindowMaximize,
+  faImage, faFilePdf, faFileWord as faFileWordRegular, faFileExcel as faFileExcelRegular, faFilePowerpoint as faFilePowerpointRegular
 } from "@fortawesome/free-regular-svg-icons";
 
 import { faChrome, faFigma, faGitAlt, faGithub } from "@fortawesome/free-brands-svg-icons";
@@ -32,13 +33,14 @@ const solidIcons = [
   faSliders, faServer, faAnchor, faLink, faLeaf, faDesktop, faCircleCheckSolid, faLaptop,
   faCompress, faFolderPlus, faFileExport, faClockRotateLeft, faKey, faLock, faMoon, faCircleNotch, faHand, faCircleExclamation, faWrench, faListCheck, faShieldHalved,
   faBook, faToggleOn, faToggleOff, faTriangleExclamation, faNoteSticky, faTrash, faShareNodes, faList, faInbox, faLightbulb, faStop, faBolt, faCoins, faWallet,
-  faStar, faPlay, faFolderTree
+  faStar, faPlay, faFolderTree, faMicrophone, faPause, faDownload, faTable
 ];
 
 const regularIcons = [
   faClock, faBell, faCalendarCheck, faWindowRestore, faCopy, faFileLinesRegular,
   faFolderOpen, faCommentDots, faComments, faPenToSquare, faFolder, faMessage, faSquare,
-  faCircleCheckRegular, faSun, faFaceSmile, faKeyboard, faCompass, faTrashCan, faWindowMaximize
+  faCircleCheckRegular, faSun, faFaceSmile, faKeyboard, faCompass, faTrashCan, faWindowMaximize,
+  faImage, faFilePdf, faFileWordRegular, faFileExcelRegular, faFilePowerpointRegular
 ];
 
 const brandIcons = [

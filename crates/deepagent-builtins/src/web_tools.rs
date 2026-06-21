@@ -34,6 +34,33 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+/// One attempted search provider in a fallback chain.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SearchAttempt {
+    /// Provider label, e.g. `deepseek`, `searxng`, `duckduckgo`.
+    pub provider: String,
+    /// Whether this provider returned the final successful result set.
+    pub ok: bool,
+    /// Number of rows returned when successful.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+    /// Failure reason when unsuccessful.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Web-search response with provider metadata.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SearchResponse {
+    /// Provider that supplied the returned rows.
+    pub provider: String,
+    /// Result rows.
+    pub results: Vec<SearchResult>,
+    /// Provider attempts made before the final response.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<SearchAttempt>,
+}
+
 /// Abstracts outbound web access for the web tools.
 ///
 /// `fetch` returns the (already text-extracted) body of a URL. `search` returns
@@ -50,6 +77,18 @@ pub trait WebClient: Send + Sync {
         Err(CoreError::other(
             "web search is not configured for this client",
         ))
+    }
+
+    /// Run a search and return provider metadata. Existing clients can keep
+    /// implementing [`Self::search`]; the default wrapper preserves behavior
+    /// and labels the provider as `custom`.
+    async fn search_response(&self, query: &str, limit: usize) -> Result<SearchResponse> {
+        let results = self.search(query, limit).await?;
+        Ok(SearchResponse {
+            provider: "custom".to_string(),
+            results,
+            attempts: Vec::new(),
+        })
     }
 }
 
@@ -209,12 +248,17 @@ impl<C: WebClient> Tool for WebSearchTool<C> {
             .map(|n| n as usize)
             .unwrap_or(self.default_limit)
             .clamp(1, 20);
-        match self.client.search(query, limit).await {
-            Ok(results) => Ok(ToolOutput::success(serde_json::json!({
-                "query": query,
-                "results": results,
-                "count": results.len(),
-            }))),
+        match self.client.search_response(query, limit).await {
+            Ok(response) => {
+                let count = response.results.len();
+                Ok(ToolOutput::success(serde_json::json!({
+                    "query": query,
+                    "provider": response.provider,
+                    "results": response.results,
+                    "count": count,
+                    "attempts": response.attempts,
+                })))
+            }
             Err(e) => Ok(ToolOutput::failure(format!("search failed: {e}"))),
         }
     }
@@ -240,6 +284,40 @@ mod tests {
                     snippet: "snippet".into(),
                 })
                 .collect())
+        }
+    }
+
+    struct MetadataWeb;
+
+    #[async_trait]
+    impl WebClient for MetadataWeb {
+        async fn fetch(&self, _url: &str) -> Result<String> {
+            Ok(String::new())
+        }
+
+        async fn search_response(&self, query: &str, _limit: usize) -> Result<SearchResponse> {
+            Ok(SearchResponse {
+                provider: "mock_provider".to_string(),
+                results: vec![SearchResult {
+                    title: format!("Hit for {query}"),
+                    url: "https://example.com/meta".to_string(),
+                    snippet: "metadata snippet".to_string(),
+                }],
+                attempts: vec![
+                    SearchAttempt {
+                        provider: "first".to_string(),
+                        ok: false,
+                        count: None,
+                        error: Some("network failed".to_string()),
+                    },
+                    SearchAttempt {
+                        provider: "mock_provider".to_string(),
+                        ok: true,
+                        count: Some(1),
+                        error: None,
+                    },
+                ],
+            })
         }
     }
 
@@ -310,7 +388,22 @@ mod tests {
             .unwrap();
         assert!(out.ok);
         assert_eq!(out.value["count"], 3);
+        assert_eq!(out.value["provider"], "custom");
         assert_eq!(out.value["results"][0]["url"], "https://example.com/0");
+    }
+
+    #[tokio::test]
+    async fn web_search_returns_provider_metadata() {
+        let tool = WebSearchTool::new(MetadataWeb);
+        let out = tool
+            .invoke(serde_json::json!({"query": "rust async"}))
+            .await
+            .unwrap();
+        assert!(out.ok);
+        assert_eq!(out.value["provider"], "mock_provider");
+        assert_eq!(out.value["attempts"][0]["provider"], "first");
+        assert_eq!(out.value["attempts"][0]["ok"], false);
+        assert_eq!(out.value["attempts"][1]["count"], 1);
     }
 
     #[tokio::test]

@@ -53,6 +53,7 @@ pub mod git_tools;
 pub mod glob_match;
 pub mod guard_hooks;
 pub mod knowledge_tools;
+pub mod office_tools;
 pub mod plan_mode;
 pub mod project_map_tools;
 pub mod skill_tool;
@@ -104,6 +105,10 @@ pub use knowledge_tools::{
 pub use plan_mode::{
     is_plan_safe_tool, EnterPlanModeTool, ExitPlanModeTool, PlanMode, PlanModeHook, PLAN_SAFE_TOOLS,
 };
+pub use office_tools::{
+    OfficeBackend, OfficeDocxCreateTool, OfficeReadTool, OfficeXlsxCreateTool,
+    OFFICE_DOCX_CREATE_TOOL_NAME, OFFICE_READ_TOOL_NAME, OFFICE_XLSX_CREATE_TOOL_NAME,
+};
 pub use project_map_tools::{
     CodeMapImpactTool, CodeMapNeighborsTool, CodeMapOverviewTool, CodeMapSearchTool,
     ProjectMapBackend, CODE_MAP_IMPACT_TOOL_NAME, CODE_MAP_NEIGHBORS_TOOL_NAME,
@@ -119,10 +124,12 @@ pub use tool_search::{
     ToolSearchTool, TOOL_SEARCH_DEFAULT_MAX_RESULTS, TOOL_SEARCH_MAX_RESULTS_CAP,
     TOOL_SEARCH_TOOL_NAME,
 };
-pub use web_tools::{SearchResult, WebClient, WebFetchTool, WebSearchTool};
+pub use web_tools::{
+    SearchAttempt, SearchResponse, SearchResult, WebClient, WebFetchTool, WebSearchTool,
+};
 
 #[cfg(feature = "http")]
-pub use reqwest_web::ReqwestWebClient;
+pub use reqwest_web::{DeepSeekWebSearchConfig, ReqwestWebClient};
 
 // Re-export the permission vocabulary callers need to grant access.
 pub use deepagent_tools::permission::{Permission, PermissionSet, RiskLevel};

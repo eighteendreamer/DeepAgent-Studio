@@ -1,6 +1,6 @@
 [package]
 name = "deepagent-desktop"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 description = "DeepAgent Studio desktop shell (Tauri v2)."
 license = "Apache-2.0"
@@ -33,7 +33,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # Enable the OS keychain so the API key is stored in Windows Credential Manager
 # / macOS Keychain / Linux Secret Service — never in plaintext on disk.
-deepagent-app-core = { path = "../../../crates/deepagent-app-core", features = ["keychain", "web"] }
+deepagent-app-core = { path = "../../../crates/deepagent-app-core", features = ["keychain", "web", "audio", "runtimes"] }
 deepagent-core = { path = "../../../crates/deepagent-core" }
 deepagent-models = { path = "../../../crates/deepagent-models", features = ["http"] }
 tauri-plugin-dialog = "2.7.1"

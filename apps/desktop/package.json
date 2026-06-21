@@ -1,7 +1,7 @@
 {
   "name": "deepagent-desktop",
   "private": true,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "description": "DeepAgent Studio desktop UI (Codex-style) built on Tauri v2 + React.",
   "scripts": {

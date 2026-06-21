@@ -122,8 +122,49 @@ tree-sitter-go = "0.23"
 # File walking + .gitignore handling
 ignore = "0.4"
 
+# Office document parsing (file preview + office tools): zip for OOXML
+# container access (docx/pptx), calamine for xlsx sheet reading. Pure Rust,
+# no external runtime — this is the Tier C fallback for office previews.
+zip = "2"
+calamine = "0.26"
+# Pure-Rust PDF text extraction (Tier C). Page rasterization is a Tier R
+# upgrade (pdfium) handled later; this gives a text-only degrade path.
+pdf-extract = "0.7"
+
 # Content hashing (incremental change detection)
 blake3 = "1"
+
+# SHA-256 for verifying downloaded managed runtimes (office-agent RuntimeService).
+sha2 = "0.10"
+
+# Archive extraction for managed runtimes distributed as .tar.gz (pandoc /
+# pdfium ship tarballs on some platforms). Pure Rust.
+tar = "0.4"
+flate2 = "1"
+
+# PDF page rendering (office-agent Tier R, behind the `pdfium` feature).
+# pdfium-render dynamically loads the pdfium library at runtime, so it compiles
+# without the binary present. `image` encodes the rendered pages to PNG.
+pdfium-render = "0.8"
+image = "0.25"
+
+# HTTP client for downloading managed runtimes (office-agent). Used behind the
+# app-core `runtimes` feature; rustls so no system OpenSSL is required.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+
+# Audio capture for the recording panel (office-agent): cpal for cross-platform
+# microphone input, hound for writing 16kHz mono PCM WAV. Pure Rust.
+cpal = "0.15"
+hound = "3.5"
+
+# In-process speech transcription engine (office-agent). Statically links
+# whisper.cpp — needs a C/C++ toolchain (+ cmake) to build, so it is gated
+# behind the app-core `whisper` feature and OFF by default.
+whisper-rs = "0.12"
+
+# Pure-Rust xlsx writer (office-agent Tier C document generation). No external
+# runtime — used by OfficeService to materialize spreadsheets.
+rust_xlsxwriter = "0.79"
 
 # Testing
 tempfile = "3"

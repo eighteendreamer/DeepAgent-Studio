@@ -25,7 +25,8 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
 use deepagent_core::message::Message;
 use deepagent_hooks::{
-    HookCommandRunner, HookPoint, HookRegistry, PermissionRulesHook, SystemHookRunner,
+    DecisionSource, Hook, HookCommandRunner, HookContext, HookData, HookOutcome, HookPoint,
+    HookRegistry, PermissionRulesHook, SystemHookRunner,
 };
 use deepagent_intent::{CommandContext, CommandDef, SlashAction, SlashRegistry};
 use deepagent_models::transport::HttpTransport;
@@ -39,6 +40,7 @@ use deepagent_tools::{PermissionSet, ToolRegistry};
 
 use crate::approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
 use crate::dto::ApprovalRequestDto;
+use crate::office_service::OfficeService;
 use crate::project_map_service::ProjectMapService;
 use crate::settings::SettingsService;
 
@@ -94,6 +96,26 @@ fn current_date_string() -> String {
         .unwrap_or_else(|_| format!("{}", now.year()))
 }
 
+#[cfg(feature = "web")]
+fn configured_searxng_url(setting: Option<String>) -> Option<String> {
+    setting
+        .or_else(|| std::env::var("DEEPAGENT_SEARXNG_URL").ok())
+        .or_else(|| std::env::var("SEARXNG_URL").ok())
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn web_search_summary(settings: &crate::settings::WebSearchSettings) -> String {
+    if !settings.enabled {
+        return "disabled".to_string();
+    }
+    let provider = settings.provider.label();
+    match settings.searxng_url.as_deref() {
+        Some(url) if !url.trim().is_empty() => format!("{provider} (SearXNG: {url})"),
+        _ => provider.to_string(),
+    }
+}
+
 #[derive(Clone)]
 struct ProjectMapToolBackend {
     service: Arc<ProjectMapService>,
@@ -121,6 +143,97 @@ impl deepagent_builtins::ProjectMapBackend for ProjectMapToolBackend {
     async fn impact(&self, target: &str) -> Result<serde_json::Value> {
         serde_json::to_value(self.service.impact(&self.root, target)?).map_err(Into::into)
     }
+}
+
+/// Bridges the `office_*` tools to the app-core [`OfficeService`] (Tier C
+/// pure-Rust read/generate; Tier R when a conversion runtime is installed).
+#[cfg(feature = "runtimes")]
+#[derive(Clone)]
+struct OfficeToolBackend {
+    service: Arc<OfficeService>,
+}
+
+#[cfg(feature = "runtimes")]
+#[async_trait]
+impl deepagent_builtins::OfficeBackend for OfficeToolBackend {
+    async fn read_text(&self, path: &str) -> Result<serde_json::Value> {
+        let text = self.service.read_text(path)?;
+        Ok(serde_json::json!({ "path": path, "text": text }))
+    }
+
+    async fn create_docx_from_markdown(
+        &self,
+        markdown: &str,
+        title: Option<String>,
+        out_path: &str,
+        overwrite: bool,
+    ) -> Result<serde_json::Value> {
+        if !overwrite && std::path::Path::new(out_path).exists() {
+            return Err(CoreError::invalid(
+                "file already exists — pass overwrite=true to replace it",
+            ));
+        }
+        self.service
+            .create_docx_from_markdown(markdown, title.as_deref(), out_path)?;
+        Ok(serde_json::json!({ "path": out_path, "ok": true }))
+    }
+
+    async fn create_xlsx(
+        &self,
+        sheets: serde_json::Value,
+        out_path: &str,
+        overwrite: bool,
+    ) -> Result<serde_json::Value> {
+        if !overwrite && std::path::Path::new(out_path).exists() {
+            return Err(CoreError::invalid(
+                "file already exists — pass overwrite=true to replace it",
+            ));
+        }
+        let parsed = parse_office_sheets(&sheets)?;
+        self.service.create_xlsx(&parsed, out_path)?;
+        Ok(serde_json::json!({ "path": out_path, "ok": true }))
+    }
+}
+
+/// Parse the `sheets` tool argument (`[{ name, rows: [[..]] }]`) into the
+/// `(name, rows)` shape [`OfficeService::create_xlsx`] expects.
+#[cfg(feature = "runtimes")]
+fn parse_office_sheets(value: &serde_json::Value) -> Result<Vec<(String, Vec<Vec<String>>)>> {
+    let arr = value
+        .as_array()
+        .ok_or_else(|| CoreError::invalid("'sheets' must be an array"))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, sheet) in arr.iter().enumerate() {
+        let name = sheet
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Sheet{}", i + 1));
+        let rows = sheet
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| {
+                        row.as_array()
+                            .map(|cells| {
+                                cells
+                                    .iter()
+                                    .map(|c| {
+                                        c.as_str()
+                                            .map(str::to_string)
+                                            .unwrap_or_else(|| c.to_string())
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push((name, rows));
+    }
+    Ok(out)
 }
 
 #[derive(Clone)]
@@ -292,6 +405,10 @@ pub struct ChatService {
     /// registered for the active project so the model can locate code before
     /// broad file reads.
     project_map: Option<Arc<ProjectMapService>>,
+    /// Optional office service: when set, the chat run registers the
+    /// `office_*` read/generate tools so the model can read and produce
+    /// Word/Excel documents (office-agent).
+    office: Option<Arc<OfficeService>>,
     /// Optional cost tracker: when set, each completed run records its token
     /// cost and runs are refused when a configured budget is exhausted. When
     /// unset, behavior is identical to before the feature (no recording, no
@@ -332,6 +449,10 @@ pub struct ChatService {
             std::collections::HashMap<String, crate::skill_catalog_reminder::SkillCatalogSendState>,
         >,
     >,
+    /// Per-session set of skills that have been successfully invoked through
+    /// the `skill` tool. Used by office tool guards so specialized document
+    /// tools cannot bypass the matching docx/xlsx/pdf/pptx skill.
+    invoked_skills: InvokedSkillMap,
 }
 
 /// One session's discovered-tool set: shared between the runtime tool
@@ -341,6 +462,144 @@ type DiscoveredToolSet = Arc<std::sync::Mutex<std::collections::HashSet<String>>
 /// Per-session map of [`DiscoveredToolSet`]s, keyed by session id.
 type DiscoveredToolsMap =
     Arc<std::sync::Mutex<std::collections::HashMap<String, DiscoveredToolSet>>>;
+
+type InvokedSkillMap =
+    Arc<std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InvokedSkillRecord {
+    id: String,
+    name: String,
+    body: String,
+    base_dir: Option<String>,
+    resources: Vec<String>,
+}
+
+#[derive(Clone)]
+struct OfficeSkillGuardHook {
+    invoked_skills: InvokedSkillMap,
+    enforce_skills: std::collections::HashSet<String>,
+}
+
+impl OfficeSkillGuardHook {
+    fn new(
+        invoked_skills: InvokedSkillMap,
+        enforce_skills: std::collections::HashSet<String>,
+    ) -> Self {
+        Self {
+            invoked_skills,
+            enforce_skills,
+        }
+    }
+
+    fn seed_session(&self, session_id: &str, skills: std::collections::HashSet<String>) {
+        if skills.is_empty() {
+            return;
+        }
+        let mut map = self
+            .invoked_skills
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let entry = map.entry(session_id.to_string()).or_default();
+        entry.extend(skills);
+    }
+
+    fn record_skill(&self, session_id: &str, skill_id: &str) {
+        let skill_id = skill_id.trim();
+        if skill_id.is_empty() {
+            return;
+        }
+        let mut map = self
+            .invoked_skills
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        map.entry(session_id.to_string())
+            .or_default()
+            .insert(skill_id.to_string());
+    }
+
+    fn has_skill(&self, session_id: &str, skill_id: &str) -> bool {
+        let map = self
+            .invoked_skills
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        map.get(session_id)
+            .map(|skills| skills.contains(skill_id))
+            .unwrap_or(false)
+    }
+}
+
+#[async_trait]
+impl Hook for OfficeSkillGuardHook {
+    fn name(&self) -> &str {
+        "office_skill_guard"
+    }
+
+    async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+        let HookData::Tool {
+            name,
+            arguments,
+            ok,
+        } = &ctx.data
+        else {
+            return Ok(HookOutcome::Continue);
+        };
+        let session_id = ctx.session_id.to_string();
+
+        if ctx.point == HookPoint::AfterToolUse && name == deepagent_builtins::SKILL_TOOL_NAME {
+            if ok == &Some(true) {
+                if let Some(id) = arguments.get("id").and_then(|v| v.as_str()) {
+                    self.record_skill(&session_id, id);
+                }
+            }
+            return Ok(HookOutcome::Continue);
+        }
+
+        if ctx.point != HookPoint::BeforeToolUse {
+            return Ok(HookOutcome::Continue);
+        }
+
+        let Some(required) = required_skill_for_office_tool(name, arguments) else {
+            return Ok(HookOutcome::Continue);
+        };
+        if !self.enforce_skills.contains(required) || self.has_skill(&session_id, required) {
+            return Ok(HookOutcome::Continue);
+        }
+
+        Ok(HookOutcome::deny_from(
+            format!(
+                "{name} requires the `{required}` skill. Call the `skill` tool first with {{\"id\":\"{required}\"}}, follow that skill's document-formatting rules, then retry {name}."
+            ),
+            DecisionSource::Policy,
+        ))
+    }
+}
+
+fn required_skill_for_office_tool(name: &str, args: &serde_json::Value) -> Option<&'static str> {
+    match name {
+        deepagent_builtins::OFFICE_DOCX_CREATE_TOOL_NAME => Some("docx"),
+        deepagent_builtins::OFFICE_XLSX_CREATE_TOOL_NAME => Some("xlsx"),
+        deepagent_builtins::OFFICE_READ_TOOL_NAME => {
+            let path = args.get("path").and_then(|v| v.as_str())?;
+            office_skill_for_path(path)
+        }
+        _ => None,
+    }
+}
+
+fn office_skill_for_path(path: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "doc" | "docx" => Some("docx"),
+        "xls" | "xlsx" | "xlsm" | "csv" | "tsv" => Some("xlsx"),
+        "ppt" | "pptx" => Some("pptx"),
+        "pdf" => Some("pdf"),
+        _ => None,
+    }
+}
 
 impl ChatService {
     /// Build a chat service over the shared DB, settings, model transport, and
@@ -364,6 +623,7 @@ impl ChatService {
             projects: None,
             knowledge: None,
             project_map: None,
+            office: None,
             cost: None,
             tool_results_dir,
             plan_modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -371,6 +631,7 @@ impl ChatService {
             discovered_tools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             skills: None,
             skill_catalog_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            invoked_skills: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -418,6 +679,13 @@ impl ChatService {
     /// tools for the active project.
     pub fn with_project_map(mut self, project_map: Arc<ProjectMapService>) -> Self {
         self.project_map = Some(project_map);
+        self
+    }
+
+    /// Attach an [`OfficeService`] so runs expose the `office_*` read/generate
+    /// tools (read docx/xlsx/pptx/pdf; create docx/xlsx) for the agent.
+    pub fn with_office(mut self, office: Arc<OfficeService>) -> Self {
+        self.office = Some(office);
         self
     }
 
@@ -737,30 +1005,32 @@ impl ChatService {
                     "off"
                 };
                 let settings = self.settings.view()?;
-                let (configured, chat_model, thinking_depth) = settings
+                let (configured, chat_model, thinking_depth, web_search) = settings
                     .as_ref()
                     .map(|s| {
                         (
                             s.configured,
                             s.chat_model.as_str(),
                             s.thinking_depth.as_str(),
+                            web_search_summary(&s.web_search),
                         )
                     })
-                    .unwrap_or((false, "(not initialized)", "medium"));
+                    .unwrap_or((false, "(not initialized)", "medium", "default".to_string()));
                 let approval = self.settings.approval_policy()?.label();
                 format!(
-                    "Status:\n- project: {}\n- configured: {}\n- chat model: {}\n- thinking: {}\n- approvals: {}\n- plan mode: {}",
+                    "Status:\n- project: {}\n- configured: {}\n- chat model: {}\n- thinking: {}\n- approvals: {}\n- web search: {}\n- plan mode: {}",
                     root.display(),
                     configured,
                     chat_model,
                     thinking_depth,
                     approval,
+                    web_search,
                     plan
                 )
             }
             SlashAction::Settings => match self.settings.view()? {
                 Some(s) => format!(
-                    "Settings:\n- configured: {}\n- api key: {}\n- base URL: {}\n- chat model: {}\n- reasoner model: {}\n- thinking: {}\n- approvals: {}\n- available models: {}",
+                    "Settings:\n- configured: {}\n- api key: {}\n- base URL: {}\n- chat model: {}\n- reasoner model: {}\n- thinking: {}\n- approvals: {}\n- web search: {}\n- available models: {}",
                     s.configured,
                     s.api_key_masked,
                     s.base_url,
@@ -768,6 +1038,7 @@ impl ChatService {
                     s.reasoner_model,
                     s.thinking_depth,
                     s.approval_policy,
+                    web_search_summary(&s.web_search),
                     if s.available_models.is_empty() {
                         "(none)".to_string()
                     } else {
@@ -1077,6 +1348,56 @@ impl ChatService {
         }
     }
 
+    #[cfg(feature = "web")]
+    fn register_web_tools(&self, registry: &mut ToolRegistry) -> Result<()> {
+        use crate::settings::WebSearchProvider;
+        use deepagent_builtins::{ReqwestWebClient, WebFetchTool, WebSearchTool};
+
+        registry.register(Arc::new(WebFetchTool::new(ReqwestWebClient::new())))?;
+        let settings = self.settings.web_search_settings()?;
+        if !settings.enabled {
+            return Ok(());
+        }
+
+        let (deepseek, searxng_url) = match settings.provider {
+            WebSearchProvider::DeepSeekFirst => (
+                self.deepseek_web_search_config(),
+                configured_searxng_url(settings.searxng_url),
+            ),
+            WebSearchProvider::Searxng => (None, configured_searxng_url(settings.searxng_url)),
+            WebSearchProvider::DuckDuckGo => (None, None),
+        };
+        registry.register(Arc::new(WebSearchTool::new(
+            ReqwestWebClient::with_search_config(deepseek, searxng_url),
+        )))?;
+        Ok(())
+    }
+
+    #[cfg(feature = "web")]
+    fn deepseek_web_search_config(&self) -> Option<deepagent_builtins::DeepSeekWebSearchConfig> {
+        use deepagent_builtins::DeepSeekWebSearchConfig;
+
+        let api_key = self.settings.api_key().ok().flatten()?;
+        if api_key.trim().is_empty() {
+            return None;
+        }
+        let settings = self.settings.load().ok().flatten();
+        let base_url = settings
+            .as_ref()
+            .map(|s| s.catalog.base_url.clone())
+            .unwrap_or_else(|| "https://api.deepseek.com".to_string());
+        let model = std::env::var("DEEPAGENT_DEEPSEEK_WEB_SEARCH_MODEL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                settings
+                    .as_ref()
+                    .map(|s| s.catalog.chat_model.clone())
+                    .filter(|s| !s.trim().is_empty())
+            })?;
+        Some(DeepSeekWebSearchConfig::new(api_key, base_url, model))
+    }
+
     /// Build the tool registry with the built-ins confined to `root`.
     ///
     /// Includes `ask_user_question` (wired to a headless-safe responder), the
@@ -1101,7 +1422,7 @@ impl ChatService {
         let todo_store = register_builtins(&mut registry, config)?;
         // Network web tools (web_fetch / web_search) when built with `web`.
         #[cfg(feature = "web")]
-        deepagent_builtins::register_web_tools(&mut registry)?;
+        self.register_web_tools(&mut registry)?;
 
         // Interactive tool (Claude-Code parity): surfaces multiple-choice
         // questions to the user. Wired to DeclineResponder here (headless-safe);
@@ -1145,6 +1466,20 @@ impl ChatService {
             registry.register(Arc::new(CodeGraphImpactTool::new(backend.clone())))?;
             registry.register(Arc::new(CodeGraphNodeTool::new(backend.clone())))?;
             registry.register(Arc::new(CodeGraphLocateTool::new(backend)))?;
+        }
+        #[cfg(feature = "runtimes")]
+        {
+            if let Some(office) = &self.office {
+                use deepagent_builtins::{
+                    OfficeDocxCreateTool, OfficeReadTool, OfficeXlsxCreateTool,
+                };
+                let backend = OfficeToolBackend {
+                    service: office.clone(),
+                };
+                registry.register(Arc::new(OfficeReadTool::new(backend.clone())))?;
+                registry.register(Arc::new(OfficeDocxCreateTool::new(backend.clone())))?;
+                registry.register(Arc::new(OfficeXlsxCreateTool::new(backend)))?;
+            }
         }
 
         Ok((registry, todo_store))
@@ -1198,6 +1533,38 @@ impl ChatService {
             )))?;
         }
         Ok(())
+    }
+
+    fn office_skill_guard_hook(
+        &self,
+        session_id: &str,
+        prior_events: &[deepagent_core::event::Event],
+    ) -> Result<Option<OfficeSkillGuardHook>> {
+        if self.office.is_none() {
+            return Ok(None);
+        }
+        let Some(skills) = &self.skills else {
+            return Ok(None);
+        };
+        let enforce_skills: std::collections::HashSet<String> = {
+            let svc = skills
+                .lock()
+                .map_err(|_| CoreError::invalid("skills service mutex poisoned"))?;
+            ["docx", "xlsx", "pptx", "pdf"]
+                .into_iter()
+                .filter(|id| svc.manager().registry().contains(id))
+                .map(str::to_string)
+                .collect()
+        };
+        if enforce_skills.is_empty() {
+            return Ok(None);
+        }
+        let hook = OfficeSkillGuardHook::new(self.invoked_skills.clone(), enforce_skills);
+        hook.seed_session(
+            session_id,
+            collect_invoked_skill_ids_from_events(prior_events),
+        );
+        Ok(Some(hook))
     }
 
     /// Build a model client for the given role from persisted settings + the
@@ -1613,6 +1980,13 @@ impl ChatService {
             HookPoint::BeforeToolUse,
             Arc::new(deepagent_builtins::PlanModeHook::new(plan.clone())),
         );
+        if let Some(office_skill_guard) =
+            self.office_skill_guard_hook(&session_id_str, &prior_events)?
+        {
+            let hook: Arc<dyn Hook> = Arc::new(office_skill_guard);
+            hooks.register(HookPoint::BeforeToolUse, hook.clone());
+            hooks.register(HookPoint::AfterToolUse, hook);
+        }
         if !rules.is_empty() {
             hooks.register(
                 HookPoint::BeforeToolUse,
@@ -1733,6 +2107,11 @@ impl ChatService {
                 system_prompt.push_str("\n\n");
                 system_prompt.push_str(&crate::system_reminder::wrap(&block));
             }
+            let invoked = collect_invoked_skill_records_from_events(&prior_events);
+            if let Some(block) = invoked_skills_reminder(&invoked) {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&crate::system_reminder::wrap(&block));
+            }
         }
         let knowledge_reminder = self
             .knowledge
@@ -1760,10 +2139,13 @@ impl ChatService {
 
         let verification_policy = self.settings.verification_policy().unwrap_or_default();
 
+        let mut per_tool_max_tokens = std::collections::BTreeMap::new();
+        per_tool_max_tokens.insert(deepagent_builtins::SKILL_TOOL_NAME.to_string(), 24_000);
         let config = RuntimeConfig {
             permissions: granted,
             tool_result_budget: deepagent_runtime::ToolResultBudgetConfig {
                 output_dir: self.tool_results_dir.clone(),
+                per_tool_max_tokens,
                 ..Default::default()
             },
             tool_result_decorator: Some(Arc::new(
@@ -2170,6 +2552,177 @@ fn collect_discovered_tools_from_events(events: &[deepagent_core::event::Event])
         }
     }
     out
+}
+
+fn collect_invoked_skill_ids_from_events(
+    events: &[deepagent_core::event::Event],
+) -> std::collections::HashSet<String> {
+    let mut pending: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut invoked = std::collections::HashSet::new();
+    for event in events {
+        match &event.payload {
+            EventPayload::ToolCallRequested { call }
+                if call.name == deepagent_builtins::SKILL_TOOL_NAME =>
+            {
+                if let Some(id) = call
+                    .arguments
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    pending.insert(call.id.clone(), id.to_string());
+                }
+            }
+            EventPayload::ToolCallCompleted { call_id, ok, .. } if *ok => {
+                if let Some(id) = pending.remove(call_id) {
+                    invoked.insert(id);
+                }
+            }
+            _ => {}
+        }
+    }
+    invoked
+}
+
+fn collect_invoked_skill_records_from_events(
+    events: &[deepagent_core::event::Event],
+) -> Vec<InvokedSkillRecord> {
+    let mut pending: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut index_by_id: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut records = Vec::new();
+
+    for event in events {
+        match &event.payload {
+            EventPayload::ToolCallRequested { call }
+                if call.name == deepagent_builtins::SKILL_TOOL_NAME =>
+            {
+                if let Some(id) = call
+                    .arguments
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    pending.insert(call.id.clone(), id.to_string());
+                }
+            }
+            EventPayload::ToolCallCompleted {
+                call_id,
+                ok,
+                output,
+                ..
+            } if *ok => {
+                let Some(requested_id) = pending.remove(call_id) else {
+                    continue;
+                };
+                let Some(record) = invoked_skill_record_from_output(&requested_id, output) else {
+                    continue;
+                };
+                if let Some(index) = index_by_id.get(&record.id).copied() {
+                    records[index] = record;
+                } else {
+                    index_by_id.insert(record.id.clone(), records.len());
+                    records.push(record);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    records
+}
+
+fn invoked_skill_record_from_output(
+    requested_id: &str,
+    output: &serde_json::Value,
+) -> Option<InvokedSkillRecord> {
+    let body = output
+        .get("body")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let id = output
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(requested_id)
+        .to_string();
+    let name = output
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&id)
+        .to_string();
+    let base_dir = output
+        .get("base_dir")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let resources = output
+        .get("resources")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(InvokedSkillRecord {
+        id,
+        name,
+        body,
+        base_dir,
+        resources,
+    })
+}
+
+fn invoked_skills_reminder(records: &[InvokedSkillRecord]) -> Option<String> {
+    if records.is_empty() {
+        return None;
+    }
+
+    let mut out = String::from(
+        "The following skills have already been invoked in this session. Continue following these instructions. Do not re-invoke a listed skill unless you need fresh arguments or updated resources.\n\n<invoked-skills>\n",
+    );
+    for record in records {
+        out.push_str("\n### Skill: ");
+        out.push_str(&record.name);
+        if record.id != record.name {
+            out.push_str(" (`");
+            out.push_str(&record.id);
+            out.push_str("`)");
+        }
+        out.push('\n');
+        if let Some(base_dir) = &record.base_dir {
+            out.push_str("Base directory: ");
+            out.push_str(base_dir);
+            out.push('\n');
+        }
+        if !record.resources.is_empty() {
+            out.push_str("Resources:\n");
+            for resource in &record.resources {
+                out.push_str("- ");
+                out.push_str(resource);
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+        out.push_str(&record.body);
+        out.push_str("\n");
+    }
+    out.push_str("\n</invoked-skills>");
+    Some(out)
 }
 
 /// Render the dynamic-section "available deferred tools" block.
@@ -2782,6 +3335,30 @@ mod tests {
             .is_none());
     }
 
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    async fn disabled_web_search_settings_omit_web_search_tool() {
+        let (_db, settings, dir) = seeded().await;
+        settings
+            .set_web_search_settings(crate::settings::WebSearchSettings {
+                enabled: false,
+                ..Default::default()
+            })
+            .unwrap();
+        let chat = ChatService::new(_db, settings, chat_transport(), dir.path());
+        let (registry, _todo_store) = chat
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full)
+            .unwrap();
+        assert!(
+            registry.get("web_fetch").is_some(),
+            "web_fetch remains available for known URLs"
+        );
+        assert!(
+            registry.get("web_search").is_none(),
+            "web_search should honor the persisted disabled setting"
+        );
+    }
+
     #[test]
     fn passive_block_renders_as_system_reminder_in_user_prompt() {
         // Phase 3C: passive knowledge injection no longer touches the system
@@ -3246,6 +3823,145 @@ mod tests {
             ),
         ];
         assert!(collect_discovered_tools_from_events(&events).is_empty());
+    }
+
+    #[test]
+    fn collect_invoked_skill_ids_restores_successful_skill_calls() {
+        let events = vec![
+            ev(
+                0,
+                EventPayload::ToolCallRequested {
+                    call: deepagent_core::message::ToolCall {
+                        id: "skill-1".into(),
+                        name: deepagent_builtins::SKILL_TOOL_NAME.into(),
+                        arguments: serde_json::json!({"id": "docx"}),
+                    },
+                },
+            ),
+            ev(
+                1,
+                EventPayload::ToolCallCompleted {
+                    call_id: "skill-1".into(),
+                    ok: true,
+                    output: serde_json::json!({"id": "docx"}),
+                    duration_ms: 1,
+                },
+            ),
+            ev(
+                2,
+                EventPayload::ToolCallRequested {
+                    call: deepagent_core::message::ToolCall {
+                        id: "skill-2".into(),
+                        name: deepagent_builtins::SKILL_TOOL_NAME.into(),
+                        arguments: serde_json::json!({"id": "xlsx"}),
+                    },
+                },
+            ),
+            ev(
+                3,
+                EventPayload::ToolCallCompleted {
+                    call_id: "skill-2".into(),
+                    ok: false,
+                    output: serde_json::json!({"error": "missing"}),
+                    duration_ms: 1,
+                },
+            ),
+        ];
+        let invoked = collect_invoked_skill_ids_from_events(&events);
+        assert!(invoked.contains("docx"));
+        assert!(!invoked.contains("xlsx"));
+    }
+
+    #[test]
+    fn collect_invoked_skill_records_restores_bodies() {
+        let events = vec![
+            ev(
+                0,
+                EventPayload::ToolCallRequested {
+                    call: deepagent_core::message::ToolCall {
+                        id: "skill-1".into(),
+                        name: deepagent_builtins::SKILL_TOOL_NAME.into(),
+                        arguments: serde_json::json!({"id": "docx"}),
+                    },
+                },
+            ),
+            ev(
+                1,
+                EventPayload::ToolCallCompleted {
+                    call_id: "skill-1".into(),
+                    ok: true,
+                    output: serde_json::json!({
+                        "id": "docx",
+                        "name": "docx",
+                        "body": "Follow DOCX rules.",
+                        "base_dir": "C:/skills/docx",
+                        "resources": ["references/style.md"]
+                    }),
+                    duration_ms: 1,
+                },
+            ),
+            ev(
+                2,
+                EventPayload::ToolCallRequested {
+                    call: deepagent_core::message::ToolCall {
+                        id: "skill-2".into(),
+                        name: deepagent_builtins::SKILL_TOOL_NAME.into(),
+                        arguments: serde_json::json!({"id": "xlsx"}),
+                    },
+                },
+            ),
+            ev(
+                3,
+                EventPayload::ToolCallCompleted {
+                    call_id: "skill-2".into(),
+                    ok: false,
+                    output: serde_json::json!({"id": "xlsx", "body": "ignore"}),
+                    duration_ms: 1,
+                },
+            ),
+        ];
+
+        let records = collect_invoked_skill_records_from_events(&events);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "docx");
+        assert_eq!(records[0].body, "Follow DOCX rules.");
+        let reminder = invoked_skills_reminder(&records).unwrap();
+        assert!(reminder.contains("<invoked-skills>"));
+        assert!(reminder.contains("Follow DOCX rules."));
+        assert!(reminder.contains("references/style.md"));
+    }
+
+    #[tokio::test]
+    async fn office_skill_guard_blocks_docx_until_skill_invoked() {
+        let session_id = deepagent_core::id::SessionId::new();
+        let mut enforce = std::collections::HashSet::new();
+        enforce.insert("docx".to_string());
+        let hook = OfficeSkillGuardHook::new(
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            enforce,
+        );
+
+        let before_docx = deepagent_hooks::HookContext::new(
+            session_id,
+            HookPoint::BeforeToolUse,
+            HookData::before_tool(
+                deepagent_builtins::OFFICE_DOCX_CREATE_TOOL_NAME,
+                serde_json::json!({"outPath": "report.docx"}),
+            ),
+        );
+        assert!(hook.run(&before_docx).await.unwrap().is_deny());
+
+        let after_skill = deepagent_hooks::HookContext::new(
+            session_id,
+            HookPoint::AfterToolUse,
+            HookData::after_tool(
+                deepagent_builtins::SKILL_TOOL_NAME,
+                serde_json::json!({"id": "docx"}),
+                true,
+            ),
+        );
+        assert_eq!(hook.run(&after_skill).await.unwrap(), HookOutcome::Continue);
+        assert_eq!(hook.run(&before_docx).await.unwrap(), HookOutcome::Continue);
     }
 
     #[test]

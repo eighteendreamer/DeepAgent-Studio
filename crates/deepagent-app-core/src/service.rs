@@ -263,6 +263,7 @@ impl AppService {
                         status: "running".to_string(),
                         duration_ms: None,
                         detail: None,
+                        output: None,
                     });
                     tool_pos.insert(call.id.clone(), (idx, part_idx));
                 }
@@ -275,8 +276,10 @@ impl AppService {
                     if let Some(&(idx, part_idx)) = tool_pos.get(call_id) {
                         if let Some(ConversationPartDto::Tool {
                             status,
+                            name,
                             duration_ms: dm,
                             detail,
+                            output: tool_output,
                             ..
                         }) = messages[idx].parts.get_mut(part_idx)
                         {
@@ -286,7 +289,8 @@ impl AppService {
                                 "error".to_string()
                             };
                             *dm = Some(*duration_ms);
-                            *detail = Some(summarize_output(output));
+                            *detail = Some(summarize_output_for_tool(name, output));
+                            *tool_output = Some(output.clone());
                         }
                     }
                 }
@@ -396,6 +400,55 @@ fn project_display_name(path: &str) -> String {
     crate::project_service::folder_name(path)
 }
 
+fn summarize_output_for_tool(tool_name: &str, output: &serde_json::Value) -> String {
+    if tool_name == "web_search" {
+        return summarize_web_search_output(output);
+    }
+    summarize_output(output)
+}
+
+fn summarize_web_search_output(output: &serde_json::Value) -> String {
+    if let Some(e) = output.get("error").and_then(|v| v.as_str()) {
+        return e.to_string();
+    }
+    let provider = output
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let count = output
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            output
+                .get("results")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len() as u64)
+        })
+        .unwrap_or(0);
+    let attempts = output
+        .get("attempts")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let provider = item.get("provider").and_then(|v| v.as_str())?;
+                    let ok = item.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                    Some(format!("{provider}:{}", if ok { "ok" } else { "failed" }))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|s| !s.is_empty());
+
+    match attempts {
+        Some(attempts) => {
+            format!("web_search: {provider} returned {count} result(s); attempts: {attempts}")
+        }
+        None => format!("web_search: {provider} returned {count} result(s)"),
+    }
+}
+
 /// Summarize a tool's JSON output into a short one-line detail string for the
 /// replayed tool card (mirrors the frontend's live `summarize`).
 fn summarize_output(output: &serde_json::Value) -> String {
@@ -490,6 +543,72 @@ mod tests {
         for w in detail.timeline.windows(2) {
             assert!(w[0].sequence < w[1].sequence);
         }
+    }
+
+    #[test]
+    fn session_conversation_preserves_web_search_output_metadata() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::ToolCall;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let sid;
+        {
+            let mut s = Session::create(&db, &clock, Some("search")).unwrap();
+            sid = s.id().to_string();
+            s.append(EventPayload::ToolCallRequested {
+                call: ToolCall {
+                    id: "search-1".into(),
+                    name: "web_search".into(),
+                    arguments: serde_json::json!({"query": "deepseek web search", "limit": 2}),
+                },
+            })
+            .unwrap();
+            s.append(EventPayload::ToolCallCompleted {
+                call_id: "search-1".into(),
+                ok: true,
+                output: serde_json::json!({
+                    "query": "deepseek web search",
+                    "provider": "searxng",
+                    "count": 1,
+                    "results": [{
+                        "title": "DeepSeek",
+                        "url": "https://deepseek.com",
+                        "snippet": "result"
+                    }],
+                    "attempts": [
+                        {"provider": "deepseek", "ok": false, "error": "not enabled"},
+                        {"provider": "searxng", "ok": true, "count": 1}
+                    ]
+                }),
+                duration_ms: 42,
+            })
+            .unwrap();
+        }
+
+        let svc = AppService::new(db);
+        let conversation = svc.session_conversation(&sid).unwrap();
+        let tool = conversation
+            .iter()
+            .flat_map(|message| message.parts.iter())
+            .find_map(|part| match part {
+                ConversationPartDto::Tool {
+                    name,
+                    detail,
+                    output,
+                    ..
+                } if name == "web_search" => Some((detail, output)),
+                _ => None,
+            })
+            .expect("web_search tool card");
+
+        let detail = tool.0.as_deref().unwrap_or_default();
+        assert!(detail.contains("searxng returned 1 result"));
+        assert!(detail.contains("deepseek:failed"));
+        let output = tool.1.as_ref().expect("raw output");
+        assert_eq!(output["provider"], "searxng");
+        assert_eq!(output["attempts"][0]["provider"], "deepseek");
+        assert_eq!(output["attempts"][1]["ok"], true);
     }
 
     #[test]

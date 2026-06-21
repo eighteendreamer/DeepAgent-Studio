@@ -11,10 +11,13 @@ import { FilesPlugin } from "./plugins/FilesPlugin";
 import { SideChatPlugin } from "./plugins/SideChatPlugin";
 import { BrowserPlugin } from "./plugins/BrowserPlugin";
 import { TerminalPlugin } from "./plugins/TerminalPlugin";
+import { RecordingPlugin } from "./plugins/RecordingPlugin";
+import { FilePreviewPlugin } from "./plugins/FilePreviewPlugin";
 import { ProjectMapPanel, ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
+import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
-import { projectMapRefreshDeep, projectMapStatus, runTerminal } from "../api";
+import { projectMapRefreshDeep, projectMapStatus, runTerminal, SEND_TO_CHAT_EVENT } from "../api";
 
 interface Props {
   messages: ChatMessage[];
@@ -51,7 +54,7 @@ interface Props {
   projectMapOpenSignal?: number;
 }
 
-export type PluginType = "none" | "files" | "chat" | "browser" | "terminal" | "project_map";
+export type PluginType = "none" | "files" | "chat" | "browser" | "terminal" | "project_map" | "recording" | "file_preview";
 
 export type Tab = {
   id: string;
@@ -82,6 +85,14 @@ type EnvironmentPanelState = {
   ghAvailable: boolean | null;
 };
 
+type OfficeContextView = {
+  type: string;
+  title?: string;
+  meta: Array<{ label: string; value: string }>;
+  body?: string;
+  prompt: string;
+};
+
 const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
 const PROJECT_MAP_TAB_ID = "project-map";
 
@@ -91,6 +102,8 @@ export const TOOL_CARDS: { icon: IconProp; title: string; desc: string; type: Pl
   { icon: ["fas", "globe"], title: "browser", desc: "browserDesc", type: "browser" },
   { icon: ["fas", "terminal"], title: "terminal", desc: "terminalDesc", type: "terminal" },
   { icon: ["fas", "share-nodes"], title: "project_map", desc: "projectMapDesc", type: "project_map" },
+  { icon: ["fas", "microphone"], title: "recording", desc: "recordingDesc", type: "recording" },
+  { icon: ["far", "file-lines"], title: "file_preview", desc: "filePreviewDesc", type: "file_preview" },
 ];
 
 /// Count the number of lines in `s`, treating an empty string as 0 lines and
@@ -323,6 +336,247 @@ function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
   // Cap at 15 — enough to surface a turn's worth of output without crowding
   // the floating panel.
   return items.slice(0, 15);
+}
+
+const OFFICE_FIELD_LABELS = [
+  "类型",
+  "当前预览文件",
+  "文件类型",
+  "路径",
+  "已导出",
+  "内容",
+  "提取内容摘要",
+];
+
+function parseOfficeContextMessage(content: string): OfficeContextView | null {
+  const match = content.match(/<office-context>\s*([\s\S]*?)\s*<\/office-context>\s*([\s\S]*)/);
+  if (!match) return null;
+
+  const fields = parseOfficeFields(match[1].trim());
+  const type = fields.get("类型") || fields.get("文件类型") || "办公上下文";
+  const title = fields.get("当前预览文件");
+  const body = fields.get("内容") || fields.get("提取内容摘要");
+  const meta = Array.from(fields.entries())
+    .filter(([label]) => !["类型", "当前预览文件", "内容", "提取内容摘要"].includes(label))
+    .map(([label, value]) => ({ label, value }));
+
+  return {
+    type,
+    title,
+    meta,
+    body,
+    prompt: match[2].trim(),
+  };
+}
+
+function parseOfficeFields(context: string): Map<string, string> {
+  const compactFields = parseCompactOfficeFields(context);
+  if (!context.includes("\n") && compactFields.size > 0) {
+    return compactFields;
+  }
+
+  const fields = new Map<string, string>();
+  const lines = context.replace(/\r\n/g, "\n").split("\n");
+  let current: string | null = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const label = OFFICE_FIELD_LABELS.find((candidate) => line.startsWith(`${candidate}:`));
+    if (label) {
+      current = label;
+      fields.set(label, line.slice(label.length + 1).trim());
+      continue;
+    }
+    if (current) {
+      const prev = fields.get(current) ?? "";
+      fields.set(current, prev ? `${prev}\n${line}` : line.trim());
+    }
+  }
+
+  if (fields.size > 0) return fields;
+
+  // Also tolerate a compact one-line payload copied from an old plain bubble.
+  return compactFields;
+}
+
+function parseCompactOfficeFields(context: string): Map<string, string> {
+  const fields = new Map<string, string>();
+  const hits: Array<{ label: string; start: number; valueStart: number }> = [];
+
+  for (const label of OFFICE_FIELD_LABELS) {
+    const needle = `${label}:`;
+    let start = context.indexOf(needle);
+    while (start >= 0) {
+      hits.push({ label, start, valueStart: start + needle.length });
+      start = context.indexOf(needle, start + needle.length);
+    }
+  }
+
+  hits.sort((a, b) => a.start - b.start);
+  for (let i = 0; i < hits.length; i++) {
+    const hit = hits[i];
+    const end = hits[i + 1]?.start ?? context.length;
+    const value = context.slice(hit.valueStart, end).trim();
+    if (value) fields.set(hit.label, value);
+  }
+
+  return fields;
+}
+
+function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => toast.success("已复制"))
+      .catch(() => fallbackCopyText(text));
+    return;
+  }
+  fallbackCopyText(text);
+}
+
+function fallbackCopyText(text: string) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+    toast.success("已复制");
+  } catch {
+    toast.error("复制失败");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
+function UserTurn({
+  message,
+  busy,
+  onResend,
+}: {
+  message: ChatMessage;
+  busy: boolean;
+  onResend: (text: string) => void;
+}) {
+  const office = parseOfficeContextMessage(message.content);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+
+  const submitEdit = () => {
+    const text = draft.trim();
+    if (!text || busy) return;
+    setEditing(false);
+    onResend(text);
+  };
+
+  return (
+    <div className="flex flex-col items-end mb-8 w-full max-w-4xl mx-auto group">
+      {editing ? (
+        <div className="w-full max-w-[80%] rounded-2xl rounded-tr-sm bg-gray-100 p-3">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            className="min-h-[120px] w-full resize-y rounded-xl border border-border-theme bg-white px-3 py-2 text-[14px] leading-relaxed text-text-base outline-none focus:border-primary/60"
+            autoFocus
+          />
+          <div className="mt-2 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setDraft(message.content);
+                setEditing(false);
+              }}
+              className="rounded-lg px-3 py-1.5 text-[12px] text-text-secondary hover:bg-white"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={submitEdit}
+              disabled={busy || !draft.trim()}
+              className="rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+            >
+              重发
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-gray-100 text-text-base px-4 py-3 rounded-2xl rounded-tr-sm text-[15px] max-w-[80%]">
+          {office ? <OfficeContextBubble office={office} /> : message.content}
+        </div>
+      )}
+      {!editing && (
+        <div className="flex text-text-secondary mt-2 space-x-3 text-sm opacity-0 group-hover:opacity-100 transition-opacity w-full justify-end">
+          <button
+            type="button"
+            title="复制"
+            aria-label="复制"
+            onClick={() => copyText(message.content)}
+            className="hover:text-text-base"
+          >
+            <FontAwesomeIcon icon={["far", "copy"]} />
+          </button>
+          <button
+            type="button"
+            title="编辑后重发"
+            aria-label="编辑后重发"
+            onClick={() => setEditing(true)}
+            disabled={busy}
+            className="hover:text-text-base disabled:opacity-40"
+          >
+            <FontAwesomeIcon icon={["fas", "pen"]} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OfficeContextBubble({ office }: { office: OfficeContextView }) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-2 rounded-xl bg-white/55 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2 text-[14px] leading-relaxed">
+          <span className="inline-flex shrink-0 items-center rounded-md bg-blue-50 px-2 py-1 text-[13px] font-semibold text-primary">
+            <FontAwesomeIcon icon={["far", "file-lines"]} className="mr-1.5 text-[12px]" />
+            {office.type}
+          </span>
+          {office.title && (
+            <span className="font-medium text-text-base">
+              {office.title}
+            </span>
+          )}
+          {office.body && (
+            <span className="whitespace-pre-wrap break-words text-text-base">
+              {office.body}
+            </span>
+          )}
+        </div>
+
+        {office.meta.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {office.meta.map((item) => (
+              <span
+                key={`${item.label}-${item.value}`}
+                className="inline-flex max-w-full items-center rounded-md bg-white/80 px-2 py-0.5 text-[12px] text-text-secondary"
+              >
+                <span className="mr-1 shrink-0">{item.label}</span>
+                <span className="truncate text-text-base">{item.value}</span>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {office.prompt && (
+        <div className="border-t border-white/70 pt-2 text-[14px] leading-relaxed text-text-base">
+          {office.prompt}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function normalizeBrowserUrl(input: string): string {
@@ -578,6 +832,18 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     window.addEventListener(PROJECT_MAP_OPEN_EVENT, onOpen);
     return () => window.removeEventListener(PROJECT_MAP_OPEN_EVENT, onOpen);
   }, [openProjectMapSidebar]);
+
+  // Office-agent panels (file preview / recording) inject messages into the
+  // active chat via this event — routed through the normal send path so the
+  // turn respects the model's context budget and approval flow.
+  useEffect(() => {
+    const onSendToChat = (e: Event) => {
+      const text = (e as CustomEvent<string>).detail;
+      if (typeof text === "string" && text.trim()) onSend(text);
+    };
+    window.addEventListener(SEND_TO_CHAT_EVENT, onSendToChat);
+    return () => window.removeEventListener(SEND_TO_CHAT_EVENT, onSendToChat);
+  }, [onSend]);
 
   useEffect(() => {
     if (!isProjectMapMenuOpen) return;
@@ -890,15 +1156,15 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
           )}
           {messages.map((m, i) =>
             m.role === "user" ? (
-              <div key={i} className="flex flex-col items-end mb-8 w-full max-w-4xl mx-auto group">
-                <div className="bg-gray-100 text-text-base px-4 py-2.5 rounded-2xl rounded-tr-sm text-[15px] max-w-[80%]">
-                  {m.content}
-                </div>
-                <div className="flex text-text-secondary mt-2 space-x-3 text-sm opacity-0 group-hover:opacity-100 transition-opacity w-full justify-end">
-                  <FontAwesomeIcon icon={["far", "copy"]} className="cursor-pointer hover:text-text-base" />
-                  <FontAwesomeIcon icon={["fas", "pen"]} className="cursor-pointer hover:text-text-base" />
-                </div>
-              </div>
+              <UserTurn
+                key={i}
+                message={m}
+                busy={busy}
+                onResend={(text) => {
+                  if (busy) return;
+                  onSend(text);
+                }}
+              />
             ) : (
               <AssistantTurn
                 key={i}
@@ -1041,6 +1307,8 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
             )}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "terminal" && <TerminalPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} onStatusChange={setMapStatus} />}
+            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "recording" && <RecordingPlugin />}
+            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "file_preview" && <FilePreviewPlugin />}
           </div>
         </div>
       )}
@@ -1144,6 +1412,8 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
             )}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "terminal" && <TerminalPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} onStatusChange={setMapStatus} />}
+            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "recording" && <RecordingPlugin />}
+            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "file_preview" && <FilePreviewPlugin />}
           </div>
         </div>
         </>

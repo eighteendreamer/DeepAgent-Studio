@@ -154,6 +154,76 @@ impl VerificationPolicy {
     }
 }
 
+/// Preferred backend for the `web_search` tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchProvider {
+    /// Use DeepSeek server web-search first, then configured fallbacks.
+    #[default]
+    DeepSeekFirst,
+    /// Use the configured SearXNG bridge first, then DuckDuckGo.
+    Searxng,
+    /// Use DuckDuckGo HTML only.
+    DuckDuckGo,
+}
+
+impl WebSearchProvider {
+    /// Stable wire label.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            WebSearchProvider::DeepSeekFirst => "deepseek_first",
+            WebSearchProvider::Searxng => "searxng",
+            WebSearchProvider::DuckDuckGo => "duckduckgo",
+        }
+    }
+
+    /// Parse from a wire string.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "deepseek_first" | "deepseek" => Some(Self::DeepSeekFirst),
+            "searxng" => Some(Self::Searxng),
+            "duckduckgo" => Some(Self::DuckDuckGo),
+            _ => None,
+        }
+    }
+}
+
+/// Persisted, non-secret configuration for `web_search`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchSettings {
+    /// Whether the `web_search` tool is registered for chat runs.
+    #[serde(default = "default_web_search_enabled")]
+    pub enabled: bool,
+    /// Preferred provider chain.
+    #[serde(default)]
+    pub provider: WebSearchProvider,
+    /// Optional SearXNG base URL, for example `https://search.example.com`.
+    #[serde(default)]
+    pub searxng_url: Option<String>,
+}
+
+impl Default for WebSearchSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_web_search_enabled(),
+            provider: WebSearchProvider::default(),
+            searxng_url: None,
+        }
+    }
+}
+
+fn default_web_search_enabled() -> bool {
+    true
+}
+
+fn normalize_web_search_settings(mut settings: WebSearchSettings) -> WebSearchSettings {
+    settings.searxng_url = settings
+        .searxng_url
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty());
+    settings
+}
+
 /// Persisted, **non-secret** application settings (safe to store on disk).
 /// The API key is intentionally absent — it lives in the [`SecretStore`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +253,9 @@ pub struct AppSettings {
     /// flip the tool result's `ok` flag to drive automatic retry.
     #[serde(default)]
     pub verification_policy: VerificationPolicy,
+    /// Web search provider settings. Defaults to DeepSeek-first.
+    #[serde(default)]
+    pub web_search: WebSearchSettings,
     /// Tool-search / lazy-tool-loading mode (tool-search spec).
     /// Decides whether deferrable tools (MCP + `should_defer == true`) are
     /// hidden from each request's `tools` array until discovered through the
@@ -256,6 +329,8 @@ pub struct SettingsView {
     pub sandbox_mode: String,
     /// Current DeepSeek Thinking Mode depth (simple / medium / deep).
     pub thinking_depth: String,
+    /// Current web-search settings.
+    pub web_search: WebSearchSettings,
 }
 
 /// One per-currency balance row exposed to the UI.
@@ -370,6 +445,10 @@ impl SettingsService {
             verification_policy: prior
                 .as_ref()
                 .map(|s| s.verification_policy)
+                .unwrap_or_default(),
+            web_search: prior
+                .as_ref()
+                .map(|s| s.web_search.clone())
                 .unwrap_or_default(),
             tool_search_mode: prior
                 .as_ref()
@@ -512,6 +591,21 @@ impl SettingsService {
             .load()?
             .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
         settings.verification_policy = policy;
+        self.save(&settings)?;
+        Ok(())
+    }
+
+    /// Current web-search settings (default DeepSeek-first when uninitialized).
+    pub fn web_search_settings(&self) -> Result<WebSearchSettings> {
+        Ok(self.load()?.map(|s| s.web_search).unwrap_or_default())
+    }
+
+    /// Persist web-search settings.
+    pub fn set_web_search_settings(&self, settings_next: WebSearchSettings) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.web_search = normalize_web_search_settings(settings_next);
         self.save(&settings)?;
         Ok(())
     }
@@ -752,6 +846,7 @@ impl SettingsService {
             approval_policy: settings.approval_policy.label().to_string(),
             sandbox_mode: settings.sandbox_mode.label().to_string(),
             thinking_depth: settings.thinking_depth.label().to_string(),
+            web_search: settings.web_search.clone(),
         })
     }
 
@@ -930,6 +1025,44 @@ mod tests {
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
+    #[tokio::test]
+    async fn web_search_settings_default_and_round_trip() {
+        let (svc, _) = service();
+        let view = svc.initialize("sk-abcd1234").await.unwrap();
+        assert!(view.web_search.enabled);
+        assert_eq!(view.web_search.provider, WebSearchProvider::DeepSeekFirst);
+        assert!(view.web_search.searxng_url.is_none());
+
+        svc.set_web_search_settings(WebSearchSettings {
+            enabled: true,
+            provider: WebSearchProvider::Searxng,
+            searxng_url: Some(" https://search.example.com/ ".into()),
+        })
+        .unwrap();
+        let persisted = svc.web_search_settings().unwrap();
+        assert_eq!(persisted.provider, WebSearchProvider::Searxng);
+        assert_eq!(
+            persisted.searxng_url.as_deref(),
+            Some("https://search.example.com")
+        );
+
+        let refreshed = svc.refresh_models().await.unwrap();
+        assert_eq!(refreshed.web_search.provider, WebSearchProvider::Searxng);
+        assert_eq!(
+            refreshed.web_search.searxng_url.as_deref(),
+            Some("https://search.example.com")
+        );
+    }
+
+    #[test]
+    fn web_search_settings_set_before_initialize_errors() {
+        let (svc, _) = service();
+        let err = svc
+            .set_web_search_settings(WebSearchSettings::default())
+            .unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
     // ---- Skill marketplace settings (R10) ---------------------------------
 
     #[tokio::test]
@@ -1052,6 +1185,9 @@ mod tests {
         assert_eq!(parsed.skill_catalog_char_budget, 8_000);
         assert!(parsed.skill_install_ai_review_enabled);
         assert!(parsed.skill_install_ai_review_model.is_none());
+        assert!(parsed.web_search.enabled);
+        assert_eq!(parsed.web_search.provider, WebSearchProvider::DeepSeekFirst);
+        assert!(parsed.web_search.searxng_url.is_none());
     }
 
     #[tokio::test]
@@ -1067,6 +1203,7 @@ mod tests {
 
         let persisted = svc.load().unwrap().unwrap();
         let json = serde_json::to_string(&persisted).unwrap();
+        assert!(json.contains("\"web_search\""));
         assert!(json.contains("\"skill_catalog_enabled\":true"));
         assert!(json.contains("\"skill_catalog_char_budget\":123"));
         assert!(json.contains("\"skill_install_ai_review_enabled\":true"));
@@ -1156,6 +1293,7 @@ mod tests {
             permission_rules: PermissionRules::default(),
             hooks_json: String::new(),
             verification_policy: VerificationPolicy::default(),
+            web_search: WebSearchSettings::default(),
             tool_search_mode: deepagent_builtins::ToolSearchMode::default(),
             tool_search_auto_threshold_chars: None,
             skill_catalog_enabled: default_skill_catalog_enabled(),

@@ -177,6 +177,7 @@ fn settings_default() -> AppSettings {
         hooks_json: String::new(),
         thinking_depth: Default::default(),
         verification_policy: Default::default(),
+        web_search: Default::default(),
         tool_search_mode: Default::default(),
         tool_search_auto_threshold_chars: None,
         skill_catalog_enabled: true,
@@ -448,12 +449,12 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
     // subsequent turns).
     let prompt1 = render_turn_system_prompt(&mut state, svc.manager().registry(), &settings);
     assert!(
-        !prompt1.contains("<available-skills>"),
-        "turn-1 prompt MUST NOT carry the catalog reminder again; got:\n{prompt1}"
+        prompt1.contains("<available-skills>"),
+        "turn-1 prompt MUST keep carrying the catalog reminder; got:\n{prompt1}"
     );
     assert!(
-        !prompt1.contains("- built-in-alpha:"),
-        "turn-1 prompt MUST NOT re-list built-in-alpha; got:\n{prompt1}"
+        prompt1.contains("- built-in-alpha:"),
+        "turn-1 prompt MUST keep listing built-in-alpha; got:\n{prompt1}"
     );
     let CannedAssistant::Content = llm.take_turn(&prompt1) else {
         panic!("script[1] must be Content (turn-1 finalizes)");
@@ -538,12 +539,12 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
         "turn-3 reminder MUST announce the newly-installed marketplace-charlie; got:\n{prompt3}"
     );
     assert!(
-        !prompt3.contains("- built-in-alpha:"),
-        "turn-3 reminder MUST NOT re-announce already-sent built-in-alpha; got:\n{prompt3}"
+        prompt3.contains("- built-in-alpha:"),
+        "turn-3 reminder MUST still include built-in-alpha; got:\n{prompt3}"
     );
     assert!(
-        !prompt3.contains("- user-bravo:"),
-        "turn-3 reminder MUST NOT re-announce already-sent user-bravo; got:\n{prompt3}"
+        prompt3.contains("- user-bravo:"),
+        "turn-3 reminder MUST still include user-bravo; got:\n{prompt3}"
     );
     assert!(
         !prompt3.contains("- user-secret:"),

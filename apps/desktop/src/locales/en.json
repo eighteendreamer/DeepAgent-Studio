@@ -681,7 +681,11 @@
       "browser": "Browser",
       "browserDesc": "Open website",
       "terminal": "Terminal",
-      "terminalDesc": "Launch interactive shell"
+      "terminalDesc": "Launch interactive shell",
+      "recording": "Recording",
+      "recordingDesc": "Meeting recording & transcription",
+      "file_preview": "File Preview",
+      "file_previewDesc": "Preview office documents"
     },
     "chat": "Chat",
     "pinChat": "Pin Chat",
@@ -950,6 +954,42 @@
     "terminal": {
       "copyright": "Copyright (C) Microsoft Corporation. All rights reserved.",
       "tryNew": "Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows"
+    },
+    "filePreview": {
+      "choose": "Choose file",
+      "loading": "Loading preview…",
+      "empty": "Choose a file to preview it here",
+      "unsupported": "Preview is not supported for this file type",
+      "imageUnavailable": "Image could not be loaded",
+      "noSheets": "No sheets found",
+      "truncated": "Content truncated for preview",
+      "truncatedRows": "(first rows shown)",
+      "sendToChat": "Send to chat"
+    },
+    "recording": {
+      "title": "Recording",
+      "idle": "Ready to record",
+      "recording": "Recording",
+      "paused": "Paused",
+      "transcribing": "Transcribing…",
+      "done": "Done",
+      "error": "Error",
+      "start": "Start",
+      "pause": "Pause",
+      "resume": "Resume",
+      "stop": "Stop",
+      "transcribe": "Transcribe",
+      "generateMinutes": "Generate minutes",
+      "modelNeededTitle": "Speech model required",
+      "modelNeededDesc": "Transcription needs the Whisper model. It downloads into the app's own folder and is verified before use.",
+      "downloadModel": "Download model",
+      "downloading": "Downloading…",
+      "transcript": "Transcript",
+      "noSpeech": "No speech detected",
+      "minutes": "Meeting minutes",
+      "exportWord": "Export Word",
+      "exportedTo": "Saved to",
+      "sendToChat": "Send to chat"
     }
   },
   "commandPalette": {

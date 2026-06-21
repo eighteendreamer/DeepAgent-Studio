@@ -19,17 +19,22 @@ pub mod cost_service;
 pub mod diff;
 pub mod doctor;
 pub mod dto;
+pub mod file_preview_service;
 pub mod knowledge_service;
 pub mod mcp_service;
+pub mod office_service;
 pub mod plan_mode_reminder;
 pub mod project_map_service;
 pub mod project_service;
+pub mod recording_service;
+pub mod runtime_service;
 pub mod secret_store;
 pub mod service;
 pub mod session_state_service;
 pub mod settings;
 pub mod skill_catalog_reminder;
 pub mod skills_service;
+pub mod speech_service;
 pub mod system_prompt;
 pub mod system_reminder;
 pub mod terminal_service;
@@ -47,32 +52,42 @@ pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
 pub use doctor::{format_diagnostics, run_diagnostics, DiagStatus, DiagnosticResult};
 pub use dto::{
     ApprovalRequestDto, ArchiveProjectResultDto, ArchivedConversationDto, CommandDto,
-    ConversationMessageDto, ConversationPartDto, ConversationUsageDto, ForkResultDto, ProjectDto,
-    RewindResultDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto, TerminalResultDto,
-    TimelineEntryDto, TranscriptDto, WorkspaceInfoDto,
+    ConversationMessageDto, ConversationPartDto, ConversationUsageDto, ForkResultDto,
+    PdfRenderResultDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, RecordingSessionDto,
+    RewindResultDto, RuntimeProgressDto, RuntimeStatusDto, SessionDetailDto, SessionStatsDto,
+    SessionSummaryDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto, TranscriptDto,
+    TranscriptSegmentDto, WorkspaceInfoDto,
 };
+pub use file_preview_service::FilePreviewService;
 pub use knowledge_service::{
     KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, KnowledgeServiceBackend,
 };
 pub use mcp_service::{McpServerDto, McpService};
+pub use office_service::{markdown_to_docspec, DocBlock, DocSpec, OfficeService};
 pub use project_map_service::{
     ProjectMapEdgeDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto,
     ProjectMapNeighborDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
     ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
 };
 pub use project_service::{folder_name, ProjectService};
+pub use recording_service::{AudioRecorder, RecordingService, UnavailableRecorder};
+pub use runtime_service::{
+    default_registry, ArchiveKind, Downloader, Platform, RuntimeArtifact, RuntimeEntry,
+    RuntimeService, UnavailableDownloader,
+};
 pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore};
 pub use service::AppService;
 pub use session_state_service::SessionStateService;
 pub use settings::{
     AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, SandboxMode, SettingsService,
-    SettingsView, VerificationPolicy,
+    SettingsView, VerificationPolicy, WebSearchProvider, WebSearchSettings,
 };
 pub use skill_catalog_reminder::SkillCatalogSendState;
 pub use skills_service::{
     ai_security_review, parse_verdict, AiReviewResult, ReviewDepth, SkillActivationDto, SkillDto,
     SkillsService, AI_SECURITY_REVIEW_SYSTEM_PROMPT,
 };
+pub use speech_service::{SpeechService, TranscriptionEngine, UnavailableEngine};
 
 // Re-export marketplace types from `deepagent-skills` so the desktop Tauri
 // layer can plumb the SkillsMP client handle into `AppState` without taking a

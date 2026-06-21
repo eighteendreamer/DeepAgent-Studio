@@ -45,13 +45,14 @@ import { ChatView } from "./components/ChatView";
 import { SearchModal } from "./components/SearchModal";
 import { SkillsView } from "./components/SkillsView";
 import { KnowledgeView } from "./components/KnowledgeView";
+import { PluginsView } from "./components/PluginsView";
 import { AutomationView } from "./components/AutomationView";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { SettingsSidebar } from "./components/SettingsSidebar";
 import { SettingsView } from "./components/SettingsView";
 import { message } from "./components/message";
 
-type View = "start" | "chat" | "skills" | "knowledge" | "automation" | "settings";
+type View = "start" | "chat" | "skills" | "knowledge" | "plugins" | "automation" | "settings";
 
 interface SessionCompletedPayload {
   run_id: string;
@@ -218,6 +219,7 @@ export function App() {
                       : "running",
                   durationMs: p.duration_ms ?? undefined,
                   detail: p.detail ?? undefined,
+                  output: p.output ?? undefined,
                 },
               };
             }
@@ -646,6 +648,7 @@ export function App() {
                 status: patch.status ?? "running",
                 durationMs: patch.durationMs,
                 detail: patch.detail,
+                output: patch.output,
               },
             });
           }
@@ -740,11 +743,37 @@ export function App() {
       };
 
       // Summarize a tool's JSON output into a short one-line detail string.
-      const summarize = (output: unknown): string => {
+      const summarizeWebSearch = (output: Record<string, unknown>): string => {
+        if (typeof output.error === "string") return output.error.slice(0, 200);
+        const provider = typeof output.provider === "string" ? output.provider : "unknown";
+        const count =
+          typeof output.count === "number"
+            ? output.count
+            : Array.isArray(output.results)
+            ? output.results.length
+            : 0;
+        const attempts = Array.isArray(output.attempts)
+          ? output.attempts
+              .map((item) => {
+                if (!item || typeof item !== "object") return null;
+                const attempt = item as Record<string, unknown>;
+                const name = typeof attempt.provider === "string" ? attempt.provider : null;
+                if (!name) return null;
+                return `${name}:${attempt.ok === true ? "ok" : "failed"}`;
+              })
+              .filter(Boolean)
+              .join(", ")
+          : "";
+        const suffix = attempts ? `; attempts: ${attempts}` : "";
+        return `web_search: ${provider} returned ${count} result(s)${suffix}`;
+      };
+
+      const summarize = (toolName: string, output: unknown): string => {
         if (output == null) return "";
         if (typeof output === "string") return output.slice(0, 200);
         try {
           const o = output as Record<string, unknown>;
+          if (toolName === "web_search") return summarizeWebSearch(o);
           if (typeof o.error === "string") return o.error.slice(0, 200);
           if (Array.isArray(o.results)) return `${o.results.length} result(s)`;
           if (typeof o.count === "number") return `${o.count} result(s)`;
@@ -812,7 +841,8 @@ export function App() {
               status: event.ok ? "ok" : "error",
               durationMs:
                 typeof event.duration_ms === "number" ? event.duration_ms : undefined,
-              detail: summarize(event.output),
+              detail: summarize(String(event.name ?? "tool"), event.output),
+              output: event.output,
             });
             break;
           case "tool_blocked":
@@ -1037,8 +1067,14 @@ export function App() {
                 onRenameProject={onRenameProject}
                 onArchiveProject={onArchiveProject}
                 onOpenSearch={() => setIsSearchOpen(true)}
+                activeSurface={
+                  view === "skills" || view === "knowledge" || view === "plugins" || view === "automation"
+                    ? view
+                    : null
+                }
                 onOpenSkills={() => navigateTo(activeId, "skills")}
                 onOpenKnowledge={() => navigateTo(activeId, "knowledge")}
+                onOpenPlugins={() => navigateTo(activeId, "plugins")}
                 onOpenAutomation={() => navigateTo(activeId, "automation")}
                 onOpenSettings={() => navigateTo(activeId, "settings")}
                 onLogout={onLogout}
@@ -1142,6 +1178,18 @@ export function App() {
                 className="w-full h-full flex flex-col"
               >
                 <KnowledgeView />
+              </motion.div>
+            )}
+            {view === "plugins" && (
+              <motion.div
+                key="plugins"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+                className="w-full h-full flex flex-col"
+              >
+                <PluginsView />
               </motion.div>
             )}
             {view === "automation" && (

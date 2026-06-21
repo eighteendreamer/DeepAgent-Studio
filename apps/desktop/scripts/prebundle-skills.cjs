@@ -2,12 +2,13 @@
 /**
  * prebundle-skills.cjs
  *
- * Copies the 7 in-repo skills from `<repo>/.deepagent/skills/` into
+ * Copies the in-repo skills from `<repo>/.deepagent/skills/` into
  * `apps/desktop/src-tauri/resources/skills/` (Tauri resources tree),
- * normalizing three different on-disk layouts into a uniform shape so the
+ * normalizing several on-disk layouts into a uniform shape so the
  * Rust-side `discover_recursive` loader can pick them up.
  *
  * Layouts handled:
+ *   0. Flat (`<id>/SKILL.md`)                → copy as-is (docx/pdf/pptx/xlsx)
  *   1. Double-shell (`<id>/<id>/SKILL.md`)  → unwrap to `<id>/SKILL.md`
  *   2. Nested skills (`superpowers/skills/<sub>/SKILL.md`) → keep tree,
  *      strip project-management chrome at the outer dir
@@ -361,6 +362,15 @@ function main() {
   fs.mkdirSync(DEST_ROOT, { recursive: true });
 
   const summary = [];
+
+  // Flat office skills (`<id>/SKILL.md`) — docx/pdf/pptx/xlsx. These ship as
+  // both Tier C generation knowledge and the Tier R script backend.
+  const flatIds = ['docx', 'pdf', 'pptx', 'xlsx'];
+  for (const id of flatIds) {
+    if (!fs.existsSync(path.join(SOURCE_ROOT, id))) continue;
+    const action = unwrapDoubleShell(id, SOURCE_ROOT, DEST_ROOT);
+    if (action) summary.push(`  - ${id} (${action})`);
+  }
 
   // 5 double-shell skills.
   const doubleShellIds = [

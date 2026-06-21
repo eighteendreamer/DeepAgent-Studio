@@ -33,6 +33,13 @@ import type {
   ProjectMapOverview,
   ProjectMapRefresh,
   ProjectMapStatus,
+  PreviewMetadata,
+  PreviewResult,
+  PdfRenderResult,
+  RecordingSession,
+  RuntimeProgress,
+  RuntimeStatus,
+  TranscriptSegment,
   RewindResult,
   ScanResult,
   SessionDetail,
@@ -45,12 +52,21 @@ import type {
   TestKeyResult,
   Transcript,
   WorkspaceInfo,
+  WebSearchSettings,
 } from "./types";
 
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
 export const SETTINGS_CHANGED_EVENT = "deepagent:settings-changed";
 export const ARCHIVE_CHANGED_EVENT = "deepagent:archive-changed";
+/** Fired by office-agent panels to inject a message into the active chat. */
+export const SEND_TO_CHAT_EVENT = "deepagent:send-to-chat";
+
+/** Dispatch text to be sent as a chat message (handled by ChatView). */
+export function sendToChat(text: string): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<string>(SEND_TO_CHAT_EVENT, { detail: text }));
+}
 
 export type SandboxMode = "read_only" | "workspace_write" | "full_access";
 
@@ -861,6 +877,26 @@ export async function setToolSearchThreshold(
   throw new Error("changing tool-search threshold requires the desktop app");
 }
 
+// ---- web-search provider settings ----------------------------------------
+
+export async function getWebSearchSettings(): Promise<WebSearchSettings> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<WebSearchSettings>("get_web_search_settings");
+  return { enabled: true, provider: "deepseek_first", searxng_url: null };
+}
+
+export async function setWebSearchSettings(
+  settings: WebSearchSettings,
+): Promise<WebSearchSettings> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const value = await invoke<WebSearchSettings>("set_web_search_settings", { settings });
+    emitSettingsChanged();
+    return value;
+  }
+  return settings;
+}
+
 // ---- MCP servers (visual config) ------------------------------------------
 
 export async function listMcpServers(): Promise<McpServer[]> {
@@ -1268,6 +1304,212 @@ export async function pickProjectFolder(): Promise<string | null> {
   });
   if (typeof selected === "string") return selected;
   return null;
+}
+
+// ---- file preview (office-agent) ------------------------------------------
+
+/**
+ * Open the OS-native "open file" dialog filtered to previewable office/text
+ * file types, returning the chosen absolute path or null if cancelled. Only
+ * available inside the desktop app.
+ */
+export async function pickPreviewFile(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const mod = await import("@tauri-apps/plugin-dialog");
+  const selected = await mod.open({
+    directory: false,
+    multiple: false,
+    title: "Select a file to preview",
+    filters: [
+      {
+        name: "Office / Text / Image",
+        extensions: [
+          "docx", "xlsx", "pptx", "pdf",
+          "txt", "md", "json", "csv", "tsv", "log", "yaml", "yml", "toml", "xml",
+          "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg",
+        ],
+      },
+    ],
+  });
+  if (typeof selected === "string") return selected;
+  return null;
+}
+
+/** Read metadata (name / ext / size / classified kind) for a file. */
+export async function previewGetMetadata(path: string): Promise<PreviewMetadata> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<PreviewMetadata>("preview_get_metadata", { path });
+  throw new Error("file preview requires the desktop app");
+}
+
+/** Open a file for preview: returns metadata + extracted content (text/sheets). */
+export async function previewOpenFile(path: string): Promise<PreviewResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<PreviewResult>("preview_open_file", { path });
+  throw new Error("file preview requires the desktop app");
+}
+
+/** Extract a previewable representation of a file (text/xlsx sheets). */
+export async function previewExtractText(path: string): Promise<PreviewResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<PreviewResult>("preview_extract_text", { path });
+  throw new Error("file preview requires the desktop app");
+}
+
+/** Read an image file as a base64 data URL for direct display in the webview. */
+export async function previewReadDataUrl(path: string): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("preview_read_data_url", { path });
+  throw new Error("file preview requires the desktop app");
+}
+
+/** Render PDF pages (Tier C degrades to text; pdfium adds page images). */
+export async function previewRenderPages(path: string): Promise<PdfRenderResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<PdfRenderResult>("preview_render_pages", { path });
+  throw new Error("file preview requires the desktop app");
+}
+
+// ---- recording (office-agent) ---------------------------------------------
+
+export async function audioListInputDevices(): Promise<string[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string[]>("audio_list_input_devices");
+  return [];
+}
+
+export async function audioStartRecording(name: string): Promise<RecordingSession> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RecordingSession>("audio_start_recording", { name });
+  throw new Error("recording requires the desktop app");
+}
+
+export async function audioPauseRecording(sessionId: string): Promise<RecordingSession> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RecordingSession>("audio_pause_recording", { sessionId });
+  throw new Error("recording requires the desktop app");
+}
+
+export async function audioResumeRecording(sessionId: string): Promise<RecordingSession> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RecordingSession>("audio_resume_recording", { sessionId });
+  throw new Error("recording requires the desktop app");
+}
+
+export async function audioStopRecording(sessionId: string): Promise<RecordingSession> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RecordingSession>("audio_stop_recording", { sessionId });
+  throw new Error("recording requires the desktop app");
+}
+
+// ---- speech (office-agent) ------------------------------------------------
+
+/** Transcribe a recorded WAV to timestamped segments. */
+export async function speechTranscribeFile(wavPath: string): Promise<TranscriptSegment[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<TranscriptSegment[]>("speech_transcribe_file", { wavPath });
+  throw new Error("transcription requires the desktop app");
+}
+
+/** Whether a speech model is installed (decide whether to prompt a download). */
+export async function speechModelInstalled(): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("speech_model_installed");
+  return false;
+}
+
+/** Whether the local whisper.cpp sidecar engine is installed. */
+export async function speechEngineInstalled(): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("speech_engine_installed");
+  return false;
+}
+
+/** Generate a structured Markdown meeting-minutes document from a transcript. */
+export async function speechGenerateMeetingMinutes(transcript: string): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("speech_generate_meeting_minutes", { transcript });
+  throw new Error("meeting minutes requires the desktop app");
+}
+
+// ---- office documents (office-agent) --------------------------------------
+
+/** Read readable text from an office/text file (Tier C, pure Rust). */
+export async function officeReadText(path: string): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("office_read_text", { path });
+  throw new Error("office read requires the desktop app");
+}
+
+/** Create a .docx from Markdown at an explicit path; returns the path. */
+export async function officeCreateDocxFromMarkdown(
+  markdown: string,
+  title: string | null,
+  outPath: string
+): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<string>("office_create_docx_from_markdown", { markdown, title, outPath });
+  throw new Error("office docx generation requires the desktop app");
+}
+
+/** Export Markdown meeting-minutes to a .docx in the recordings folder. */
+export async function officeExportMinutesDocx(markdown: string): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("office_export_minutes_docx", { markdown });
+  throw new Error("minutes export requires the desktop app");
+}
+
+// ---- managed runtimes (office-agent) --------------------------------------
+
+/** List all known managed runtimes and their install status. */
+export async function runtimeList(): Promise<RuntimeStatus[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RuntimeStatus[]>("runtime_list");
+  return [];
+}
+
+export async function runtimeStatus(id: string): Promise<RuntimeStatus | null> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RuntimeStatus | null>("runtime_status", { id });
+  return null;
+}
+
+/**
+ * Download + verify + install a managed runtime into the app's own dir.
+ * High-risk (downloads + writes a binary/model) — call only after explicit
+ * user consent. Progress arrives via the `runtime:progress` event; subscribe
+ * with {@link runtimeProgressSubscribe}.
+ */
+export async function runtimeInstall(id: string): Promise<RuntimeStatus> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RuntimeStatus>("runtime_install", { id });
+  throw new Error("runtime install requires the desktop app");
+}
+
+export async function runtimeCancel(id: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("runtime_cancel", { id });
+}
+
+export async function runtimeUninstall(id: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("runtime_uninstall", { id });
+  return false;
+}
+
+/** Subscribe to `runtime:progress` events for a runtime id. Returns an
+ *  unlisten function. */
+export async function runtimeProgressSubscribe(
+  id: string,
+  onProgress: (p: RuntimeProgress) => void
+): Promise<() => void> {
+  if (!isTauri()) return () => {};
+  const mod = await import("@tauri-apps/api/event");
+  const unlisten = await mod.listen<RuntimeProgress>("runtime:progress", (event) => {
+    if (event.payload && event.payload.id === id) onProgress(event.payload);
+  });
+  return () => unlisten();
 }
 
 function mockMcpServers(): McpServer[] {

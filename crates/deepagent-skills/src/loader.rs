@@ -144,7 +144,7 @@ pub fn load_skill_dir(dir: impl AsRef<Path>, origin: SkillOrigin) -> Result<Opti
 
     let Some(mut skill) = Skill::from_frontmatter(id, &fm, origin) else {
         return Err(CoreError::invalid(format!(
-            "{} is missing required 'name'/'description' frontmatter",
+            "{} is empty or missing a usable description/body",
             skill_md.display()
         )));
     };
@@ -266,18 +266,35 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         // Missing description → invalid, skipped.
-        write(
-            &root.join("bad").join("SKILL.md"),
-            "---\nname: Bad\n---\nbody",
-        );
+        write(&root.join("bad").join("SKILL.md"), "---\nname: Bad\n---\n");
         // Valid one alongside.
         write(
             &root.join("good").join("SKILL.md"),
-            "---\nname: Good\ndescription: \"do good\"\n---\nbody",
+            "---\nname: Good\n---\nbody fallback",
         );
         let skills = discover(root, SkillOrigin::Workspace).unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].meta.id, "good");
+        assert_eq!(skills[0].meta.description, "body fallback");
+    }
+
+    #[test]
+    fn discover_accepts_skill_without_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            &root.join("meeting-notes").join("SKILL.md"),
+            "# Meeting Notes\n\nUse this when turning transcripts into minutes.",
+        );
+
+        let skills = discover(root, SkillOrigin::Workspace).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].meta.id, "meeting-notes");
+        assert_eq!(skills[0].meta.name, "meeting-notes");
+        assert_eq!(
+            skills[0].meta.description,
+            "Use this when turning transcripts into minutes."
+        );
     }
 
     #[test]

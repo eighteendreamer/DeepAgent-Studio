@@ -9,6 +9,8 @@ import { FilesPlugin } from "./plugins/FilesPlugin";
 import { SideChatPlugin } from "./plugins/SideChatPlugin";
 import { BrowserPlugin } from "./plugins/BrowserPlugin";
 import { TerminalPlugin } from "./plugins/TerminalPlugin";
+import { RecordingPlugin } from "./plugins/RecordingPlugin";
+import { FilePreviewPlugin } from "./plugins/FilePreviewPlugin";
 import { ProjectMapPanel } from "./project-map/ProjectMapPanel";
 import { Tab, TOOL_CARDS } from "./ChatView";
 
@@ -460,6 +462,8 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "chat" && <SideChatPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "browser" && <BrowserPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "terminal" && <TerminalPlugin />}
+            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "recording" && <RecordingPlugin />}
+            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "file_preview" && <FilePreviewPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} />}
           </div>
         </div>
@@ -561,6 +565,8 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "chat" && <SideChatPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "browser" && <BrowserPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "terminal" && <TerminalPlugin />}
+            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "recording" && <RecordingPlugin />}
+            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "file_preview" && <FilePreviewPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} />}
           </div>
         </div>

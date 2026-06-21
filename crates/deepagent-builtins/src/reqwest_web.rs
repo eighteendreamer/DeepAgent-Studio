@@ -16,11 +16,65 @@ use async_trait::async_trait;
 
 use deepagent_core::error::{CoreError, Result};
 
-use crate::web_tools::{SearchResult, WebClient};
+use crate::web_tools::{SearchAttempt, SearchResponse, SearchResult, WebClient};
+
+/// Configuration for DeepSeek's Anthropic-compatible server web-search tool.
+#[derive(Debug, Clone)]
+pub struct DeepSeekWebSearchConfig {
+    /// DeepSeek API key.
+    pub api_key: String,
+    /// DeepSeek base URL, usually `https://api.deepseek.com`.
+    pub base_url: String,
+    /// Model used to invoke hosted web search.
+    pub model: String,
+    /// Maximum server-side search uses for one call.
+    pub max_uses: usize,
+}
+
+impl DeepSeekWebSearchConfig {
+    /// Build a config. Empty base URLs fall back to DeepSeek's API endpoint;
+    /// the model is intentionally not defaulted here so the host can decide.
+    pub fn new(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        let base_url = base_url.into();
+        let model = model.into();
+        Self {
+            api_key: api_key.into(),
+            base_url: if base_url.trim().is_empty() {
+                "https://api.deepseek.com".to_string()
+            } else {
+                base_url
+            },
+            model: model.trim().to_string(),
+            max_uses: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum SearchProvider {
+    DeepSeek(DeepSeekWebSearchConfig),
+    Searxng { base_url: String },
+    DuckDuckGo,
+}
+
+impl SearchProvider {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::DeepSeek(_) => "deepseek",
+            Self::Searxng { .. } => "searxng",
+            Self::DuckDuckGo => "duckduckgo",
+        }
+    }
+}
 
 /// `reqwest`-backed web client with a fetch timeout.
 pub struct ReqwestWebClient {
     client: reqwest::Client,
+    search_providers: Vec<SearchProvider>,
 }
 
 impl Default for ReqwestWebClient {
@@ -32,6 +86,19 @@ impl Default for ReqwestWebClient {
 impl ReqwestWebClient {
     /// Build a client with a 30s timeout and a descriptive user agent.
     pub fn new() -> Self {
+        Self::with_search_config(deepseek_config_from_env(), searxng_url_from_env())
+    }
+
+    /// Build a client with an optional DeepSeek-first search provider.
+    pub fn with_deepseek_search(deepseek: Option<DeepSeekWebSearchConfig>) -> Self {
+        Self::with_search_config(deepseek, searxng_url_from_env())
+    }
+
+    /// Build a client with explicit search providers.
+    pub fn with_search_config(
+        deepseek: Option<DeepSeekWebSearchConfig>,
+        searxng_url: Option<String>,
+    ) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             // A browser-like UA so search/content endpoints return real HTML
@@ -42,7 +109,10 @@ impl ReqwestWebClient {
             )
             .build()
             .unwrap_or_default();
-        Self { client }
+        Self {
+            client,
+            search_providers: build_search_providers(deepseek, searxng_url),
+        }
     }
 }
 
@@ -80,6 +150,151 @@ impl WebClient for ReqwestWebClient {
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        Ok(self.search_response(query, limit).await?.results)
+    }
+
+    async fn search_response(&self, query: &str, limit: usize) -> Result<SearchResponse> {
+        let mut attempts = Vec::new();
+        for provider in &self.search_providers {
+            let provider_name = provider.name();
+            let result = match provider {
+                SearchProvider::DeepSeek(config) => {
+                    self.search_deepseek(config, query, limit).await
+                }
+                SearchProvider::Searxng { base_url } => {
+                    self.search_searxng(base_url, query, limit).await
+                }
+                SearchProvider::DuckDuckGo => self.search_duckduckgo(query, limit).await,
+            };
+            match result {
+                Ok(results) if !results.is_empty() => {
+                    attempts.push(SearchAttempt {
+                        provider: provider_name.to_string(),
+                        ok: true,
+                        count: Some(results.len()),
+                        error: None,
+                    });
+                    return Ok(SearchResponse {
+                        provider: provider_name.to_string(),
+                        results,
+                        attempts,
+                    });
+                }
+                Ok(_) => attempts.push(SearchAttempt {
+                    provider: provider_name.to_string(),
+                    ok: false,
+                    count: Some(0),
+                    error: Some("returned no results".to_string()),
+                }),
+                Err(e) => attempts.push(SearchAttempt {
+                    provider: provider_name.to_string(),
+                    ok: false,
+                    count: None,
+                    error: Some(e.to_string()),
+                }),
+            }
+        }
+        let errors = attempts
+            .iter()
+            .map(|attempt| {
+                format!(
+                    "{}: {}",
+                    attempt.provider,
+                    attempt
+                        .error
+                        .as_deref()
+                        .unwrap_or("returned no parseable results")
+                )
+            })
+            .collect::<Vec<_>>();
+        Err(CoreError::other(format!(
+            "all search providers failed: {}",
+            errors.join(" | ")
+        )))
+    }
+}
+
+impl ReqwestWebClient {
+    async fn search_deepseek(
+        &self,
+        config: &DeepSeekWebSearchConfig,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if config.api_key.trim().is_empty() {
+            return Err(CoreError::other("DeepSeek API key is empty"));
+        }
+        let endpoint = deepseek_anthropic_messages_endpoint(&config.base_url);
+        let body = serde_json::json!({
+            "model": config.model,
+            "max_tokens": 512,
+            "messages": [{
+                "role": "user",
+                "content": format!(
+                    "Search the web for this query and return the most relevant source results. Query: {query}"
+                )
+            }],
+            "tools": [{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": config.max_uses.clamp(1, 5)
+            }]
+        });
+        let resp = self
+            .client
+            .post(&endpoint)
+            .bearer_auth(config.api_key.trim())
+            .header("x-api-key", config.api_key.trim())
+            .header("anthropic-version", "2023-06-01")
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::ACCEPT, "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| CoreError::other(format!("DeepSeek web search request failed: {e}")))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let detail = resp.text().await.unwrap_or_default();
+            return Err(CoreError::other(format!(
+                "DeepSeek web search returned {status}: {detail}"
+            )));
+        }
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| CoreError::other(format!("reading DeepSeek search body failed: {e}")))?;
+        parse_deepseek_web_search_results(&text, limit)
+    }
+
+    async fn search_searxng(
+        &self,
+        base_url: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let url = format!("{}/search", base_url.trim_end_matches('/'));
+        let resp = self
+            .client
+            .get(&url)
+            .query(&[("q", query), ("format", "json")])
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|e| CoreError::other(format!("SearXNG request failed: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(CoreError::other(format!(
+                "SearXNG returned {}",
+                resp.status()
+            )));
+        }
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| CoreError::other(format!("reading SearXNG body failed: {e}")))?;
+        parse_searxng_results(&text, limit)
+    }
+
+    async fn search_duckduckgo(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         // DuckDuckGo's HTML endpoint needs no API key and returns server-rendered
         // result rows we can scrape. POSTing the query avoids some bot checks.
         let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
@@ -94,25 +309,178 @@ impl WebClient for ReqwestWebClient {
             .body(body)
             .send()
             .await
-            .map_err(|e| CoreError::other(format!("search request failed: {e}")))?;
+            .map_err(|e| CoreError::other(format!("DuckDuckGo request failed: {e}")))?;
         if !resp.status().is_success() {
             return Err(CoreError::other(format!(
-                "search returned {}",
+                "DuckDuckGo returned {}",
                 resp.status()
             )));
         }
         let html = resp
             .text()
             .await
-            .map_err(|e| CoreError::other(format!("reading search body failed: {e}")))?;
+            .map_err(|e| CoreError::other(format!("reading DuckDuckGo body failed: {e}")))?;
         let results = parse_ddg_results(&html, limit);
         if results.is_empty() {
             return Err(CoreError::other(
-                "search returned no parseable results (the provider may have changed its markup)",
+                "DuckDuckGo returned no parseable results (markup may have changed)",
             ));
         }
         Ok(results)
     }
+}
+
+fn build_search_providers(
+    deepseek: Option<DeepSeekWebSearchConfig>,
+    searxng_url: Option<String>,
+) -> Vec<SearchProvider> {
+    let mut providers = Vec::new();
+    if let Some(config) =
+        deepseek.filter(|c| !c.api_key.trim().is_empty() && !c.model.trim().is_empty())
+    {
+        providers.push(SearchProvider::DeepSeek(config));
+    }
+    if let Some(base_url) = searxng_url.filter(|s| !s.trim().is_empty()) {
+        providers.push(SearchProvider::Searxng { base_url });
+    }
+    providers.push(SearchProvider::DuckDuckGo);
+    providers
+}
+
+fn deepseek_config_from_env() -> Option<DeepSeekWebSearchConfig> {
+    let api_key =
+        env_value("DEEPAGENT_DEEPSEEK_API_KEY").or_else(|| env_value("DEEPSEEK_API_KEY"))?;
+    let base_url = env_value("DEEPAGENT_DEEPSEEK_BASE_URL")
+        .unwrap_or_else(|| "https://api.deepseek.com".to_string());
+    let model = env_value("DEEPAGENT_DEEPSEEK_WEB_SEARCH_MODEL")?;
+    Some(DeepSeekWebSearchConfig::new(api_key, base_url, model))
+}
+
+fn searxng_url_from_env() -> Option<String> {
+    env_value("DEEPAGENT_SEARXNG_URL").or_else(|| env_value("SEARXNG_URL"))
+}
+
+fn env_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn deepseek_anthropic_messages_endpoint(base_url: &str) -> String {
+    let base = env_value("DEEPAGENT_DEEPSEEK_ANTHROPIC_BASE_URL")
+        .unwrap_or_else(|| base_url.trim_end_matches('/').to_string());
+    let base = base.trim_end_matches('/');
+    if base.ends_with("/v1/messages") {
+        base.to_string()
+    } else if base.ends_with("/v1") {
+        format!("{base}/messages")
+    } else if base.ends_with("/anthropic") {
+        format!("{base}/v1/messages")
+    } else {
+        format!("{base}/anthropic/v1/messages")
+    }
+}
+
+fn parse_deepseek_web_search_results(body: &str, limit: usize) -> Result<Vec<SearchResult>> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| CoreError::other(format!("parsing DeepSeek search JSON failed: {e}")))?;
+    let mut results = Vec::new();
+    collect_deepseek_results(&value, limit, &mut results);
+    dedupe_results(&mut results);
+    results.truncate(limit);
+    if results.is_empty() {
+        return Err(CoreError::other(
+            "DeepSeek web search returned no parseable result rows",
+        ));
+    }
+    Ok(results)
+}
+
+fn collect_deepseek_results(value: &serde_json::Value, limit: usize, out: &mut Vec<SearchResult>) {
+    if out.len() >= limit {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            let is_search_result = map
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "web_search_result")
+                .unwrap_or(false);
+            if is_search_result {
+                if let Some(result) = result_from_json_object(map) {
+                    out.push(result);
+                }
+            }
+            for child in map.values() {
+                collect_deepseek_results(child, limit, out);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_deepseek_results(item, limit, out);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_searxng_results(body: &str, limit: usize) -> Result<Vec<SearchResult>> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| CoreError::other(format!("parsing SearXNG JSON failed: {e}")))?;
+    let mut results = value
+        .get("results")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_object())
+        .filter_map(result_from_json_object)
+        .collect::<Vec<_>>();
+    dedupe_results(&mut results);
+    results.truncate(limit);
+    if results.is_empty() {
+        return Err(CoreError::other("SearXNG returned no parseable results"));
+    }
+    Ok(results)
+}
+
+fn result_from_json_object(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<SearchResult> {
+    let url = json_string(map, &["url", "href", "link"])?;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return None;
+    }
+    let title = json_string(map, &["title", "name"]).unwrap_or_else(|| url.clone());
+    let snippet =
+        json_string(map, &["content", "snippet", "description", "page_age"]).unwrap_or_default();
+    Some(SearchResult {
+        title: title.trim().to_string(),
+        url,
+        snippet: snippet.trim().to_string(),
+    })
+}
+
+fn json_string(map: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        map.get(*key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+fn dedupe_results(results: &mut Vec<SearchResult>) {
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|r| seen.insert(r.url.clone()));
 }
 
 /// Parse DuckDuckGo HTML result rows into [`SearchResult`]s (best-effort).
@@ -392,5 +760,106 @@ mod tests {
     fn strip_tags_and_entities() {
         assert_eq!(strip_tags("a <b>bold</b> c"), "a bold c");
         assert_eq!(decode_entities("x &amp; y &#39;z&#39;"), "x & y 'z'");
+    }
+
+    #[test]
+    fn builds_deepseek_anthropic_endpoint() {
+        assert_eq!(
+            deepseek_anthropic_messages_endpoint("https://api.deepseek.com"),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+        assert_eq!(
+            deepseek_anthropic_messages_endpoint("https://api.deepseek.com/anthropic"),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+        assert_eq!(
+            deepseek_anthropic_messages_endpoint("https://proxy.example/v1"),
+            "https://proxy.example/v1/messages"
+        );
+    }
+
+    #[test]
+    fn parses_deepseek_web_search_tool_results() {
+        let body = r#"
+        {
+          "content": [
+            {
+              "type": "web_search_tool_result",
+              "content": [
+                {
+                  "type": "web_search_result",
+                  "title": "DeepSeek Docs",
+                  "url": "https://api-docs.deepseek.com/guides/anthropic_api",
+                  "page_age": "June 2026"
+                },
+                {
+                  "type": "web_search_result",
+                  "title": "Ignored duplicate",
+                  "url": "https://api-docs.deepseek.com/guides/anthropic_api"
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+        let results = parse_deepseek_web_search_results(body, 5).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "DeepSeek Docs");
+        assert_eq!(
+            results[0].url,
+            "https://api-docs.deepseek.com/guides/anthropic_api"
+        );
+        assert_eq!(results[0].snippet, "June 2026");
+    }
+
+    #[test]
+    fn parses_searxng_json_results() {
+        let body = r#"
+        {
+          "results": [
+            {
+              "title": "Rust",
+              "url": "https://www.rust-lang.org/",
+              "content": "A language empowering everyone."
+            },
+            {
+              "title": "Skip non-http",
+              "url": "ftp://example.com/file"
+            }
+          ]
+        }
+        "#;
+        let results = parse_searxng_results(body, 5).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust");
+        assert_eq!(results[0].snippet, "A language empowering everyone.");
+    }
+
+    #[test]
+    fn builds_provider_chain_in_deepseek_first_order() {
+        let providers = build_search_providers(
+            Some(DeepSeekWebSearchConfig::new(
+                "sk-test",
+                "https://api.deepseek.com",
+                "test-search-model",
+            )),
+            Some("https://search.example.com".to_string()),
+        );
+        let names: Vec<&str> = providers.iter().map(SearchProvider::name).collect();
+        assert_eq!(names, vec!["deepseek", "searxng", "duckduckgo"]);
+    }
+
+    #[test]
+    fn provider_chain_skips_deepseek_when_model_missing() {
+        let providers = build_search_providers(
+            Some(DeepSeekWebSearchConfig::new(
+                "sk-test",
+                "https://api.deepseek.com",
+                "",
+            )),
+            Some("https://search.example.com".to_string()),
+        );
+        let names: Vec<&str> = providers.iter().map(SearchProvider::name).collect();
+        assert_eq!(names, vec!["searxng", "duckduckgo"]);
     }
 }

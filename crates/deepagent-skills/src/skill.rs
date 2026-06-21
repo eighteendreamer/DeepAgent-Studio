@@ -146,18 +146,35 @@ pub struct Skill {
 }
 
 impl Skill {
-    /// Build a skill from parsed frontmatter, an id, and an origin. Returns
-    /// `None` if the mandatory `name`/`description` fields are absent.
+    /// Build a skill from parsed frontmatter, an id, and an origin.
+    ///
+    /// `name` and `description` are the preferred Claude/Codex-compatible
+    /// metadata fields, but they are not a hard requirement: hand-authored
+    /// skills should remain discoverable even when the header is incomplete.
+    /// Missing `name` falls back to the directory id; missing `description`
+    /// falls back to the first useful Markdown paragraph in the body.
+    /// Completely empty skills are ignored.
     pub fn from_frontmatter(
         id: impl Into<String>,
         fm: &Frontmatter,
         origin: SkillOrigin,
     ) -> Option<Self> {
-        let name = fm.get("name")?.to_string();
-        let description = fm.get("description")?.to_string();
-        if name.trim().is_empty() || description.trim().is_empty() {
+        let id = id.into();
+        let name = fm
+            .get("name")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| id.clone());
+        let description = fm
+            .get("description")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| first_markdown_paragraph(&fm.body));
+        let Some(description) = description else {
             return None;
-        }
+        };
         let triggers = extract_triggers(&description);
         // Accept both the canonical kebab-case key and the underscore variant
         // for compatibility with hand-edited SKILL.md files.
@@ -168,7 +185,7 @@ impl Skill {
             .unwrap_or(false);
         Some(Self {
             meta: SkillMeta {
-                id: id.into(),
+                id,
                 name,
                 description,
                 version: fm.get("version").map(|s| s.to_string()),
@@ -228,7 +245,77 @@ pub fn extract_triggers(description: &str) -> Vec<String> {
         }
     }
 
+    if triggers.is_empty() {
+        let fallback = description.trim().to_lowercase();
+        if fallback.len() >= 2 {
+            triggers.push(fallback);
+        }
+    }
+
     triggers
+}
+
+fn first_markdown_paragraph(body: &str) -> Option<String> {
+    let mut paragraph: Vec<String> = Vec::new();
+    let mut heading_fallback: Option<String> = None;
+    let mut in_fence = false;
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if trimmed.is_empty() {
+            if let Some(text) = finish_paragraph(&paragraph) {
+                return Some(text);
+            }
+            paragraph.clear();
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            if heading_fallback.is_none() {
+                heading_fallback = clean_heading(trimmed);
+            }
+            if let Some(text) = finish_paragraph(&paragraph) {
+                return Some(text);
+            }
+            paragraph.clear();
+            continue;
+        }
+        if trimmed.starts_with('|') {
+            if let Some(text) = finish_paragraph(&paragraph) {
+                return Some(text);
+            }
+            paragraph.clear();
+            continue;
+        }
+        paragraph.push(trimmed.to_string());
+    }
+
+    finish_paragraph(&paragraph).or(heading_fallback)
+}
+
+fn finish_paragraph(lines: &[String]) -> Option<String> {
+    let text = lines.join(" ");
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+
+fn clean_heading(line: &str) -> Option<String> {
+    let text = line.trim_start_matches('#').trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -255,7 +342,26 @@ mod tests {
     #[test]
     fn missing_fields_yields_none() {
         let fm = frontmatter::parse("---\nname: Only Name\n---\nbody");
-        assert!(Skill::from_frontmatter("x", &fm, SkillOrigin::Workspace).is_none());
+        let skill = Skill::from_frontmatter("x", &fm, SkillOrigin::Workspace).unwrap();
+        assert_eq!(skill.meta.name, "Only Name");
+        assert_eq!(skill.meta.description, "body");
+    }
+
+    #[test]
+    fn missing_frontmatter_uses_id_and_first_body_paragraph() {
+        let fm = frontmatter::parse(
+            "# Meeting Notes\n\nUse this skill to make minutes.\n\nMore detail.",
+        );
+        let skill = Skill::from_frontmatter("meeting-notes", &fm, SkillOrigin::Workspace).unwrap();
+        assert_eq!(skill.meta.name, "meeting-notes");
+        assert_eq!(skill.meta.description, "Use this skill to make minutes.");
+        assert_eq!(skill.triggers, vec!["use this skill to make minutes."]);
+    }
+
+    #[test]
+    fn empty_skill_without_description_is_ignored() {
+        let fm = frontmatter::parse("---\nname: Empty\n---\n");
+        assert!(Skill::from_frontmatter("empty", &fm, SkillOrigin::Workspace).is_none());
     }
 
     #[test]
@@ -267,9 +373,12 @@ mod tests {
     }
 
     #[test]
-    fn no_quotes_yields_no_triggers() {
+    fn no_quotes_uses_description_as_fallback_trigger() {
         let triggers = extract_triggers("A plain description without any quoted phrases.");
-        assert!(triggers.is_empty());
+        assert_eq!(
+            triggers,
+            vec!["a plain description without any quoted phrases."]
+        );
     }
 
     #[test]

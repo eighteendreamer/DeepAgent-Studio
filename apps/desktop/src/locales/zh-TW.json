@@ -553,7 +553,11 @@
       "browser": "瀏覽器",
       "browserDesc": "開啟網站",
       "terminal": "終端機",
-      "terminalDesc": "啟動互動式 Shell"
+      "terminalDesc": "啟動互動式 Shell",
+      "recording": "錄音",
+      "recordingDesc": "會議錄音與轉寫",
+      "file_preview": "檔案預覽",
+      "file_previewDesc": "預覽辦公文件"
     },
     "chat": "對話",
     "pinChat": "釘選對話",

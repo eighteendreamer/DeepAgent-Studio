@@ -84,6 +84,8 @@ export interface ToolCall {
   durationMs?: number;
   /** Short result/error summary once completed. */
   detail?: string;
+  /** Raw tool output, when available, for richer tool cards. */
+  output?: unknown;
 }
 
 /** One ordered segment of an assistant turn, in the order it streamed in. */
@@ -105,6 +107,7 @@ export type ConversationPart =
       status: string;
       duration_ms: number | null;
       detail: string | null;
+      output?: unknown | null;
     };
 
 /** A reconstructed conversation message (mirrors ConversationMessageDto). */
@@ -269,6 +272,15 @@ export interface SettingsView {
   approval_policy: string;
   sandbox_mode: "read_only" | "workspace_write" | "full_access";
   thinking_depth: "simple" | "medium" | "deep";
+  web_search: WebSearchSettings;
+}
+
+export type WebSearchProvider = "deepseek_first" | "searxng" | "duckduckgo";
+
+export interface WebSearchSettings {
+  enabled: boolean;
+  provider: WebSearchProvider;
+  searxng_url: string | null;
 }
 
 /** A project folder in the sidebar (mirrors deepagent-app-core::ProjectDto). */
@@ -580,4 +592,88 @@ export interface SkillToolOutput {
   body: string;
   base_dir?: string;
   resources: string[];
+}
+
+// ---- file preview (office-agent) -----------------------------------------
+
+/** Metadata about a file selected for preview (mirrors PreviewMetadataDto). */
+export interface PreviewMetadata {
+  path: string;
+  name: string;
+  /** Lowercased extension without the dot, "" if none. */
+  ext: string;
+  size_bytes: number;
+  /** "text" | "image" | "pdf" | "docx" | "xlsx" | "pptx" | "csv" | "unknown". */
+  kind: string;
+}
+
+/** One xlsx sheet's preview (first N rows) (mirrors SheetPreviewDto). */
+export interface SheetPreview {
+  name: string;
+  rows: string[][];
+  truncated: boolean;
+}
+
+/** Result of extracting a previewable representation (mirrors PreviewResultDto). */
+export interface PreviewResult {
+  metadata: PreviewMetadata;
+  text: string | null;
+  sheets: SheetPreview[] | null;
+  truncated: boolean;
+  message: string | null;
+}
+
+/** Result of a PDF render request (mirrors PdfRenderResultDto). */
+export interface PdfRenderResult {
+  rendered: boolean;
+  pages: string[];
+  text: string | null;
+  message: string | null;
+}
+
+// ---- recording + transcription (office-agent) -----------------------------
+
+/** A recording session's lifecycle (mirrors RecordingSessionDto). */
+export interface RecordingSession {
+  id: string;
+  /** "idle" | "recording" | "paused" | "transcribing" | "done" | "error". */
+  status: string;
+  started_at: number;
+  duration_ms: number;
+  audio_path: string | null;
+  transcript_path: string | null;
+  error: string | null;
+}
+
+/** One transcript segment (mirrors TranscriptSegmentDto). */
+export interface TranscriptSegment {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  speaker: string | null;
+  confidence: number | null;
+}
+
+// ---- managed runtimes (office-agent) --------------------------------------
+
+/** Status of one managed runtime (mirrors RuntimeStatusDto). */
+export interface RuntimeStatus {
+  id: string;
+  name: string;
+  version: string;
+  capability: string;
+  size_bytes: number;
+  installed: boolean;
+  available_for_platform: boolean;
+  checksum_pinned: boolean;
+  install_path: string | null;
+}
+
+/** Progress payload for `runtime:progress` events (mirrors RuntimeProgressDto). */
+export interface RuntimeProgress {
+  id: string;
+  downloaded: number;
+  total: number | null;
+  /** "downloading" | "verifying" | "extracting" | "done" | "error". */
+  phase: string;
 }

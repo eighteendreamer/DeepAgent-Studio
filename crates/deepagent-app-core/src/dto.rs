@@ -151,6 +151,11 @@ pub enum ConversationPartDto {
         duration_ms: Option<u64>,
         /// One-line result/error summary.
         detail: Option<String>,
+        /// Raw tool output, when available. The UI uses this for richer tool
+        /// cards (for example, web_search provider diagnostics) while keeping
+        /// `detail` as a compact fallback.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
     },
 }
 
@@ -278,4 +283,140 @@ pub struct TerminalResultDto {
     /// True when the command was refused as dangerous (needs approval) and not
     /// executed at all.
     pub blocked: bool,
+}
+
+/// Metadata about a file selected for preview (office-agent file preview).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewMetadataDto {
+    /// Absolute path of the file.
+    pub path: String,
+    /// File name (last path component).
+    pub name: String,
+    /// Lowercased extension without the dot (e.g. "docx"), empty if none.
+    pub ext: String,
+    /// Size in bytes.
+    pub size_bytes: u64,
+    /// Classified kind: "text" | "image" | "pdf" | "docx" | "xlsx" | "pptx"
+    /// | "csv" | "unknown".
+    pub kind: String,
+}
+
+/// One sheet's preview (first N rows) for an xlsx workbook.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SheetPreviewDto {
+    /// Sheet name.
+    pub name: String,
+    /// First N rows, each a list of cell strings.
+    pub rows: Vec<Vec<String>>,
+    /// True when more rows exist beyond the previewed window.
+    pub truncated: bool,
+}
+
+/// The result of extracting a previewable representation of a file.
+///
+/// Tier C (pure-Rust) preview: text for text/markdown/json/csv/docx/pptx/pdf,
+/// sheet tables for xlsx. Images carry no text — the frontend renders them
+/// directly from `metadata.path`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewResultDto {
+    /// File metadata (includes the classified `kind`).
+    pub metadata: PreviewMetadataDto,
+    /// Extracted text content when applicable (None for images / xlsx).
+    pub text: Option<String>,
+    /// Sheet previews for xlsx workbooks (None otherwise).
+    pub sheets: Option<Vec<SheetPreviewDto>>,
+    /// True when `text` was truncated to the preview byte cap.
+    pub truncated: bool,
+    /// Optional human-readable note (e.g. "rendered as text fallback").
+    pub message: Option<String>,
+}
+
+// ---- managed runtimes (office-agent RuntimeService) -----------------------
+
+/// Status of one managed runtime (downloadable, installed into the app's own
+/// runtimes dir). Surfaced by `runtime_list` / `runtime_status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeStatusDto {
+    /// Stable id, e.g. "whisper-base" / "pdfium" / "pandoc".
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+    /// Version label.
+    pub version: String,
+    /// Capability this runtime provides, e.g. "speech-model" / "pdf-render".
+    pub capability: String,
+    /// Approximate download size in bytes (for the consent prompt).
+    pub size_bytes: u64,
+    /// True when installed and present on disk.
+    pub installed: bool,
+    /// Whether this runtime has an artifact for the current platform.
+    pub available_for_platform: bool,
+    /// Whether the artifact carries a pinned SHA-256 (installable). When false,
+    /// install is blocked until a checksum is pinned (fail-closed integrity).
+    pub checksum_pinned: bool,
+    /// Absolute install path when installed, else null.
+    pub install_path: Option<String>,
+}
+
+/// Progress event payload for a runtime download (emitted as `runtime:progress`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeProgressDto {
+    /// The runtime id being installed.
+    pub id: String,
+    /// Bytes downloaded so far.
+    pub downloaded: u64,
+    /// Total bytes when known (from Content-Length), else null.
+    pub total: Option<u64>,
+    /// Phase label: "downloading" | "verifying" | "extracting" | "done" | "error".
+    pub phase: String,
+}
+
+// ---- recording + transcription (office-agent) -----------------------------
+
+/// A recording session's lifecycle state for the recording panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingSessionDto {
+    /// Opaque session id.
+    pub id: String,
+    /// Status: "idle" | "recording" | "paused" | "transcribing" | "done" | "error".
+    pub status: String,
+    /// When recording started, Unix ms.
+    pub started_at: i64,
+    /// Elapsed duration in ms (set on stop).
+    pub duration_ms: u64,
+    /// Absolute path of the captured WAV, when available.
+    pub audio_path: Option<String>,
+    /// Absolute path of the transcript JSON, when available.
+    pub transcript_path: Option<String>,
+    /// Human-readable error message when `status == "error"`.
+    pub error: Option<String>,
+}
+
+/// One transcript segment (mirrors the planned TranscriptSegment).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptSegmentDto {
+    /// Segment start, ms from the recording start.
+    pub start_ms: u64,
+    /// Segment end, ms from the recording start.
+    pub end_ms: u64,
+    /// Recognized text.
+    pub text: String,
+    /// Optional speaker label.
+    pub speaker: Option<String>,
+    /// Optional confidence in [0,1].
+    pub confidence: Option<f32>,
+}
+
+/// Result of a PDF render request (office-agent). Tier R returns page image
+/// paths; Tier C returns extracted text with a note that pdfium is needed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PdfRenderResultDto {
+    /// True when pages were rasterized (pdfium installed + feature enabled).
+    pub rendered: bool,
+    /// Absolute paths of rendered page PNGs (empty when not rendered).
+    pub pages: Vec<String>,
+    /// Extracted text (Tier C degrade) when pages were not rendered.
+    pub text: Option<String>,
+    /// Human-readable note (e.g. "install pdfium to render pages").
+    pub message: Option<String>,
 }
