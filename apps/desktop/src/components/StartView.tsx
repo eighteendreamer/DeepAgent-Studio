@@ -6,6 +6,7 @@ import { Composer } from "./Composer";
 import { BalanceChip } from "./BalanceChip";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import type { Project } from "../types";
+import { runTerminal } from "../api";
 import { FilesPlugin } from "./plugins/FilesPlugin";
 import { SideChatPlugin } from "./plugins/SideChatPlugin";
 import { BrowserPlugin } from "./plugins/BrowserPlugin";
@@ -33,6 +34,27 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   const [value, setValue] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activeProjectPath) {
+      setGitBranch(null);
+      return;
+    }
+    runTerminal("git rev-parse --abbrev-ref HEAD")
+      .then(res => {
+        if (res.exit_code === 0 && res.stdout) {
+          const branch = res.stdout.trim();
+          setGitBranch(branch);
+        } else {
+          setGitBranch(null);
+        }
+      })
+      .catch(() => setGitBranch(null));
+  }, [activeProjectPath]);
+  const [isEnvDropdownOpen, setIsEnvDropdownOpen] = useState(false);
+  const envDropdownRef = useRef<HTMLDivElement>(null);
+  const [envMode, setEnvMode] = useState<"local" | "remote">(() => (localStorage.getItem("envMode") as any) || "local");
 
   const [isModeDropdownOpen, setIsModeDropdownOpen] = useState(false);
   const modeDropdownRef = useRef<HTMLDivElement>(null);
@@ -155,15 +177,18 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setIsDropdownOpen(false);
       }
+      if (envDropdownRef.current && !envDropdownRef.current.contains(e.target as Node)) {
+        setIsEnvDropdownOpen(false);
+      }
       if (modeDropdownRef.current && !modeDropdownRef.current.contains(e.target as Node)) {
         setIsModeDropdownOpen(false);
       }
     };
-    if (isDropdownOpen || isModeDropdownOpen) {
+    if (isDropdownOpen || isModeDropdownOpen || isEnvDropdownOpen) {
       document.addEventListener("mousedown", handleClickOutside);
     }
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isDropdownOpen, isModeDropdownOpen]);
+  }, [isDropdownOpen, isModeDropdownOpen, isEnvDropdownOpen]);
 
   const submit = () => {
     onSubmit(value.trim());
@@ -279,24 +304,79 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
               <div className="flex items-center space-x-4">
               <div 
                 className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors"
-                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                onClick={() => {
+                  setIsDropdownOpen(!isDropdownOpen);
+                  setIsEnvDropdownOpen(false);
+                }}
               >
                 <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-[13px]" />
                 {projectName}
                 <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
               </div>
 
-              <div className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors">
-                <FontAwesomeIcon icon={["fas", "desktop"]} className="mr-2 text-[13px]" />
-                本地模式
-                <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
+              <div className="relative" ref={envDropdownRef}>
+                <div 
+                  className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors"
+                  onClick={() => {
+                    setIsEnvDropdownOpen(!isEnvDropdownOpen);
+                    setIsDropdownOpen(false);
+                  }}
+                >
+                  <FontAwesomeIcon icon={envMode === "local" ? ["fas", "desktop"] : ["fas", "cloud"]} className="mr-2 w-4 text-[13px]" />
+                  {envMode === "local" ? "本地模式" : "远程模式"}
+                  <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
+                </div>
+                
+                <AnimatePresence>
+                  {isEnvDropdownOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      transition={{ duration: 0.15, ease: "easeOut" }}
+                      className="absolute bottom-full left-0 mb-2 w-[140px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[60] py-1 origin-bottom-left"
+                    >
+                      <div 
+                        className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between group"
+                        onClick={() => {
+                          setEnvMode("local");
+                          localStorage.setItem("envMode", "local");
+                          setIsEnvDropdownOpen(false);
+                        }}
+                      >
+                        <div className="flex items-center text-[13px] text-text-base">
+                          <FontAwesomeIcon icon={["fas", "desktop"]} className="w-4 mr-2 text-text-secondary group-hover:text-text-base" />
+                          本地模式
+                        </div>
+                        {envMode === "local" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-secondary" />}
+                      </div>
+
+                      <div 
+                        className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between group"
+                        onClick={() => {
+                          setEnvMode("remote");
+                          localStorage.setItem("envMode", "remote");
+                          setIsEnvDropdownOpen(false);
+                        }}
+                      >
+                        <div className="flex items-center text-[13px] text-text-base">
+                          <FontAwesomeIcon icon={["fas", "cloud"]} className="w-4 mr-2 text-text-secondary group-hover:text-text-base" />
+                          远程模式
+                        </div>
+                        {envMode === "remote" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-secondary" />}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
 
-              <div className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors">
-                <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[13px]" />
-                main
-                <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
-              </div>
+              {gitBranch && (
+                <div className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors">
+                  <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[13px]" />
+                  {gitBranch}
+                  <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
+                </div>
+              )}
               </div>
 
               {/* Right-aligned: live DeepSeek balance chip. */}
