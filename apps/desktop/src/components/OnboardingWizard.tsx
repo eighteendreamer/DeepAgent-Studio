@@ -409,7 +409,7 @@ export function OnboardingWizard({ onComplete }: Props) {
 
               <div className="flex-1 flex space-x-3">
                 {[
-                  { id: "code", title: "适用于工作", desc: "更具技术性的回复和控制", icon: "terminal" },
+                  { id: "code", title: "适用于编程", desc: "更具技术性的回复和控制", icon: "terminal" },
                   { id: "daily", title: "适用于日常工作", desc: "同样强大，技术细节更少", icon: "comments" },
                 ].map((m) => (
                   <div

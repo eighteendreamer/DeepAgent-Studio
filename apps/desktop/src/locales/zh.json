@@ -61,7 +61,7 @@
       "workMode": {
         "title": "工作模式",
         "desc": "选择 Codex 显示多少技术细节",
-        "code": "适用于工作",
+        "code": "适用于编程",
         "codeDesc": "更具技术性的回复和控制",
         "daily": "适用于日常工作",
         "dailyDesc": "同样强大，技术细节更少"
