@@ -20,6 +20,7 @@ pub mod diff;
 pub mod doctor;
 pub mod dto;
 pub mod file_preview_service;
+pub mod git_service;
 pub mod knowledge_service;
 pub mod mcp_service;
 pub mod office_service;
@@ -53,12 +54,17 @@ pub use doctor::{format_diagnostics, run_diagnostics, DiagStatus, DiagnosticResu
 pub use dto::{
     ApprovalRequestDto, ArchiveProjectResultDto, ArchivedConversationDto, CommandDto,
     ConversationMessageDto, ConversationPartDto, ConversationUsageDto, ForkResultDto,
-    PdfRenderResultDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, RecordingSessionDto,
-    RewindResultDto, RuntimeProgressDto, RuntimeStatusDto, SessionDetailDto, SessionStatsDto,
-    SessionSummaryDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto, TranscriptDto,
-    TranscriptSegmentDto, WorkspaceInfoDto,
+    GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto, GitBranchDto,
+    GitChangedFileDto, GitChangesDto, GitCommitFileDto, GitCommitMessageDraftDto,
+    GitCompareCommitDto, GitDiffDto, GitLogEntryDto, GitOperationResultDto, GitProjectStatusDto,
+    GitPushCommitDto, GitPushPreviewDto, GitPushRiskItemDto, GitPushRiskScanDto, GitRefCompareDto,
+    GitWorktreeDto, PdfRenderResultDto, PreviewMetadataDto, PreviewResultDto, ProjectDto,
+    RecordingSessionDto, RewindResultDto, RuntimeProgressDto, RuntimeStatusDto, SessionDetailDto,
+    SessionStatsDto, SessionSummaryDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto,
+    TranscriptDto, TranscriptSegmentDto, WorkspaceInfoDto,
 };
 pub use file_preview_service::FilePreviewService;
+pub use git_service::GitService;
 pub use knowledge_service::{
     KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, KnowledgeServiceBackend,
 };

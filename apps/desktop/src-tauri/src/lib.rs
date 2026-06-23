@@ -18,7 +18,11 @@ use std::sync::{Arc, Mutex};
 use deepagent_app_core::{
     AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, BalanceDto,
     BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary,
-    DiagnosticResult, DiffResult, FilePreviewService, ForkResultDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto,
+    DiagnosticResult, DiffResult, FilePreviewService, ForkResultDto,
+    GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto,
+    GitBranchDto, GitChangesDto, GitCommitMessageDraftDto, GitDiffDto, GitLogEntryDto,
+    GitOperationResultDto, GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto,
+    GitRefCompareDto, GitService, GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto,
     KnowledgeHitDto, KnowledgeService, McpServerDto, McpService, OfficeService, PdfRenderResultDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto,
     ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto,
     ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
@@ -73,6 +77,7 @@ struct AppState {
     project_map: Arc<ProjectMapService>,
     workspace: Arc<WorkspaceService>,
     terminal: Arc<TerminalService>,
+    git: Arc<GitService>,
     /// File preview for the desktop "File Preview" panel (office-agent).
     preview: Arc<FilePreviewService>,
     /// Microphone recording for the desktop recording panel (office-agent).
@@ -1637,6 +1642,269 @@ fn terminal_cwd(state: State<'_, AppState>) -> String {
     state.terminal.current_dir()
 }
 
+// ---- git (read-only project/worktree state for the Git Workbench) ---------
+
+#[tauri::command]
+fn git_project_status(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<GitProjectStatusDto, String> {
+    state.git.project_status(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_projects_status(
+    state: State<'_, AppState>,
+    paths: Option<Vec<String>>,
+) -> Result<Vec<GitProjectStatusDto>, String> {
+    state.git.projects_status(paths).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_branch_list(state: State<'_, AppState>, path: String) -> Result<Vec<GitBranchDto>, String> {
+    state.git.branch_list(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_checkout_branch(
+    state: State<'_, AppState>,
+    path: String,
+    branch: String,
+) -> Result<GitOperationResultDto, String> {
+    state
+        .git
+        .checkout_branch(&path, &branch)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_create_branch(
+    state: State<'_, AppState>,
+    path: String,
+    name: String,
+    start_point: Option<String>,
+) -> Result<GitOperationResultDto, String> {
+    state
+        .git
+        .create_branch(&path, &name, start_point.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_changes(state: State<'_, AppState>, path: String) -> Result<GitChangesDto, String> {
+    state.git.changes(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_diff(
+    state: State<'_, AppState>,
+    path: String,
+    file_path: String,
+    staged: bool,
+) -> Result<GitDiffDto, String> {
+    state
+        .git
+        .diff(&path, &file_path, staged)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_log(
+    state: State<'_, AppState>,
+    path: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitLogEntryDto>, String> {
+    state.git.log(&path, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_commit_diff(
+    state: State<'_, AppState>,
+    path: String,
+    commit: String,
+    file_path: String,
+) -> Result<GitDiffDto, String> {
+    state
+        .git
+        .commit_diff(&path, &commit, &file_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_stage(
+    state: State<'_, AppState>,
+    path: String,
+    files: Vec<String>,
+) -> Result<GitOperationResultDto, String> {
+    state.git.stage(&path, &files).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_unstage(
+    state: State<'_, AppState>,
+    path: String,
+    files: Vec<String>,
+) -> Result<GitOperationResultDto, String> {
+    state.git.unstage(&path, &files).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_apply_hunk(
+    state: State<'_, AppState>,
+    path: String,
+    file_path: String,
+    patch: String,
+    staged: bool,
+) -> Result<GitOperationResultDto, String> {
+    state
+        .git
+        .apply_hunk(&path, &file_path, &patch, staged)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_commit(
+    state: State<'_, AppState>,
+    path: String,
+    message: String,
+) -> Result<GitOperationResultDto, String> {
+    state.git.commit(&path, &message).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_commit_message_draft(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<GitCommitMessageDraftDto, String> {
+    state
+        .git
+        .commit_message_draft(&path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_push_preview(state: State<'_, AppState>, path: String) -> Result<GitPushPreviewDto, String> {
+    state.git.push_preview(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_push_risk_scan(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<GitPushRiskScanDto, String> {
+    state
+        .git
+        .push_risk_scan(&path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_push(
+    state: State<'_, AppState>,
+    path: String,
+    remote: Option<String>,
+    branch: Option<String>,
+) -> Result<GitOperationResultDto, String> {
+    state
+        .git
+        .push(&path, remote.as_deref(), branch.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_fetch(
+    state: State<'_, AppState>,
+    path: String,
+    all: bool,
+) -> Result<GitOperationResultDto, String> {
+    state.git.fetch(&path, all).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_pull_update(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<GitOperationResultDto, String> {
+    state.git.pull_update(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_worktrees(state: State<'_, AppState>, path: String) -> Result<Vec<GitWorktreeDto>, String> {
+    state.git.worktrees(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_compare_refs(
+    state: State<'_, AppState>,
+    path: String,
+    base_ref: String,
+    target_ref: String,
+) -> Result<GitRefCompareDto, String> {
+    state
+        .git
+        .compare_refs(&path, &base_ref, &target_ref)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_ref_diff(
+    state: State<'_, AppState>,
+    path: String,
+    base_ref: String,
+    target_ref: String,
+    file_path: Option<String>,
+) -> Result<GitDiffDto, String> {
+    state
+        .git
+        .ref_diff(&path, &base_ref, &target_ref, file_path.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_batch_commit_preview(
+    state: State<'_, AppState>,
+    targets: Vec<String>,
+) -> Result<Vec<GitBatchCommitPreviewItemDto>, String> {
+    state
+        .git
+        .batch_commit_preview(&targets)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_batch_commit(
+    state: State<'_, AppState>,
+    targets: Vec<GitBatchCommitTargetDto>,
+    message: String,
+    stage_all: bool,
+) -> Result<Vec<GitBatchProjectResultDto>, String> {
+    state
+        .git
+        .batch_commit(&targets, &message, stage_all)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_batch_push(
+    state: State<'_, AppState>,
+    targets: Vec<String>,
+) -> Result<Vec<GitBatchProjectResultDto>, String> {
+    state.git.batch_push(&targets).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_batch_commit_and_push(
+    state: State<'_, AppState>,
+    targets: Vec<GitBatchCommitTargetDto>,
+    message: String,
+    stage_all: bool,
+) -> Result<Vec<GitBatchProjectResultDto>, String> {
+    state
+        .git
+        .batch_commit_and_push(&targets, &message, stage_all)
+        .map_err(|e| e.to_string())
+}
+
 // ---- file preview (office-agent: preview office files in the panel) -------
 
 /// Read metadata (name / extension / size / classified kind) for a file.
@@ -2029,6 +2297,7 @@ pub fn run() {
                 projects.clone(),
                 workspace_root.to_string_lossy().into_owned(),
             ));
+            let git = Arc::new(GitService::new(projects.clone()));
 
             // File preview: stateless office-file previewer for the desktop
             // "File Preview" panel (office-agent). Pure-Rust, no external runtime.
@@ -2118,6 +2387,7 @@ pub fn run() {
                 project_map,
                 workspace,
                 terminal,
+                git,
                 preview,
                 recording,
                 runtime,
@@ -2235,6 +2505,32 @@ pub fn run() {
             delete_all_archived_conversations,
             run_terminal,
             terminal_cwd,
+            git_project_status,
+            git_projects_status,
+            git_branch_list,
+            git_checkout_branch,
+            git_create_branch,
+            git_changes,
+            git_diff,
+            git_log,
+            git_commit_diff,
+            git_stage,
+            git_unstage,
+            git_apply_hunk,
+            git_commit,
+            git_commit_message_draft,
+            git_push_preview,
+            git_push_risk_scan,
+            git_push,
+            git_fetch,
+            git_pull_update,
+            git_worktrees,
+            git_compare_refs,
+            git_ref_diff,
+            git_batch_commit_preview,
+            git_batch_commit,
+            git_batch_push,
+            git_batch_commit_and_push,
             preview_get_metadata,
             preview_extract_text,
             preview_open_file,

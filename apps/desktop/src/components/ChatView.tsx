@@ -17,7 +17,10 @@ import { ProjectMapPanel, ProjectMapStatusBadge } from "./project-map/ProjectMap
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
-import { projectMapRefreshDeep, projectMapStatus, runTerminal, SEND_TO_CHAT_EVENT } from "../api";
+import { projectMapRefreshDeep, projectMapStatus, SEND_TO_CHAT_EVENT } from "../api";
+import { useGitStatus } from "../hooks/useGitStatus";
+import { GitBranchChip } from "./git/GitBranchChip";
+import { GitWorkbench } from "./git/GitWorkbench";
 
 interface Props {
   messages: ChatMessage[];
@@ -76,14 +79,6 @@ type OutputItem =
       inProgress: number;
       completed: number;
     };
-
-type EnvironmentPanelState = {
-  loading: boolean;
-  branch: string | null;
-  additions: number | null;
-  deletions: number | null;
-  ghAvailable: boolean | null;
-};
 
 type OfficeContextView = {
   type: string;
@@ -599,13 +594,13 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
   const { t } = useTranslation();
   const [value, setValue] = useState("");
   const [isOutputPanelOpen, setIsOutputPanelOpen] = useState(false);
-  const [environment, setEnvironment] = useState<EnvironmentPanelState>({
-    loading: false,
-    branch: null,
-    additions: null,
-    deletions: null,
-    ghAvailable: null,
-  });
+  const [isGitWorkbenchOpen, setIsGitWorkbenchOpen] = useState(false);
+  const {
+    loading: gitLoading,
+    status: gitStatus,
+    changes: gitChangesState,
+    refresh: refreshGitStatus,
+  } = useGitStatus(activeProjectPath);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isProjectMapMenuOpen, setIsProjectMapMenuOpen] = useState(false);
   const projectMapMenuRef = useRef<HTMLDivElement>(null);
@@ -669,6 +664,10 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
   // when the workspace isn't a git repo. See `computeChatChanges` for
   // wire-format + undercounting notes.
   const chatChanges = useMemo(() => computeChatChanges(messages), [messages]);
+  const gitWorkspaceAdditions = gitChangesState?.additions ?? gitStatus?.additions ?? 0;
+  const gitWorkspaceDeletions = gitChangesState?.deletions ?? gitStatus?.deletions ?? 0;
+  const gitWorkspaceFilesChanged =
+    gitChangesState?.files.length ?? gitStatus?.files_changed ?? 0;
   const hasConversation = messages.length > 0;
   const outputSignature = useMemo(
     () => outputItems.map((item) => `${item.kind}:${item.label}`).join("|"),
@@ -680,11 +679,6 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
   // when the conversation resets (e.g. switch to an empty session) or when
   // the user opens it again manually.
   const userClosedOutputPanelRef = useRef<boolean>(false);
-  // Caches which project path the environment info was last successfully
-  // fetched for, so repeatedly toggling the dropdown for the same project
-  // reuses the cached result instead of re-running git/gh every time.
-  const envFetchedForRef = useRef<string | null>(null);
-
   useEffect(() => {
     if (!hasConversation) {
       lastAutoOpenedOutputRef.current = "";
@@ -713,54 +707,8 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
   }, []);
 
   useEffect(() => {
-    if (!isOutputPanelOpen) return;
-    if (!activeProjectPath) {
-      setEnvironment({
-        loading: false,
-        branch: null,
-        additions: null,
-        deletions: null,
-        ghAvailable: null,
-      });
-      envFetchedForRef.current = null;
-      return;
-    }
-
-    // Cache hit: already fetched for this project, reuse existing state.
-    if (envFetchedForRef.current === activeProjectPath) return;
-
-    let cancelled = false;
-    setEnvironment((prev) => ({ ...prev, loading: true }));
-    Promise.allSettled([
-      runTerminal("git branch --show-current"),
-      runTerminal("gh --version"),
-    ]).then(([branchResult, ghResult]) => {
-      if (cancelled) return;
-      const branch =
-        branchResult.status === "fulfilled" && branchResult.value.exit_code === 0
-          ? branchResult.value.stdout.trim() || null
-          : null;
-      setEnvironment({
-        loading: false,
-        branch,
-        // `additions` / `deletions` are derived from the chat tool calls
-        // (see `chatChanges` / `computeChatChanges`). They stay `null` on
-        // the environment state object so a future revival of the
-        // git-shortstat source can drop back in without renaming fields.
-        additions: null,
-        deletions: null,
-        ghAvailable:
-          ghResult.status === "fulfilled" ? ghResult.value.exit_code === 0 : false,
-      });
-      // Mark this project as fetched only after a successful (non-cancelled)
-      // update so failures/cancellations retry on the next open.
-      envFetchedForRef.current = activeProjectPath;
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeProjectPath, isOutputPanelOpen]);
+    setIsGitWorkbenchOpen(false);
+  }, [activeProjectPath]);
 
   // Auto-scroll the conversation to the bottom as messages/tokens stream in.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1438,23 +1386,46 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
               </div>
 
               <div className="space-y-3 text-[14px]">
-                <div className="flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between gap-3 rounded-lg px-0 py-0 text-left transition-colors hover:text-text-base disabled:hover:text-text-base"
+                  onClick={() => {
+                    if (activeProjectPath && gitStatus?.is_repo) setIsGitWorkbenchOpen(true);
+                  }}
+                  disabled={!activeProjectPath || !gitStatus?.is_repo}
+                >
                   <div className="flex items-center min-w-0 text-text-base">
                     <FontAwesomeIcon icon={["fas", "list-check"]} className="w-4 mr-3 text-text-secondary" />
                     <span>{t("chatView.changes")}</span>
+                    {activeProjectPath && gitStatus?.is_repo && (
+                      <FontAwesomeIcon icon={["fas", "chevron-right"]} className="ml-2 text-[10px] text-text-secondary" />
+                    )}
                   </div>
                   {activeProjectPath ? (
                     <div
                       className="flex items-center gap-1.5 font-medium tabular-nums"
-                      title={t("chatView.changes")}
+                      title={`Git 工作区变更；本轮会话变更 +${chatChanges.additions} -${chatChanges.deletions}`}
                     >
-                      <span className="text-green-600">+{chatChanges.additions}</span>
-                      <span className="text-red-500">-{chatChanges.deletions}</span>
+                      {gitLoading ? (
+                        <span className="text-[13px] text-text-secondary">{t("chatView.loading")}</span>
+                      ) : gitStatus?.is_repo ? (
+                        <>
+                          <span className="text-green-600">+{gitWorkspaceAdditions}</span>
+                          <span className="text-red-500">-{gitWorkspaceDeletions}</span>
+                          {gitWorkspaceFilesChanged > 0 && (
+                            <span className="ml-1 text-[11px] text-text-secondary">
+                              {gitWorkspaceFilesChanged}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-[13px] text-text-secondary">{t("chatView.noGitRepository")}</span>
+                      )}
                     </div>
                   ) : (
                     <span className="text-[13px] text-text-secondary">{t("chatView.noProject")}</span>
                   )}
-                </div>
+                </button>
 
                 <div className="flex items-center min-w-0 text-text-base" title={activeProjectPath ?? undefined}>
                   <FontAwesomeIcon icon={["fas", "desktop"]} className="w-4 mr-3 text-text-secondary" />
@@ -1464,14 +1435,22 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
 
                 <div className="flex items-center min-w-0 text-text-base">
                   <FontAwesomeIcon icon={["fas", "code-branch"]} className="w-4 mr-3 text-text-secondary" />
-                  <span className="truncate">
-                    {activeProjectPath
-                      ? environment.loading
-                        ? t("chatView.loading")
-                        : environment.branch ?? t("chatView.noGitRepository")
-                      : t("chatView.noProject")}
-                  </span>
-                  {activeProjectPath && environment.branch && <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[10px] text-text-secondary" />}
+                  {activeProjectPath ? (
+                    gitLoading ? (
+                      <span className="truncate text-text-secondary">{t("chatView.loading")}</span>
+                    ) : gitStatus?.is_repo ? (
+                      <GitBranchChip
+                        projectPath={activeProjectPath}
+                        compact
+                        className="-ml-1 min-w-0"
+                        onOpenWorkbench={() => setIsGitWorkbenchOpen(true)}
+                      />
+                    ) : (
+                      <span className="truncate text-text-secondary">{t("chatView.noGitRepository")}</span>
+                    )
+                  ) : (
+                    <span className="truncate text-text-secondary">{t("chatView.noProject")}</span>
+                  )}
                 </div>
 
                 <div className="flex items-center min-w-0 text-text-base">
@@ -1482,7 +1461,7 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
                 <div className="flex items-center min-w-0 text-text-secondary">
                   <FontAwesomeIcon icon={["fab", "github"]} className="w-4 mr-3 text-text-secondary" />
                   <span>
-                    {environment.ghAvailable ? t("chatView.githubCliAvailable") : t("chatView.githubCliUnavailable")}
+                    {gitStatus?.gh_available ? t("chatView.githubCliAvailable") : t("chatView.githubCliUnavailable")}
                   </span>
                 </div>
               </div>
@@ -1561,6 +1540,20 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
                 <div className="text-[13px] text-text-secondary">{t("chatView.noSources")}</div>
               </div>
             </div>
+          </div>
+        )}
+        {isGitWorkbenchOpen && activeProjectPath && (
+          <div
+            className="absolute top-16 bottom-6 left-6 right-6 z-20 overflow-hidden rounded-2xl border border-border-theme bg-white shadow-[0_18px_46px_rgb(0,0,0,0.14)] lg:right-[330px]"
+          >
+            <GitWorkbench
+              projectPath={activeProjectPath}
+              status={gitStatus}
+              changes={gitChangesState}
+              loading={gitLoading}
+              onRefresh={refreshGitStatus}
+              onClose={() => setIsGitWorkbenchOpen(false)}
+            />
           </div>
         )}
     </div>

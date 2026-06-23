@@ -6,7 +6,6 @@ import { Composer } from "./Composer";
 import { BalanceChip } from "./BalanceChip";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import type { Project } from "../types";
-import { runTerminal } from "../api";
 import { FilesPlugin } from "./plugins/FilesPlugin";
 import { SideChatPlugin } from "./plugins/SideChatPlugin";
 import { BrowserPlugin } from "./plugins/BrowserPlugin";
@@ -15,6 +14,7 @@ import { RecordingPlugin } from "./plugins/RecordingPlugin";
 import { FilePreviewPlugin } from "./plugins/FilePreviewPlugin";
 import { ProjectMapPanel } from "./project-map/ProjectMapPanel";
 import { Tab, TOOL_CARDS } from "./ChatView";
+import { GitBranchChip } from "./git/GitBranchChip";
 
 const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
 const PROJECT_MAP_TAB_ID = "project-map";
@@ -34,24 +34,6 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   const [value, setValue] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const [gitBranch, setGitBranch] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!activeProjectPath) {
-      setGitBranch(null);
-      return;
-    }
-    runTerminal("git rev-parse --abbrev-ref HEAD")
-      .then(res => {
-        if (res.exit_code === 0 && res.stdout) {
-          const branch = res.stdout.trim();
-          setGitBranch(branch);
-        } else {
-          setGitBranch(null);
-        }
-      })
-      .catch(() => setGitBranch(null));
-  }, [activeProjectPath]);
   const [isEnvDropdownOpen, setIsEnvDropdownOpen] = useState(false);
   const envDropdownRef = useRef<HTMLDivElement>(null);
   const [envMode, setEnvMode] = useState<"local" | "remote">(() => (localStorage.getItem("envMode") as any) || "local");
@@ -370,13 +352,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                 </AnimatePresence>
               </div>
 
-              {gitBranch && (
-                <div className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors">
-                  <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[13px]" />
-                  {gitBranch}
-                  <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
-                </div>
-              )}
+              <GitBranchChip projectPath={activeProjectPath} />
               </div>
 
               {/* Right-aligned: live DeepSeek balance chip. */}

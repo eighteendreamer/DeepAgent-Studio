@@ -17,6 +17,20 @@ import type {
   DiagnosticResult,
   DiffResult,
   ForkResult,
+  GitBatchCommitPreviewItem,
+  GitBatchCommitTarget,
+  GitBatchProjectResult,
+  GitBranch,
+  GitChanges,
+  GitCommitMessageDraft,
+  GitDiff,
+  GitLogEntry,
+  GitOperationResult,
+  GitProjectStatus,
+  GitPushPreview,
+  GitPushRiskScan,
+  GitRefCompare,
+  GitWorktree,
   KnowledgeDraft,
   KnowledgeEntry,
   KnowledgeHit,
@@ -1037,6 +1051,284 @@ export async function openProjectInFileManager(path: string): Promise<void> {
   if (invoke) await invoke("open_project_in_file_manager", { path });
 }
 
+// ---- git (read-only project/worktree state) -------------------------------
+
+export async function gitProjectStatus(path: string): Promise<GitProjectStatus> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitProjectStatus>("git_project_status", { path });
+  return mockGitProjectStatus(path);
+}
+
+export async function gitProjectsStatus(paths?: string[]): Promise<GitProjectStatus[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitProjectStatus[]>("git_projects_status", { paths: paths ?? null });
+  return (paths ?? []).map(mockGitProjectStatus);
+}
+
+export async function gitBranchList(path: string): Promise<GitBranch[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitBranch[]>("git_branch_list", { path });
+  return path
+    ? [mockGitBranch("main", true), mockGitBranch("feature/git-workbench", false)]
+    : [];
+}
+
+export async function gitCheckoutBranch(path: string, branch: string): Promise<GitOperationResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitOperationResult>("git_checkout_branch", { path, branch });
+  return { ok: true, command: `git switch ${branch}`, stdout: "mock checkout", stderr: "" };
+}
+
+export async function gitCreateBranch(
+  path: string,
+  name: string,
+  startPoint?: string | null
+): Promise<GitOperationResult> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<GitOperationResult>("git_create_branch", {
+      path,
+      name,
+      startPoint: startPoint ?? null,
+    });
+  }
+  return {
+    ok: true,
+    command: `git switch -c ${name}${startPoint ? ` ${startPoint}` : ""}`,
+    stdout: "mock create branch",
+    stderr: "",
+  };
+}
+
+export async function gitChanges(path: string): Promise<GitChanges> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitChanges>("git_changes", { path });
+  return {
+    project_path: path,
+    repo_root: path || null,
+    is_repo: !!path,
+    files: [],
+    additions: 0,
+    deletions: 0,
+  };
+}
+
+export async function gitDiff(
+  path: string,
+  filePath: string,
+  staged: boolean = false
+): Promise<GitDiff> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitDiff>("git_diff", { path, filePath, staged });
+  return {
+    project_path: path,
+    repo_root: path || null,
+    file_path: filePath,
+    staged,
+    is_repo: !!path,
+    text: "",
+    truncated: false,
+  };
+}
+
+export async function gitLog(path: string, limit: number = 200): Promise<GitLogEntry[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitLogEntry[]>("git_log", { path, limit });
+  return [
+    {
+      hash: "mock001",
+      full_hash: "mock001",
+      parents: [],
+      author_name: "DeepAgent",
+      author_email: "preview@example.test",
+      date: new Date().toISOString(),
+      refs: ["HEAD -> main"],
+      subject: "Browser preview commit",
+      files: [],
+    },
+  ];
+}
+
+export async function gitCommitDiff(
+  path: string,
+  commit: string,
+  filePath: string
+): Promise<GitDiff> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitDiff>("git_commit_diff", { path, commit, filePath });
+  return {
+    project_path: path,
+    repo_root: path || null,
+    file_path: filePath,
+    staged: false,
+    is_repo: !!path,
+    text: "",
+    truncated: false,
+  };
+}
+
+export async function gitStage(path: string, files: string[]): Promise<GitOperationResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitOperationResult>("git_stage", { path, files });
+  return { ok: true, command: "git add", stdout: "", stderr: "" };
+}
+
+export async function gitUnstage(path: string, files: string[]): Promise<GitOperationResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitOperationResult>("git_unstage", { path, files });
+  return { ok: true, command: "git restore --staged", stdout: "", stderr: "" };
+}
+
+export async function gitApplyHunk(
+  path: string,
+  filePath: string,
+  patch: string,
+  staged: boolean
+): Promise<GitOperationResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitOperationResult>("git_apply_hunk", { path, filePath, patch, staged });
+  return {
+    ok: true,
+    command: staged ? "git apply --cached --reverse" : "git apply --cached",
+    stdout: "mock hunk apply",
+    stderr: "",
+  };
+}
+
+export async function gitCommit(path: string, message: string): Promise<GitOperationResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitOperationResult>("git_commit", { path, message });
+  return { ok: true, command: "git commit", stdout: "mock commit", stderr: "" };
+}
+
+export async function gitCommitMessageDraft(path: string): Promise<GitCommitMessageDraft> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitCommitMessageDraft>("git_commit_message_draft", { path });
+  return mockGitCommitMessageDraft(path);
+}
+
+export async function gitPushPreview(path: string): Promise<GitPushPreview> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitPushPreview>("git_push_preview", { path });
+  return mockGitPushPreview(path);
+}
+
+export async function gitPushRiskScan(path: string): Promise<GitPushRiskScan> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitPushRiskScan>("git_push_risk_scan", { path });
+  return mockGitPushRiskScan(path);
+}
+
+export async function gitPush(
+  path: string,
+  remote?: string | null,
+  branch?: string | null
+): Promise<GitOperationResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitOperationResult>("git_push", { path, remote: remote ?? null, branch: branch ?? null });
+  return { ok: true, command: "git push origin HEAD:main", stdout: "mock push", stderr: "" };
+}
+
+export async function gitFetch(path: string, all: boolean = false): Promise<GitOperationResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitOperationResult>("git_fetch", { path, all });
+  return { ok: true, command: all ? "git fetch --all --prune" : "git fetch --prune", stdout: "mock fetch", stderr: "" };
+}
+
+export async function gitPullUpdate(path: string): Promise<GitOperationResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitOperationResult>("git_pull_update", { path });
+  return { ok: true, command: "git pull --ff-only", stdout: "mock update", stderr: "" };
+}
+
+export async function gitWorktrees(path: string): Promise<GitWorktree[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitWorktree[]>("git_worktrees", { path });
+  return [];
+}
+
+export async function gitCompareRefs(
+  path: string,
+  baseRef: string,
+  targetRef: string
+): Promise<GitRefCompare> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitRefCompare>("git_compare_refs", { path, baseRef, targetRef });
+  return mockGitRefCompare(path, baseRef, targetRef);
+}
+
+export async function gitRefDiff(
+  path: string,
+  baseRef: string,
+  targetRef: string,
+  filePath?: string | null
+): Promise<GitDiff> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<GitDiff>("git_ref_diff", {
+      path,
+      baseRef,
+      targetRef,
+      filePath: filePath ?? null,
+    });
+  }
+  return {
+    project_path: path,
+    repo_root: path || null,
+    file_path: filePath ?? "",
+    staged: false,
+    is_repo: !!path,
+    text: `diff --git a/${filePath ?? "mock.txt"} b/${filePath ?? "mock.txt"}\n+mock ref diff\n`,
+    truncated: false,
+  };
+}
+
+export async function gitBatchCommitPreview(targets: string[]): Promise<GitBatchCommitPreviewItem[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitBatchCommitPreviewItem[]>("git_batch_commit_preview", { targets });
+  return targets.map((projectPath) => ({
+    project_path: projectPath,
+    repo_root: projectPath || null,
+    is_repo: !!projectPath,
+    current_branch: "main",
+    files_changed: 1,
+    staged_files: 1,
+    additions: 4,
+    deletions: 1,
+    ahead: 0,
+    behind: 0,
+    blocked_reason: projectPath ? null : "not a git repository",
+  }));
+}
+
+export async function gitBatchCommit(
+  targets: GitBatchCommitTarget[],
+  message: string,
+  stageAll: boolean
+): Promise<GitBatchProjectResult[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitBatchProjectResult[]>("git_batch_commit", { targets, message, stageAll });
+  return mockGitBatchResults(targets.map((target) => target.project_path), "Committed", true, false);
+}
+
+export async function gitBatchPush(targets: string[]): Promise<GitBatchProjectResult[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<GitBatchProjectResult[]>("git_batch_push", { targets });
+  return mockGitBatchResults(targets, "Pushed", false, true);
+}
+
+export async function gitBatchCommitAndPush(
+  targets: GitBatchCommitTarget[],
+  message: string,
+  stageAll: boolean
+): Promise<GitBatchProjectResult[]> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<GitBatchProjectResult[]>("git_batch_commit_and_push", { targets, message, stageAll });
+  }
+  return mockGitBatchResults(targets.map((target) => target.project_path), "Committed and pushed", true, true);
+}
+
 // ---- project map ----------------------------------------------------------
 
 export async function projectMapStatus(projectPath?: string | null): Promise<ProjectMapStatus> {
@@ -1525,6 +1817,173 @@ function mockMcpServers(): McpServer[] {
       headers: {},
     },
   ];
+}
+
+function mockGitProjectStatus(path: string): GitProjectStatus {
+  return {
+    project_path: path,
+    repo_root: path || null,
+    repo_id: path ? `mock:${path}` : null,
+    is_repo: !!path,
+    current_branch: path ? "main" : null,
+    detached_head: false,
+    upstream: path ? "origin/main" : null,
+    ahead: 0,
+    behind: 0,
+    has_changes: false,
+    files_changed: 0,
+    additions: 0,
+    deletions: 0,
+    rebase_state: null,
+    merge_state: false,
+    gh_available: false,
+  };
+}
+
+function mockGitPushPreview(path: string): GitPushPreview {
+  return {
+    project_path: path,
+    repo_root: path || null,
+    is_repo: !!path,
+    current_branch: path ? "main" : null,
+    upstream: path ? "origin/main" : null,
+    remote: path ? "origin" : null,
+    remote_branch: path ? "main" : null,
+    ahead: 1,
+    behind: 0,
+    commits: [
+      {
+        hash: "mock001",
+        full_hash: "mock001",
+        author_name: "DeepAgent",
+        date: new Date().toISOString(),
+        subject: "Browser preview commit",
+      },
+    ],
+    blocked_reason: path ? null : "not a git repository",
+  };
+}
+
+function mockGitCommitMessageDraft(path: string): GitCommitMessageDraft {
+  return {
+    project_path: path,
+    repo_root: path || null,
+    is_repo: !!path,
+    source: path ? "working_tree" : "none",
+    title: path ? "chore: update Git Workbench changes" : "",
+    body: path
+      ? "- Update 2 file(s) (+42, -3)\n- M apps/desktop/src/components/git/GitChangesPanel.tsx (+28, -2)"
+      : "",
+    files: [],
+    blocked_reason: path ? null : "not a git repository",
+  };
+}
+
+function mockGitPushRiskScan(path: string): GitPushRiskScan {
+  return {
+    project_path: path,
+    repo_root: path || null,
+    is_repo: !!path,
+    current_branch: path ? "main" : null,
+    upstream: path ? "origin/main" : null,
+    ahead: path ? 1 : 0,
+    scanned_files: path ? 3 : 0,
+    risks: path
+      ? [
+          {
+            severity: "low",
+            category: "debug_log",
+            title: "Debug output added",
+            detail: "console.log('debug')",
+            file_path: "apps/desktop/src/components/git/GitPushPanel.tsx",
+          },
+        ]
+      : [],
+    blocked_reason: path ? null : "not a git repository",
+  };
+}
+
+function mockGitRefCompare(path: string, baseRef: string, targetRef: string): GitRefCompare {
+  return {
+    project_path: path,
+    repo_root: path || null,
+    is_repo: !!path,
+    base_ref: baseRef || "main",
+    target_ref: targetRef || "feature/git-workbench",
+    merge_base: path ? "mock-base" : null,
+    ahead: path ? 2 : 0,
+    behind: path ? 1 : 0,
+    commits: path
+      ? [
+          {
+            side: "target",
+            hash: "mock301",
+            full_hash: "mock301",
+            author_name: "DeepAgent",
+            date: new Date().toISOString(),
+            subject: "Add branch comparison panel",
+          },
+          {
+            side: "base",
+            hash: "mock201",
+            full_hash: "mock201",
+            author_name: "DeepAgent",
+            date: new Date().toISOString(),
+            subject: "Upstream fix not in target",
+          },
+        ]
+      : [],
+    files: path
+      ? [
+          {
+            path: "apps/desktop/src/components/git/GitProjectsPanel.tsx",
+            old_path: null,
+            status: "M",
+            additions: 36,
+            deletions: 4,
+          },
+        ]
+      : [],
+    blocked_reason: path ? null : "not a git repository",
+  };
+}
+
+function mockGitBatchResults(
+  targets: string[],
+  message: string,
+  committed: boolean,
+  pushed: boolean
+): GitBatchProjectResult[] {
+  return targets.map((projectPath) => ({
+    project_path: projectPath,
+    current_branch: "main",
+    ok: true,
+    committed,
+    pushed,
+    skipped: false,
+    message,
+    commit_result: committed
+      ? { ok: true, command: "git commit", stdout: "mock commit", stderr: "" }
+      : null,
+    push_result: pushed
+      ? { ok: true, command: "git push", stdout: "mock push", stderr: "" }
+      : null,
+  }));
+}
+
+function mockGitBranch(name: string, current: boolean): GitBranch {
+  return {
+    name,
+    full_name: `refs/heads/${name}`,
+    kind: "local",
+    current,
+    upstream: name === "main" ? "origin/main" : null,
+    ahead: current ? 0 : 1,
+    behind: 0,
+    commit: "mock",
+    subject: current ? "Current browser-preview branch" : "Preview branch",
+    worktree_path: null,
+  };
 }
 
 function mockProjectMapHits(): ProjectMapHit[] {

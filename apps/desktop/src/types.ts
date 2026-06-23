@@ -292,6 +292,208 @@ export interface Project {
   updated_at: number;
 }
 
+export interface GitProjectStatus {
+  project_path: string;
+  repo_root: string | null;
+  repo_id: string | null;
+  is_repo: boolean;
+  current_branch: string | null;
+  detached_head: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  has_changes: boolean;
+  files_changed: number;
+  additions: number;
+  deletions: number;
+  rebase_state: string | null;
+  merge_state: boolean;
+  gh_available: boolean;
+}
+
+export interface GitBranch {
+  name: string;
+  full_name: string;
+  kind: "local" | "remote" | string;
+  current: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  commit: string | null;
+  subject: string | null;
+  worktree_path: string | null;
+}
+
+export interface GitChangedFile {
+  path: string;
+  old_path: string | null;
+  status: string;
+  category: "staged" | "unstaged" | "untracked" | "conflicted" | string;
+  additions: number;
+  deletions: number;
+}
+
+export interface GitChanges {
+  project_path: string;
+  repo_root: string | null;
+  is_repo: boolean;
+  files: GitChangedFile[];
+  additions: number;
+  deletions: number;
+}
+
+export interface GitDiff {
+  project_path: string;
+  repo_root: string | null;
+  file_path: string;
+  staged: boolean;
+  is_repo: boolean;
+  text: string;
+  truncated: boolean;
+}
+
+export interface GitCommitFile {
+  path: string;
+  old_path: string | null;
+  status: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface GitLogEntry {
+  hash: string;
+  full_hash: string;
+  parents: string[];
+  author_name: string;
+  author_email: string;
+  date: string;
+  refs: string[];
+  subject: string;
+  files: GitCommitFile[];
+}
+
+export interface GitOperationResult {
+  ok: boolean;
+  command: string;
+  stdout: string;
+  stderr: string;
+}
+
+export interface GitCommitMessageDraft {
+  project_path: string;
+  repo_root: string | null;
+  is_repo: boolean;
+  source: "staged" | "working_tree" | "none" | string;
+  title: string;
+  body: string;
+  files: GitChangedFile[];
+  blocked_reason: string | null;
+}
+
+export interface GitPushCommit {
+  hash: string;
+  full_hash: string;
+  author_name: string;
+  date: string;
+  subject: string;
+}
+
+export interface GitPushPreview {
+  project_path: string;
+  repo_root: string | null;
+  is_repo: boolean;
+  current_branch: string | null;
+  upstream: string | null;
+  remote: string | null;
+  remote_branch: string | null;
+  ahead: number;
+  behind: number;
+  commits: GitPushCommit[];
+  blocked_reason: string | null;
+}
+
+export interface GitPushRiskItem {
+  severity: "high" | "medium" | "low" | string;
+  category: string;
+  title: string;
+  detail: string;
+  file_path: string | null;
+}
+
+export interface GitPushRiskScan {
+  project_path: string;
+  repo_root: string | null;
+  is_repo: boolean;
+  current_branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  scanned_files: number;
+  risks: GitPushRiskItem[];
+  blocked_reason: string | null;
+}
+
+export interface GitCompareCommit {
+  side: "base" | "target" | string;
+  hash: string;
+  full_hash: string;
+  author_name: string;
+  date: string;
+  subject: string;
+}
+
+export interface GitRefCompare {
+  project_path: string;
+  repo_root: string | null;
+  is_repo: boolean;
+  base_ref: string;
+  target_ref: string;
+  merge_base: string | null;
+  ahead: number;
+  behind: number;
+  commits: GitCompareCommit[];
+  files: GitCommitFile[];
+  blocked_reason: string | null;
+}
+
+export interface GitBatchCommitTarget {
+  project_path: string;
+  message: string | null;
+}
+
+export interface GitBatchCommitPreviewItem {
+  project_path: string;
+  repo_root: string | null;
+  is_repo: boolean;
+  current_branch: string | null;
+  files_changed: number;
+  staged_files: number;
+  additions: number;
+  deletions: number;
+  ahead: number;
+  behind: number;
+  blocked_reason: string | null;
+}
+
+export interface GitBatchProjectResult {
+  project_path: string;
+  current_branch: string | null;
+  ok: boolean;
+  committed: boolean;
+  pushed: boolean;
+  skipped: boolean;
+  message: string;
+  commit_result: GitOperationResult | null;
+  push_result: GitOperationResult | null;
+}
+
+export interface GitWorktree {
+  path: string;
+  head: string | null;
+  branch: string | null;
+  detached: boolean;
+  bare: boolean;
+}
+
 export interface ArchivedConversation {
   session_id: string;
   title: string | null;

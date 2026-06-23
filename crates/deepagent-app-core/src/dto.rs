@@ -42,6 +42,290 @@ pub struct ProjectDto {
     pub updated_at: i64,
 }
 
+/// Current Git state for one opened project/worktree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitProjectStatusDto {
+    /// Project path that was queried.
+    pub project_path: String,
+    /// Repository root if the project is inside a Git work tree.
+    pub repo_root: Option<String>,
+    /// Stable repository/worktree group id for multi-project grouping.
+    pub repo_id: Option<String>,
+    /// Whether `project_path` is inside a Git work tree.
+    pub is_repo: bool,
+    /// Current branch, or short commit id in detached HEAD state.
+    pub current_branch: Option<String>,
+    /// True when HEAD is detached.
+    pub detached_head: bool,
+    /// Upstream tracking branch, when configured.
+    pub upstream: Option<String>,
+    /// Commits ahead of upstream.
+    pub ahead: u32,
+    /// Commits behind upstream.
+    pub behind: u32,
+    /// True when staged/unstaged/untracked/conflicted files exist.
+    pub has_changes: bool,
+    /// Number of files with changes.
+    pub files_changed: u32,
+    /// Added lines across the working tree diff.
+    pub additions: u32,
+    /// Deleted lines across the working tree diff.
+    pub deletions: u32,
+    /// `merge` or `apply` while an interactive/non-interactive rebase is active.
+    pub rebase_state: Option<String>,
+    /// True while a merge is in progress.
+    pub merge_state: bool,
+    /// Whether GitHub CLI is available on PATH.
+    pub gh_available: bool,
+}
+
+/// One Git branch row for a branch popup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBranchDto {
+    /// Display branch name, e.g. `main` or `origin/main`.
+    pub name: String,
+    /// Full ref name, e.g. `refs/heads/main`.
+    pub full_name: String,
+    /// `local` or `remote`.
+    pub kind: String,
+    /// Whether this is the active branch for the queried worktree.
+    pub current: bool,
+    /// Upstream tracking branch for local refs.
+    pub upstream: Option<String>,
+    /// Commits ahead of upstream for local refs.
+    pub ahead: u32,
+    /// Commits behind upstream for local refs.
+    pub behind: u32,
+    /// Short head commit id.
+    pub commit: Option<String>,
+    /// Commit subject.
+    pub subject: Option<String>,
+    /// Path of a worktree using this local branch, when Git reports one.
+    pub worktree_path: Option<String>,
+}
+
+/// One changed file row in the Git changes panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitChangedFileDto {
+    /// Relative path in the repository.
+    pub path: String,
+    /// Optional previous path for renames/copies.
+    pub old_path: Option<String>,
+    /// Two-column porcelain status, e.g. `M `, ` M`, `??`, `UU`.
+    pub status: String,
+    /// Coarse group: staged / unstaged / untracked / conflicted.
+    pub category: String,
+    /// Added lines for this path, when available.
+    pub additions: u32,
+    /// Deleted lines for this path, when available.
+    pub deletions: u32,
+}
+
+/// Working tree changes for a project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitChangesDto {
+    pub project_path: String,
+    pub repo_root: Option<String>,
+    pub is_repo: bool,
+    pub files: Vec<GitChangedFileDto>,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+/// Unified diff text for one file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDiffDto {
+    pub project_path: String,
+    pub repo_root: Option<String>,
+    pub file_path: String,
+    pub staged: bool,
+    pub is_repo: bool,
+    pub text: String,
+    pub truncated: bool,
+}
+
+/// One changed file in a commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitFileDto {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+/// One row in the Git Log view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitLogEntryDto {
+    pub hash: String,
+    pub full_hash: String,
+    pub parents: Vec<String>,
+    pub author_name: String,
+    pub author_email: String,
+    pub date: String,
+    pub refs: Vec<String>,
+    pub subject: String,
+    pub files: Vec<GitCommitFileDto>,
+}
+
+/// One commit that would be pushed to the configured upstream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPushCommitDto {
+    pub hash: String,
+    pub full_hash: String,
+    pub author_name: String,
+    pub date: String,
+    pub subject: String,
+}
+
+/// Safe preview payload for a push operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPushPreviewDto {
+    pub project_path: String,
+    pub repo_root: Option<String>,
+    pub is_repo: bool,
+    pub current_branch: Option<String>,
+    pub upstream: Option<String>,
+    pub remote: Option<String>,
+    pub remote_branch: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub commits: Vec<GitPushCommitDto>,
+    /// Present when pushing should be blocked until the user fixes the state.
+    pub blocked_reason: Option<String>,
+}
+
+/// One pre-push risk finding. This is intentionally advisory and read-only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPushRiskItemDto {
+    /// `high`, `medium`, or `low`.
+    pub severity: String,
+    /// Stable category such as `secret`, `large_file`, `debug_log`, or `binary_file`.
+    pub category: String,
+    pub title: String,
+    pub detail: String,
+    pub file_path: Option<String>,
+}
+
+/// Local pre-push risk scan over outgoing commits/diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPushRiskScanDto {
+    pub project_path: String,
+    pub repo_root: Option<String>,
+    pub is_repo: bool,
+    pub current_branch: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub scanned_files: u32,
+    pub risks: Vec<GitPushRiskItemDto>,
+    /// Present when scanning cannot run because pushing itself is not currently valid.
+    pub blocked_reason: Option<String>,
+}
+
+/// One commit that exists on exactly one side of a ref comparison.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCompareCommitDto {
+    /// `base` when the commit is only in `base_ref`, `target` when only in `target_ref`.
+    pub side: String,
+    pub hash: String,
+    pub full_hash: String,
+    pub author_name: String,
+    pub date: String,
+    pub subject: String,
+}
+
+/// Safe read-only comparison between two refs in one repository/worktree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRefCompareDto {
+    pub project_path: String,
+    pub repo_root: Option<String>,
+    pub is_repo: bool,
+    pub base_ref: String,
+    pub target_ref: String,
+    pub merge_base: Option<String>,
+    /// Commits on `target_ref` that are not on `base_ref`.
+    pub ahead: u32,
+    /// Commits on `base_ref` that are not on `target_ref`.
+    pub behind: u32,
+    pub commits: Vec<GitCompareCommitDto>,
+    pub files: Vec<GitCommitFileDto>,
+    /// Present when comparison should be blocked until the user fixes the input/state.
+    pub blocked_reason: Option<String>,
+}
+
+/// One project/worktree target selected for a batch Git action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBatchCommitTargetDto {
+    pub project_path: String,
+    /// Optional per-project commit message override.
+    pub message: Option<String>,
+}
+
+/// Read-only preview row for a project selected in the batch commit/upload UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBatchCommitPreviewItemDto {
+    pub project_path: String,
+    pub repo_root: Option<String>,
+    pub is_repo: bool,
+    pub current_branch: Option<String>,
+    pub files_changed: u32,
+    pub staged_files: u32,
+    pub additions: u32,
+    pub deletions: u32,
+    pub ahead: u32,
+    pub behind: u32,
+    pub blocked_reason: Option<String>,
+}
+
+/// Result row for one project in a batch commit/upload operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBatchProjectResultDto {
+    pub project_path: String,
+    pub current_branch: Option<String>,
+    pub ok: bool,
+    pub committed: bool,
+    pub pushed: bool,
+    pub skipped: bool,
+    pub message: String,
+    pub commit_result: Option<GitOperationResultDto>,
+    pub push_result: Option<GitOperationResultDto>,
+}
+
+/// Result of a local Git operation initiated by the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitOperationResultDto {
+    pub ok: bool,
+    pub command: String,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Suggested commit message generated from staged changes, or all changes when
+/// nothing is staged yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitMessageDraftDto {
+    pub project_path: String,
+    pub repo_root: Option<String>,
+    pub is_repo: bool,
+    /// `staged` when based on staged files, `working_tree` when based on all changes.
+    pub source: String,
+    pub title: String,
+    pub body: String,
+    pub files: Vec<GitChangedFileDto>,
+    /// Present when a draft cannot be produced.
+    pub blocked_reason: Option<String>,
+}
+
+/// One `git worktree list --porcelain` entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitWorktreeDto {
+    pub path: String,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub detached: bool,
+    pub bare: bool,
+}
+
 /// A conversation hidden from the live sidebar by app-level archive state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchivedConversationDto {
