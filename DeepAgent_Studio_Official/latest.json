@@ -1,0 +1,11 @@
+{
+    "version":  "0.0.4",
+    "notes":  "DeepAgent Studio 0.0.4",
+    "pub_date":  "2026-06-21T16:20:17Z",
+    "platforms":  {
+                      "windows-x86_64":  {
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNDNQS0k5ZC9hd3RBQ25hbmlQQ0xsSXlGMDdYc0MrT01vR0s4VmZOMFFhZ1psM0VLRE16YjMzSzBndVo3YTZGVTFxY3JNd0M5NW0xMEd5L0FVMjhRc1FuT08xK2NzYlFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgyMDU4NzEyCWZpbGU6RGVlcEFnZW50IFN0dWRpb18wLjAuNF94NjQtc2V0dXAuZXhlCngxMnUyTW8xMVBVSUJUYTE1RjNaQXVaeXdMTTBnWXJIUFlpTFoxdGIzQSs0blFQS01jbkE5dWxPOThSQm5zYjlaYjQwRXRmUHF6cjR0bEhDb2NkekNBPT0K",
+                                             "url":  "https://github.com/eighteendreamer/DeepAgent-Studio/releases/latest/download/DeepAgent.Studio_0.0.4_x64-setup.exe"
+                                         }
+                  }
+}
