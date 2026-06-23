@@ -2105,8 +2105,7 @@ fn summarize_file_targets(files: &[GitChangedFileDto]) -> String {
 
 fn display_file_name(path: &str) -> String {
     path.split(['/', '\\'])
-        .filter(|part| !part.is_empty())
-        .last()
+        .rfind(|part| !part.is_empty())
         .unwrap_or(path)
         .to_string()
 }
