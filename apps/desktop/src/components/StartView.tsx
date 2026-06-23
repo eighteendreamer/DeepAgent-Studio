@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { Composer } from "./Composer";
@@ -181,53 +182,61 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             <FontAwesomeIcon icon={workMode === "code" ? ["fas", "code"] : ["far", "comments"]} className={workMode === "code" ? "text-blue-500" : "text-text-base"} />
           </div>
 
-          {isModeDropdownOpen && (
-            <div className="absolute top-full right-0 mt-1 w-[260px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[100] py-2">
-              <div 
-                className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-start justify-between"
-                onClick={() => {
-                  setWorkMode("code");
-                  localStorage.setItem("workMode", "code");
-                  setIsModeDropdownOpen(false);
-                }}
+          <AnimatePresence>
+            {isModeDropdownOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                transition={{ duration: 0.15, ease: "easeOut" }}
+                className="absolute top-full right-0 mt-1 w-[260px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[100] py-2 origin-top-right"
               >
-                <div className="flex items-start">
-                  <div className="w-6 h-6 flex items-center justify-center mr-3 mt-0.5">
-                    <FontAwesomeIcon icon={["fas", "code"]} className="text-blue-500 text-[13px]" />
+                <div 
+                  className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-start justify-between"
+                  onClick={() => {
+                    setWorkMode("code");
+                    localStorage.setItem("workMode", "code");
+                    setIsModeDropdownOpen(false);
+                  }}
+                >
+                  <div className="flex items-start">
+                    <div className="w-6 h-6 flex items-center justify-center mr-3 mt-0.5">
+                      <FontAwesomeIcon icon={["fas", "code"]} className="text-blue-500 text-[13px]" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-[13px] font-medium text-text-base">{t("settings.general.workMode.code")}</div>
+                      <div className="text-[11px] text-text-secondary">{t("settings.general.workMode.codeDesc")}</div>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <div className="text-[13px] font-medium text-text-base">{t("settings.general.workMode.code")}</div>
-                    <div className="text-[11px] text-text-secondary">{t("settings.general.workMode.codeDesc")}</div>
+                  <div className="w-4 flex justify-end mt-1">
+                    {workMode === "code" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[12px] text-text-base" />}
                   </div>
                 </div>
-                <div className="w-4 flex justify-end mt-1">
-                  {workMode === "code" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[12px] text-text-base" />}
-                </div>
-              </div>
 
-              <div 
-                className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-start justify-between"
-                onClick={() => {
-                  setWorkMode("daily");
-                  localStorage.setItem("workMode", "daily");
-                  setIsModeDropdownOpen(false);
-                }}
-              >
-                <div className="flex items-start">
-                  <div className="w-6 h-6 flex items-center justify-center mr-3 mt-0.5">
-                    <FontAwesomeIcon icon={["far", "comments"]} className="text-text-base text-[13px]" />
+                <div 
+                  className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-start justify-between"
+                  onClick={() => {
+                    setWorkMode("daily");
+                    localStorage.setItem("workMode", "daily");
+                    setIsModeDropdownOpen(false);
+                  }}
+                >
+                  <div className="flex items-start">
+                    <div className="w-6 h-6 flex items-center justify-center mr-3 mt-0.5">
+                      <FontAwesomeIcon icon={["far", "comments"]} className="text-text-base text-[13px]" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-[13px] font-medium text-text-base">{t("settings.general.workMode.daily")}</div>
+                      <div className="text-[11px] text-text-secondary">{t("settings.general.workMode.dailyDesc")}</div>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <div className="text-[13px] font-medium text-text-base">{t("settings.general.workMode.daily")}</div>
-                    <div className="text-[11px] text-text-secondary">{t("settings.general.workMode.dailyDesc")}</div>
+                  <div className="w-4 flex justify-end mt-1">
+                    {workMode === "daily" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[12px] text-text-base" />}
                   </div>
                 </div>
-                <div className="w-4 flex justify-end mt-1">
-                  {workMode === "daily" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[12px] text-text-base" />}
-                </div>
-              </div>
-            </div>
-          )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
         <BottomPanelIcon 
           className="cursor-pointer transition-colors hover:text-text-base"
@@ -296,53 +305,61 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
               </div>
 
               {/* Dropdown Menu */}
-              {isDropdownOpen && (
-                <div className="absolute bottom-full left-0 mb-2 w-[300px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1">
-                  <div className="px-3 py-2 border-b border-transparent text-[13px] flex items-center text-text-secondary">
-                    <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="mr-2" />
-                    <input 
-                      type="text"
-                      placeholder={t("startView.searchProject")}
-                      className="bg-transparent outline-none w-full"
-                    />
-                  </div>
-                  
-                  <div className="flex-1 max-h-[200px] overflow-y-auto py-1">
-                    {projects.map(p => (
-                      <div
-                        key={p.path}
-                        className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base group"
-                        onClick={() => {
-                          onSelectProject(p.path);
-                          setIsDropdownOpen(false);
-                        }}
-                      >
-                        <div className="flex items-center">
-                          <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
-                          <span className="truncate">{p.name ?? "Untitled project"}</span>
-                        </div>
-                        {p.path === activeProjectPath && (
-                          <FontAwesomeIcon icon={["fas", "check"]} className="text-text-secondary text-[11px]" />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="w-full h-px bg-border-theme my-1"></div>
-
-                  <div className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base" onClick={() => { onAddProject(); setIsDropdownOpen(false); }}>
-                    <div className="flex items-center">
-                      <FontAwesomeIcon icon={["fas", "plus"]} className="mr-2 text-text-secondary w-4" />
-                      {t("startView.addNewProject")}
+              <AnimatePresence>
+                {isDropdownOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                    transition={{ duration: 0.15, ease: "easeOut" }}
+                    className="absolute bottom-full left-0 mb-2 w-[300px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1 origin-bottom-left"
+                  >
+                    <div className="px-3 py-2 border-b border-transparent text-[13px] flex items-center text-text-secondary">
+                      <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="mr-2" />
+                      <input 
+                        type="text"
+                        placeholder={t("startView.searchProject")}
+                        className="bg-transparent outline-none w-full"
+                      />
                     </div>
-                    <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
-                  </div>
-                  <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base">
-                    <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
-                    {t("startView.noProject")}
-                  </div>
-                </div>
-              )}
+                    
+                    <div className="flex-1 max-h-[200px] overflow-y-auto py-1">
+                      {projects.map(p => (
+                        <div
+                          key={p.path}
+                          className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base group"
+                          onClick={() => {
+                            onSelectProject(p.path);
+                            setIsDropdownOpen(false);
+                          }}
+                        >
+                          <div className="flex items-center">
+                            <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
+                            <span className="truncate">{p.name ?? "Untitled project"}</span>
+                          </div>
+                          {p.path === activeProjectPath && (
+                            <FontAwesomeIcon icon={["fas", "check"]} className="text-text-secondary text-[11px]" />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="w-full h-px bg-border-theme my-1"></div>
+
+                    <div className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base" onClick={() => { onAddProject(); setIsDropdownOpen(false); }}>
+                      <div className="flex items-center">
+                        <FontAwesomeIcon icon={["fas", "plus"]} className="mr-2 text-text-secondary w-4" />
+                        {t("startView.addNewProject")}
+                      </div>
+                      <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
+                    </div>
+                    <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base">
+                      <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
+                      {t("startView.noProject")}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           }
         />
