@@ -17,6 +17,7 @@ import {
 } from "../../api";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import type { ITerminalDimensions } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalPluginProps {
@@ -27,6 +28,13 @@ interface TerminalPluginProps {
 type TerminalSession =
   | { kind: "local"; handle: LocalPtyHandle }
   | { kind: "remote"; handle: SshPtyHandle };
+
+type TerminalLayout = {
+  width: number;
+  height: number;
+  cols: number;
+  rows: number;
+};
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -41,6 +49,10 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
   const sessionRef = useRef<TerminalSession | null>(null);
   const pollRef = useRef<number | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const resizeFrameRef = useRef<number | null>(null);
+  const ptyResizeTimerRef = useRef<number | null>(null);
+  const lastLayoutRef = useRef<TerminalLayout | null>(null);
+  const lastSentPtySizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const decoderRef = useRef(new TextDecoder());
   const readingRef = useRef(false);
 
@@ -62,10 +74,23 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
     readingRef.current = false;
   }, []);
 
+  const clearScheduledResize = useCallback(() => {
+    if (resizeFrameRef.current !== null) {
+      window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = null;
+    }
+    if (ptyResizeTimerRef.current !== null) {
+      window.clearTimeout(ptyResizeTimerRef.current);
+      ptyResizeTimerRef.current = null;
+    }
+  }, []);
+
   const closeSession = useCallback(async () => {
     stopPolling();
+    clearScheduledResize();
     const current = sessionRef.current;
     sessionRef.current = null;
+    lastSentPtySizeRef.current = null;
     if (current?.kind === "local") {
       try {
         await localPtyClose(current.handle.pty_id);
@@ -73,7 +98,99 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
         // ignore best-effort cleanup errors
       }
     }
-  }, [stopPolling]);
+  }, [clearScheduledResize, stopPolling]);
+
+  const schedulePtyResize = useCallback((cols: number, rows: number) => {
+    const current = sessionRef.current;
+    if (!current) return;
+
+    const last = lastSentPtySizeRef.current;
+    if (last && last.cols === cols && last.rows === rows) return;
+
+    if (ptyResizeTimerRef.current !== null) {
+      window.clearTimeout(ptyResizeTimerRef.current);
+    }
+
+    ptyResizeTimerRef.current = window.setTimeout(() => {
+      ptyResizeTimerRef.current = null;
+      const active = sessionRef.current;
+      if (!active) return;
+
+      lastSentPtySizeRef.current = { cols, rows };
+      if (active.kind === "local") {
+        void localPtyResize(active.handle.pty_id, cols, rows);
+      } else {
+        void sshPtyResize(active.handle.connection_id, cols, rows);
+      }
+    }, 120);
+  }, []);
+
+  const syncTerminalLayout = useCallback(
+    (notifyPty: boolean): ITerminalDimensions | null => {
+      const term = termRef.current;
+      const fit = fitRef.current;
+      const container = containerRef.current;
+      if (!term || !fit || !container) return null;
+
+      const rect = container.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 24) return null;
+
+      const proposed = fit.proposeDimensions();
+      if (!proposed) return null;
+
+      const previous = lastLayoutRef.current;
+      const widthChanged = !previous || Math.abs(rect.width - previous.width) > 1;
+      const heightChanged = !previous || Math.abs(rect.height - previous.height) > 1;
+
+      let cols = proposed.cols;
+      let rows = proposed.rows;
+
+      // xterm fit addon 在只改高度时也可能重新算坏列数；我们按方向拆开处理。
+      if (previous) {
+        if (!widthChanged && heightChanged) {
+          cols = term.cols;
+        } else if (widthChanged && !heightChanged) {
+          rows = term.rows;
+        }
+      }
+
+      cols = Math.max(cols, 2);
+      rows = Math.max(rows, 1);
+
+      if (term.cols !== cols || term.rows !== rows) {
+        term.resize(cols, rows);
+        term.scrollToBottom();
+      }
+
+      lastLayoutRef.current = {
+        width: rect.width,
+        height: rect.height,
+        cols,
+        rows,
+      };
+
+      if (notifyPty) {
+        schedulePtyResize(cols, rows);
+      }
+
+      return { cols, rows };
+    },
+    [schedulePtyResize]
+  );
+
+  const scheduleTerminalLayout = useCallback(
+    (notifyPty: boolean) => {
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+      }
+
+      resizeFrameRef.current = window.requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        syncTerminalLayout(notifyPty);
+      });
+    },
+    [syncTerminalLayout]
+  );
 
   useEffect(() => {
     if (!containerRef.current || termRef.current) return;
@@ -110,10 +227,14 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
       scrollback: 3000,
       convertEol: false,
     });
+
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
-    fit.fit();
+
+    termRef.current = term;
+    fitRef.current = fit;
+    scheduleTerminalLayout(false);
     term.focus();
 
     const disposable = term.onData((data) => {
@@ -128,36 +249,25 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
 
     if (typeof ResizeObserver !== "undefined") {
       const observer = new ResizeObserver(() => {
-        if (!termRef.current || !fitRef.current) return;
-        fitRef.current.fit();
-        const current = sessionRef.current;
-        if (!current) return;
-        const cols = Math.max(termRef.current.cols, 2);
-        const rows = Math.max(termRef.current.rows, 2);
-        if (current.kind === "local") {
-          void localPtyResize(current.handle.pty_id, cols, rows);
-        } else {
-          void sshPtyResize(current.handle.connection_id, cols, rows);
-        }
+        scheduleTerminalLayout(true);
       });
       observer.observe(containerRef.current);
       resizeObserverRef.current = observer;
     }
 
-    termRef.current = term;
-    fitRef.current = fit;
-
     return () => {
       disposable.dispose();
       resizeObserverRef.current?.disconnect();
       resizeObserverRef.current = null;
+      clearScheduledResize();
       stopPolling();
       void closeSession();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
+      lastLayoutRef.current = null;
     };
-  }, [closeSession, stopPolling]);
+  }, [clearScheduledResize, closeSession, scheduleTerminalLayout, stopPolling]);
 
   useEffect(() => {
     if (!termRef.current || !fitRef.current) return;
@@ -168,15 +278,19 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
     const start = async () => {
       setBooting(true);
       await closeSession();
-      if (cancelled || !termRef.current || !fitRef.current) return;
+      if (cancelled || !termRef.current) return;
 
       const term = termRef.current;
-      const fit = fitRef.current;
       term.reset();
-      fit.fit();
 
-      const cols = Math.max(term.cols, 80);
-      const rows = Math.max(term.rows, 24);
+      const dims =
+        syncTerminalLayout(false) ?? {
+          cols: Math.max(term.cols, 2),
+          rows: Math.max(term.rows, 1),
+        };
+
+      const cols = Math.max(dims.cols, 2);
+      const rows = Math.max(dims.rows, 1);
 
       try {
         if (isRemote && connectionId) {
@@ -191,6 +305,9 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
           }
           sessionRef.current = { kind: "local", handle };
         }
+
+        lastSentPtySizeRef.current = { cols, rows };
+        scheduleTerminalLayout(false);
 
         stopPolling();
         pollRef.current = window.setInterval(async () => {
@@ -227,7 +344,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
     return () => {
       cancelled = true;
     };
-  }, [closeSession, connectionId, isRemote, stopPolling]);
+  }, [closeSession, connectionId, isRemote, scheduleTerminalLayout, stopPolling, syncTerminalLayout]);
 
   if (isRemote && !connectionId) {
     return (
