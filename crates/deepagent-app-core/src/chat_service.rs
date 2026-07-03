@@ -2720,7 +2720,10 @@ fn normalize_generated_session_title(raw: &str) -> Option<String> {
     let max_chars = 48usize;
     let normalized = if title.chars().count() > max_chars {
         let mut truncated = title.chars().take(max_chars).collect::<String>();
-        truncated = truncated.trim().trim_end_matches([':', '-', ' ', '，', '。']).to_string();
+        truncated = truncated
+            .trim()
+            .trim_end_matches([':', '-', ' ', '，', '。'])
+            .to_string();
         truncated
     } else {
         title

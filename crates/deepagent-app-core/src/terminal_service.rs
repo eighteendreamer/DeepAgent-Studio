@@ -142,7 +142,10 @@ impl TerminalService {
     ) -> Result<LocalPtyHandle> {
         let cwd = self.cwd();
         let state = spawn_local_pty(shell, &cwd, cols, rows)?;
-        let id = format!("local-pty-{}", self.next_pty_id.fetch_add(1, Ordering::Relaxed));
+        let id = format!(
+            "local-pty-{}",
+            self.next_pty_id.fetch_add(1, Ordering::Relaxed)
+        );
         self.ptys.write().await.insert(id.clone(), Arc::new(state));
         Ok(LocalPtyHandle {
             pty_id: id,
@@ -252,12 +255,7 @@ impl TerminalService {
     }
 }
 
-fn spawn_local_pty(
-    shell: TerminalShell,
-    cwd: &str,
-    cols: u16,
-    rows: u16,
-) -> Result<LocalPtyState> {
+fn spawn_local_pty(shell: TerminalShell, cwd: &str, cols: u16, rows: u16) -> Result<LocalPtyState> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -418,9 +416,9 @@ fn find_git_bash_exe() -> Option<String> {
         candidates.push(format!(r"{local_app_data}\Programs\Git\bin\bash.exe"));
     }
     candidates.push("bash.exe".to_string());
-    candidates.into_iter().find(|path| {
-        path.eq_ignore_ascii_case("bash.exe") || std::path::Path::new(path).exists()
-    })
+    candidates
+        .into_iter()
+        .find(|path| path.eq_ignore_ascii_case("bash.exe") || std::path::Path::new(path).exists())
 }
 
 #[cfg(not(target_os = "windows"))]

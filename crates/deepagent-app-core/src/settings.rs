@@ -472,10 +472,7 @@ impl SettingsService {
                 .map(|s| s.approval_policy)
                 .unwrap_or_default(),
             sandbox_mode: prior.as_ref().map(|s| s.sandbox_mode).unwrap_or_default(),
-            terminal_shell: prior
-                .as_ref()
-                .map(|s| s.terminal_shell)
-                .unwrap_or_default(),
+            terminal_shell: prior.as_ref().map(|s| s.terminal_shell).unwrap_or_default(),
             permission_rules: prior
                 .as_ref()
                 .map(|s| s.permission_rules.clone())

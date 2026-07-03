@@ -82,7 +82,9 @@ impl SshServiceImpl {
                 };
                 (
                     live_status.unwrap_or(cfg.cached_status),
-                    s.last_error().await.or_else(|| cfg.cached_last_error.clone()),
+                    s.last_error()
+                        .await
+                        .or_else(|| cfg.cached_last_error.clone()),
                     cfg.cached_latency_ms,
                 )
             } else {
@@ -414,11 +416,10 @@ impl SshServiceImpl {
                         .as_ref()
                         .map(|snap| snap.status)
                         .unwrap_or(SshStatus::Disconnected),
-                    last_error: s.last_error().await.or_else(|| {
-                        cached
-                            .as_ref()
-                            .and_then(|snap| snap.last_error.clone())
-                    }),
+                    last_error: s
+                        .last_error()
+                        .await
+                        .or_else(|| cached.as_ref().and_then(|snap| snap.last_error.clone())),
                     latency_ms: cached.and_then(|snap| snap.latency_ms),
                 })
             }
@@ -476,12 +477,7 @@ impl SshServiceImpl {
             SshStatus::Error
         };
         let _ = self
-            .update_cached_status(
-                &cfg.id,
-                status,
-                result.error.clone(),
-                result.latency_ms,
-            )
+            .update_cached_status(&cfg.id, status, result.error.clone(), result.latency_ms)
             .await;
         Ok(result)
     }
@@ -984,9 +980,8 @@ impl SshServiceImpl {
                             .await
                         }
                         Err(_) => {
-                            let err = SshError::Timeout(Duration::from_secs(
-                                STATUS_REFRESH_TIMEOUT_SECS,
-                            ));
+                            let err =
+                                SshError::Timeout(Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS));
                             let _ = client.disconnect().await;
                             session.replace_pty(None).await;
                             session.set_client(None).await;

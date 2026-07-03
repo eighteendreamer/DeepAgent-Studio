@@ -297,8 +297,14 @@ mod tests {
                 .as_deref(),
             Some("max")
         );
-        assert_eq!(ThinkingConfig::for_depth(ThinkingDepth::Medium).max_tokens, None);
-        assert_eq!(ThinkingConfig::for_depth(ThinkingDepth::Deep).max_tokens, None);
+        assert_eq!(
+            ThinkingConfig::for_depth(ThinkingDepth::Medium).max_tokens,
+            None
+        );
+        assert_eq!(
+            ThinkingConfig::for_depth(ThinkingDepth::Deep).max_tokens,
+            None
+        );
     }
 
     #[test]
