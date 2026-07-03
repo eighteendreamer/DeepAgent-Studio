@@ -115,6 +115,17 @@ pub struct CostRecord {
     pub cost_yuan: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CostRecordRequest {
+    pub session_id: String,
+    pub model: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_hit_tokens: u32,
+    pub cache_miss_tokens: u32,
+    pub total_tokens: u32,
+}
+
 /// Summary of accumulated costs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CostSummary {
@@ -171,39 +182,32 @@ impl CostService {
 
     /// Record a cost entry for a completed model call. Returns the calculated
     /// RMB cost.
-    pub fn record(
-        &self,
-        session_id: &str,
-        model: &str,
-        input_tokens: u32,
-        output_tokens: u32,
-        cache_hit_tokens: u32,
-        cache_miss_tokens: u32,
-        total_tokens: u32,
-    ) -> Result<f64> {
-        let pricing = self.pricing_for_model(model)?;
-        let effective_cache_miss = if cache_miss_tokens > 0 {
-            cache_miss_tokens
+    pub fn record(&self, request: CostRecordRequest) -> Result<f64> {
+        let pricing = self.pricing_for_model(&request.model)?;
+        let effective_cache_miss = if request.cache_miss_tokens > 0 {
+            request.cache_miss_tokens
         } else {
-            input_tokens.saturating_sub(cache_hit_tokens)
+            request
+                .input_tokens
+                .saturating_sub(request.cache_hit_tokens)
         };
         let cost = pricing.calculate(
-            input_tokens,
-            output_tokens,
-            cache_hit_tokens,
+            request.input_tokens,
+            request.output_tokens,
+            request.cache_hit_tokens,
             effective_cache_miss,
         );
         let now = SystemClock.now().as_millis();
 
         CostStore::new(&self.db).insert(&CostEntry {
-            session_id,
+            session_id: &request.session_id,
             timestamp: now,
-            model,
-            input_tokens,
-            output_tokens,
-            cache_hit_tokens,
+            model: &request.model,
+            input_tokens: request.input_tokens,
+            output_tokens: request.output_tokens,
+            cache_hit_tokens: request.cache_hit_tokens,
             cache_miss_tokens: effective_cache_miss,
-            total_tokens,
+            total_tokens: request.total_tokens,
             cost_yuan: cost,
         })?;
         Ok(cost)
@@ -339,7 +343,15 @@ mod tests {
     fn record_and_summary() {
         let svc = service();
         let cost = svc
-            .record("ses_1", "deepseek-v4-flash", 10000, 500, 8000, 2000, 10500)
+            .record(CostRecordRequest {
+                session_id: "ses_1".to_string(),
+                model: "deepseek-v4-flash".to_string(),
+                input_tokens: 10000,
+                output_tokens: 500,
+                cache_hit_tokens: 8000,
+                cache_miss_tokens: 2000,
+                total_tokens: 10500,
+            })
             .unwrap();
         assert!(cost > 0.0);
 
@@ -356,15 +368,15 @@ mod tests {
             daily_limit: Some(0.001),
             monthly_limit: None,
         });
-        svc.record(
-            "ses_1",
-            "deepseek-v4-flash",
-            1_000_000,
-            500_000,
-            0,
-            1_000_000,
-            1_500_000,
-        )
+        svc.record(CostRecordRequest {
+            session_id: "ses_1".to_string(),
+            model: "deepseek-v4-flash".to_string(),
+            input_tokens: 1_000_000,
+            output_tokens: 500_000,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 1_000_000,
+            total_tokens: 1_500_000,
+        })
         .unwrap();
         assert!(svc.check_budget().is_err());
     }
@@ -379,7 +391,15 @@ mod tests {
     fn deprecated_chat_alias_uses_flash_pricing() {
         let svc = service();
         let cost = svc
-            .record("ses_1", "deepseek-chat", 1000, 1000, 0, 1000, 2000)
+            .record(CostRecordRequest {
+                session_id: "ses_1".to_string(),
+                model: "deepseek-chat".to_string(),
+                input_tokens: 1000,
+                output_tokens: 1000,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 1000,
+                total_tokens: 2000,
+            })
             .unwrap();
         assert!(cost > 0.0);
     }

@@ -191,7 +191,7 @@ mod tests {
         svc.set_env_panel_auto_open("s1", false).unwrap();
 
         assert!(svc.clear_session("s1").unwrap());
-        assert_eq!(svc.ui_prefs("s1").unwrap().env_panel_auto_open, false);
+        assert!(!svc.ui_prefs("s1").unwrap().env_panel_auto_open);
         assert!(!svc.pinned_ids().unwrap().contains("s1"));
     }
 
@@ -199,9 +199,9 @@ mod tests {
     fn purge_session_state_removes_ui_prefs() {
         let svc = service();
         svc.set_env_panel_auto_open("s1", false).unwrap();
-        assert_eq!(svc.ui_prefs("s1").unwrap().env_panel_auto_open, false);
+        assert!(!svc.ui_prefs("s1").unwrap().env_panel_auto_open);
 
         assert!(svc.purge_session_state("s1").unwrap());
-        assert_eq!(svc.ui_prefs("s1").unwrap().env_panel_auto_open, true);
+        assert!(svc.ui_prefs("s1").unwrap().env_panel_auto_open);
     }
 }

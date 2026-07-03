@@ -41,6 +41,7 @@ use deepagent_session::Session;
 use deepagent_tools::{PermissionSet, ToolRegistry};
 
 use crate::approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
+use crate::cost_service::CostRecordRequest;
 use crate::dto::ApprovalRequestDto;
 use crate::office_service::OfficeService;
 use crate::project_map_service::ProjectMapService;
@@ -2467,15 +2468,15 @@ impl ChatService {
         if let Some(cost) = &self.cost {
             if let Some(u) = agent.cumulative_usage() {
                 if u.total_tokens > 0 {
-                    match cost.record(
-                        &session_id,
-                        &model_name_for_cost,
-                        u.prompt_tokens,
-                        u.completion_tokens,
-                        u.prompt_cache_hit_tokens,
-                        u.prompt_cache_miss_tokens,
-                        u.total_tokens,
-                    ) {
+                    match cost.record(CostRecordRequest {
+                        session_id: session_id.clone(),
+                        model: model_name_for_cost.clone(),
+                        input_tokens: u.prompt_tokens,
+                        output_tokens: u.completion_tokens,
+                        cache_hit_tokens: u.prompt_cache_hit_tokens,
+                        cache_miss_tokens: u.prompt_cache_miss_tokens,
+                        total_tokens: u.total_tokens,
+                    }) {
                         Ok(cny) => {
                             tracing::info!(cost_yuan = cny, "recorded run cost");
                             sink.emit(RuntimeEvent::Usage {
