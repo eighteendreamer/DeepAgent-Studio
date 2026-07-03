@@ -7,6 +7,8 @@ import { Composer } from "./Composer";
 import { ToolCallCard } from "./ToolCallCard";
 import { ApprovalDialog } from "./ApprovalDialog";
 import { MarkdownText } from "./MarkdownText";
+import { EnvironmentInfoPanel } from "./EnvironmentInfoPanel";
+import type { OutputItem } from "./EnvironmentInfoPanel";
 import { FilesPlugin } from "./plugins/FilesPlugin";
 import { SideChatPlugin } from "./plugins/SideChatPlugin";
 import { BrowserPlugin } from "./plugins/BrowserPlugin";
@@ -19,7 +21,6 @@ import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
 import { projectMapRefreshDeep, projectMapStatus, SEND_TO_CHAT_EVENT } from "../api";
 import { useGitStatus } from "../hooks/useGitStatus";
-import { GitBranchChip } from "./git/GitBranchChip";
 import { GitWorkbench } from "./git/GitWorkbench";
 
 interface Props {
@@ -66,19 +67,6 @@ export type Tab = {
   icon: IconProp;
   url?: string;
 };
-
-type OutputItem =
-  | { kind: "url"; label: string }
-  | { kind: "file"; label: string; action: "write" | "edit" }
-  | { kind: "image"; label: string; source: "tool" | "url" }
-  | {
-      kind: "todo";
-      label: string;
-      total: number;
-      pending: number;
-      inProgress: number;
-      completed: number;
-    };
 
 type OfficeContextView = {
   type: string;
@@ -1373,178 +1361,18 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
       </div>
       {/* Floating sticky note for context state */}
         {isOutputPanelOpen && (
-          <div
-            className="absolute top-16 right-6 w-[300px] bg-white border border-border-theme rounded-2xl shadow-[0_12px_36px_rgb(0,0,0,0.10)] flex flex-col z-10"
-            style={{ maxHeight: "min(460px, calc(100% - 120px))" }}
-          >
-            <div className="flex-1 flex flex-col p-5 overflow-y-auto">
-              <div className="flex items-center justify-between mb-3">
-                <div className="text-[14px] text-text-secondary">{t("chatView.environmentInfo")}</div>
-                <button
-                  type="button"
-                  className="w-7 h-7 rounded-md text-text-secondary hover:text-text-base hover:bg-gray-100 transition-colors"
-                  aria-label={t("chatView.environmentSettings")}
-                >
-                  <FontAwesomeIcon icon={["fas", "gear"]} />
-                </button>
-              </div>
-
-              <div className="space-y-3 text-[14px]">
-                <button
-                  type="button"
-                  className="flex w-full items-center justify-between gap-3 rounded-lg px-0 py-0 text-left transition-colors hover:text-text-base disabled:hover:text-text-base"
-                  onClick={() => {
-                    if (activeProjectPath && gitStatus?.is_repo) setIsGitWorkbenchOpen(true);
-                  }}
-                  disabled={!activeProjectPath || !gitStatus?.is_repo}
-                >
-                  <div className="flex items-center min-w-0 text-text-base">
-                    <FontAwesomeIcon icon={["fas", "list-check"]} className="w-4 mr-3 text-text-secondary" />
-                    <span>{t("chatView.changes")}</span>
-                    {activeProjectPath && gitStatus?.is_repo && (
-                      <FontAwesomeIcon icon={["fas", "chevron-right"]} className="ml-2 text-[10px] text-text-secondary" />
-                    )}
-                  </div>
-                  {activeProjectPath ? (
-                    <div
-                      className="flex items-center gap-1.5 font-medium tabular-nums"
-                      title={`Git 工作区变更；本轮会话变更 +${chatChanges.additions} -${chatChanges.deletions}`}
-                    >
-                      {gitLoading ? (
-                        <span className="text-[13px] text-text-secondary">{t("chatView.loading")}</span>
-                      ) : gitStatus?.is_repo ? (
-                        <>
-                          <span className="text-green-600">+{gitWorkspaceAdditions}</span>
-                          <span className="text-red-500">-{gitWorkspaceDeletions}</span>
-                          {gitWorkspaceFilesChanged > 0 && (
-                            <span className="ml-1 text-[11px] text-text-secondary">
-                              {gitWorkspaceFilesChanged}
-                            </span>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-[13px] text-text-secondary">{t("chatView.noGitRepository")}</span>
-                      )}
-                    </div>
-                  ) : (
-                    <span className="text-[13px] text-text-secondary">{t("chatView.noProject")}</span>
-                  )}
-                </button>
-
-                <div className="flex items-center min-w-0 text-text-base" title={activeProjectPath ?? undefined}>
-                  <FontAwesomeIcon icon={["fas", "desktop"]} className="w-4 mr-3 text-text-secondary" />
-                  <span className="truncate">{t("chatView.local")}</span>
-                  {activeProjectPath && <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[10px] text-text-secondary" />}
-                </div>
-
-                <div className="flex items-center min-w-0 text-text-base">
-                  <FontAwesomeIcon icon={["fas", "code-branch"]} className="w-4 mr-3 text-text-secondary" />
-                  {activeProjectPath ? (
-                    gitLoading ? (
-                      <span className="truncate text-text-secondary">{t("chatView.loading")}</span>
-                    ) : gitStatus?.is_repo ? (
-                      <GitBranchChip
-                        projectPath={activeProjectPath}
-                        compact
-                        className="-ml-1 min-w-0"
-                        onOpenWorkbench={() => setIsGitWorkbenchOpen(true)}
-                      />
-                    ) : (
-                      <span className="truncate text-text-secondary">{t("chatView.noGitRepository")}</span>
-                    )
-                  ) : (
-                    <span className="truncate text-text-secondary">{t("chatView.noProject")}</span>
-                  )}
-                </div>
-
-                <div className="flex items-center min-w-0 text-text-base">
-                  <FontAwesomeIcon icon={["fas", "share-nodes"]} className="w-4 mr-3 text-text-secondary" />
-                  <span>{t("chatView.commitOrPush")}</span>
-                </div>
-
-                <div className="flex items-center min-w-0 text-text-secondary">
-                  <FontAwesomeIcon icon={["fab", "github"]} className="w-4 mr-3 text-text-secondary" />
-                  <span>
-                    {gitStatus?.gh_available ? t("chatView.githubCliAvailable") : t("chatView.githubCliUnavailable")}
-                  </span>
-                </div>
-              </div>
-
-              <div className="w-full h-px bg-border-theme my-5"></div>
-
-              <div className="mb-5">
-                <div className="text-[14px] text-text-secondary mb-3">{t("chatView.output")}</div>
-                {outputItems.length > 0 ? (
-                  <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-1">
-                    {outputItems.map((item) => {
-                      const key =
-                        item.kind === "todo"
-                          ? `todo:${item.total}:${item.pending}:${item.inProgress}:${item.completed}`
-                          : `${item.kind}:${item.label}`;
-                      const icon: IconProp =
-                        item.kind === "url"
-                          ? ["fas", "globe"]
-                          : item.kind === "image"
-                          ? ["far", "image"]
-                          : item.kind === "todo"
-                          ? ["fas", "list-check"]
-                          : ["far", "file-lines"];
-                      const iconColor =
-                        item.kind === "todo"
-                          ? "text-blue-500"
-                          : item.kind === "image"
-                          ? "text-purple-500"
-                          : item.kind === "file"
-                          ? item.action === "write"
-                            ? "text-green-600"
-                            : "text-amber-600"
-                          : "text-text-secondary";
-                      const clickable =
-                        item.kind === "url" || (item.kind === "image" && item.source === "url");
-                      const onClick = () => {
-                        if (item.kind === "url") openUrlInSidebarBrowser(item.label);
-                        else if (item.kind === "image" && item.source === "url")
-                          openUrlInSidebarBrowser(item.label);
-                      };
-                      return (
-                        <div
-                          key={key}
-                          className={`flex items-center text-[13px] text-text-base min-w-0 transition-colors ${
-                            clickable ? "hover:text-blue-500 cursor-pointer" : "cursor-default"
-                          }`}
-                          title={item.label}
-                          onClick={clickable ? onClick : undefined}
-                        >
-                          <FontAwesomeIcon
-                            icon={icon}
-                            className={`w-4 mr-2 flex-shrink-0 ${iconColor}`}
-                          />
-                          <span className="truncate flex-1">{item.label}</span>
-                          {item.kind === "file" && (
-                            <span className="ml-2 text-[10px] text-text-secondary flex-shrink-0 px-1.5 py-0.5 bg-gray-100 rounded">
-                              {item.action === "write" ? t("chatView.outputCreated") : t("chatView.outputEdited")}
-                            </span>
-                          )}
-                          {item.kind === "image" && item.source === "tool" && (
-                            <span className="ml-2 text-[10px] text-text-secondary flex-shrink-0 px-1.5 py-0.5 bg-gray-100 rounded">
-                              {t("chatView.outputCreated")}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="text-[13px] text-text-secondary">{t("chatView.noOutput")}</div>
-                )}
-              </div>
-
-              <div>
-                <div className="text-[14px] text-text-secondary mb-3">{t("chatView.sources")}</div>
-                <div className="text-[13px] text-text-secondary">{t("chatView.noSources")}</div>
-              </div>
-            </div>
-          </div>
+          <EnvironmentInfoPanel
+            activeProjectPath={activeProjectPath}
+            gitStatus={gitStatus}
+            gitLoading={gitLoading}
+            gitWorkspaceAdditions={gitWorkspaceAdditions}
+            gitWorkspaceDeletions={gitWorkspaceDeletions}
+            gitWorkspaceFilesChanged={gitWorkspaceFilesChanged}
+            chatChanges={chatChanges}
+            outputItems={outputItems}
+            onOpenGitWorkbench={() => setIsGitWorkbenchOpen(true)}
+            onOpenUrl={openUrlInSidebarBrowser}
+          />
         )}
         {isGitWorkbenchOpen && activeProjectPath && (
           <div
