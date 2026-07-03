@@ -494,6 +494,17 @@ fn session_conversation(
 }
 
 #[tauri::command]
+fn rename_session(
+    state: State<'_, AppState>,
+    session_id: String,
+    title: String,
+) -> Result<SessionSummaryDto, String> {
+    let svc = state.service.lock().map_err(|e| e.to_string())?;
+    svc.rename_session(&session_id, &title)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn set_session_pinned(
     state: State<'_, AppState>,
     session_id: String,
@@ -3100,6 +3111,7 @@ pub fn run() {
             list_sessions,
             session_detail,
             session_conversation,
+            rename_session,
             set_session_pinned,
             get_session_ui_prefs,
             set_session_env_panel_auto_open,

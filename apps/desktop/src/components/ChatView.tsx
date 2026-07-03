@@ -21,6 +21,7 @@ import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
 import {
   getSessionUiPrefs,
+  OPEN_AUTOMATION_EVENT,
   projectMapRefreshDeep,
   projectMapStatus,
   SEND_TO_CHAT_EVENT,
@@ -42,12 +43,20 @@ interface Props {
   onRewind?: (toSeq: number) => void;
   /** Export the current session transcript. */
   onExport?: (format: "markdown" | "json") => void;
+  /** Copy the current session transcript. */
+  onCopy?: () => void;
+  /** Rename the current session. */
+  onRename?: (title: string) => void;
+  /** Open the current session in a new window. */
+  onOpenInNewWindow?: () => void;
   /** Pin or unpin the current session. */
   onPin?: () => void;
   /** Archive the current session. */
   onArchive?: () => void;
   /** Whether the current session is pinned. */
   pinned?: boolean;
+  /** Current session display title. */
+  title?: string | null;
   /** The session timeline, used to offer rewind anchors. */
   timeline?: TimelineEntry[];
   /** Head-of-queue tool-approval request to show floating above the composer. */
@@ -596,9 +605,13 @@ export function ChatView({
   onFork,
   onRewind,
   onExport,
+  onCopy,
+  onRename,
+  onOpenInNewWindow,
   onPin,
   onArchive,
   pinned = false,
+  title = null,
   timeline = [],
   approval = null,
   approvalQueueCount = 0,
@@ -952,6 +965,26 @@ export function ChatView({
     setValue("");
   };
 
+  const handleRename = () => {
+    const nextTitle = window.prompt(t("chatView.renameChat"), title || t("chatView.chat"));
+    const trimmed = nextTitle?.trim();
+    if (!trimmed) return;
+    onRename?.(trimmed);
+    setIsMenuOpen(false);
+  };
+
+  const handleOpenSideChat = () => {
+    const sideChatCard = TOOL_CARDS.find((card) => card.type === "chat");
+    if (sideChatCard) handleOpenSidebarPlugin(sideChatCard);
+    setIsRightSidebarOpen(true);
+    setIsMenuOpen(false);
+  };
+
+  const handleOpenAutomation = () => {
+    window.dispatchEvent(new CustomEvent(OPEN_AUTOMATION_EVENT));
+    setIsMenuOpen(false);
+  };
+
   return (
     <div className="w-full h-full flex flex-col relative">
       {/* Top half: conversation flow & overlay */}
@@ -985,7 +1018,10 @@ export function ChatView({
                   </div>
                   <span className="text-gray-400 text-[11px] font-sans">Ctrl+Alt+P</span>
                 </div>
-                <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group">
+                <div
+                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  onClick={handleRename}
+                >
                   <div className="flex items-center">
                     <FontAwesomeIcon icon={["fas", "pen"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
                     <span>{t("chatView.renameChat")}</span>
@@ -1008,7 +1044,10 @@ export function ChatView({
                 
                 <div className="w-full h-px bg-border-theme my-1.5"></div>
                 
-                <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group">
+                <div
+                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  onClick={handleOpenSideChat}
+                >
                   <div className="flex items-center">
                     <FontAwesomeIcon icon={["far", "window-restore"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
                     <span>{t("chatView.openSideChat")}</span>
@@ -1016,7 +1055,7 @@ export function ChatView({
                 </div>
                 <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
                   onClick={() => {
-                    onExport?.("markdown");
+                    onCopy?.();
                     setIsMenuOpen(false);
                   }}
                 >
@@ -1024,7 +1063,6 @@ export function ChatView({
                     <FontAwesomeIcon icon={["far", "copy"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
                     <span>{t("chatView.copy")}</span>
                   </div>
-                  <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-gray-400" />
                 </div>
                 <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
                   onClick={() => {
@@ -1047,7 +1085,6 @@ export function ChatView({
                     <FontAwesomeIcon icon={["fas", "code-branch"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
                     <span>{t("chatView.branch")}</span>
                   </div>
-                  <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-gray-400" />
                 </div>
                 <div className="relative">
                   <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
@@ -1085,7 +1122,10 @@ export function ChatView({
 
                 <div className="w-full h-px bg-border-theme my-1.5"></div>
 
-                <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group">
+                <div
+                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  onClick={handleOpenAutomation}
+                >
                   <div className="flex items-center">
                     <FontAwesomeIcon icon={["far", "clock"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
                     <span>{t("chatView.addAutomation")}</span>
@@ -1094,7 +1134,13 @@ export function ChatView({
 
                 <div className="w-full h-px bg-border-theme my-1.5"></div>
 
-                <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group">
+                <div
+                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  onClick={() => {
+                    onOpenInNewWindow?.();
+                    setIsMenuOpen(false);
+                  }}
+                >
                   <div className="flex items-center">
                     <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
                     <span>{t("chatView.openInNewWindow")}</span>

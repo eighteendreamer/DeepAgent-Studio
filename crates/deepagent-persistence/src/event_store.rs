@@ -267,6 +267,24 @@ impl<'db> EventStore<'db> {
         })
     }
 
+    /// Update a session's display title.
+    pub fn rename_session(
+        &self,
+        session_id: SessionId,
+        title: Option<&str>,
+        now: Timestamp,
+    ) -> Result<bool> {
+        self.db.with_conn(|c| {
+            let changed = c
+                .execute(
+                    "UPDATE sessions SET title = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![session_id.to_string(), title, now.as_millis()],
+                )
+                .map_err(map_sqlite)?;
+            Ok(changed > 0)
+        })
+    }
+
     /// List all sessions, most recently updated first.
     pub fn list_sessions(&self) -> Result<Vec<SessionRecord>> {
         self.db.with_conn(|c| {

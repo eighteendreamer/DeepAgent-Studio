@@ -6,7 +6,7 @@
 
 use std::str::FromStr;
 
-use deepagent_core::clock::SystemClock;
+use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::id::SessionId;
 use deepagent_observation::{build_timeline, export_transcript, SessionStats, TranscriptFormat};
@@ -148,6 +148,24 @@ impl AppService {
             timeline,
             stats,
         })
+    }
+
+    /// Rename a session's display title.
+    pub fn rename_session(&self, session_id: &str, title: &str) -> Result<SessionSummaryDto> {
+        let id = SessionId::from_str(session_id)
+            .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            return Err(CoreError::invalid("session title cannot be empty"));
+        }
+
+        let store = EventStore::new(&self.db);
+        let now = SystemClock.now();
+        if !store.rename_session(id, Some(trimmed), now)? {
+            return Err(CoreError::not_found(format!("session {session_id}")));
+        }
+
+        Ok(self.session_detail(session_id)?.summary)
     }
 
     /// The command-palette commands, optionally filtered by a fuzzy `query`.

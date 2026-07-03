@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ARCHIVE_CHANGED_EVENT,
+  OPEN_AUTOMATION_EVENT,
   archiveAllConversations,
   archiveConversation,
   getSessionDetail,
@@ -27,6 +28,8 @@ import {
   forkSession,
   rewindSession,
   exportTranscript,
+  openSessionInNewWindow,
+  renameSession,
 } from "./api";
 import type { RuntimeEvent } from "./api";
 import type {
@@ -62,6 +65,14 @@ interface SessionCompletedPayload {
 }
 
 export function App() {
+  const requestedSessionIdRef = useRef<string | null>(null);
+  if (requestedSessionIdRef.current === null && typeof window !== "undefined") {
+    const raw = window.location.hash.startsWith("#")
+      ? window.location.hash.slice(1)
+      : window.location.hash;
+    const params = new URLSearchParams(raw);
+    requestedSessionIdRef.current = params.get("session");
+  }
 
   const [showOnboarding, setShowOnboarding] = useState(
     () => !localStorage.getItem("onboarding_complete")
@@ -113,12 +124,17 @@ export function App() {
       .then((s) => {
         setSessions(s);
         if (s.length > 0) {
-          const initialId = s[0].id;
+          const requested = requestedSessionIdRef.current;
+          const requestedMatch = s.find((session) => session.id === requested) ?? null;
+          const initialId = requestedMatch?.id ?? s[0].id;
           setActiveId(initialId);
           setNavState({
-            history: [{ activeId: initialId, view: "start" }],
+            history: [{ activeId: initialId, view: requestedMatch ? "chat" : "start" }],
             index: 0,
           });
+          if (requestedMatch) {
+            setView("chat");
+          }
         }
       })
       .catch(() => setSessions([]));
@@ -356,6 +372,12 @@ export function App() {
     window.addEventListener(ARCHIVE_CHANGED_EVENT, refreshSessions);
     return () => window.removeEventListener(ARCHIVE_CHANGED_EVENT, refreshSessions);
   }, [refreshSessions]);
+
+  useEffect(() => {
+    const onOpenAutomation = () => navigateTo(activeIdRef.current, "automation");
+    window.addEventListener(OPEN_AUTOMATION_EVENT, onOpenAutomation);
+    return () => window.removeEventListener(OPEN_AUTOMATION_EVENT, onOpenAutomation);
+  }, [navigateTo]);
 
   // Switch the active project (agent ops + new sessions attach here).
   const onSelectProject = useCallback((path: string) => {
@@ -1038,6 +1060,55 @@ export function App() {
     [activeId]
   );
 
+  const onCopySession = useCallback(() => {
+    if (!activeId) return;
+    exportTranscript(activeId, "markdown")
+      .then(async (transcript) => {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(transcript.content);
+        } else {
+          const textarea = document.createElement("textarea");
+          textarea.value = transcript.content;
+          textarea.style.position = "fixed";
+          textarea.style.opacity = "0";
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand("copy");
+          document.body.removeChild(textarea);
+        }
+        message.success("已复制对话");
+      })
+      .catch((err) => {
+        message.error(`复制失败：${String(err)}`);
+      });
+  }, [activeId]);
+
+  const onRenameSession = useCallback(
+    (title: string) => {
+      if (!activeId) return;
+      renameSession(activeId, title)
+        .then((summary) => {
+          setSessions((prev) =>
+            prev.map((session) => (session.id === summary.id ? summary : session))
+          );
+          setDetail((prev) => (prev ? { ...prev, summary } : prev));
+          message.success("已重命名对话");
+        })
+        .catch((err) => {
+          message.error(`重命名失败：${String(err)}`);
+        });
+    },
+    [activeId]
+  );
+
+  const onOpenSessionInNewWindow = useCallback(() => {
+    if (!activeId) return;
+    openSessionInNewWindow(activeId)
+      .catch((err) => {
+        message.error(`打开新窗口失败：${String(err)}`);
+      });
+  }, [activeId]);
+
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
@@ -1163,6 +1234,9 @@ export function App() {
                   onFork={onForkSession}
                   onRewind={onRewindSession}
                   onExport={onExportSession}
+                  onCopy={onCopySession}
+                  onRename={onRenameSession}
+                  onOpenInNewWindow={onOpenSessionInNewWindow}
                   onPin={() => {
                     if (activeSession) onPinSession(activeSession.id, !activeSession.pinned);
                   }}
@@ -1170,6 +1244,7 @@ export function App() {
                     if (activeSession) onArchiveSession(activeSession.id);
                   }}
                   pinned={activeSession?.pinned ?? false}
+                  title={activeSession?.title ?? detail?.summary.title ?? null}
                   timeline={detail?.timeline ?? []}
                   approval={approvals[0] ?? null}
                   approvalQueueCount={approvals.length}

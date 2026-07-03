@@ -74,6 +74,7 @@ type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
 export const SETTINGS_CHANGED_EVENT = "deepagent:settings-changed";
 export const ARCHIVE_CHANGED_EVENT = "deepagent:archive-changed";
+export const OPEN_AUTOMATION_EVENT = "deepagent:open-automation";
 /** Fired by office-agent panels to inject a message into the active chat. */
 export const SEND_TO_CHAT_EVENT = "deepagent:send-to-chat";
 
@@ -138,6 +139,21 @@ export async function setSessionPinned(sessionId: string, pinned: boolean): Prom
   const invoke = getInvoke();
   if (invoke) return invoke<boolean>("set_session_pinned", { sessionId, pinned });
   return pinned;
+}
+
+export async function renameSession(sessionId: string, title: string): Promise<SessionSummary> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SessionSummary>("rename_session", { sessionId, title });
+  return {
+    id: sessionId,
+    project: undefined,
+    title,
+    mode: "normal",
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    ended: false,
+    pinned: false,
+  };
 }
 
 export async function getSessionUiPrefs(sessionId: string): Promise<SessionUiPrefs> {
@@ -1121,6 +1137,27 @@ export async function gitCreateBranch(
     stdout: "mock create branch",
     stderr: "",
   };
+}
+
+export async function openSessionInNewWindow(sessionId: string): Promise<void> {
+  const url = `${window.location.origin}${window.location.pathname}${window.location.search}#session=${encodeURIComponent(sessionId)}`;
+  if (typeof window !== "undefined" && (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    const label = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const webview = new WebviewWindow(label, {
+      url,
+      title: "DeepAgent Studio",
+      width: 1280,
+      height: 860,
+      focus: true,
+    });
+    await new Promise<void>((resolve, reject) => {
+      webview.once("tauri://created", () => resolve());
+      webview.once("tauri://error", (event) => reject(new Error(String(event.payload))));
+    });
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 export async function gitChanges(path: string): Promise<GitChanges> {
