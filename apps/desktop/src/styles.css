@@ -71,6 +71,82 @@ button:focus {
   background: #ffffff !important;
 }
 
+.panel-resize-handle-col {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 10px;
+  margin-left: -5px;
+  cursor: col-resize;
+  z-index: 50;
+}
+
+.panel-resize-handle-col::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.28);
+  transition:
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    width 160ms ease,
+    opacity 160ms ease;
+}
+
+.panel-resize-handle-col:hover::after {
+  background: rgba(100, 116, 139, 0.42);
+}
+
+.panel-resize-handle-col.is-active::after {
+  width: 1px;
+  background: rgba(100, 116, 139, 0.42);
+  box-shadow: none;
+}
+
+.panel-resize-handle-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 10px;
+  margin-top: -5px;
+  cursor: row-resize;
+  z-index: 50;
+}
+
+.panel-resize-handle-row::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.24);
+  transition:
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    height 160ms ease,
+    opacity 160ms ease;
+}
+
+.panel-resize-handle-row:hover::after {
+  background: rgba(100, 116, 139, 0.36);
+}
+
+.panel-resize-handle-row.is-active::after {
+  height: 1px;
+  background: rgba(100, 116, 139, 0.36);
+  box-shadow: none;
+}
+
 /* Window control buttons */
 .win-btn:hover {
   background-color: rgba(0, 0, 0, 0.05);

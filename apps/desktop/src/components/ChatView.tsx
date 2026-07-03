@@ -1389,7 +1389,7 @@ export function ChatView({
         >
           {/* Resize Handle */}
           <div 
-            className="absolute left-0 right-0 top-0 h-1.5 cursor-row-resize hover:bg-blue-500/50 z-50 -mt-[1px]"
+            className={`panel-resize-handle-row ${isResizingBottom ? "is-active" : ""}`}
             onMouseDown={(e) => {
               e.preventDefault();
               setIsResizingBottom(true);
@@ -1398,7 +1398,7 @@ export function ChatView({
           {/* Global Tab Bar */}
           {/* Resize Handle */}
           <div 
-            className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/50 z-50 -ml-[1px]"
+            className={`panel-resize-handle-col ${isResizingSidebar ? "is-active" : ""}`}
             onMouseDown={(e) => {
               e.preventDefault();
               setIsResizingSidebar(true);
@@ -1483,7 +1483,7 @@ export function ChatView({
         >
           {/* Resize Handle */}
           <div 
-            className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/50 z-50 -ml-[1px]"
+            className={`panel-resize-handle-col ${isResizingSidebar ? "is-active" : ""}`}
             onMouseDown={(e) => {
               e.preventDefault();
               setIsResizingSidebar(true);
