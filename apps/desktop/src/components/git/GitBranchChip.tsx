@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { gitCheckoutBranch, gitCreateBranch, gitFetch } from "../../api";
 import type { GitBranch, GitOperationResult } from "../../types";
 import { useGitStatus } from "../../hooks/useGitStatus";
@@ -26,6 +28,7 @@ export function GitBranchChip({
   onStatusChange,
   onOpenWorkbench,
 }: Props) {
+  const { t } = useTranslation();
   const { loading, status, branches, changes, refresh } = useGitStatus(projectPath);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -50,28 +53,25 @@ export function GitBranchChip({
   if (!projectPath || (!loading && !status?.is_repo)) return null;
 
   const dirty = !!status?.has_changes;
-  const aheadBehind =
-    status && (status.ahead > 0 || status.behind > 0)
-      ? `${status.ahead > 0 ? `↑${status.ahead}` : ""}${status.behind > 0 ? ` ↓${status.behind}` : ""}`
-      : "";
-
   const displayAheadBehind =
-    status && (status.ahead > 0 || status.behind > 0)
-      ? formatAheadBehind(status.ahead, status.behind)
-      : "";
-  void aheadBehind;
+    status && (status.ahead > 0 || status.behind > 0) ? formatAheadBehind(status.ahead, status.behind, t) : "";
 
-  const runOperation = async (label: string, operation: () => Promise<GitOperationResult | void>) => {
-    setBusy(label);
+  const runOperation = async (
+    action: "checkout" | "createBranch" | "fetch",
+    operation: () => Promise<GitOperationResult | void>,
+  ) => {
+    setBusy(action);
     setOperationError(null);
     setOperationResult(null);
     try {
       const result = await operation();
       if (result && !result.ok) {
-        setOperationError(result.stderr || result.stdout || `${label} failed`);
+        setOperationError(result.stderr || result.stdout || t("git.operationFailed", { action: t(`git.actions.${action}`) }));
         return;
       }
-      if (result) setOperationResult(result.stdout.trim() || `${label} completed`);
+      if (result) {
+        setOperationResult(result.stdout.trim() || t("git.operationCompleted", { action: t(`git.actions.${action}`) }));
+      }
       await refresh();
     } catch (error) {
       setOperationError(error instanceof Error ? error.message : String(error));
@@ -83,16 +83,14 @@ export function GitBranchChip({
   const checkoutBranch = async (branch: GitBranch) => {
     if (!projectPath || branch.current || busy) return;
     if (branch.worktree_path) {
-      setOperationError(`Branch is already checked out in ${branch.worktree_path}`);
+      setOperationError(t("git.branchAlreadyCheckedOut", { path: branch.worktree_path }));
       return;
     }
     if (dirty) {
-      const ok = window.confirm(
-        `Switch to ${branch.name}? Git will stop the checkout if local changes would be overwritten.`,
-      );
+      const ok = window.confirm(t("git.switchBranchConfirm", { branch: branch.name }));
       if (!ok) return;
     }
-    await runOperation(`Checkout ${branch.name}`, async () => gitCheckoutBranch(projectPath, branch.name));
+    await runOperation("checkout", async () => gitCheckoutBranch(projectPath, branch.name));
     setOpen(false);
   };
 
@@ -101,15 +99,15 @@ export function GitBranchChip({
     const settings = getGitUiSettings();
     const suffix = status?.current_branch ? `${status.current_branch}-new` : "new-branch";
     const suggested = `${settings.branchPrefix}${suffix}`;
-    const name = window.prompt("New branch name", suggested)?.trim();
+    const name = window.prompt(t("git.newBranchName"), suggested)?.trim();
     if (!name) return;
-    await runOperation(`Create ${name}`, async () => gitCreateBranch(projectPath, name, null));
+    await runOperation("createBranch", async () => gitCreateBranch(projectPath, name, null));
     setOpen(false);
   };
 
   const fetchAndRefresh = async () => {
     if (!projectPath || busy) return;
-    await runOperation("Fetch", async () => gitFetch(projectPath, false));
+    await runOperation("fetch", async () => gitFetch(projectPath, false));
   };
 
   return (
@@ -122,49 +120,43 @@ export function GitBranchChip({
                 compact ? "min-h-[38px]" : "min-h-[42px]"
               }`
             : variant === "row"
-            ? `flex w-full min-w-0 items-center justify-between rounded-xl px-3 py-2 text-[14px] font-medium text-text-base transition-colors hover:bg-gray-50 ${
-                compact ? "min-h-[38px]" : "min-h-[42px]"
-              }`
-            : `inline-flex min-w-0 items-center rounded-md text-[12px] font-medium text-text-secondary transition-colors hover:bg-gray-100 hover:text-text-base ${
-                compact ? "px-1.5 py-1" : "px-2 py-1.5"
-              }`
+              ? `flex w-full min-w-0 items-center justify-between rounded-xl px-3 py-2 text-[14px] font-medium text-text-base transition-colors hover:bg-gray-50 ${
+                  compact ? "min-h-[38px]" : "min-h-[42px]"
+                }`
+              : `inline-flex min-w-0 items-center rounded-md text-[12px] font-medium text-text-secondary transition-colors hover:bg-gray-100 hover:text-text-base ${
+                  compact ? "px-1.5 py-1" : "px-2 py-1.5"
+                }`
         }
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen((value) => !value)}
         title={status?.repo_root ?? projectPath ?? undefined}
       >
         {variant === "env" ? (
           <>
             <div className="flex min-w-0 items-center">
               <FontAwesomeIcon icon={["fas", "desktop"]} className="mr-3 w-4 text-text-secondary" />
-              <span className="truncate">本地</span>
+              <span className="truncate">{t("chatView.local")}</span>
             </div>
             <div className="ml-3 flex min-w-0 items-center">
               <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[12px] text-text-secondary" />
-              <span className="max-w-[96px] truncate font-medium">{currentLabel ?? "Git"}</span>
+              <span className="max-w-[96px] truncate font-medium">{currentLabel ?? t("git.title")}</span>
               {dirty && <span className="ml-2 h-2 w-2 rounded-full bg-amber-500" />}
-              <FontAwesomeIcon
-                icon={["fas", open ? "chevron-up" : "chevron-down"]}
-                className="ml-2 text-[11px] text-text-secondary"
-              />
+              <FontAwesomeIcon icon={["fas", open ? "chevron-up" : "chevron-down"]} className="ml-2 text-[11px] text-text-secondary" />
             </div>
           </>
         ) : variant === "row" ? (
           <>
             <div className="flex min-w-0 items-center">
               <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-3 w-4 text-text-secondary" />
-              <span className="truncate">{currentLabel ?? "Git"}</span>
+              <span className="truncate">{currentLabel ?? t("git.title")}</span>
               {dirty && <span className="ml-2 h-2 w-2 rounded-full bg-amber-500" />}
               {displayAheadBehind && <span className="ml-2 text-[11px] text-blue-500">{displayAheadBehind}</span>}
             </div>
-            <FontAwesomeIcon
-              icon={["fas", open ? "chevron-up" : "chevron-down"]}
-              className="ml-3 text-[11px] text-text-secondary"
-            />
+            <FontAwesomeIcon icon={["fas", open ? "chevron-up" : "chevron-down"]} className="ml-3 text-[11px] text-text-secondary" />
           </>
         ) : (
           <>
             <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[13px]" />
-            <span className="max-w-[150px] truncate">{currentLabel ?? "Git"}</span>
+            <span className="max-w-[150px] truncate">{currentLabel ?? t("git.title")}</span>
             {dirty && <span className="ml-1.5 h-1.5 w-1.5 rounded-full bg-amber-500" />}
             {displayAheadBehind && <span className="ml-1.5 text-[11px] text-blue-500">{displayAheadBehind}</span>}
             <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
@@ -240,6 +232,7 @@ function GitBranchDropdown({
   onCreateBranch: () => void;
   onOpenWorkbench?: () => void;
 }) {
+  const { t } = useTranslation();
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return branches;
@@ -262,7 +255,7 @@ function GitBranchDropdown({
           <input
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
-            placeholder="Search branches"
+            placeholder={t("git.searchBranches")}
             className="w-full bg-transparent outline-none"
             autoFocus
           />
@@ -274,15 +267,15 @@ function GitBranchDropdown({
           <div className="min-w-0">
             <div className="flex items-center text-[13px] font-medium text-text-base">
               <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-text-secondary" />
-              <span className="truncate">{currentBranch ?? "Detached HEAD"}</span>
+              <span className="truncate">{currentBranch ?? t("git.detachedHead")}</span>
               {(rebaseState || mergeState) && (
                 <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700">
-                  {rebaseState ? "变基中" : "合并中"}
+                  {rebaseState ? t("git.rebasing") : t("git.merging")}
                 </span>
               )}
             </div>
             <div className="mt-0.5 text-[11px] text-text-secondary">
-              {filesChanged > 0 ? `${filesChanged} changed file(s)` : "Working tree clean"}
+              {filesChanged > 0 ? t("git.changedFilesCount", { count: filesChanged }) : t("git.workingTreeClean")}
             </div>
           </div>
           <div className="ml-3 flex items-center gap-1.5 text-[12px] font-medium tabular-nums">
@@ -295,12 +288,12 @@ function GitBranchDropdown({
       </div>
 
       <div className="max-h-[280px] overflow-y-auto py-1">
-        {loading && <div className="px-4 py-2 text-[12px] text-text-secondary">Loading Git state...</div>}
+        {loading && <div className="px-4 py-2 text-[12px] text-text-secondary">{t("git.loadingState")}</div>}
         {!loading && branches.length === 0 && (
-          <div className="px-4 py-2 text-[12px] text-text-secondary">No branches found</div>
+          <div className="px-4 py-2 text-[12px] text-text-secondary">{t("git.noBranchesFound")}</div>
         )}
-        <BranchSection title="Local branches" branches={local} busy={busy} onCheckout={onCheckout} />
-        <BranchSection title="Remote branches" branches={remote} busy={busy} onCheckout={onCheckout} />
+        <BranchSection title={t("git.localBranches")} branches={local} busy={busy} onCheckout={onCheckout} />
+        <BranchSection title={t("git.remoteBranches")} branches={remote} busy={busy} onCheckout={onCheckout} />
       </div>
 
       <div className="border-t border-border-theme py-1">
@@ -311,7 +304,7 @@ function GitBranchDropdown({
           disabled={!!busy}
         >
           <FontAwesomeIcon icon={["fas", "rotate-right"]} className="mr-2.5 w-4 text-text-secondary" />
-          {busy === "Fetch" ? "Fetching..." : "Fetch"}
+          {busy === "fetch" ? t("git.fetching") : t("git.fetch")}
         </button>
         <button
           type="button"
@@ -320,7 +313,7 @@ function GitBranchDropdown({
           onClick={onCreateBranch}
         >
           <FontAwesomeIcon icon={["fas", "plus"]} className="mr-2.5 w-4 text-text-secondary" />
-          Create and checkout new branch...
+          {t("git.createAndCheckoutBranch")}
         </button>
         <button
           type="button"
@@ -328,11 +321,11 @@ function GitBranchDropdown({
             onOpenWorkbench ? "text-text-base hover:bg-gray-50" : "text-text-secondary"
           }`}
           disabled={!onOpenWorkbench}
-          title={onOpenWorkbench ? "打开 Git" : "当前视图未挂载 Git 面板"}
+          title={onOpenWorkbench ? t("git.openGit") : t("git.openGitUnavailable")}
           onClick={onOpenWorkbench}
         >
           <FontAwesomeIcon icon={["fas", "table"]} className="mr-2.5 w-4" />
-          打开 Git
+          {t("git.openGit")}
         </button>
       </div>
     </div>
@@ -350,6 +343,8 @@ function BranchSection({
   busy: string | null;
   onCheckout: (branch: GitBranch) => void;
 }) {
+  const { t } = useTranslation();
+
   if (branches.length === 0) return null;
   return (
     <div className="py-1">
@@ -361,7 +356,7 @@ function BranchSection({
             type="button"
             key={branch.full_name}
             className="flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-[13px] text-text-base hover:bg-gray-50 disabled:cursor-default disabled:hover:bg-transparent"
-            title={branch.worktree_path ? `Worktree: ${branch.worktree_path}` : branch.subject ?? branch.name}
+            title={branch.worktree_path ? t("git.worktreeAt", { path: branch.worktree_path }) : branch.subject ?? branch.name}
             disabled={disabled}
             onClick={() => onCheckout(branch)}
           >
@@ -370,15 +365,13 @@ function BranchSection({
               <div className="min-w-0">
                 <div className="truncate font-medium">{branch.name}</div>
                 <div className="truncate text-[11px] text-text-secondary">
-                  {branch.worktree_path ? `Worktree: ${branch.worktree_path}` : branch.subject ?? branch.upstream ?? ""}
+                  {branch.worktree_path ? t("git.worktreeAt", { path: branch.worktree_path }) : branch.subject ?? branch.upstream ?? ""}
                 </div>
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {(branch.ahead > 0 || branch.behind > 0) && (
-                <span className="text-[11px] font-medium text-blue-600">
-                  {formatAheadBehind(branch.ahead, branch.behind)}
-                </span>
+                <span className="text-[11px] font-medium text-blue-600">{formatAheadBehind(branch.ahead, branch.behind, t)}</span>
               )}
               {branch.current && <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-base" />}
             </div>
@@ -394,9 +387,11 @@ function Message({ children, tone }: { children: string; tone: "error" | "succes
   return <div className={`mt-2 rounded-md px-3 py-2 text-[12px] ${cls}`}>{children}</div>;
 }
 
-function formatAheadBehind(ahead: number, behind: number): string {
+function formatAheadBehind(ahead: number, behind: number, t: TFunction): string {
   return [
-    ahead > 0 ? `ahead ${ahead}` : "",
-    behind > 0 ? `behind ${behind}` : "",
-  ].filter(Boolean).join(" ");
+    ahead > 0 ? t("git.aheadCount", { count: ahead }) : "",
+    behind > 0 ? t("git.behindCount", { count: behind }) : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }

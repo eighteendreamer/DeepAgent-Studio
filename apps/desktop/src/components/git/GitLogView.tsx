@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { useTranslation } from "react-i18next";
 import { gitCommitDiff, gitCreateBranch, gitLog } from "../../api";
 import type { GitCommitFile, GitDiff, GitLogEntry } from "../../types";
 import { DiffText } from "./GitDiffViewer";
@@ -11,6 +12,7 @@ interface Props {
 }
 
 export function GitLogView({ projectPath, onRefresh }: Props) {
+  const { t } = useTranslation();
   const [entries, setEntries] = useState<GitLogEntry[]>([]);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -21,26 +23,29 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
   const [operation, setOperation] = useState<string | null>(null);
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
 
-  const loadLog = useCallback((preserveSelection: boolean) => {
-    setLoading(true);
-    setError(null);
-    return gitLog(projectPath, 200)
-      .then((next) => {
-        setEntries(next);
-        setSelectedHash((current) =>
-          preserveSelection && current && next.some((entry) => entry.full_hash === current)
-            ? current
-            : next[0]?.full_hash ?? null,
-        );
-        setSelectedFile(null);
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-  }, [projectPath]);
+  const loadLog = useCallback(
+    (preserveSelection: boolean) => {
+      setLoading(true);
+      setError(null);
+      return gitLog(projectPath, 200)
+        .then((next) => {
+          setEntries(next);
+          setSelectedHash((current) =>
+            preserveSelection && current && next.some((entry) => entry.full_hash === current)
+              ? current
+              : next[0]?.full_hash ?? null,
+          );
+          setSelectedFile(null);
+        })
+        .catch((err) => {
+          setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          setLoading(false);
+        });
+    },
+    [projectPath],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -106,13 +111,13 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
     setOperationMessage(null);
     const settings = getGitUiSettings();
     const suggested = `${settings.branchPrefix}${slugBranchName(selectedCommit.subject) || selectedCommit.hash}`;
-    const name = window.prompt("New branch name", suggested)?.trim();
+    const name = window.prompt(t("git.logPanel.newBranchName"), suggested)?.trim();
     if (!name) return;
     setOperation("branch");
     try {
       const result = await gitCreateBranch(projectPath, name, selectedCommit.full_hash);
       if (!result.ok) throw new Error(result.stderr || result.stdout || result.command);
-      setOperationMessage(`Created and checked out ${name}`);
+      setOperationMessage(t("git.logPanel.branchCreated", { name }));
       await loadLog(true);
       await onRefresh?.();
     } catch (err) {
@@ -128,17 +133,17 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
         <div className="flex h-10 flex-shrink-0 items-center justify-between border-b border-border-theme px-3">
           <div className="flex items-center text-[13px] font-medium text-text-base">
             <FontAwesomeIcon icon={["fas", "code-commit"]} className="mr-2 text-text-secondary" />
-            修改记录
+            {t("git.logPanel.title")}
           </div>
-          <span className="text-[11px] text-text-secondary">{entries.length} commits</span>
+          <span className="text-[11px] text-text-secondary">{t("git.logPanel.commitsCount", { count: entries.length })}</span>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto bg-gray-50/60">
           {loading ? (
-            <div className="px-4 py-3 text-[13px] text-text-secondary">Loading Git log...</div>
+            <div className="px-4 py-3 text-[13px] text-text-secondary">{t("git.logPanel.loadingLog")}</div>
           ) : error ? (
             <div className="px-4 py-3 text-[13px] text-red-500">{error}</div>
           ) : entries.length === 0 ? (
-            <div className="px-4 py-3 text-[13px] text-text-secondary">No commits found.</div>
+            <div className="px-4 py-3 text-[13px] text-text-secondary">{t("git.logPanel.noCommitsFound")}</div>
           ) : (
             entries.map((entry, index) => (
               <CommitRow
@@ -170,7 +175,7 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
                     </span>
                     {selectedCommit.parents.length > 1 && (
                       <span className="ml-2 rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-600">
-                        merge {selectedCommit.parents.length}
+                        {t("git.logPanel.mergeCount", { count: selectedCommit.parents.length })}
                       </span>
                     )}
                   </div>
@@ -191,7 +196,7 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <LogActionButton
-                  label="创建分支"
+                    label={t("git.logPanel.createBranch")}
                     icon={["fas", "code-branch"]}
                     disabled={!!operation}
                     busy={operation === "branch"}
@@ -203,9 +208,7 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
             <div className="grid min-h-0 flex-1 grid-rows-[160px_minmax(0,1fr)]">
               <div className="overflow-y-auto border-b border-border-theme bg-gray-50/60 py-2">
                 {selectedCommit.files.length === 0 ? (
-                  <div className="px-4 py-2 text-[13px] text-text-secondary">
-                    This commit has no file list.
-                  </div>
+                  <div className="px-4 py-2 text-[13px] text-text-secondary">{t("git.logPanel.noFileList")}</div>
                 ) : (
                   selectedCommit.files.map((file) => (
                     <CommitFileRow
@@ -220,13 +223,13 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
               <div className="min-h-0 overflow-auto bg-[#fbfbfb]">
                 {diffLoading ? (
                   <div className="flex h-full items-center justify-center text-[13px] text-text-secondary">
-                    Loading commit diff...
+                    {t("git.logPanel.loadingCommitDiff")}
                   </div>
                 ) : diff?.text ? (
                   <DiffText text={diff.text} />
                 ) : (
                   <div className="flex h-full items-center justify-center text-[13px] text-text-secondary">
-                    Select a file to inspect this commit diff.
+                    {t("git.logPanel.selectFile")}
                   </div>
                 )}
               </div>
@@ -234,7 +237,7 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
           </>
         ) : (
           <div className="flex h-full items-center justify-center text-[13px] text-text-secondary">
-            Select a commit.
+            {t("git.logPanel.selectCommit")}
           </div>
         )}
       </div>
@@ -255,6 +258,7 @@ function CommitRow({
   active: boolean;
   onClick: () => void;
 }) {
+  const { t } = useTranslation();
   const parentCount = entry.parents.length;
   const merge = parentCount > 1;
   return (
@@ -272,7 +276,7 @@ function CommitRow({
           <span className="truncate text-[13px] font-medium">{entry.subject}</span>
           {merge && (
             <span className="ml-1.5 shrink-0 rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-600">
-              merge {parentCount}
+              {t("git.logPanel.mergeCount", { count: parentCount })}
             </span>
           )}
           {entry.refs.slice(0, 2).map((ref) => (
@@ -285,7 +289,7 @@ function CommitRow({
           <span className="font-mono">{entry.hash}</span>
           <span>{entry.author_name}</span>
           <span>{formatDate(entry.date)}</span>
-          <span>{entry.files.length} files</span>
+          <span>{t("git.logPanel.filesCount", { count: entry.files.length })}</span>
         </div>
       </div>
     </button>
@@ -386,11 +390,7 @@ function LogActionButton({
 }
 
 function slugBranchName(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48);
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
 }
 
 function formatDate(value: string): string {

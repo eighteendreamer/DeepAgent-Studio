@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { gitPush, gitPushPreview, gitPushRiskScan } from "../../api";
 import type { GitOperationResult, GitPushPreview, GitPushRiskScan } from "../../types";
 import { getGitUiSettings } from "./gitSettings";
@@ -10,6 +12,7 @@ interface Props {
 }
 
 export function GitPushPanel({ projectPath, onRefresh }: Props) {
+  const { t } = useTranslation();
   const [preview, setPreview] = useState<GitPushPreview | null>(null);
   const [riskScan, setRiskScan] = useState<GitPushRiskScan | null>(null);
   const [loading, setLoading] = useState(false);
@@ -21,10 +24,7 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const [nextPreview, nextRiskScan] = await Promise.all([
-        gitPushPreview(projectPath),
-        gitPushRiskScan(projectPath),
-      ]);
+      const [nextPreview, nextRiskScan] = await Promise.all([gitPushPreview(projectPath), gitPushRiskScan(projectPath)]);
       setPreview(nextPreview);
       setRiskScan(nextRiskScan);
     } catch (err) {
@@ -44,13 +44,11 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
     const target = `${preview.remote ?? "origin"}/${preview.remote_branch ?? preview.current_branch ?? ""}`;
     const highRisks = riskScan?.risks.filter((risk) => risk.severity === "high") ?? [];
     if (highRisks.length > 0) {
-      const ok = window.confirm(
-        `Push includes ${highRisks.length} high-risk finding(s). Review them before pushing. Continue anyway?`,
-      );
+      const ok = window.confirm(t("git.pushPanel.confirmHighRisk", { count: highRisks.length }));
       if (!ok) return;
     }
     if (settings.confirmBeforePush) {
-      const ok = window.confirm(`Push ${preview.ahead} commit(s) to ${target}?`);
+      const ok = window.confirm(t("git.pushPanel.confirmPush", { count: preview.ahead, target }));
       if (!ok) return;
     }
     setPushing(true);
@@ -60,7 +58,7 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
       const next = await gitPush(projectPath, preview.remote, preview.remote_branch);
       setResult(next);
       if (!next.ok) {
-        setError(next.stderr || next.stdout || "Push failed");
+        setError(next.stderr || next.stdout || t("git.pushPanel.pushFailed"));
       } else {
         await onRefresh?.();
         await load();
@@ -72,20 +70,18 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
     }
   };
 
-  const blocked = preview?.blocked_reason;
-  const target = preview
-    ? `${preview.remote ?? "origin"}/${preview.remote_branch ?? preview.current_branch ?? "-"}`
-    : "-";
+  const blocked = localizeGitPushBlockedReason(t, preview?.blocked_reason ?? null);
+  const target = preview ? `${preview.remote ?? "origin"}/${preview.remote_branch ?? preview.current_branch ?? "-"}` : "-";
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
       <div className="flex h-11 flex-shrink-0 items-center justify-between border-b border-border-theme px-4">
         <div className="flex min-w-0 items-center">
           <FontAwesomeIcon icon={["fas", "upload"]} className="mr-2 text-text-secondary" />
-          <span className="text-[14px] font-medium text-text-base">Push</span>
+          <span className="text-[14px] font-medium text-text-base">{t("git.pushPanel.title")}</span>
           {preview && (
             <span className="ml-2 truncate text-[12px] text-text-secondary">
-              {preview.current_branch ?? "HEAD"} {"->"} {target}
+              {preview.current_branch ?? t("git.detachedHead")} {"->"} {target}
             </span>
           )}
         </div>
@@ -96,28 +92,26 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
           className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
         >
           <FontAwesomeIcon icon={["fas", "rotate-right"]} className="mr-1.5 text-[11px]" />
-          Refresh
+          {t("git.pushPanel.refresh")}
         </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto bg-gray-50/60 p-4">
         {loading ? (
-          <div className="text-[13px] text-text-secondary">Loading push preview...</div>
+          <div className="text-[13px] text-text-secondary">{t("git.pushPanel.loadingPreview")}</div>
         ) : error ? (
-          <Message tone="error">{error}</Message>
+          <Message>{error}</Message>
         ) : preview ? (
           <div className="mx-auto flex max-w-3xl flex-col gap-3">
             <div className="rounded-lg border border-border-theme bg-white p-4">
               <div className="grid gap-3 text-[12px] text-text-secondary sm:grid-cols-2">
-                <Info label="Current branch" value={preview.current_branch ?? "Detached HEAD"} />
-                <Info label="Upstream" value={preview.upstream ?? "Not configured"} />
-                <Info label="Target" value={target} />
-                <Info label="Ahead / Behind" value={`${preview.ahead} / ${preview.behind}`} />
+                <Info label={t("git.pushPanel.currentBranch")} value={preview.current_branch ?? t("git.detachedHead")} />
+                <Info label={t("git.pushPanel.upstream")} value={preview.upstream ?? t("git.pushPanel.notConfigured")} />
+                <Info label={t("git.pushPanel.target")} value={target} />
+                <Info label={t("git.pushPanel.aheadBehind")} value={`${preview.ahead} / ${preview.behind}`} />
               </div>
               {blocked ? (
-                <div className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
-                  {blocked}
-                </div>
+                <div className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-[12px] text-amber-700">{blocked}</div>
               ) : (
                 <button
                   type="button"
@@ -126,12 +120,12 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
                   className="mt-4 inline-flex h-9 items-center rounded-md bg-text-base px-3 text-[12px] font-medium text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:bg-gray-300"
                 >
                   <FontAwesomeIcon icon={["fas", "upload"]} className="mr-2 text-[11px]" />
-                  {pushing ? "Pushing..." : `Push ${preview.ahead} commit(s)`}
+                  {pushing ? t("git.pushPanel.pushing") : t("git.pushPanel.pushCommits", { count: preview.ahead })}
                 </button>
               )}
               {result?.ok && (
                 <div className="mt-3 rounded-md bg-green-50 px-3 py-2 text-[12px] text-green-700">
-                  Push completed.
+                  {t("git.pushPanel.pushCompleted")}
                 </div>
               )}
             </div>
@@ -140,20 +134,18 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
 
             <div className="rounded-lg border border-border-theme bg-white">
               <div className="flex h-10 items-center justify-between border-b border-border-theme px-3">
-                <div className="text-[13px] font-medium text-text-base">Commits to push</div>
-                <div className="text-[11px] text-text-secondary">{preview.commits.length} commits</div>
+                <div className="text-[13px] font-medium text-text-base">{t("git.pushPanel.commitsTitle")}</div>
+                <div className="text-[11px] text-text-secondary">{t("git.pushPanel.commitsCount", { count: preview.commits.length })}</div>
               </div>
               {preview.commits.length === 0 ? (
-                <div className="px-3 py-4 text-[13px] text-text-secondary">No outgoing commits.</div>
+                <div className="px-3 py-4 text-[13px] text-text-secondary">{t("git.pushPanel.noOutgoingCommits")}</div>
               ) : (
                 <div className="divide-y divide-border-theme">
                   {preview.commits.map((commit) => (
                     <div key={commit.full_hash} className="px-3 py-2">
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="font-mono text-[11px] text-text-secondary">{commit.hash}</span>
-                        <span className="truncate text-[13px] font-medium text-text-base">
-                          {commit.subject}
-                        </span>
+                        <span className="truncate text-[13px] font-medium text-text-base">{commit.subject}</span>
                       </div>
                       <div className="mt-0.5 flex items-center gap-2 text-[11px] text-text-secondary">
                         <span>{commit.author_name}</span>
@@ -166,7 +158,7 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
             </div>
           </div>
         ) : (
-          <div className="text-[13px] text-text-secondary">No push preview available.</div>
+          <div className="text-[13px] text-text-secondary">{t("git.pushPanel.noPreview")}</div>
         )}
       </div>
     </div>
@@ -174,31 +166,35 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
 }
 
 function RiskScanCard({ scan }: { scan: GitPushRiskScan | null }) {
+  const { t } = useTranslation();
+
   if (!scan) return null;
   const high = scan.risks.filter((risk) => risk.severity === "high").length;
   const medium = scan.risks.filter((risk) => risk.severity === "medium").length;
   const low = scan.risks.filter((risk) => risk.severity === "low").length;
+  const blockedReason = localizeGitPushBlockedReason(t, scan.blocked_reason);
+
   return (
     <div className="rounded-lg border border-border-theme bg-white">
       <div className="flex h-10 items-center justify-between border-b border-border-theme px-3">
         <div className="flex items-center text-[13px] font-medium text-text-base">
           <FontAwesomeIcon icon={["fas", "shield-halved"]} className="mr-2 text-text-secondary" />
-          Push risk scan
+          {t("git.pushPanel.riskScanTitle")}
         </div>
         <div className="text-[11px] text-text-secondary">
-          {scan.scanned_files} file(s), {scan.risks.length} finding(s)
+          {t("git.pushPanel.riskSummary", { files: scan.scanned_files, findings: scan.risks.length })}
         </div>
       </div>
-      {scan.blocked_reason ? (
-        <div className="px-3 py-3 text-[12px] text-text-secondary">{scan.blocked_reason}</div>
+      {blockedReason ? (
+        <div className="px-3 py-3 text-[12px] text-text-secondary">{blockedReason}</div>
       ) : scan.risks.length === 0 ? (
-        <div className="px-3 py-3 text-[12px] text-green-700">No local risks found.</div>
+        <div className="px-3 py-3 text-[12px] text-green-700">{t("git.pushPanel.noLocalRisks")}</div>
       ) : (
         <div className="p-3">
           <div className="mb-2 flex flex-wrap gap-2 text-[11px]">
-            <RiskCount label="High" value={high} tone="high" />
-            <RiskCount label="Medium" value={medium} tone="medium" />
-            <RiskCount label="Low" value={low} tone="low" />
+            <RiskCount label={t("git.pushPanel.severity.high")} value={high} tone="high" />
+            <RiskCount label={t("git.pushPanel.severity.medium")} value={medium} tone="medium" />
+            <RiskCount label={t("git.pushPanel.severity.low")} value={low} tone="low" />
           </div>
           <div className="space-y-2">
             {scan.risks.map((risk, index) => (
@@ -208,7 +204,7 @@ function RiskScanCard({ scan }: { scan: GitPushRiskScan | null }) {
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="font-medium">{risk.title}</div>
-                  <span className="shrink-0 text-[10px] uppercase">{risk.severity}</span>
+                  <span className="shrink-0 text-[10px] uppercase">{localizeSeverity(t, risk.severity)}</span>
                 </div>
                 <div className="mt-1 text-[11px] opacity-90">{risk.detail}</div>
                 {risk.file_path && (
@@ -264,9 +260,8 @@ function Info({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Message({ children, tone }: { children: string; tone: "error" }) {
-  const cls = tone === "error" ? "bg-red-50 text-red-600" : "bg-gray-100 text-text-secondary";
-  return <div className={`rounded-md px-3 py-2 text-[12px] ${cls}`}>{children}</div>;
+function Message({ children }: { children: string }) {
+  return <div className="rounded-md bg-red-50 px-3 py-2 text-[12px] text-red-600">{children}</div>;
 }
 
 function formatDate(value: string): string {
@@ -278,4 +273,27 @@ function formatDate(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function localizeSeverity(t: TFunction, severity: string): string {
+  if (severity === "high") return t("git.pushPanel.severity.high");
+  if (severity === "medium") return t("git.pushPanel.severity.medium");
+  if (severity === "low") return t("git.pushPanel.severity.low");
+  return severity;
+}
+
+function localizeGitPushBlockedReason(t: TFunction, reason: string | null): string | null {
+  if (!reason) return null;
+
+  const exact: Record<string, string> = {
+    "nothing to push": t("git.pushPanel.reasons.nothingToPush"),
+    "not a git repository": t("git.pushPanel.reasons.notGitRepository"),
+    "no upstream branch is configured": t("git.pushPanel.reasons.noUpstream"),
+    "upstream has new commits; update before pushing": t("git.pushPanel.reasons.upstreamAhead"),
+    "detached HEAD cannot be pushed from this view": t("git.pushPanel.reasons.detachedHead"),
+    "finish or abort the active merge before pushing": t("git.pushPanel.reasons.finishMerge"),
+    "finish or abort the active rebase before pushing": t("git.pushPanel.reasons.finishRebase"),
+  };
+
+  return exact[reason] ?? reason;
 }

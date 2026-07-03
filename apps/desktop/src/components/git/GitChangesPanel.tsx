@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import { useTranslation } from "react-i18next";
 import { gitCommit, gitCommitMessageDraft, gitStage, gitUnstage } from "../../api";
 import type { GitChangedFile, GitChanges } from "../../types";
 import { GitDiffViewer } from "./GitDiffViewer";
@@ -14,13 +15,14 @@ interface Props {
 }
 
 const GROUPS = [
-  { id: "conflicted", label: "Conflicts", icon: ["fas", "triangle-exclamation"] as IconProp },
-  { id: "staged", label: "Staged", icon: ["fas", "check"] as IconProp },
-  { id: "unstaged", label: "Unstaged", icon: ["fas", "pen"] as IconProp },
-  { id: "untracked", label: "Untracked", icon: ["far", "file"] as IconProp },
+  { id: "conflicted", labelKey: "git.groups.conflicted", icon: ["fas", "triangle-exclamation"] as IconProp },
+  { id: "staged", labelKey: "git.groups.staged", icon: ["fas", "check"] as IconProp },
+  { id: "unstaged", labelKey: "git.groups.unstaged", icon: ["fas", "pen"] as IconProp },
+  { id: "untracked", labelKey: "git.groups.untracked", icon: ["far", "file"] as IconProp },
 ] as const;
 
 export function GitChangesPanel({ projectPath, changes, loading = false, onRefresh, onClose }: Props) {
+  const { t } = useTranslation();
   const files = changes?.files ?? [];
   const [selectedPath, setSelectedPath] = useState<string | null>(files[0]?.path ?? null);
   const [commitMessage, setCommitMessage] = useState("");
@@ -33,9 +35,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
       setSelectedPath(null);
       return;
     }
-    setSelectedPath((current) =>
-      current && files.some((file) => file.path === current) ? current : files[0].path,
-    );
+    setSelectedPath((current) => (current && files.some((file) => file.path === current) ? current : files[0].path));
   }, [files]);
 
   const selected = useMemo(() => {
@@ -49,13 +49,16 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
   };
   const stagedFiles = files.filter((file) => file.category === "staged");
 
-  const runOperation = async (label: string, fn: () => Promise<{ ok: boolean; stderr: string; stdout: string }>) => {
-    setBusyAction(label);
+  const runOperation = async (
+    action: "stage" | "unstage" | "commit",
+    fn: () => Promise<{ ok: boolean; stderr: string; stdout: string }>,
+  ) => {
+    setBusyAction(action);
     setOperationError(null);
     try {
       const result = await fn();
       if (!result.ok) {
-        setOperationError(result.stderr || result.stdout || `${label} failed`);
+        setOperationError(result.stderr || result.stdout || t("git.operationFailed", { action: t(`git.actions.${action}`) }));
         return false;
       }
       await onRefresh?.();
@@ -68,22 +71,20 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
     }
   };
 
-  const stageFile = (file: GitChangedFile) =>
-    runOperation("stage", () => gitStage(projectPath, [file.path]));
-  const unstageFile = (file: GitChangedFile) =>
-    runOperation("unstage", () => gitUnstage(projectPath, [file.path]));
+  const stageFile = (file: GitChangedFile) => runOperation("stage", () => gitStage(projectPath, [file.path]));
+  const unstageFile = (file: GitChangedFile) => runOperation("unstage", () => gitUnstage(projectPath, [file.path]));
 
   const commitStaged = async () => {
     const message = commitMessage.trim();
     if (!message) {
-      setOperationError("Commit message must not be empty.");
+      setOperationError(t("git.commitMessageRequired"));
       return;
     }
     if (stagedFiles.length === 0) {
-      setOperationError("Stage at least one file before committing.");
+      setOperationError(t("git.stageBeforeCommit"));
       return;
     }
-    const ok = window.confirm(`Create a local commit with ${stagedFiles.length} staged file(s)?`);
+    const ok = window.confirm(t("git.commitConfirm", { count: stagedFiles.length }));
     if (!ok) return;
     const committed = await runOperation("commit", () => gitCommit(projectPath, message));
     if (committed) setCommitMessage("");
@@ -114,8 +115,8 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
       <div className="flex h-11 flex-shrink-0 items-center justify-between border-b border-border-theme px-4">
         <div className="flex min-w-0 items-center">
           <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-2 text-text-secondary" />
-          <span className="text-[14px] font-medium text-text-base">Git Changes</span>
-          <span className="ml-2 text-[12px] text-text-secondary">{files.length} files</span>
+          <span className="text-[14px] font-medium text-text-base">{t("git.changesTitle")}</span>
+          <span className="ml-2 text-[12px] text-text-secondary">{t("git.filesCount", { count: files.length })}</span>
           <span className="ml-3 text-[12px] font-medium tabular-nums">
             <span className="text-green-600">+{totals.additions}</span>
             <span className="ml-1.5 text-red-500">-{totals.deletions}</span>
@@ -126,7 +127,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
             type="button"
             className="h-7 w-7 rounded-md text-text-secondary hover:bg-gray-100 hover:text-text-base"
             onClick={onClose}
-            aria-label="Close Git Changes"
+            aria-label={t("git.closeChanges")}
           >
             <FontAwesomeIcon icon={["fas", "xmark"]} />
           </button>
@@ -137,9 +138,9 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
         <div className="flex min-h-0 min-w-0 flex-col border-r border-border-theme bg-gray-50/60">
           <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto py-2">
             {loading ? (
-              <div className="px-4 py-3 text-[13px] text-text-secondary">正在读取 Git 变更...</div>
+              <div className="px-4 py-3 text-[13px] text-text-secondary">{t("git.loadingChanges")}</div>
             ) : files.length === 0 ? (
-              <div className="px-4 py-3 text-[13px] text-text-secondary">工作区干净</div>
+              <div className="px-4 py-3 text-[13px] text-text-secondary">{t("git.workingTreeClean")}</div>
             ) : (
               GROUPS.map((group) => {
                 const groupFiles = files.filter((file) => file.category === group.id);
@@ -148,7 +149,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
                   <div key={group.id} className="mb-2">
                     <div className="flex items-center px-3 py-1 text-[11px] font-medium text-text-secondary">
                       <FontAwesomeIcon icon={group.icon} className="mr-2 w-3" />
-                      {group.label}
+                      {t(group.labelKey)}
                       <span className="ml-1.5">{groupFiles.length}</span>
                     </div>
                     {groupFiles.map((file) => (
@@ -171,10 +172,10 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="min-w-0 text-[11px] text-text-secondary">
                 {draftSource === "staged"
-                  ? "Drafted from staged changes"
+                  ? t("git.draftedFromStaged")
                   : draftSource === "working_tree"
-                    ? "Drafted from working tree"
-                    : "Commit message"}
+                    ? t("git.draftedFromWorkingTree")
+                    : t("git.commitMessage")}
               </div>
               <button
                 type="button"
@@ -183,13 +184,13 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
                 className="inline-flex h-7 items-center rounded-md border border-border-theme bg-white px-2 text-[11px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
               >
                 <FontAwesomeIcon icon={["fas", "lightbulb"]} className="mr-1.5 text-[10px]" />
-                {busyAction === "draft" ? "Drafting..." : "Draft message"}
+                {busyAction === "draft" ? t("git.draftingMessage") : t("git.draftMessage")}
               </button>
             </div>
             <textarea
               value={commitMessage}
               onChange={(event) => setCommitMessage(event.target.value)}
-              placeholder="Commit message"
+              placeholder={t("git.commitMessage")}
               className="h-28 w-full resize-none rounded-lg border border-border-theme bg-white px-3 py-2 text-[12px] text-text-base outline-none focus:border-primary/60"
             />
             {operationError && (
@@ -203,7 +204,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
               onClick={commitStaged}
               className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-md bg-text-base px-3 text-[12px] font-medium text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:bg-gray-300"
             >
-              {busyAction === "commit" ? "Committing..." : `Commit ${stagedFiles.length} staged file(s)`}
+              {busyAction === "commit" ? t("git.committing") : t("git.commitStagedFiles", { count: stagedFiles.length })}
             </button>
           </div>
         </div>
@@ -213,7 +214,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
             <GitDiffViewer projectPath={projectPath} file={selected} onRefresh={onRefresh} />
           ) : (
             <div className="flex h-full items-center justify-center text-[13px] text-text-secondary">
-              选择一个文件查看 diff
+              {t("git.selectFileToViewDiff")}
             </div>
           )}
         </div>
@@ -237,8 +238,10 @@ function ChangedFileRow({
   onStage: () => void;
   onUnstage: () => void;
 }) {
+  const { t } = useTranslation();
   const canStage = file.category === "unstaged" || file.category === "untracked";
   const canUnstage = file.category === "staged";
+
   return (
     <div
       className={`group flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[12px] transition-colors ${
@@ -247,9 +250,7 @@ function ChangedFileRow({
       title={file.old_path ? `${file.old_path} -> ${file.path}` : file.path}
     >
       <button type="button" className="flex min-w-0 flex-1 items-center text-left" onClick={onClick}>
-        <span className={`mr-2 w-7 text-[11px] font-semibold ${statusColor(file.status)}`}>
-          {file.status.trim() || "M"}
-        </span>
+        <span className={`mr-2 w-7 text-[11px] font-semibold ${statusColor(file.status)}`}>{file.status.trim() || "M"}</span>
         <span className="truncate">{file.path}</span>
       </button>
       <div className="ml-2 flex flex-shrink-0 items-center gap-1.5">
@@ -264,7 +265,7 @@ function ChangedFileRow({
             onClick={onStage}
             className="hidden rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-text-secondary hover:bg-blue-50 hover:text-blue-600 disabled:opacity-50 group-hover:inline-flex"
           >
-            Stage
+            {t("git.stage")}
           </button>
         )}
         {canUnstage && (
@@ -274,7 +275,7 @@ function ChangedFileRow({
             onClick={onUnstage}
             className="hidden rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-text-secondary hover:bg-amber-50 hover:text-amber-700 disabled:opacity-50 group-hover:inline-flex"
           >
-            Unstage
+            {t("git.unstage")}
           </button>
         )}
       </div>

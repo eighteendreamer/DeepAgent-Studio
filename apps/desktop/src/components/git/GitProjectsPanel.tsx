@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import {
   gitBatchCommit,
   gitBatchPush,
@@ -62,6 +64,7 @@ interface BatchPushRiskSummary {
 }
 
 export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
+  const { t } = useTranslation();
   const { loading, projects, statuses, error, refresh } = useGitProjects();
   const [busyGroup, setBusyGroup] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -99,7 +102,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
   const openBatchDialog = (mode: "commit" | "commit-push" | "step", rows: ProjectRow[]) => {
     const unique = uniqueProjectRows(rows);
     if (unique.length === 0) {
-      setOperationError("No project targets selected.");
+      setOperationError(t("git.projectsPanel.errors.noProjectTargetsSelected"));
       return;
     }
     setOperationError(null);
@@ -117,7 +120,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
   const pushBranchGroup = async (group: BranchGroup) => {
     const candidates = uniquePushCandidates(group.rows);
     if (candidates.length === 0) {
-      setOperationError("No unique project targets in this branch group.");
+      setOperationError(t("git.projectsPanel.errors.noUniqueProjectTargets"));
       return;
     }
     setBusyGroup(group.key);
@@ -131,7 +134,11 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
       const pushable = previews.filter(({ preview }) => !preview.blocked_reason && preview.ahead > 0);
       const blocked = previews.filter(({ preview }) => preview.blocked_reason);
       if (pushable.length === 0) {
-        setOperationError(blocked[0]?.preview.blocked_reason ?? "No outgoing commits to push.");
+        setOperationError(
+          blocked[0]?.preview.blocked_reason
+            ? localizeProjectsBlockedReason(t, blocked[0].preview.blocked_reason)
+            : t("git.projectsPanel.errors.noOutgoingCommitsToPush"),
+        );
         return;
       }
       const riskScans = await Promise.all(
@@ -142,7 +149,11 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
       );
       const scanBlocked = riskScans.find(({ scan }) => scan.blocked_reason);
       if (scanBlocked) {
-        setOperationError(scanBlocked.scan.blocked_reason ?? "Push risk scan could not run.");
+        setOperationError(
+          scanBlocked.scan.blocked_reason
+            ? localizeProjectsBlockedReason(t, scanBlocked.scan.blocked_reason)
+            : t("git.projectsPanel.errors.pushRiskScanUnavailable"),
+        );
         return;
       }
       const risks = flattenBatchPushRisks(riskScans);
@@ -154,19 +165,23 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
       const highRiskCount = risks.filter((risk) => risk.severity === "high").length;
       if (highRiskCount > 0) {
         const okRisk = window.confirm(
-          `Push risk scan found ${highRiskCount} high-risk finding(s) across ${riskScans.length} target(s). Continue anyway?`,
+          t("git.projectsPanel.confirm.pushRiskHigh", { findings: highRiskCount, targets: riskScans.length }),
         );
         if (!okRisk) return;
       } else if (risks.length > 0) {
         const okRisk = window.confirm(
-          `Push risk scan found ${risks.length} finding(s) across ${riskScans.length} target(s). Continue?`,
+          t("git.projectsPanel.confirm.pushRiskAny", { findings: risks.length, targets: riskScans.length }),
         );
         if (!okRisk) return;
       }
       const totalCommits = pushable.reduce((sum, item) => sum + item.preview.ahead, 0);
       if (getGitUiSettings().confirmBeforePush) {
         const ok = window.confirm(
-          `Push ${totalCommits} outgoing commit(s) from ${pushable.length} project target(s) on ${group.branch}?`,
+          t("git.projectsPanel.confirm.pushBranchGroup", {
+            commits: totalCommits,
+            targets: pushable.length,
+            branch: group.branch,
+          }),
         );
         if (!ok) return;
       }
@@ -176,9 +191,9 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
       }
       const failed = results.find((result) => !result.ok);
       if (failed) {
-        setOperationError(failed.stderr || failed.stdout || "One push failed.");
+        setOperationError(failed.stderr || failed.stdout || t("git.projectsPanel.errors.onePushFailed"));
       } else {
-        setOperationResult(`Pushed ${pushable.length} target(s).`);
+        setOperationResult(t("git.projectsPanel.results.pushedTargets", { count: pushable.length }));
       }
       await refreshAll();
     } catch (err) {
@@ -191,10 +206,10 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
   const fetchAll = async () => {
     const candidates = uniqueRepoCandidates(statuses);
     if (candidates.length === 0) {
-      setOperationError("No Git repositories to fetch.");
+      setOperationError(t("git.projectsPanel.errors.noGitRepositoriesToFetch"));
       return;
     }
-    const ok = window.confirm(`Fetch ${candidates.length} unique repo(s)?`);
+    const ok = window.confirm(t("git.projectsPanel.confirm.fetchRepos", { count: candidates.length }));
     if (!ok) return;
     setBusyGroup("fetch-all");
     setOperationError(null);
@@ -206,9 +221,9 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
       }
       const failed = results.find((result) => !result.ok);
       if (failed) {
-        setOperationError(failed.stderr || failed.stdout || "One fetch failed.");
+        setOperationError(failed.stderr || failed.stdout || t("git.projectsPanel.errors.oneFetchFailed"));
       } else {
-        setOperationResult(`Fetched ${candidates.length} repo(s).`);
+        setOperationResult(t("git.projectsPanel.results.fetchedRepos", { count: candidates.length }));
       }
       await refreshAll();
     } catch (err) {
@@ -221,20 +236,20 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
   const updateBranchGroup = async (group: BranchGroup) => {
     const allCandidates = uniqueUpdateCandidates(group.rows);
     if (allCandidates.length === 0) {
-      setOperationError("No project targets in this branch group can be updated.");
+      setOperationError(t("git.projectsPanel.errors.noProjectTargetsUpdatable"));
       return;
     }
     const blocked = allCandidates.find((row) => updateRiskBlockedReason(row.status));
     if (blocked) {
-      setOperationError(updateRiskBlockedReason(blocked.status));
+      setOperationError(localizeProjectsBlockedReason(t, updateRiskBlockedReason(blocked.status)));
       return;
     }
     const candidates = allCandidates.filter((row) => row.status.behind > 0);
     if (candidates.length === 0) {
-      setOperationError("No behind commits to update.");
+      setOperationError(t("git.projectsPanel.errors.noBehindCommits"));
       return;
     }
-    const ok = window.confirm(`Fast-forward update ${candidates.length} project target(s) on ${group.branch}?`);
+    const ok = window.confirm(t("git.projectsPanel.confirm.updateBranchGroup", { count: candidates.length, branch: group.branch }));
     if (!ok) return;
     setBusyGroup(`update:${group.key}`);
     setOperationError(null);
@@ -246,9 +261,9 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
       }
       const failed = results.find((result) => !result.ok);
       if (failed) {
-        setOperationError(failed.stderr || failed.stdout || "One update failed.");
+        setOperationError(failed.stderr || failed.stdout || t("git.projectsPanel.errors.oneUpdateFailed"));
       } else {
-        setOperationResult(`Updated ${candidates.length} target(s).`);
+        setOperationResult(t("git.projectsPanel.results.updatedTargets", { count: candidates.length }));
       }
       await refreshAll();
     } catch (err) {
@@ -261,7 +276,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
   const compareRepoRefs = async (repo: RepoGroup, baseRef: string, targetRef: string) => {
     const candidate = repo.branches[0]?.rows[0]?.status;
     if (!candidate) {
-      setOperationError("No project target in this repository group.");
+      setOperationError(t("git.projectsPanel.errors.noProjectTargetInRepositoryGroup"));
       return;
     }
     setBusyGroup(`compare:${repo.key}`);
@@ -271,7 +286,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
       const result = await gitCompareRefs(candidate.project_path, baseRef, targetRef);
       if (result.blocked_reason) {
         setCompareResult(null);
-        setOperationError(result.blocked_reason);
+        setOperationError(localizeProjectsBlockedReason(t, result.blocked_reason));
         return;
       }
       setCompareResult({
@@ -291,9 +306,9 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
       <div className="flex h-11 flex-shrink-0 items-center justify-between border-b border-border-theme px-4">
         <div className="flex min-w-0 items-center">
           <FontAwesomeIcon icon={["fas", "folder-tree"]} className="mr-2 text-text-secondary" />
-          <span className="text-[14px] font-medium text-text-base">分支管理</span>
+          <span className="text-[14px] font-medium text-text-base">{t("git.projectsPanel.title")}</span>
           <span className="ml-2 text-[12px] text-text-secondary">
-            {statuses.filter((status) => status.is_repo).length} 个 Git 项目
+            {t("git.projectsPanel.gitProjectsCount", { count: statuses.filter((status) => status.is_repo).length })}
           </span>
         </div>
         <div className="flex items-center gap-1.5">
@@ -304,7 +319,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "check"]} className="mr-1.5 text-[11px]" />
-            提交选中
+            {t("git.projectsPanel.commitSelected")}
           </button>
           <button
             type="button"
@@ -313,7 +328,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "upload"]} className="mr-1.5 text-[11px]" />
-            提交并上传
+            {t("git.projectsPanel.commitAndPushSelected")}
           </button>
           <button
             type="button"
@@ -322,7 +337,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-1.5 text-[11px]" />
-            逐个处理
+            {t("git.projectsPanel.handleIndividually")}
           </button>
           <button
             type="button"
@@ -331,7 +346,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "download"]} className="mr-1.5 text-[11px]" />
-            {busyGroup === "fetch-all" ? "拉取中..." : "全部拉取"}
+            {busyGroup === "fetch-all" ? t("git.projectsPanel.fetchingAll") : t("git.projectsPanel.fetchAll")}
           </button>
           <button
             type="button"
@@ -340,7 +355,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "rotate-right"]} className="mr-1.5 text-[11px]" />
-            刷新
+            {t("git.projectsPanel.refresh")}
           </button>
         </div>
       </div>
@@ -363,10 +378,10 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
           )}
 
           {loading ? (
-            <div className="text-[13px] text-text-secondary">正在读取 Git 分支状态...</div>
+            <div className="text-[13px] text-text-secondary">{t("git.projectsPanel.loadingBranches")}</div>
           ) : groups.length === 0 ? (
             <div className="rounded-lg border border-border-theme bg-white p-4 text-[13px] text-text-secondary">
-              没有检测到已打开的 Git 项目。
+              {t("git.projectsPanel.noOpenGitProjects")}
             </div>
           ) : (
             groups.map((repo) => (
@@ -376,7 +391,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                     <div className="min-w-0">
                       <div className="truncate text-[13px] font-medium text-text-base">{repo.label}</div>
                       <div className="mt-0.5 text-[11px] text-text-secondary">
-                        {repo.branches.length} 个分支组
+                        {t("git.projectsPanel.branchGroupsCount", { count: repo.branches.length })}
                       </div>
                     </div>
                     <RepoCompareForm
@@ -397,10 +412,10 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                         <div className="flex min-w-0 items-center">
                           <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-text-secondary" />
                           <span className="truncate text-[13px] font-medium text-text-base">
-                            {branch.branch}
+                            {displayBranchLabel(t, branch.branch)}
                           </span>
                           <span className="ml-2 text-[11px] text-text-secondary">
-                            {branch.rows.length} 个项目
+                            {t("git.projectsPanel.projectCount", { count: branch.rows.length })}
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5">
@@ -411,7 +426,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                             className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
                           >
                             <FontAwesomeIcon icon={["fas", "check"]} className="mr-1.5 text-[11px]" />
-                            提交
+                            {t("git.projectsPanel.commit")}
                           </button>
                           <button
                             type="button"
@@ -420,7 +435,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                             className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
                           >
                             <FontAwesomeIcon icon={["fas", "upload"]} className="mr-1.5 text-[11px]" />
-                            提交并上传
+                            {t("git.projectsPanel.commitAndPush")}
                           </button>
                           <button
                             type="button"
@@ -429,7 +444,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                             className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
                           >
                             <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-1.5 text-[11px]" />
-                            逐个处理
+                            {t("git.projectsPanel.handleIndividually")}
                           </button>
                           <button
                             type="button"
@@ -438,7 +453,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                             className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
                           >
                             <FontAwesomeIcon icon={["fas", "download"]} className="mr-1.5 text-[11px]" />
-                            {busyGroup === `update:${branch.key}` ? "更新中..." : "更新"}
+                            {busyGroup === `update:${branch.key}` ? t("git.projectsPanel.updating") : t("git.projectsPanel.update")}
                           </button>
                           <button
                             type="button"
@@ -447,7 +462,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                             className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
                           >
                             <FontAwesomeIcon icon={["fas", "upload"]} className="mr-1.5 text-[11px]" />
-                            {busyGroup === branch.key ? "上传中..." : "上传"}
+                            {busyGroup === branch.key ? t("git.projectsPanel.pushing") : t("git.projectsPanel.push")}
                           </button>
                         </div>
                       </div>
@@ -485,6 +500,7 @@ function ProjectStatusRow({
   selected: boolean;
   onSelectedChange: (selected: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const { status, project } = row;
   return (
     <div className="grid gap-2 px-3 py-2 text-[12px] sm:grid-cols-[minmax(0,1fr)_auto]">
@@ -494,14 +510,14 @@ function ProjectStatusRow({
           checked={selected}
           onChange={(event) => onSelectedChange(event.target.checked)}
           className="mt-1 h-3.5 w-3.5 rounded border-border-theme"
-          aria-label={`Select ${status.project_path}`}
+          aria-label={t("git.projectsPanel.selectProject", { path: status.project_path })}
         />
         <div className="min-w-0">
           <div className="flex min-w-0 items-center">
             <span className="truncate font-medium text-text-base">
               {project?.name ?? status.project_path.split(/[\\/]/).pop() ?? status.project_path}
             </span>
-            {active && <span className="ml-2 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">当前</span>}
+            {active && <span className="ml-2 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">{t("git.projectsPanel.current")}</span>}
           </div>
           <div className="mt-0.5 truncate text-[11px] text-text-secondary" title={status.project_path}>
             {status.project_path}
@@ -509,12 +525,12 @@ function ProjectStatusRow({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
-        <Metric label="变更" value={`${status.files_changed}`} tone={status.has_changes ? "warn" : "muted"} />
-        <Metric label="ahead" value={`${status.ahead}`} tone={status.ahead > 0 ? "good" : "muted"} />
-        <Metric label="behind" value={`${status.behind}`} tone={status.behind > 0 ? "warn" : "muted"} />
-        {status.merge_state && <Badge tone="warn">merge</Badge>}
-        {status.rebase_state && <Badge tone="warn">rebase</Badge>}
-        {status.detached_head && <Badge tone="warn">detached</Badge>}
+        <Metric label={t("git.projectsPanel.metrics.changed")} value={`${status.files_changed}`} tone={status.has_changes ? "warn" : "muted"} />
+        <Metric label={t("git.projectsPanel.metrics.ahead")} value={`${status.ahead}`} tone={status.ahead > 0 ? "good" : "muted"} />
+        <Metric label={t("git.projectsPanel.metrics.behind")} value={`${status.behind}`} tone={status.behind > 0 ? "warn" : "muted"} />
+        {status.merge_state && <Badge tone="warn">{t("git.projectsPanel.badges.merge")}</Badge>}
+        {status.rebase_state && <Badge tone="warn">{t("git.projectsPanel.badges.rebase")}</Badge>}
+        {status.detached_head && <Badge tone="warn">{t("git.projectsPanel.badges.detached")}</Badge>}
       </div>
     </div>
   );
@@ -531,6 +547,7 @@ function RepoCompareForm({
   active: boolean;
   onCompare: (baseRef: string, targetRef: string) => void;
 }) {
+  const { t } = useTranslation();
   const refs = repoRefOptions(repo);
   if (refs.length === 0) return null;
   const defaultBase = refs.find((ref) => ref === "origin/main") ?? refs.find((ref) => ref === "main") ?? refs[0];
@@ -562,7 +579,7 @@ function RepoCompareForm({
         list={listId}
         defaultValue={defaultBase}
         className="h-8 w-28 rounded-md border border-border-theme bg-white px-2 text-[12px] text-text-base outline-none focus:border-blue-400"
-        aria-label="Base ref"
+        aria-label={t("git.projectsPanel.baseRef")}
       />
       <span className="text-[11px] text-text-secondary">...</span>
       <input
@@ -570,7 +587,7 @@ function RepoCompareForm({
         list={listId}
         defaultValue={defaultTarget}
         className="h-8 w-28 rounded-md border border-border-theme bg-white px-2 text-[12px] text-text-base outline-none focus:border-blue-400"
-        aria-label="Target ref"
+        aria-label={t("git.projectsPanel.targetRef")}
       />
       <button
         type="submit"
@@ -578,13 +595,14 @@ function RepoCompareForm({
         className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
       >
         <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-1.5 text-[11px]" />
-        {active ? "比较中..." : "比较"}
+        {active ? t("git.projectsPanel.comparing") : t("git.projectsPanel.compare")}
       </button>
     </form>
   );
 }
 
 function CompareResultView({ title, result }: { title: string; result: GitRefCompare }) {
+  const { t } = useTranslation();
   const targetCommits = result.commits.filter((commit) => commit.side === "target");
   const baseCommits = result.commits.filter((commit) => commit.side === "base");
   const [selectedFile, setSelectedFile] = useState(result.files[0]?.path ?? null);
@@ -636,22 +654,22 @@ function CompareResultView({ title, result }: { title: string; result: GitRefCom
       <div className="flex flex-wrap items-center gap-2 text-[12px]">
         <FontAwesomeIcon icon={["fas", "code-branch"]} className="text-blue-600" />
         <span className="font-medium text-text-base">{title}</span>
-        <Metric label="ahead" value={`${result.ahead}`} tone={result.ahead > 0 ? "good" : "muted"} />
-        <Metric label="behind" value={`${result.behind}`} tone={result.behind > 0 ? "warn" : "muted"} />
+        <Metric label={t("git.projectsPanel.metrics.ahead")} value={`${result.ahead}`} tone={result.ahead > 0 ? "good" : "muted"} />
+        <Metric label={t("git.projectsPanel.metrics.behind")} value={`${result.behind}`} tone={result.behind > 0 ? "warn" : "muted"} />
         {result.merge_base && (
-          <span className="text-[11px] text-text-secondary">base {shortHash(result.merge_base)}</span>
+          <span className="text-[11px] text-text-secondary">{t("git.projectsPanel.mergeBase", { hash: shortHash(result.merge_base) })}</span>
         )}
       </div>
       <div className="mt-2 grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(320px,1.5fr)]">
-        <CompareCommitColumn title="Target only" commits={targetCommits} empty="No target-only commits" />
-        <CompareCommitColumn title="Base only" commits={baseCommits} empty="No base-only commits" />
+        <CompareCommitColumn title={t("git.projectsPanel.targetOnly")} commits={targetCommits} empty={t("git.projectsPanel.noTargetOnlyCommits")} />
+        <CompareCommitColumn title={t("git.projectsPanel.baseOnly")} commits={baseCommits} empty={t("git.projectsPanel.noBaseOnlyCommits")} />
         <div className="grid min-h-[260px] min-w-0 grid-rows-[auto_120px_minmax(0,1fr)] overflow-hidden rounded-md border border-border-theme bg-white">
           <div className="px-2 py-2 text-[11px] font-medium uppercase text-text-secondary">
-            Changed files
+            {t("git.projectsPanel.changedFiles")}
           </div>
           <div className="min-h-0 overflow-y-auto border-b border-border-theme px-2 pb-2">
             {result.files.length === 0 ? (
-              <div className="text-[12px] text-text-secondary">No file changes</div>
+              <div className="text-[12px] text-text-secondary">{t("git.projectsPanel.noFileChanges")}</div>
             ) : (
               <div className="space-y-1">
                 {result.files.map((file) => (
@@ -678,11 +696,11 @@ function CompareResultView({ title, result }: { title: string; result: GitRefCom
           </div>
           <div className="min-h-0 overflow-auto bg-[#fbfbfb]">
             {loadingDiff ? (
-              <div className="p-3 text-[12px] text-text-secondary">Loading diff...</div>
+              <div className="p-3 text-[12px] text-text-secondary">{t("git.projectsPanel.loadingDiff")}</div>
             ) : diff ? (
-              <DiffText text={diff.text || "No diff for this file."} />
+              <DiffText text={diff.text || t("git.projectsPanel.noDiffForFile")} />
             ) : (
-              <div className="p-3 text-[12px] text-text-secondary">Select a file to view diff.</div>
+              <div className="p-3 text-[12px] text-text-secondary">{t("git.projectsPanel.selectFileToViewDiff")}</div>
             )}
           </div>
         </div>
@@ -700,6 +718,7 @@ function CompareCommitColumn({
   commits: GitRefCompare["commits"];
   empty: string;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="min-w-0 rounded-md border border-border-theme bg-white p-2">
       <div className="mb-1 text-[11px] font-medium uppercase text-text-secondary">{title}</div>
@@ -714,7 +733,7 @@ function CompareCommitColumn({
             </div>
           ))}
           {commits.length > 5 && (
-            <div className="text-[11px] text-text-secondary">+{commits.length - 5} more</div>
+            <div className="text-[11px] text-text-secondary">{t("git.projectsPanel.moreCount", { count: commits.length - 5 })}</div>
           )}
         </div>
       )}
@@ -733,6 +752,7 @@ function BatchCommitPanel({
   onClose: () => void;
   onDone: () => Promise<void> | void;
 }) {
+  const { t } = useTranslation();
   const settings = useMemo(() => getGitUiSettings(), []);
   const [preview, setPreview] = useState<GitBatchCommitPreviewItem[]>([]);
   const [message, setMessage] = useState("");
@@ -784,7 +804,9 @@ function BatchCommitPanel({
               ...result,
               ok: false,
               pushed: false,
-              message: `Committed, but push risk scan failed: ${scanBlocked.blocked_reason}`,
+              message: t("git.projectsPanel.results.commitPushRiskScanFailed", {
+                reason: localizeProjectsBlockedReason(t, scanBlocked.blocked_reason),
+              }),
             }
           : result,
       );
@@ -794,23 +816,23 @@ function BatchCommitPanel({
     if (risks.length > 0) {
       const okRisk = window.confirm(
         highRisks > 0
-          ? `Push risk scan found ${highRisks} high-risk finding(s). Continue pushing ${pushTargets.length} target(s)?`
-          : `Push risk scan found ${risks.length} finding(s). Continue pushing ${pushTargets.length} target(s)?`,
+          ? t("git.projectsPanel.confirm.continuePushingHighRisk", { findings: highRisks, targets: pushTargets.length })
+          : t("git.projectsPanel.confirm.continuePushingRisk", { findings: risks.length, targets: pushTargets.length }),
       );
       if (!okRisk) {
         return committed.map((result) =>
           pushTargets.includes(result.project_path)
-            ? { ...result, ok: false, pushed: false, message: "Committed, push cancelled after risk scan." }
+            ? { ...result, ok: false, pushed: false, message: t("git.projectsPanel.results.commitPushCancelledAfterRiskScan") }
             : result,
         );
       }
     }
     if (settings.confirmBeforePush) {
-      const ok = window.confirm(`Push ${pushTargets.length} committed project target(s)?`);
+      const ok = window.confirm(t("git.projectsPanel.confirm.pushCommittedTargets", { count: pushTargets.length }));
       if (!ok) {
         return committed.map((result) =>
           pushTargets.includes(result.project_path)
-            ? { ...result, ok: false, pushed: false, message: "Committed, push cancelled." }
+            ? { ...result, ok: false, pushed: false, message: t("git.projectsPanel.results.commitPushCancelled") }
             : result,
         );
       }
@@ -825,7 +847,9 @@ function BatchCommitPanel({
         ok: push.ok,
         pushed: push.pushed,
         push_result: push.push_result,
-        message: push.ok ? "Committed and pushed" : `Committed, but push failed: ${push.message}`,
+        message: push.ok
+          ? t("git.projectsPanel.results.committedAndPushed")
+          : t("git.projectsPanel.results.committedButPushFailed", { message: push.message }),
       };
     });
   };
@@ -843,12 +867,12 @@ function BatchCommitPanel({
   const run = async () => {
     const trimmed = message.trim();
     if (!trimmed) {
-      setError("Commit message must not be empty.");
+      setError(t("git.commitMessageRequired"));
       return;
     }
     const pushAfterCommit = mode === "commit-push";
     if (pushAfterCommit) {
-      const ok = window.confirm(`Commit ${targets.length} project target(s), then run push risk scan?`);
+      const ok = window.confirm(t("git.projectsPanel.confirm.commitThenPushRiskScan", { count: targets.length }));
       if (!ok) return;
     }
     setBusy(true);
@@ -869,7 +893,7 @@ function BatchCommitPanel({
   const runSingle = async (projectPath: string, pushAfterCommit: boolean) => {
     const trimmed = message.trim();
     if (!trimmed) {
-      setError("Commit message must not be empty.");
+      setError(t("git.commitMessageRequired"));
       return;
     }
     const row = targets.find((target) => target.status.project_path === projectPath);
@@ -896,17 +920,21 @@ function BatchCommitPanel({
       <div className="flex items-center justify-between border-b border-border-theme px-3 py-2">
         <div>
           <div className="text-[13px] font-medium text-text-base">
-            {mode === "step" ? "逐个处理" : mode === "commit-push" ? "批量提交并上传" : "批量提交"}
+            {mode === "step"
+              ? t("git.projectsPanel.handleIndividually")
+              : mode === "commit-push"
+                ? t("git.projectsPanel.batchCommitAndPush")
+                : t("git.projectsPanel.batchCommit")}
           </div>
           <div className="text-[11px] text-text-secondary">
-            {targets.length} 个项目，{changedCount} 个变更文件
+            {t("git.projectsPanel.batchSummary", { projects: targets.length, files: changedCount })}
           </div>
         </div>
         <button
           type="button"
           onClick={onClose}
           className="h-8 w-8 rounded-md text-text-secondary hover:bg-gray-100 hover:text-text-base"
-          aria-label="Close batch commit"
+          aria-label={t("git.projectsPanel.closeBatchCommit")}
         >
           <FontAwesomeIcon icon={["fas", "xmark"]} />
         </button>
@@ -917,7 +945,7 @@ function BatchCommitPanel({
             value={message}
             onChange={(event) => setMessage(event.target.value)}
             className="h-24 w-full resize-none rounded-md border border-border-theme bg-white px-3 py-2 text-[13px] text-text-base outline-none focus:border-blue-400"
-            placeholder={settings.commitInstructions || "Commit message"}
+            placeholder={settings.commitInstructions || t("git.commitMessage")}
           />
           <label className="mt-2 flex items-center gap-2 text-[12px] text-text-secondary">
             <input
@@ -926,7 +954,7 @@ function BatchCommitPanel({
               onChange={(event) => setStageAll(event.target.checked)}
               className="h-3.5 w-3.5 rounded border-border-theme"
             />
-            自动暂存每个项目的全部变更
+            {t("git.projectsPanel.autoStageAll")}
           </label>
           {settings.commitInstructions && (
             <div className="mt-2 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-text-secondary">
@@ -935,7 +963,7 @@ function BatchCommitPanel({
           )}
           {error && <Message tone="error">{error}</Message>}
           {blockedCount > 0 && (
-            <Message tone="warn">{`${blockedCount} 个项目当前会被阻止，执行后会逐项显示原因。`}</Message>
+            <Message tone="warn">{t("git.projectsPanel.blockedProjectsCount", { count: blockedCount })}</Message>
           )}
           <div className="mt-3 flex items-center gap-2">
             {mode !== "step" && (
@@ -946,7 +974,11 @@ function BatchCommitPanel({
                 className="inline-flex h-9 items-center rounded-md bg-text-base px-3 text-[12px] font-medium text-white hover:bg-primary disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 <FontAwesomeIcon icon={mode === "commit-push" ? ["fas", "upload"] : ["fas", "check"]} className="mr-1.5 text-[11px]" />
-                {busy ? "执行中..." : mode === "commit-push" ? "提交并上传" : "提交"}
+                {busy
+                  ? t("git.projectsPanel.running")
+                  : mode === "commit-push"
+                    ? t("git.projectsPanel.commitAndPush")
+                    : t("git.projectsPanel.commit")}
               </button>
             )}
             <button
@@ -955,19 +987,19 @@ function BatchCommitPanel({
               onClick={() => void loadPreview()}
               className="inline-flex h-9 items-center rounded-md border border-border-theme bg-white px-3 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
             >
-              刷新预览
+              {t("git.projectsPanel.refreshPreview")}
             </button>
           </div>
         </div>
         <div className="min-w-0 rounded-md border border-border-theme">
           <div className="border-b border-border-theme px-3 py-2 text-[12px] font-medium text-text-base">
-            项目预览
+            {t("git.projectsPanel.projectPreview")}
           </div>
           <div className="max-h-[280px] overflow-y-auto">
             {loading ? (
-              <div className="px-3 py-3 text-[12px] text-text-secondary">Loading...</div>
+              <div className="px-3 py-3 text-[12px] text-text-secondary">{t("git.projectsPanel.loading")}</div>
             ) : preview.length === 0 ? (
-              <div className="px-3 py-3 text-[12px] text-text-secondary">No targets.</div>
+              <div className="px-3 py-3 text-[12px] text-text-secondary">{t("git.projectsPanel.noTargets")}</div>
             ) : (
               preview.map((item) => (
                 <div key={item.project_path} className="border-b border-border-theme px-3 py-2 last:border-b-0">
@@ -975,15 +1007,15 @@ function BatchCommitPanel({
                     {item.project_path.split(/[\\/]/).pop() || item.project_path}
                   </div>
                   <div className="mt-1 flex flex-wrap gap-1.5 text-[11px] text-text-secondary">
-                    <span>{item.current_branch ?? "HEAD"}</span>
-                    <span>changed {item.files_changed}</span>
-                    <span>staged {item.staged_files}</span>
+                    <span>{item.current_branch ?? t("git.detachedHead")}</span>
+                    <span>{t("git.projectsPanel.previewChanged", { count: item.files_changed })}</span>
+                    <span>{t("git.projectsPanel.previewStaged", { count: item.staged_files })}</span>
                     <span className="text-green-600">+{item.additions}</span>
                     <span className="text-red-500">-{item.deletions}</span>
                   </div>
                   {effectiveBatchBlockedReason(item, stageAll) && (
                     <div className="mt-1 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
-                      {effectiveBatchBlockedReason(item, stageAll)}
+                      {localizeProjectsBlockedReason(t, effectiveBatchBlockedReason(item, stageAll))}
                     </div>
                   )}
                   <input
@@ -995,7 +1027,7 @@ function BatchCommitPanel({
                       }))
                     }
                     className="mt-2 h-8 w-full rounded-md border border-border-theme px-2 text-[12px] outline-none focus:border-blue-400"
-                    placeholder="单项目提交说明，可选"
+                    placeholder={t("git.projectsPanel.singleProjectCommitNote")}
                   />
                   {mode === "step" && (
                     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1005,7 +1037,7 @@ function BatchCommitPanel({
                         onClick={() => void runSingle(item.project_path, false)}
                         className="inline-flex h-7 items-center rounded-md border border-border-theme bg-white px-2 text-[11px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
                       >
-                        提交
+                        {t("git.projectsPanel.commit")}
                       </button>
                       <button
                         type="button"
@@ -1013,7 +1045,7 @@ function BatchCommitPanel({
                         onClick={() => void runSingle(item.project_path, true)}
                         className="inline-flex h-7 items-center rounded-md border border-border-theme bg-white px-2 text-[11px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
                       >
-                        提交并上传
+                        {t("git.projectsPanel.commitAndPush")}
                       </button>
                     </div>
                   )}
@@ -1025,7 +1057,7 @@ function BatchCommitPanel({
       </div>
       {results && (
         <div className="border-t border-border-theme p-3">
-          <div className="mb-2 text-[12px] font-medium text-text-base">执行结果</div>
+          <div className="mb-2 text-[12px] font-medium text-text-base">{t("git.projectsPanel.executionResults")}</div>
           <div className="grid gap-2 md:grid-cols-2">
             {results.map((result) => (
               <div
@@ -1037,7 +1069,7 @@ function BatchCommitPanel({
                 <div className="truncate font-medium" title={result.project_path}>
                   {result.project_path}
                 </div>
-                <div className="mt-1 text-[11px] opacity-90">{result.message || (result.ok ? "OK" : "Failed")}</div>
+                <div className="mt-1 text-[11px] opacity-90">{result.message || (result.ok ? t("git.projectsPanel.ok") : t("git.projectsPanel.failed"))}</div>
               </div>
             ))}
           </div>
@@ -1048,6 +1080,7 @@ function BatchCommitPanel({
 }
 
 function BatchPushRiskCard({ summary }: { summary: BatchPushRiskSummary }) {
+  const { t } = useTranslation();
   const high = summary.risks.filter((risk) => risk.severity === "high").length;
   const medium = summary.risks.filter((risk) => risk.severity === "medium").length;
   const low = summary.risks.filter((risk) => risk.severity === "low").length;
@@ -1055,20 +1088,20 @@ function BatchPushRiskCard({ summary }: { summary: BatchPushRiskSummary }) {
     <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-[13px] font-medium text-amber-900">
-          Batch push risk scan
+          {t("git.projectsPanel.batchPushRiskScan")}
         </div>
         <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
           <span className="rounded bg-white px-1.5 py-0.5 text-text-secondary">
-            {summary.scannedTargets} target(s)
+            {t("git.projectsPanel.targetCount", { count: summary.scannedTargets })}
           </span>
-          <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700">high {high}</span>
-          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">medium {medium}</span>
-          <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700">low {low}</span>
+          <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700">{t("git.projectsPanel.severityCount.high", { count: high })}</span>
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">{t("git.projectsPanel.severityCount.medium", { count: medium })}</span>
+          <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700">{t("git.projectsPanel.severityCount.low", { count: low })}</span>
         </div>
       </div>
       {summary.risks.length === 0 ? (
         <div className="mt-2 text-[12px] text-amber-800">
-          No local risk findings before pushing {summary.branch}.
+          {t("git.projectsPanel.noLocalRiskFindingsBeforePush", { branch: summary.branch })}
         </div>
       ) : (
         <div className="mt-2 max-h-48 overflow-y-auto rounded-md border border-amber-200 bg-white">
@@ -1076,7 +1109,7 @@ function BatchPushRiskCard({ summary }: { summary: BatchPushRiskSummary }) {
             <div key={`${risk.projectPath}:${risk.title}:${index}`} className="border-b border-border-theme px-3 py-2 last:border-b-0">
               <div className="flex flex-wrap items-center gap-2 text-[12px]">
                 <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${riskSeverityClass(risk.severity)}`}>
-                  {risk.severity}
+                  {localizeRiskSeverity(t, risk.severity)}
                 </span>
                 <span className="font-medium text-text-base">{risk.title}</span>
                 <span className="text-[11px] text-text-secondary">{risk.category}</span>
@@ -1092,7 +1125,7 @@ function BatchPushRiskCard({ summary }: { summary: BatchPushRiskSummary }) {
           ))}
           {summary.risks.length > 12 && (
             <div className="px-3 py-2 text-[11px] text-text-secondary">
-              +{summary.risks.length - 12} more finding(s)
+              {t("git.projectsPanel.moreFindings", { count: summary.risks.length - 12 })}
             </div>
           )}
         </div>
@@ -1222,6 +1255,46 @@ function updateRiskBlockedReason(status: GitProjectStatus): string | null {
   if (status.has_changes) return "Commit or stash local changes before updating.";
   if (!status.upstream) return "No upstream branch is configured.";
   return null;
+}
+
+function localizeProjectsBlockedReason(t: TFunction, reason: string | null): string {
+  if (!reason) return "";
+
+  const exact: Record<string, string> = {
+    "not a git repository": t("git.projectsPanel.reasons.notGitRepository"),
+    "nothing to push": t("git.projectsPanel.reasons.nothingToPush"),
+    "no upstream branch is configured": t("git.projectsPanel.reasons.noUpstream"),
+    "upstream has new commits; update before pushing": t("git.projectsPanel.reasons.upstreamAhead"),
+    "detached HEAD cannot be pushed from this view": t("git.projectsPanel.reasons.detachedHeadPush"),
+    "finish or abort the active merge before pushing": t("git.projectsPanel.reasons.finishMergePush"),
+    "finish or abort the active rebase before pushing": t("git.projectsPanel.reasons.finishRebasePush"),
+    "choose a base ref to compare": t("git.projectsPanel.reasons.chooseBaseRef"),
+    "choose a target ref to compare": t("git.projectsPanel.reasons.chooseTargetRef"),
+    "base ref does not exist": t("git.projectsPanel.reasons.baseRefMissing"),
+    "target ref does not exist": t("git.projectsPanel.reasons.targetRefMissing"),
+    "Detached HEAD cannot be updated from this view.": t("git.projectsPanel.reasons.detachedHeadUpdate"),
+    "Finish or abort the active merge before updating.": t("git.projectsPanel.reasons.finishMergeUpdate"),
+    "Finish or abort the active rebase before updating.": t("git.projectsPanel.reasons.finishRebaseUpdate"),
+    "Commit or stash local changes before updating.": t("git.projectsPanel.reasons.commitOrStashBeforeUpdate"),
+    "No upstream branch is configured.": t("git.projectsPanel.reasons.noUpstreamUpdate"),
+    "finish or abort the active merge before committing": t("git.projectsPanel.reasons.finishMergeCommit"),
+    "finish or abort the active rebase before committing": t("git.projectsPanel.reasons.finishRebaseCommit"),
+    "no Git changes to commit": t("git.projectsPanel.reasons.noGitChangesToCommit"),
+    "no staged files; enable stage all or stage files first": t("git.projectsPanel.reasons.noStagedFiles"),
+  };
+
+  return exact[reason] ?? reason;
+}
+
+function localizeRiskSeverity(t: TFunction, severity: string): string {
+  if (severity === "high") return t("git.pushPanel.severity.high");
+  if (severity === "medium") return t("git.pushPanel.severity.medium");
+  if (severity === "low") return t("git.pushPanel.severity.low");
+  return severity;
+}
+
+function displayBranchLabel(t: TFunction, branch: string): string {
+  return branch === "detached" ? t("git.detachedHead") : branch;
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone: "good" | "warn" | "muted" }) {

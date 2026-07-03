@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { useTranslation } from "react-i18next";
 import { gitApplyHunk, gitDiff } from "../../api";
 import type { GitChangedFile, GitDiff } from "../../types";
 
@@ -40,6 +41,7 @@ interface UnifiedPatchParts {
 }
 
 export function GitDiffViewer({ projectPath, file, onRefresh }: Props) {
+  const { t } = useTranslation();
   const [diff, setDiff] = useState<GitDiff | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +81,7 @@ export function GitDiffViewer({ projectPath, file, onRefresh }: Props) {
     try {
       const result = await gitApplyHunk(projectPath, file.path, patch, staged);
       if (!result.ok) {
-        setError(result.stderr || result.stdout || "Failed to apply hunk.");
+        setError(result.stderr || result.stdout || t("git.applyHunkFailed"));
         return;
       }
       await loadDiff();
@@ -99,7 +101,7 @@ export function GitDiffViewer({ projectPath, file, onRefresh }: Props) {
           <span className="break-all font-medium leading-5">{file.path}</span>
           {diff?.truncated && (
             <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
-              truncated
+              {t("git.truncated")}
             </span>
           )}
         </div>
@@ -115,7 +117,7 @@ export function GitDiffViewer({ projectPath, file, onRefresh }: Props) {
       <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-[#fbfbfb] pb-4">
         {loading ? (
           <div className="flex h-full items-center justify-center text-[13px] text-text-secondary">
-            Loading diff...
+            {t("git.loadingDiff")}
           </div>
         ) : error ? (
           <div className="p-4 text-[13px] text-red-500">{error}</div>
@@ -133,9 +135,7 @@ export function GitDiffViewer({ projectPath, file, onRefresh }: Props) {
         ) : (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center text-[13px] text-text-secondary">
             <FontAwesomeIcon icon={["fas", "circle-info"]} className="mb-2 text-[15px]" />
-            {file.category === "untracked"
-              ? "No text diff is available for this untracked file."
-              : "This file has no displayable diff."}
+            {file.category === "untracked" ? t("git.noUntrackedDiff") : t("git.noDisplayableDiff")}
           </div>
         )}
       </div>
@@ -144,6 +144,8 @@ export function GitDiffViewer({ projectPath, file, onRefresh }: Props) {
 }
 
 function DiffModeToggle({ mode, onChange }: { mode: DiffMode; onChange: (mode: DiffMode) => void }) {
+  const { t } = useTranslation();
+
   return (
     <div className="inline-flex h-7 overflow-hidden rounded-md border border-border-theme bg-white text-[11px]">
       <button
@@ -153,7 +155,7 @@ function DiffModeToggle({ mode, onChange }: { mode: DiffMode; onChange: (mode: D
         }`}
         onClick={() => onChange("unified")}
       >
-        Unified
+        {t("git.diffMode.unified")}
       </button>
       <button
         type="button"
@@ -162,7 +164,7 @@ function DiffModeToggle({ mode, onChange }: { mode: DiffMode; onChange: (mode: D
         }`}
         onClick={() => onChange("split")}
       >
-        Split
+        {t("git.diffMode.split")}
       </button>
     </div>
   );
@@ -189,6 +191,7 @@ function InteractiveDiffText({
   busyHunk: number | null;
   onApplyHunk: (hunkIndex: number, patch: string) => void;
 }) {
+  const { t } = useTranslation();
   const parts = useMemo(() => parseUnifiedPatch(text), [text]);
   if (parts.hunks.length === 0) return <DiffText text={text} />;
   return (
@@ -216,7 +219,7 @@ function InteractiveDiffText({
                   icon={busy ? ["fas", "spinner"] : ["fas", staged ? "minus" : "plus"]}
                   className={`mr-1 text-[10px] ${busy ? "animate-spin" : ""}`}
                 />
-                {staged ? "Unstage hunk" : "Stage hunk"}
+                {staged ? t("git.unstageHunk") : t("git.stageHunk")}
               </button>
             </div>
             {hunk.lines.map((line, lineIndex) => (
@@ -248,6 +251,7 @@ function DiffLine({ line, lineNo }: { line: string; lineNo: number }) {
 }
 
 function SplitDiffText({ text }: { text: string }) {
+  const { t } = useTranslation();
   const rows = useMemo(() => parseSplitDiff(text), [text]);
   return (
     <div className="w-max min-w-full text-[12px] leading-5">
@@ -255,10 +259,10 @@ function SplitDiffText({ text }: { text: string }) {
         className="sticky top-0 z-10 grid w-max min-w-full border-b border-border-theme bg-gray-100 text-[11px] font-medium text-text-secondary"
         style={{ gridTemplateColumns: "64px max-content 64px max-content" }}
       >
-        <div className="border-r border-border-theme px-2 py-1 text-right">Old</div>
-        <div className="border-r border-border-theme px-3 py-1">Before</div>
-        <div className="border-r border-border-theme px-2 py-1 text-right">New</div>
-        <div className="px-3 py-1">After</div>
+        <div className="border-r border-border-theme px-2 py-1 text-right">{t("git.diffColumns.old")}</div>
+        <div className="border-r border-border-theme px-3 py-1">{t("git.diffColumns.before")}</div>
+        <div className="border-r border-border-theme px-2 py-1 text-right">{t("git.diffColumns.new")}</div>
+        <div className="px-3 py-1">{t("git.diffColumns.after")}</div>
       </div>
       {rows.map((row, index) =>
         isFullWidthRow(row) ? (
@@ -310,11 +314,8 @@ function parseUnifiedPatch(text: string): UnifiedPatchParts {
       current = { header: line, lines: [] };
       continue;
     }
-    if (current) {
-      current.lines.push(line);
-    } else {
-      headerLines.push(line);
-    }
+    if (current) current.lines.push(line);
+    else headerLines.push(line);
   }
   if (current) hunks.push(current);
   return { headerLines, hunks };
@@ -341,38 +342,17 @@ function parseSplitDiff(text: string): SplitRow[] {
       continue;
     }
     if (line.startsWith("+")) {
-      rows.push({
-        kind: "add",
-        text: "",
-        oldLine: null,
-        newLine,
-        oldText: "",
-        newText: line.slice(1),
-      });
+      rows.push({ kind: "add", text: "", oldLine: null, newLine, oldText: "", newText: line.slice(1) });
       newLine += 1;
       continue;
     }
     if (line.startsWith("-")) {
-      rows.push({
-        kind: "remove",
-        text: "",
-        oldLine,
-        newLine: null,
-        oldText: line.slice(1),
-        newText: "",
-      });
+      rows.push({ kind: "remove", text: "", oldLine, newLine: null, oldText: line.slice(1), newText: "" });
       oldLine += 1;
       continue;
     }
     const content = line.startsWith(" ") ? line.slice(1) : line;
-    rows.push({
-      kind: "context",
-      text: "",
-      oldLine,
-      newLine,
-      oldText: content,
-      newText: content,
-    });
+    rows.push({ kind: "context", text: "", oldLine, newLine, oldText: content, newText: content });
     oldLine += 1;
     newLine += 1;
   }
@@ -382,10 +362,7 @@ function parseSplitDiff(text: string): SplitRow[] {
 function parseHunkHeader(line: string): { oldStart: number; newStart: number } | null {
   const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
   if (!match) return null;
-  return {
-    oldStart: Number(match[1]),
-    newStart: Number(match[2]),
-  };
+  return { oldStart: Number(match[1]), newStart: Number(match[2]) };
 }
 
 function diffLineKind(line: string): "add" | "remove" | "hunk" | "meta" | "context" {
