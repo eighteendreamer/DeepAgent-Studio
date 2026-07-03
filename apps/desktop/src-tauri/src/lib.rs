@@ -2065,6 +2065,7 @@ async fn local_pty_close(state: State<'_, AppState>, pty_id: String) -> Result<(
 // ---- ssh (long-lived remote connections) -----------------------------------
 
 use deepagent_ssh::{
+    CreateSshConnectionRequest as DtoCreateSshConnectionRequest,
     RemoteBundleRequest as DtoRemoteBundleRequest,
     RemoteBundleResult as DtoRemoteBundleResult,
     RemoteInstallRequest as DtoRemoteInstallRequest,
@@ -2079,6 +2080,7 @@ use deepagent_ssh::{
     SshExecResult as DtoSshExecResult,
     SshServiceHandle as DtoSshServiceHandle,
     SshStatus as DtoSshStatus,
+    UpdateSshConnectionRequest as DtoUpdateSshConnectionRequest,
     SshError,
 };
 
@@ -2176,7 +2178,15 @@ async fn ssh_create_connection(
         "password" => DtoSshAuthType::Password,
         _ => DtoSshAuthType::Agent,
     };
-    ssh.create_connection(name, host, port, username, auth, key_path, password)
+    ssh.create_connection(DtoCreateSshConnectionRequest {
+        name,
+        host,
+        port,
+        username,
+        auth_type: auth,
+        key_path,
+        password,
+    })
         .await
         .map(Into::into)
         .map_err(|e| e.to_string())
@@ -2201,7 +2211,16 @@ async fn ssh_update_connection(
         "password" => DtoSshAuthType::Password,
         _ => DtoSshAuthType::Agent,
     };
-    ssh.update_connection(&id, name, host, port, username, auth, key_path, password)
+    ssh.update_connection(DtoUpdateSshConnectionRequest {
+        id,
+        name,
+        host,
+        port,
+        username,
+        auth_type: auth,
+        key_path,
+        password,
+    })
         .await
         .map(Into::into)
         .map_err(|e| e.to_string())

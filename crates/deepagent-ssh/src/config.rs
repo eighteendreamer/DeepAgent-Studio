@@ -62,6 +62,29 @@ pub struct SshConnectionDto {
     pub latency_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSshConnectionRequest {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth_type: SshAuthType,
+    pub key_path: Option<String>,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateSshConnectionRequest {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth_type: SshAuthType,
+    pub key_path: Option<String>,
+    pub password: Option<String>,
+}
+
 impl SshConnectionConfig {
     pub fn new(
         name: impl Into<String>,

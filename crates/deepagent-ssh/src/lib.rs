@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-pub use config::{SshAuthType, SshConnectionConfig, SshConnectionDto, SshStatus};
+pub use config::{
+    CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto, SshStatus,
+    UpdateSshConnectionRequest,
+};
 pub use error::{SshError, SshResult};
 pub use remote::{
     RemoteBundleManifest, RemoteBundleRequest, RemoteBundleResult, RemoteInstallRequest,
@@ -86,35 +89,16 @@ impl SshService {
 
     pub async fn create_connection(
         &self,
-        name: String,
-        host: String,
-        port: u16,
-        username: String,
-        auth_type: SshAuthType,
-        key_path: Option<String>,
-        password: Option<String>,
+        request: CreateSshConnectionRequest,
     ) -> SshResult<SshConnectionDto> {
-        self.inner
-            .create_connection(name, host, port, username, auth_type, key_path, password)
-            .await
+        self.inner.create_connection(request).await
     }
 
     pub async fn update_connection(
         &self,
-        id: &str,
-        name: String,
-        host: String,
-        port: u16,
-        username: String,
-        auth_type: SshAuthType,
-        key_path: Option<String>,
-        password: Option<String>,
+        request: UpdateSshConnectionRequest,
     ) -> SshResult<SshConnectionDto> {
-        self.inner
-            .update_connection(
-                id, name, host, port, username, auth_type, key_path, password,
-            )
-            .await
+        self.inner.update_connection(request).await
     }
 
     pub async fn remove_connection(&self, id: &str) -> SshResult<()> {

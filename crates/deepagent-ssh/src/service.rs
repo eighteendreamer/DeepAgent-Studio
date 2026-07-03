@@ -1,4 +1,7 @@
-use super::config::{SshAuthType, SshConnectionConfig, SshConnectionDto, SshStatus};
+use super::config::{
+    CreateSshConnectionRequest, SshAuthType, SshConnectionConfig, SshConnectionDto, SshStatus,
+    UpdateSshConnectionRequest,
+};
 use super::error::{SshError, SshResult};
 use super::remote::{
     RemoteBundleManifest, RemoteBundleRequest, RemoteBundleResult, RemoteInstallRequest,
@@ -113,19 +116,19 @@ impl SshServiceImpl {
 
     pub async fn create_connection(
         &self,
-        name: String,
-        host: String,
-        port: u16,
-        username: String,
-        auth_type: SshAuthType,
-        key_path: Option<String>,
-        password: Option<String>,
+        request: CreateSshConnectionRequest,
     ) -> SshResult<SshConnectionDto> {
         self.ensure_loaded().await;
-        let mut config = SshConnectionConfig::new(name, host, port, username, auth_type);
-        validate_config(&config, key_path.as_deref(), password.as_deref())?;
-        config.key_path = key_path.clone();
-        config.password = password;
+        let mut config = SshConnectionConfig::new(
+            request.name,
+            request.host,
+            request.port,
+            request.username,
+            request.auth_type,
+        );
+        validate_config(&config, request.key_path.as_deref(), request.password.as_deref())?;
+        config.key_path = request.key_path.clone();
+        config.password = request.password;
         let id = config.id.clone();
         let mut configs = self.configs.write().await;
         if configs.contains_key(&id) {
@@ -144,29 +147,22 @@ impl SshServiceImpl {
 
     pub async fn update_connection(
         &self,
-        id: &str,
-        name: String,
-        host: String,
-        port: u16,
-        username: String,
-        auth_type: SshAuthType,
-        key_path: Option<String>,
-        password: Option<String>,
+        request: UpdateSshConnectionRequest,
     ) -> SshResult<SshConnectionDto> {
         self.ensure_loaded().await;
         let mut configs = self.configs.write().await;
         let cfg = configs
-            .get_mut(id)
-            .ok_or_else(|| SshError::NotFound(id.to_string()))?;
+            .get_mut(&request.id)
+            .ok_or_else(|| SshError::NotFound(request.id.clone()))?;
         let candidate = SshConnectionConfig {
             id: cfg.id.clone(),
-            name,
-            host,
-            port,
-            username,
-            auth_type,
-            key_path: key_path.clone(),
-            password,
+            name: request.name,
+            host: request.host,
+            port: request.port,
+            username: request.username,
+            auth_type: request.auth_type,
+            key_path: request.key_path.clone(),
+            password: request.password,
             extra_options: cfg.extra_options.clone(),
             control_path: None,
             cached_status: SshStatus::Disconnected,
@@ -181,7 +177,7 @@ impl SshServiceImpl {
         )?;
         *cfg = candidate.clone();
         drop(configs);
-        let _ = self.disconnect(id).await;
+        let _ = self.disconnect(&request.id).await;
         self.persist_configs().await?;
         Ok(dto_from_config(
             &candidate,
