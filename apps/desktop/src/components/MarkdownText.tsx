@@ -47,15 +47,24 @@ export const MarkdownText = memo(function MarkdownText({
             const match = /language-(\w+(?:-\w+)*)/.exec(className || "");
             const language = match ? match[1] : "";
             const content = String(children).replace(/\n$/, "");
+            const startLine = node?.position?.start?.line;
+            const endLine = node?.position?.end?.line;
+            const isInlineCode =
+              inline === true ||
+              (!language &&
+                !content.includes("\n") &&
+                typeof startLine === "number" &&
+                typeof endLine === "number" &&
+                startLine === endLine);
 
-            if (!inline && language === "echarts") {
+            if (!isInlineCode && language === "echarts") {
               return <EChartsBlock content={content} />;
             }
-            if (!inline && language === "site-card") {
+            if (!isInlineCode && language === "site-card") {
               return <SiteCardBlock content={content} />;
             }
 
-            return !inline ? (
+            return !isInlineCode ? (
               <div className="relative mb-4 mt-2 overflow-hidden rounded-lg bg-[#1e1e1e] shadow-md border border-gray-700/50">
                 <div className="flex items-center justify-between bg-[#2d2d2d] px-4 py-1.5 text-xs text-gray-400">
                   <span className="font-mono lowercase">{language || "text"}</span>
@@ -79,7 +88,7 @@ export const MarkdownText = memo(function MarkdownText({
               </div>
             ) : (
               <code
-                className="rounded bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 text-[0.92em] font-mono text-gray-800 dark:text-gray-200"
+                className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[0.92em] font-mono text-slate-700 dark:border-slate-600 dark:bg-slate-800/40 dark:text-slate-100"
                 {...props}
               >
                 {children}
