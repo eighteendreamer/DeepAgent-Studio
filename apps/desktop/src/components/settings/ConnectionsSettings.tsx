@@ -329,144 +329,175 @@ export function ConnectionsSettings() {
       </div>
 
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20">
-          <div className="w-full max-w-[500px] overflow-hidden rounded-2xl bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-transparent px-6 py-4">
-              <h3 className="text-lg font-semibold text-text-base">
-                {editingId
-                  ? t("settings.connections.edit")
-                  : t("settings.connections.addSsh")}
-              </h3>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(15,23,42,0.16)] px-6 py-8"
+          onMouseDown={closeModal}
+        >
+          <div
+            className="flex max-h-[calc(100vh-64px)] w-full max-w-[520px] flex-col overflow-hidden rounded-[20px] border border-black/5 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.16)]"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-border-theme px-5 py-4">
+              <div>
+                <h3 className="text-[18px] font-semibold tracking-tight text-text-base">
+                  {editingId
+                    ? t("settings.connections.edit")
+                    : t("settings.connections.addSsh")}
+                </h3>
+                <p className="mt-1 text-[11px] leading-4 text-text-secondary">
+                  {t("settings.connections.sshDesc")}
+                </p>
+              </div>
               <button
-                className="text-gray-400 transition-colors hover:text-text-base"
+                type="button"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-text-base"
                 onClick={closeModal}
               >
-                <FontAwesomeIcon icon={["fas", "times"]} className="text-[14px]" />
+                <FontAwesomeIcon icon={["fas", "times"]} className="text-[12px]" />
               </button>
             </div>
 
-            <div className="space-y-4 px-6 py-4">
-              <div>
-                <label className="mb-1.5 block text-[12px] font-medium text-text-base">
-                  {t("settings.connections.displayName")}
-                </label>
-                <input
-                  type="text"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  className="w-full rounded-lg border border-blue-400 bg-white px-3 py-1.5 text-[13px] shadow-[0_0_0_1px_rgba(59,130,246,0.2)] focus:border-blue-500 focus:outline-none"
-                />
+            <form
+              className="min-h-0 flex-1 overflow-y-auto"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleSave();
+              }}
+            >
+              <div className="space-y-3 px-5 py-4">
+                <section className="space-y-2.5">
+                  <div>
+                    <label className="mb-1.5 block text-[11px] font-medium text-text-base">
+                      {t("settings.connections.displayName")}
+                    </label>
+                    <input
+                      type="text"
+                      value={form.name}
+                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                      className="h-[34px] w-full rounded-[14px] border border-blue-400 bg-white px-3 text-[13px] text-text-base shadow-[0_0_0_1px_rgba(59,130,246,0.12)] outline-none transition-colors focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-[11px] font-medium text-text-base">
+                      {t("settings.connections.hostname")}
+                    </label>
+                    <input
+                      type="text"
+                      value={form.host}
+                      onChange={(e) => setForm({ ...form, host: e.target.value })}
+                      placeholder={t("settings.connections.hostPlaceholder")}
+                      className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-[110px_minmax(0,1fr)]">
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-medium text-text-base">
+                        {t("settings.connections.sshPort")}{" "}
+                        <span className="font-normal text-gray-400">
+                          {t("settings.connections.optional")}
+                        </span>
+                      </label>
+                      <input
+                        type="text"
+                        value={form.port}
+                        onChange={(e) => setForm({ ...form, port: e.target.value })}
+                        className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-medium text-text-base">
+                        {t("settings.connections.username")}
+                      </label>
+                      <input
+                        type="text"
+                        value={form.username}
+                        onChange={(e) => setForm({ ...form, username: e.target.value })}
+                        className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+                </section>
+
+                <section className="space-y-2.5 border-t border-border-theme pt-3">
+                  <div className="text-[11px] font-medium text-text-secondary">
+                    SSH
+                  </div>
+
+                  {form.authType === "password" ? (
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-medium text-text-base">
+                        {t("settings.connections.password")}
+                      </label>
+                      <input
+                        type="password"
+                        value={form.password}
+                        onChange={(e) => setForm({ ...form, password: e.target.value })}
+                        className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-medium text-text-base">
+                        {t("settings.connections.identityFilePath")}
+                      </label>
+                      <input
+                        type="text"
+                        value={form.keyPath}
+                        onChange={(e) => setForm({ ...form, keyPath: e.target.value })}
+                        className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex overflow-hidden rounded-full border border-border-theme bg-gray-100 p-0.5">
+                    <button
+                      type="button"
+                      className={`flex h-[28px] flex-1 items-center justify-center rounded-full px-3 text-[12px] font-medium transition-colors ${
+                        form.authType === "password"
+                          ? "bg-white text-text-base shadow-sm"
+                          : "text-text-secondary hover:text-text-base"
+                      }`}
+                      onClick={() => setForm({ ...form, authType: "password" })}
+                    >
+                      {t("settings.connections.password")}
+                    </button>
+                    <button
+                      type="button"
+                      className={`flex h-[28px] flex-1 items-center justify-center rounded-full px-3 text-[12px] font-medium transition-colors ${
+                        form.authType === "file"
+                          ? "bg-white text-text-base shadow-sm"
+                          : "text-text-secondary hover:text-text-base"
+                      }`}
+                      onClick={() => setForm({ ...form, authType: "file" })}
+                    >
+                      {t("settings.connections.identityFile")}
+                    </button>
+                  </div>
+                </section>
               </div>
 
-              <div>
-                <label className="mb-1.5 block text-[12px] font-medium text-text-base">
-                  {t("settings.connections.hostname")}
-                </label>
-                <input
-                  type="text"
-                  value={form.host}
-                  onChange={(e) => setForm({ ...form, host: e.target.value })}
-                  placeholder={t("settings.connections.hostPlaceholder")}
-                  className="w-full rounded-lg border border-border-theme bg-white px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-[12px] font-medium text-text-base">
-                  {t("settings.connections.sshPort")}{" "}
-                  <span className="font-normal text-gray-400">
-                    {t("settings.connections.optional")}
-                  </span>
-                </label>
-                <input
-                  type="text"
-                  value={form.port}
-                  onChange={(e) => setForm({ ...form, port: e.target.value })}
-                  className="w-full rounded-lg border border-border-theme bg-white px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-[12px] font-medium text-text-base">
-                  {t("settings.connections.username")}
-                </label>
-                <input
-                  type="text"
-                  value={form.username}
-                  onChange={(e) => setForm({ ...form, username: e.target.value })}
-                  className="w-full rounded-lg border border-border-theme bg-white px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none"
-                />
-              </div>
-
-              <div className="mt-2 flex overflow-hidden rounded-full border border-border-theme bg-gray-100 p-0.5">
+              <div className="flex items-center justify-end gap-2.5 border-t border-border-theme bg-gray-50/70 px-5 py-2.5">
                 <button
-                  className={`flex-1 rounded-full py-1.5 text-[12px] font-medium transition-colors ${
-                    form.authType === "password"
-                      ? "bg-white text-text-base shadow-sm"
-                      : "text-text-secondary hover:text-text-base"
-                  }`}
-                  onClick={() => setForm({ ...form, authType: "password" })}
+                  type="button"
+                  className="rounded-full px-3.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-gray-200/70 hover:text-text-base"
+                  onClick={closeModal}
                 >
-                  {t("settings.connections.password")}
+                  {t("settings.connections.cancel")}
                 </button>
                 <button
-                  className={`flex-1 rounded-full py-1.5 text-[12px] font-medium transition-colors ${
-                    form.authType === "file"
-                      ? "bg-white text-text-base shadow-sm"
-                      : "text-text-secondary hover:text-text-base"
-                  }`}
-                  onClick={() => setForm({ ...form, authType: "file" })}
+                  type="submit"
+                  className="rounded-full bg-black px-4 py-1 text-[12px] font-medium text-white shadow-sm transition-colors hover:bg-gray-800 disabled:opacity-50"
+                  disabled={!form.name || !form.host || !form.username}
                 >
-                  {t("settings.connections.identityFile")}
+                  {editingId
+                    ? t("settings.connections.save")
+                    : t("settings.connections.add")}
                 </button>
               </div>
-
-              {form.authType === "password" && (
-                <div className="pt-2">
-                  <label className="mb-1.5 block text-[12px] font-medium text-text-base">
-                    {t("settings.connections.password")}
-                  </label>
-                  <input
-                    type="password"
-                    value={form.password}
-                    onChange={(e) => setForm({ ...form, password: e.target.value })}
-                    className="w-full rounded-lg border border-border-theme bg-white px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none"
-                  />
-                </div>
-              )}
-
-              {form.authType === "file" && (
-                <div className="pt-2">
-                  <label className="mb-1.5 block text-[12px] font-medium text-text-base">
-                    {t("settings.connections.identityFilePath")}
-                  </label>
-                  <input
-                    type="text"
-                    value={form.keyPath}
-                    onChange={(e) => setForm({ ...form, keyPath: e.target.value })}
-                    className="w-full rounded-lg border border-border-theme bg-white px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none"
-                  />
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-end space-x-4 bg-gray-50/50 px-6 py-4">
-              <button
-                className="text-[13px] text-text-secondary transition-colors hover:text-text-base"
-                onClick={closeModal}
-              >
-                {t("settings.connections.cancel")}
-              </button>
-              <button
-                className="rounded-full bg-black px-6 py-1.5 text-[13px] font-medium text-white shadow-sm transition-colors hover:bg-gray-800 disabled:opacity-50"
-                onClick={handleSave}
-                disabled={!form.name || !form.host || !form.username}
-              >
-                {editingId
-                  ? t("settings.connections.save")
-                  : t("settings.connections.add")}
-              </button>
-            </div>
+            </form>
           </div>
         </div>
       )}
