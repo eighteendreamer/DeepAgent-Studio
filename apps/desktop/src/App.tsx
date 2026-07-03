@@ -1149,6 +1149,7 @@ export function App() {
               >
                 <ChatView
                   sessionId={activeId}
+                  sessionKey={activeId ?? activePendingRunKey ?? null}
                   messages={chatMessages}
                   onSend={onSubmit}
                   onFork={onForkSession}

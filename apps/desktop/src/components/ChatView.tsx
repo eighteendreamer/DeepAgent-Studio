@@ -32,6 +32,8 @@ import { GitWorkbench } from "./git/GitWorkbench";
 interface Props {
   /** Active session id for per-session UI persistence. */
   sessionId?: string | null;
+  /** Active chat identity, including pending runs before a real session id exists. */
+  sessionKey?: string | null;
   messages: ChatMessage[];
   onSend: (text: string) => void;
   /** Fork the current session into a new branch from its latest point. */
@@ -588,6 +590,7 @@ function browserTitle(url: string): string {
 
 export function ChatView({
   sessionId = null,
+  sessionKey = null,
   messages,
   onSend,
   onFork,
@@ -691,13 +694,45 @@ export function ChatView({
     [outputItems]
   );
   const lastAutoOpenedOutputRef = useRef<string>("");
+  const previousSessionKeyRef = useRef<string | null>(null);
+  const tempEnvPanelAutoOpenRef = useRef<Map<string, boolean>>(new Map());
   useEffect(() => {
     let cancelled = false;
+    const previousSessionKey = previousSessionKeyRef.current;
+    previousSessionKeyRef.current = sessionKey;
     lastAutoOpenedOutputRef.current = "";
     setIsOutputPanelOpen(false);
 
-    if (!sessionId) {
+    if (!sessionKey) {
       setEnvPanelAutoOpenEnabled(true);
+      setEnvPanelPrefsLoaded(true);
+      return;
+    }
+
+    if (
+      sessionId &&
+      previousSessionKey &&
+      previousSessionKey !== sessionKey &&
+      tempEnvPanelAutoOpenRef.current.has(previousSessionKey)
+    ) {
+      const pendingAutoOpen =
+        tempEnvPanelAutoOpenRef.current.get(previousSessionKey) ?? true;
+      tempEnvPanelAutoOpenRef.current.delete(previousSessionKey);
+      setEnvPanelAutoOpenEnabled(pendingAutoOpen);
+      setEnvPanelPrefsLoaded(true);
+      if (!pendingAutoOpen) {
+        void setSessionEnvPanelAutoOpen(sessionId, false).catch((error) => {
+          if (cancelled) return;
+          console.error("set_session_env_panel_auto_open failed:", error);
+        });
+      }
+      return;
+    }
+
+    if (!sessionId) {
+      setEnvPanelAutoOpenEnabled(
+        tempEnvPanelAutoOpenRef.current.get(sessionKey) ?? true,
+      );
       setEnvPanelPrefsLoaded(true);
       return;
     }
@@ -719,7 +754,7 @@ export function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [sessionId, sessionKey]);
   useEffect(() => {
     if (!hasConversation) {
       lastAutoOpenedOutputRef.current = "";
@@ -748,11 +783,13 @@ export function ChatView({
           void setSessionEnvPanelAutoOpen(sessionId, false).catch((error) => {
             console.error("set_session_env_panel_auto_open failed:", error);
           });
+        } else if (sessionKey) {
+          tempEnvPanelAutoOpenRef.current.set(sessionKey, false);
         }
       }
       return next;
     });
-  }, [sessionId]);
+  }, [sessionId, sessionKey]);
 
   useEffect(() => {
     setIsGitWorkbenchOpen(false);
