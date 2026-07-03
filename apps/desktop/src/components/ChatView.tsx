@@ -1473,7 +1473,7 @@ export function ChatView({
         )}
         {isGitWorkbenchOpen && activeProjectPath && (
           <div
-            className="absolute top-16 bottom-6 left-6 right-6 z-20 overflow-hidden rounded-2xl border border-border-theme bg-white shadow-[0_18px_46px_rgb(0,0,0,0.14)] lg:right-[330px]"
+            className="absolute left-4 right-4 top-12 bottom-4 z-20 overflow-hidden rounded-2xl border border-border-theme bg-white shadow-[0_18px_46px_rgb(0,0,0,0.14)] md:left-6 md:right-6 md:top-16 md:bottom-6"
           >
             <GitWorkbench
               projectPath={activeProjectPath}
