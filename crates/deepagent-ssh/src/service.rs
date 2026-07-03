@@ -126,7 +126,11 @@ impl SshServiceImpl {
             request.username,
             request.auth_type,
         );
-        validate_config(&config, request.key_path.as_deref(), request.password.as_deref())?;
+        validate_config(
+            &config,
+            request.key_path.as_deref(),
+            request.password.as_deref(),
+        )?;
         config.key_path = request.key_path.clone();
         config.password = request.password;
         let id = config.id.clone();
