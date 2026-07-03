@@ -1661,8 +1661,8 @@ impl ChatService {
     }
 
     /// Build a model client for the given role from persisted settings + the
-    /// stored API key. Deep thinking uses the catalog's reasoner model; lighter
-    /// thinking keeps the requested role so normal chat stays fast.
+    /// stored API key. Thinking depth is a request-parameter concern only; it
+    /// does not implicitly swap the selected model role.
     fn build_model(&self, role: ModelRole) -> Result<(Arc<ModelClient>, String, ThinkingDepth)> {
         let settings = self
             .settings
@@ -1673,13 +1673,8 @@ impl ChatService {
             .api_key()?
             .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
         let thinking_depth = settings.thinking_depth;
-        let effective_role = if role == ModelRole::Chat && thinking_depth == ThinkingDepth::Deep {
-            ModelRole::Reasoner
-        } else {
-            role
-        };
-        let model = settings.catalog.model_for(effective_role).to_string();
-        let config = ModelConfig::from_catalog(api_key, &settings.catalog, effective_role);
+        let model = settings.catalog.model_for(role).to_string();
+        let config = ModelConfig::from_catalog(api_key, &settings.catalog, role);
         let client = Arc::new(ModelClient::new(self.transport.clone(), config));
         Ok((client, model, thinking_depth))
     }
@@ -3242,7 +3237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deep_thinking_uses_reasoner_model_in_request_body() {
+    async fn deep_thinking_keeps_chat_model_and_uses_max_effort() {
         let (db, settings, dir) = seeded().await;
         settings
             .set_thinking_depth(ThinkingDepth::Deep)
@@ -3260,10 +3255,10 @@ mod tests {
 
         let body = last_body.lock().unwrap().clone().unwrap();
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(json["model"], "deepseek-v4-pro");
+        assert_eq!(json["model"], "deepseek-v4-flash");
         assert_eq!(json["thinking"]["type"], "enabled");
         assert_eq!(json["reasoning_effort"], "max");
-        assert_eq!(json["max_tokens"], 65_536);
+        assert!(json.get("max_tokens").is_none());
     }
 
     #[tokio::test]

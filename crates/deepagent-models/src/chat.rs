@@ -11,18 +11,19 @@ use deepagent_core::message::Message;
 
 /// DeepSeek Thinking Mode depth exposed to users.
 ///
-/// DeepSeek maps low/medium efforts to `high`, so simple and medium both use
-/// `reasoning_effort=high`; the runtime still differentiates them with output
-/// token ceilings.
+/// Aligned to the provider's official controls:
+/// - `Simple` => thinking disabled
+/// - `Medium` => thinking enabled with `reasoning_effort=high`
+/// - `Deep` => thinking enabled with `reasoning_effort=max`
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingDepth {
-    /// Reasoning enabled with a conservative output budget.
+    /// Thinking disabled.
     Simple,
-    /// Reasoning enabled with the normal agent output budget.
+    /// Thinking enabled at high effort.
     #[default]
     Medium,
-    /// Reasoning enabled at maximum effort.
+    /// Thinking enabled at maximum effort.
     Deep,
 }
 
@@ -55,19 +56,19 @@ impl ThinkingConfig {
     pub fn for_depth(depth: ThinkingDepth) -> Self {
         match depth {
             ThinkingDepth::Simple => Self {
-                enabled: true,
-                effort: Some("high".to_string()),
-                max_tokens: Some(16_384),
+                enabled: false,
+                effort: None,
+                max_tokens: None,
             },
             ThinkingDepth::Medium => Self {
                 enabled: true,
                 effort: Some("high".to_string()),
-                max_tokens: Some(32_768),
+                max_tokens: None,
             },
             ThinkingDepth::Deep => Self {
                 enabled: true,
                 effort: Some("max".to_string()),
-                max_tokens: Some(65_536),
+                max_tokens: None,
             },
         }
     }
@@ -279,9 +280,9 @@ mod tests {
         assert_eq!(
             ThinkingConfig::for_depth(ThinkingDepth::Simple),
             ThinkingConfig {
-                enabled: true,
-                effort: Some("high".to_string()),
-                max_tokens: Some(16_384)
+                enabled: false,
+                effort: None,
+                max_tokens: None
             }
         );
         assert_eq!(
@@ -296,10 +297,8 @@ mod tests {
                 .as_deref(),
             Some("max")
         );
-        assert!(
-            ThinkingConfig::for_depth(ThinkingDepth::Deep).max_tokens
-                > ThinkingConfig::for_depth(ThinkingDepth::Medium).max_tokens
-        );
+        assert_eq!(ThinkingConfig::for_depth(ThinkingDepth::Medium).max_tokens, None);
+        assert_eq!(ThinkingConfig::for_depth(ThinkingDepth::Deep).max_tokens, None);
     }
 
     #[test]
@@ -318,9 +317,19 @@ mod tests {
         assert_eq!(json["stream"], true);
         assert_eq!(json["thinking"]["type"], "enabled");
         assert_eq!(json["reasoning_effort"], "high");
-        assert_eq!(json["max_tokens"], 32768);
+        assert!(json.get("max_tokens").is_none());
         assert!((json["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
         assert_eq!(json["tools"][0]["function"]["name"], "reverse");
+    }
+
+    #[test]
+    fn simple_thinking_disables_reasoning() {
+        let req = ChatRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
+            .with_thinking_depth(ThinkingDepth::Simple);
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["thinking"]["type"], "disabled");
+        assert!(json.get("reasoning_effort").is_none());
+        assert!(json.get("max_tokens").is_none());
     }
 
     #[test]
