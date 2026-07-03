@@ -531,6 +531,8 @@
       "noAuth": "No Auth",
       "identityFile": "Identity File",
       "identityFilePath": "Identity File Path",
+      "selectIdentityFile": "Choose an identity file",
+      "browse": "Browse",
       "testing": "Testing...",
       "test": "Test",
       "testOk": "Connection successful",

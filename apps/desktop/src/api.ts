@@ -1650,6 +1650,22 @@ export async function pickPreviewFile(): Promise<string | null> {
   return null;
 }
 
+/**
+ * Open the OS-native "open file" dialog for selecting an SSH identity file.
+ * Returns the chosen absolute path or null if the user cancelled.
+ */
+export async function pickSshIdentityFile(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const mod = await import("@tauri-apps/plugin-dialog");
+  const selected = await mod.open({
+    directory: false,
+    multiple: false,
+    title: "Select SSH Identity File",
+  });
+  if (typeof selected === "string") return selected;
+  return null;
+}
+
 /** Read metadata (name / ext / size / classified kind) for a file. */
 export async function previewGetMetadata(path: string): Promise<PreviewMetadata> {
   const invoke = getInvoke();

@@ -531,6 +531,8 @@
       "noAuth": "无认证",
       "identityFile": "密钥文件",
       "identityFilePath": "密钥文件路径",
+      "selectIdentityFile": "点击浏览选择密钥文件",
+      "browse": "浏览",
       "testing": "测试连接中...",
       "test": "测试",
       "testOk": "连接成功",

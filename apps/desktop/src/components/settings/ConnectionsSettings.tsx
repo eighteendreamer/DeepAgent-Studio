@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
+  pickSshIdentityFile,
   sshCreateConnection,
   sshListConnections,
   sshRemoveConnection,
@@ -113,6 +114,12 @@ export function ConnectionsSettings() {
 
     closeModal();
     load();
+  };
+
+  const handlePickKeyFile = async () => {
+    const selected = await pickSshIdentityFile();
+    if (!selected) return;
+    setForm((prev) => ({ ...prev, keyPath: selected }));
   };
 
   const handleRemove = async (id: string) => {
@@ -443,12 +450,23 @@ export function ConnectionsSettings() {
                       <label className="mb-1.5 block text-[11px] font-medium text-text-base">
                         {t("settings.connections.identityFilePath")}
                       </label>
-                      <input
-                        type="text"
-                        value={form.keyPath}
-                        onChange={(e) => setForm({ ...form, keyPath: e.target.value })}
-                        className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
-                      />
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={form.keyPath}
+                          readOnly
+                          placeholder={t("settings.connections.selectIdentityFile")}
+                          className="h-[34px] min-w-0 flex-1 rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
+                        />
+                        <button
+                          type="button"
+                          className="inline-flex h-[34px] shrink-0 items-center rounded-[14px] border border-border-theme bg-gray-50 px-3 text-[12px] font-medium text-text-base transition-colors hover:bg-gray-100"
+                          onClick={() => void handlePickKeyFile()}
+                        >
+                          <FontAwesomeIcon icon={["fas", "folder-open"]} className="mr-1.5 text-[11px] text-text-secondary" />
+                          {t("settings.connections.browse")}
+                        </button>
+                      </div>
                     </div>
                   )}
 
