@@ -9,7 +9,9 @@
 //! The model client is built from the persisted [`ModelCatalog`] + the API key
 //! from the secret store, so the UI only needs to call [`ChatService::run`].
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -453,7 +455,32 @@ pub struct ChatService {
     /// the `skill` tool. Used by office tool guards so specialized document
     /// tools cannot bypass the matching docx/xlsx/pdf/pptx skill.
     invoked_skills: InvokedSkillMap,
+    /// Optional executor factory for remote (SSH) sessions. When set and the
+    /// session is in `SessionMode::Remote`, the factory creates a
+    /// [`CommandExecutor`] that routes bash/git commands through SSH instead
+    /// of local execution.
+    executor_factory: Option<ExecutorFactory>,
+    /// Optional remote-context factory for remote (SSH) sessions. When set,
+    /// remote runs can inject a concise SSH snapshot so the model reasons from
+    /// the remote host's actual state rather than the local workspace alone.
+    remote_context_factory: Option<RemoteContextFactory>,
+    /// Optional remote-ops factory for remote (SSH) sessions. When set, remote
+    /// sessions gain probe / push / install tools backed by the active SSH
+    /// connection so the model can inspect capabilities before acting.
+    remote_ops_factory: Option<RemoteOpsFactory>,
 }
+
+/// Factory that creates a [`CommandExecutor`] for a given connection id.
+/// Used for remote (SSH) sessions — the factory is set up by the desktop
+/// app and captures the `SshService` handle.
+type ExecutorFactory = Arc<dyn Fn(String) -> Box<dyn deepagent_builtins::bash_tool::CommandExecutor>
+    + Send
+    + Sync>;
+
+type RemoteContextFuture = Pin<Box<dyn Future<Output = Result<Option<String>>> + Send>>;
+type RemoteContextFactory = Arc<dyn Fn(String) -> RemoteContextFuture + Send + Sync>;
+type RemoteOpsFactory =
+    Arc<dyn Fn(String) -> Arc<dyn deepagent_builtins::RemoteOpsBackend> + Send + Sync>;
 
 /// One session's discovered-tool set: shared between the runtime tool
 /// (`ToolSearchTool`) and the chat-service's per-turn tools-array assembly.
@@ -632,6 +659,9 @@ impl ChatService {
             skills: None,
             skill_catalog_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             invoked_skills: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            executor_factory: None,
+            remote_context_factory: None,
+            remote_ops_factory: None,
         }
     }
 
@@ -746,6 +776,46 @@ impl ChatService {
     /// Store oversized tool results under `dir` (usually app_data/tool_results).
     pub fn with_tool_results_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.tool_results_dir = dir.into();
+        self
+    }
+
+    /// Bind a factory that creates a [`CommandExecutor`] for a given SSH
+    /// connection id. When a session is in [`SessionMode::Remote`], the
+    /// factory is called at runtime to produce an executor that routes
+    /// bash/git commands through SSH instead of local execution.
+    pub fn with_executor_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(String) -> Box<dyn deepagent_builtins::bash_tool::CommandExecutor>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.executor_factory = Some(Arc::new(factory));
+        self
+    }
+
+    /// Bind a factory that gathers a concise remote snapshot for a given SSH
+    /// connection id. The result is injected as a system reminder during
+    /// remote runs so the model can see the remote host and current directory.
+    pub fn with_remote_context_factory<F, Fut>(mut self, factory: F) -> Self
+    where
+        F: Fn(String) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Option<String>>> + Send + 'static,
+    {
+        self.remote_context_factory = Some(Arc::new(move |connection_id: String| {
+            Box::pin(factory(connection_id))
+        }));
+        self
+    }
+
+    /// Bind a factory that creates the remote probe / transfer / install
+    /// backend for a given SSH connection id. Registered only for remote
+    /// sessions.
+    pub fn with_remote_ops_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(String) -> Arc<dyn deepagent_builtins::RemoteOpsBackend> + Send + Sync + 'static,
+    {
+        self.remote_ops_factory = Some(Arc::new(factory));
         self
     }
 
@@ -1410,15 +1480,25 @@ impl ChatService {
         &self,
         root: &std::path::Path,
         access: deepagent_builtins::FsAccess,
+        env_mode: Option<&str>,
+        connection_id: Option<&str>,
     ) -> Result<(ToolRegistry, deepagent_builtins::TodoStore)> {
         use deepagent_builtins::{
             register_builtins, AskUserQuestionTool, BuiltinConfig, DeclineResponder, WorkspaceRoot,
         };
         let mut registry = ToolRegistry::new();
-        let config = BuiltinConfig::new(
+        let mut config = BuiltinConfig::new(
             WorkspaceRoot::new(root.to_path_buf()).with_access(access),
             self.bash_allow.clone(),
         );
+        // When the session is remote, create an SSH-backed executor through the
+        // factory and attach it to the builtin config so bash/git commands are
+        // routed through SSH instead of local execution.
+        if let (Some("remote"), Some(factory), Some(conn_id)) =
+            (env_mode, &self.executor_factory, connection_id)
+        {
+            config = config.with_command_executor(factory(conn_id.to_string()));
+        }
         let todo_store = register_builtins(&mut registry, config)?;
         // Network web tools (web_fetch / web_search) when built with `web`.
         #[cfg(feature = "web")]
@@ -1480,6 +1560,20 @@ impl ChatService {
                 registry.register(Arc::new(OfficeDocxCreateTool::new(backend.clone())))?;
                 registry.register(Arc::new(OfficeXlsxCreateTool::new(backend)))?;
             }
+        }
+        if let (Some("remote"), Some(factory), Some(conn_id)) =
+            (env_mode, &self.remote_ops_factory, connection_id)
+        {
+            use deepagent_builtins::{
+                RemoteInstallTool, RemoteProbeTool, RemotePushBundleTool, RemotePushFileTool,
+                RemoteRequireTool,
+            };
+            let backend = factory(conn_id.to_string());
+            registry.register(Arc::new(RemoteProbeTool::new(backend.clone())))?;
+            registry.register(Arc::new(RemotePushFileTool::new(backend.clone())))?;
+            registry.register(Arc::new(RemotePushBundleTool::new(backend.clone())))?;
+            registry.register(Arc::new(RemoteRequireTool::new(backend.clone())))?;
+            registry.register(Arc::new(RemoteInstallTool::new(backend)))?;
         }
 
         Ok((registry, todo_store))
@@ -1733,7 +1827,7 @@ impl ChatService {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
-        self.run_in_session(prompt, None, on_event, on_approval)
+        self.run_in_session(prompt, None, None, None, on_event, on_approval)
             .await
     }
 
@@ -1746,6 +1840,8 @@ impl ChatService {
         &self,
         prompt: &str,
         continue_session: Option<&str>,
+        env_mode: Option<&str>,
+        connection_id: Option<&str>,
         on_event: F,
         on_approval: A,
     ) -> Result<String>
@@ -1788,10 +1884,6 @@ impl ChatService {
         // the sandbox allows actually executes, instead of being
         // re-rejected inside the tool. Sub-agents (below) have no interactive
         // gate, so their tools stay confined to the sandbox `access`.
-        let (registry, todo_store) =
-            self.build_registry(&root, deepagent_builtins::FsAccess::Full)?;
-        let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
-
         let clock = SystemClock;
         // Bind the session to the active project (its folder path) so the
         // sidebar groups it under the right project folder.
@@ -1811,16 +1903,37 @@ impl ChatService {
                 (session, history, events)
             }
             None => {
+                let mode = match env_mode {
+                    Some("remote") => deepagent_core::SessionMode::Remote,
+                    _ => deepagent_core::SessionMode::Normal,
+                };
                 let session = Session::create_in_project(
                     &self.db,
                     &clock,
                     Some(prompt),
-                    Default::default(),
+                    mode,
                     Some(&project),
                 )?;
                 (session, Vec::new(), Vec::new())
             }
         };
+
+        // Derive the effective env_mode: for continuation sessions, use the
+        // persisted session mode; for new sessions, use the caller-supplied
+        // env_mode. This ensures the SSH executor is used when the session was
+        // created in Remote mode, even if the frontend doesn't re-send env_mode.
+        let effective_env_mode = match continue_session {
+            Some(_) => match session.state().mode {
+                deepagent_core::SessionMode::Remote => Some("remote"),
+                _ => None,
+            },
+            None => env_mode,
+        };
+
+        let (registry, todo_store) =
+            self.build_registry(&root, deepagent_builtins::FsAccess::Full, effective_env_mode, connection_id)?;
+        let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
+
         let session_id_str = session.id().to_string();
 
         // Restore previously-discovered tools from the event log (Phase 3C).
@@ -1888,7 +2001,7 @@ impl ChatService {
         // (Req 4.6 default behavior, now extended with snapshot inheritance).
         {
             use deepagent_builtins::TaskTool;
-            let sub_registry = Arc::new(self.build_registry(&root, access)?.0);
+            let sub_registry = Arc::new(self.build_registry(&root, access, None, None)?.0);
             let parent_discovered_snapshot: std::collections::HashSet<String> =
                 tool_search_discovered
                     .lock()
@@ -2119,9 +2232,35 @@ impl ChatService {
             .map(|k| k.passive_block(prompt_for_model))
             .filter(|b| !b.trim().is_empty())
             .map(|b| crate::system_reminder::wrap(&b));
-        let final_user_prompt: String = match &knowledge_reminder {
-            Some(reminder) => format!("{reminder}\n\n{prompt_for_model}"),
-            None => prompt_for_model.to_string(),
+        let remote_reminder = if matches!(effective_env_mode, Some("remote")) {
+            if let (Some(factory), Some(conn_id)) = (&self.remote_context_factory, connection_id) {
+                match factory(conn_id.to_string()).await {
+                    Ok(Some(block)) if !block.trim().is_empty() => {
+                        Some(crate::system_reminder::wrap(&block))
+                    }
+                    Ok(_) => None,
+                    Err(err) => {
+                        tracing::warn!(connection_id = conn_id, error = %err, "failed to collect remote context");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let mut prompt_prefixes: Vec<String> = Vec::new();
+        if let Some(reminder) = remote_reminder {
+            prompt_prefixes.push(reminder);
+        }
+        if let Some(reminder) = knowledge_reminder.clone() {
+            prompt_prefixes.push(reminder);
+        }
+        let final_user_prompt: String = if prompt_prefixes.is_empty() {
+            prompt_for_model.to_string()
+        } else {
+            format!("{}\n\n{}", prompt_prefixes.join("\n\n"), prompt_for_model)
         };
 
         // Clone the model handle for the post-run auto-capture (the originals
@@ -2985,7 +3124,7 @@ mod tests {
             matches!(ev, RuntimeEvent::RunCompleted { message } if message.contains("Entered Plan mode"))
         }));
 
-        chat.run_in_session("/execute", Some(&sid), |_| {}, |_| {})
+        chat.run_in_session("/execute", Some(&sid), None, None, |_| {}, |_| {})
             .await
             .unwrap();
         assert!(!chat.is_plan_mode(&sid));
@@ -3146,7 +3285,7 @@ mod tests {
         let first = chat.run("hello", |_| {}, |_| {}).await.unwrap();
         // Second turn → continue the same session.
         let second = chat
-            .run_in_session("follow up", Some(&first), |_| {}, |_| {})
+            .run_in_session("follow up", Some(&first), None, None, |_| {}, |_| {})
             .await
             .unwrap();
         assert_eq!(first, second, "continuation reuses the same session id");
@@ -3305,7 +3444,7 @@ mod tests {
 
         // The main registry must advertise both knowledge tools.
         let (registry, _todo_store) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full)
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None)
             .unwrap();
         assert!(
             registry
@@ -3322,7 +3461,7 @@ mod tests {
         let (_db, _settings, dir) = seeded().await;
         let chat = ChatService::new(_db, _settings, chat_transport(), dir.path());
         let (registry, _todo_store) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full)
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None)
             .unwrap();
         assert!(
             registry
@@ -3347,7 +3486,7 @@ mod tests {
             .unwrap();
         let chat = ChatService::new(_db, settings, chat_transport(), dir.path());
         let (registry, _todo_store) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full)
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None)
             .unwrap();
         assert!(
             registry.get("web_fetch").is_some(),
@@ -4293,7 +4432,7 @@ mod tests {
         // Build the same registry the run uses (built-ins shared between
         // main and sub-agents) and apply the skill-tool wiring helper.
         let (mut registry, _todo) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full)
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None)
             .unwrap();
         chat.maybe_register_skill_tool(&mut registry).unwrap();
 
@@ -4311,7 +4450,7 @@ mod tests {
         let chat = ChatService::new(db, settings, chat_transport(), dir.path());
 
         let (mut registry, _todo) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full)
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None)
             .unwrap();
         chat.maybe_register_skill_tool(&mut registry).unwrap();
 

@@ -37,6 +37,15 @@ pub struct CommandOutcome {
     pub stderr: String,
 }
 
+/// Allow `Box<dyn CommandExecutor>` to be used as a `CommandExecutor` so it
+/// can be substituted into the generic bash/git tool constructors.
+#[async_trait]
+impl CommandExecutor for Box<dyn CommandExecutor> {
+    async fn run(&self, command: &str, cwd: &str) -> Result<CommandOutcome> {
+        self.as_ref().run(command, cwd).await
+    }
+}
+
 /// Real OS process executor (runs via the platform shell).
 #[derive(Debug, Clone, Default)]
 pub struct SystemExecutor;

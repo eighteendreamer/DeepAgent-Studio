@@ -33,7 +33,8 @@ use deepagent_app_core::{
     TranscriptDto, TranscriptSegmentDto, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
-use serde::Serialize;
+use deepagent_ssh::SshService;
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 /// Service name used for keychain entries.
@@ -45,6 +46,232 @@ const KEYCHAIN_SERVICE: &str = "deepagent-studio";
 const KEYCHAIN_SKILLSMP_KEY_NAME: &str = "skillsmp_api_key";
 
 /// Shared application state.
+
+/// A [`CommandExecutor`] that routes bash/git commands through SSH to a
+/// remote machine. Created by the [`ExecutorFactory`] bound to
+/// [`ChatService`] when a session is in [`SessionMode::Remote`].
+struct SshExecutor {
+    ssh: Arc<SshService>,
+    connection_id: String,
+}
+
+struct SshRemoteOpsBackend {
+    ssh: Arc<SshService>,
+    connection_id: String,
+}
+
+async fn build_remote_context(
+    ssh: Arc<SshService>,
+    connection_id: String,
+) -> Result<Option<String>, deepagent_core::error::CoreError> {
+    let probe = ssh
+        .remote_probe(&connection_id, false)
+        .await
+        .map_err(|e| deepagent_core::error::CoreError::other(format!("SSH probe: {e}")))?;
+    let mut lines = vec![
+        "Remote mode is active. Treat local workspace file tools as host-only unless verified via SSH tools or SSH commands.".to_string(),
+    ];
+    if let Some(os) = &probe.os {
+        let mut platform = os.clone();
+        if let Some(distro) = &probe.distro {
+            platform.push_str(" / ");
+            platform.push_str(distro);
+        }
+        if let Some(version) = &probe.distro_version {
+            platform.push(' ');
+            platform.push_str(version);
+        }
+        if let Some(arch) = &probe.arch {
+            platform.push_str(" (");
+            platform.push_str(arch);
+            platform.push(')');
+        }
+        lines.push(format!("Platform: {platform}"));
+    }
+    if let Some(user) = &probe.user {
+        lines.push(format!("User: {user}"));
+    }
+    if let Some(cwd) = &probe.cwd {
+        lines.push(format!("Working directory: {cwd}"));
+    }
+    if !probe.package_managers.is_empty() {
+        lines.push(format!("Package managers: {}", probe.package_managers.join(", ")));
+    }
+    let available_commands: Vec<String> = probe
+        .commands
+        .iter()
+        .filter_map(|(name, ok)| if *ok { Some(name.clone()) } else { None })
+        .collect();
+    if !available_commands.is_empty() {
+        let mut commands = available_commands;
+        commands.sort();
+        lines.push(format!(
+            "Available commands: {}",
+            commands.into_iter().take(20).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if probe.runtimes.is_empty() {
+        lines.push("No probed runtime versions were reported.".to_string());
+    } else {
+        let mut runtimes: Vec<String> = probe
+            .runtimes
+            .iter()
+            .map(|(name, version)| format!("{name}={version}"))
+            .collect();
+        runtimes.sort();
+        lines.push(format!("Runtime versions: {}", runtimes.join("; ")));
+    }
+    let snapshot = lines.join("\n");
+    if snapshot.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(snapshot))
+    }
+}
+
+#[async_trait::async_trait]
+impl deepagent_builtins::bash_tool::CommandExecutor for SshExecutor {
+    async fn run(
+        &self,
+        command: &str,
+        _cwd: &str,
+    ) -> Result<deepagent_builtins::bash_tool::CommandOutcome, deepagent_core::error::CoreError>
+    {
+        let handle = self
+            .ssh
+            .connect(&self.connection_id)
+            .await
+            .map_err(|e| deepagent_core::error::CoreError::other(format!("SSH connect: {e}")))?;
+        let result = self
+            .ssh
+            .exec(&handle, command)
+            .await
+            .map_err(|e| deepagent_core::error::CoreError::other(format!("SSH exec: {e}")))?;
+        Ok(deepagent_builtins::bash_tool::CommandOutcome {
+            exit_code: Some(result.exit_code),
+            stdout: result.stdout,
+            stderr: result.stderr,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl deepagent_builtins::RemoteOpsBackend for SshRemoteOpsBackend {
+    async fn probe(
+        &self,
+        args: deepagent_builtins::RemoteProbeArgs,
+    ) -> Result<serde_json::Value, deepagent_core::error::CoreError> {
+        let result = self
+            .ssh
+            .remote_probe(&self.connection_id, args.force_refresh)
+            .await
+            .map_err(|e| deepagent_core::error::CoreError::other(format!("SSH probe: {e}")))?;
+        serde_json::to_value(result)
+            .map_err(|e| deepagent_core::error::CoreError::other(e.to_string()))
+    }
+
+    async fn push_file(
+        &self,
+        args: deepagent_builtins::RemotePushFileArgs,
+    ) -> Result<serde_json::Value, deepagent_core::error::CoreError> {
+        let request = deepagent_ssh::RemotePushFileRequest {
+            local_path: args.local_path,
+            remote_path: args.remote_path,
+            create_parent: args.create_parent,
+            overwrite: args.overwrite,
+            verify_mode: parse_verify_mode(&args.verify_mode),
+        };
+        let result = self
+            .ssh
+            .remote_push_file(&self.connection_id, request)
+            .await
+            .map_err(|e| deepagent_core::error::CoreError::other(format!("SSH push file: {e}")))?;
+        serde_json::to_value(result)
+            .map_err(|e| deepagent_core::error::CoreError::other(e.to_string()))
+    }
+
+    async fn push_bundle(
+        &self,
+        args: deepagent_builtins::RemotePushBundleArgs,
+    ) -> Result<serde_json::Value, deepagent_core::error::CoreError> {
+        let request = deepagent_ssh::RemoteBundleRequest {
+            local_path: args.local_path,
+            remote_path: args.remote_path,
+            create_parent: args.create_parent,
+            overwrite: args.overwrite,
+            verify_mode: parse_verify_mode(&args.verify_mode),
+            remove_archive_after_extract: args.remove_archive_after_extract,
+        };
+        let result = self
+            .ssh
+            .remote_push_bundle(&self.connection_id, request)
+            .await
+            .map_err(|e| deepagent_core::error::CoreError::other(format!("SSH push bundle: {e}")))?;
+        serde_json::to_value(result)
+            .map_err(|e| deepagent_core::error::CoreError::other(e.to_string()))
+    }
+
+    async fn require(
+        &self,
+        args: deepagent_builtins::RemoteRequireArgs,
+    ) -> Result<serde_json::Value, deepagent_core::error::CoreError> {
+        let request = deepagent_ssh::RemoteRequireRequest {
+            commands: args.commands,
+            runtimes: args
+                .runtimes
+                .into_iter()
+                .map(|runtime| deepagent_ssh::RemoteRuntimeRequirement {
+                    name: runtime.name,
+                    version: runtime.version,
+                })
+                .collect(),
+            archives: args.archives,
+        };
+        let result = self
+            .ssh
+            .remote_require(&self.connection_id, request)
+            .await
+            .map_err(|e| deepagent_core::error::CoreError::other(format!("SSH require: {e}")))?;
+        serde_json::to_value(result)
+            .map_err(|e| deepagent_core::error::CoreError::other(e.to_string()))
+    }
+
+    async fn install(
+        &self,
+        args: deepagent_builtins::RemoteInstallArgs,
+    ) -> Result<serde_json::Value, deepagent_core::error::CoreError> {
+        let request = deepagent_ssh::RemoteInstallRequest {
+            package_manager: args.package_manager,
+            commands: args.commands,
+            runtimes: args
+                .runtimes
+                .into_iter()
+                .map(|runtime| deepagent_ssh::RemoteRuntimeRequirement {
+                    name: runtime.name,
+                    version: runtime.version,
+                })
+                .collect(),
+            packages: args.packages,
+            update_index: args.update_index,
+        };
+        let result = self
+            .ssh
+            .remote_install(&self.connection_id, request)
+            .await
+            .map_err(|e| deepagent_core::error::CoreError::other(format!("SSH install: {e}")))?;
+        serde_json::to_value(result)
+            .map_err(|e| deepagent_core::error::CoreError::other(e.to_string()))
+    }
+}
+
+fn parse_verify_mode(mode: &str) -> deepagent_ssh::RemoteVerifyMode {
+    match mode.trim().to_lowercase().as_str() {
+        "none" => deepagent_ssh::RemoteVerifyMode::None,
+        "size" => deepagent_ssh::RemoteVerifyMode::Size,
+        _ => deepagent_ssh::RemoteVerifyMode::Sha256,
+    }
+}
+
 struct AppState {
     service: Mutex<AppService>,
     settings: Arc<SettingsService>,
@@ -88,6 +315,8 @@ struct AppState {
     speech: Arc<SpeechService>,
     /// Office document read/generate (office-agent).
     office: Arc<OfficeService>,
+    /// SSH long-lived connection service.
+    ssh: Arc<SshService>,
     /// Tokio runtime for async calls invoked from sync commands.
     rt: tokio::runtime::Runtime,
 }
@@ -894,6 +1123,8 @@ async fn run_chat(
     state: State<'_, AppState>,
     prompt: String,
     session_id: Option<String>,
+    env_mode: Option<String>,
+    connection_id: Option<String>,
     run_id: Option<String>,
 ) -> Result<String, String> {
     // IMPORTANT: this command is `async` so Tauri runs it on a worker thread,
@@ -924,6 +1155,8 @@ async fn run_chat(
             .run_in_session(
                 &prompt,
                 session_id.as_deref(),
+                env_mode.as_deref(),
+                connection_id.as_deref(),
                 move |event| {
                     let _ = event_emitter.emit(
                         "chat://event",
@@ -1642,6 +1875,391 @@ fn terminal_cwd(state: State<'_, AppState>) -> String {
     state.terminal.current_dir()
 }
 
+// ---- ssh (long-lived remote connections) -----------------------------------
+
+use deepagent_ssh::{
+    RemoteBundleRequest as DtoRemoteBundleRequest,
+    RemoteBundleResult as DtoRemoteBundleResult,
+    RemoteInstallRequest as DtoRemoteInstallRequest,
+    RemoteInstallResult as DtoRemoteInstallResult,
+    RemoteProbeResult as DtoRemoteProbeResult,
+    RemotePushFileRequest as DtoRemotePushFileRequest,
+    RemotePushFileResult as DtoRemotePushFileResult,
+    RemoteRequireRequest as DtoRemoteRequireRequest,
+    RemoteRequireResult as DtoRemoteRequireResult,
+    SshAuthType as DtoSshAuthType,
+    SshConnectionDto as DtoSshConnectionDto,
+    SshExecResult as DtoSshExecResult,
+    SshServiceHandle as DtoSshServiceHandle,
+    SshStatus as DtoSshStatus,
+    SshError,
+};
+
+fn to_dto_auth_type(t: DtoSshAuthType) -> &'static str {
+    match t {
+        DtoSshAuthType::Agent => "agent",
+        DtoSshAuthType::KeyFile => "key_file",
+        DtoSshAuthType::Password => "password",
+    }
+}
+
+fn to_dto_status(s: DtoSshStatus) -> &'static str {
+    match s {
+        DtoSshStatus::Disconnected => "disconnected",
+        DtoSshStatus::Connecting => "connecting",
+        DtoSshStatus::Connected => "connected",
+        DtoSshStatus::Error => "error",
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SshConnectionFrontendDto {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth_type: &'static str,
+    pub key_path: Option<String>,
+    pub status: &'static str,
+    pub last_error: Option<String>,
+    pub latency_ms: Option<u64>,
+}
+
+impl From<DtoSshConnectionDto> for SshConnectionFrontendDto {
+    fn from(dto: DtoSshConnectionDto) -> Self {
+        Self {
+            id: dto.id,
+            name: dto.name,
+            host: dto.host,
+            port: dto.port,
+            username: dto.username,
+            auth_type: to_dto_auth_type(dto.auth_type),
+            key_path: dto.key_path,
+            status: to_dto_status(dto.status),
+            last_error: dto.last_error,
+            latency_ms: dto.latency_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SshExecResultFrontend {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub duration_ms: u64,
+}
+
+impl From<DtoSshExecResult> for SshExecResultFrontend {
+    fn from(r: DtoSshExecResult) -> Self {
+        Self {
+            exit_code: r.exit_code,
+            stdout: r.stdout,
+            stderr: r.stderr,
+            duration_ms: r.duration_ms,
+        }
+    }
+}
+
+#[tauri::command]
+async fn ssh_list_connections(
+    state: State<'_, AppState>,
+) -> Result<Vec<SshConnectionFrontendDto>, String> {
+    let ssh = state.ssh.clone();
+    let list = ssh.list_connections().await;
+    Ok(list.into_iter().map(Into::into).collect())
+}
+
+#[tauri::command]
+async fn ssh_create_connection(
+    state: State<'_, AppState>,
+    name: String,
+    host: String,
+    port: u16,
+    username: String,
+    auth_type: String,
+    key_path: Option<String>,
+    password: Option<String>,
+) -> Result<SshConnectionFrontendDto, String> {
+    let ssh = state.ssh.clone();
+    let auth = match auth_type.as_str() {
+        "agent" => DtoSshAuthType::Agent,
+        "key_file" => DtoSshAuthType::KeyFile,
+        "password" => DtoSshAuthType::Password,
+        _ => DtoSshAuthType::Agent,
+    };
+    ssh.create_connection(name, host, port, username, auth, key_path, password)
+        .await
+        .map(Into::into)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_update_connection(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+    host: String,
+    port: u16,
+    username: String,
+    auth_type: String,
+    key_path: Option<String>,
+    password: Option<String>,
+) -> Result<SshConnectionFrontendDto, String> {
+    let ssh = state.ssh.clone();
+    let auth = match auth_type.as_str() {
+        "agent" => DtoSshAuthType::Agent,
+        "key_file" => DtoSshAuthType::KeyFile,
+        "password" => DtoSshAuthType::Password,
+        _ => DtoSshAuthType::Agent,
+    };
+    ssh.update_connection(&id, name, host, port, username, auth, key_path, password)
+        .await
+        .map(Into::into)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_remove_connection(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let ssh = state.ssh.clone();
+    ssh.remove_connection(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_connect(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let ssh = state.ssh.clone();
+    ssh.connect(&id).await.map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_disconnect(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let ssh = state.ssh.clone();
+    ssh.disconnect(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_status(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<SshConnectionFrontendDto, String> {
+    let ssh = state.ssh.clone();
+    let snap = ssh.status(&id).await.map_err(|e: SshError| e.to_string())?;
+    let configs = ssh.list_connections().await;
+    let cfg = configs.into_iter().find(|c| c.id == id).ok_or_else(|| {
+        format!("SSH connection not found: {id}")
+    })?;
+    Ok(SshConnectionFrontendDto {
+        id: cfg.id,
+        name: cfg.name,
+        host: cfg.host,
+        port: cfg.port,
+        username: cfg.username,
+        auth_type: to_dto_auth_type(cfg.auth_type),
+        key_path: cfg.key_path,
+        status: to_dto_status(snap.status),
+        last_error: snap.last_error,
+        latency_ms: snap.latency_ms,
+    })
+}
+
+#[tauri::command]
+async fn ssh_test_connection(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<SshTestResultFrontend, String> {
+    let ssh = state.ssh.clone();
+    let configs = ssh.list_connections().await;
+    let cfg = configs.into_iter().find(|c| c.id == id).ok_or_else(|| {
+        format!("SSH connection not found: {id}")
+    })?;
+    let result = ssh.test_connection(&cfg).await.map_err(|e: SshError| e.to_string())?;
+    Ok(SshTestResultFrontend {
+        ok: result.ok,
+        latency_ms: result.latency_ms,
+        banner: result.banner,
+        error: result.error,
+    })
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SshTestResultFrontend {
+    ok: bool,
+    latency_ms: Option<u64>,
+    banner: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SshPtyHandleFrontend {
+    connection_id: String,
+    token: String,
+    cols: u16,
+    rows: u16,
+}
+
+#[tauri::command]
+async fn ssh_exec(
+    state: State<'_, AppState>,
+    connection_id: String,
+    command: String,
+) -> Result<SshExecResultFrontend, String> {
+    let ssh = state.ssh.clone();
+    let handle = DtoSshServiceHandle {
+        connection_id: connection_id.clone(),
+        token: connection_id.clone(),
+        cols: 80,
+        rows: 24,
+    };
+    ssh.exec(&handle, &command).await.map(Into::into).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_remote_probe(
+    state: State<'_, AppState>,
+    connection_id: String,
+    force_refresh: Option<bool>,
+) -> Result<DtoRemoteProbeResult, String> {
+    let ssh = state.ssh.clone();
+    ssh.remote_probe(&connection_id, force_refresh.unwrap_or(false))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_push_file(
+    state: State<'_, AppState>,
+    connection_id: String,
+    request: DtoRemotePushFileRequest,
+) -> Result<DtoRemotePushFileResult, String> {
+    let ssh = state.ssh.clone();
+    ssh.remote_push_file(&connection_id, request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_push_bundle(
+    state: State<'_, AppState>,
+    connection_id: String,
+    request: DtoRemoteBundleRequest,
+) -> Result<DtoRemoteBundleResult, String> {
+    let ssh = state.ssh.clone();
+    ssh.remote_push_bundle(&connection_id, request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_remote_require(
+    state: State<'_, AppState>,
+    connection_id: String,
+    request: DtoRemoteRequireRequest,
+) -> Result<DtoRemoteRequireResult, String> {
+    let ssh = state.ssh.clone();
+    ssh.remote_require(&connection_id, request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_remote_install(
+    state: State<'_, AppState>,
+    connection_id: String,
+    request: DtoRemoteInstallRequest,
+) -> Result<DtoRemoteInstallResult, String> {
+    let ssh = state.ssh.clone();
+    ssh.remote_install(&connection_id, request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_pty_spawn(
+    state: State<'_, AppState>,
+    connection_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<SshPtyHandleFrontend, String> {
+    let ssh = state.ssh.clone();
+    let handle = DtoSshServiceHandle {
+        connection_id: connection_id.clone(),
+        token: connection_id.clone(),
+        cols,
+        rows,
+    };
+    ssh.pty_spawn(&handle, cols, rows)
+        .await
+        .map(|h| SshPtyHandleFrontend {
+            connection_id: h.connection_id,
+            token: h.token,
+            cols: h.cols,
+            rows: h.rows,
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_pty_write(
+    state: State<'_, AppState>,
+    connection_id: String,
+    data: String,
+) -> Result<(), String> {
+    let ssh = state.ssh.clone();
+    let handle = DtoSshServiceHandle {
+        connection_id: connection_id.clone(),
+        token: connection_id.clone(),
+        cols: 80,
+        rows: 24,
+    };
+    ssh.pty_write(&handle, data.as_bytes())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_pty_read(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<Vec<u8>, String> {
+    let ssh = state.ssh.clone();
+    let handle = DtoSshServiceHandle {
+        connection_id: connection_id.clone(),
+        token: connection_id.clone(),
+        cols: 80,
+        rows: 24,
+    };
+    ssh.pty_read(&handle).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_pty_resize(
+    state: State<'_, AppState>,
+    connection_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let ssh = state.ssh.clone();
+    let handle = DtoSshServiceHandle {
+        connection_id: connection_id.clone(),
+        token: connection_id.clone(),
+        cols,
+        rows,
+    };
+    ssh.pty_resize(&handle, cols, rows)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ---- git (read-only project/worktree state for the Git Workbench) ---------
 
 #[tauri::command]
@@ -2340,27 +2958,52 @@ pub fn run() {
             // Tier R conversion when a doc-convert runtime is installed.
             let office = Arc::new(OfficeService::new(runtime.clone()));
 
+            // SSH: long-lived remote connections (ControlMaster multiplexing,
+            // keepalive, reconnection). Configs persisted in app_data.
+            // Configs are loaded lazily on first access.
+            let ssh = Arc::new(SshService::new(dir.clone()));
+
             // Chat: streamed runs; MCP servers connect + live-register tools, each
             // run is rooted at the active project's folder, the knowledge base
             // is attached for passive injection + active tools, and the skill
             // service powers channel-A catalog reminders + the channel-B
             // `skill` tool (skill-marketplace task 14).
-            let chat = Arc::new(
-                ChatService::new(
-                    service.shared_database(),
-                    settings_arc.clone(),
-                    Arc::new(ReqwestTransport::new()),
-                    workspace_root,
+            let chat = {
+                let ssh_clone = ssh.clone();
+                let ssh_context = ssh.clone();
+                let ssh_ops = ssh.clone();
+                Arc::new(
+                    ChatService::new(
+                        service.shared_database(),
+                        settings_arc.clone(),
+                        Arc::new(ReqwestTransport::new()),
+                        workspace_root,
+                    )
+                    .with_executor_factory(move |connection_id: String| {
+                        Box::new(SshExecutor {
+                            ssh: ssh_clone.clone(),
+                            connection_id,
+                        })
+                    })
+                    .with_remote_context_factory(move |connection_id: String| {
+                        build_remote_context(ssh_context.clone(), connection_id)
+                    })
+                    .with_remote_ops_factory(move |connection_id: String| {
+                        Arc::new(SshRemoteOpsBackend {
+                            ssh: ssh_ops.clone(),
+                            connection_id,
+                        })
+                    })
+                    .with_mcp(mcp.clone())
+                    .with_projects(projects.clone())
+                    .with_knowledge(knowledge.clone())
+                    .with_project_map(project_map.clone())
+                    .with_cost(cost.clone())
+                    .with_skills(skills.clone())
+                    .with_office(office.clone())
+                    .with_tool_results_dir(dir.join("tool_results")),
                 )
-                .with_mcp(mcp.clone())
-                .with_projects(projects.clone())
-                .with_knowledge(knowledge.clone())
-                .with_project_map(project_map.clone())
-                .with_cost(cost.clone())
-                .with_skills(skills.clone())
-                .with_office(office.clone())
-                .with_tool_results_dir(dir.join("tool_results")),
-            );
+            };
 
             // Speech: transcription engine (whisper when the `whisper` feature
             // is enabled, else an "engine unavailable" guide) + the runtime
@@ -2393,6 +3036,7 @@ pub fn run() {
                 runtime,
                 speech,
                 office,
+                ssh,
                 rt,
             });
             Ok(())
@@ -2505,6 +3149,24 @@ pub fn run() {
             delete_all_archived_conversations,
             run_terminal,
             terminal_cwd,
+            ssh_list_connections,
+            ssh_create_connection,
+            ssh_update_connection,
+            ssh_remove_connection,
+            ssh_connect,
+            ssh_disconnect,
+            ssh_status,
+            ssh_test_connection,
+            ssh_exec,
+            ssh_remote_probe,
+            ssh_push_file,
+            ssh_push_bundle,
+            ssh_remote_require,
+            ssh_remote_install,
+            ssh_pty_spawn,
+            ssh_pty_write,
+            ssh_pty_read,
+            ssh_pty_resize,
             git_project_status,
             git_projects_status,
             git_branch_list,

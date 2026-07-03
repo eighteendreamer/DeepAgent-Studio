@@ -879,3 +879,138 @@ export interface RuntimeProgress {
   /** "downloading" | "verifying" | "extracting" | "done" | "error". */
   phase: string;
 }
+
+// --- SSH long-lived connection types (Phase SSH) ---
+
+export type SshAuthType = "agent" | "key_file" | "password";
+export type SshStatus = "disconnected" | "connecting" | "connected" | "error";
+
+export interface SshConnection {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  auth_type: SshAuthType;
+  key_path?: string;
+  status: SshStatus;
+  last_error?: string;
+  latency_ms?: number;
+}
+
+export interface SshExecResult {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  duration_ms: number;
+}
+
+export interface SshTestResult {
+  ok: boolean;
+  latency_ms?: number;
+  banner?: string;
+  error?: string;
+}
+
+export interface SshServiceHandle {
+  connection_id: string;
+  token: string;
+  cols: number;
+  rows: number;
+}
+
+export interface RemoteProbeResult {
+  os?: string;
+  distro?: string;
+  distro_version?: string;
+  arch?: string;
+  shell?: string;
+  user?: string;
+  cwd?: string;
+  path?: string;
+  package_managers: string[];
+  commands: Record<string, boolean>;
+  runtimes: Record<string, string>;
+  probed_at_ms: number;
+}
+
+export interface RemotePushFileRequest {
+  local_path: string;
+  remote_path: string;
+  create_parent?: boolean;
+  overwrite?: boolean;
+  verify_mode?: "none" | "size" | "sha256";
+}
+
+export interface RemotePushFileResult {
+  ok: boolean;
+  remote_path: string;
+  bytes: number;
+  local_sha256?: string;
+  remote_sha256?: string;
+  integrity_verified: boolean;
+  duration_ms: number;
+}
+
+export interface RemoteBundleRequest {
+  local_path: string;
+  remote_path: string;
+  create_parent?: boolean;
+  overwrite?: boolean;
+  verify_mode?: "none" | "size" | "sha256";
+  remove_archive_after_extract?: boolean;
+}
+
+export interface RemoteBundleResult {
+  ok: boolean;
+  remote_path: string;
+  remote_archive_path: string;
+  remote_manifest_path: string;
+  files: number;
+  bytes: number;
+  local_archive_sha256?: string;
+  remote_archive_sha256?: string;
+  integrity_verified: boolean;
+  extract_verified: boolean;
+  duration_ms: number;
+}
+
+export interface RemoteRuntimeRequirement {
+  name: string;
+  version?: string;
+}
+
+export interface RemoteRequireRequest {
+  commands?: string[];
+  runtimes?: RemoteRuntimeRequirement[];
+  archives?: string[];
+}
+
+export interface RemoteRequireResult {
+  package_manager?: string;
+  package_managers: string[];
+  missing_commands: string[];
+  missing_runtimes: string[];
+  missing_archive_tools: string[];
+  install_commands: string[];
+  can_install: boolean;
+  probe: RemoteProbeResult;
+}
+
+export interface RemoteInstallRequest {
+  package_manager?: string;
+  commands?: string[];
+  runtimes?: RemoteRuntimeRequirement[];
+  packages?: string[];
+  update_index?: boolean;
+}
+
+export interface RemoteInstallResult {
+  ok: boolean;
+  package_manager?: string;
+  commands_run: string[];
+  stdout: string;
+  stderr: string;
+  installed_packages: string[];
+  probe?: RemoteProbeResult;
+}

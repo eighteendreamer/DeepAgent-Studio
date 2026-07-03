@@ -1,0 +1,28 @@
+[package]
+name = "deepagent-ssh"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "Apache-2.0"
+authors = ["DeepAgent Studio"]
+description = "SSH long-lived connection service for DeepAgent Studio: config management, native SSH connections, command execution, and terminal I/O."
+
+[dependencies]
+# Internal crates — absolute paths to avoid workspace-relative path issues.
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+async-ssh2-tokio = "0.12.2"
+russh-sftp = "=2.1.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "io-util"] }
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+async-trait = "0.1"
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio = { version = "1", features = ["test-util", "macros"] }

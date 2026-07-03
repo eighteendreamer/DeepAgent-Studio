@@ -11,6 +11,14 @@ license = "Apache-2.0"
 # this manifest as its own workspace root rather than erroring that it "believes
 # it's in a workspace when it's not".
 [workspace]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.4"
+edition = "2021"
+rust-version = "1.80"
+license = "Apache-2.0"
+authors = ["DeepAgent Studio"]
 
 [profile.dev]
 # Windows often keeps files in target/debug/incremental locked while Tauri dev,
@@ -34,11 +42,14 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # Enable the OS keychain so the API key is stored in Windows Credential Manager
 # / macOS Keychain / Linux Secret Service — never in plaintext on disk.
 deepagent-app-core = { path = "../../../crates/deepagent-app-core", features = ["keychain", "web", "audio", "runtimes"] }
+deepagent-builtins = { path = "../../../crates/deepagent-builtins" }
 deepagent-core = { path = "../../../crates/deepagent-core" }
+deepagent-ssh = { path = "../../../crates/deepagent-ssh" }
 deepagent-models = { path = "../../../crates/deepagent-models", features = ["http"] }
 tauri-plugin-dialog = "2.7.1"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 tempfile = "3.8"
+async-trait = "0.1"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

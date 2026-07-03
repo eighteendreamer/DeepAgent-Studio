@@ -6,6 +6,7 @@ import { Composer } from "./Composer";
 import { BalanceChip } from "./BalanceChip";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import type { Project } from "../types";
+import { sshListConnections, type SshConnection } from "../api";
 import { FilesPlugin } from "./plugins/FilesPlugin";
 import { SideChatPlugin } from "./plugins/SideChatPlugin";
 import { BrowserPlugin } from "./plugins/BrowserPlugin";
@@ -26,7 +27,7 @@ interface Props {
   projects: Project[];
   onSelectProject: (path: string) => void;
   onAddProject: () => void;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, envMode: "local" | "remote", connectionId: string | null) => void;
 }
 
 export function StartView({ projectName, activeProjectPath = null, projectMapOpenSignal = 0, projects, onSelectProject, onAddProject, onSubmit }: Props) {
@@ -37,6 +38,33 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   const [isEnvDropdownOpen, setIsEnvDropdownOpen] = useState(false);
   const envDropdownRef = useRef<HTMLDivElement>(null);
   const [envMode, setEnvMode] = useState<"local" | "remote">(() => (localStorage.getItem("envMode") as any) || "local");
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(
+    () => localStorage.getItem("ssh_connection_id")
+  );
+  const [sshConnections, setSshConnections] = useState<SshConnection[]>([]);
+  const [isRemoteSubmenuOpen, setIsRemoteSubmenuOpen] = useState(false);
+
+  const handleEnvModeChange = (mode: "local" | "remote") => {
+    setEnvMode(mode);
+    localStorage.setItem("envMode", mode);
+    if (mode === "local") {
+      setSelectedConnectionId(null);
+      localStorage.removeItem("ssh_connection_id");
+    }
+  };
+
+  const handleRemoteConnectionSelect = (connectionId: string) => {
+    setEnvMode("remote");
+    setSelectedConnectionId(connectionId);
+    localStorage.setItem("envMode", "remote");
+    localStorage.setItem("ssh_connection_id", connectionId);
+    setIsEnvDropdownOpen(false);
+    setIsRemoteSubmenuOpen(false);
+  };
+
+  const loadSshConnections = useCallback(() => {
+    sshListConnections().then(setSshConnections).catch(() => setSshConnections([]));
+  }, []);
 
   const [isModeDropdownOpen, setIsModeDropdownOpen] = useState(false);
   const modeDropdownRef = useRef<HTMLDivElement>(null);
@@ -172,8 +200,32 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isDropdownOpen, isModeDropdownOpen, isEnvDropdownOpen]);
 
+  useEffect(() => {
+    if (!isEnvDropdownOpen) {
+      setIsRemoteSubmenuOpen(false);
+      return;
+    }
+
+    loadSshConnections();
+  }, [isEnvDropdownOpen, loadSshConnections]);
+
+  useEffect(() => {
+    if (envMode === "remote" || selectedConnectionId) {
+      loadSshConnections();
+    }
+  }, [envMode, selectedConnectionId, loadSshConnections]);
+
+  const selectedConnection =
+    sshConnections.find((conn) => conn.id === selectedConnectionId) ?? null;
+  const envLabel =
+    envMode === "local"
+      ? "\u672c\u5730\u6a21\u5f0f"
+      : selectedConnection
+      ? `\u8fdc\u7a0b\u6a21\u5f0f \u00b7 ${selectedConnection.name}`
+      : "\u8fdc\u7a0b\u6a21\u5f0f";
+
   const submit = () => {
-    onSubmit(value.trim());
+    onSubmit(value.trim(), envMode, selectedConnectionId);
     setValue("");
   };
 
@@ -302,10 +354,11 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                   onClick={() => {
                     setIsEnvDropdownOpen(!isEnvDropdownOpen);
                     setIsDropdownOpen(false);
+                    setIsRemoteSubmenuOpen(false);
                   }}
                 >
                   <FontAwesomeIcon icon={envMode === "local" ? ["fas", "desktop"] : ["fas", "cloud"]} className="mr-2 w-4 text-[13px]" />
-                  {envMode === "local" ? "本地模式" : "远程模式"}
+                  {envLabel}
                   <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
                 </div>
                 
@@ -316,36 +369,116 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: 10, scale: 0.95 }}
                       transition={{ duration: 0.15, ease: "easeOut" }}
-                      className="absolute bottom-full left-0 mb-2 w-[140px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[60] py-1 origin-bottom-left"
+                      className="absolute bottom-full left-0 mb-2 w-[180px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[60] py-1 origin-bottom-left"
                     >
                       <div 
                         className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between group"
                         onClick={() => {
-                          setEnvMode("local");
-                          localStorage.setItem("envMode", "local");
+                          handleEnvModeChange("local");
                           setIsEnvDropdownOpen(false);
+                          setIsRemoteSubmenuOpen(false);
                         }}
                       >
                         <div className="flex items-center text-[13px] text-text-base">
                           <FontAwesomeIcon icon={["fas", "desktop"]} className="w-4 mr-2 text-text-secondary group-hover:text-text-base" />
-                          本地模式
+                          {"\u672c\u5730\u6a21\u5f0f"}
                         </div>
                         {envMode === "local" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-secondary" />}
                       </div>
 
-                      <div 
-                        className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between group"
-                        onClick={() => {
-                          setEnvMode("remote");
-                          localStorage.setItem("envMode", "remote");
-                          setIsEnvDropdownOpen(false);
-                        }}
+                      <div
+                        className="relative"
+                        onMouseEnter={() => setIsRemoteSubmenuOpen(true)}
+                        onMouseLeave={() => setIsRemoteSubmenuOpen(false)}
                       >
-                        <div className="flex items-center text-[13px] text-text-base">
-                          <FontAwesomeIcon icon={["fas", "cloud"]} className="w-4 mr-2 text-text-secondary group-hover:text-text-base" />
-                          远程模式
+                        <div 
+                          className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between group"
+                          onClick={() => {
+                            handleEnvModeChange("remote");
+                            setIsRemoteSubmenuOpen((prev) => !prev);
+                          }}
+                        >
+                          <div className="flex items-center text-[13px] text-text-base">
+                            <FontAwesomeIcon icon={["fas", "cloud"]} className="w-4 mr-2 text-text-secondary group-hover:text-text-base" />
+                            {"\u8fdc\u7a0b\u6a21\u5f0f"}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {envMode === "remote" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-secondary" />}
+                            <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
+                          </div>
                         </div>
-                        {envMode === "remote" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-secondary" />}
+
+                        <AnimatePresence>
+                          {isRemoteSubmenuOpen && (
+                            <motion.div
+                              initial={{ opacity: 0, x: 8, scale: 0.98 }}
+                              animate={{ opacity: 1, x: 0, scale: 1 }}
+                              exit={{ opacity: 0, x: 8, scale: 0.98 }}
+                              transition={{ duration: 0.15, ease: "easeOut" }}
+                              className="absolute left-full top-0 ml-2 w-[280px] overflow-hidden rounded-xl border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)]"
+                            >
+                              <div className="px-3 py-2 text-[11px] font-medium text-text-secondary">
+                                {"\u5df2\u6709 SSH \u8fde\u63a5"}
+                              </div>
+
+                              {sshConnections.length === 0 ? (
+                                <div className="px-3 py-2 text-[12px] text-text-secondary">
+                                  {"\u6682\u65e0 SSH \u8fde\u63a5"}
+                                </div>
+                              ) : (
+                                sshConnections.map((conn) => {
+                                  const checked =
+                                    envMode === "remote" &&
+                                    selectedConnectionId === conn.id;
+
+                                  return (
+                                    <div
+                                      key={conn.id}
+                                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-start justify-between gap-3"
+                                      onClick={() => handleRemoteConnectionSelect(conn.id)}
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="text-[13px] text-text-base">
+                                          {conn.name}
+                                        </div>
+                                        <div className="text-[11px] text-text-secondary break-all">
+                                          {conn.username}@{conn.host}:{conn.port}
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2 pt-0.5">
+                                        <span
+                                          className={`rounded-full px-2 py-0.5 text-[10px] ${
+                                            conn.status === "connected"
+                                              ? "bg-green-100 text-green-700"
+                                              : conn.status === "connecting"
+                                              ? "bg-yellow-100 text-yellow-700"
+                                              : conn.status === "error"
+                                              ? "bg-red-100 text-red-700"
+                                              : "bg-gray-100 text-text-secondary"
+                                          }`}
+                                        >
+                                          {conn.status === "connected"
+                                            ? t("settings.connections.online")
+                                            : conn.status === "connecting"
+                                            ? t("settings.connections.checking")
+                                            : conn.status === "error"
+                                            ? t("settings.connections.offline")
+                                            : t("settings.connections.unknown")}
+                                        </span>
+                                        {checked && (
+                                          <FontAwesomeIcon
+                                            icon={["fas", "check"]}
+                                            className="text-[11px] text-text-secondary"
+                                          />
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })
+                              )}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                       </div>
                     </motion.div>
                   )}
@@ -534,7 +667,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "files" && <FilesPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "chat" && <SideChatPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "browser" && <BrowserPlugin />}
-            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "terminal" && <TerminalPlugin />}
+            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "terminal" && (
+              <TerminalPlugin mode={envMode} connectionId={selectedConnectionId} />
+            )}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "recording" && <RecordingPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "file_preview" && <FilePreviewPlugin />}
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} />}
@@ -637,7 +772,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "files" && <FilesPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "chat" && <SideChatPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "browser" && <BrowserPlugin />}
-            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "terminal" && <TerminalPlugin />}
+            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "terminal" && (
+              <TerminalPlugin mode={envMode} connectionId={selectedConnectionId} />
+            )}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "recording" && <RecordingPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "file_preview" && <FilePreviewPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} />}

@@ -32,6 +32,7 @@ members = [
     "crates/deepagent-app-core",
     "crates/deepagent-mcp",
     "crates/deepagent-codegraph",
+    "crates/deepagent-ssh",
     "apps/cli",
 ]
 # The Tauri desktop shell is its own workspace root (it carries the WebView
@@ -85,6 +86,7 @@ deepagent-security = { path = "crates/deepagent-security" }
 deepagent-app-core = { path = "crates/deepagent-app-core" }
 deepagent-mcp = { path = "crates/deepagent-mcp" }
 deepagent-codegraph = { path = "crates/deepagent-codegraph" }
+deepagent-ssh = { path = "crates/deepagent-ssh" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

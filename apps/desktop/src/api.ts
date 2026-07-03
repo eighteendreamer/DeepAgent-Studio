@@ -753,7 +753,9 @@ export async function runChat(
   onEvent: (event: RuntimeEvent) => void,
   onApproval?: (request: ApprovalRequest) => void,
   sessionId?: string | null,
-  runId?: string
+  runId?: string,
+  envMode?: string | null,
+  connectionId?: string | null
 ): Promise<string> {
   const invoke = getInvoke();
   if (invoke) {
@@ -771,7 +773,7 @@ export async function runChat(
       }
     );
     try {
-      const nextSessionId = await invoke<string>("run_chat", { prompt, sessionId: sessionId ?? null, runId: actualRunId });
+      const nextSessionId = await invoke<string>("run_chat", { prompt, sessionId: sessionId ?? null, envMode: envMode ?? null, connectionId: connectionId ?? null, runId: actualRunId });
       if (promptMayChangeSettings(prompt)) emitSettingsChanged();
       return nextSessionId;
     } finally {
@@ -2227,3 +2229,356 @@ function mockDiff(oldText: string, newText: string): DiffResult {
   lines.push(...rev);
   return { lines, added, removed };
 }
+
+// ==================== SSH Long-Lived Connection API ====================
+
+export interface SshConnection {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  auth_type: "agent" | "key_file" | "password";
+  key_path?: string;
+  status: "disconnected" | "connecting" | "connected" | "error";
+  last_error?: string;
+  latency_ms?: number;
+}
+
+export interface SshExecResult {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  duration_ms: number;
+}
+
+export interface SshTestResult {
+  ok: boolean;
+  latency_ms?: number;
+  banner?: string;
+  error?: string;
+}
+
+export interface RemoteProbeResult {
+  os?: string;
+  distro?: string;
+  distro_version?: string;
+  arch?: string;
+  shell?: string;
+  user?: string;
+  cwd?: string;
+  path?: string;
+  package_managers: string[];
+  commands: Record<string, boolean>;
+  runtimes: Record<string, string>;
+  probed_at_ms: number;
+}
+
+export interface RemotePushFileRequest {
+  local_path: string;
+  remote_path: string;
+  create_parent?: boolean;
+  overwrite?: boolean;
+  verify_mode?: "none" | "size" | "sha256";
+}
+
+export interface RemotePushFileResult {
+  ok: boolean;
+  remote_path: string;
+  bytes: number;
+  local_sha256?: string;
+  remote_sha256?: string;
+  integrity_verified: boolean;
+  duration_ms: number;
+}
+
+export interface RemoteBundleRequest {
+  local_path: string;
+  remote_path: string;
+  create_parent?: boolean;
+  overwrite?: boolean;
+  verify_mode?: "none" | "size" | "sha256";
+  remove_archive_after_extract?: boolean;
+}
+
+export interface RemoteBundleResult {
+  ok: boolean;
+  remote_path: string;
+  remote_archive_path: string;
+  remote_manifest_path: string;
+  files: number;
+  bytes: number;
+  local_archive_sha256?: string;
+  remote_archive_sha256?: string;
+  integrity_verified: boolean;
+  extract_verified: boolean;
+  duration_ms: number;
+}
+
+export interface RemoteRuntimeRequirement {
+  name: string;
+  version?: string;
+}
+
+export interface RemoteRequireRequest {
+  commands?: string[];
+  runtimes?: RemoteRuntimeRequirement[];
+  archives?: string[];
+}
+
+export interface RemoteRequireResult {
+  package_manager?: string;
+  package_managers: string[];
+  missing_commands: string[];
+  missing_runtimes: string[];
+  missing_archive_tools: string[];
+  install_commands: string[];
+  can_install: boolean;
+  probe: RemoteProbeResult;
+}
+
+export interface RemoteInstallRequest {
+  package_manager?: string;
+  commands?: string[];
+  runtimes?: RemoteRuntimeRequirement[];
+  packages?: string[];
+  update_index?: boolean;
+}
+
+export interface RemoteInstallResult {
+  ok: boolean;
+  package_manager?: string;
+  commands_run: string[];
+  stdout: string;
+  stderr: string;
+  installed_packages: string[];
+  probe?: RemoteProbeResult;
+}
+
+export async function sshListConnections(): Promise<SshConnection[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SshConnection[]>("ssh_list_connections");
+  return [];
+}
+
+export async function sshCreateConnection(
+  name: string,
+  host: string,
+  port: number,
+  username: string,
+  authType: "agent" | "key_file" | "password",
+  keyPath?: string,
+  password?: string,
+): Promise<SshConnection> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<SshConnection>("ssh_create_connection", {
+      name,
+      host,
+      port,
+      username,
+      authType,
+      keyPath,
+      password,
+    });
+  return { id: "mock", name, host, port, username, auth_type: authType, status: "disconnected" };
+}
+
+export async function sshUpdateConnection(
+  id: string,
+  name: string,
+  host: string,
+  port: number,
+  username: string,
+  authType: "agent" | "key_file" | "password",
+  keyPath?: string,
+  password?: string,
+): Promise<SshConnection> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<SshConnection>("ssh_update_connection", {
+      id,
+      name,
+      host,
+      port,
+      username,
+      authType,
+      keyPath,
+      password,
+    });
+  return { id, name, host, port, username, auth_type: authType, status: "disconnected" };
+}
+
+export async function sshRemoveConnection(id: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("ssh_remove_connection", { id });
+}
+
+export async function sshConnect(id: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("ssh_connect", { id });
+}
+
+export async function sshDisconnect(id: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("ssh_disconnect", { id });
+}
+
+export async function sshStatus(id: string): Promise<SshConnection> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SshConnection>("ssh_status", { id });
+  return { id: id, name: "", host: "", port: 22, username: "", auth_type: "agent", status: "disconnected" };
+}
+
+export async function sshTestConnection(
+  id: string,
+): Promise<SshTestResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SshTestResult>("ssh_test_connection", { id });
+  return { ok: false, error: "not available in browser preview" };
+}
+
+export async function sshExec(
+  connectionId: string,
+  command: string,
+): Promise<SshExecResult> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<SshExecResult>("ssh_exec", { connectionId, command });
+  return {
+    exit_code: 0,
+    stdout: "[browser preview] ssh commands require the desktop app",
+    stderr: "",
+    duration_ms: 0,
+  };
+}
+
+export async function sshRemoteProbe(
+  connectionId: string,
+  forceRefresh = false,
+): Promise<RemoteProbeResult> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<RemoteProbeResult>("ssh_remote_probe", { connectionId, forceRefresh });
+  }
+  return {
+    package_managers: [],
+    commands: {},
+    runtimes: {},
+    probed_at_ms: Date.now(),
+  };
+}
+
+export async function sshPushFile(
+  connectionId: string,
+  request: RemotePushFileRequest,
+): Promise<RemotePushFileResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RemotePushFileResult>("ssh_push_file", { connectionId, request });
+  return {
+    ok: false,
+    remote_path: request.remote_path,
+    bytes: 0,
+    integrity_verified: false,
+    duration_ms: 0,
+  };
+}
+
+export async function sshPushBundle(
+  connectionId: string,
+  request: RemoteBundleRequest,
+): Promise<RemoteBundleResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RemoteBundleResult>("ssh_push_bundle", { connectionId, request });
+  return {
+    ok: false,
+    remote_path: request.remote_path,
+    remote_archive_path: "",
+    remote_manifest_path: "",
+    files: 0,
+    bytes: 0,
+    integrity_verified: false,
+    extract_verified: false,
+    duration_ms: 0,
+  };
+}
+
+export async function sshRemoteRequire(
+  connectionId: string,
+  request: RemoteRequireRequest,
+): Promise<RemoteRequireResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RemoteRequireResult>("ssh_remote_require", { connectionId, request });
+  return {
+    package_managers: [],
+    missing_commands: [],
+    missing_runtimes: [],
+    missing_archive_tools: [],
+    install_commands: [],
+    can_install: false,
+    probe: {
+      package_managers: [],
+      commands: {},
+      runtimes: {},
+      probed_at_ms: Date.now(),
+    },
+  };
+}
+
+export async function sshRemoteInstall(
+  connectionId: string,
+  request: RemoteInstallRequest,
+): Promise<RemoteInstallResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RemoteInstallResult>("ssh_remote_install", { connectionId, request });
+  return {
+    ok: false,
+    commands_run: [],
+    stdout: "",
+    stderr: "not available in browser preview",
+    installed_packages: [],
+  };
+}
+
+// ---- SSH PTY streaming (interactive terminal) ----------------------------
+
+export interface SshPtyHandle {
+  connection_id: string;
+  token: string;
+  cols: number;
+  rows: number;
+}
+
+export async function sshPtySpawn(
+  connectionId: string,
+  cols: number,
+  rows: number,
+): Promise<SshPtyHandle> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SshPtyHandle>("ssh_pty_spawn", { connectionId, cols, rows });
+  return { connection_id: connectionId, token: "", cols, rows };
+}
+
+export async function sshPtyWrite(
+  connectionId: string,
+  data: string,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("ssh_pty_write", { connectionId, data });
+}
+
+export async function sshPtyRead(connectionId: string): Promise<number[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<number[]>("ssh_pty_read", { connectionId });
+  return [];
+}
+
+export async function sshPtyResize(
+  connectionId: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("ssh_pty_resize", { connectionId, cols, rows });
+}
+

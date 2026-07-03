@@ -56,6 +56,7 @@ pub mod knowledge_tools;
 pub mod office_tools;
 pub mod plan_mode;
 pub mod project_map_tools;
+pub mod remote_tools;
 pub mod skill_tool;
 pub mod task_tool;
 pub mod todo_tool;
@@ -114,6 +115,13 @@ pub use project_map_tools::{
     ProjectMapBackend, CODE_MAP_IMPACT_TOOL_NAME, CODE_MAP_NEIGHBORS_TOOL_NAME,
     CODE_MAP_OVERVIEW_TOOL_NAME, CODE_MAP_SEARCH_TOOL_NAME,
 };
+pub use remote_tools::{
+    RemoteInstallArgs, RemoteInstallTool, RemoteOpsBackend, RemoteProbeArgs, RemoteProbeTool,
+    RemotePushBundleArgs, RemotePushBundleTool, RemotePushFileArgs, RemotePushFileTool,
+    RemoteRequireArgs, RemoteRequireTool, RemoteRuntimeRequirement, REMOTE_INSTALL_TOOL_NAME,
+    REMOTE_PROBE_TOOL_NAME, REMOTE_PUSH_BUNDLE_TOOL_NAME, REMOTE_PUSH_FILE_TOOL_NAME,
+    REMOTE_REQUIRE_TOOL_NAME,
+};
 pub use skill_tool::{SkillTool, SKILL_TOOL_NAME};
 pub use task_tool::{
     SubagentRequest, SubagentRunner, TaskTool, UnavailableSubagentRunner, TASK_TOOL_NAME,
@@ -144,6 +152,10 @@ pub struct BuiltinConfig {
     pub bash_allow: Vec<String>,
     /// Shared session todo list backing `todo_write`.
     pub todo_store: TodoStore,
+    /// Optional custom command executor for bash/git commands.
+    /// When set, this overrides the default SystemExecutor.
+    /// Used for remote execution over SSH.
+    pub command_executor: Option<Box<dyn bash_tool::CommandExecutor + 'static>>,
 }
 
 impl BuiltinConfig {
@@ -156,12 +168,23 @@ impl BuiltinConfig {
             bash_cwd,
             bash_allow: bash_allow.into_iter().collect(),
             todo_store: TodoStore::new(),
+            command_executor: None,
         }
+    }
+
+    /// Set a custom command executor for bash/git commands.
+    pub fn with_command_executor(
+        mut self,
+        executor: impl bash_tool::CommandExecutor + 'static,
+    ) -> Self {
+        self.command_executor = Some(Box::new(executor));
+        self
     }
 }
 
 /// Assemble every built-in tool over the given config, using the real
-/// [`SystemExecutor`] for `bash`.
+/// [`SystemExecutor`] for `bash` unless a custom [`CommandExecutor`] was
+/// supplied via [`BuiltinConfig::with_command_executor`].
 ///
 /// Returns the tools plus the [`TodoStore`] so the caller can render the todo
 /// list between turns.
@@ -171,23 +194,37 @@ pub fn builtin_tools(config: BuiltinConfig) -> (Vec<Arc<dyn Tool>>, TodoStore) {
         bash_cwd,
         bash_allow,
         todo_store,
+        command_executor,
     } = config;
 
     let mut tools = file_tools(root);
-    tools.push(Arc::new(BashTool::new(
-        SystemExecutor,
-        bash_cwd.clone(),
-        bash_allow,
-    )));
-    // Git tools (read-only status/diff/log + workspace-write commit). They run
-    // through the same SystemExecutor as bash, rooted at the workspace dir.
-    tools.push(Arc::new(GitStatusTool::new(
-        SystemExecutor,
-        bash_cwd.clone(),
-    )));
-    tools.push(Arc::new(GitDiffTool::new(SystemExecutor, bash_cwd.clone())));
-    tools.push(Arc::new(GitLogTool::new(SystemExecutor, bash_cwd.clone())));
-    tools.push(Arc::new(GitCommitTool::new(SystemExecutor, bash_cwd)));
+    if let Some(exec) = command_executor {
+        tools.push(Arc::new(BashTool::new(exec, bash_cwd.clone(), bash_allow)));
+        // Git tools always use the local SystemExecutor — only bash commands
+        // are routed remotely.
+        tools.push(Arc::new(GitStatusTool::new(
+            SystemExecutor,
+            bash_cwd.clone(),
+        )));
+        tools.push(Arc::new(GitDiffTool::new(SystemExecutor, bash_cwd.clone())));
+        tools.push(Arc::new(GitLogTool::new(SystemExecutor, bash_cwd.clone())));
+        tools.push(Arc::new(GitCommitTool::new(SystemExecutor, bash_cwd)));
+    } else {
+        tools.push(Arc::new(BashTool::new(
+            SystemExecutor,
+            bash_cwd.clone(),
+            bash_allow,
+        )));
+        // Git tools (read-only status/diff/log + workspace-write commit). They run
+        // through the same SystemExecutor as bash, rooted at the workspace dir.
+        tools.push(Arc::new(GitStatusTool::new(
+            SystemExecutor,
+            bash_cwd.clone(),
+        )));
+        tools.push(Arc::new(GitDiffTool::new(SystemExecutor, bash_cwd.clone())));
+        tools.push(Arc::new(GitLogTool::new(SystemExecutor, bash_cwd.clone())));
+        tools.push(Arc::new(GitCommitTool::new(SystemExecutor, bash_cwd)));
+    }
     tools.push(Arc::new(TodoWriteTool::new(todo_store.clone())));
     tools.push(Arc::new(TaskListTool::new(todo_store.clone())));
     (tools, todo_store)

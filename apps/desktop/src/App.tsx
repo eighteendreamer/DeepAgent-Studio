@@ -528,8 +528,22 @@ export function App() {
   }, []);
 
   const onSubmit = useCallback(
-    (text: string) => {
+    (
+      text: string,
+      envMode?: "local" | "remote",
+      connectionId?: string | null
+    ) => {
       if (!text) return;
+      const storedEnvMode = localStorage.getItem("envMode");
+      const effectiveEnvMode: "local" | "remote" =
+        envMode ?? (storedEnvMode === "remote" ? "remote" : "local");
+      const storedConnectionId = localStorage.getItem("ssh_connection_id");
+      const effectiveConnectionId =
+        effectiveEnvMode === "remote"
+          ? connectionId === undefined
+            ? storedConnectionId
+            : connectionId
+          : null;
       // Block new submissions while a run is streaming — you can't start a new
       // message until the current output finishes.
       // Continue the current session when submitting a follow-up from within an
@@ -889,7 +903,9 @@ export function App() {
           setApprovals((prev) => [...prev, request]);
         },
         continueId,
-        runId
+        runId,
+        effectiveEnvMode,
+        effectiveConnectionId
       )
         .then((newSessionId) => {
           // The run created (or continued) a session under the active project;

@@ -1,59 +1,153 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
-import { runTerminal, terminalCwd } from "../../api";
+import {
+  runTerminal,
+  terminalCwd,
+  sshExec,
+  sshStatus,
+  sshPtySpawn,
+  sshPtyWrite,
+  sshPtyRead,
+  type SshConnection,
+  type SshPtyHandle,
+} from "../../api";
 
 interface Line {
-  kind: "prompt" | "stdout" | "stderr";
+  kind: "prompt" | "stdout" | "stderr" | "system";
   text: string;
 }
 
-export function TerminalPlugin() {
+interface TerminalPluginProps {
+  mode?: "local" | "remote";
+  connectionId?: string | null;
+}
+
+export function TerminalPlugin({ mode = "local", connectionId = null }: TerminalPluginProps) {
   const { t } = useTranslation();
   const [cwd, setCwd] = useState("");
   const [lines, setLines] = useState<Line[]>([]);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
+  const [remoteConn, setRemoteConn] = useState<SshConnection | null>(null);
+  const [ptyHandle, setPtyHandle] = useState<SshPtyHandle | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const ptyPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const isRemote = mode === "remote";
 
   useEffect(() => {
-    terminalCwd().then(setCwd).catch(() => {});
-  }, []);
+    if (isRemote && connectionId) {
+      sshStatus(connectionId).then(setRemoteConn).catch(() => setRemoteConn(null));
+    } else {
+      setRemoteConn(null);
+    }
+  }, [isRemote, connectionId]);
 
   useEffect(() => {
-    // Keep the view scrolled to the latest output.
+    if (!isRemote) {
+      terminalCwd().then(setCwd).catch(() => {});
+    }
+  }, [isRemote]);
+
+  useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [lines, running]);
 
-  const promptLabel = `PS ${cwd || "…"}>`;
+  // Spawn PTY on first remote command
+  const ensurePty = useCallback(async () => {
+    if (ptyHandle || !connectionId) return null;
+    const handle = await sshPtySpawn(connectionId, 80, 24);
+    setPtyHandle(handle);
+    return handle;
+  }, [ptyHandle, connectionId]);
 
-  const submit = async () => {
+  // Poll PTY output when a PTY session is active
+  useEffect(() => {
+    if (ptyHandle && isRemote) {
+      ptyPollRef.current = setInterval(async () => {
+        try {
+          const data = await sshPtyRead(ptyHandle.connection_id);
+          if (data.length > 0) {
+            const text = new TextDecoder().decode(new Uint8Array(data));
+            setLines((prev) => [...prev, { kind: "stdout", text }]);
+          }
+        } catch {
+          // ignore poll errors (e.g. PTY not yet spawned)
+        }
+      }, 100);
+      return () => {
+        if (ptyPollRef.current) clearInterval(ptyPollRef.current);
+      };
+    }
+  }, [ptyHandle, isRemote]);
+
+  const promptLabel = isRemote
+    ? remoteConn
+      ? `PS ${remoteConn.username}@${remoteConn.host}:${cwd || "~"}>`
+      : "PS [remote]>"
+    : `PS ${cwd || "…"}>`;
+
+  const submit = useCallback(async () => {
     const cmd = input.trim();
     if (!cmd || running) return;
+
+    if (isRemote && !connectionId) {
+      setLines((prev) => [...prev, { kind: "system", text: "请先在设置中配置 SSH 连接" }]);
+      return;
+    }
+
     setInput("");
     setLines((prev) => [...prev, { kind: "prompt", text: `${promptLabel} ${cmd}` }]);
     setRunning(true);
+
     try {
-      const res = await runTerminal(cmd);
-      setLines((prev) => {
-        const next = [...prev];
-        if (res.stdout) next.push({ kind: "stdout", text: res.stdout.replace(/\n$/, "") });
-        if (res.stderr) next.push({ kind: "stderr", text: res.stderr.replace(/\n$/, "") });
-        return next;
-      });
-      if (res.cwd) setCwd(res.cwd);
+      if (isRemote && connectionId) {
+        // Use PTY streaming for interactive remote commands
+        const handle = await ensurePty();
+        if (handle) {
+          await sshPtyWrite(handle.connection_id, cmd + "\n");
+        } else {
+          // Fallback to one-shot exec
+          const res = await sshExec(connectionId, cmd);
+          setLines((prev) => {
+            const next = [...prev];
+            if (res.stdout) next.push({ kind: "stdout", text: res.stdout.replace(/\n$/, "") });
+            if (res.stderr) next.push({ kind: "stderr", text: res.stderr.replace(/\n$/, "") });
+            return next;
+          });
+        }
+      } else {
+        const res = await runTerminal(cmd);
+        setLines((prev) => {
+          const next = [...prev];
+          if (res.stdout) next.push({ kind: "stdout", text: res.stdout.replace(/\n$/, "") });
+          if (res.stderr) next.push({ kind: "stderr", text: res.stderr.replace(/\n$/, "") });
+          return next;
+        });
+        if (res.cwd) setCwd(res.cwd);
+      }
     } catch (e) {
       setLines((prev) => [...prev, { kind: "stderr", text: String(e) }]);
     } finally {
       setRunning(false);
       inputRef.current?.focus();
     }
-  };
+  }, [input, running, isRemote, connectionId, promptLabel, ensurePty]);
+
+  if (isRemote && !connectionId) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center bg-white text-text-secondary">
+        <FontAwesomeIcon icon={["fas", "server"]} className="text-4xl mb-4 text-gray-300" />
+        <div className="text-[13px] mb-2">请先在设置中配置 SSH 连接</div>
+        <div className="text-[12px] text-gray-400">切换到远程模式后，需要选择一个已配置的 SSH 连接</div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full h-full flex flex-col bg-white">
-      {/* Terminal View */}
       <div className="flex-1 flex overflow-hidden">
         <div
           ref={scrollRef}
@@ -61,11 +155,13 @@ export function TerminalPlugin() {
           onClick={() => inputRef.current?.focus()}
         >
           <div className="mb-4">
-            Windows PowerShell<br />
+            {isRemote
+              ? `SSH: ${remoteConn?.username}@${remoteConn?.host}:${remoteConn?.port || 22}`
+              : "Windows PowerShell"}
+            <br />
             {t("plugins.terminal.copyright")}
           </div>
 
-          {/* History */}
           {lines.map((line, i) => (
             <div
               key={i}
@@ -74,6 +170,8 @@ export function TerminalPlugin() {
                   ? "text-red-500"
                   : line.kind === "prompt"
                   ? "text-text-base"
+                  : line.kind === "system"
+                  ? "text-yellow-600"
                   : "text-text-secondary"
               }`}
             >
@@ -81,7 +179,6 @@ export function TerminalPlugin() {
             </div>
           ))}
 
-          {/* Active input line */}
           <div className="flex items-center">
             <span className="mr-2 flex-shrink-0">{promptLabel}</span>
             <input
@@ -100,7 +197,6 @@ export function TerminalPlugin() {
           </div>
         </div>
 
-        {/* Scrollbar placeholder right side */}
         <div className="w-4 border-l border-border-theme flex flex-col items-center py-2 text-text-secondary flex-shrink-0 bg-gray-50">
           <FontAwesomeIcon icon={["fas", "caret-up"]} className="text-[10px] cursor-pointer" />
           <div className="flex-1 w-full flex justify-center py-1">
