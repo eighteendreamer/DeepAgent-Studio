@@ -28,7 +28,7 @@ use deepagent_app_core::{
     ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
     ProjectService, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeProgressDto, RuntimeService,
     RuntimeStatusDto, SecretStore, SessionDetailDto, SessionStateService,
-    SessionSummaryDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
+    SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
     SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, TerminalResultDto, TerminalService,
     TranscriptDto, TranscriptSegmentDto, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
 };
@@ -503,6 +503,35 @@ fn set_session_pinned(
         .session_state
         .set_pinned(&session_id, pinned)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_session_ui_prefs(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SessionUiPrefsDto, String> {
+    let prefs = state
+        .session_state
+        .ui_prefs(&session_id)
+        .map_err(|e| e.to_string())?;
+    Ok(SessionUiPrefsDto {
+        env_panel_auto_open: prefs.env_panel_auto_open,
+    })
+}
+
+#[tauri::command]
+fn set_session_env_panel_auto_open(
+    state: State<'_, AppState>,
+    session_id: String,
+    enabled: bool,
+) -> Result<SessionUiPrefsDto, String> {
+    let prefs = state
+        .session_state
+        .set_env_panel_auto_open(&session_id, enabled)
+        .map_err(|e| e.to_string())?;
+    Ok(SessionUiPrefsDto {
+        env_panel_auto_open: prefs.env_panel_auto_open,
+    })
 }
 
 #[tauri::command]
@@ -1848,15 +1877,30 @@ fn delete_archived_conversation(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<bool, String> {
-    state
+    let deleted = state
         .archive
         .delete_archived_session(&session_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if deleted {
+        state
+            .session_state
+            .purge_session_state(&session_id)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(deleted)
 }
 
 #[tauri::command]
 fn delete_all_archived_conversations(state: State<'_, AppState>) -> Result<u32, String> {
-    state.archive.delete_all().map_err(|e| e.to_string())
+    let archived = state.archive.list().map_err(|e| e.to_string())?;
+    let deleted = state.archive.delete_all().map_err(|e| e.to_string())?;
+    for session in archived {
+        state
+            .session_state
+            .purge_session_state(&session.session_id)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(deleted)
 }
 
 // ---- terminal (interactive command in the active project) -----------------
@@ -3046,6 +3090,8 @@ pub fn run() {
             session_detail,
             session_conversation,
             set_session_pinned,
+            get_session_ui_prefs,
+            set_session_env_panel_auto_open,
             commands,
             compute_diff,
             fork_session,

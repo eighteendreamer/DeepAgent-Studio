@@ -13,11 +13,24 @@ use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 
 const PINNED_SESSIONS_COLLECTION: &str = "pinned_sessions";
+const SESSION_UI_PREFS_COLLECTION: &str = "session_ui_prefs";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PinnedSessionRecord {
     session_id: String,
     pinned_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionUiPrefsRecord {
+    session_id: String,
+    env_panel_auto_open: bool,
+    updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionUiPrefs {
+    pub env_panel_auto_open: bool,
 }
 
 /// Stores and queries app-level session sidebar state.
@@ -69,9 +82,65 @@ impl SessionStateService {
         }
     }
 
+    /// Durable UI preferences for one session. Missing records fall back to
+    /// defaults so older sessions remain valid without migration.
+    pub fn ui_prefs(&self, session_id: &str) -> Result<SessionUiPrefs> {
+        let store = DocumentStore::new(&self.db);
+        let Some(doc) = store.get(SESSION_UI_PREFS_COLLECTION, session_id)? else {
+            return Ok(SessionUiPrefs {
+                env_panel_auto_open: true,
+            });
+        };
+
+        match serde_json::from_str::<SessionUiPrefsRecord>(&doc.body) {
+            Ok(record) => Ok(SessionUiPrefs {
+                env_panel_auto_open: record.env_panel_auto_open,
+            }),
+            Err(err) => {
+                tracing::warn!(id = %doc.id, error = %err, "invalid session ui prefs record");
+                Ok(SessionUiPrefs {
+                    env_panel_auto_open: true,
+                })
+            }
+        }
+    }
+
+    /// Persist whether the environment panel may auto-open for this session.
+    pub fn set_env_panel_auto_open(
+        &self,
+        session_id: &str,
+        enabled: bool,
+    ) -> Result<SessionUiPrefs> {
+        let store = DocumentStore::new(&self.db);
+        let now = SystemClock.now();
+        let record = SessionUiPrefsRecord {
+            session_id: session_id.to_string(),
+            env_panel_auto_open: enabled,
+            updated_at: now.as_millis(),
+        };
+        store.put(
+            SESSION_UI_PREFS_COLLECTION,
+            session_id,
+            &serde_json::to_string(&record)?,
+            None,
+            now,
+        )?;
+        Ok(SessionUiPrefs {
+            env_panel_auto_open: enabled,
+        })
+    }
+
     /// Remove a session from the pinned index.
     pub fn clear_session(&self, session_id: &str) -> Result<bool> {
         DocumentStore::new(&self.db).delete(PINNED_SESSIONS_COLLECTION, session_id)
+    }
+
+    /// Remove all app-level state associated with a session.
+    pub fn purge_session_state(&self, session_id: &str) -> Result<bool> {
+        let store = DocumentStore::new(&self.db);
+        let mut removed = store.delete(PINNED_SESSIONS_COLLECTION, session_id)?;
+        removed |= store.delete(SESSION_UI_PREFS_COLLECTION, session_id)?;
+        Ok(removed)
     }
 }
 
@@ -93,5 +162,35 @@ mod tests {
 
         assert!(!svc.set_pinned("s1", false).unwrap());
         assert!(!svc.pinned_ids().unwrap().contains("s1"));
+    }
+
+    #[test]
+    fn session_ui_prefs_default_and_persist() {
+        let svc = service();
+        assert_eq!(
+            svc.ui_prefs("s1").unwrap(),
+            SessionUiPrefs {
+                env_panel_auto_open: true,
+            }
+        );
+
+        let updated = svc.set_env_panel_auto_open("s1", false).unwrap();
+        assert_eq!(
+            updated,
+            SessionUiPrefs {
+                env_panel_auto_open: false,
+            }
+        );
+        assert_eq!(svc.ui_prefs("s1").unwrap(), updated);
+    }
+
+    #[test]
+    fn clear_session_removes_ui_prefs() {
+        let svc = service();
+        svc.set_env_panel_auto_open("s1", false).unwrap();
+        assert_eq!(svc.ui_prefs("s1").unwrap().env_panel_auto_open, false);
+
+        assert!(svc.purge_session_state("s1").unwrap());
+        assert_eq!(svc.ui_prefs("s1").unwrap().env_panel_auto_open, true);
     }
 }

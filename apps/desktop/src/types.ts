@@ -11,6 +11,10 @@ export interface SessionSummary {
   pinned: boolean;
 }
 
+export interface SessionUiPrefs {
+  env_panel_auto_open: boolean;
+}
+
 export interface TimelineEntry {
   sequence: number;
   timestamp: number;

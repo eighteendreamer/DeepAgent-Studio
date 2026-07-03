@@ -58,6 +58,7 @@ import type {
   ScanResult,
   SessionDetail,
   SessionSummary,
+  SessionUiPrefs,
   SettingsView,
   Skill,
   SkillActivation,
@@ -137,6 +138,26 @@ export async function setSessionPinned(sessionId: string, pinned: boolean): Prom
   const invoke = getInvoke();
   if (invoke) return invoke<boolean>("set_session_pinned", { sessionId, pinned });
   return pinned;
+}
+
+export async function getSessionUiPrefs(sessionId: string): Promise<SessionUiPrefs> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SessionUiPrefs>("get_session_ui_prefs", { sessionId });
+  return { env_panel_auto_open: true };
+}
+
+export async function setSessionEnvPanelAutoOpen(
+  sessionId: string,
+  enabled: boolean,
+): Promise<SessionUiPrefs> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<SessionUiPrefs>("set_session_env_panel_auto_open", {
+      sessionId,
+      enabled,
+    });
+  }
+  return { env_panel_auto_open: enabled };
 }
 
 export async function getCommands(query: string): Promise<Command[]> {

@@ -27,6 +27,13 @@ pub struct SessionSummaryDto {
     pub pinned: bool,
 }
 
+/// Durable UI preferences bound to a session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionUiPrefsDto {
+    /// Whether the environment info panel may auto-open when new outputs appear.
+    pub env_panel_auto_open: bool,
+}
+
 /// A project (a folder) the user has opened, with its session count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectDto {

@@ -1148,6 +1148,7 @@ export function App() {
                 className="w-full h-full flex flex-col"
               >
                 <ChatView
+                  sessionId={activeId}
                   messages={chatMessages}
                   onSend={onSubmit}
                   onFork={onForkSession}

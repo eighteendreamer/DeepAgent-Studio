@@ -60,7 +60,7 @@ pub use dto::{
     GitPushCommitDto, GitPushPreviewDto, GitPushRiskItemDto, GitPushRiskScanDto, GitRefCompareDto,
     GitWorktreeDto, PdfRenderResultDto, PreviewMetadataDto, PreviewResultDto, ProjectDto,
     RecordingSessionDto, RewindResultDto, RuntimeProgressDto, RuntimeStatusDto, SessionDetailDto,
-    SessionStatsDto, SessionSummaryDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto,
+    SessionStatsDto, SessionSummaryDto, SessionUiPrefsDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto,
     TranscriptDto, TranscriptSegmentDto, WorkspaceInfoDto,
 };
 pub use file_preview_service::FilePreviewService;

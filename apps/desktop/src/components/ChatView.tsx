@@ -19,11 +19,19 @@ import { ProjectMapPanel, ProjectMapStatusBadge } from "./project-map/ProjectMap
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
-import { projectMapRefreshDeep, projectMapStatus, SEND_TO_CHAT_EVENT } from "../api";
+import {
+  getSessionUiPrefs,
+  projectMapRefreshDeep,
+  projectMapStatus,
+  SEND_TO_CHAT_EVENT,
+  setSessionEnvPanelAutoOpen,
+} from "../api";
 import { useGitStatus } from "../hooks/useGitStatus";
 import { GitWorkbench } from "./git/GitWorkbench";
 
 interface Props {
+  /** Active session id for per-session UI persistence. */
+  sessionId?: string | null;
   messages: ChatMessage[];
   onSend: (text: string) => void;
   /** Fork the current session into a new branch from its latest point. */
@@ -578,10 +586,31 @@ function browserTitle(url: string): string {
   }
 }
 
-export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, onArchive, pinned = false, timeline = [], approval = null, approvalQueueCount = 0, onApprovalDecision, busy = false, onStop, planMode = false, activeProjectPath = null, projectMapOpenSignal = 0 }: Props) {
+export function ChatView({
+  sessionId = null,
+  messages,
+  onSend,
+  onFork,
+  onRewind,
+  onExport,
+  onPin,
+  onArchive,
+  pinned = false,
+  timeline = [],
+  approval = null,
+  approvalQueueCount = 0,
+  onApprovalDecision,
+  busy = false,
+  onStop,
+  planMode = false,
+  activeProjectPath = null,
+  projectMapOpenSignal = 0,
+}: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
   const [isOutputPanelOpen, setIsOutputPanelOpen] = useState(false);
+  const [envPanelAutoOpenEnabled, setEnvPanelAutoOpenEnabled] = useState(true);
+  const [envPanelPrefsLoaded, setEnvPanelPrefsLoaded] = useState(true);
   const [isGitWorkbenchOpen, setIsGitWorkbenchOpen] = useState(false);
   const {
     loading: gitLoading,
@@ -662,37 +691,68 @@ export function ChatView({ messages, onSend, onFork, onRewind, onExport, onPin, 
     [outputItems]
   );
   const lastAutoOpenedOutputRef = useRef<string>("");
-  // Sticky user override: once the user explicitly closes the panel within a
-  // conversation, subsequent new outputs will not pop it back open. Cleared
-  // when the conversation resets (e.g. switch to an empty session) or when
-  // the user opens it again manually.
-  const userClosedOutputPanelRef = useRef<boolean>(false);
+  useEffect(() => {
+    let cancelled = false;
+    lastAutoOpenedOutputRef.current = "";
+    setIsOutputPanelOpen(false);
+
+    if (!sessionId) {
+      setEnvPanelAutoOpenEnabled(true);
+      setEnvPanelPrefsLoaded(true);
+      return;
+    }
+
+    setEnvPanelPrefsLoaded(false);
+    getSessionUiPrefs(sessionId)
+      .then((prefs) => {
+        if (cancelled) return;
+        setEnvPanelAutoOpenEnabled(prefs.env_panel_auto_open);
+        setEnvPanelPrefsLoaded(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error("get_session_ui_prefs failed:", error);
+        setEnvPanelAutoOpenEnabled(true);
+        setEnvPanelPrefsLoaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
   useEffect(() => {
     if (!hasConversation) {
       lastAutoOpenedOutputRef.current = "";
-      userClosedOutputPanelRef.current = false;
       setIsOutputPanelOpen(false);
       return;
     }
+    if (!envPanelPrefsLoaded) return;
     if (!outputSignature) {
       lastAutoOpenedOutputRef.current = "";
       return;
     }
     if (lastAutoOpenedOutputRef.current === outputSignature) return;
     lastAutoOpenedOutputRef.current = outputSignature;
-    if (userClosedOutputPanelRef.current) return;
+    if (!envPanelAutoOpenEnabled) return;
     setIsOutputPanelOpen(true);
-  }, [hasConversation, outputSignature]);
+  }, [envPanelAutoOpenEnabled, envPanelPrefsLoaded, hasConversation, outputSignature]);
 
   const toggleOutputPanel = useCallback(() => {
     setIsOutputPanelOpen((prev) => {
       const next = !prev;
       // Closing → record the user's intent so future outputs respect it.
       // Opening → user is engaging again, clear the override.
-      userClosedOutputPanelRef.current = !next;
+      if (!next) {
+        setEnvPanelAutoOpenEnabled(false);
+        if (sessionId) {
+          void setSessionEnvPanelAutoOpen(sessionId, false).catch((error) => {
+            console.error("set_session_env_panel_auto_open failed:", error);
+          });
+        }
+      }
       return next;
     });
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     setIsGitWorkbenchOpen(false);
