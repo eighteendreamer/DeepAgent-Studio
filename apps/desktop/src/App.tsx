@@ -251,6 +251,10 @@ export function App() {
   );
 
   const navigateTo = useCallback((newActiveId: string | null, newView: View) => {
+    if (newActiveId === activeId && newView === view) {
+      return;
+    }
+
     setActiveId(newActiveId);
     setView(newView);
     setMessages([]);
@@ -260,7 +264,7 @@ export function App() {
       newHistory.push({ activeId: newActiveId, view: newView });
       return { history: newHistory, index: newHistory.length - 1 };
     });
-  }, []);
+  }, [activeId, view]);
 
   const goBack = useCallback(() => {
     setNavState((prev) => {
