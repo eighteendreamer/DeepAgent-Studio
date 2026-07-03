@@ -100,6 +100,9 @@ pub enum RuntimeEvent {
         prompt_cache_hit_tokens: u32,
         /// Prompt tokens NOT served from cache (a "miss").
         prompt_cache_miss_tokens: u32,
+        /// Backend-computed RMB cost for the completed run, when available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_yuan: Option<f64>,
     },
     /// The run finished.
     RunCompleted {

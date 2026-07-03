@@ -10,6 +10,7 @@ use deepagent_core::clock::SystemClock;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::id::SessionId;
 use deepagent_observation::{build_timeline, export_transcript, SessionStats, TranscriptFormat};
+use deepagent_persistence::cost_store::CostStore;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::Database;
 use deepagent_session::Session;
@@ -180,6 +181,9 @@ impl AppService {
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         let store = EventStore::new(&self.db);
         let events = store.load_session(id)?;
+        let mut recorded_costs = CostStore::new(&self.db)
+            .session_costs(session_id)?
+            .into_iter();
 
         let mut messages: Vec<ConversationMessageDto> = Vec::new();
         // Index of tool parts by call_id within the current assistant turn, so a
@@ -312,6 +316,7 @@ impl AppService {
                         prompt_cache_hit_tokens: *prompt_cache_hit_tokens,
                         prompt_cache_miss_tokens: *prompt_cache_miss_tokens,
                         duration_ms: *duration_ms,
+                        cost_yuan: recorded_costs.next(),
                     });
                 }
                 _ => {}

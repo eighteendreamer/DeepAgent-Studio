@@ -98,6 +98,12 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_costs_session ON costs(session_id);
     CREATE INDEX idx_costs_timestamp ON costs(timestamp);
     "#,
+    // V7: reset the old USD ledger and switch `cost_yuan` to RMB semantics.
+    // Cache-miss tokens are now stored from provider usage directly.
+    r#"
+    DELETE FROM costs;
+    ALTER TABLE costs ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 /// The highest schema version defined by this build.

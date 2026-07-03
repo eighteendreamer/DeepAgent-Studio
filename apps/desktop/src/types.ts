@@ -130,6 +130,7 @@ export interface ConversationUsage {
   prompt_cache_hit_tokens: number;
   prompt_cache_miss_tokens: number;
   duration_ms: number;
+  cost_yuan?: number;
 }
 
 /** Accumulated token usage for an assistant turn (mirrors runtime Usage). */
@@ -139,6 +140,7 @@ export interface TokenUsage {
   totalTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
+  costYuan?: number;
 }
 
 /** Budget configuration (mirrors deepagent-app-core::BudgetConfig). */

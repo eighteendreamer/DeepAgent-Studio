@@ -466,7 +466,7 @@ pub struct ConversationMessageDto {
 }
 
 /// Persisted per-turn token usage + duration (mirrors `UsageRecorded`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ConversationUsageDto {
     /// Prompt (input) tokens.
     pub prompt_tokens: u32,
@@ -480,6 +480,9 @@ pub struct ConversationUsageDto {
     pub prompt_cache_miss_tokens: u32,
     /// Wall-clock run duration in milliseconds.
     pub duration_ms: u64,
+    /// Backend-computed RMB cost for this assistant turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_yuan: Option<f64>,
 }
 
 /// A command-palette action the UI can present and dispatch.

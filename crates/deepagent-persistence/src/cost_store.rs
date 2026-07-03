@@ -24,11 +24,13 @@ pub struct CostEntry<'a> {
     pub input_tokens: u32,
     /// Completion tokens.
     pub output_tokens: u32,
-    /// Cache-hit tokens (subset of input billed at the discounted rate).
+    /// Cache-hit tokens reported by the provider.
     pub cache_hit_tokens: u32,
+    /// Cache-miss tokens reported by the provider.
+    pub cache_miss_tokens: u32,
     /// Total tokens reported by the provider.
     pub total_tokens: u32,
-    /// Computed cost in USD (column kept as `cost_yuan` for schema compatibility).
+    /// Computed cost in CNY / RMB.
     pub cost_yuan: f64,
 }
 
@@ -48,8 +50,8 @@ impl<'db> CostStore<'db> {
         self.db.with_conn(|c| {
             c.execute(
                 "INSERT INTO costs (session_id, timestamp, model, input_tokens, output_tokens, \
-                 cache_hit_tokens, total_tokens, cost_yuan) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 cache_hit_tokens, cache_miss_tokens, total_tokens, cost_yuan) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     entry.session_id,
                     entry.timestamp,
@@ -57,6 +59,7 @@ impl<'db> CostStore<'db> {
                     entry.input_tokens,
                     entry.output_tokens,
                     entry.cache_hit_tokens,
+                    entry.cache_miss_tokens,
                     entry.total_tokens,
                     entry.cost_yuan,
                 ],
@@ -78,6 +81,22 @@ impl<'db> CostStore<'db> {
         })
     }
 
+    /// Individual costs for a session, in insertion order.
+    pub fn session_costs(&self, session_id: &str) -> Result<Vec<f64>> {
+        self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare("SELECT cost_yuan FROM costs WHERE session_id = ?1 ORDER BY id ASC")
+                .map_err(map_sqlite)?;
+            let rows = stmt
+                .query_map(params![session_id], |row| row.get::<_, f64>(0))
+                .map_err(map_sqlite)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(map_sqlite)?);
+            }
+            Ok(out)
+        })
+    }
     /// Sum of `cost_yuan` for all records at or after `since` (unix millis).
     pub fn total_since(&self, since: i64) -> Result<f64> {
         self.db.with_conn(|c| {
@@ -115,6 +134,7 @@ mod tests {
             input_tokens: 100,
             output_tokens: 50,
             cache_hit_tokens: 0,
+            cache_miss_tokens: 100,
             total_tokens: 150,
             cost_yuan: cost,
         }

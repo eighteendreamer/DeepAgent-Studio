@@ -1699,34 +1699,21 @@ function formatMs(ms: number): string {
   return `${m}m${rem}s`;
 }
 
-/** Compact number (1234 → 1.2k). */
+/** Compact number (1234 -> 1.2k). */
 function formatTokens(n: number): string {
   if (n < 1000) return `${n}`;
   return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
 }
 
-/**
- * Estimate this turn's spend (USD) from the token breakdown, using
- * deepseek-v4-flash official pricing. The authoritative cumulative figure lives
- * in the backend cost summary. Cache-hit tokens are a subset of input billed at
- * the discounted rate.
- */
-function estimateCostUsd(usage: TokenUsage): number {
-  const fullInput = Math.max(0, usage.promptTokens - usage.cacheHitTokens);
-  const usd =
-    (fullInput * 0.14 + usage.completionTokens * 0.28 + usage.cacheHitTokens * 0.0028) /
-    1_000_000;
-  return Math.round(usd * 10000) / 10000;
-}
+const CNY_SYMBOL = "\uFFE5";
 
-/** Format a USD amount with adaptive precision (small spends keep 4 decimals). */
-function formatUsd(n: number): string {
-  if (n <= 0) return "$0";
-  if (n < 0.01) return `$${n.toFixed(4)}`;
-  if (n < 1) return `$${n.toFixed(3)}`;
-  return `$${n.toFixed(2)}`;
+/** Format an RMB amount with adaptive precision (small spends keep 6 decimals). */
+function formatCny(n: number): string {
+  if (n <= 0) return `${CNY_SYMBOL}0`;
+  if (n < 0.01) return `${CNY_SYMBOL}${n.toFixed(6)}`;
+  if (n < 1) return `${CNY_SYMBOL}${n.toFixed(4)}`;
+  return `${CNY_SYMBOL}${n.toFixed(2)}`;
 }
-
 /**
  * The footer shown under a finished assistant answer: a token/usage metaline
  * (total + input/output breakdown + cache hit) and total duration, plus a row
@@ -1785,7 +1772,7 @@ function UsageFooter({
                 title={t("chatView.turnCost")}
               >
                 <FontAwesomeIcon icon={["fas", "coins"]} className="mr-0.5 text-[9px]" />
-                {formatUsd(estimateCostUsd(usage))}
+                {typeof usage.costYuan === "number" ? formatCny(usage.costYuan) : `${CNY_SYMBOL}--`}
               </span>
             </div>
           )}

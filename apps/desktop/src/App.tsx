@@ -198,6 +198,7 @@ export function App() {
                 totalTokens: m.usage.total_tokens,
                 cacheHitTokens: m.usage.prompt_cache_hit_tokens,
                 cacheMissTokens: m.usage.prompt_cache_miss_tokens,
+                costYuan: m.usage.cost_yuan,
               }
             : undefined,
           runMs: m.usage?.duration_ms,
@@ -681,6 +682,7 @@ export function App() {
         total: number;
         cacheHit: number;
         cacheMiss: number;
+        costYuan?: number;
       }) => {
         updateTranscript((prev) => {
           const next = [...prev];
@@ -702,6 +704,7 @@ export function App() {
               totalTokens: cur.totalTokens + u.total,
               cacheHitTokens: cur.cacheHitTokens + u.cacheHit,
               cacheMissTokens: cur.cacheMissTokens + u.cacheMiss,
+              costYuan: u.costYuan ?? cur.costYuan,
             },
           };
           return next;
@@ -882,6 +885,7 @@ export function App() {
               total: Number(event.total_tokens ?? 0),
               cacheHit: Number(event.prompt_cache_hit_tokens ?? 0),
               cacheMiss: Number(event.prompt_cache_miss_tokens ?? 0),
+              costYuan: typeof event.cost_yuan === "number" ? event.cost_yuan : undefined,
             });
             break;
           case "run_completed":

@@ -197,6 +197,7 @@ impl Agent for ModelAgent {
                     total_tokens: usage.total_tokens,
                     prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
                     prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
+                    cost_yuan: None,
                 });
             }
         }

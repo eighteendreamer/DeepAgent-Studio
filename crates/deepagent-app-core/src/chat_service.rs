@@ -473,9 +473,8 @@ pub struct ChatService {
 /// Factory that creates a [`CommandExecutor`] for a given connection id.
 /// Used for remote (SSH) sessions — the factory is set up by the desktop
 /// app and captures the `SshService` handle.
-type ExecutorFactory = Arc<dyn Fn(String) -> Box<dyn deepagent_builtins::bash_tool::CommandExecutor>
-    + Send
-    + Sync>;
+type ExecutorFactory =
+    Arc<dyn Fn(String) -> Box<dyn deepagent_builtins::bash_tool::CommandExecutor> + Send + Sync>;
 
 type RemoteContextFuture = Pin<Box<dyn Future<Output = Result<Option<String>>> + Send>>;
 type RemoteContextFactory = Arc<dyn Fn(String) -> RemoteContextFuture + Send + Sync>;
@@ -1930,8 +1929,12 @@ impl ChatService {
             None => env_mode,
         };
 
-        let (registry, todo_store) =
-            self.build_registry(&root, deepagent_builtins::FsAccess::Full, effective_env_mode, connection_id)?;
+        let (registry, todo_store) = self.build_registry(
+            &root,
+            deepagent_builtins::FsAccess::Full,
+            effective_env_mode,
+            connection_id,
+        )?;
         let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
 
         let session_id_str = session.id().to_string();
@@ -2318,7 +2321,7 @@ impl ChatService {
         }
 
         let engine = RuntimeEngine::new(&registry, Default::default(), config)
-            .with_events(sink)
+            .with_events(sink.clone())
             .with_approvals(gate)
             .with_hooks(&hooks)
             .with_cancel(cancel);
@@ -2372,9 +2375,20 @@ impl ChatService {
                         u.prompt_tokens,
                         u.completion_tokens,
                         u.prompt_cache_hit_tokens,
+                        u.prompt_cache_miss_tokens,
                         u.total_tokens,
                     ) {
-                        Ok(usd) => tracing::info!(cost_usd = usd, "recorded run cost"),
+                        Ok(cny) => {
+                            tracing::info!(cost_yuan = cny, "recorded run cost");
+                            sink.emit(RuntimeEvent::Usage {
+                                prompt_tokens: 0,
+                                completion_tokens: 0,
+                                total_tokens: 0,
+                                prompt_cache_hit_tokens: 0,
+                                prompt_cache_miss_tokens: 0,
+                                cost_yuan: Some(cny),
+                            });
+                        }
                         Err(e) => tracing::warn!(error = %e, "failed to record run cost"),
                     }
                 }
@@ -2392,6 +2406,7 @@ impl ChatService {
         // all events were delivered.
         drop(engine);
         drop(agent);
+        drop(sink);
         let _ = pump.await;
 
         // Session auto-capture: if the run succeeded and a knowledge base with

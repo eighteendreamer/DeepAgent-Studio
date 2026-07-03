@@ -47,12 +47,15 @@ export function EnvironmentInfoPanel({
 }: EnvironmentInfoPanelProps) {
   const { t } = useTranslation();
 
+  const hasProject = !!activeProjectPath;
+  const isRepo = !!gitStatus?.is_repo;
+
   return (
     <div
       className="absolute top-16 right-6 z-10 flex w-[300px] flex-col rounded-2xl border border-border-theme bg-white shadow-[0_12px_36px_rgb(0,0,0,0.10)]"
       style={{ maxHeight: "min(460px, calc(100% - 120px))" }}
     >
-      <div className="flex flex-1 flex-col overflow-y-auto p-5">
+      <div className="flex flex-1 flex-col overflow-visible p-5">
         <div className="mb-3 flex items-center justify-between">
           <div className="text-[14px] text-text-secondary">{t("chatView.environmentInfo")}</div>
           <button
@@ -64,37 +67,35 @@ export function EnvironmentInfoPanel({
           </button>
         </div>
 
-        <div className="space-y-3 text-[14px]">
+        <div className="space-y-2 text-[14px]">
           <button
             type="button"
-            className="flex w-full items-center justify-between gap-3 rounded-lg px-0 py-0 text-left transition-colors hover:text-text-base disabled:hover:text-text-base"
+            className="flex w-full items-center justify-between gap-3 rounded-xl px-1 py-1 text-left transition-colors hover:text-text-base disabled:hover:text-text-base"
             onClick={() => {
-              if (activeProjectPath && gitStatus?.is_repo) onOpenGitWorkbench();
+              if (hasProject && isRepo) onOpenGitWorkbench();
             }}
-            disabled={!activeProjectPath || !gitStatus?.is_repo}
+            disabled={!hasProject || !isRepo}
           >
             <div className="flex min-w-0 items-center text-text-base">
               <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-3 w-4 text-text-secondary" />
               <span>{t("chatView.changes")}</span>
-              {activeProjectPath && gitStatus?.is_repo && (
+              {hasProject && isRepo && (
                 <FontAwesomeIcon icon={["fas", "chevron-right"]} className="ml-2 text-[10px] text-text-secondary" />
               )}
             </div>
-            {activeProjectPath ? (
+            {hasProject ? (
               <div
                 className="flex items-center gap-1.5 font-medium tabular-nums"
-                title={`Git 工作区变更；本轮会话变更 +${chatChanges.additions} -${chatChanges.deletions}`}
+                title={`Git workspace changes; chat changes +${chatChanges.additions} -${chatChanges.deletions}`}
               >
                 {gitLoading ? (
                   <span className="text-[13px] text-text-secondary">{t("chatView.loading")}</span>
-                ) : gitStatus?.is_repo ? (
+                ) : isRepo ? (
                   <>
                     <span className="text-green-600">+{gitWorkspaceAdditions}</span>
                     <span className="text-red-500">-{gitWorkspaceDeletions}</span>
                     {gitWorkspaceFilesChanged > 0 && (
-                      <span className="ml-1 text-[11px] text-text-secondary">
-                        {gitWorkspaceFilesChanged}
-                      </span>
+                      <span className="ml-1 text-[11px] text-text-secondary">{gitWorkspaceFilesChanged}</span>
                     )}
                   </>
                 ) : (
@@ -106,38 +107,48 @@ export function EnvironmentInfoPanel({
             )}
           </button>
 
-          <div className="flex min-w-0 items-center text-text-base" title={activeProjectPath ?? undefined}>
-            <FontAwesomeIcon icon={["fas", "desktop"]} className="mr-3 w-4 text-text-secondary" />
-            <span className="truncate">{t("chatView.local")}</span>
-            {activeProjectPath && <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[10px] text-text-secondary" />}
-          </div>
-
-          <div className="flex min-w-0 items-center text-text-base">
-            <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-3 w-4 text-text-secondary" />
-            {activeProjectPath ? (
-              gitLoading ? (
-                <span className="truncate text-text-secondary">{t("chatView.loading")}</span>
-              ) : gitStatus?.is_repo ? (
-                <GitBranchChip
-                  projectPath={activeProjectPath}
-                  compact
-                  className="-ml-1 min-w-0"
-                  onOpenWorkbench={onOpenGitWorkbench}
-                />
-              ) : (
-                <span className="truncate text-text-secondary">{t("chatView.noGitRepository")}</span>
-              )
+          {hasProject ? (
+            gitLoading ? (
+              <div className="flex min-w-0 items-center justify-between rounded-xl px-3 py-2 text-text-base">
+                <div className="flex min-w-0 items-center">
+                  <FontAwesomeIcon icon={["fas", "desktop"]} className="mr-3 w-4 text-text-secondary" />
+                  <span className="truncate">{t("chatView.local")}</span>
+                </div>
+                <span className="truncate text-[13px] text-text-secondary">{t("chatView.loading")}</span>
+              </div>
+            ) : isRepo && activeProjectPath ? (
+              <GitBranchChip
+                projectPath={activeProjectPath}
+                variant="env"
+                dropdownPlacement="bottom"
+                dropdownAlign="right"
+                onOpenWorkbench={onOpenGitWorkbench}
+              />
             ) : (
-              <span className="truncate text-text-secondary">{t("chatView.noProject")}</span>
-            )}
-          </div>
+              <div className="flex min-w-0 items-center justify-between rounded-xl px-3 py-2 text-text-base">
+                <div className="flex min-w-0 items-center">
+                  <FontAwesomeIcon icon={["fas", "desktop"]} className="mr-3 w-4 text-text-secondary" />
+                  <span className="truncate">{t("chatView.local")}</span>
+                </div>
+                <span className="text-[13px] text-text-secondary">{t("chatView.noGitRepository")}</span>
+              </div>
+            )
+          ) : (
+            <div className="flex min-w-0 items-center justify-between rounded-xl px-3 py-2 text-text-base">
+              <div className="flex min-w-0 items-center">
+                <FontAwesomeIcon icon={["fas", "desktop"]} className="mr-3 w-4 text-text-secondary" />
+                <span className="truncate">{t("chatView.local")}</span>
+              </div>
+              <span className="text-[13px] text-text-secondary">{t("chatView.noProject")}</span>
+            </div>
+          )}
 
-          <div className="flex min-w-0 items-center text-text-base">
+          <div className="flex min-w-0 items-center rounded-xl px-1 py-1 text-text-base">
             <FontAwesomeIcon icon={["fas", "share-nodes"]} className="mr-3 w-4 text-text-secondary" />
             <span>{t("chatView.commitOrPush")}</span>
           </div>
 
-          <div className="flex min-w-0 items-center text-text-secondary">
+          <div className="flex min-w-0 items-center rounded-xl px-1 py-1 text-text-secondary">
             <FontAwesomeIcon icon={["fab", "github"]} className="mr-3 w-4 text-text-secondary" />
             <span>
               {gitStatus?.gh_available ? t("chatView.githubCliAvailable") : t("chatView.githubCliUnavailable")}
@@ -160,23 +171,23 @@ export function EnvironmentInfoPanel({
                   item.kind === "url"
                     ? ["fas", "globe"]
                     : item.kind === "image"
-                    ? ["far", "image"]
-                    : item.kind === "todo"
-                    ? ["fas", "list-check"]
-                    : ["far", "file-lines"];
+                      ? ["far", "image"]
+                      : item.kind === "todo"
+                        ? ["fas", "list-check"]
+                        : ["far", "file-lines"];
                 const iconColor =
                   item.kind === "todo"
                     ? "text-blue-500"
                     : item.kind === "image"
-                    ? "text-purple-500"
-                    : item.kind === "file"
-                    ? item.action === "write"
-                      ? "text-green-600"
-                      : "text-amber-600"
-                    : "text-text-secondary";
+                      ? "text-purple-500"
+                      : item.kind === "file"
+                        ? item.action === "write"
+                          ? "text-green-600"
+                          : "text-amber-600"
+                        : "text-text-secondary";
                 const clickable =
                   item.kind === "url" || (item.kind === "image" && item.source === "url");
-                const onClick = () => {
+                const handleItemClick = () => {
                   if (item.kind === "url") onOpenUrl(item.label);
                   else if (item.kind === "image" && item.source === "url") onOpenUrl(item.label);
                 };
@@ -188,12 +199,9 @@ export function EnvironmentInfoPanel({
                       clickable ? "cursor-pointer hover:text-blue-500" : "cursor-default"
                     }`}
                     title={item.label}
-                    onClick={clickable ? onClick : undefined}
+                    onClick={clickable ? handleItemClick : undefined}
                   >
-                    <FontAwesomeIcon
-                      icon={icon}
-                      className={`mr-2 w-4 flex-shrink-0 ${iconColor}`}
-                    />
+                    <FontAwesomeIcon icon={icon} className={`mr-2 w-4 flex-shrink-0 ${iconColor}`} />
                     <span className="flex-1 truncate">{item.label}</span>
                     {item.kind === "file" && (
                       <span className="ml-2 flex-shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-text-secondary">

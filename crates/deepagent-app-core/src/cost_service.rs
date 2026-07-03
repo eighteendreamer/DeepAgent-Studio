@@ -1,11 +1,12 @@
-//! Cost tracking and budget enforcement (Phase 1B — gap-closure spec).
+//! Cost tracking and budget enforcement.
 //!
-//! Records per-request token cost (calculated from model pricing), persists it
-//! to the `costs` table, and enforces optional daily/monthly budget limits.
-//! The UI shows per-turn and cumulative spend; the runtime refuses new runs
-//! when the budget is exhausted.
+//! Records per-request token cost in RMB/CNY, persists it to the `costs` table,
+//! and enforces optional daily/monthly budget limits. Token counts come from the
+//! provider's `usage` payload; pricing is centralized here so the UI only
+//! displays authoritative backend-calculated values.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
@@ -13,62 +14,88 @@ use deepagent_persistence::cost_store::{CostEntry, CostStore};
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 
-/// Pricing for one model (per million tokens, in USD).
+/// Pricing for one model, in RMB per million tokens.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelPricing {
-    /// Cost per million input (prompt) tokens.
-    pub input_per_million: f64,
-    /// Cost per million output (completion) tokens.
+    /// Cost per million cache-hit prompt tokens.
+    pub input_cache_hit_per_million: f64,
+    /// Cost per million cache-miss prompt tokens.
+    pub input_cache_miss_per_million: f64,
+    /// Cost per million output/completion tokens.
     pub output_per_million: f64,
-    /// Cost per million cache-hit tokens (discounted input).
-    pub cache_hit_per_million: f64,
 }
 
 impl ModelPricing {
-    /// Calculate the cost for a single request.
-    pub fn calculate(&self, input_tokens: u32, output_tokens: u32, cache_hit_tokens: u32) -> f64 {
-        // Cache-hit tokens are a subset of input tokens charged at the
-        // discounted rate; the remainder is charged at the full input rate.
-        let full_input = input_tokens.saturating_sub(cache_hit_tokens) as f64;
-        let cost = (full_input * self.input_per_million
-            + output_tokens as f64 * self.output_per_million
-            + cache_hit_tokens as f64 * self.cache_hit_per_million)
+    /// Calculate the RMB cost for a single request.
+    pub fn calculate(
+        &self,
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_hit_tokens: u32,
+        cache_miss_tokens: u32,
+    ) -> f64 {
+        let miss_tokens = if cache_miss_tokens > 0 {
+            cache_miss_tokens
+        } else {
+            input_tokens.saturating_sub(cache_hit_tokens)
+        };
+        let cost = (cache_hit_tokens as f64 * self.input_cache_hit_per_million
+            + miss_tokens as f64 * self.input_cache_miss_per_million
+            + output_tokens as f64 * self.output_per_million)
             / 1_000_000.0;
-        (cost * 10000.0).round() / 10000.0 // round to 4 decimal places
+        (cost * 1_000_000.0).round() / 1_000_000.0
     }
 }
 
-/// Current DeepSeek v4 pricing (USD / 1M tokens), sourced from the official
-/// Models & Pricing page. Deprecated compatibility aliases are intentionally
-/// not included.
-pub fn default_pricing() -> std::collections::HashMap<String, ModelPricing> {
-    let mut m = std::collections::HashMap::new();
+/// Emergency fallback DeepSeek pricing snapshot (RMB / 1M tokens).
+///
+/// This snapshot is used when dynamic official pricing refresh is unavailable.
+/// The UI never reads these constants directly.
+pub fn default_pricing() -> HashMap<String, ModelPricing> {
+    let mut m = HashMap::new();
     m.insert(
         "deepseek-v4-flash".into(),
         ModelPricing {
-            input_per_million: 0.14,
-            output_per_million: 0.28,
-            cache_hit_per_million: 0.0028,
+            input_cache_hit_per_million: 0.02,
+            input_cache_miss_per_million: 1.0,
+            output_per_million: 2.0,
         },
     );
     m.insert(
         "deepseek-v4-pro".into(),
         ModelPricing {
-            input_per_million: 0.435,
-            output_per_million: 0.87,
-            cache_hit_per_million: 0.003625,
+            input_cache_hit_per_million: 0.025,
+            input_cache_miss_per_million: 3.0,
+            output_per_million: 6.0,
+        },
+    );
+    m.insert(
+        "deepseek-reasoner".into(),
+        ModelPricing {
+            input_cache_hit_per_million: 0.02,
+            input_cache_miss_per_million: 4.0,
+            output_per_million: 16.0,
+        },
+    );
+    // Deprecated aliases are mapped to the currently compatible v4 roles.
+    m.insert(
+        "deepseek-chat".into(),
+        ModelPricing {
+            input_cache_hit_per_million: 0.02,
+            input_cache_miss_per_million: 1.0,
+            output_per_million: 2.0,
         },
     );
     m
 }
 
-/// Budget configuration (optional limits).
+/// Budget configuration (optional limits, RMB/CNY).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BudgetConfig {
-    /// Maximum daily spend in USD (None = unlimited).
+    /// Maximum daily spend in RMB (None = unlimited).
     #[serde(default)]
     pub daily_limit: Option<f64>,
-    /// Maximum monthly spend in USD (None = unlimited).
+    /// Maximum monthly spend in RMB (None = unlimited).
     #[serde(default)]
     pub monthly_limit: Option<f64>,
 }
@@ -82,8 +109,9 @@ pub struct CostRecord {
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub cache_hit_tokens: u32,
+    pub cache_miss_tokens: u32,
     pub total_tokens: u32,
-    /// Cost in USD (kept as `cost_yuan` for DB schema compatibility).
+    /// Cost in RMB/CNY, persisted in the historical `cost_yuan` column.
     pub cost_yuan: f64,
 }
 
@@ -107,18 +135,24 @@ pub struct CostSummary {
 /// Cost tracking service.
 pub struct CostService {
     db: Arc<Database>,
-    pricing: std::collections::HashMap<String, ModelPricing>,
-    budget: std::sync::RwLock<BudgetConfig>,
+    pricing: RwLock<HashMap<String, ModelPricing>>,
+    budget: RwLock<BudgetConfig>,
 }
 
 impl CostService {
-    /// Build with the shared database, default pricing, and no budget.
+    /// Build with the shared database, fallback RMB pricing, and no budget.
     pub fn new(db: Arc<Database>) -> Self {
         Self {
             db,
-            pricing: default_pricing(),
-            budget: std::sync::RwLock::new(BudgetConfig::default()),
+            pricing: RwLock::new(default_pricing()),
+            budget: RwLock::new(BudgetConfig::default()),
         }
+    }
+
+    /// Replace the in-memory pricing catalog. Intended for a future official
+    /// pricing refresh path; calculation callers keep using this service.
+    pub fn set_pricing(&self, pricing: HashMap<String, ModelPricing>) {
+        *self.pricing.write().unwrap_or_else(|p| p.into_inner()) = pricing;
     }
 
     /// Set the budget config. Uses interior mutability so the service can be
@@ -136,7 +170,7 @@ impl CostService {
     }
 
     /// Record a cost entry for a completed model call. Returns the calculated
-    /// cost in USD.
+    /// RMB cost.
     pub fn record(
         &self,
         session_id: &str,
@@ -144,10 +178,21 @@ impl CostService {
         input_tokens: u32,
         output_tokens: u32,
         cache_hit_tokens: u32,
+        cache_miss_tokens: u32,
         total_tokens: u32,
     ) -> Result<f64> {
         let pricing = self.pricing_for_model(model)?;
-        let cost = pricing.calculate(input_tokens, output_tokens, cache_hit_tokens);
+        let effective_cache_miss = if cache_miss_tokens > 0 {
+            cache_miss_tokens
+        } else {
+            input_tokens.saturating_sub(cache_hit_tokens)
+        };
+        let cost = pricing.calculate(
+            input_tokens,
+            output_tokens,
+            cache_hit_tokens,
+            effective_cache_miss,
+        );
         let now = SystemClock.now().as_millis();
 
         CostStore::new(&self.db).insert(&CostEntry {
@@ -157,6 +202,7 @@ impl CostService {
             input_tokens,
             output_tokens,
             cache_hit_tokens,
+            cache_miss_tokens: effective_cache_miss,
             total_tokens,
             cost_yuan: cost,
         })?;
@@ -169,7 +215,7 @@ impl CostService {
         // Approximate day/month boundaries in ms.
         let day_ms = 86_400_000i64;
         let today_start = now - (now % day_ms);
-        let month_start = now - (now % (day_ms * 30)); // approximate
+        let month_start = now - (now % (day_ms * 30));
 
         let store = CostStore::new(&self.db);
         let session_cost = store.session_total(session_id)?;
@@ -182,29 +228,34 @@ impl CostService {
             today_cost,
             month_cost,
             total_cost,
-            currency: "USD".to_string(),
+            currency: "CNY".to_string(),
             budget: self.budget(),
         })
     }
 
     fn pricing_for_model(&self, model: &str) -> Result<ModelPricing> {
-        if let Some(pricing) = self.pricing.get(model) {
-            return Ok(pricing.clone());
+        let pricing = self.pricing.read().unwrap_or_else(|p| p.into_inner());
+        if let Some(p) = pricing.get(model) {
+            return Ok(p.clone());
         }
         let lower = model.to_ascii_lowercase();
         if lower.contains("v4-flash") || lower.ends_with("-flash") {
-            return self
-                .pricing
+            return pricing
                 .get("deepseek-v4-flash")
                 .cloned()
                 .ok_or_else(|| CoreError::invalid("deepseek-v4-flash pricing is missing"));
         }
         if lower.contains("v4-pro") || lower.ends_with("-pro") {
-            return self
-                .pricing
+            return pricing
                 .get("deepseek-v4-pro")
                 .cloned()
                 .ok_or_else(|| CoreError::invalid("deepseek-v4-pro pricing is missing"));
+        }
+        if lower.contains("reasoner") {
+            return pricing
+                .get("deepseek-reasoner")
+                .cloned()
+                .ok_or_else(|| CoreError::invalid("deepseek-reasoner pricing is missing"));
         }
         Err(CoreError::invalid(format!(
             "no DeepSeek pricing configured for model '{model}'"
@@ -218,12 +269,11 @@ impl CostService {
         if budget.daily_limit.is_none() && budget.monthly_limit.is_none() {
             return Ok(());
         }
-        // Use a dummy session_id to get today/month totals.
         let summary = self.summary("")?;
         if let Some(daily) = budget.daily_limit {
             if summary.today_cost >= daily {
                 return Err(CoreError::invalid(format!(
-                    "daily budget exhausted (${:.2} / ${:.2})",
+                    "daily budget exhausted (￥{:.2} / ￥{:.2})",
                     summary.today_cost, daily
                 )));
             }
@@ -231,7 +281,7 @@ impl CostService {
         if let Some(monthly) = budget.monthly_limit {
             if summary.month_cost >= monthly {
                 return Err(CoreError::invalid(format!(
-                    "monthly budget exhausted (${:.2} / ${:.2})",
+                    "monthly budget exhausted (￥{:.2} / ￥{:.2})",
                     summary.month_cost, monthly
                 )));
             }
@@ -254,7 +304,6 @@ mod tests {
 
     fn service() -> CostService {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        // The costs table has a FK to sessions(id); create the rows the tests use.
         db.with_conn(|c| {
             c.execute(
                 "INSERT INTO sessions (id, title, mode, created_at, updated_at) \
@@ -277,27 +326,27 @@ mod tests {
     #[test]
     fn pricing_calculation() {
         let p = ModelPricing {
-            input_per_million: 0.14,
-            output_per_million: 0.28,
-            cache_hit_per_million: 0.0028,
+            input_cache_hit_per_million: 0.02,
+            input_cache_miss_per_million: 1.0,
+            output_per_million: 2.0,
         };
-        // 5000 input (3000 cached + 2000 full), 1000 output
-        let cost = p.calculate(5000, 1000, 3000);
-        assert!((cost - 0.0006).abs() < 0.0001);
+        // 5000 input (3000 cached + 2000 miss), 1000 output.
+        let cost = p.calculate(5000, 1000, 3000, 2000);
+        assert!((cost - 0.00406).abs() < 0.000001);
     }
 
     #[test]
     fn record_and_summary() {
         let svc = service();
         let cost = svc
-            .record("ses_1", "deepseek-v4-flash", 10000, 500, 8000, 10500)
+            .record("ses_1", "deepseek-v4-flash", 10000, 500, 8000, 2000, 10500)
             .unwrap();
         assert!(cost > 0.0);
 
         let summary = svc.summary("ses_1").unwrap();
         assert_eq!(summary.session_cost, cost);
         assert!(summary.total_cost >= cost);
-        assert_eq!(summary.currency, "USD");
+        assert_eq!(summary.currency, "CNY");
     }
 
     #[test]
@@ -307,17 +356,16 @@ mod tests {
             daily_limit: Some(0.001),
             monthly_limit: None,
         });
-        // Record a cost that exceeds the tiny budget.
         svc.record(
             "ses_1",
             "deepseek-v4-flash",
             1_000_000,
             500_000,
             0,
+            1_000_000,
             1_500_000,
         )
         .unwrap();
-        // Now check_budget should fail.
         assert!(svc.check_budget().is_err());
     }
 
@@ -328,10 +376,11 @@ mod tests {
     }
 
     #[test]
-    fn deprecated_model_has_no_pricing_fallback() {
+    fn deprecated_chat_alias_uses_flash_pricing() {
         let svc = service();
-        assert!(svc
-            .record("ses_1", "deepseek-chat", 1000, 1000, 0, 2000)
-            .is_err());
+        let cost = svc
+            .record("ses_1", "deepseek-chat", 1000, 1000, 0, 1000, 2000)
+            .unwrap();
+        assert!(cost > 0.0);
     }
 }

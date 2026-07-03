@@ -124,7 +124,12 @@ impl SshServiceImpl {
         configs.insert(id.clone(), config.clone());
         drop(configs);
         self.persist_configs().await?;
-        Ok(dto_from_config(&config, SshStatus::Disconnected, None, None))
+        Ok(dto_from_config(
+            &config,
+            SshStatus::Disconnected,
+            None,
+            None,
+        ))
     }
 
     pub async fn update_connection(
@@ -164,7 +169,12 @@ impl SshServiceImpl {
         drop(configs);
         let _ = self.disconnect(id).await;
         self.persist_configs().await?;
-        Ok(dto_from_config(&candidate, SshStatus::Disconnected, None, None))
+        Ok(dto_from_config(
+            &candidate,
+            SshStatus::Disconnected,
+            None,
+            None,
+        ))
     }
 
     pub async fn remove_connection(&self, id: &str) -> SshResult<()> {
@@ -195,7 +205,9 @@ impl SshServiceImpl {
             Ok(Ok(client)) => client,
             Ok(Err(err)) => {
                 let msg = err.to_string();
-                session.set_status(SshStatus::Error, Some(msg.clone())).await;
+                session
+                    .set_status(SshStatus::Error, Some(msg.clone()))
+                    .await;
                 return Err(err);
             }
             Err(_) => {
@@ -410,7 +422,11 @@ impl SshServiceImpl {
         }
     }
 
-    pub async fn remote_probe(&self, id: &str, force_refresh: bool) -> SshResult<RemoteProbeResult> {
+    pub async fn remote_probe(
+        &self,
+        id: &str,
+        force_refresh: bool,
+    ) -> SshResult<RemoteProbeResult> {
         self.ensure_loaded().await;
         if !force_refresh {
             if let Some(cached) = self.read_probe_cache(id).await? {
@@ -425,7 +441,10 @@ impl SshServiceImpl {
             .client()
             .await
             .ok_or_else(|| SshError::ConnectionLost(id.to_string()))?;
-        let output = client.execute(REMOTE_PROBE_SCRIPT).await.map_err(map_ssh_error)?;
+        let output = client
+            .execute(REMOTE_PROBE_SCRIPT)
+            .await
+            .map_err(map_ssh_error)?;
         let exit_code = i32::try_from(output.exit_status).unwrap_or(i32::MAX);
         if exit_code != 0 {
             return Err(SshError::CommandFailed {
@@ -452,7 +471,9 @@ impl SshServiceImpl {
             .ok_or_else(|| SshError::ConnectionLost(id.to_string()))?;
         let started = std::time::Instant::now();
         let local_path = PathBuf::from(&request.local_path);
-        let meta = tokio::fs::metadata(&local_path).await.map_err(SshError::Process)?;
+        let meta = tokio::fs::metadata(&local_path)
+            .await
+            .map_err(SshError::Process)?;
         if !meta.is_file() {
             return Err(SshError::InvalidConfig(format!(
                 "local_path is not a file: {}",
@@ -535,7 +556,9 @@ impl SshServiceImpl {
             .ok_or_else(|| SshError::ConnectionLost(id.to_string()))?;
         let started = std::time::Instant::now();
         let local_root = PathBuf::from(&request.local_path);
-        let root_meta = tokio::fs::metadata(&local_root).await.map_err(SshError::Process)?;
+        let root_meta = tokio::fs::metadata(&local_root)
+            .await
+            .map_err(SshError::Process)?;
         if !root_meta.is_dir() {
             return Err(SshError::InvalidConfig(format!(
                 "local_path is not a directory: {}",
@@ -548,11 +571,15 @@ impl SshServiceImpl {
             .filter(|s| !s.is_empty())
             .unwrap_or("bundle")
             .to_string();
-        let temp_base = std::env::temp_dir().join(format!("deepagent-bundle-{}", uuid::Uuid::new_v4()));
-        tokio::fs::create_dir_all(&temp_base).await.map_err(SshError::Process)?;
+        let temp_base =
+            std::env::temp_dir().join(format!("deepagent-bundle-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&temp_base)
+            .await
+            .map_err(SshError::Process)?;
         let archive_path = temp_base.join("bundle.tar.gz");
         let manifest_path = temp_base.join("manifest.json");
-        let manifest = build_bundle_archive(&local_root, &root_name, &archive_path, &manifest_path).await?;
+        let manifest =
+            build_bundle_archive(&local_root, &root_name, &archive_path, &manifest_path).await?;
         if request.create_parent {
             let cmd = format!("mkdir -p {}", shell_escape(&request.remote_path));
             self.exec_remote_raw(&client, &cmd).await?;
@@ -676,12 +703,8 @@ impl SshServiceImpl {
             &missing_archive_tools,
             &missing_runtimes,
         );
-        let install_commands = build_install_commands(
-            package_manager.as_deref(),
-            &probe,
-            &packages,
-            true,
-        );
+        let install_commands =
+            build_install_commands(package_manager.as_deref(), &probe, &packages, true);
         let can_install = !install_commands.is_empty();
         Ok(RemoteRequireResult {
             package_manager,
@@ -816,8 +839,8 @@ impl SshServiceImpl {
                 .await
                 .map_err(|err| SshError::Persistence(err.to_string()))?;
         }
-        let data =
-            serde_json::to_string_pretty(probe).map_err(|err| SshError::Persistence(err.to_string()))?;
+        let data = serde_json::to_string_pretty(probe)
+            .map_err(|err| SshError::Persistence(err.to_string()))?;
         tokio::fs::write(path, data)
             .await
             .map_err(|err| SshError::Persistence(err.to_string()))
@@ -851,7 +874,11 @@ impl SshServiceImpl {
 }
 
 async fn connect_client(config: &SshConnectionConfig) -> SshResult<Client> {
-    validate_config(config, config.key_path.as_deref(), config.password.as_deref())?;
+    validate_config(
+        config,
+        config.key_path.as_deref(),
+        config.password.as_deref(),
+    )?;
     let auth = auth_method(config)?;
     let addr = (config.host.as_str(), config.port);
     Client::connect(addr, &config.username, auth, ServerCheckMethod::NoCheck)
@@ -871,7 +898,10 @@ fn auth_method(config: &SshConnectionConfig) -> SshResult<AuthMethod> {
             let key_path = config.key_path.as_deref().ok_or_else(|| {
                 SshError::InvalidConfig("key_file authentication requires key_path".into())
             })?;
-            Ok(AuthMethod::with_key_file(key_path, config.password.as_deref()))
+            Ok(AuthMethod::with_key_file(
+                key_path,
+                config.password.as_deref(),
+            ))
         }
         SshAuthType::Agent => auth_agent_method(),
     }
@@ -902,7 +932,9 @@ fn validate_config(
         return Err(SshError::InvalidConfig("username is required".into()));
     }
     if config.port == 0 {
-        return Err(SshError::InvalidConfig("port must be greater than 0".into()));
+        return Err(SshError::InvalidConfig(
+            "port must be greater than 0".into(),
+        ));
     }
     match config.auth_type {
         SshAuthType::Password if password.unwrap_or_default().is_empty() => {
@@ -943,7 +975,9 @@ fn map_ssh_error(err: async_ssh2_tokio::Error) -> SshError {
         | async_ssh2_tokio::Error::AgentAuthenticationFailed => {
             SshError::AuthFailed("ssh".into(), err.to_string())
         }
-        async_ssh2_tokio::Error::AddressInvalid(inner) => SshError::InvalidConfig(inner.to_string()),
+        async_ssh2_tokio::Error::AddressInvalid(inner) => {
+            SshError::InvalidConfig(inner.to_string())
+        }
         async_ssh2_tokio::Error::IoError(inner) => SshError::Process(inner),
         other => SshError::Internal(other.to_string()),
     }
@@ -998,7 +1032,9 @@ fn parse_probe_output(stdout: &str) -> SshResult<RemoteProbeResult> {
             result.path = sanitize_optional(value);
         } else if let Some(rest) = line.strip_prefix("cmd:") {
             if let Some((name, value)) = rest.split_once('=') {
-                result.commands.insert(name.to_string(), value.trim() == "1");
+                result
+                    .commands
+                    .insert(name.to_string(), value.trim() == "1");
             }
         } else if let Some(rest) = line.strip_prefix("pkg:") {
             if let Some((name, value)) = rest.split_once('=') {
@@ -1015,7 +1051,9 @@ fn parse_probe_output(stdout: &str) -> SshResult<RemoteProbeResult> {
         }
     }
     if result.os.is_none() && result.user.is_none() && result.cwd.is_none() {
-        return Err(SshError::Internal("remote probe returned no usable data".into()));
+        return Err(SshError::Internal(
+            "remote probe returned no usable data".into(),
+        ));
     }
     result.package_managers.sort();
     result.package_managers.dedup();
@@ -1039,7 +1077,9 @@ fn now_epoch_ms() -> u64 {
 }
 
 async fn sha256_file(path: &Path) -> SshResult<String> {
-    let mut file = tokio::fs::File::open(path).await.map_err(SshError::Process)?;
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(SshError::Process)?;
     let mut hasher = sha2::Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
@@ -1069,7 +1109,11 @@ async fn remote_file_size(client: &Client, remote_path: &str) -> SshResult<u64> 
         .stdout
         .split_whitespace()
         .find_map(|part| part.trim().parse::<u64>().ok())
-        .ok_or_else(|| SshError::Internal(format!("failed to parse remote file size for {remote_path}")))
+        .ok_or_else(|| {
+            SshError::Internal(format!(
+                "failed to parse remote file size for {remote_path}"
+            ))
+        })
 }
 
 async fn remote_sha256(client: &Client, remote_path: &str) -> SshResult<String> {
@@ -1089,7 +1133,13 @@ elif command -v python3 >/dev/null 2>&1; then python3 - {path} <<'PY'\nimport ha
             stderr: output.stderr,
         });
     }
-    let hash = output.stdout.lines().next().unwrap_or_default().trim().to_string();
+    let hash = output
+        .stdout
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if hash.is_empty() {
         return Err(SshError::IntegrityMismatch(format!(
             "remote sha256 command returned no hash for {remote_path}"
@@ -1220,7 +1270,9 @@ fn archive_requirements(kind: &str) -> &'static [&'static str] {
 }
 
 fn preferred_package_manager(package_managers: &[String]) -> Option<String> {
-    for candidate in ["apt", "dnf", "yum", "apk", "zypper", "brew", "winget", "choco", "scoop"] {
+    for candidate in [
+        "apt", "dnf", "yum", "apk", "zypper", "brew", "winget", "choco", "scoop",
+    ] {
         if package_managers.iter().any(|name| name == candidate) {
             return Some(candidate.to_string());
         }
@@ -1249,7 +1301,10 @@ fn package_names_for_requirements(
     packages
 }
 
-fn package_name_for_requirement(package_manager: Option<&str>, requirement: &str) -> Option<String> {
+fn package_name_for_requirement(
+    package_manager: Option<&str>,
+    requirement: &str,
+) -> Option<String> {
     let name = requirement.split('@').next().unwrap_or(requirement).trim();
     if name.is_empty() {
         return None;

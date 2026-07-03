@@ -14,9 +14,9 @@
 //! Connection configs are stored in the app data directory
 //! (`<app_data>/deepagent-ssh/connections.json`) so they survive app restarts.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 
 pub use config::{SshAuthType, SshConnectionConfig, SshConnectionDto, SshStatus};
 pub use error::{SshError, SshResult};
@@ -31,8 +31,8 @@ pub use session::{SshExecResult, SshPtyHandle, SshSession, SshStatusSnapshot, Ss
 mod config;
 mod error;
 mod remote;
-mod session;
 mod service;
+mod session;
 
 use service::SshServiceImpl;
 
@@ -45,7 +45,12 @@ pub struct SshServiceHandle {
 }
 
 impl SshServiceHandle {
-    pub fn new(connection_id: impl Into<String>, token: impl Into<String>, cols: u16, rows: u16) -> Self {
+    pub fn new(
+        connection_id: impl Into<String>,
+        token: impl Into<String>,
+        cols: u16,
+        rows: u16,
+    ) -> Self {
         Self {
             connection_id: connection_id.into(),
             token: token.into(),
@@ -106,7 +111,9 @@ impl SshService {
         password: Option<String>,
     ) -> SshResult<SshConnectionDto> {
         self.inner
-            .update_connection(id, name, host, port, username, auth_type, key_path, password)
+            .update_connection(
+                id, name, host, port, username, auth_type, key_path, password,
+            )
             .await
     }
 
@@ -122,7 +129,12 @@ impl SshService {
         self.inner.exec(handle, command).await
     }
 
-    pub async fn pty_spawn(&self, handle: &SshServiceHandle, cols: u16, rows: u16) -> SshResult<SshServiceHandle> {
+    pub async fn pty_spawn(
+        &self,
+        handle: &SshServiceHandle,
+        cols: u16,
+        rows: u16,
+    ) -> SshResult<SshServiceHandle> {
         self.inner.pty_spawn(handle, cols, rows).await
     }
 
@@ -134,7 +146,12 @@ impl SshService {
         self.inner.pty_read(handle).await
     }
 
-    pub async fn pty_resize(&self, handle: &SshServiceHandle, cols: u16, rows: u16) -> SshResult<()> {
+    pub async fn pty_resize(
+        &self,
+        handle: &SshServiceHandle,
+        cols: u16,
+        rows: u16,
+    ) -> SshResult<()> {
         self.inner.pty_resize(handle, cols, rows).await
     }
 
@@ -165,7 +182,11 @@ impl SshService {
         self.inner.test_connection(&cfg).await
     }
 
-    pub async fn remote_probe(&self, id: &str, force_refresh: bool) -> SshResult<RemoteProbeResult> {
+    pub async fn remote_probe(
+        &self,
+        id: &str,
+        force_refresh: bool,
+    ) -> SshResult<RemoteProbeResult> {
         self.inner.remote_probe(id, force_refresh).await
     }
 

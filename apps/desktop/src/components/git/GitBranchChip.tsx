@@ -9,6 +9,9 @@ interface Props {
   projectPath?: string | null;
   compact?: boolean;
   className?: string;
+  variant?: "chip" | "row" | "env";
+  dropdownPlacement?: "top" | "bottom";
+  dropdownAlign?: "left" | "right";
   onStatusChange?: (status: ReturnType<typeof useGitStatus>["status"]) => void;
   onOpenWorkbench?: () => void;
 }
@@ -17,6 +20,9 @@ export function GitBranchChip({
   projectPath,
   compact = false,
   className = "",
+  variant = "chip",
+  dropdownPlacement = "top",
+  dropdownAlign = "left",
   onStatusChange,
   onOpenWorkbench,
 }: Props) {
@@ -110,39 +116,88 @@ export function GitBranchChip({
     <div className={`relative ${className}`} ref={ref}>
       <button
         type="button"
-        className={`inline-flex min-w-0 items-center rounded-md text-[12px] font-medium text-text-secondary transition-colors hover:bg-gray-100 hover:text-text-base ${
-          compact ? "px-1.5 py-1" : "px-2 py-1.5"
-        }`}
+        className={
+          variant === "env"
+            ? `flex w-full min-w-0 items-center justify-between rounded-xl px-3 py-2 text-[14px] text-text-base transition-colors hover:bg-gray-100/80 ${
+                compact ? "min-h-[38px]" : "min-h-[42px]"
+              }`
+            : variant === "row"
+            ? `flex w-full min-w-0 items-center justify-between rounded-xl px-3 py-2 text-[14px] font-medium text-text-base transition-colors hover:bg-gray-50 ${
+                compact ? "min-h-[38px]" : "min-h-[42px]"
+              }`
+            : `inline-flex min-w-0 items-center rounded-md text-[12px] font-medium text-text-secondary transition-colors hover:bg-gray-100 hover:text-text-base ${
+                compact ? "px-1.5 py-1" : "px-2 py-1.5"
+              }`
+        }
         onClick={() => setOpen((v) => !v)}
         title={status?.repo_root ?? projectPath ?? undefined}
       >
-        <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[13px]" />
-        <span className="max-w-[150px] truncate">{currentLabel ?? "Git"}</span>
-        {dirty && <span className="ml-1.5 h-1.5 w-1.5 rounded-full bg-amber-500" />}
-        {displayAheadBehind && <span className="ml-1.5 text-[11px] text-blue-500">{displayAheadBehind}</span>}
-        <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
+        {variant === "env" ? (
+          <>
+            <div className="flex min-w-0 items-center">
+              <FontAwesomeIcon icon={["fas", "desktop"]} className="mr-3 w-4 text-text-secondary" />
+              <span className="truncate">本地</span>
+            </div>
+            <div className="ml-3 flex min-w-0 items-center">
+              <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[12px] text-text-secondary" />
+              <span className="max-w-[96px] truncate font-medium">{currentLabel ?? "Git"}</span>
+              {dirty && <span className="ml-2 h-2 w-2 rounded-full bg-amber-500" />}
+              <FontAwesomeIcon
+                icon={["fas", open ? "chevron-up" : "chevron-down"]}
+                className="ml-2 text-[11px] text-text-secondary"
+              />
+            </div>
+          </>
+        ) : variant === "row" ? (
+          <>
+            <div className="flex min-w-0 items-center">
+              <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-3 w-4 text-text-secondary" />
+              <span className="truncate">{currentLabel ?? "Git"}</span>
+              {dirty && <span className="ml-2 h-2 w-2 rounded-full bg-amber-500" />}
+              {displayAheadBehind && <span className="ml-2 text-[11px] text-blue-500">{displayAheadBehind}</span>}
+            </div>
+            <FontAwesomeIcon
+              icon={["fas", open ? "chevron-up" : "chevron-down"]}
+              className="ml-3 text-[11px] text-text-secondary"
+            />
+          </>
+        ) : (
+          <>
+            <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[13px]" />
+            <span className="max-w-[150px] truncate">{currentLabel ?? "Git"}</span>
+            {dirty && <span className="ml-1.5 h-1.5 w-1.5 rounded-full bg-amber-500" />}
+            {displayAheadBehind && <span className="ml-1.5 text-[11px] text-blue-500">{displayAheadBehind}</span>}
+            <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
+          </>
+        )}
       </button>
 
       {open && (
-        <GitBranchDropdown
-          branches={branches}
-          loading={loading}
-          busy={busy}
-          query={query}
-          onQueryChange={setQuery}
-          currentBranch={status?.current_branch ?? null}
-          additions={status?.additions ?? changes?.additions ?? 0}
-          deletions={status?.deletions ?? changes?.deletions ?? 0}
-          filesChanged={status?.files_changed ?? changes?.files.length ?? 0}
-          rebaseState={status?.rebase_state ?? null}
-          mergeState={!!status?.merge_state}
-          operationError={operationError}
-          operationResult={operationResult}
-          onCheckout={checkoutBranch}
-          onFetch={fetchAndRefresh}
-          onCreateBranch={createBranch}
-          onOpenWorkbench={onOpenWorkbench}
-        />
+        <div
+          className={`absolute z-[70] ${
+            dropdownPlacement === "top" ? "bottom-full mb-2" : "top-full mt-2"
+          } ${dropdownAlign === "right" ? "right-0" : "left-0"}`}
+        >
+          <GitBranchDropdown
+            branches={branches}
+            loading={loading}
+            busy={busy}
+            query={query}
+            onQueryChange={setQuery}
+            currentBranch={status?.current_branch ?? null}
+            additions={status?.additions ?? changes?.additions ?? 0}
+            deletions={status?.deletions ?? changes?.deletions ?? 0}
+            filesChanged={status?.files_changed ?? changes?.files.length ?? 0}
+            rebaseState={status?.rebase_state ?? null}
+            mergeState={!!status?.merge_state}
+            operationError={operationError}
+            operationResult={operationResult}
+            onCheckout={checkoutBranch}
+            onFetch={fetchAndRefresh}
+            onCreateBranch={createBranch}
+            onOpenWorkbench={onOpenWorkbench}
+          />
+        </div>
       )}
     </div>
   );
@@ -200,7 +255,7 @@ function GitBranchDropdown({
   const remote = filtered.filter((branch) => branch.kind === "remote");
 
   return (
-    <div className="absolute bottom-full left-0 z-[70] mb-2 w-[380px] overflow-hidden rounded-lg border border-border-theme bg-white shadow-[0_12px_36px_rgb(0,0,0,0.14)]">
+    <div className="w-[380px] max-w-[calc(100vw-48px)] overflow-hidden rounded-lg border border-border-theme bg-white shadow-[0_12px_36px_rgb(0,0,0,0.14)]">
       <div className="border-b border-border-theme px-3 py-2">
         <div className="flex items-center rounded-md bg-gray-50 px-2 py-1.5 text-[12px] text-text-secondary">
           <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="mr-2 text-[11px]" />

@@ -141,8 +141,8 @@ impl<B: RemoteOpsBackend> Tool for RemoteProbeTool<B> {
     }
 
     async fn invoke(&self, arguments: serde_json::Value) -> Result<ToolOutput> {
-        let args: RemoteProbeArgs = serde_json::from_value(arguments)
-            .unwrap_or_else(|_| RemoteProbeArgs::default());
+        let args: RemoteProbeArgs =
+            serde_json::from_value(arguments).unwrap_or_else(|_| RemoteProbeArgs::default());
         Ok(ToolOutput::success(self.backend.probe(args).await?))
     }
 }
@@ -185,7 +185,9 @@ impl<B: RemoteOpsBackend> Tool for RemotePushFileTool<B> {
             Err(err) => return Ok(ToolOutput::failure(format!("invalid arguments: {err}"))),
         };
         if args.local_path.trim().is_empty() || args.remote_path.trim().is_empty() {
-            return Ok(ToolOutput::failure("local_path and remote_path are required"));
+            return Ok(ToolOutput::failure(
+                "local_path and remote_path are required",
+            ));
         }
         Ok(ToolOutput::success(self.backend.push_file(args).await?))
     }
@@ -230,7 +232,9 @@ impl<B: RemoteOpsBackend> Tool for RemotePushBundleTool<B> {
             Err(err) => return Ok(ToolOutput::failure(format!("invalid arguments: {err}"))),
         };
         if args.local_path.trim().is_empty() || args.remote_path.trim().is_empty() {
-            return Ok(ToolOutput::failure("local_path and remote_path are required"));
+            return Ok(ToolOutput::failure(
+                "local_path and remote_path are required",
+            ));
         }
         Ok(ToolOutput::success(self.backend.push_bundle(args).await?))
     }

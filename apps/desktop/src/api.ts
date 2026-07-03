@@ -690,7 +690,7 @@ const EMPTY_COST_SUMMARY: CostSummary = {
   today_cost: 0,
   month_cost: 0,
   total_cost: 0,
-  currency: "USD",
+  currency: "CNY",
   budget: { daily_limit: null, monthly_limit: null },
 };
 
@@ -702,7 +702,7 @@ export async function getCostSummary(sessionId?: string): Promise<CostSummary> {
   return EMPTY_COST_SUMMARY;
 }
 
-/** Set the daily/monthly budget (USD); returns the refreshed summary. */
+/** Set the daily/monthly budget (RMB/CNY); returns the refreshed summary. */
 export async function setBudget(
   dailyLimit: number | null,
   monthlyLimit: number | null,
