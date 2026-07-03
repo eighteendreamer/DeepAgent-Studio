@@ -17,6 +17,7 @@ import { TerminalPlugin } from "./plugins/TerminalPlugin";
 import { RecordingPlugin } from "./plugins/RecordingPlugin";
 import { FilePreviewPlugin } from "./plugins/FilePreviewPlugin";
 import { ProjectMapPanel, ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
+import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
@@ -820,13 +821,9 @@ export function ChatView({
   }, [messages]);
 
   const getTranslatedToolName = (_title: string, type: string) => {
-    if (type === "project_map") return "项目地图";
-    return t(`chatView.tools.${type}`);
-  };
-
-  const getTranslatedToolDesc = (type: string) => {
-    if (type === "project_map") return "查看模块关系";
-    return t(`chatView.tools.${type}Desc`);
+    return t(`chatView.tools.${type}`, {
+      defaultValue: type === "project_map" ? "项目地图" : type,
+    });
   };
 
   const handleOpenBottomPlugin = (c: typeof TOOL_CARDS[0]) => {
@@ -1451,27 +1448,7 @@ export function ChatView({
 
           <div className="flex-1 overflow-hidden flex flex-col relative">
             {activeBottomTabId === "new" && (
-              <div className="w-full h-full flex flex-col relative">
-                <div className="flex-1 flex items-center justify-center pt-8 pb-4">
-                  <div className="flex space-x-4">
-                    {TOOL_CARDS.map((c) => (
-                      <div
-                        key={c.title}
-                        onClick={() => handleOpenBottomPlugin(c)}
-                        className="group flex-shrink-0 w-[200px] bg-bg-base rounded-2xl p-4 flex flex-col items-start cursor-pointer hover:shadow-lg hover:-translate-y-1 border border-border-theme hover:border-primary/50 transition-all duration-300"
-                      >
-                        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary mb-3 group-hover:scale-110 transition-transform">
-                          <FontAwesomeIcon icon={c.icon} className="text-[18px]" />
-                        </div>
-                        <div className="text-[14px] font-semibold text-text-base mb-1 group-hover:text-primary transition-colors line-clamp-1 w-full text-left">{getTranslatedToolName(c.title, c.type)}</div>
-                        <div className="text-[12px] text-text-secondary leading-snug line-clamp-2 text-left">{getTranslatedToolDesc(c.type)}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="pl-12 pb-4 text-[13px] text-text-secondary font-medium">{t("chatView.recommended")}</div>
-              </div>
+              <ToolLauncherPanel cards={TOOL_CARDS} onSelect={handleOpenBottomPlugin} variant="bottom" />
             )}
 
             {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "files" && <FilesPlugin />}
@@ -1556,29 +1533,7 @@ export function ChatView({
 
           <div className="flex-1 overflow-hidden flex flex-col relative">
             {activeSidebarTabId === "new" && (
-              <div className="w-full h-full flex flex-col relative overflow-y-auto bg-white">
-                <div className="flex-1 flex flex-col p-6">
-                  <div className="flex flex-col space-y-3">
-                    {TOOL_CARDS.map((c) => (
-                      <div
-                        key={c.title}
-                        onClick={() => handleOpenSidebarPlugin(c)}
-                        className="group flex items-center p-4 rounded-2xl bg-bg-base border border-border-theme cursor-pointer hover:shadow-md hover:border-primary/50 transition-all duration-200"
-                      >
-                        <div className="w-11 h-11 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0 mr-4 group-hover:scale-105 transition-transform">
-                          <FontAwesomeIcon icon={c.icon} className="text-[18px]" />
-                        </div>
-                        <div className="flex-1 text-left min-w-0">
-                          <div className="text-[14px] font-semibold text-text-base mb-0.5 group-hover:text-primary transition-colors truncate">{getTranslatedToolName(c.title, c.type)}</div>
-                          <div className="text-[12px] text-text-secondary leading-snug line-clamp-1">{getTranslatedToolDesc(c.type)}</div>
-                        </div>
-                        <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-text-secondary opacity-0 group-hover:opacity-100 group-hover:-translate-x-1 transition-all ml-2 text-sm" />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="px-6 pb-6 text-[13px] text-text-secondary font-medium">{t("chatView.recommended")}</div>
-              </div>
+              <ToolLauncherPanel cards={TOOL_CARDS} onSelect={handleOpenSidebarPlugin} variant="sidebar" />
             )}
 
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "files" && <FilesPlugin />}

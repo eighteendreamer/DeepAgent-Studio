@@ -22,7 +22,7 @@ use deepagent_context::{
     CompactionPolicy, HeuristicSummarizer, HeuristicTokenizer, ModelCompactor, Summarizer,
     TaskSummary, TokenCounter,
 };
-use deepagent_core::clock::SystemClock;
+use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
 use deepagent_core::message::Message;
@@ -72,6 +72,14 @@ use crate::settings::SettingsService;
 /// byte-identical across an agent loop is what lets DeepSeek serve the system
 /// prompt + tool schemas from cache (~5–10x cheaper, lower first-token latency).
 pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "\n\n<<<DYNAMIC>>>\n\n";
+const SESSION_TITLE_SYSTEM_PROMPT: &str = concat!(
+    "You generate concise conversation titles for a coding assistant session.\n",
+    "Return only the title text.\n",
+    "Do not use quotes, markdown, numbering, or any explanation.\n",
+    "Use the user's language when possible.\n",
+    "Focus on the user's concrete task or goal, not greetings or assistant boilerplate.\n",
+    "Keep it short and specific."
+);
 
 /// Build the effective system prompt for a run: the stable, prefix-cacheable
 /// base, then the [`SYSTEM_PROMPT_DYNAMIC_BOUNDARY`], then a dynamic environment
@@ -1805,6 +1813,106 @@ impl ChatService {
         Ok(response.message.content)
     }
 
+    /// Generate and persist an AI title for a session when it is still
+    /// untitled. Intended for post-run refinement: if the user renames the
+    /// session before generation finishes, the second title check prevents the
+    /// auto title from overwriting the explicit one.
+    pub async fn maybe_generate_session_title(&self, session_id: &str) -> Result<Option<String>> {
+        use deepagent_core::message::Role;
+        use deepagent_persistence::event_store::EventStore;
+
+        let id = deepagent_core::id::SessionId::from_str(session_id)
+            .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+        let store = EventStore::new(&self.db);
+        let Some(record) = store.get_session(id)? else {
+            return Err(CoreError::not_found(format!("session {session_id}")));
+        };
+        if record
+            .title
+            .as_deref()
+            .map(|title| !title.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return Ok(None);
+        }
+
+        let events = store.load_session(id)?;
+        let history = conversation_from_events(&events);
+        let mut lines = Vec::new();
+        let mut user_messages = 0usize;
+        for message in &history {
+            let text = message.content.trim();
+            if text.is_empty() {
+                continue;
+            }
+            match message.role {
+                Role::User => {
+                    user_messages += 1;
+                    lines.push(format!("User: {text}"));
+                    if user_messages >= 3 {
+                        break;
+                    }
+                }
+                Role::Assistant => {
+                    if user_messages == 0 {
+                        continue;
+                    }
+                    lines.push(format!("Assistant: {text}"));
+                }
+                _ => {}
+            }
+        }
+        if lines.is_empty() {
+            return Ok(None);
+        }
+
+        let settings = self
+            .settings
+            .load()?
+            .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?;
+        let api_key = self
+            .settings
+            .api_key()?
+            .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
+        let model = settings.catalog.model_for(ModelRole::Chat).to_string();
+        let config = ModelConfig::from_catalog(api_key, &settings.catalog, ModelRole::Chat);
+        let client = Arc::new(ModelClient::new(self.transport.clone(), config));
+
+        let request = deepagent_models::chat::ChatRequest::new(
+            model,
+            vec![
+                deepagent_core::message::Message::system(SESSION_TITLE_SYSTEM_PROMPT),
+                deepagent_core::message::Message::user(format!(
+                    "Create a short conversation title from this transcript:\n\n{}",
+                    lines.join("\n")
+                )),
+            ],
+        )
+        .streaming()
+        .with_max_tokens(48)
+        .with_thinking_depth(ThinkingDepth::Simple);
+        let response = client.stream_chat(request).await?;
+        let Some(title) = normalize_generated_session_title(&response.message.content) else {
+            return Ok(None);
+        };
+
+        let current = store.get_session(id)?;
+        if current
+            .as_ref()
+            .and_then(|session| session.title.as_deref())
+            .map(|title| !title.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return Ok(None);
+        }
+
+        let clock = SystemClock;
+        if !store.rename_session(id, Some(&title), clock.now())? {
+            return Err(CoreError::not_found(format!("session {session_id}")));
+        }
+        Ok(Some(title))
+    }
+
     /// Run one streamed chat turn-loop for `prompt`, forwarding every
     /// [`RuntimeEvent`] to `on_event` and any approval request to `on_approval`.
     /// Returns the new session id.
@@ -1901,13 +2009,8 @@ impl ChatService {
                     Some("remote") => deepagent_core::SessionMode::Remote,
                     _ => deepagent_core::SessionMode::Normal,
                 };
-                let session = Session::create_in_project(
-                    &self.db,
-                    &clock,
-                    Some(prompt),
-                    mode,
-                    Some(&project),
-                )?;
+                let session =
+                    Session::create_in_project(&self.db, &clock, None, mode, Some(&project))?;
                 (session, Vec::new(), Vec::new())
             }
         };
@@ -2595,6 +2698,37 @@ fn parse_slash_invocation(line: &str) -> Option<(&str, &str)> {
         None
     } else {
         Some((name, args))
+    }
+}
+
+fn normalize_generated_session_title(raw: &str) -> Option<String> {
+    let mut title = raw.trim().replace(['\r', '\n'], " ");
+    for prefix in ["Title:", "title:", "标题：", "标题:"] {
+        if let Some(stripped) = title.strip_prefix(prefix) {
+            title = stripped.trim().to_string();
+            break;
+        }
+    }
+    title = title
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '“' | '”' | '‘' | '’'))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if title.is_empty() {
+        return None;
+    }
+    let max_chars = 48usize;
+    let normalized = if title.chars().count() > max_chars {
+        let mut truncated = title.chars().take(max_chars).collect::<String>();
+        truncated = truncated.trim().trim_end_matches([':', '-', ' ', '，', '。']).to_string();
+        truncated
+    } else {
+        title
+    };
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
     }
 }
 

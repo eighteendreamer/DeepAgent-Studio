@@ -66,6 +66,11 @@ interface SessionCompletedPayload {
   error?: string | null;
 }
 
+interface SessionTitleUpdatedPayload {
+  session_id: string;
+  title: string;
+}
+
 function mapConversationToChatMessages(conversation: ConversationMessage[]): ChatMessage[] {
   return conversation.map((m) => ({
     role: m.role,
@@ -375,6 +380,37 @@ export function App() {
   useEffect(() => {
     window.addEventListener(ARCHIVE_CHANGED_EVENT, refreshSessions);
     return () => window.removeEventListener(ARCHIVE_CHANGED_EVENT, refreshSessions);
+  }, [refreshSessions]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event")
+      .then((mod) =>
+        mod.listen<SessionTitleUpdatedPayload>("session://title-updated", (event) => {
+          const payload = event.payload;
+          setSessions((prev) =>
+            prev.map((session) =>
+              session.id === payload.session_id ? { ...session, title: payload.title } : session
+            )
+          );
+          setDetail((prev) =>
+            prev && prev.summary.id === payload.session_id
+              ? { ...prev, summary: { ...prev.summary, title: payload.title } }
+              : prev
+          );
+          refreshSessions();
+        })
+      )
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [refreshSessions]);
 
   useEffect(() => {

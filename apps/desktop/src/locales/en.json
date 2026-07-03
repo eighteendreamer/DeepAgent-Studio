@@ -700,6 +700,8 @@
       "browserDesc": "Open website",
       "terminal": "Terminal",
       "terminalDesc": "Launch interactive shell",
+      "project_map": "Project Map",
+      "project_mapDesc": "Inspect module relationships",
       "recording": "Recording",
       "recordingDesc": "Meeting recording & transcription",
       "file_preview": "File Preview",

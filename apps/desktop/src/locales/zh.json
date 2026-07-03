@@ -700,6 +700,8 @@
       "browserDesc": "打开网站",
       "terminal": "终端",
       "terminalDesc": "启动交互式 shell",
+      "project_map": "项目地图",
+      "project_mapDesc": "查看模块关系",
       "recording": "录音",
       "recordingDesc": "会议录音与转写",
       "file_preview": "文件预览",

@@ -310,7 +310,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             title={t("sidebar.running")}
           />
         )}
-        <span className="truncate flex-1 pr-2">{s.title}</span>
+        <span className="truncate flex-1 pr-2">{s.title?.trim() || t("sidebar.newChat")}</span>
 
         {/* Right side container for timestamp and buttons using grid stacking */}
         <div className="grid items-center flex-shrink-0">
@@ -478,13 +478,10 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         </div>
         {isExpanded && (
           <div className="flex flex-col mt-0.5 space-y-0.5">
-            {projSessions.length === 0 || (projSessions.length === 1 && !projSessions[0].title) ? (
+            {projSessions.length === 0 ? (
               <div className="pl-8 py-1 text-[12px] text-gray-400">{t("sidebar.noChats")}</div>
             ) : (
-              projSessions.map((s) => {
-                if (!s.title) return null;
-                return renderSessionItem(s);
-              })
+              projSessions.map((s) => renderSessionItem(s))
             )}
           </div>
         )}
@@ -817,13 +814,10 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 </div>
                 {isExpanded && (
                   <div className="flex flex-col mt-0.5 space-y-0.5">
-                    {projSessions.length === 0 || (projSessions.length === 1 && !projSessions[0].title) ? (
+                    {projSessions.length === 0 ? (
                       <div className="pl-8 py-1 text-[12px] text-gray-400">{t("sidebar.noChats")}</div>
                     ) : (
-                      projSessions.map((s) => {
-                        if (!s.title) return null;
-                        return renderSessionItem(s);
-                      })
+                      projSessions.map((s) => renderSessionItem(s))
                     )}
                   </div>
                 )}

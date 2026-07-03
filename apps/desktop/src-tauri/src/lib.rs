@@ -466,6 +466,12 @@ struct SessionCompletedPayload {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct SessionTitleUpdatedPayload {
+    session_id: String,
+    title: String,
+}
+
 // ---- session / view commands ---------------------------------------------
 
 #[tauri::command]
@@ -1195,7 +1201,8 @@ async fn run_chat(
     let requested_session_id = session_id.clone();
     let event_emitter = app.clone();
     let approval_emitter = app.clone();
-    let completion_emitter = app;
+    let completion_emitter = app.clone();
+    let title_emitter = app;
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.rt.spawn(async move {
         let event_run_id = run_id.clone();
@@ -1242,6 +1249,23 @@ async fn run_chat(
             },
         };
         let _ = completion_emitter.emit("session://completed", completed);
+        if let Ok(session_id) = &result {
+            let chat = chat.clone();
+            let session_id = session_id.clone();
+            let title_emitter = title_emitter.clone();
+            tokio::spawn(async move {
+                match chat.maybe_generate_session_title(&session_id).await {
+                    Ok(Some(title)) => {
+                        let _ = title_emitter.emit(
+                            "session://title-updated",
+                            SessionTitleUpdatedPayload { session_id, title },
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!("session title generation failed: {error}"),
+                }
+            });
+        }
         let _ = tx.send(result);
     });
     match rx.await {
