@@ -826,11 +826,16 @@ export function ChatView({
     });
   };
 
+  const getTerminalTabTitle = () => {
+    const path = activeProjectPath?.trim();
+    return path && path.length > 0 ? path : "Terminal";
+  };
+
   const handleOpenBottomPlugin = (c: typeof TOOL_CARDS[0]) => {
     const newTab: Tab = {
       id: Date.now().toString(),
       type: c.type,
-      title: c.title === "terminal" ? "C:\\WINDOWS\\System32\\..." : 
+      title: c.title === "terminal" ? getTerminalTabTitle() : 
              c.title === "files" ? "AUTH_SPEC.md" : getTranslatedToolName(c.title, c.type),
       icon: c.title === "terminal" ? ["fas", "terminal"] :
             c.title === "files" ? ["far", "file-lines"] : c.icon
@@ -843,7 +848,7 @@ export function ChatView({
     const newTab: Tab = {
       id: Date.now().toString(),
       type: c.type,
-      title: c.title === "terminal" ? "C:\\WINDOWS\\System32\\..." : 
+      title: c.title === "terminal" ? getTerminalTabTitle() : 
              c.title === "files" ? "AUTH_SPEC.md" : getTranslatedToolName(c.title, c.type),
       icon: c.title === "terminal" ? ["fas", "terminal"] :
             c.title === "files" ? ["far", "file-lines"] : c.icon
@@ -1295,19 +1300,19 @@ export function ChatView({
             <BottomPanelIcon 
               className="cursor-pointer transition-colors hover:text-text-base"
               onClick={() => {
-            if (isBottomPanelOpen) {
-              setIsBottomPanelOpen(false);
-            } else {
-              setIsBottomPanelOpen(true);
-              if (!bottomTabs.some(t => t.type === "terminal")) {
-                const terminalCard = TOOL_CARDS.find(c => c.type === "terminal");
-                if (terminalCard) handleOpenBottomPlugin(terminalCard);
-              } else {
-                const termTab = bottomTabs.find(t => t.type === "terminal");
-                if (termTab) setActiveBottomTabId(termTab.id);
-              }
-            }
-          }}
+                if (isBottomPanelOpen) {
+                  setIsBottomPanelOpen(false);
+                } else {
+                  setIsBottomPanelOpen(true);
+                  if (!bottomTabs.some((t) => t.type === "terminal")) {
+                    const terminalCard = TOOL_CARDS.find((c) => c.type === "terminal");
+                    if (terminalCard) handleOpenBottomPlugin(terminalCard);
+                  } else {
+                    const termTab = bottomTabs.find((t) => t.type === "terminal");
+                    if (termTab) setActiveBottomTabId(termTab.id);
+                  }
+                }
+              }}
             />
             <SidebarRightIcon
               className={`cursor-pointer transition-colors ${isRightSidebarOpen ? "text-text-base" : "hover:text-text-base"}`}

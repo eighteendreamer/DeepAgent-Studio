@@ -124,11 +124,22 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
       defaultValue: type === "project_map" ? "项目地图" : type,
     });
 
+  const getTerminalTabTitle = () => {
+    if (envMode === "remote") {
+      const current = sshConnections.find((connection) => connection.id === selectedConnectionId);
+      if (current?.name) return current.name;
+      if (current) return `${current.username}@${current.host}`;
+      return "SSH Terminal";
+    }
+    const path = activeProjectPath?.trim();
+    return path && path.length > 0 ? path : "Terminal";
+  };
+
   const handleOpenBottomPlugin = (c: typeof TOOL_CARDS[0]) => {
     const newTab: Tab = {
       id: Date.now().toString(),
       type: c.type,
-      title: c.title === "terminal" ? "C:\\WINDOWS\\System32\\..." : 
+      title: c.title === "terminal" ? getTerminalTabTitle() : 
              c.title === "files" ? "AUTH_SPEC.md" : resolveToolName(c.type),
       icon: c.title === "terminal" ? ["fas", "terminal"] :
             c.title === "files" ? ["far", "file-lines"] : c.icon
@@ -141,7 +152,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
     const newTab: Tab = {
       id: Date.now().toString(),
       type: c.type,
-      title: c.title === "terminal" ? "C:\\WINDOWS\\System32\\..." : 
+      title: c.title === "terminal" ? getTerminalTabTitle() : 
              c.title === "files" ? "AUTH_SPEC.md" : resolveToolName(c.type),
       icon: c.title === "terminal" ? ["fas", "terminal"] :
             c.title === "files" ? ["far", "file-lines"] : c.icon
@@ -313,13 +324,26 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
         <BottomPanelIcon 
           className="cursor-pointer transition-colors hover:text-text-base"
           onClick={() => {
+            if (envMode === "local") {
+              setIsBottomPanelOpen(true);
+              if (!bottomTabs.some((t) => t.type === "terminal")) {
+                const terminalCard = TOOL_CARDS.find((c) => c.type === "terminal");
+                if (terminalCard) {
+                  void handleOpenBottomPlugin(terminalCard);
+                }
+              } else {
+                const termTab = bottomTabs.find((t) => t.type === "terminal");
+                if (termTab) setActiveBottomTabId(termTab.id);
+              }
+              return;
+            }
             if (isBottomPanelOpen) {
               setIsBottomPanelOpen(false);
             } else {
               setIsBottomPanelOpen(true);
               if (!bottomTabs.some(t => t.type === "terminal")) {
                 const terminalCard = TOOL_CARDS.find(c => c.type === "terminal");
-                if (terminalCard) handleOpenBottomPlugin(terminalCard);
+                if (terminalCard) void handleOpenBottomPlugin(terminalCard);
               } else {
                 const termTab = bottomTabs.find(t => t.type === "terminal");
                 if (termTab) setActiveBottomTabId(termTab.id);

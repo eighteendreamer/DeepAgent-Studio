@@ -58,6 +58,19 @@ button:focus {
   user-select: none;
 }
 
+.terminal-surface .xterm {
+  height: 100%;
+}
+
+.terminal-surface .xterm-viewport {
+  overflow-y: auto !important;
+  background: #ffffff !important;
+}
+
+.terminal-surface .xterm-screen canvas {
+  background: #ffffff !important;
+}
+
 /* Window control buttons */
 .win-btn:hover {
   background-color: rgba(0, 0, 0, 0.05);

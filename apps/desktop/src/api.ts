@@ -272,6 +272,19 @@ export async function setThinkingDepth(
   throw new Error("changing thinking depth requires the desktop app");
 }
 
+/** Persist the preferred integrated-terminal shell. */
+export async function setTerminalShell(
+  shell: "powershell" | "command_prompt" | "git_bash" | "wsl"
+): Promise<SettingsView> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const view = await invoke<SettingsView>("set_terminal_shell", { shell });
+    emitSettingsChanged();
+    return view;
+  }
+  throw new Error("changing terminal shell requires the desktop app");
+}
+
 /**
  * Fork a session at a timeline sequence: create a new branch copying events
  * `0..=atSeq`. The source session is left untouched. Returns the branch id.
@@ -1681,6 +1694,46 @@ export async function terminalCwd(): Promise<string> {
   const invoke = getInvoke();
   if (invoke) return invoke<string>("terminal_cwd");
   return "";
+}
+
+export interface LocalPtyHandle {
+  pty_id: string;
+  cols: number;
+  rows: number;
+}
+
+/** Open the user's system terminal in the active project directory. */
+export async function openSystemTerminal(): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("open_system_terminal");
+  throw new Error("opening the system terminal requires the desktop app");
+}
+
+export async function localPtySpawn(cols: number, rows: number): Promise<LocalPtyHandle> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<LocalPtyHandle>("local_pty_spawn", { cols, rows });
+  return { pty_id: "local-preview", cols, rows };
+}
+
+export async function localPtyWrite(ptyId: string, data: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("local_pty_write", { ptyId, data });
+}
+
+export async function localPtyRead(ptyId: string): Promise<number[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<number[]>("local_pty_read", { ptyId });
+  return [];
+}
+
+export async function localPtyResize(ptyId: string, cols: number, rows: number): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("local_pty_resize", { ptyId, cols, rows });
+}
+
+export async function localPtyClose(ptyId: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("local_pty_close", { ptyId });
 }
 
 /**

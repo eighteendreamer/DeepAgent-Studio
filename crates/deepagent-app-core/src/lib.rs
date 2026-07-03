@@ -86,7 +86,7 @@ pub use service::AppService;
 pub use session_state_service::SessionStateService;
 pub use settings::{
     AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, SandboxMode, SettingsService,
-    SettingsView, VerificationPolicy, WebSearchProvider, WebSearchSettings,
+    SettingsView, TerminalShell, VerificationPolicy, WebSearchProvider, WebSearchSettings,
 };
 pub use skill_catalog_reminder::SkillCatalogSendState;
 pub use skills_service::{
@@ -107,7 +107,7 @@ pub use deepagent_skills::{
 // desktop Tauri layer + downstream callers don't have to depend on
 // `deepagent-builtins` directly to get the user-facing config enum.
 pub use deepagent_builtins::ToolSearchMode;
-pub use terminal_service::TerminalService;
+pub use terminal_service::{LocalPtyHandle, TerminalService};
 pub use workspace_service::WorkspaceService;
 
 // Re-export the live runtime event + approval types so the Tauri/web layer can

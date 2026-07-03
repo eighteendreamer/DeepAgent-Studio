@@ -173,6 +173,7 @@ fn settings_default() -> AppSettings {
         discovered_at: 0,
         approval_policy: Default::default(),
         sandbox_mode: Default::default(),
+        terminal_shell: Default::default(),
         permission_rules: Default::default(),
         hooks_json: String::new(),
         thinking_depth: Default::default(),

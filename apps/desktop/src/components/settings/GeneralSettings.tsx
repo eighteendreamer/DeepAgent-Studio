@@ -2,8 +2,10 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  getSettings,
   getPermissionRules,
   setPermissionRules,
+  setTerminalShell as persistTerminalShell,
 } from "../../api";
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
@@ -299,6 +301,34 @@ const SHELL_OPTIONS = [
   { title: "WSL" }
 ];
 
+function shellKeyToTitle(shell: "powershell" | "command_prompt" | "git_bash" | "wsl"): string {
+  switch (shell) {
+    case "command_prompt":
+      return "Command Prompt";
+    case "git_bash":
+      return "Git Bash";
+    case "wsl":
+      return "WSL";
+    case "powershell":
+    default:
+      return "PowerShell";
+  }
+}
+
+function shellTitleToKey(title: string): "powershell" | "command_prompt" | "git_bash" | "wsl" {
+  switch (title) {
+    case "Command Prompt":
+      return "command_prompt";
+    case "Git Bash":
+      return "git_bash";
+    case "WSL":
+      return "wsl";
+    case "PowerShell":
+    default:
+      return "powershell";
+  }
+}
+
 const LANGUAGE_OPTIONS = [
   { title: "自动检测" },
   { title: "阿尔巴尼亚语 (阿尔巴尼亚)" },
@@ -362,6 +392,15 @@ export function GeneralSettings() {
   const [editorTarget, setEditorTarget] = useState("VS Code");
   const [agentEnv, setAgentEnv] = useState("Windows 原生");
   const [terminalShell, setTerminalShell] = useState("PowerShell");
+  useEffect(() => {
+    getSettings()
+      .then((view) => {
+        if (view?.terminal_shell) {
+          setTerminalShell(shellKeyToTitle(view.terminal_shell));
+        }
+      })
+      .catch(() => {});
+  }, []);
   
   const mapLangToTitle = (lng: string) => {
     switch (lng) {
@@ -588,7 +627,10 @@ export function GeneralSettings() {
             <ComplexDropdown 
               options={SHELL_OPTIONS} 
               selectedTitle={terminalShell} 
-              onChange={setTerminalShell} 
+              onChange={(title) => {
+                setTerminalShell(title);
+                persistTerminalShell(shellTitleToKey(title)).catch(() => {});
+              }} 
               dropdownWidth="w-[200px]"
             />
           </div>

@@ -24,12 +24,14 @@ use deepagent_app_core::{
     GitOperationResultDto, GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto,
     GitRefCompareDto, GitService, GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto,
     KnowledgeHitDto, KnowledgeService, McpServerDto, McpService, OfficeService, PdfRenderResultDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto,
+    LocalPtyHandle,
     ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto,
     ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
     ProjectService, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeProgressDto, RuntimeService,
     RuntimeStatusDto, SecretStore, SessionDetailDto, SessionStateService,
     SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
     SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, TerminalResultDto, TerminalService,
+    TerminalShell,
     TranscriptDto, TranscriptSegmentDto, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
@@ -1351,6 +1353,16 @@ fn set_sandbox_mode(state: State<'_, AppState>, mode: String) -> Result<Settings
 }
 
 #[tauri::command]
+fn set_terminal_shell(state: State<'_, AppState>, shell: String) -> Result<SettingsView, String> {
+    let parsed = TerminalShell::parse(&shell)
+        .ok_or_else(|| "shell must be one of: powershell, command_prompt, git_bash, wsl".to_string())?;
+    state
+        .settings
+        .set_terminal_shell(parsed)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn set_thinking_depth(state: State<'_, AppState>, depth: String) -> Result<SettingsView, String> {
     let parsed = match depth.as_str() {
         "simple" => deepagent_models::ThinkingDepth::Simple,
@@ -1961,6 +1973,93 @@ fn run_terminal(state: State<'_, AppState>, command: String) -> Result<TerminalR
 #[tauri::command]
 fn terminal_cwd(state: State<'_, AppState>) -> String {
     state.terminal.current_dir()
+}
+
+#[tauri::command]
+fn open_system_terminal(state: State<'_, AppState>) -> Result<String, String> {
+    let shell = state.settings.terminal_shell().map_err(|e| e.to_string())?;
+    state
+        .terminal
+        .open_system(shell)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn local_pty_spawn(
+    state: State<'_, AppState>,
+    cols: u16,
+    rows: u16,
+) -> Result<LocalPtyHandle, String> {
+    let shell = state.settings.terminal_shell().map_err(|e| e.to_string())?;
+    state
+        .terminal
+        .pty_spawn(shell, cols, rows)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn local_pty_write(state: State<'_, AppState>, pty_id: String, data: String) -> Result<(), String> {
+    state
+        .terminal
+        .pty_write(
+            &LocalPtyHandle {
+                pty_id,
+                cols: 0,
+                rows: 0,
+            },
+            data.as_bytes(),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn local_pty_read(state: State<'_, AppState>, pty_id: String) -> Result<Vec<u8>, String> {
+    state
+        .terminal
+        .pty_read(&LocalPtyHandle {
+            pty_id,
+            cols: 0,
+            rows: 0,
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn local_pty_resize(
+    state: State<'_, AppState>,
+    pty_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    state
+        .terminal
+        .pty_resize(
+            &LocalPtyHandle {
+                pty_id,
+                cols,
+                rows,
+            },
+            cols,
+            rows,
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn local_pty_close(state: State<'_, AppState>, pty_id: String) -> Result<(), String> {
+    state
+        .terminal
+        .pty_close(&LocalPtyHandle {
+            pty_id,
+            cols: 0,
+            rows: 0,
+        })
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ---- ssh (long-lived remote connections) -----------------------------------
@@ -3201,6 +3300,7 @@ pub fn run() {
             set_approval_policy,
             get_sandbox_mode,
             set_sandbox_mode,
+            set_terminal_shell,
             set_thinking_depth,
             get_verification_policy,
             set_verification_policy,
@@ -3252,6 +3352,12 @@ pub fn run() {
             delete_all_archived_conversations,
             run_terminal,
             terminal_cwd,
+            open_system_terminal,
+            local_pty_spawn,
+            local_pty_write,
+            local_pty_read,
+            local_pty_resize,
+            local_pty_close,
             ssh_list_connections,
             ssh_create_connection,
             ssh_update_connection,

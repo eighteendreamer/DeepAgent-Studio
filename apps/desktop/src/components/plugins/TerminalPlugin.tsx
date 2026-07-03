@@ -1,39 +1,48 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { useTranslation } from "react-i18next";
 import {
-  runTerminal,
-  terminalCwd,
-  sshExec,
-  sshStatus,
+  localPtyClose,
+  localPtyRead,
+  localPtyResize,
+  localPtySpawn,
+  localPtyWrite,
+  sshPtyRead,
+  sshPtyResize,
   sshPtySpawn,
   sshPtyWrite,
-  sshPtyRead,
+  sshStatus,
+  type LocalPtyHandle,
   type SshConnection,
   type SshPtyHandle,
 } from "../../api";
-
-interface Line {
-  kind: "prompt" | "stdout" | "stderr" | "system";
-  text: string;
-}
+import { Terminal as XTerm } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 interface TerminalPluginProps {
   mode?: "local" | "remote";
   connectionId?: string | null;
 }
 
+type TerminalSession =
+  | { kind: "local"; handle: LocalPtyHandle }
+  | { kind: "remote"; handle: SshPtyHandle };
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function TerminalPlugin({ mode = "local", connectionId = null }: TerminalPluginProps) {
-  const { t } = useTranslation();
-  const [cwd, setCwd] = useState("");
-  const [lines, setLines] = useState<Line[]>([]);
-  const [input, setInput] = useState("");
-  const [running, setRunning] = useState(false);
   const [remoteConn, setRemoteConn] = useState<SshConnection | null>(null);
-  const [ptyHandle, setPtyHandle] = useState<SshPtyHandle | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const ptyPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [booting, setBooting] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<XTerm | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const sessionRef = useRef<TerminalSession | null>(null);
+  const pollRef = useRef<number | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const decoderRef = useRef(new TextDecoder());
+  const readingRef = useRef(false);
 
   const isRemote = mode === "remote";
 
@@ -45,166 +54,204 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
     }
   }, [isRemote, connectionId]);
 
-  useEffect(() => {
-    if (!isRemote) {
-      terminalCwd().then(setCwd).catch(() => {});
+  const stopPolling = useCallback(() => {
+    if (pollRef.current !== null) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
     }
-  }, [isRemote]);
+    readingRef.current = false;
+  }, []);
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [lines, running]);
-
-  // Spawn PTY on first remote command
-  const ensurePty = useCallback(async () => {
-    if (ptyHandle || !connectionId) return null;
-    const handle = await sshPtySpawn(connectionId, 80, 24);
-    setPtyHandle(handle);
-    return handle;
-  }, [ptyHandle, connectionId]);
-
-  // Poll PTY output when a PTY session is active
-  useEffect(() => {
-    if (ptyHandle && isRemote) {
-      ptyPollRef.current = setInterval(async () => {
-        try {
-          const data = await sshPtyRead(ptyHandle.connection_id);
-          if (data.length > 0) {
-            const text = new TextDecoder().decode(new Uint8Array(data));
-            setLines((prev) => [...prev, { kind: "stdout", text }]);
-          }
-        } catch {
-          // ignore poll errors (e.g. PTY not yet spawned)
-        }
-      }, 100);
-      return () => {
-        if (ptyPollRef.current) clearInterval(ptyPollRef.current);
-      };
-    }
-  }, [ptyHandle, isRemote]);
-
-  const promptLabel = isRemote
-    ? remoteConn
-      ? `PS ${remoteConn.username}@${remoteConn.host}:${cwd || "~"}>`
-      : "PS [remote]>"
-    : `PS ${cwd || "…"}>`;
-
-  const submit = useCallback(async () => {
-    const cmd = input.trim();
-    if (!cmd || running) return;
-
-    if (isRemote && !connectionId) {
-      setLines((prev) => [...prev, { kind: "system", text: "请先在设置中配置 SSH 连接" }]);
-      return;
-    }
-
-    setInput("");
-    setLines((prev) => [...prev, { kind: "prompt", text: `${promptLabel} ${cmd}` }]);
-    setRunning(true);
-
-    try {
-      if (isRemote && connectionId) {
-        // Use PTY streaming for interactive remote commands
-        const handle = await ensurePty();
-        if (handle) {
-          await sshPtyWrite(handle.connection_id, cmd + "\n");
-        } else {
-          // Fallback to one-shot exec
-          const res = await sshExec(connectionId, cmd);
-          setLines((prev) => {
-            const next = [...prev];
-            if (res.stdout) next.push({ kind: "stdout", text: res.stdout.replace(/\n$/, "") });
-            if (res.stderr) next.push({ kind: "stderr", text: res.stderr.replace(/\n$/, "") });
-            return next;
-          });
-        }
-      } else {
-        const res = await runTerminal(cmd);
-        setLines((prev) => {
-          const next = [...prev];
-          if (res.stdout) next.push({ kind: "stdout", text: res.stdout.replace(/\n$/, "") });
-          if (res.stderr) next.push({ kind: "stderr", text: res.stderr.replace(/\n$/, "") });
-          return next;
-        });
-        if (res.cwd) setCwd(res.cwd);
+  const closeSession = useCallback(async () => {
+    stopPolling();
+    const current = sessionRef.current;
+    sessionRef.current = null;
+    if (current?.kind === "local") {
+      try {
+        await localPtyClose(current.handle.pty_id);
+      } catch {
+        // ignore best-effort cleanup errors
       }
-    } catch (e) {
-      setLines((prev) => [...prev, { kind: "stderr", text: String(e) }]);
-    } finally {
-      setRunning(false);
-      inputRef.current?.focus();
     }
-  }, [input, running, isRemote, connectionId, promptLabel, ensurePty]);
+  }, [stopPolling]);
+
+  useEffect(() => {
+    if (!containerRef.current || termRef.current) return;
+
+    const term = new XTerm({
+      cursorBlink: true,
+      cursorStyle: "bar",
+      cursorWidth: 1,
+      fontFamily: '"Cascadia Mono", "Consolas", "Courier New", monospace',
+      fontSize: 13,
+      lineHeight: 1.35,
+      theme: {
+        background: "#ffffff",
+        foreground: "#111827",
+        cursor: "#111827",
+        selectionBackground: "rgba(59, 130, 246, 0.16)",
+        black: "#111827",
+        red: "#dc2626",
+        green: "#059669",
+        yellow: "#b45309",
+        blue: "#2563eb",
+        magenta: "#7c3aed",
+        cyan: "#0891b2",
+        white: "#e5e7eb",
+        brightBlack: "#6b7280",
+        brightRed: "#ef4444",
+        brightGreen: "#10b981",
+        brightYellow: "#f59e0b",
+        brightBlue: "#3b82f6",
+        brightMagenta: "#8b5cf6",
+        brightCyan: "#06b6d4",
+        brightWhite: "#f9fafb",
+      },
+      scrollback: 3000,
+      convertEol: false,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(containerRef.current);
+    fit.fit();
+    term.focus();
+
+    const disposable = term.onData((data) => {
+      const current = sessionRef.current;
+      if (!current) return;
+      if (current.kind === "local") {
+        void localPtyWrite(current.handle.pty_id, data);
+      } else {
+        void sshPtyWrite(current.handle.connection_id, data);
+      }
+    });
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => {
+        if (!termRef.current || !fitRef.current) return;
+        fitRef.current.fit();
+        const current = sessionRef.current;
+        if (!current) return;
+        const cols = Math.max(termRef.current.cols, 2);
+        const rows = Math.max(termRef.current.rows, 2);
+        if (current.kind === "local") {
+          void localPtyResize(current.handle.pty_id, cols, rows);
+        } else {
+          void sshPtyResize(current.handle.connection_id, cols, rows);
+        }
+      });
+      observer.observe(containerRef.current);
+      resizeObserverRef.current = observer;
+    }
+
+    termRef.current = term;
+    fitRef.current = fit;
+
+    return () => {
+      disposable.dispose();
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
+      stopPolling();
+      void closeSession();
+      term.dispose();
+      termRef.current = null;
+      fitRef.current = null;
+    };
+  }, [closeSession, stopPolling]);
+
+  useEffect(() => {
+    if (!termRef.current || !fitRef.current) return;
+    if (isRemote && !connectionId) return;
+
+    let cancelled = false;
+
+    const start = async () => {
+      setBooting(true);
+      await closeSession();
+      if (cancelled || !termRef.current || !fitRef.current) return;
+
+      const term = termRef.current;
+      const fit = fitRef.current;
+      term.reset();
+      fit.fit();
+
+      const cols = Math.max(term.cols, 80);
+      const rows = Math.max(term.rows, 24);
+
+      try {
+        if (isRemote && connectionId) {
+          const handle = await sshPtySpawn(connectionId, cols, rows);
+          if (cancelled) return;
+          sessionRef.current = { kind: "remote", handle };
+        } else {
+          const handle = await localPtySpawn(cols, rows);
+          if (cancelled) {
+            await localPtyClose(handle.pty_id).catch(() => {});
+            return;
+          }
+          sessionRef.current = { kind: "local", handle };
+        }
+
+        stopPolling();
+        pollRef.current = window.setInterval(async () => {
+          if (readingRef.current || !sessionRef.current || !termRef.current) return;
+          readingRef.current = true;
+          try {
+            const current = sessionRef.current;
+            const payload =
+              current.kind === "local"
+                ? await localPtyRead(current.handle.pty_id)
+                : await sshPtyRead(current.handle.connection_id);
+            if (payload.length > 0) {
+              termRef.current.write(decoderRef.current.decode(new Uint8Array(payload)));
+            }
+          } catch {
+            // ignore transient poll/read errors
+          } finally {
+            readingRef.current = false;
+          }
+        }, 30);
+      } catch (error) {
+        term.writeln("");
+        term.writeln(`Terminal failed: ${formatError(error)}`);
+      } finally {
+        if (!cancelled) {
+          setBooting(false);
+          term.focus();
+        }
+      }
+    };
+
+    void start();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [closeSession, connectionId, isRemote, stopPolling]);
 
   if (isRemote && !connectionId) {
     return (
-      <div className="w-full h-full flex flex-col items-center justify-center bg-white text-text-secondary">
-        <FontAwesomeIcon icon={["fas", "server"]} className="text-4xl mb-4 text-gray-300" />
-        <div className="text-[13px] mb-2">请先在设置中配置 SSH 连接</div>
-        <div className="text-[12px] text-gray-400">切换到远程模式后，需要选择一个已配置的 SSH 连接</div>
+      <div className="flex h-full w-full flex-col items-center justify-center bg-white text-text-secondary">
+        <FontAwesomeIcon icon={["fas", "server"]} className="mb-4 text-4xl text-gray-300" />
+        <div className="mb-2 text-[13px]">请先选择一个 SSH 连接</div>
+        <div className="text-[12px] text-gray-400">切换到远程模式后，需要先绑定一条可用的远程连接。</div>
       </div>
     );
   }
 
   return (
-    <div className="w-full h-full flex flex-col bg-white">
-      <div className="flex-1 flex overflow-hidden">
-        <div
-          ref={scrollRef}
-          className="flex-1 overflow-y-auto bg-white p-4 font-mono text-[13px] leading-relaxed text-text-base"
-          onClick={() => inputRef.current?.focus()}
-        >
-          <div className="mb-4">
-            {isRemote
-              ? `SSH: ${remoteConn?.username}@${remoteConn?.host}:${remoteConn?.port || 22}`
-              : "Windows PowerShell"}
-            <br />
-            {t("plugins.terminal.copyright")}
-          </div>
-
-          {lines.map((line, i) => (
-            <div
-              key={i}
-              className={`whitespace-pre-wrap ${
-                line.kind === "stderr"
-                  ? "text-red-500"
-                  : line.kind === "prompt"
-                  ? "text-text-base"
-                  : line.kind === "system"
-                  ? "text-yellow-600"
-                  : "text-text-secondary"
-              }`}
-            >
-              {line.text}
-            </div>
-          ))}
-
-          <div className="flex items-center">
-            <span className="mr-2 flex-shrink-0">{promptLabel}</span>
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              autoFocus
-              disabled={running}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submit();
-              }}
-              className="flex-1 bg-transparent outline-none border-none font-mono text-[13px] text-text-base"
-            />
-            {running && <span className="ml-2 text-text-secondary">…</span>}
-          </div>
+    <div className="relative h-full w-full overflow-hidden bg-white">
+      {booting && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80 text-[12px] text-text-secondary">
+          正在启动终端...
         </div>
-
-        <div className="w-4 border-l border-border-theme flex flex-col items-center py-2 text-text-secondary flex-shrink-0 bg-gray-50">
-          <FontAwesomeIcon icon={["fas", "caret-up"]} className="text-[10px] cursor-pointer" />
-          <div className="flex-1 w-full flex justify-center py-1">
-            <div className="w-1.5 h-10 bg-gray-300 rounded-full"></div>
-          </div>
-          <FontAwesomeIcon icon={["fas", "caret-down"]} className="text-[10px] cursor-pointer" />
+      )}
+      <div ref={containerRef} className="terminal-surface h-full w-full px-3 py-2" />
+      {isRemote && remoteConn && (
+        <div className="absolute right-3 top-2 rounded-full bg-white/90 px-2 py-0.5 text-[11px] text-text-secondary shadow-sm">
+          {remoteConn.username}@{remoteConn.host}
         </div>
-      </div>
+      )}
     </div>
   );
 }

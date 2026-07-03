@@ -154,6 +154,40 @@ impl VerificationPolicy {
     }
 }
 
+/// Which shell the desktop-integrated terminal should launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalShell {
+    #[default]
+    PowerShell,
+    CommandPrompt,
+    GitBash,
+    Wsl,
+}
+
+impl TerminalShell {
+    /// Stable wire label.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            TerminalShell::PowerShell => "powershell",
+            TerminalShell::CommandPrompt => "command_prompt",
+            TerminalShell::GitBash => "git_bash",
+            TerminalShell::Wsl => "wsl",
+        }
+    }
+
+    /// Parse from a wire string.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "powershell" => Some(Self::PowerShell),
+            "command_prompt" | "commandprompt" | "cmd" => Some(Self::CommandPrompt),
+            "git_bash" | "gitbash" => Some(Self::GitBash),
+            "wsl" => Some(Self::Wsl),
+            _ => None,
+        }
+    }
+}
+
 /// Preferred backend for the `web_search` tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -237,6 +271,9 @@ pub struct AppSettings {
     pub approval_policy: ApprovalPolicy,
     /// Maximum filesystem boundary for tool execution.
     pub sandbox_mode: SandboxMode,
+    /// Preferred shell for the desktop integrated terminal.
+    #[serde(default)]
+    pub terminal_shell: TerminalShell,
     /// Declarative permission rules (allow/ask/deny patterns).
     #[serde(default)]
     pub permission_rules: PermissionRules,
@@ -327,6 +364,8 @@ pub struct SettingsView {
     pub approval_policy: String,
     /// Current sandbox mode label (read_only / workspace_write / full_access).
     pub sandbox_mode: String,
+    /// Current preferred integrated-terminal shell.
+    pub terminal_shell: String,
     /// Current DeepSeek Thinking Mode depth (simple / medium / deep).
     pub thinking_depth: String,
     /// Current web-search settings.
@@ -433,6 +472,10 @@ impl SettingsService {
                 .map(|s| s.approval_policy)
                 .unwrap_or_default(),
             sandbox_mode: prior.as_ref().map(|s| s.sandbox_mode).unwrap_or_default(),
+            terminal_shell: prior
+                .as_ref()
+                .map(|s| s.terminal_shell)
+                .unwrap_or_default(),
             permission_rules: prior
                 .as_ref()
                 .map(|s| s.permission_rules.clone())
@@ -570,6 +613,11 @@ impl SettingsService {
     /// The current sandbox mode.
     pub fn sandbox_mode(&self) -> Result<SandboxMode> {
         Ok(self.load()?.map(|s| s.sandbox_mode).unwrap_or_default())
+    }
+
+    /// The preferred integrated-terminal shell.
+    pub fn terminal_shell(&self) -> Result<TerminalShell> {
+        Ok(self.load()?.map(|s| s.terminal_shell).unwrap_or_default())
     }
 
     /// The current DeepSeek Thinking Mode depth.
@@ -772,6 +820,17 @@ impl SettingsService {
         self.view_with_key(key.as_deref(), &settings)
     }
 
+    /// Set the preferred integrated-terminal shell, persisting it.
+    pub fn set_terminal_shell(&self, shell: TerminalShell) -> Result<SettingsView> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.terminal_shell = shell;
+        self.save(&settings)?;
+        let key = self.secrets.get(API_KEY_NAME)?;
+        self.view_with_key(key.as_deref(), &settings)
+    }
+
     /// The current declarative permission rules (empty when uninitialized).
     pub fn permission_rules(&self) -> Result<PermissionRules> {
         Ok(self.load()?.map(|s| s.permission_rules).unwrap_or_default())
@@ -845,6 +904,7 @@ impl SettingsService {
                 && !settings.catalog.available.is_empty(),
             approval_policy: settings.approval_policy.label().to_string(),
             sandbox_mode: settings.sandbox_mode.label().to_string(),
+            terminal_shell: settings.terminal_shell.label().to_string(),
             thinking_depth: settings.thinking_depth.label().to_string(),
             web_search: settings.web_search.clone(),
         })
@@ -1289,6 +1349,7 @@ mod tests {
             discovered_at: 0,
             approval_policy: ApprovalPolicy::AlwaysAsk,
             sandbox_mode: SandboxMode::WorkspaceWrite,
+            terminal_shell: TerminalShell::default(),
             thinking_depth: ThinkingDepth::Medium,
             permission_rules: PermissionRules::default(),
             hooks_json: String::new(),

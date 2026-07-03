@@ -177,6 +177,7 @@ mod tests {
             discovered_at: 0,
             approval_policy: crate::settings::ApprovalPolicy::default(),
             sandbox_mode: crate::settings::SandboxMode::default(),
+            terminal_shell: crate::settings::TerminalShell::default(),
             permission_rules: deepagent_hooks::PermissionRules::default(),
             hooks_json: String::new(),
             thinking_depth: deepagent_models::ThinkingDepth::default(),

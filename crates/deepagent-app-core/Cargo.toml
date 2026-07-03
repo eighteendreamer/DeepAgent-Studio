@@ -59,6 +59,7 @@ whisper-rs = { workspace = true, optional = true }
 # never searches a stale year). Already in the workspace lock; offline-safe.
 time = { version = "0.3", default-features = false, features = ["std", "local-offset"] }
 keyring = { version = "3", optional = true }
+portable-pty = "0.8"
 
 # Platform-native keychain backends (only the relevant one per OS). keyring v3
 # ships no backend by default, so we must enable one explicitly or `set` becomes

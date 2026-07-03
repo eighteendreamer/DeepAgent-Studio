@@ -277,6 +277,7 @@ export interface SettingsView {
   configured: boolean;
   approval_policy: string;
   sandbox_mode: "read_only" | "workspace_write" | "full_access";
+  terminal_shell: "powershell" | "command_prompt" | "git_bash" | "wsl";
   thinking_depth: "simple" | "medium" | "deep";
   web_search: WebSearchSettings;
 }
