@@ -92,11 +92,11 @@ export function GitDiffViewer({ projectPath, file, onRefresh }: Props) {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white">
-      <div className="flex h-10 flex-shrink-0 items-center justify-between border-b border-border-theme px-3">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-white">
+      <div className="flex flex-shrink-0 items-start justify-between gap-3 border-b border-border-theme px-3 py-2">
         <div className="flex min-w-0 items-center text-[13px] text-text-base">
           <FontAwesomeIcon icon={["far", "file-lines"]} className="mr-2 text-text-secondary" />
-          <span className="truncate font-medium">{file.path}</span>
+          <span className="break-all font-medium leading-5">{file.path}</span>
           {diff?.truncated && (
             <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
               truncated
@@ -112,7 +112,7 @@ export function GitDiffViewer({ projectPath, file, onRefresh }: Props) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto bg-[#fbfbfb]">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-[#fbfbfb] pb-4">
         {loading ? (
           <div className="flex h-full items-center justify-center text-[13px] text-text-secondary">
             Loading diff...
@@ -170,11 +170,11 @@ function DiffModeToggle({ mode, onChange }: { mode: DiffMode; onChange: (mode: D
 
 export function DiffText({ text }: { text: string }) {
   return (
-    <pre className="min-w-full text-[12px] leading-5">
+    <div className="w-max min-w-full text-[12px] leading-5">
       {text.split("\n").map((line, index) => (
         <DiffLine key={`${index}-${line.slice(0, 12)}`} line={line} lineNo={index + 1} />
       ))}
-    </pre>
+    </div>
   );
 }
 
@@ -192,7 +192,7 @@ function InteractiveDiffText({
   const parts = useMemo(() => parseUnifiedPatch(text), [text]);
   if (parts.hunks.length === 0) return <DiffText text={text} />;
   return (
-    <div className="min-w-full text-[12px] leading-5">
+    <div className="w-max min-w-full text-[12px] leading-5">
       {parts.headerLines.map((line, index) => (
         <DiffLine key={`header-${index}-${line.slice(0, 12)}`} line={line} lineNo={index + 1} />
       ))}
@@ -201,11 +201,11 @@ function InteractiveDiffText({
         const busy = busyHunk === index;
         return (
           <div key={`${index}:${hunk.header}`}>
-            <div className="grid grid-cols-[52px_minmax(0,1fr)_auto] bg-blue-50 text-blue-700">
+            <div className="grid w-max min-w-full grid-cols-[52px_max-content_auto] bg-blue-50 text-blue-700">
               <span className="select-none border-r border-black/5 pr-2 text-right text-[11px] text-text-secondary">
                 {parts.headerLines.length + index + 1}
               </span>
-              <code className="px-3 font-mono">{hunk.header}</code>
+              <code className="px-3 pr-6 font-mono">{hunk.header}</code>
               <button
                 type="button"
                 className="mr-2 self-center rounded border border-blue-200 bg-white px-2 py-0.5 text-[11px] font-medium text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
@@ -238,11 +238,11 @@ function DiffLine({ line, lineNo }: { line: string; lineNo: number }) {
   const cls = lineClass(kind);
 
   return (
-    <div className={`grid grid-cols-[52px_minmax(0,1fr)] whitespace-pre ${cls}`}>
+    <div className={`grid w-max min-w-full grid-cols-[52px_max-content] whitespace-pre ${cls}`}>
       <span className="select-none border-r border-black/5 pr-2 text-right text-[11px] text-text-secondary">
         {lineNo}
       </span>
-      <code className="px-3 font-mono">{line || " "}</code>
+      <code className="px-3 pr-6 font-mono">{line || " "}</code>
     </div>
   );
 }
@@ -250,8 +250,11 @@ function DiffLine({ line, lineNo }: { line: string; lineNo: number }) {
 function SplitDiffText({ text }: { text: string }) {
   const rows = useMemo(() => parseSplitDiff(text), [text]);
   return (
-    <div className="min-w-[920px] text-[12px] leading-5">
-      <div className="sticky top-0 z-10 grid grid-cols-[64px_minmax(0,1fr)_64px_minmax(0,1fr)] border-b border-border-theme bg-gray-100 text-[11px] font-medium text-text-secondary">
+    <div className="w-max min-w-full text-[12px] leading-5">
+      <div
+        className="sticky top-0 z-10 grid w-max min-w-full border-b border-border-theme bg-gray-100 text-[11px] font-medium text-text-secondary"
+        style={{ gridTemplateColumns: "64px max-content 64px max-content" }}
+      >
         <div className="border-r border-border-theme px-2 py-1 text-right">Old</div>
         <div className="border-r border-border-theme px-3 py-1">Before</div>
         <div className="border-r border-border-theme px-2 py-1 text-right">New</div>
@@ -261,10 +264,11 @@ function SplitDiffText({ text }: { text: string }) {
         isFullWidthRow(row) ? (
           <div
             key={`${index}:${row.text}`}
-            className={`grid grid-cols-[64px_minmax(0,1fr)] ${lineClass(row.kind)}`}
+            className={`grid w-max min-w-full ${lineClass(row.kind)}`}
+            style={{ gridTemplateColumns: "64px max-content" }}
           >
             <div className="border-r border-black/5" />
-            <code className="px-3 font-mono">{row.text || " "}</code>
+            <code className="px-3 pr-6 font-mono">{row.text || " "}</code>
           </div>
         ) : (
           <SplitDiffRow key={`${index}:${row.oldLine ?? ""}:${row.newLine ?? ""}`} row={row} />
@@ -278,15 +282,15 @@ function SplitDiffRow({ row }: { row: Extract<SplitRow, { kind: "context" | "add
   const oldCls = row.kind === "remove" ? "bg-red-50 text-red-800" : "text-text-base";
   const newCls = row.kind === "add" ? "bg-green-50 text-green-800" : "text-text-base";
   return (
-    <div className="grid grid-cols-[64px_minmax(0,1fr)_64px_minmax(0,1fr)] whitespace-pre">
+    <div className="grid w-max min-w-full whitespace-pre" style={{ gridTemplateColumns: "64px max-content 64px max-content" }}>
       <div className={`${oldCls} select-none border-r border-black/5 px-2 text-right text-[11px] text-text-secondary`}>
         {row.oldLine ?? ""}
       </div>
-      <code className={`${oldCls} border-r border-black/5 px-3 font-mono`}>{row.oldText || " "}</code>
+      <code className={`${oldCls} border-r border-black/5 px-3 pr-6 font-mono`}>{row.oldText || " "}</code>
       <div className={`${newCls} select-none border-r border-black/5 px-2 text-right text-[11px] text-text-secondary`}>
         {row.newLine ?? ""}
       </div>
-      <code className={`${newCls} px-3 font-mono`}>{row.newText || " "}</code>
+      <code className={`${newCls} px-3 pr-6 font-mono`}>{row.newText || " "}</code>
     </div>
   );
 }

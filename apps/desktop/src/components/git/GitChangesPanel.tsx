@@ -133,9 +133,9 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
         )}
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[280px_minmax(0,1fr)]">
-        <div className="flex min-h-0 flex-col border-r border-border-theme bg-gray-50/60">
-          <div className="min-h-0 flex-1 overflow-y-auto py-2">
+      <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)]">
+        <div className="flex min-h-0 min-w-0 flex-col border-r border-border-theme bg-gray-50/60">
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto py-2">
             {loading ? (
               <div className="px-4 py-3 text-[13px] text-text-secondary">正在读取 Git 变更...</div>
             ) : files.length === 0 ? (
@@ -190,7 +190,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
               value={commitMessage}
               onChange={(event) => setCommitMessage(event.target.value)}
               placeholder="Commit message"
-              className="h-20 w-full resize-none rounded-lg border border-border-theme bg-white px-3 py-2 text-[12px] text-text-base outline-none focus:border-primary/60"
+              className="h-28 w-full resize-none rounded-lg border border-border-theme bg-white px-3 py-2 text-[12px] text-text-base outline-none focus:border-primary/60"
             />
             {operationError && (
               <div className="mt-2 rounded-md bg-red-50 px-2 py-1.5 text-[11px] text-red-600">
@@ -208,7 +208,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
           </div>
         </div>
 
-        <div className="min-h-0">
+        <div className="min-h-0 min-w-0 overflow-hidden">
           {selected ? (
             <GitDiffViewer projectPath={projectPath} file={selected} onRefresh={onRefresh} />
           ) : (

@@ -123,7 +123,7 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
   };
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-[minmax(360px,42%)_minmax(0,1fr)] bg-white">
+    <div className="grid h-full min-h-0 grid-cols-[minmax(340px,38%)_minmax(0,1fr)] bg-white">
       <div className="flex min-h-0 flex-col border-r border-border-theme">
         <div className="flex h-10 flex-shrink-0 items-center justify-between border-b border-border-theme px-3">
           <div className="flex items-center text-[13px] font-medium text-text-base">
