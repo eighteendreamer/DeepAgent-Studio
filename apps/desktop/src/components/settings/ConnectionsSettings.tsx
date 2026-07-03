@@ -1,6 +1,7 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { message } from "../message";
 
 import {
   pickSshIdentityFile,
@@ -145,6 +146,19 @@ export function ConnectionsSettings() {
     try {
       const result = await sshTestConnection(id);
       setTestResult((prev) => ({ ...prev, [id]: result }));
+      if (result.ok) {
+        message.success(
+          `${t("settings.connections.testOk")}${
+            typeof result.latency_ms === "number" ? ` (${result.latency_ms}ms)` : ""
+          }`,
+        );
+      } else {
+        message.error(
+          `${t("settings.connections.testFailed")}${
+            result.error ? `: ${result.error}` : ""
+          }`,
+        );
+      }
       setConnections((prev) =>
         prev.map((conn) =>
           conn.id === id
@@ -158,22 +172,27 @@ export function ConnectionsSettings() {
         ),
       );
     } catch (error) {
-      const message =
+      const errorMessage =
         error instanceof Error
           ? error.message
           : t("settings.connections.testFailed");
 
       setTestResult((prev) => ({
         ...prev,
-        [id]: { ok: false, error: message },
+        [id]: { ok: false, error: errorMessage },
       }));
+      message.error(
+        `${t("settings.connections.testFailed")}${
+          errorMessage ? `: ${errorMessage}` : ""
+        }`,
+      );
       setConnections((prev) =>
         prev.map((conn) =>
           conn.id === id
             ? {
                 ...conn,
                 status: "error",
-                last_error: message,
+                last_error: errorMessage,
               }
             : conn,
         ),
@@ -313,7 +332,7 @@ export function ConnectionsSettings() {
                   </div>
                 </div>
 
-                {testResult[conn.id] && (
+                {testResult[conn.id] && !testResult[conn.id].ok && (
                   <div
                     className={`mt-3 text-[12px] ${
                       testResult[conn.id].ok ? "text-green-600" : "text-red-500"
