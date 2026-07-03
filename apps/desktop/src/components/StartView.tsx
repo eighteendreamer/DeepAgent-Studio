@@ -215,6 +215,23 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
     }
   }, [envMode, selectedConnectionId, loadSshConnections]);
 
+  useEffect(() => {
+    const refreshConnections = () => {
+      if (document.visibilityState === "visible") {
+        loadSshConnections();
+      }
+    };
+
+    refreshConnections();
+    const intervalId = window.setInterval(refreshConnections, 15000);
+    document.addEventListener("visibilitychange", refreshConnections);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", refreshConnections);
+    };
+  }, [loadSshConnections]);
+
   const selectedConnection =
     sshConnections.find((conn) => conn.id === selectedConnectionId) ?? null;
   const envLabel =
@@ -447,7 +464,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                                       </div>
                                       <div className="flex items-center gap-2 pt-0.5">
                                         <span
-                                          className={`rounded-full px-2 py-0.5 text-[10px] ${
+                                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] ${
                                             conn.status === "connected"
                                               ? "bg-green-100 text-green-700"
                                               : conn.status === "connecting"
@@ -457,6 +474,17 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                                               : "bg-gray-100 text-text-secondary"
                                           }`}
                                         >
+                                          <span
+                                            className={`mr-1 h-1.5 w-1.5 rounded-full ${
+                                              conn.status === "connected"
+                                                ? "bg-green-500"
+                                                : conn.status === "connecting"
+                                                ? "bg-yellow-500"
+                                                : conn.status === "error"
+                                                ? "bg-red-500"
+                                                : "bg-gray-400"
+                                            }`}
+                                          />
                                           {conn.status === "connected"
                                             ? t("settings.connections.online")
                                             : conn.status === "connecting"

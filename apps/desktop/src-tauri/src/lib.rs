@@ -3006,6 +3006,17 @@ pub fn run() {
             // keepalive, reconnection). Configs persisted in app_data.
             // Configs are loaded lazily on first access.
             let ssh = Arc::new(SshService::new(dir.clone()));
+            {
+                let ssh_monitor = ssh.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        if let Err(err) = ssh_monitor.refresh_due_statuses().await {
+                            eprintln!("ssh background status refresh loop failed: {err}");
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    }
+                });
+            }
 
             // Chat: streamed runs; MCP servers connect + live-register tools, each
             // run is rooted at the active project's folder, the knowledge base

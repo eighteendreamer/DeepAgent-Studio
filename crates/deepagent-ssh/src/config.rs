@@ -28,6 +28,14 @@ pub struct SshConnectionConfig {
     pub extra_options: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control_path: Option<String>,
+    #[serde(default)]
+    pub cached_status: SshStatus,
+    #[serde(default)]
+    pub cached_last_error: Option<String>,
+    #[serde(default)]
+    pub cached_latency_ms: Option<u64>,
+    #[serde(default)]
+    pub cached_checked_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -73,6 +81,10 @@ impl SshConnectionConfig {
             password: None,
             extra_options: HashMap::new(),
             control_path: None,
+            cached_status: SshStatus::Disconnected,
+            cached_last_error: None,
+            cached_latency_ms: None,
+            cached_checked_at_ms: None,
         }
     }
 }

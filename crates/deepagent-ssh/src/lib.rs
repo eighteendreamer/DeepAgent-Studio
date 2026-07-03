@@ -178,8 +178,16 @@ impl SshService {
             password: None,
             extra_options: HashMap::new(),
             control_path: None,
+            cached_status: dto.status,
+            cached_last_error: dto.last_error.clone(),
+            cached_latency_ms: dto.latency_ms,
+            cached_checked_at_ms: None,
         };
         self.inner.test_connection(&cfg).await
+    }
+
+    pub async fn refresh_due_statuses(&self) -> SshResult<usize> {
+        self.inner.refresh_due_statuses().await
     }
 
     pub async fn remote_probe(
