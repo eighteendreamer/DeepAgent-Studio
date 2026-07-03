@@ -307,6 +307,47 @@ export async function exportTranscript(
   };
 }
 
+/** Persist exported transcript content to a chosen file path. */
+export async function saveTranscriptFile(
+  transcript: Transcript,
+  suggestedName?: string,
+): Promise<string | null> {
+  const defaultName = suggestedName?.trim() || `session-${transcript.session_id}.${transcript.extension}`;
+
+  if (isTauri()) {
+    const dialog = await import("@tauri-apps/plugin-dialog");
+    const selected = await dialog.save({
+      title: transcript.format === "json" ? "Export Transcript as JSON" : "Export Transcript",
+      defaultPath: defaultName,
+      filters: [
+        {
+          name: transcript.format === "json" ? "JSON" : "Markdown",
+          extensions: [transcript.extension],
+        },
+      ],
+    });
+    if (typeof selected !== "string" || !selected.trim()) return null;
+    const invoke = getInvoke();
+    if (!invoke) throw new Error("desktop runtime is unavailable");
+    await invoke("save_text_file", {
+      path: selected,
+      content: transcript.content,
+    });
+    return selected;
+  }
+
+  const blob = new Blob([transcript.content], {
+    type: transcript.format === "json" ? "application/json" : "text/markdown",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = defaultName;
+  a.click();
+  URL.revokeObjectURL(url);
+  return defaultName;
+}
+
 /** Pending approvals are pushed by the runtime; mocked here for preview. */
 export async function getPendingApprovals(): Promise<ApprovalRequest[]> {
   return mockApprovals();

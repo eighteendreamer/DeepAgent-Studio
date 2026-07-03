@@ -28,6 +28,7 @@ import {
   forkSession,
   rewindSession,
   exportTranscript,
+  saveTranscriptFile,
   openSessionInNewWindow,
   renameSession,
 } from "./api";
@@ -35,6 +36,7 @@ import type { RuntimeEvent } from "./api";
 import type {
   ApprovalRequest,
   ChatMessage,
+  ConversationMessage,
   MessagePart,
   Project,
   SessionDetail,
@@ -62,6 +64,49 @@ interface SessionCompletedPayload {
   session_id: string | null;
   status: "completed" | "failed" | string;
   error?: string | null;
+}
+
+function mapConversationToChatMessages(conversation: ConversationMessage[]): ChatMessage[] {
+  return conversation.map((m) => ({
+    role: m.role,
+    content: m.content,
+    usage: m.usage
+      ? {
+          promptTokens: m.usage.prompt_tokens,
+          completionTokens: m.usage.completion_tokens,
+          totalTokens: m.usage.total_tokens,
+          cacheHitTokens: m.usage.prompt_cache_hit_tokens,
+          cacheMissTokens: m.usage.prompt_cache_miss_tokens,
+          costYuan: m.usage.cost_yuan,
+        }
+      : undefined,
+    runMs: m.usage?.duration_ms,
+    parts: m.parts.map((p): MessagePart => {
+      if (p.kind === "tool") {
+        return {
+          kind: "tool",
+          tool: {
+            call_id: p.call_id,
+            name: p.name,
+            args: p.args,
+            status:
+              p.status === "ok"
+                ? "ok"
+                : p.status === "error"
+                ? "error"
+                : p.status === "blocked"
+                ? "blocked"
+                : "running",
+            durationMs: p.duration_ms ?? undefined,
+            detail: p.detail ?? undefined,
+            output: p.output ?? undefined,
+          },
+        };
+      }
+      if (p.kind === "reasoning") return { kind: "reasoning", text: p.text };
+      return { kind: "text", text: p.text };
+    }),
+  }));
 }
 
 export function App() {
@@ -204,46 +249,7 @@ export function App() {
     getSessionConversation(activeId)
       .then((conv) => {
         if (cancelled) return;
-        const mapped: ChatMessage[] = conv.map((m) => ({
-          role: m.role,
-          content: m.content,
-          usage: m.usage
-            ? {
-                promptTokens: m.usage.prompt_tokens,
-                completionTokens: m.usage.completion_tokens,
-                totalTokens: m.usage.total_tokens,
-                cacheHitTokens: m.usage.prompt_cache_hit_tokens,
-                cacheMissTokens: m.usage.prompt_cache_miss_tokens,
-                costYuan: m.usage.cost_yuan,
-              }
-            : undefined,
-          runMs: m.usage?.duration_ms,
-          parts: m.parts.map((p): MessagePart => {
-            if (p.kind === "tool") {
-              return {
-                kind: "tool",
-                tool: {
-                  call_id: p.call_id,
-                  name: p.name,
-                  args: p.args,
-                  status:
-                    p.status === "ok"
-                      ? "ok"
-                      : p.status === "error"
-                      ? "error"
-                      : p.status === "blocked"
-                      ? "blocked"
-                      : "running",
-                  durationMs: p.duration_ms ?? undefined,
-                  detail: p.detail ?? undefined,
-                  output: p.output ?? undefined,
-                },
-              };
-            }
-            if (p.kind === "reasoning") return { kind: "reasoning", text: p.text };
-            return { kind: "text", text: p.text };
-          }),
-        }));
+        const mapped = mapConversationToChatMessages(conv);
         // Don't clobber a live transcript that appeared while loading.
         if (!liveTranscripts.current.get(activeId)) {
           setMessages(mapped);
@@ -327,12 +333,10 @@ export function App() {
 
   // Reload the sessions + projects lists (after a run/fork changes them).
   const refreshSessions = useCallback(() => {
-    listSessions()
-      .then(setSessions)
-      .catch(() => {});
-    listProjects()
-      .then(setProjects)
-      .catch(() => {});
+    return Promise.all([
+      listSessions().then(setSessions),
+      listProjects().then(setProjects),
+    ]).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1026,38 +1030,46 @@ export function App() {
   // Rewind the active session to a timeline sequence (destructive truncate),
   // then reload its detail.
   const onRewindSession = useCallback(
-    (toSeq: number) => {
+    async (toSeq: number) => {
       if (!activeId) return;
-      rewindSession(activeId, toSeq)
-        .then(() => {
-          setMessages([]);
-          return getSessionDetail(activeId);
-        })
-        .then(setDetail)
-        .catch(() => {});
+      try {
+        liveTranscripts.current.delete(activeId);
+        setMessages([]);
+        await rewindSession(activeId, toSeq);
+        const [nextDetail, nextConversation] = await Promise.all([
+          getSessionDetail(activeId),
+          getSessionConversation(activeId),
+          refreshSessions(),
+        ]);
+        setDetail(nextDetail);
+        setMessages(mapConversationToChatMessages(nextConversation));
+      } catch {
+        // keep current screen state if rewind fails
+      }
     },
-    [activeId]
+    [activeId, refreshSessions]
   );
 
   // Export the active session transcript and trigger a browser/Tauri download.
   const onExportSession = useCallback(
-    (format: "markdown" | "json") => {
+    async (format: "markdown" | "json") => {
       if (!activeId) return;
-      exportTranscript(activeId, format)
-        .then((t) => {
-          const blob = new Blob([t.content], {
-            type: format === "json" ? "application/json" : "text/markdown",
-          });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `session-${activeId}.${t.extension}`;
-          a.click();
-          URL.revokeObjectURL(url);
-        })
-        .catch(() => {});
+      try {
+        const transcript = await exportTranscript(activeId, format);
+        const rawTitle = activeSession?.title ?? detail?.summary.title ?? "";
+        const safeTitle = rawTitle
+          .trim()
+          .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
+          .slice(0, 80);
+        const suggestedName = `${safeTitle || `session-${activeId}`}.${transcript.extension}`;
+        const savedPath = await saveTranscriptFile(transcript, suggestedName);
+        if (!savedPath) return;
+        message.success(format === "json" ? "JSON 已导出" : "对话已导出");
+      } catch (err) {
+        message.error(`导出失败：${String(err)}`);
+      }
     },
-    [activeId]
+    [activeId, activeSession?.title, detail?.summary.title]
   );
 
   const onCopySession = useCallback(() => {
@@ -1084,21 +1096,23 @@ export function App() {
   }, [activeId]);
 
   const onRenameSession = useCallback(
-    (title: string) => {
+    async (title: string) => {
       if (!activeId) return;
-      renameSession(activeId, title)
-        .then((summary) => {
-          setSessions((prev) =>
-            prev.map((session) => (session.id === summary.id ? summary : session))
-          );
-          setDetail((prev) => (prev ? { ...prev, summary } : prev));
-          message.success("已重命名对话");
-        })
-        .catch((err) => {
-          message.error(`重命名失败：${String(err)}`);
-        });
+      try {
+        const summary = await renameSession(activeId, title);
+        setSessions((prev) =>
+          prev.map((session) => (session.id === summary.id ? summary : session))
+        );
+        setDetail((prev) => (prev ? { ...prev, summary } : prev));
+        await refreshSessions();
+        const latest = await getSessionDetail(activeId);
+        setDetail(latest);
+        message.success("已重命名对话");
+      } catch (err) {
+        message.error(`重命名失败：${String(err)}`);
+      }
     },
-    [activeId]
+    [activeId, refreshSessions]
   );
 
   const onOpenSessionInNewWindow = useCallback(() => {

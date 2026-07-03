@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capability for the main window: core APIs + native folder picker + window controls.",
-  "windows": ["main"],
+  "windows": ["main", "session-*"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",
@@ -10,12 +10,14 @@
     "core:window:allow-close",
     "core:window:allow-destroy",
     "core:webview:allow-create-webview",
+    "core:webview:allow-create-webview-window",
     "core:webview:allow-set-webview-position",
     "core:webview:allow-set-webview-size",
     "core:webview:allow-webview-close",
     "core:webview:allow-webview-hide",
     "core:webview:allow-webview-show",
     "dialog:allow-open",
+    "dialog:allow-save",
     "updater:default"
   ]
 }

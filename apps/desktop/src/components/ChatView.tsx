@@ -6,6 +6,7 @@ import type { ChatMessage, MessagePart, ToolCall, TokenUsage, TimelineEntry, App
 import { Composer } from "./Composer";
 import { ToolCallCard } from "./ToolCallCard";
 import { ApprovalDialog } from "./ApprovalDialog";
+import { RenameSessionDialog } from "./RenameSessionDialog";
 import { MarkdownText } from "./MarkdownText";
 import { EnvironmentInfoPanel } from "./EnvironmentInfoPanel";
 import type { OutputItem } from "./EnvironmentInfoPanel";
@@ -46,7 +47,7 @@ interface Props {
   /** Copy the current session transcript. */
   onCopy?: () => void;
   /** Rename the current session. */
-  onRename?: (title: string) => void;
+  onRename?: (title: string) => void | Promise<void>;
   /** Open the current session in a new window. */
   onOpenInNewWindow?: () => void;
   /** Pin or unpin the current session. */
@@ -635,10 +636,13 @@ export function ChatView({
     refresh: refreshGitStatus,
   } = useGitStatus(activeProjectPath);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
+  const chatMenuRef = useRef<HTMLDivElement>(null);
   const [isProjectMapMenuOpen, setIsProjectMapMenuOpen] = useState(false);
   const projectMapMenuRef = useRef<HTMLDivElement>(null);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
   const [isRewindOpen, setIsRewindOpen] = useState(false);
+  const rewindCloseTimerRef = useRef<number | null>(null);
   const [bottomTabs, setBottomTabs] = useState<Tab[]>([]);
   const [activeBottomTabId, setActiveBottomTabId] = useState<string>("new");
 
@@ -901,6 +905,28 @@ export function ChatView({
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [isProjectMapMenuOpen]);
 
+  useEffect(() => {
+    if (!isMenuOpen) {
+      setIsRewindOpen(false);
+      return;
+    }
+    const onMouseDown = (event: MouseEvent) => {
+      if (chatMenuRef.current?.contains(event.target as Node)) return;
+      setIsMenuOpen(false);
+      setIsRewindOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [isMenuOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (rewindCloseTimerRef.current !== null) {
+        window.clearTimeout(rewindCloseTimerRef.current);
+      }
+    };
+  }, []);
+
   const refreshProjectMap = async () => {
     if (!activeProjectPath) return;
     setMapStatus((current) => current ? { ...current, status: "updating" } : current);
@@ -966,10 +992,7 @@ export function ChatView({
   };
 
   const handleRename = () => {
-    const nextTitle = window.prompt(t("chatView.renameChat"), title || t("chatView.chat"));
-    const trimmed = nextTitle?.trim();
-    if (!trimmed) return;
-    onRename?.(trimmed);
+    setIsRenameDialogOpen(true);
     setIsMenuOpen(false);
   };
 
@@ -985,17 +1008,71 @@ export function ChatView({
     setIsMenuOpen(false);
   };
 
+  const openRewindMenu = () => {
+    if (rewindCloseTimerRef.current !== null) {
+      window.clearTimeout(rewindCloseTimerRef.current);
+      rewindCloseTimerRef.current = null;
+    }
+    setIsRewindOpen(true);
+  };
+
+  const scheduleCloseRewindMenu = () => {
+    if (rewindCloseTimerRef.current !== null) {
+      window.clearTimeout(rewindCloseTimerRef.current);
+    }
+    rewindCloseTimerRef.current = window.setTimeout(() => {
+      setIsRewindOpen(false);
+      rewindCloseTimerRef.current = null;
+    }, 180);
+  };
+
+  const isUserRewindEntry = useCallback(
+    (entry: TimelineEntry) =>
+      entry.kind === "message" &&
+      entry.label.toLowerCase().includes("user") &&
+      typeof entry.detail === "string" &&
+      entry.detail.trim().length > 0,
+    [],
+  );
+
+  const rewindEntries = useMemo(
+    () => timeline.filter((entry) => isUserRewindEntry(entry)),
+    [isUserRewindEntry, timeline],
+  );
+
+  const formatRewindTimestamp = useCallback((timestamp: number) => {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return "";
+    return new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(date);
+  }, []);
+
   return (
     <div className="w-full h-full flex flex-col relative">
+      <RenameSessionDialog
+        open={isRenameDialogOpen}
+        initialValue={title || t("chatView.chat")}
+        onClose={() => setIsRenameDialogOpen(false)}
+        onConfirm={async (nextTitle) => {
+          await onRename?.(nextTitle);
+          setIsRenameDialogOpen(false);
+        }}
+      />
       {/* Top half: conversation flow & overlay */}
       <div className="flex-1 flex flex-col h-full w-full relative overflow-hidden">
         <header className="h-14 flex items-center px-6 justify-between flex-shrink-0 w-full">
-          <div className="relative">
+          <div className="relative" ref={chatMenuRef}>
             <div 
               className="flex items-center text-sm font-medium text-text-base cursor-pointer px-2 py-1 -ml-2 rounded hover:bg-gray-100 transition-colors"
               onClick={() => setIsMenuOpen(!isMenuOpen)}
             >
-              {t("chatView.chat")}
+              {title?.trim() || t("chatView.chat")}
               <FontAwesomeIcon
                 icon={["fas", "ellipsis"]}
                 className="ml-2 text-text-secondary"
@@ -1086,8 +1163,13 @@ export function ChatView({
                     <span>{t("chatView.branch")}</span>
                   </div>
                 </div>
-                <div className="relative">
+                <div
+                  className="relative"
+                  onMouseEnter={openRewindMenu}
+                  onMouseLeave={scheduleCloseRewindMenu}
+                >
                   <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                    onMouseEnter={openRewindMenu}
                     onClick={() => setIsRewindOpen((v) => !v)}
                   >
                     <div className="flex items-center">
@@ -1097,14 +1179,18 @@ export function ChatView({
                     <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-gray-400" />
                   </div>
                   {isRewindOpen && (
-                    <div className="absolute left-full top-0 ml-1 w-64 max-h-72 overflow-y-auto bg-white border border-border-theme rounded-xl shadow-lg py-1.5 z-50 custom-scrollbar">
-                      {timeline.length === 0 && (
+                    <div
+                      className="absolute left-full top-0 ml-1 w-72 max-h-72 overflow-y-auto bg-white border border-border-theme rounded-xl shadow-lg py-1.5 z-50 custom-scrollbar"
+                      onMouseEnter={openRewindMenu}
+                      onMouseLeave={scheduleCloseRewindMenu}
+                    >
+                      {rewindEntries.length === 0 && (
                         <div className="px-4 py-2 text-[12px] text-text-secondary">{t("chatView.noRewindPoints")}</div>
                       )}
-                      {timeline.map((entry) => (
+                      {rewindEntries.map((entry) => (
                         <div
                           key={entry.sequence}
-                          className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer text-[12px] text-text-base"
+                          className="px-4 py-2.5 hover:bg-gray-100 cursor-pointer text-[12px] text-text-base"
                           onClick={() => {
                             onRewind?.(entry.sequence);
                             setIsRewindOpen(false);
@@ -1112,8 +1198,17 @@ export function ChatView({
                           }}
                           title={entry.detail ?? undefined}
                         >
-                          <span className="text-gray-400 mr-2 tabular-nums">#{entry.sequence}</span>
-                          <span className="truncate">{entry.label}</span>
+                          <div className="flex items-start gap-2">
+                            <span className="text-gray-400 tabular-nums shrink-0">#{entry.sequence}</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-[13px] text-text-base">
+                                {entry.detail}
+                              </div>
+                              <div className="mt-0.5 text-[11px] text-text-secondary">
+                                {formatRewindTimestamp(entry.timestamp)}
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       ))}
                     </div>
