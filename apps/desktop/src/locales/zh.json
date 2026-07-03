@@ -827,6 +827,11 @@
     "aheadCount": "领先 {{count}}",
     "behindCount": "落后 {{count}}",
     "worktreeAt": "工作树：{{path}}",
+    "createBranchDialog": {
+      "title": "创建分支",
+      "cancel": "取消",
+      "placeholder": "请输入分支名称"
+    },
     "pushPanel": {
       "title": "上传",
       "refresh": "刷新",

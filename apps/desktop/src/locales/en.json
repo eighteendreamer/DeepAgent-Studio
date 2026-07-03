@@ -827,6 +827,11 @@
     "aheadCount": "ahead {{count}}",
     "behindCount": "behind {{count}}",
     "worktreeAt": "Worktree: {{path}}",
+    "createBranchDialog": {
+      "title": "Create branch",
+      "cancel": "Cancel",
+      "placeholder": "Enter branch name"
+    },
     "pushPanel": {
       "title": "Push",
       "refresh": "Refresh",

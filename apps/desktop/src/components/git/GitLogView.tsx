@@ -5,6 +5,7 @@ import { gitCommitDiff, gitCreateBranch, gitLog } from "../../api";
 import type { GitCommitFile, GitDiff, GitLogEntry } from "../../types";
 import { DiffText } from "./GitDiffViewer";
 import { getGitUiSettings } from "./gitSettings";
+import { GitCreateBranchDialog } from "./GitCreateBranchDialog";
 
 interface Props {
   projectPath: string;
@@ -22,6 +23,9 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [operation, setOperation] = useState<string | null>(null);
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
+  const [createBranchOpen, setCreateBranchOpen] = useState(false);
+  const [createBranchError, setCreateBranchError] = useState<string | null>(null);
+  const [suggestedBranchName, setSuggestedBranchName] = useState("");
 
   const loadLog = useCallback(
     (preserveSelection: boolean) => {
@@ -106,22 +110,29 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
     };
   }, [projectPath, selectedCommit, selectedFile]);
 
-  const createBranchFromCommit = async () => {
+  const openCreateBranchDialog = () => {
+    if (!selectedCommit || operation) return;
+    const settings = getGitUiSettings();
+    setOperationMessage(null);
+    setCreateBranchError(null);
+    setSuggestedBranchName(`${settings.branchPrefix}${slugBranchName(selectedCommit.subject) || selectedCommit.hash}`);
+    setCreateBranchOpen(true);
+  };
+
+  const createBranchFromCommit = async (name: string) => {
     if (!selectedCommit || operation) return;
     setOperationMessage(null);
-    const settings = getGitUiSettings();
-    const suggested = `${settings.branchPrefix}${slugBranchName(selectedCommit.subject) || selectedCommit.hash}`;
-    const name = window.prompt(t("git.logPanel.newBranchName"), suggested)?.trim();
-    if (!name) return;
+    setCreateBranchError(null);
     setOperation("branch");
     try {
       const result = await gitCreateBranch(projectPath, name, selectedCommit.full_hash);
       if (!result.ok) throw new Error(result.stderr || result.stdout || result.command);
       setOperationMessage(t("git.logPanel.branchCreated", { name }));
+      setCreateBranchOpen(false);
       await loadLog(true);
       await onRefresh?.();
     } catch (err) {
-      setOperationMessage(err instanceof Error ? err.message : String(err));
+      setCreateBranchError(err instanceof Error ? err.message : String(err));
     } finally {
       setOperation(null);
     }
@@ -200,7 +211,7 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
                     icon={["fas", "code-branch"]}
                     disabled={!!operation}
                     busy={operation === "branch"}
-                    onClick={() => void createBranchFromCommit()}
+                    onClick={openCreateBranchDialog}
                   />
                 </div>
               </div>
@@ -241,6 +252,22 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
           </div>
         )}
       </div>
+
+      <GitCreateBranchDialog
+        open={createBranchOpen}
+        title={t("git.createBranchDialog.title")}
+        label={t("git.logPanel.newBranchName")}
+        initialValue={suggestedBranchName}
+        confirmLabel={t("git.logPanel.createBranch")}
+        loading={operation === "branch"}
+        error={createBranchError}
+        onClose={() => {
+          if (operation === "branch") return;
+          setCreateBranchOpen(false);
+          setCreateBranchError(null);
+        }}
+        onConfirm={createBranchFromCommit}
+      />
     </div>
   );
 }

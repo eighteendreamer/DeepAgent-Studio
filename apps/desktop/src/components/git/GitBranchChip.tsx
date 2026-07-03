@@ -6,6 +6,7 @@ import { gitCheckoutBranch, gitCreateBranch, gitFetch } from "../../api";
 import type { GitBranch, GitOperationResult } from "../../types";
 import { useGitStatus } from "../../hooks/useGitStatus";
 import { getGitUiSettings } from "./gitSettings";
+import { GitCreateBranchDialog } from "./GitCreateBranchDialog";
 
 interface Props {
   projectPath?: string | null;
@@ -35,6 +36,8 @@ export function GitBranchChip({
   const [busy, setBusy] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [operationResult, setOperationResult] = useState<string | null>(null);
+  const [createBranchOpen, setCreateBranchOpen] = useState(false);
+  const [suggestedBranchName, setSuggestedBranchName] = useState("");
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,14 +70,16 @@ export function GitBranchChip({
       const result = await operation();
       if (result && !result.ok) {
         setOperationError(result.stderr || result.stdout || t("git.operationFailed", { action: t(`git.actions.${action}`) }));
-        return;
+        return false;
       }
       if (result) {
         setOperationResult(result.stdout.trim() || t("git.operationCompleted", { action: t(`git.actions.${action}`) }));
       }
       await refresh();
+      return true;
     } catch (error) {
       setOperationError(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setBusy(null);
     }
@@ -90,19 +95,27 @@ export function GitBranchChip({
       const ok = window.confirm(t("git.switchBranchConfirm", { branch: branch.name }));
       if (!ok) return;
     }
-    await runOperation("checkout", async () => gitCheckoutBranch(projectPath, branch.name));
-    setOpen(false);
+    const ok = await runOperation("checkout", async () => gitCheckoutBranch(projectPath, branch.name));
+    if (ok) setOpen(false);
   };
 
-  const createBranch = async () => {
+  const openCreateBranchDialog = () => {
     if (!projectPath || busy) return;
     const settings = getGitUiSettings();
     const suffix = status?.current_branch ? `${status.current_branch}-new` : "new-branch";
-    const suggested = `${settings.branchPrefix}${suffix}`;
-    const name = window.prompt(t("git.newBranchName"), suggested)?.trim();
-    if (!name) return;
-    await runOperation("createBranch", async () => gitCreateBranch(projectPath, name, null));
-    setOpen(false);
+    setSuggestedBranchName(`${settings.branchPrefix}${suffix}`);
+    setOperationError(null);
+    setOperationResult(null);
+    setCreateBranchOpen(true);
+  };
+
+  const createBranch = async (name: string) => {
+    if (!projectPath || busy) return;
+    const ok = await runOperation("createBranch", async () => gitCreateBranch(projectPath, name, null));
+    if (ok) {
+      setCreateBranchOpen(false);
+      setOpen(false);
+    }
   };
 
   const fetchAndRefresh = async () => {
@@ -186,11 +199,26 @@ export function GitBranchChip({
             operationResult={operationResult}
             onCheckout={checkoutBranch}
             onFetch={fetchAndRefresh}
-            onCreateBranch={createBranch}
+            onCreateBranch={openCreateBranchDialog}
             onOpenWorkbench={onOpenWorkbench}
           />
         </div>
       )}
+
+      <GitCreateBranchDialog
+        open={createBranchOpen}
+        title={t("git.createBranchDialog.title")}
+        label={t("git.newBranchName")}
+        initialValue={suggestedBranchName}
+        confirmLabel={t("git.actions.createBranch")}
+        loading={busy === "createBranch"}
+        error={operationError}
+        onClose={() => {
+          if (busy === "createBranch") return;
+          setCreateBranchOpen(false);
+        }}
+        onConfirm={createBranch}
+      />
     </div>
   );
 }
