@@ -1187,11 +1187,11 @@ export function App() {
           {isSidebarOpen && view !== "settings" && (
             <motion.div
               key="main-sidebar"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
+              initial={{ width: 0, opacity: 0, x: -20 }}
+              animate={{ width: 240, opacity: 1, x: 0 }}
+              exit={{ width: 0, opacity: 0, x: -20 }}
               transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-              className="flex-shrink-0 h-full flex"
+              className="flex-shrink-0 h-full flex overflow-hidden"
             >
               <Sidebar
                 sessions={sessions}
@@ -1230,11 +1230,11 @@ export function App() {
           {isSidebarOpen && view === "settings" && (
             <motion.div
               key="settings-sidebar"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
+              initial={{ width: 0, opacity: 0, x: -20 }}
+              animate={{ width: 240, opacity: 1, x: 0 }}
+              exit={{ width: 0, opacity: 0, x: -20 }}
               transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-              className="flex-shrink-0 h-full flex"
+              className="flex-shrink-0 h-full flex overflow-hidden"
             >
               <SettingsSidebar 
                 onBack={goBack} 
