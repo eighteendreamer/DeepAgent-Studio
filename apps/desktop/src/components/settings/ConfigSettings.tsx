@@ -491,18 +491,18 @@ export function ConfigSettings() {
   const webSearchOptions = [
     {
       title: "deepseek_first",
-      description: "DeepSeek server web-search first, then configured bridges",
-      displayTitle: "DeepSeek first",
+      description: t("settings.config.webSearch.providers.deepseekFirstDesc"),
+      displayTitle: t("settings.config.webSearch.providers.deepseekFirst"),
     },
     {
       title: "searxng",
-      description: "Use your SearXNG full-web bridge, then DuckDuckGo",
-      displayTitle: "SearXNG bridge",
+      description: t("settings.config.webSearch.providers.searxngDesc"),
+      displayTitle: t("settings.config.webSearch.providers.searxng"),
     },
     {
       title: "duckduckgo",
-      description: "Use keyless DuckDuckGo HTML as the final fallback",
-      displayTitle: "DuckDuckGo",
+      description: t("settings.config.webSearch.providers.duckduckgoDesc"),
+      displayTitle: t("settings.config.webSearch.providers.duckduckgo"),
     },
   ];
 
@@ -516,7 +516,7 @@ export function ConfigSettings() {
     } catch (e) {
       setWebSearchSettingsState(previous);
       setSearxngInput(previous.searxng_url ?? "");
-      message.error("web_search settings save failed");
+      message.error(t("settings.config.webSearch.saveFailed"));
       console.error("set_web_search_settings failed:", e);
     }
   };
@@ -666,16 +666,16 @@ export function ConfigSettings() {
 
       {/* Section: web_search provider */}
       <div className="mb-12 max-w-[700px]">
-        <h2 className="text-[15px] font-medium text-text-base mb-1">Web Search</h2>
+        <h2 className="text-[15px] font-medium text-text-base mb-1">{t("settings.config.webSearch.title")}</h2>
         <div className="text-[12px] text-text-secondary mb-6">
-          Configure the built-in <code className="font-mono px-1 py-0.5 bg-gray-100 rounded">web_search</code> tool. DeepSeek first keeps the system aligned with DeepSeek, while SearXNG can act as a full-web bridge.
+          {t("settings.config.webSearch.descBefore")} <code className="font-mono px-1 py-0.5 bg-gray-100 rounded">web_search</code> {t("settings.config.webSearch.descAfter")}
         </div>
         <div className="border border-border-theme rounded-xl shadow-[0_1px_2px_rgb(0,0,0,0.02)] bg-white">
           <div className="flex items-center justify-between p-4 border-b border-border-theme">
             <div>
-              <div className="text-[14px] font-medium text-text-base mb-1">Enable web_search</div>
+              <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.config.webSearch.enableTitle")}</div>
               <div className="text-[12px] text-text-secondary">
-                When disabled, only <code className="font-mono px-1 py-0.5 bg-gray-100 rounded">web_fetch</code> remains registered.
+                {t("settings.config.webSearch.enableDescBefore")} <code className="font-mono px-1 py-0.5 bg-gray-100 rounded">web_fetch</code> {t("settings.config.webSearch.enableDescAfter")}
               </div>
             </div>
             <ToggleSwitch
@@ -695,16 +695,16 @@ export function ConfigSettings() {
             }`}
           >
             <div>
-              <div className="text-[14px] font-medium text-text-base mb-1">Provider</div>
+              <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.config.webSearch.providerTitle")}</div>
               <div className="text-[12px] text-text-secondary">
-                DeepSeek first uses the configured DeepSeek key, then falls back to SearXNG and DuckDuckGo when available.
+                {t("settings.config.webSearch.providerDesc")}
               </div>
             </div>
             <ComplexDropdown
               options={webSearchOptions}
               selectedTitle={
                 webSearchOptions.find((o) => o.title === webSearchSettings.provider)
-                  ?.displayTitle ?? "DeepSeek first"
+                  ?.displayTitle ?? t("settings.config.webSearch.providers.deepseekFirst")
               }
               onChange={(display) => {
                 const opt = webSearchOptions.find((o) => o.displayTitle === display);
@@ -725,9 +725,9 @@ export function ConfigSettings() {
             }`}
           >
             <div>
-              <div className="text-[14px] font-medium text-text-base mb-1">SearXNG URL</div>
+              <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.config.webSearch.searxngUrlTitle")}</div>
               <div className="text-[12px] text-text-secondary">
-                Optional bridge base URL, for example <code className="font-mono px-1 py-0.5 bg-gray-100 rounded">https://search.example.com</code>.
+                {t("settings.config.webSearch.searxngUrlDescBefore")} <code className="font-mono px-1 py-0.5 bg-gray-100 rounded">https://search.example.com</code>.
               </div>
             </div>
             <input

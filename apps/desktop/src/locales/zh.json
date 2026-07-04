@@ -436,7 +436,28 @@
       "workspaceWrite": "工作区写入",
       "workspaceWriteDesc": "允许写入工作区",
       "fullAccess": "完全访问",
-      "fullAccessDesc": "完全系统访问"
+      "fullAccessDesc": "完全系统访问",
+      "webSearch": {
+        "title": "网页搜索",
+        "descBefore": "配置内置",
+        "descAfter": "工具。DeepSeek first 会优先与 DeepSeek 保持一致，SearXNG 可作为完整网页搜索桥接。",
+        "enableTitle": "启用 web_search",
+        "enableDescBefore": "关闭后，仅保留",
+        "enableDescAfter": "工具注册。",
+        "providerTitle": "提供方",
+        "providerDesc": "DeepSeek first 使用已配置的 DeepSeek key，必要时回退到 SearXNG 和 DuckDuckGo。",
+        "searxngUrlTitle": "SearXNG URL",
+        "searxngUrlDescBefore": "可选的桥接基础 URL，例如",
+        "saveFailed": "web_search 设置保存失败",
+        "providers": {
+          "deepseekFirst": "DeepSeek 优先",
+          "deepseekFirstDesc": "优先使用 DeepSeek 服务端网页搜索，再使用已配置的桥接",
+          "searxng": "SearXNG 桥接",
+          "searxngDesc": "使用你的 SearXNG 完整网页桥接，然后回退到 DuckDuckGo",
+          "duckduckgo": "DuckDuckGo",
+          "duckduckgoDesc": "使用无需 key 的 DuckDuckGo HTML 作为最终回退"
+        }
+      }
     },
     "git": {
       "title": "Git",

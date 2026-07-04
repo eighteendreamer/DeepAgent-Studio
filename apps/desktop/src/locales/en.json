@@ -436,7 +436,28 @@
       "workspaceWrite": "Workspace Write",
       "workspaceWriteDesc": "Can write to workspace",
       "fullAccess": "Full Access",
-      "fullAccessDesc": "Full system access"
+      "fullAccessDesc": "Full system access",
+      "webSearch": {
+        "title": "Web Search",
+        "descBefore": "Configure the built-in",
+        "descAfter": "tool. DeepSeek first keeps the system aligned with DeepSeek, while SearXNG can act as a full-web bridge.",
+        "enableTitle": "Enable web_search",
+        "enableDescBefore": "When disabled, only",
+        "enableDescAfter": "remains registered.",
+        "providerTitle": "Provider",
+        "providerDesc": "DeepSeek first uses the configured DeepSeek key, then falls back to SearXNG and DuckDuckGo when available.",
+        "searxngUrlTitle": "SearXNG URL",
+        "searxngUrlDescBefore": "Optional bridge base URL, for example",
+        "saveFailed": "web_search settings save failed",
+        "providers": {
+          "deepseekFirst": "DeepSeek first",
+          "deepseekFirstDesc": "DeepSeek server web-search first, then configured bridges",
+          "searxng": "SearXNG bridge",
+          "searxngDesc": "Use your SearXNG full-web bridge, then DuckDuckGo",
+          "duckduckgo": "DuckDuckGo",
+          "duckduckgoDesc": "Use keyless DuckDuckGo HTML as the final fallback"
+        }
+      }
     },
     "git": {
       "title": "Git",
