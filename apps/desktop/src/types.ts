@@ -840,6 +840,22 @@ export interface PdfRenderResult {
   message: string | null;
 }
 
+/** One directory entry for the active project's file browser. */
+export interface ProjectFileEntry {
+  path: string;
+  name: string;
+  rel_path: string;
+  is_dir: boolean;
+  size_bytes: number | null;
+  ext: string;
+}
+
+/** One lazy-loaded directory listing for the active project. */
+export interface ProjectFileListResult {
+  root_path: string;
+  entries: ProjectFileEntry[];
+}
+
 // ---- recording + transcription (office-agent) -----------------------------
 
 /** A recording session's lifecycle (mirrors RecordingSessionDto). */

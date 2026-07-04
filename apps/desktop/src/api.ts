@@ -48,6 +48,7 @@ import type {
   ProjectMapRefresh,
   ProjectMapStatus,
   PreviewMetadata,
+  ProjectFileListResult,
   PreviewResult,
   PdfRenderResult,
   RecordingSession,
@@ -1830,6 +1831,24 @@ export async function previewRenderPages(path: string): Promise<PdfRenderResult>
   const invoke = getInvoke();
   if (invoke) return invoke<PdfRenderResult>("preview_render_pages", { path });
   throw new Error("file preview requires the desktop app");
+}
+
+/** List one directory level from the active/current project. */
+export async function listProjectFiles(
+  projectPath?: string | null,
+  path?: string | null,
+): Promise<ProjectFileListResult> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<ProjectFileListResult>("list_project_files", {
+      projectPath: projectPath ?? null,
+      path: path ?? null,
+    });
+  }
+  return {
+    root_path: projectPath ?? "",
+    entries: [],
+  };
 }
 
 // ---- recording (office-agent) ---------------------------------------------

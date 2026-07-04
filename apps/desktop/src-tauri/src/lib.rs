@@ -1642,6 +1642,22 @@ fn workspace_info(state: State<'_, AppState>) -> Result<WorkspaceInfoDto, String
     Ok(state.workspace.info())
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ProjectFileEntryDto {
+    path: String,
+    name: String,
+    rel_path: String,
+    is_dir: bool,
+    size_bytes: Option<u64>,
+    ext: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProjectFileListDto {
+    root_path: String,
+    entries: Vec<ProjectFileEntryDto>,
+}
+
 fn resolve_project_root(
     state: &State<'_, AppState>,
     project_path: Option<String>,
@@ -1655,6 +1671,109 @@ fn resolve_project_root(
         .map_err(|e| e.to_string())?
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(state.workspace.info().path)))
+}
+
+fn canonicalize_path(path: &Path) -> Result<PathBuf, String> {
+    std::fs::canonicalize(path).map_err(|e| format!("cannot access '{}': {e}", path.display()))
+}
+
+fn normalize_relative_path(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    raw.trim_start_matches("./").to_string()
+}
+
+fn resolve_browse_dir(root: &Path, requested: Option<String>) -> Result<PathBuf, String> {
+    let requested_path = match requested.filter(|p| !p.trim().is_empty()) {
+        Some(path) => {
+            let candidate = PathBuf::from(path);
+            if candidate.is_absolute() {
+                candidate
+            } else {
+                root.join(candidate)
+            }
+        }
+        None => root.to_path_buf(),
+    };
+    let canonical = canonicalize_path(&requested_path)?;
+    if !canonical.starts_with(root) {
+        return Err("requested path is outside the active project".to_string());
+    }
+    let meta = std::fs::metadata(&canonical)
+        .map_err(|e| format!("cannot stat '{}': {e}", canonical.display()))?;
+    if !meta.is_dir() {
+        return Err(format!("'{}' is not a directory", canonical.display()));
+    }
+    Ok(canonical)
+}
+
+fn list_project_directory(root: &Path, dir: &Path) -> Result<Vec<ProjectFileEntryDto>, String> {
+    let read_dir =
+        std::fs::read_dir(dir).map_err(|e| format!("read_dir '{}': {e}", dir.display()))?;
+    let mut entries = Vec::new();
+    for dirent in read_dir {
+        let dirent = dirent.map_err(|e| format!("read_dir '{}': {e}", dir.display()))?;
+        let file_type = dirent
+            .file_type()
+            .map_err(|e| format!("file_type '{}': {e}", dirent.path().display()))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        let visible_path = dirent.path();
+        let canonical_path = canonicalize_path(&visible_path)?;
+        if !canonical_path.starts_with(root) {
+            continue;
+        }
+
+        let meta = dirent
+            .metadata()
+            .map_err(|e| format!("metadata '{}': {e}", visible_path.display()))?;
+        let name = dirent.file_name().to_string_lossy().into_owned();
+        let rel_path = visible_path
+            .strip_prefix(root)
+            .map(normalize_relative_path)
+            .unwrap_or_else(|_| name.clone());
+        let ext = visible_path
+            .extension()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+
+        entries.push(ProjectFileEntryDto {
+            path: canonical_path.to_string_lossy().into_owned(),
+            name,
+            rel_path,
+            is_dir: file_type.is_dir(),
+            size_bytes: if file_type.is_file() {
+                Some(meta.len())
+            } else {
+                None
+            },
+            ext,
+        });
+    }
+
+    entries.sort_by(|a, b| {
+        a.is_dir
+            .cmp(&b.is_dir)
+            .reverse()
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+fn list_project_files(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+    path: Option<String>,
+) -> Result<ProjectFileListDto, String> {
+    let root = canonicalize_path(&resolve_project_root(&state, project_path)?)?;
+    let dir = resolve_browse_dir(&root, path)?;
+    let entries = list_project_directory(&root, &dir)?;
+    Ok(ProjectFileListDto {
+        root_path: root.to_string_lossy().into_owned(),
+        entries,
+    })
 }
 
 // ---- project map -----------------------------------------------------------
@@ -3346,6 +3465,7 @@ pub fn run() {
             get_hooks_json,
             set_hooks_json,
             workspace_info,
+            list_project_files,
             project_map_status,
             project_map_overview,
             project_map_search,

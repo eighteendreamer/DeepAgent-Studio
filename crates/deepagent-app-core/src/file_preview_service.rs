@@ -33,6 +33,9 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// Max image size we will inline as a data URL (16 MiB).
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 
+/// Bytes sampled when deciding whether an unknown file is actually text.
+const TEXT_SNIFF_BYTES: usize = 8 * 1024;
+
 /// Stateless service that reads files and returns preview DTOs. Holds no
 /// handles — every call is independent, mirroring the thin-service convention.
 #[derive(Debug, Default, Clone)]
@@ -45,16 +48,84 @@ impl FilePreviewService {
     }
 
     /// Classify a file by extension into a coarse preview `kind`.
-    fn classify(ext: &str) -> &'static str {
+    fn classify(path: &Path, ext: &str) -> &'static str {
+        let file_name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
         match ext {
-            "txt" | "md" | "markdown" | "json" | "log" | "yaml" | "yml" | "toml" | "xml" => "text",
+            "txt"
+            | "md"
+            | "markdown"
+            | "json"
+            | "log"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "xml"
+            | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "css"
+            | "scss"
+            | "sass"
+            | "less"
+            | "html"
+            | "htm"
+            | "vue"
+            | "svelte"
+            | "java"
+            | "kt"
+            | "kts"
+            | "gradle"
+            | "groovy"
+            | "rs"
+            | "go"
+            | "py"
+            | "rb"
+            | "php"
+            | "c"
+            | "cc"
+            | "cpp"
+            | "cxx"
+            | "h"
+            | "hpp"
+            | "hxx"
+            | "cs"
+            | "swift"
+            | "sql"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "ps1"
+            | "bat"
+            | "cmd"
+            | "conf"
+            | "cfg"
+            | "ini"
+            | "properties"
+            | "env"
+            | "lock" => "text",
             "csv" | "tsv" => "csv",
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "ico" => "image",
             "pdf" => "pdf",
             "docx" => "docx",
             "xlsx" => "xlsx",
             "pptx" => "pptx",
-            _ => "unknown",
+            _ => {
+                if file_name.starts_with('.') {
+                    "text"
+                } else {
+                    match file_name.as_str() {
+                        "dockerfile" | "makefile" => "text",
+                        _ => "unknown",
+                    }
+                }
+            }
         }
     }
 
@@ -79,7 +150,7 @@ impl FilePreviewService {
             name,
             ext: ext.clone(),
             size_bytes: meta.len(),
-            kind: Self::classify(&ext).to_string(),
+            kind: Self::classify(p, &ext).to_string(),
         })
     }
 
@@ -158,13 +229,22 @@ impl FilePreviewService {
                     )),
                 }
             }
-            _ => Ok(result(
-                metadata,
-                None,
-                None,
-                false,
-                Some("preview not supported for this file type".to_string()),
-            )),
+            _ => {
+                let bytes = std::fs::read(path)
+                    .map_err(|e| CoreError::Other(format!("read '{path}': {e}")))?;
+                if is_likely_text(&bytes) {
+                    let (text, truncated) = cap_bytes_to_text(&bytes);
+                    Ok(result(metadata, Some(text), None, truncated, None))
+                } else {
+                    Ok(result(
+                        metadata,
+                        None,
+                        None,
+                        false,
+                        Some("preview not supported for this file type".to_string()),
+                    ))
+                }
+            }
         }
     }
 
@@ -234,6 +314,41 @@ fn cap_bytes_to_text(bytes: &[u8]) -> (String, bool) {
         bytes
     };
     (String::from_utf8_lossy(slice).into_owned(), truncated)
+}
+
+/// Best-effort detector for "unknown" file types that are still plain text.
+fn is_likely_text(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return true;
+    }
+
+    let sample = &bytes[..bytes.len().min(TEXT_SNIFF_BYTES)];
+
+    if sample.starts_with(&[0xEF, 0xBB, 0xBF])
+        || sample.starts_with(&[0xFE, 0xFF])
+        || sample.starts_with(&[0xFF, 0xFE])
+    {
+        return true;
+    }
+
+    if sample.contains(&0) {
+        return false;
+    }
+
+    let suspicious = sample
+        .iter()
+        .filter(|&&b| {
+            !(b == b'\n'
+                || b == b'\r'
+                || b == b'\t'
+                || b == 0x0C
+                || b == 0x1B
+                || (0x20..=0x7E).contains(&b)
+                || b >= 0x80)
+        })
+        .count();
+
+    suspicious * 10 <= sample.len()
 }
 
 /// Extract text from a PDF (Tier C, pure Rust via `pdf-extract`). Returns the
@@ -438,14 +553,19 @@ mod tests {
 
     #[test]
     fn classify_covers_office_and_text() {
-        assert_eq!(FilePreviewService::classify("md"), "text");
-        assert_eq!(FilePreviewService::classify("csv"), "csv");
-        assert_eq!(FilePreviewService::classify("png"), "image");
-        assert_eq!(FilePreviewService::classify("docx"), "docx");
-        assert_eq!(FilePreviewService::classify("xlsx"), "xlsx");
-        assert_eq!(FilePreviewService::classify("pptx"), "pptx");
-        assert_eq!(FilePreviewService::classify("pdf"), "pdf");
-        assert_eq!(FilePreviewService::classify("zip"), "unknown");
+        assert_eq!(FilePreviewService::classify(Path::new("a.md"), "md"), "text");
+        assert_eq!(FilePreviewService::classify(Path::new("a.ts"), "ts"), "text");
+        assert_eq!(FilePreviewService::classify(Path::new("index.html"), "html"), "text");
+        assert_eq!(FilePreviewService::classify(Path::new("csv.csv"), "csv"), "csv");
+        assert_eq!(FilePreviewService::classify(Path::new("img.png"), "png"), "image");
+        assert_eq!(FilePreviewService::classify(Path::new("doc.docx"), "docx"), "docx");
+        assert_eq!(FilePreviewService::classify(Path::new("book.xlsx"), "xlsx"), "xlsx");
+        assert_eq!(FilePreviewService::classify(Path::new("deck.pptx"), "pptx"), "pptx");
+        assert_eq!(FilePreviewService::classify(Path::new("scan.pdf"), "pdf"), "pdf");
+        assert_eq!(FilePreviewService::classify(Path::new("Dockerfile"), ""), "text");
+        assert_eq!(FilePreviewService::classify(Path::new(".gitignore"), ""), "text");
+        assert_eq!(FilePreviewService::classify(Path::new(".npmrc"), ""), "text");
+        assert_eq!(FilePreviewService::classify(Path::new("a.zip"), "zip"), "unknown");
     }
 
     #[test]
@@ -467,6 +587,16 @@ mod tests {
         assert_eq!(r.text.as_deref(), Some("line1\nline2"));
         assert!(!r.truncated);
         assert_eq!(r.metadata.kind, "text");
+    }
+
+    #[test]
+    fn extracts_unknown_text_like_file() {
+        let (_d, path) = write_temp("post-update.sample", b"#!/bin/sh\necho ok\n");
+        let svc = FilePreviewService::new();
+        let r = svc.extract_text(&path).unwrap();
+        assert_eq!(r.metadata.kind, "unknown");
+        assert_eq!(r.text.as_deref(), Some("#!/bin/sh\necho ok\n"));
+        assert!(r.message.is_none());
     }
 
     #[test]

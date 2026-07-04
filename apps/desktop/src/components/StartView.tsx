@@ -17,9 +17,17 @@ import { ProjectMapPanel } from "./project-map/ProjectMapPanel";
 import { Tab, TOOL_CARDS } from "./ChatView";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { GitBranchChip } from "./git/GitBranchChip";
+import { SidebarPluginHeader } from "./SidebarPluginHeader";
 
 const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
 const PROJECT_MAP_TAB_ID = "project-map";
+
+function getProjectDisplayName(path?: string | null): string | null {
+  const value = path?.trim();
+  if (!value) return null;
+  const parts = value.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? value;
+}
 
 interface Props {
   projectName: string;
@@ -78,8 +86,10 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
   const [rightSidebarWidth, setRightSidebarWidth] = useState(600);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [isRightSidebarMaximized, setIsRightSidebarMaximized] = useState(false);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(280);
   const [isResizingBottom, setIsResizingBottom] = useState(false);
+  const sidebarRestoreWidthRef = useRef(600);
 
   useEffect(() => {
     if (!isResizingBottom) return;
@@ -118,6 +128,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   }, [isResizingSidebar]);
   const [sidebarTabs, setSidebarTabs] = useState<Tab[]>([]);
   const [activeSidebarTabId, setActiveSidebarTabId] = useState<string>("new");
+  const activeSidebarTab = sidebarTabs.find((tab) => tab.id === activeSidebarTabId) ?? null;
 
   const resolveToolName = (type: string) =>
     t(`chatView.tools.${type}`, {
@@ -135,12 +146,16 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
     return path && path.length > 0 ? path : "Terminal";
   };
 
+  const getFilesTabTitle = () => {
+    return getProjectDisplayName(activeProjectPath) ?? resolveToolName("files");
+  };
+
   const handleOpenBottomPlugin = (c: typeof TOOL_CARDS[0]) => {
     const newTab: Tab = {
       id: Date.now().toString(),
       type: c.type,
       title: c.title === "terminal" ? getTerminalTabTitle() : 
-             c.title === "files" ? "AUTH_SPEC.md" : resolveToolName(c.type),
+             c.title === "files" ? getFilesTabTitle() : resolveToolName(c.type),
       icon: c.title === "terminal" ? ["fas", "terminal"] :
             c.title === "files" ? ["far", "file-lines"] : c.icon
     };
@@ -153,12 +168,62 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
       id: Date.now().toString(),
       type: c.type,
       title: c.title === "terminal" ? getTerminalTabTitle() : 
-             c.title === "files" ? "AUTH_SPEC.md" : resolveToolName(c.type),
+             c.title === "files" ? getFilesTabTitle() : resolveToolName(c.type),
       icon: c.title === "terminal" ? ["fas", "terminal"] :
             c.title === "files" ? ["far", "file-lines"] : c.icon
     };
     setSidebarTabs([...sidebarTabs, newTab]);
     setActiveSidebarTabId(newTab.id);
+  };
+
+  const closeSidebarTab = (tabId: string) => {
+    const newTabs = sidebarTabs.filter((tab) => tab.id !== tabId);
+    setSidebarTabs(newTabs);
+    if (activeSidebarTabId === tabId) {
+      setActiveSidebarTabId(newTabs.length > 0 ? newTabs[newTabs.length - 1].id : "new");
+    }
+  };
+
+  const handleToggleBottomTerminalPanel = () => {
+    if (envMode === "local") {
+      setIsBottomPanelOpen(true);
+      if (!bottomTabs.some((t) => t.type === "terminal")) {
+        const terminalCard = TOOL_CARDS.find((c) => c.type === "terminal");
+        if (terminalCard) {
+          void handleOpenBottomPlugin(terminalCard);
+        }
+      } else {
+        const termTab = bottomTabs.find((t) => t.type === "terminal");
+        if (termTab) setActiveBottomTabId(termTab.id);
+      }
+      return;
+    }
+
+    if (isBottomPanelOpen) {
+      setIsBottomPanelOpen(false);
+    } else {
+      setIsBottomPanelOpen(true);
+      if (!bottomTabs.some((t) => t.type === "terminal")) {
+        const terminalCard = TOOL_CARDS.find((c) => c.type === "terminal");
+        if (terminalCard) {
+          void handleOpenBottomPlugin(terminalCard);
+        }
+      } else {
+        const termTab = bottomTabs.find((t) => t.type === "terminal");
+        if (termTab) setActiveBottomTabId(termTab.id);
+      }
+    }
+  };
+
+  const toggleSidebarMaximize = () => {
+    if (isRightSidebarMaximized) {
+      setRightSidebarWidth(sidebarRestoreWidthRef.current);
+      setIsRightSidebarMaximized(false);
+      return;
+    }
+    sidebarRestoreWidthRef.current = rightSidebarWidth;
+    setRightSidebarWidth(Math.max(960, window.innerWidth - 32));
+    setIsRightSidebarMaximized(true);
   };
 
   const openProjectMapSidebar = useCallback(() => {
@@ -323,33 +388,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
         </div>
         <BottomPanelIcon 
           className="cursor-pointer transition-colors hover:text-text-base"
-          onClick={() => {
-            if (envMode === "local") {
-              setIsBottomPanelOpen(true);
-              if (!bottomTabs.some((t) => t.type === "terminal")) {
-                const terminalCard = TOOL_CARDS.find((c) => c.type === "terminal");
-                if (terminalCard) {
-                  void handleOpenBottomPlugin(terminalCard);
-                }
-              } else {
-                const termTab = bottomTabs.find((t) => t.type === "terminal");
-                if (termTab) setActiveBottomTabId(termTab.id);
-              }
-              return;
-            }
-            if (isBottomPanelOpen) {
-              setIsBottomPanelOpen(false);
-            } else {
-              setIsBottomPanelOpen(true);
-              if (!bottomTabs.some(t => t.type === "terminal")) {
-                const terminalCard = TOOL_CARDS.find(c => c.type === "terminal");
-                if (terminalCard) void handleOpenBottomPlugin(terminalCard);
-              } else {
-                const termTab = bottomTabs.find(t => t.type === "terminal");
-                if (termTab) setActiveBottomTabId(termTab.id);
-              }
-            }
-          }}
+          onClick={handleToggleBottomTerminalPanel}
         />
         <SidebarRightIcon
           className={`cursor-pointer transition-colors ${isRightSidebarOpen ? "text-text-base" : "hover:text-text-base"}`}
@@ -358,9 +397,11 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
       </div>
 
       
-      <div className="flex-1 flex overflow-hidden relative w-full">
-        <div className="flex-1 flex flex-col relative min-w-0 w-full">
-          <div className="flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full px-8">
+      <div className="flex flex-1 min-h-0 w-full overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+            <div className="flex flex-1 flex-col items-center justify-center min-w-0 px-8">
+              <div className="flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full">
         <h1 className="text-[28px] font-medium text-text-base mb-8">
           {projectName ? t("startView.greeting", { projectName }) : t("startView.greetingNoProject")}
         </h1>
@@ -612,26 +653,13 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           </div>
         </div>
       </div>
-
-      
-
-      
-          
-      {/* Bottom Panel */}
-      {isBottomPanelOpen && (
-        <div 
-          className={`absolute left-0 right-0 bottom-0 bg-white flex flex-col z-50 shadow-[0_0_40px_rgba(0,0,0,0.1)] border-t border-border-theme transform translate-y-0 ${isResizingBottom ? "" : "transition-transform duration-300"}`}
-          style={{ height: `${bottomPanelHeight}px`, minHeight: '200px', maxHeight: '80vh' }}
-        >
-          {/* Resize Handle */}
-          <div 
-            className={`panel-resize-handle-row ${isResizingBottom ? "is-active" : ""}`}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setIsResizingBottom(true);
-            }}
-          />
-          {/* Global Tab Bar */}
+            </div>
+            
+            {isRightSidebarOpen && (
+              <div 
+                className={`relative flex h-full flex-shrink-0 flex-col border-l border-border-theme bg-white shadow-[-12px_0_30px_rgba(0,0,0,0.06)] ${isResizingSidebar ? "" : "transition-[width] duration-300"}`}
+                style={{ width: `${rightSidebarWidth}px`, minWidth: '360px' }}
+              >
           {/* Resize Handle */}
           <div 
             className={`panel-resize-handle-col ${isResizingSidebar ? "is-active" : ""}`}
@@ -640,142 +668,62 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
               setIsResizingSidebar(true);
             }}
           />
-          <div className="flex items-center justify-between border-b border-border-theme h-10 px-4 flex-shrink-0 bg-white">
-            <div className="flex items-center text-[13px] text-text-secondary h-full">
-              {bottomTabs.map(tab => (
-                <div 
-                  key={tab.id}
-                  onClick={() => setActiveBottomTabId(tab.id)}
-                  className={`flex items-center h-full px-3 border-b-2 cursor-pointer ${
-                    activeBottomTabId === tab.id 
-                      ? "border-text-base text-text-base" 
-                      : "border-transparent hover:text-text-base"
-                  }`}
-                >
-                  <FontAwesomeIcon icon={tab.icon} className="mr-2" />
-                  {tab.title}
-                  <FontAwesomeIcon 
-                    icon={["fas", "xmark"]} 
-                    className="ml-3 hover:text-red-500 text-[10px]" 
-                    onClick={(e) => {
-                       e.stopPropagation();
-                       const newTabs = bottomTabs.filter(t => t.id !== tab.id);
-                       setBottomTabs(newTabs);
-                       if (activeBottomTabId === tab.id) {
-                         setActiveBottomTabId(newTabs.length > 0 ? newTabs[newTabs.length - 1].id : "new");
-                       }
-                    }}
-                  />
-                </div>
-              ))}
-              <div 
-                className={`flex items-center h-full px-3 cursor-pointer ${activeBottomTabId === "new" ? "text-text-base" : "hover:text-text-base"}`}
-                onClick={() => setActiveBottomTabId("new")}
-              >
-                <FontAwesomeIcon icon={["fas", "plus"]} />
-              </div>
-            </div>
-            <div className="flex items-center space-x-3 text-text-secondary">
-              {bottomTabs.find(t => t.id === activeBottomTabId)?.type === "files" && (
+          <SidebarPluginHeader
+            tabs={sidebarTabs}
+            activeTabId={activeSidebarTabId}
+            onSelectTab={setActiveSidebarTabId}
+            onCloseTab={closeSidebarTab}
+            onShowLauncher={() => setActiveSidebarTabId("new")}
+            extraActions={
+              activeSidebarTab?.type === "files" ? (
                 <>
-                  <FontAwesomeIcon icon={["fas", "ellipsis"]} className="cursor-pointer hover:text-text-base" />
-                  <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} className="cursor-pointer hover:text-text-base text-[13px]" />
-                  <FontAwesomeIcon icon={["far", "copy"]} className="cursor-pointer hover:text-text-base" />
+                  <button
+                    type="button"
+                    onClick={toggleSidebarMaximize}
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+                    title={isRightSidebarMaximized ? "退出全屏文件视图" : "全屏文件视图"}
+                  >
+                    <FontAwesomeIcon
+                      icon={[ "fas", isRightSidebarMaximized ? "compress" : "expand" ]}
+                      className="text-[11px]"
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleToggleBottomTerminalPanel}
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+                    title="打开底部终端"
+                  >
+                    <FontAwesomeIcon icon={["far", "window-maximize"]} className="text-[11px]" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsRightSidebarOpen(false)}
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+                    title="收起侧边文件面板"
+                  >
+                    <FontAwesomeIcon icon={["fas", "angles-right"]} className="text-[11px]" />
+                  </button>
                 </>
-              )}
-              <FontAwesomeIcon icon={["fas", "xmark"]} className="cursor-pointer hover:text-text-base ml-2" onClick={() => setIsBottomPanelOpen(false)} />
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-hidden flex flex-col relative">
-            {activeBottomTabId === "new" && (
-              <ToolLauncherPanel cards={TOOL_CARDS} onSelect={handleOpenBottomPlugin} variant="bottom" />
-            )}
-
-            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "files" && <FilesPlugin />}
-            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "chat" && <SideChatPlugin />}
-            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "browser" && <BrowserPlugin />}
-            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "terminal" && (
-              <TerminalPlugin mode={envMode} connectionId={selectedConnectionId} />
-            )}
-            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "recording" && <RecordingPlugin />}
-            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "file_preview" && <FilePreviewPlugin />}
-            {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} />}
-          </div>
-        </div>
-      )}
-        </div>
-        
-      {/* Right Sidebar */}
-      {isRightSidebarOpen && (
-        <>
-        
-        {/* Drawer Panel */}
-        <div 
-          className={`absolute right-0 top-0 h-full bg-white flex flex-col z-50 shadow-[0_0_40px_rgba(0,0,0,0.1)] border-l border-border-theme transform translate-x-0 ${isResizingSidebar ? "" : "transition-transform duration-300"}`}
-          style={{ width: `${rightSidebarWidth}px`, minWidth: '360px' }}
-        >
-          {/* Resize Handle */}
-          <div 
-            className={`panel-resize-handle-col ${isResizingSidebar ? "is-active" : ""}`}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setIsResizingSidebar(true);
-            }}
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsRightSidebarOpen(false)}
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+                  title="收起侧边面板"
+                >
+                  <FontAwesomeIcon icon={["fas", "angles-right"]} className="text-[11px]" />
+                </button>
+              )
+            }
           />
-          <div className="flex items-center justify-between border-b border-border-theme h-10 px-4 flex-shrink-0 bg-white">
-            <div className="flex items-center text-[13px] text-text-secondary h-full overflow-x-auto no-scrollbar">
-              {sidebarTabs.map(tab => (
-                <div 
-                  key={tab.id}
-                  onClick={() => setActiveSidebarTabId(tab.id)}
-                  className={`flex items-center h-full px-3 border-b-2 cursor-pointer flex-shrink-0 ${
-                    activeSidebarTabId === tab.id 
-                      ? "border-text-base text-text-base" 
-                      : "border-transparent hover:text-text-base"
-                  }`}
-                >
-                  <FontAwesomeIcon icon={tab.icon} className="mr-2" />
-                  {tab.title}
-                  <FontAwesomeIcon 
-                    icon={["fas", "xmark"]} 
-                    className="ml-3 hover:text-red-500 text-[10px]" 
-                    onClick={(e) => {
-                       e.stopPropagation();
-                       const newTabs = sidebarTabs.filter(t => t.id !== tab.id);
-                       setSidebarTabs(newTabs);
-                       if (activeSidebarTabId === tab.id) {
-                         setActiveSidebarTabId(newTabs.length > 0 ? newTabs[newTabs.length - 1].id : "new");
-                       }
-                    }}
-                  />
-                </div>
-              ))}
-              <div 
-                className={`flex items-center h-full px-3 cursor-pointer flex-shrink-0 ${activeSidebarTabId === "new" ? "text-text-base" : "hover:text-text-base"}`}
-                onClick={() => setActiveSidebarTabId("new")}
-              >
-                <FontAwesomeIcon icon={["fas", "plus"]} />
-              </div>
-            </div>
-            <div className="flex items-center space-x-3 text-text-secondary ml-2 flex-shrink-0 bg-white pl-2">
-              {sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "files" && (
-                <>
-                  <FontAwesomeIcon icon={["fas", "ellipsis"]} className="cursor-pointer hover:text-text-base" />
-                  <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} className="cursor-pointer hover:text-text-base text-[13px]" />
-                  <FontAwesomeIcon icon={["far", "copy"]} className="cursor-pointer hover:text-text-base" />
-                </>
-              )}
-              <FontAwesomeIcon icon={["fas", "xmark"]} className="cursor-pointer hover:text-text-base ml-1" onClick={() => setIsRightSidebarOpen(false)} />
-            </div>
-          </div>
 
           <div className="flex-1 overflow-hidden flex flex-col relative">
             {activeSidebarTabId === "new" && (
               <ToolLauncherPanel cards={TOOL_CARDS} onSelect={handleOpenSidebarPlugin} variant="sidebar" />
             )}
 
-            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "files" && <FilesPlugin />}
+            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "files" && <FilesPlugin projectPath={activeProjectPath} />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "chat" && <SideChatPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "browser" && <BrowserPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "terminal" && (
@@ -785,9 +733,87 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "file_preview" && <FilePreviewPlugin />}
             {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} />}
           </div>
+              </div>
+            )}
+          </div>
+
+          {isBottomPanelOpen && (
+            <div 
+              className={`relative flex flex-shrink-0 flex-col border-t border-border-theme bg-white shadow-[0_-12px_30px_rgba(0,0,0,0.06)] ${isResizingBottom ? "" : "transition-[height] duration-300"}`}
+              style={{ height: `${bottomPanelHeight}px`, minHeight: '200px', maxHeight: '80vh' }}
+            >
+              <div 
+                className={`panel-resize-handle-row ${isResizingBottom ? "is-active" : ""}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setIsResizingBottom(true);
+                }}
+              />
+              <div className="flex items-center justify-between border-b border-border-theme h-10 px-4 flex-shrink-0 bg-white">
+                <div className="flex items-center text-[13px] text-text-secondary h-full">
+                  {bottomTabs.map(tab => (
+                    <div 
+                      key={tab.id}
+                      onClick={() => setActiveBottomTabId(tab.id)}
+                      className={`flex items-center h-full px-3 border-b-2 cursor-pointer ${
+                        activeBottomTabId === tab.id 
+                          ? "border-text-base text-text-base" 
+                          : "border-transparent hover:text-text-base"
+                      }`}
+                    >
+                      <FontAwesomeIcon icon={tab.icon} className="mr-2" />
+                      {tab.title}
+                      <FontAwesomeIcon 
+                        icon={["fas", "xmark"]} 
+                        className="ml-3 hover:text-red-500 text-[10px]" 
+                        onClick={(e) => {
+                           e.stopPropagation();
+                           const newTabs = bottomTabs.filter(t => t.id !== tab.id);
+                           setBottomTabs(newTabs);
+                           if (activeBottomTabId === tab.id) {
+                             setActiveBottomTabId(newTabs.length > 0 ? newTabs[newTabs.length - 1].id : "new");
+                           }
+                        }}
+                      />
+                    </div>
+                  ))}
+                  <div 
+                    className={`flex items-center h-full px-3 cursor-pointer ${activeBottomTabId === "new" ? "text-text-base" : "hover:text-text-base"}`}
+                    onClick={() => setActiveBottomTabId("new")}
+                  >
+                    <FontAwesomeIcon icon={["fas", "plus"]} />
+                  </div>
+                </div>
+                <div className="flex items-center space-x-3 text-text-secondary">
+                  {bottomTabs.find(t => t.id === activeBottomTabId)?.type === "files" && (
+                    <>
+                      <FontAwesomeIcon icon={["fas", "ellipsis"]} className="cursor-pointer hover:text-text-base" />
+                      <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} className="cursor-pointer hover:text-text-base text-[13px]" />
+                      <FontAwesomeIcon icon={["far", "copy"]} className="cursor-pointer hover:text-text-base" />
+                    </>
+                  )}
+                  <FontAwesomeIcon icon={["fas", "xmark"]} className="cursor-pointer hover:text-text-base ml-2" onClick={() => setIsBottomPanelOpen(false)} />
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-hidden flex flex-col relative">
+                {activeBottomTabId === "new" && (
+                  <ToolLauncherPanel cards={TOOL_CARDS} onSelect={handleOpenBottomPlugin} variant="bottom" />
+                )}
+
+                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "files" && <FilesPlugin projectPath={activeProjectPath} />}
+                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "chat" && <SideChatPlugin />}
+                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "browser" && <BrowserPlugin />}
+                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "terminal" && (
+                  <TerminalPlugin mode={envMode} connectionId={selectedConnectionId} />
+                )}
+                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "recording" && <RecordingPlugin />}
+                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "file_preview" && <FilePreviewPlugin />}
+                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} />}
+              </div>
+            </div>
+          )}
         </div>
-        </>
-      )}
       </div>
       
     </div>
