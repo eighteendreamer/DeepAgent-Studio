@@ -332,7 +332,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   return (
     <div className="w-full h-full flex flex-col relative">
       {/* Top-right widgets */}
-      <div className={`absolute top-4 z-50 flex items-center gap-3 text-text-secondary ${isRightSidebarOpen && sidebarTabs.length > 0 ? "right-0" : "right-4"}`}>
+      <div className={`absolute top-4 z-50 flex items-center gap-3 text-text-secondary ${isRightSidebarOpen ? "right-0" : "right-4"}`}>
         <div className="relative" ref={modeDropdownRef}>
           <div
             className="flex items-center px-2 py-1 hover:bg-gray-100 rounded cursor-pointer text-sm transition-colors"
@@ -398,7 +398,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           </AnimatePresence>
         </div>
 
-        {isRightSidebarOpen && sidebarTabs.length > 0 ? (
+        {isRightSidebarOpen ? (
           <div
             className={`overflow-hidden border border-border-theme border-b-0 bg-white ${isResizingSidebar ? "" : "transition-[width] duration-300"} ${isRightSidebarMaximized ? "flex-1 min-w-0" : ""}`}
             style={isRightSidebarMaximized ? { minWidth: "360px" } : { width: `${rightSidebarWidth}px`, minWidth: "360px" }}
@@ -452,8 +452,8 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
               onClick={handleToggleBottomTerminalPanel}
             />
             <SidebarRightIcon
-              className="cursor-pointer transition-colors hover:text-text-base"
-              onClick={() => setIsRightSidebarOpen(true)}
+              className={`cursor-pointer transition-colors ${isRightSidebarOpen ? 'text-text-base' : 'hover:text-text-base'}`}
+              onClick={() => setIsRightSidebarOpen(!isRightSidebarOpen)}
             />
           </div>
         )}

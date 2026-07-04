@@ -1128,7 +1128,7 @@ export function ChatView({
       />
       {/* Top half: conversation flow & overlay */}
       <div className="flex-1 flex flex-col h-full w-full relative overflow-hidden">
-        <header className={`h-14 flex items-center pl-6 justify-between flex-shrink-0 w-full ${isRightSidebarOpen && sidebarTabs.length > 0 ? "pr-0" : "pr-6"}`}>
+        <header className={`h-14 flex items-center pl-6 justify-between flex-shrink-0 w-full ${isRightSidebarOpen ? "pr-0" : "pr-6"}`}>
           <div className="relative" ref={chatMenuRef}>
             <div 
               className="flex items-center text-sm font-medium text-text-base cursor-pointer px-2 py-1 -ml-2 rounded hover:bg-gray-100 transition-colors"
@@ -1359,7 +1359,7 @@ export function ChatView({
                 />
               )}
             </div>
-            {isRightSidebarOpen && sidebarTabs.length > 0 ? (
+            {isRightSidebarOpen ? (
               <div
                 className={`overflow-hidden border border-border-theme border-b-0 bg-white ${isResizingSidebar ? "" : "transition-[width] duration-300"} ${isRightSidebarMaximized ? "flex-1 min-w-0" : ""}`}
                 style={isRightSidebarMaximized ? { minWidth: "360px" } : { width: `${rightSidebarWidth}px`, minWidth: "360px" }}
@@ -1413,8 +1413,8 @@ export function ChatView({
                   onClick={handleToggleBottomTerminalPanel}
                 />
                 <SidebarRightIcon
-                  className="cursor-pointer transition-colors hover:text-text-base"
-                  onClick={() => setIsRightSidebarOpen(true)}
+                  className={`cursor-pointer transition-colors ${isRightSidebarOpen ? 'text-text-base' : 'hover:text-text-base'}`}
+                  onClick={() => setIsRightSidebarOpen(!isRightSidebarOpen)}
                 />
               </div>
             )}
