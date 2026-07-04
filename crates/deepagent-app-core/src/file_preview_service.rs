@@ -54,62 +54,12 @@ impl FilePreviewService {
             .map(|s| s.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         match ext {
-            "txt"
-            | "md"
-            | "markdown"
-            | "json"
-            | "log"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "xml"
-            | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "css"
-            | "scss"
-            | "sass"
-            | "less"
-            | "html"
-            | "htm"
-            | "vue"
-            | "svelte"
-            | "java"
-            | "kt"
-            | "kts"
-            | "gradle"
-            | "groovy"
-            | "rs"
-            | "go"
-            | "py"
-            | "rb"
-            | "php"
-            | "c"
-            | "cc"
-            | "cpp"
-            | "cxx"
-            | "h"
-            | "hpp"
-            | "hxx"
-            | "cs"
-            | "swift"
-            | "sql"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "fish"
-            | "ps1"
-            | "bat"
-            | "cmd"
-            | "conf"
-            | "cfg"
-            | "ini"
-            | "properties"
-            | "env"
-            | "lock" => "text",
+            "txt" | "md" | "markdown" | "json" | "log" | "yaml" | "yml" | "toml" | "xml" | "ts"
+            | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "css" | "scss" | "sass" | "less" | "html"
+            | "htm" | "vue" | "svelte" | "java" | "kt" | "kts" | "gradle" | "groovy" | "rs"
+            | "go" | "py" | "rb" | "php" | "c" | "cc" | "cpp" | "cxx" | "h" | "hpp" | "hxx"
+            | "cs" | "swift" | "sql" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd"
+            | "conf" | "cfg" | "ini" | "properties" | "env" | "lock" => "text",
             "csv" | "tsv" => "csv",
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "ico" => "image",
             "pdf" => "pdf",
@@ -553,19 +503,58 @@ mod tests {
 
     #[test]
     fn classify_covers_office_and_text() {
-        assert_eq!(FilePreviewService::classify(Path::new("a.md"), "md"), "text");
-        assert_eq!(FilePreviewService::classify(Path::new("a.ts"), "ts"), "text");
-        assert_eq!(FilePreviewService::classify(Path::new("index.html"), "html"), "text");
-        assert_eq!(FilePreviewService::classify(Path::new("csv.csv"), "csv"), "csv");
-        assert_eq!(FilePreviewService::classify(Path::new("img.png"), "png"), "image");
-        assert_eq!(FilePreviewService::classify(Path::new("doc.docx"), "docx"), "docx");
-        assert_eq!(FilePreviewService::classify(Path::new("book.xlsx"), "xlsx"), "xlsx");
-        assert_eq!(FilePreviewService::classify(Path::new("deck.pptx"), "pptx"), "pptx");
-        assert_eq!(FilePreviewService::classify(Path::new("scan.pdf"), "pdf"), "pdf");
-        assert_eq!(FilePreviewService::classify(Path::new("Dockerfile"), ""), "text");
-        assert_eq!(FilePreviewService::classify(Path::new(".gitignore"), ""), "text");
-        assert_eq!(FilePreviewService::classify(Path::new(".npmrc"), ""), "text");
-        assert_eq!(FilePreviewService::classify(Path::new("a.zip"), "zip"), "unknown");
+        assert_eq!(
+            FilePreviewService::classify(Path::new("a.md"), "md"),
+            "text"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new("a.ts"), "ts"),
+            "text"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new("index.html"), "html"),
+            "text"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new("csv.csv"), "csv"),
+            "csv"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new("img.png"), "png"),
+            "image"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new("doc.docx"), "docx"),
+            "docx"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new("book.xlsx"), "xlsx"),
+            "xlsx"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new("deck.pptx"), "pptx"),
+            "pptx"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new("scan.pdf"), "pdf"),
+            "pdf"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new("Dockerfile"), ""),
+            "text"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new(".gitignore"), ""),
+            "text"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new(".npmrc"), ""),
+            "text"
+        );
+        assert_eq!(
+            FilePreviewService::classify(Path::new("a.zip"), "zip"),
+            "unknown"
+        );
     }
 
     #[test]
