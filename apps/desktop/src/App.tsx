@@ -59,6 +59,13 @@ import { message } from "./components/message";
 
 type View = "start" | "chat" | "skills" | "knowledge" | "plugins" | "automation" | "settings";
 
+const LEFT_SIDEBAR_OPEN_KEY = "deepagent:left-sidebar-open";
+
+function readLeftSidebarOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem(LEFT_SIDEBAR_OPEN_KEY) !== "false";
+}
+
 interface SessionCompletedPayload {
   run_id: string;
   session_id: string | null;
@@ -1159,11 +1166,15 @@ export function App() {
       });
   }, [activeId]);
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(readLeftSidebarOpen);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   // Settings State
   const [activeSettingsCategory, setActiveSettingsCategory] = useState("general");
+
+  useEffect(() => {
+    window.localStorage.setItem(LEFT_SIDEBAR_OPEN_KEY, String(isSidebarOpen));
+  }, [isSidebarOpen]);
 
   const canGoBack = navState.index > 0;
   const canGoForward = navState.index < navState.history.length - 1;
@@ -1174,7 +1185,7 @@ export function App() {
   return (
     <div className="bg-sidebar-bg text-text-base font-sans h-screen w-full overflow-hidden flex flex-col relative">
       <TitleBar 
-        onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)} 
+        onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
         isSidebarOpen={isSidebarOpen} 
         canGoBack={canGoBack}
         canGoForward={canGoForward}
