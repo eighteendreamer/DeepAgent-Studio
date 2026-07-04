@@ -12,12 +12,77 @@ interface Props {
   onRefresh?: () => Promise<void> | void;
 }
 
+type GitLogViewCache = {
+  version: 1;
+  projectPath: string;
+  cachedAt: number;
+  entries: GitLogEntry[];
+  selectedHash: string | null;
+  selectedFile: string | null;
+  diffCommitHash: string | null;
+  diffFilePath: string | null;
+  diff: GitDiff | null;
+};
+
+const GIT_LOG_VIEW_CACHE_PREFIX = "deepagent:git-log-view:";
+
+function gitLogViewCacheKey(projectPath: string): string {
+  return `${GIT_LOG_VIEW_CACHE_PREFIX}${encodeURIComponent(projectPath)}`;
+}
+
+function readGitLogViewCache(projectPath: string): GitLogViewCache | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(gitLogViewCacheKey(projectPath));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<GitLogViewCache>;
+    if (parsed.version !== 1 || parsed.projectPath !== projectPath || !Array.isArray(parsed.entries)) return null;
+    return parsed as GitLogViewCache;
+  } catch {
+    return null;
+  }
+}
+
+function writeGitLogViewCache(
+  projectPath: string,
+  entries: GitLogEntry[],
+  selectedHash: string | null,
+  selectedFile: string | null,
+  diff: GitDiff | null,
+) {
+  if (typeof window === "undefined" || entries.length === 0) return;
+  try {
+    window.localStorage.setItem(
+      gitLogViewCacheKey(projectPath),
+      JSON.stringify({
+        version: 1,
+        projectPath,
+        cachedAt: Date.now(),
+        entries,
+        selectedHash,
+        selectedFile,
+        diffCommitHash: diff ? selectedHash : null,
+        diffFilePath: diff ? selectedFile : null,
+        diff,
+      } satisfies GitLogViewCache),
+    );
+  } catch {
+    // Best-effort UI cache.
+  }
+}
+
 export function GitLogView({ projectPath, onRefresh }: Props) {
   const { t } = useTranslation();
-  const [entries, setEntries] = useState<GitLogEntry[]>([]);
-  const [selectedHash, setSelectedHash] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [diff, setDiff] = useState<GitDiff | null>(null);
+  const cached = readGitLogViewCache(projectPath);
+  const [entries, setEntries] = useState<GitLogEntry[]>(() => cached?.entries ?? []);
+  const [selectedHash, setSelectedHash] = useState<string | null>(() => cached?.selectedHash ?? cached?.entries[0]?.full_hash ?? null);
+  const [selectedFile, setSelectedFile] = useState<string | null>(() => cached?.selectedFile ?? null);
+  const [diff, setDiff] = useState<GitDiff | null>(() => cached?.diff ?? null);
+  const [diffMeta, setDiffMeta] = useState<{ commitHash: string; filePath: string } | null>(() =>
+    cached?.diffCommitHash && cached.diffFilePath
+      ? { commitHash: cached.diffCommitHash, filePath: cached.diffFilePath }
+      : null,
+  );
   const [loading, setLoading] = useState(false);
   const [diffLoading, setDiffLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +118,22 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    const nextCache = readGitLogViewCache(projectPath);
+    if (nextCache) {
+      setEntries(nextCache.entries);
+      setSelectedHash(nextCache.selectedHash ?? nextCache.entries[0]?.full_hash ?? null);
+      setSelectedFile(nextCache.selectedFile);
+      setDiff(nextCache.diff);
+      setDiffMeta(
+        nextCache.diffCommitHash && nextCache.diffFilePath
+          ? { commitHash: nextCache.diffCommitHash, filePath: nextCache.diffFilePath }
+          : null,
+      );
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
     loadLog(false).finally(() => {
       if (cancelled) return;
     });
@@ -60,6 +141,12 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
       cancelled = true;
     };
   }, [loadLog]);
+
+  useEffect(() => {
+    const matchingDiff =
+      diffMeta?.commitHash === selectedHash && diffMeta.filePath === selectedFile ? diff : null;
+    writeGitLogViewCache(projectPath, entries, selectedHash, selectedFile, matchingDiff);
+  }, [diff, diffMeta, entries, projectPath, selectedFile, selectedHash]);
 
   const selectedCommit = useMemo(
     () => entries.find((entry) => entry.full_hash === selectedHash) ?? entries[0] ?? null,
@@ -83,11 +170,30 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
       setDiff(null);
       return;
     }
+    const nextCache = readGitLogViewCache(projectPath);
+    const cachedDiff = nextCache?.diff;
+    if (
+      cachedDiff &&
+      selectedHash === nextCache?.diffCommitHash &&
+      selectedFile === nextCache.diffFilePath &&
+      cachedDiff.file_path === selectedFile &&
+      selectedCommit.full_hash === selectedHash
+    ) {
+      setDiff(cachedDiff);
+      setDiffMeta({ commitHash: selectedCommit.full_hash, filePath: selectedFile });
+      setDiffLoading(false);
+      return;
+    }
     let cancelled = false;
+    setDiff(null);
+    setDiffMeta(null);
     setDiffLoading(true);
     gitCommitDiff(projectPath, selectedCommit.full_hash, selectedFile)
       .then((next) => {
-        if (!cancelled) setDiff(next);
+        if (!cancelled) {
+          setDiff(next);
+          setDiffMeta({ commitHash: selectedCommit.full_hash, filePath: selectedFile });
+        }
       })
       .catch((err) => {
         if (!cancelled) {
@@ -100,6 +206,7 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
             text: err instanceof Error ? err.message : String(err),
             truncated: false,
           });
+          setDiffMeta({ commitHash: selectedCommit.full_hash, filePath: selectedFile });
         }
       })
       .finally(() => {

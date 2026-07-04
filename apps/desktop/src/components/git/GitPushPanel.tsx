@@ -11,10 +11,54 @@ interface Props {
   onRefresh?: () => Promise<void> | void;
 }
 
+type GitPushPanelCache = {
+  version: 1;
+  projectPath: string;
+  cachedAt: number;
+  preview: GitPushPreview | null;
+  riskScan: GitPushRiskScan | null;
+};
+
+const GIT_PUSH_PANEL_CACHE_PREFIX = "deepagent:git-push-panel:";
+
+function gitPushPanelCacheKey(projectPath: string): string {
+  return `${GIT_PUSH_PANEL_CACHE_PREFIX}${encodeURIComponent(projectPath)}`;
+}
+
+function readGitPushPanelCache(projectPath: string): GitPushPanelCache | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(gitPushPanelCacheKey(projectPath));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<GitPushPanelCache>;
+    if (parsed.version !== 1 || parsed.projectPath !== projectPath) return null;
+    return parsed as GitPushPanelCache;
+  } catch {
+    return null;
+  }
+}
+
+function writeGitPushPanelCache(
+  projectPath: string,
+  preview: GitPushPreview | null,
+  riskScan: GitPushRiskScan | null,
+) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      gitPushPanelCacheKey(projectPath),
+      JSON.stringify({ version: 1, projectPath, cachedAt: Date.now(), preview, riskScan } satisfies GitPushPanelCache),
+    );
+  } catch {
+    // Best-effort UI cache.
+  }
+}
+
 export function GitPushPanel({ projectPath, onRefresh }: Props) {
   const { t } = useTranslation();
-  const [preview, setPreview] = useState<GitPushPreview | null>(null);
-  const [riskScan, setRiskScan] = useState<GitPushRiskScan | null>(null);
+  const cached = readGitPushPanelCache(projectPath);
+  const [preview, setPreview] = useState<GitPushPreview | null>(() => cached?.preview ?? null);
+  const [riskScan, setRiskScan] = useState<GitPushRiskScan | null>(() => cached?.riskScan ?? null);
   const [loading, setLoading] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +71,7 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
       const [nextPreview, nextRiskScan] = await Promise.all([gitPushPreview(projectPath), gitPushRiskScan(projectPath)]);
       setPreview(nextPreview);
       setRiskScan(nextRiskScan);
+      writeGitPushPanelCache(projectPath, nextPreview, nextRiskScan);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -35,8 +80,19 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
   }, [projectPath]);
 
   useEffect(() => {
+    const nextCache = readGitPushPanelCache(projectPath);
+    setResult(null);
+    setError(null);
+    if (nextCache) {
+      setPreview(nextCache.preview);
+      setRiskScan(nextCache.riskScan);
+      setLoading(false);
+      return;
+    }
+    setPreview(null);
+    setRiskScan(null);
     void load();
-  }, [load]);
+  }, [load, projectPath]);
 
   const runPush = async () => {
     if (!preview || preview.blocked_reason) return;
