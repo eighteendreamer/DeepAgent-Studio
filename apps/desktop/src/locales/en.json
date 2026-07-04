@@ -648,6 +648,8 @@
     "help": "Help",
     "update": "Update",
     "downloadUpdate": "Download update",
+    "downloadingUpdate": "Downloading",
+    "downloadingUpdatePercent": "Downloading {{percent}}%",
     "updateReady": "Update downloaded. It will install automatically when the app closes.",
     "updateDownloadFailed": "Failed to download update. Please try again.",
     "updateInstallFailed": "Failed to install update. Please close the app and try again."

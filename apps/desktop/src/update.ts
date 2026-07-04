@@ -1,4 +1,17 @@
-import { check, type CheckOptions, type Update } from "@tauri-apps/plugin-updater";
+import {
+  check,
+  type CheckOptions,
+  type DownloadEvent,
+  type Update,
+} from "@tauri-apps/plugin-updater";
+
+export interface UpdateDownloadProgress {
+  downloadedBytes: number;
+  totalBytes?: number;
+  percent?: number;
+}
+
+type UpdateDownloadProgressHandler = (progress: UpdateDownloadProgress) => void;
 
 let downloadedUpdate: Update | null = null;
 let availableUpdate: Update | null = null;
@@ -60,7 +73,34 @@ export function checkForAvailableUpdate(): Promise<boolean> {
   return checkPromise;
 }
 
-export function downloadUpdateForNextShutdown(): Promise<boolean> {
+function toProgressHandler(
+  onProgress?: UpdateDownloadProgressHandler,
+): (event: DownloadEvent) => void {
+  let downloadedBytes = 0;
+  let totalBytes: number | undefined;
+
+  return (event) => {
+    if (event.event === "Started") {
+      downloadedBytes = 0;
+      totalBytes = event.data.contentLength;
+    } else if (event.event === "Progress") {
+      downloadedBytes += event.data.chunkLength;
+    } else {
+      if (typeof totalBytes === "number") downloadedBytes = totalBytes;
+    }
+
+    const percent =
+      typeof totalBytes === "number" && totalBytes > 0
+        ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100))
+        : undefined;
+
+    onProgress?.({ downloadedBytes, totalBytes, percent });
+  };
+}
+
+export function downloadUpdateForNextShutdown(
+  onProgress?: UpdateDownloadProgressHandler,
+): Promise<boolean> {
   if (!inTauri()) return Promise.resolve(false);
   if (downloadedUpdate) return Promise.resolve(true);
   if (downloadPromise) return downloadPromise;
@@ -69,7 +109,7 @@ export function downloadUpdateForNextShutdown(): Promise<boolean> {
     try {
       const update = availableUpdate ?? (await checkWithFallbacks());
       if (!update) return false;
-      await update.download(undefined, { timeout: 120_000 });
+      await update.download(toProgressHandler(onProgress), { timeout: 120_000 });
       downloadedUpdate = update;
       availableUpdate = null;
       return true;

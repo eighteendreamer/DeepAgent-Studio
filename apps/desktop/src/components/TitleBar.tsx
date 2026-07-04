@@ -33,6 +33,7 @@ async function currentWindow() {
 export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForward, onBack, onForward }: Props) {
   const { t } = useTranslation();
   const [downloadingUpdate, setDownloadingUpdate] = useState(false);
+  const [updateDownloadPercent, setUpdateDownloadPercent] = useState<number | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const MENUS = [
     { key: "file", label: t("titleBar.file") },
@@ -59,11 +60,18 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
   const onDownloadUpdate = async () => {
     if (downloadingUpdate || !updateAvailable) return;
     setDownloadingUpdate(true);
-    const ready = await downloadUpdateForNextShutdown();
+    setUpdateDownloadPercent(0);
+    const ready = await downloadUpdateForNextShutdown((progress) => {
+      if (typeof progress.percent === "number") {
+        setUpdateDownloadPercent(progress.percent);
+      }
+    });
     setUpdateAvailable(!ready);
     if (ready) {
+      setUpdateDownloadPercent(100);
       message.success(t("titleBar.updateReady"));
     } else {
+      setUpdateDownloadPercent(null);
       message.error(t("titleBar.updateDownloadFailed"));
     }
     setDownloadingUpdate(false);
@@ -140,13 +148,27 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
               onClick={onDownloadUpdate}
               disabled={downloadingUpdate}
               title={t("titleBar.downloadUpdate")}
-              className="ml-1 inline-flex h-7 items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 text-[12px] font-medium text-blue-700 shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-100 disabled:cursor-default disabled:border-blue-100 disabled:bg-blue-50/60 disabled:text-blue-500"
+              className="relative ml-1 inline-flex h-7 min-w-[88px] items-center justify-center gap-1.5 overflow-hidden rounded-full border border-blue-200 bg-blue-50 px-2.5 text-[12px] font-medium text-blue-700 shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-100 disabled:cursor-default disabled:border-blue-100 disabled:bg-blue-50/60 disabled:text-blue-500"
             >
+              {downloadingUpdate && typeof updateDownloadPercent === "number" && (
+                <span
+                  className="pointer-events-none absolute inset-y-0 left-0 bg-blue-200/60 transition-[width] duration-200"
+                  style={{ width: `${updateDownloadPercent}%` }}
+                />
+              )}
               <FontAwesomeIcon
                 icon={["fas", downloadingUpdate ? "circle-notch" : "download"]}
-                className={downloadingUpdate ? "animate-spin text-[11px]" : "text-[11px]"}
+                className={`relative z-10 ${downloadingUpdate ? "animate-spin text-[11px]" : "text-[11px]"}`}
               />
-              <span>{t("titleBar.downloadUpdate")}</span>
+              <span className="relative z-10">
+                {downloadingUpdate
+                  ? typeof updateDownloadPercent === "number"
+                    ? t("titleBar.downloadingUpdatePercent", {
+                        percent: updateDownloadPercent,
+                      })
+                    : t("titleBar.downloadingUpdate")
+                  : t("titleBar.downloadUpdate")}
+              </span>
             </button>
           )}
         </div>
