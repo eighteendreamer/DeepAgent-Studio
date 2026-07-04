@@ -47,7 +47,7 @@
         "https://download.deepagent.studio/releases/latest.json"
       ],
       "windows": {
-        "installMode": "passive"
+        "installMode": "quiet"
       }
     }
   }
