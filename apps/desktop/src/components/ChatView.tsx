@@ -907,7 +907,6 @@ export function ChatView({
       return;
     }
     sidebarRestoreWidthRef.current = rightSidebarWidth;
-    setRightSidebarWidth(Math.max(960, window.innerWidth - 32));
     setIsRightSidebarMaximized(true);
   };
 
@@ -1355,8 +1354,8 @@ export function ChatView({
             </div>
             {isRightSidebarOpen && sidebarTabs.length > 0 ? (
               <div
-                className={`overflow-hidden border border-border-theme border-b-0 bg-white ${isResizingSidebar ? "" : "transition-[width] duration-300"}`}
-                style={{ width: `${rightSidebarWidth}px`, minWidth: "360px" }}
+                className={`overflow-hidden border border-border-theme border-b-0 bg-white ${isResizingSidebar ? "" : "transition-[width] duration-300"} ${isRightSidebarMaximized ? "flex-1 min-w-0" : ""}`}
+                style={isRightSidebarMaximized ? { minWidth: "360px" } : { width: `${rightSidebarWidth}px`, minWidth: "360px" }}
               >
                 <SidebarPluginHeader
                   tabs={sidebarTabs}
@@ -1479,8 +1478,8 @@ export function ChatView({
             
             {isRightSidebarOpen && (
               <div 
-                className={`relative flex h-full flex-shrink-0 flex-col border-l border-border-theme bg-white shadow-[-12px_0_30px_rgba(0,0,0,0.06)] ${isResizingSidebar ? "" : "transition-[width] duration-300"}`}
-                style={{ width: `${rightSidebarWidth}px`, minWidth: '360px' }}
+                className={`relative flex h-full flex-shrink-0 flex-col border-l border-border-theme bg-white shadow-[-12px_0_30px_rgba(0,0,0,0.06)] ${isResizingSidebar ? "" : "transition-[width] duration-300"} ${isRightSidebarMaximized ? "w-full" : ""}`}
+                style={isRightSidebarMaximized ? { minWidth: '360px' } : { width: `${rightSidebarWidth}px`, minWidth: '360px' }}
               >
           {/* Resize Handle */}
           <div 

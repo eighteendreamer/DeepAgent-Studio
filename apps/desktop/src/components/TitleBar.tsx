@@ -153,7 +153,7 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
       </div>
 
       {/* Right: window controls */}
-      <div className="flex items-center -mr-4">
+      <div className="flex items-center absolute right-0 top-0 h-10 z-50">
         <button
           className="win-btn w-10 h-10 flex items-center justify-center text-text-secondary transition-colors"
           onClick={onMinimize}
