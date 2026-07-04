@@ -565,7 +565,15 @@
       "edit": "Edit",
       "delete": "Delete",
       "cancel": "Cancel",
-      "save": "Save"
+      "save": "Save",
+      "errors": {
+        "generic": "Unable to connect. Please check the SSH configuration.",
+        "refused": "Connection refused. Check that the host and port are correct, and that the SSH service is running.",
+        "timeout": "Connection timed out. Check the network, firewall, host, and port.",
+        "auth": "Authentication failed. Check the username, password, or key file.",
+        "resolve": "Host could not be resolved. Check the host name or IP address.",
+        "unreachable": "Host is unreachable. Check the network route, firewall, and server status."
+      }
     },
     "env": {
       "title": "Environment Variables",

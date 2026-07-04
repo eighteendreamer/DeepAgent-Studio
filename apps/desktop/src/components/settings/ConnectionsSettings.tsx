@@ -36,6 +36,59 @@ const emptyForm: FormData = {
   password: "",
 };
 
+type Translate = (key: string) => string;
+
+function normalizeSshError(
+  error: string | null | undefined,
+  t: Translate,
+): string {
+  const raw = (error ?? "").trim();
+  if (!raw) return t("settings.connections.errors.generic");
+
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes("os error 10061") ||
+    lower.includes("connection refused") ||
+    raw.includes("积极拒绝")
+  ) {
+    return t("settings.connections.errors.refused");
+  }
+  if (
+    lower.includes("timed out") ||
+    lower.includes("timeout") ||
+    raw.includes("超时")
+  ) {
+    return t("settings.connections.errors.timeout");
+  }
+  if (
+    lower.includes("permission denied") ||
+    lower.includes("authentication failed") ||
+    raw.includes("认证失败") ||
+    raw.includes("密码")
+  ) {
+    return t("settings.connections.errors.auth");
+  }
+  if (
+    lower.includes("could not resolve") ||
+    lower.includes("name or service not known") ||
+    lower.includes("nodename nor servname provided") ||
+    raw.includes("无法解析")
+  ) {
+    return t("settings.connections.errors.resolve");
+  }
+  if (lower.includes("no route to host") || raw.includes("不可达")) {
+    return t("settings.connections.errors.unreachable");
+  }
+
+  const cleaned = raw
+    .replace(/^internal error:\s*/i, "")
+    .replace(/^ssh error occurr?ed:\s*/i, "")
+    .replace(/^ssh error:\s*/i, "")
+    .trim();
+
+  return cleaned || t("settings.connections.errors.generic");
+}
+
 export function ConnectionsSettings() {
   const { t } = useTranslation();
   const [connections, setConnections] = useState<SshConnection[]>([]);
@@ -145,7 +198,11 @@ export function ConnectionsSettings() {
 
     try {
       const result = await sshTestConnection(id);
-      setTestResult((prev) => ({ ...prev, [id]: result }));
+      const displayError = normalizeSshError(result.error, t);
+      const displayResult = result.ok
+        ? result
+        : { ...result, error: displayError };
+      setTestResult((prev) => ({ ...prev, [id]: displayResult }));
       if (result.ok) {
         message.success(
           `${t("settings.connections.testOk")}${
@@ -155,7 +212,7 @@ export function ConnectionsSettings() {
       } else {
         message.error(
           `${t("settings.connections.testFailed")}${
-            result.error ? `: ${result.error}` : ""
+            displayError ? `: ${displayError}` : ""
           }`,
         );
       }
@@ -166,16 +223,16 @@ export function ConnectionsSettings() {
                 ...conn,
                 status: result.ok ? "connected" : "error",
                 latency_ms: result.latency_ms,
-                last_error: result.ok ? undefined : result.error,
+                last_error: result.ok ? undefined : displayError,
               }
             : conn,
         ),
       );
     } catch (error) {
-      const errorMessage =
-        error instanceof Error
-          ? error.message
-          : t("settings.connections.testFailed");
+      const errorMessage = normalizeSshError(
+        error instanceof Error ? error.message : undefined,
+        t,
+      );
 
       setTestResult((prev) => ({
         ...prev,
@@ -296,7 +353,7 @@ export function ConnectionsSettings() {
                       </div>
                       {conn.last_error && (
                         <div className="mt-0.5 break-all text-[11px] text-red-500">
-                          {conn.last_error}
+                          {normalizeSshError(conn.last_error, t)}
                         </div>
                       )}
                     </div>
