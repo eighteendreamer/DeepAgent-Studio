@@ -224,7 +224,7 @@ function RuntimeResourceSettings() {
         <div>
           <h2 className="text-[15px] font-medium text-text-base mb-1">按需下载资源</h2>
           <div className="text-[12px] text-text-secondary">
-            管理本地语音模型、转写引擎、文档转换和 PDF 渲染等可选运行时。资源安装在应用自身目录中，可随时卸载。
+            管理本地语音模型、转写引擎、文档转换和 PDF 渲染等可选运行时。资源安装在应用数据目录中，更新应用不会删除，可随时卸载。
           </div>
         </div>
         <button

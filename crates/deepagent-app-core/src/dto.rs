@@ -627,7 +627,7 @@ pub struct PreviewResultDto {
 
 // ---- managed runtimes (office-agent RuntimeService) -----------------------
 
-/// Status of one managed runtime (downloadable, installed into the app's own
+/// Status of one managed runtime (downloadable, installed into the app data
 /// runtimes dir). Surfaced by `runtime_list` / `runtime_status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeStatusDto {

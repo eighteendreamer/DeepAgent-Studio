@@ -1,9 +1,9 @@
 //! Managed-runtime manager (office-agent Phase 2).
 //!
 //! Heavy runtimes (speech models, pdfium, pandoc, LibreOffice) are **not**
-//! bundled in the installer. They are downloaded on demand into the app's own
-//! runtimes directory — never the OS program dir, never `PATH`, no admin —
-//! and verified by SHA-256 before install. When a runtime is absent the
+//! bundled in the installer. They are downloaded on demand into the app data
+//! runtimes directory, not the OS program dir or `PATH`, and verified by
+//! SHA-256 before install. When a runtime is absent the
 //! caller falls back to a pure-Rust Tier C path (handled by the consumer).
 //!
 //! The core (registry / resolution / install-dir selection / checksum verify /
@@ -12,7 +12,7 @@
 //! implementation lives behind the `runtimes` feature.
 //!
 //! Integrity is **fail-closed**: an artifact without a pinned SHA-256 cannot be
-//! installed. This is deliberate — real registry entries must pin a verified
+//! installed. This is deliberate: real registry entries must pin a verified
 //! checksum before the download path is enabled.
 
 use std::collections::HashMap;
@@ -86,11 +86,11 @@ impl Platform {
 /// How a downloaded artifact is materialized into the install dir.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveKind {
-    /// A zip archive — extracted into the destination subdir.
+    /// A zip archive extracted into the destination subdir.
     Zip,
-    /// A gzip-compressed tar archive — extracted into the destination subdir.
+    /// A gzip-compressed tar archive extracted into the destination subdir.
     TarGz,
-    /// A single raw file (e.g. a `.bin` model) — copied as-is.
+    /// A single raw file (e.g. a `.bin` model) copied as-is.
     Raw,
 }
 
@@ -102,7 +102,8 @@ pub struct RuntimeArtifact {
     /// Optional fallback URLs for networks where the primary host is blocked.
     /// These are tried after `url`; downloaded bytes are still verified.
     pub mirror_urls: Vec<String>,
-    /// Pinned SHA-256 (lowercase hex). `None` ⇒ not installable (fail-closed).
+    /// Pinned SHA-256 (lowercase hex). `None` means not installable
+    /// (fail-closed).
     pub sha256: Option<String>,
     /// Destination subdir under the install root (e.g. "speech/models").
     pub dest_subdir: String,
@@ -151,7 +152,7 @@ pub trait Downloader: Send + Sync {
     ) -> Result<()>;
 }
 
-/// A downloader that always errors — the default when no real downloader is
+/// A downloader that always errors: the default when no real downloader is
 /// injected (e.g. the kernel workspace without the `runtimes` feature).
 pub struct UnavailableDownloader;
 
@@ -170,7 +171,7 @@ impl Downloader for UnavailableDownloader {
     }
 }
 
-/// Manages download + verified install of optional runtimes into the app's own
+/// Manages download + verified install of optional runtimes into the app data
 /// runtimes directory.
 pub struct RuntimeService {
     registry: Vec<RuntimeEntry>,
@@ -182,7 +183,8 @@ pub struct RuntimeService {
 
 impl RuntimeService {
     /// Build with the default registry, choosing the first writable install
-    /// root from `candidates` (e.g. `<exe>/runtimes`, then `<app_data>/runtimes`).
+    /// root from `candidates` (prefer `<app_data>/runtimes`; legacy
+    /// `<exe>/runtimes` can remain as a fallback).
     pub fn new(candidates: &[PathBuf], downloader: Arc<dyn Downloader>) -> Self {
         Self::with_registry(candidates, downloader, default_registry())
     }
@@ -202,7 +204,7 @@ impl RuntimeService {
         }
     }
 
-    /// The chosen install root (app-owned runtimes dir).
+    /// The chosen install root (app data runtimes dir).
     pub fn install_root(&self) -> &Path {
         &self.install_root
     }

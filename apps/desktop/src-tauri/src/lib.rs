@@ -425,6 +425,48 @@ fn dir_has_skill_md(dir: &Path) -> bool {
     false
 }
 
+/// Move previously downloaded optional runtimes out of the install directory.
+///
+/// Older builds preferred `<exe>/runtimes`, which can be removed by Windows
+/// updater/uninstaller flows. Runtime assets are user-managed downloads, so the
+/// durable home is `<app_data>/runtimes`.
+fn migrate_legacy_runtime_dir(
+    legacy_dir: &Path,
+    app_data_runtime_dir: &Path,
+) -> std::io::Result<()> {
+    if !legacy_dir.exists() {
+        return Ok(());
+    }
+    if same_path(legacy_dir, app_data_runtime_dir) {
+        return Ok(());
+    }
+
+    copy_dir_missing(legacy_dir, app_data_runtime_dir)
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+fn copy_dir_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_missing(&from, &to)?;
+        } else if ty.is_file() && !to.exists() {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Drop entries older than [`PENDING_SCAN_TTL`] from `pending`. Pull-based:
 /// every `skill_market_*` command that touches the map calls this first, so
 /// no background tokio task is needed (no thread leak at shutdown).
@@ -2938,7 +2980,31 @@ fn audio_stop_recording(
     state.recording.stop_recording(&session_id).map_err(|e| e.to_string())
 }
 
-// ---- managed runtimes (office-agent: on-demand download into app dir) -----
+// ---- managed runtimes (office-agent: on-demand download into app data) ----
+
+#[tauri::command]
+fn runtime_prepare_for_update(app: tauri::AppHandle) -> Result<(), String> {
+    let app_runtime_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("resolve app data dir: {e}"))?
+        .join("runtimes");
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let legacy_runtime_dir = exe_dir.join("runtimes");
+            migrate_legacy_runtime_dir(&legacy_runtime_dir, &app_runtime_dir).map_err(|e| {
+                format!(
+                    "migrate runtimes from '{}' to '{}': {e}",
+                    legacy_runtime_dir.display(),
+                    app_runtime_dir.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
 
 #[tauri::command]
 fn runtime_list(state: State<'_, AppState>) -> Result<Vec<RuntimeStatusDto>, String> {
@@ -3254,17 +3320,25 @@ pub fn run() {
                 Arc::new(deepagent_app_core::recording_service::CpalRecorder::new()),
             ));
 
-            // Managed runtimes: download into the app's own dir. Prefer a
-            // `runtimes/` next to the executable (writable for per-user
-            // installs); fall back to <app_data>/runtimes when the exe dir is
-            // read-only (e.g. Program Files). Never the OS program dir / PATH.
-            let mut runtime_roots = Vec::new();
+            // Managed runtimes are user-downloaded assets. Keep them under
+            // app data so app updates/uninstalls do not remove them.
+            let app_runtime_dir = dir.join("runtimes");
+            let mut runtime_roots = vec![app_runtime_dir.clone()];
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(exe_dir) = exe.parent() {
-                    runtime_roots.push(exe_dir.join("runtimes"));
+                    let legacy_runtime_dir = exe_dir.join("runtimes");
+                    if let Err(error) =
+                        migrate_legacy_runtime_dir(&legacy_runtime_dir, &app_runtime_dir)
+                    {
+                        eprintln!(
+                            "[runtime] failed to migrate runtimes from '{}' to '{}': {error}",
+                            legacy_runtime_dir.display(),
+                            app_runtime_dir.display()
+                        );
+                    }
+                    runtime_roots.push(legacy_runtime_dir);
                 }
             }
-            runtime_roots.push(dir.join("runtimes"));
             let runtime = Arc::new(RuntimeService::new(
                 &runtime_roots,
                 Arc::new(deepagent_app_core::runtime_service::ReqwestDownloader::default()),
@@ -3551,6 +3625,7 @@ pub fn run() {
             audio_pause_recording,
             audio_resume_recording,
             audio_stop_recording,
+            runtime_prepare_for_update,
             runtime_list,
             runtime_status,
             runtime_install,

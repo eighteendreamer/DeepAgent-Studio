@@ -1956,8 +1956,13 @@ export async function runtimeStatus(id: string): Promise<RuntimeStatus | null> {
   return null;
 }
 
+export async function runtimePrepareForUpdate(): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("runtime_prepare_for_update");
+}
+
 /**
- * Download + verify + install a managed runtime into the app's own dir.
+ * Download + verify + install a managed runtime into the app data dir.
  * High-risk (downloads + writes a binary/model) — call only after explicit
  * user consent. Progress arrives via the `runtime:progress` event; subscribe
  * with {@link runtimeProgressSubscribe}.

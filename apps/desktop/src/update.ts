@@ -4,6 +4,7 @@ import {
   type DownloadEvent,
   type Update,
 } from "@tauri-apps/plugin-updater";
+import { runtimePrepareForUpdate } from "./api";
 
 export interface UpdateDownloadProgress {
   downloadedBytes: number;
@@ -130,6 +131,7 @@ export async function installDownloadedUpdate(): Promise<boolean> {
   if (!update) return false;
 
   try {
+    await runtimePrepareForUpdate();
     await update.install();
     downloadedUpdate = null;
     return true;
