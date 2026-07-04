@@ -441,16 +441,16 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
         onKeyDown={onKeyDown}
       />
 
-      <div className="flex items-center justify-between mt-2 pt-1">
-        <div className="flex items-center space-x-2">
-          <button className="w-7 h-7 rounded flex items-center justify-center text-text-secondary hover:bg-gray-100 transition-colors">
+      <div className="flex flex-wrap items-center justify-between mt-2 pt-1 gap-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button className="w-7 h-7 flex-shrink-0 rounded flex items-center justify-center text-text-secondary hover:bg-gray-100 transition-colors">
             <FontAwesomeIcon icon={["fas", "plus"]} />
           </button>
           
           {visibleOptions.length > 0 && (
             <div className="relative" ref={approvalDropdownRef}>
               <div 
-                className="flex items-center text-blue-500 text-xs font-medium cursor-pointer hover:bg-blue-50 px-2 py-1.5 rounded transition-colors"
+                className="flex items-center flex-shrink-0 whitespace-nowrap text-blue-500 text-xs font-medium cursor-pointer hover:bg-blue-50 px-2 py-1.5 rounded transition-colors"
                 onClick={() => setIsApprovalDropdownOpen(!isApprovalDropdownOpen)}
               >
                 {selectedApproval && (
@@ -491,10 +491,10 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
           )}
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="relative" ref={thinkingDropdownRef}>
             <div
-              className="flex items-center bg-gray-50 border border-border-theme rounded-full px-2.5 py-1 cursor-pointer hover:bg-gray-100 transition-colors text-xs text-text-base"
+              className="flex items-center flex-shrink-0 whitespace-nowrap bg-gray-50 border border-border-theme rounded-full px-2.5 py-1 cursor-pointer hover:bg-gray-100 transition-colors text-xs text-text-base"
               onClick={() => setIsThinkingDropdownOpen(!isThinkingDropdownOpen)}
               title={t("composer.selectThinking")}
             >
@@ -523,7 +523,7 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
           </div>
           <div className="relative" ref={dropdownRef}>
             <div 
-              className="flex items-center bg-gray-50 border border-border-theme rounded-full px-3 py-1 cursor-pointer hover:bg-gray-100 transition-colors text-xs text-text-base"
+              className="flex items-center flex-shrink-0 whitespace-nowrap bg-gray-50 border border-border-theme rounded-full px-3 py-1 cursor-pointer hover:bg-gray-100 transition-colors text-xs text-text-base"
               onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
             >
               {selectedModel ? (
@@ -575,7 +575,7 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
             }}
             disabled={busy && !onStop}
             title={busy ? t("composer.stop") : undefined}
-            className={`w-8 h-8 rounded-full text-white flex items-center justify-center transition-colors ${
+            className={`w-8 h-8 flex-shrink-0 rounded-full text-white flex items-center justify-center transition-colors ${
               busy
                 ? onStop
                   ? "bg-text-base hover:bg-red-500 cursor-pointer"

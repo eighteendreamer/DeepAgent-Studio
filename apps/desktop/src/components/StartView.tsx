@@ -113,8 +113,13 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
     if (!isResizingSidebar) return;
     const handleMouseMove = (e: MouseEvent) => {
       const newWidth = window.innerWidth - e.clientX;
-      if (newWidth > 360 && newWidth < window.innerWidth - 100) {
+      const maxSidebarWidth = Math.max(360, window.innerWidth - 500);
+      if (newWidth >= 360 && newWidth <= maxSidebarWidth) {
         setRightSidebarWidth(newWidth);
+      } else if (newWidth < 360) {
+        setRightSidebarWidth(360);
+      } else if (newWidth > maxSidebarWidth) {
+        setRightSidebarWidth(maxSidebarWidth);
       }
     };
     const handleMouseUp = () => setIsResizingSidebar(false);
