@@ -321,7 +321,11 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   return (
     <div className="w-full h-full flex flex-col relative">
       {/* Top-right widgets */}
-      <div className="absolute top-4 right-4 flex items-center space-x-3 text-text-secondary z-50">
+      <div className="absolute top-4 right-4 z-50 flex items-center text-text-secondary">
+        <div
+          className={`flex items-center ${isResizingSidebar ? "" : "transition-[margin-right] duration-300"}`}
+          style={{ marginRight: isRightSidebarOpen ? rightSidebarWidth + 12 : 0 }}
+        >
         <div className="relative" ref={modeDropdownRef}>
           <div 
             className="flex items-center px-2 py-1 hover:bg-gray-100 rounded cursor-pointer text-sm transition-colors"
@@ -386,14 +390,17 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             )}
           </AnimatePresence>
         </div>
+        </div>
+        <div className="ml-3 flex items-center space-x-3">
         <BottomPanelIcon 
           className="cursor-pointer transition-colors hover:text-text-base"
           onClick={handleToggleBottomTerminalPanel}
         />
         <SidebarRightIcon
           className={`cursor-pointer transition-colors ${isRightSidebarOpen ? "text-text-base" : "hover:text-text-base"}`}
-          onClick={() => setIsRightSidebarOpen(!isRightSidebarOpen)}
+          onClick={() => setIsRightSidebarOpen((open) => !open)}
         />
+        </div>
       </div>
 
       
@@ -676,45 +683,18 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             onShowLauncher={() => setActiveSidebarTabId("new")}
             extraActions={
               activeSidebarTab?.type === "files" ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={toggleSidebarMaximize}
-                    className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
-                    title={isRightSidebarMaximized ? "退出全屏文件视图" : "全屏文件视图"}
-                  >
-                    <FontAwesomeIcon
-                      icon={[ "fas", isRightSidebarMaximized ? "compress" : "expand" ]}
-                      className="text-[11px]"
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleToggleBottomTerminalPanel}
-                    className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
-                    title="打开底部终端"
-                  >
-                    <FontAwesomeIcon icon={["far", "window-maximize"]} className="text-[11px]" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsRightSidebarOpen(false)}
-                    className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
-                    title="收起侧边文件面板"
-                  >
-                    <FontAwesomeIcon icon={["fas", "angles-right"]} className="text-[11px]" />
-                  </button>
-                </>
-              ) : (
                 <button
                   type="button"
-                  onClick={() => setIsRightSidebarOpen(false)}
+                  onClick={toggleSidebarMaximize}
                   className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
-                  title="收起侧边面板"
+                  title={isRightSidebarMaximized ? "Exit full screen file view" : "Full screen file view"}
                 >
-                  <FontAwesomeIcon icon={["fas", "angles-right"]} className="text-[11px]" />
+                  <FontAwesomeIcon
+                    icon={[ "fas", isRightSidebarMaximized ? "compress" : "expand" ]}
+                    className="text-[11px]"
+                  />
                 </button>
-              )
+              ) : null
             }
           />
 
