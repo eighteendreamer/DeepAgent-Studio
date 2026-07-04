@@ -187,6 +187,13 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
     if (activeSidebarTabId === tabId) {
       setActiveSidebarTabId(newTabs.length > 0 ? newTabs[newTabs.length - 1].id : "new");
     }
+    if (newTabs.length === 0) {
+      setIsRightSidebarOpen(false);
+      if (isRightSidebarMaximized) {
+        setIsRightSidebarMaximized(false);
+        setRightSidebarWidth(sidebarRestoreWidthRef.current);
+      }
+    }
   };
 
   const handleToggleBottomTerminalPanel = () => {
