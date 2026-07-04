@@ -625,6 +625,11 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
       const isLoadingChildren = !!loadingDirs[entry.path];
       const children = directoryMap[entry.path] ?? [];
 
+      const lastDotIdx = entry.name.lastIndexOf(".");
+      const hasExtension = !entry.is_dir && lastDotIdx > 0;
+      const basename = hasExtension ? entry.name.substring(0, lastDotIdx) : entry.name;
+      const extension = hasExtension ? entry.name.substring(lastDotIdx) : "";
+
       return [
         <div key={entry.path}>
           <div
@@ -642,13 +647,16 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
               }
             }}
           >
-            <span className="mr-1 flex h-4 w-4 items-center justify-center text-[10px] text-text-secondary">
+            <span className="mr-1 flex h-4 w-4 flex-shrink-0 items-center justify-center text-[10px] text-text-secondary">
               {entry.is_dir ? (
                 <FontAwesomeIcon icon={["fas", isExpanded ? "chevron-down" : "chevron-right"]} />
               ) : null}
             </span>
-            <FontAwesomeIcon icon={fileIcon(entry)} className="mr-2 w-4 text-text-secondary" />
-            <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+            <FontAwesomeIcon icon={fileIcon(entry)} className="mr-2 w-4 flex-shrink-0 text-text-secondary" />
+            <div className="flex min-w-0 flex-1 overflow-hidden" title={entry.name}>
+              <span className="truncate block">{basename}</span>
+              <span className="flex-shrink-0">{extension}</span>
+            </div>
             {entry.is_dir && isLoadingChildren ? (
               <FontAwesomeIcon icon={["fas", "circle-notch"]} className="ml-2 animate-spin text-[11px] text-text-secondary" />
             ) : null}
@@ -860,11 +868,8 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
         </div>
 
         {!treeCollapsed ? (
-          <div className="flex w-[340px] flex-shrink-0 flex-col border-l border-border-theme bg-white">
+          <div className="flex w-[220px] flex-shrink-0 flex-col border-l border-border-theme bg-white">
             <div className="border-b border-border-theme px-4 py-4">
-              <div className="mb-3 truncate text-[14px] font-semibold text-text-base" title={rootPath ?? undefined}>
-                {projectLabel}
-              </div>
               <div className="relative">
                 <FontAwesomeIcon
                   icon={["fas", "magnifying-glass"]}

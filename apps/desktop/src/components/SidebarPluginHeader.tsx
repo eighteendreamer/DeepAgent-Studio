@@ -17,6 +17,7 @@ interface Props {
   onCloseTab: (id: string) => void;
   onShowLauncher: () => void;
   extraActions?: ReactNode;
+  className?: string;
 }
 
 export function SidebarPluginHeader({
@@ -26,13 +27,14 @@ export function SidebarPluginHeader({
   onCloseTab,
   onShowLauncher,
   extraActions = null,
+  className = "",
 }: Props) {
   const { t } = useTranslation();
 
   return (
-    <div className="border-b border-border-theme bg-white">
-      <div className="flex h-[44px] items-end justify-between gap-3 px-3">
-        <div className="flex min-w-0 flex-1 items-end gap-1 overflow-x-auto no-scrollbar pt-1.5">
+    <div className={`border-b border-border-theme bg-white ${className}`.trim()}>
+      <div className="flex h-[56px] items-center justify-between gap-3 pl-4 pr-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto no-scrollbar">
           {tabs.map((tab) => {
             const active = activeTabId === tab.id;
             return (
@@ -40,10 +42,10 @@ export function SidebarPluginHeader({
                 key={tab.id}
                 type="button"
                 onClick={() => onSelectTab(tab.id)}
-                className={`group relative flex h-[34px] min-w-0 max-w-[220px] flex-shrink-0 items-center gap-2 rounded-t-[10px] border px-3 text-[13px] transition-colors ${
+                className={`group relative flex h-10 min-w-0 max-w-[240px] flex-shrink-0 items-center gap-2 rounded-xl px-4 text-[13px] transition-colors ${
                   active
-                    ? "border-border-theme border-b-white bg-[#f7f8fa] text-text-base"
-                    : "border-transparent bg-transparent text-text-secondary hover:bg-[#f7f8fa] hover:text-text-base"
+                    ? "bg-[#f3f4f6] text-text-base shadow-[inset_0_0_0_1px_rgba(15,23,42,0.04)]"
+                    : "text-text-secondary hover:bg-[#f7f8fa] hover:text-text-base"
                 }`}
               >
                 <FontAwesomeIcon icon={tab.icon} className="flex-shrink-0 text-[12px]" />
@@ -53,7 +55,11 @@ export function SidebarPluginHeader({
                     event.stopPropagation();
                     onCloseTab(tab.id);
                   }}
-                  className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded text-[10px] text-text-secondary transition-colors hover:bg-white hover:text-text-base"
+                  className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded text-[10px] transition-colors ${
+                    active
+                      ? "text-text-secondary hover:bg-white hover:text-text-base"
+                      : "text-transparent group-hover:text-text-secondary hover:bg-white hover:text-text-base"
+                  }`}
                 >
                   <FontAwesomeIcon icon={["fas", "xmark"]} />
                 </span>
@@ -64,14 +70,14 @@ export function SidebarPluginHeader({
           <button
             type="button"
             onClick={onShowLauncher}
-            title={t("chatView.recommended", { defaultValue: "打开插件" })}
-            className="mb-[3px] flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+            title={t("chatView.recommended", { defaultValue: "Open plugin" })}
+            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
           >
             <FontAwesomeIcon icon={["fas", "plus"]} className="text-[12px]" />
           </button>
         </div>
 
-        <div className="mb-[5px] flex flex-shrink-0 items-center gap-1.5">{extraActions}</div>
+        <div className="flex flex-shrink-0 items-center gap-0.5">{extraActions}</div>
       </div>
     </div>
   );

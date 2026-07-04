@@ -321,13 +321,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   return (
     <div className="w-full h-full flex flex-col relative">
       {/* Top-right widgets */}
-      <div className="absolute top-4 right-4 z-50 flex items-center text-text-secondary">
-        <div
-          className={`flex items-center ${isResizingSidebar ? "" : "transition-[margin-right] duration-300"}`}
-          style={{ marginRight: isRightSidebarOpen ? rightSidebarWidth + 12 : 0 }}
-        >
+      <div className={`absolute top-4 z-50 flex items-center gap-3 text-text-secondary ${isRightSidebarOpen && sidebarTabs.length > 0 ? "right-0" : "right-4"}`}>
         <div className="relative" ref={modeDropdownRef}>
-          <div 
+          <div
             className="flex items-center px-2 py-1 hover:bg-gray-100 rounded cursor-pointer text-sm transition-colors"
             onClick={() => setIsModeDropdownOpen(!isModeDropdownOpen)}
           >
@@ -343,7 +339,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                 transition={{ duration: 0.15, ease: "easeOut" }}
                 className="absolute top-full right-0 mt-1 w-[260px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[100] py-2 origin-top-right"
               >
-                <div 
+                <div
                   className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-start justify-between"
                   onClick={() => {
                     setWorkMode("code");
@@ -365,7 +361,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                   </div>
                 </div>
 
-                <div 
+                <div
                   className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-start justify-between"
                   onClick={() => {
                     setWorkMode("daily");
@@ -390,17 +386,66 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             )}
           </AnimatePresence>
         </div>
-        </div>
-        <div className="ml-3 flex items-center space-x-3">
-        <BottomPanelIcon 
-          className="cursor-pointer transition-colors hover:text-text-base"
-          onClick={handleToggleBottomTerminalPanel}
-        />
-        <SidebarRightIcon
-          className={`cursor-pointer transition-colors ${isRightSidebarOpen ? "text-text-base" : "hover:text-text-base"}`}
-          onClick={() => setIsRightSidebarOpen((open) => !open)}
-        />
-        </div>
+
+        {isRightSidebarOpen && sidebarTabs.length > 0 ? (
+          <div
+            className={`overflow-hidden border border-border-theme border-b-0 bg-white ${isResizingSidebar ? "" : "transition-[width] duration-300"}`}
+            style={{ width: `${rightSidebarWidth}px`, minWidth: "360px" }}
+          >
+            <SidebarPluginHeader
+              tabs={sidebarTabs}
+              activeTabId={activeSidebarTabId}
+              onSelectTab={setActiveSidebarTabId}
+              onCloseTab={closeSidebarTab}
+              onShowLauncher={() => setActiveSidebarTabId("new")}
+              extraActions={
+                <>
+                  {activeSidebarTab?.type === "files" ? (
+                    <button
+                      type="button"
+                      onClick={toggleSidebarMaximize}
+                      className="flex h-9 w-9 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+                      title={isRightSidebarMaximized ? "Exit full screen file view" : "Full screen file view"}
+                    >
+                      <FontAwesomeIcon
+                        icon={["fas", isRightSidebarMaximized ? "compress" : "expand"]}
+                        className="text-[12px]"
+                      />
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={handleToggleBottomTerminalPanel}
+                    className="flex h-9 w-9 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+                    title="Open bottom panel"
+                  >
+                    <BottomPanelIcon className="text-[15px]" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsRightSidebarOpen(false)}
+                    className="flex h-9 w-9 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+                    title="Collapse sidebar"
+                  >
+                    <SidebarRightIcon className="text-[15px]" />
+                  </button>
+                </>
+              }
+              className="border-0 bg-transparent"
+            />
+          </div>
+        ) : (
+          <div className="flex items-center space-x-3">
+            <BottomPanelIcon
+              className="cursor-pointer transition-colors hover:text-text-base"
+              onClick={handleToggleBottomTerminalPanel}
+            />
+            <SidebarRightIcon
+              className="cursor-pointer transition-colors hover:text-text-base"
+              onClick={() => setIsRightSidebarOpen(true)}
+            />
+          </div>
+        )}
       </div>
 
       
@@ -675,29 +720,6 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
               setIsResizingSidebar(true);
             }}
           />
-          <SidebarPluginHeader
-            tabs={sidebarTabs}
-            activeTabId={activeSidebarTabId}
-            onSelectTab={setActiveSidebarTabId}
-            onCloseTab={closeSidebarTab}
-            onShowLauncher={() => setActiveSidebarTabId("new")}
-            extraActions={
-              activeSidebarTab?.type === "files" ? (
-                <button
-                  type="button"
-                  onClick={toggleSidebarMaximize}
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
-                  title={isRightSidebarMaximized ? "Exit full screen file view" : "Full screen file view"}
-                >
-                  <FontAwesomeIcon
-                    icon={[ "fas", isRightSidebarMaximized ? "compress" : "expand" ]}
-                    className="text-[11px]"
-                  />
-                </button>
-              ) : null
-            }
-          />
-
           <div className="flex-1 overflow-hidden flex flex-col relative">
             {activeSidebarTabId === "new" && (
               <ToolLauncherPanel cards={TOOL_CARDS} onSelect={handleOpenSidebarPlugin} variant="sidebar" />

@@ -1117,7 +1117,7 @@ export function ChatView({
       />
       {/* Top half: conversation flow & overlay */}
       <div className="flex-1 flex flex-col h-full w-full relative overflow-hidden">
-        <header className="h-14 flex items-center px-6 justify-between flex-shrink-0 w-full">
+        <header className={`h-14 flex items-center pl-6 justify-between flex-shrink-0 w-full ${isRightSidebarOpen && sidebarTabs.length > 0 ? "pr-0" : "pr-6"}`}>
           <div className="relative" ref={chatMenuRef}>
             <div 
               className="flex items-center text-sm font-medium text-text-base cursor-pointer px-2 py-1 -ml-2 rounded hover:bg-gray-100 transition-colors"
@@ -1295,13 +1295,10 @@ export function ChatView({
               </div>
             )}
           </div>
-          <div className="flex items-center text-text-secondary">
-            <div
-              className={`flex items-center space-x-3 ${isResizingSidebar ? "" : "transition-[margin-right] duration-300"}`}
-              style={{ marginRight: isRightSidebarOpen ? rightSidebarWidth + 12 : 0 }}
-            >
-            {activeProjectPath && (
-              <div className="relative" ref={projectMapMenuRef}>
+          <div className="flex items-center gap-3 text-text-secondary">
+            <div className="flex items-center space-x-3">
+              {activeProjectPath && (
+                <div className="relative" ref={projectMapMenuRef}>
                 <button
                   type="button"
                   className="h-7 max-w-[220px] flex items-center rounded-md px-2 text-[12px] text-text-secondary hover:bg-gray-100 hover:text-text-base transition-colors"
@@ -1343,24 +1340,73 @@ export function ChatView({
             {activeProjectPath && (
               <ProjectMapStatusBadge status={mapStatus} onClick={openProjectMapSidebar} />
             )}
-            {hasConversation && (
-              <FontAwesomeIcon
-                icon={["fas", "sliders"]}
-                className={`cursor-pointer transition-colors text-sm ${isOutputPanelOpen ? "text-text-base" : "hover:text-text-base"}`}
-                onClick={toggleOutputPanel}
-              />
+              {hasConversation && (
+                <FontAwesomeIcon
+                  icon={["fas", "sliders"]}
+                  className={`cursor-pointer transition-colors text-sm ${isOutputPanelOpen ? "text-text-base" : "hover:text-text-base"}`}
+                  onClick={toggleOutputPanel}
+                />
+              )}
+            </div>
+            {isRightSidebarOpen && sidebarTabs.length > 0 ? (
+              <div
+                className={`overflow-hidden border border-border-theme border-b-0 bg-white ${isResizingSidebar ? "" : "transition-[width] duration-300"}`}
+                style={{ width: `${rightSidebarWidth}px`, minWidth: "360px" }}
+              >
+                <SidebarPluginHeader
+                  tabs={sidebarTabs}
+                  activeTabId={activeSidebarTabId}
+                  onSelectTab={setActiveSidebarTabId}
+                  onCloseTab={closeSidebarTab}
+                  onShowLauncher={() => setActiveSidebarTabId("new")}
+                  extraActions={
+                    <>
+                      {activeSidebarTab?.type === "files" ? (
+                        <button
+                          type="button"
+                          onClick={toggleSidebarMaximize}
+                          className="flex h-9 w-9 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+                          title={isRightSidebarMaximized ? "Exit full screen file view" : "Full screen file view"}
+                        >
+                          <FontAwesomeIcon
+                            icon={["fas", isRightSidebarMaximized ? "compress" : "expand"]}
+                            className="text-[12px]"
+                          />
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={handleToggleBottomTerminalPanel}
+                        className="flex h-9 w-9 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+                        title="Open bottom panel"
+                      >
+                        <BottomPanelIcon className="text-[15px]" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsRightSidebarOpen(false)}
+                        className="flex h-9 w-9 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+                        title="Collapse sidebar"
+                      >
+                        <SidebarRightIcon className="text-[15px]" />
+                      </button>
+                    </>
+                  }
+                  className="border-0 bg-transparent"
+                />
+              </div>
+            ) : (
+              <div className="flex items-center space-x-3">
+                <BottomPanelIcon
+                  className="cursor-pointer transition-colors hover:text-text-base"
+                  onClick={handleToggleBottomTerminalPanel}
+                />
+                <SidebarRightIcon
+                  className="cursor-pointer transition-colors hover:text-text-base"
+                  onClick={() => setIsRightSidebarOpen(true)}
+                />
+              </div>
             )}
-            </div>
-            <div className="ml-3 flex items-center space-x-3">
-            <BottomPanelIcon 
-              className="cursor-pointer transition-colors hover:text-text-base"
-              onClick={handleToggleBottomTerminalPanel}
-            />
-            <SidebarRightIcon
-              className={`cursor-pointer transition-colors ${isRightSidebarOpen ? "text-text-base" : "hover:text-text-base"}`}
-              onClick={() => setIsRightSidebarOpen((open) => !open)}
-            />
-            </div>
           </div>
         </header>
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -1439,29 +1485,6 @@ export function ChatView({
               setIsResizingSidebar(true);
             }}
           />
-          <SidebarPluginHeader
-            tabs={sidebarTabs}
-            activeTabId={activeSidebarTabId}
-            onSelectTab={setActiveSidebarTabId}
-            onCloseTab={closeSidebarTab}
-            onShowLauncher={() => setActiveSidebarTabId("new")}
-            extraActions={
-              activeSidebarTab?.type === "files" ? (
-                <button
-                  type="button"
-                  onClick={toggleSidebarMaximize}
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
-                  title={isRightSidebarMaximized ? "Exit full screen file view" : "Full screen file view"}
-                >
-                  <FontAwesomeIcon
-                    icon={[ "fas", isRightSidebarMaximized ? "compress" : "expand" ]}
-                    className="text-[11px]"
-                  />
-                </button>
-              ) : null
-            }
-          />
-
           <div className="flex-1 overflow-hidden flex flex-col relative">
             {activeSidebarTabId === "new" && (
               <ToolLauncherPanel cards={TOOL_CARDS} onSelect={handleOpenSidebarPlugin} variant="sidebar" />
