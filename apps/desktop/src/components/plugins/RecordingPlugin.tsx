@@ -17,6 +17,7 @@ import {
   speechModelInstalled,
   speechTranscribeFile,
 } from "../../api";
+import type { PluginDefinition } from "./pluginTypes";
 
 const SPEECH_MODEL_ID = "whisper-base";
 const SPEECH_ENGINE_ID = "whisper-cli";
@@ -540,6 +541,18 @@ export function RecordingPlugin() {
     </div>
   );
 }
+
+export const recordingPluginDefinition: PluginDefinition = {
+  type: "recording",
+  icon: ["fas", "microphone"],
+  titleKey: "recording",
+  descKey: "recordingDesc",
+  fallbackTitle: "Recording",
+  fallbackDesc: "Meeting recording and transcription",
+  getTabTitle: ({ t }) =>
+    t?.("chatView.tools.recording", { defaultValue: "Recording" }) || "Recording",
+  render: () => <RecordingPlugin />,
+};
 
 function ActionButton({
   icon,

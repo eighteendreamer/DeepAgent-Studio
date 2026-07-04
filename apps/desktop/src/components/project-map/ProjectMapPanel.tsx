@@ -55,6 +55,53 @@ function complexityClass(complexity: string): string {
 
 type PanelMode = "graph" | "list";
 
+type ProjectMapPanelCache = {
+  version: 1;
+  projectPath: string | null;
+  cachedAt: number;
+  overview: ProjectMapOverview;
+  graph: ProjectMapGraph | null;
+};
+
+const PROJECT_MAP_PANEL_CACHE_PREFIX = "deepagent:project-map-panel:";
+
+function projectMapCacheKey(projectPath?: string | null): string {
+  return `${PROJECT_MAP_PANEL_CACHE_PREFIX}${encodeURIComponent(projectPath?.trim() || "__default__")}`;
+}
+
+function readProjectMapPanelCache(projectPath?: string | null): ProjectMapPanelCache | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(projectMapCacheKey(projectPath));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ProjectMapPanelCache>;
+    if (parsed.version !== 1 || !parsed.overview) return null;
+    return parsed as ProjectMapPanelCache;
+  } catch {
+    return null;
+  }
+}
+
+function writeProjectMapPanelCache(
+  projectPath: string | null | undefined,
+  overview: ProjectMapOverview,
+  graph: ProjectMapGraph | null,
+) {
+  if (typeof window === "undefined") return;
+  try {
+    const cache: ProjectMapPanelCache = {
+      version: 1,
+      projectPath: projectPath ?? null,
+      cachedAt: Date.now(),
+      overview,
+      graph,
+    };
+    window.localStorage.setItem(projectMapCacheKey(projectPath), JSON.stringify(cache));
+  } catch {
+    // Best-effort cache only; quota/private-mode failures should not block the panel.
+  }
+}
+
 export function ProjectMapStatusBadge({
   status,
   onClick,
@@ -100,40 +147,49 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    projectMapOverview(projectPath)
-      .then((next) => {
+
+    setSelected(null);
+    setNeighbors(null);
+    setNotice(null);
+
+    const cached = readProjectMapPanelCache(projectPath);
+    if (cached) {
+      setOverview(cached.overview);
+      setGraph(cached.graph);
+      setHits(cached.overview.complex_nodes);
+      onStatusChange?.(cached.overview.status);
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const load = async () => {
+      setLoading(true);
+      try {
+        const next = await projectMapOverview(projectPath);
         if (cancelled) return;
         setOverview(next);
         onStatusChange?.(next.status);
         setHits(next.complex_nodes);
-        setSelected(null);
-      })
-      .finally(() => {
+
+        let graphNext: ProjectMapGraph | null = null;
+        if (next.status.status !== "missing" && next.status.status !== "failed") {
+          graphNext = await projectMapGraph(90, projectPath).catch(() => null);
+          if (cancelled) return;
+        }
+        setGraph(graphNext);
+        writeProjectMapPanelCache(projectPath, next, graphNext);
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    };
+
+    void load();
     return () => {
       cancelled = true;
     };
   }, [onStatusChange, projectPath]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (status === "missing" || status === "failed") {
-      setGraph(null);
-      return;
-    }
-    projectMapGraph(90, projectPath)
-      .then((next) => {
-        if (!cancelled) setGraph(next);
-      })
-      .catch(() => {
-        if (!cancelled) setGraph(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectPath, status, stats?.nodes, stats?.edges, stats?.updated_at]);
 
   useEffect(() => {
     const onDebugChanged = (event: Event) => {
@@ -210,6 +266,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
       const graphNext = await projectMapGraph(90, projectPath).catch(() => null);
       setOverview(next);
       setGraph(graphNext);
+      writeProjectMapPanelCache(projectPath, next, graphNext);
       onStatusChange?.(next.status);
       setHits(next.complex_nodes);
       setSelected(null);
@@ -224,7 +281,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
   };
 
   return (
-    <div className="h-full flex flex-col bg-white">
+    <div className="h-full min-h-0 flex flex-col bg-white">
       <div className="px-4 py-2 border-b border-border-theme flex-shrink-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center min-w-0">
@@ -281,12 +338,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
             <span className="font-medium text-text-base">{stats?.edges ?? 0}</span> 边
             <span className="w-1 h-1 rounded-full bg-border-theme"></span>
             <span className="font-medium text-text-base">{stats?.files ?? 0}</span> 文件
-            {stats?.source && (
-              <>
-                <span className="w-1 h-1 rounded-full bg-border-theme"></span>
-                <span className="truncate max-w-[120px]" title={stats?.graph_path ?? undefined}>{stats.source}</span>
-              </>
-            )}
+
           </div>
           <span>更新于 {formatTime(stats?.updated_at ?? null)}</span>
         </div>
@@ -303,7 +355,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
           <ProjectMapDebugView projectPath={projectPath} compact />
         </div>
       ) : status === "missing" || status === "failed" ? (
-        <div className="flex-1 p-5 text-[13px] text-text-secondary leading-6">
+        <div className="flex-1 min-h-0 overflow-y-auto p-5 text-[13px] text-text-secondary leading-6">
           <div className="rounded-xl border border-border-theme bg-gray-50 p-4">
             {status === "missing"
               ? "当前项目还没有项目地图。点击右上角刷新按钮可生成 Understand-Anything 完整项目地图。"

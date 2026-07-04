@@ -4,6 +4,7 @@ import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
 import type { PreviewResult } from "../../types";
 import { pickPreviewFile, previewOpenFile, previewReadDataUrl, previewRenderPages, sendToChat } from "../../api";
+import type { PluginDefinition } from "./pluginTypes";
 
 /** Human-readable size. */
 function formatSize(bytes: number): string {
@@ -158,6 +159,19 @@ export function FilePreviewPlugin() {
     </div>
   );
 }
+
+export const filePreviewPluginDefinition: PluginDefinition = {
+  type: "file_preview",
+  icon: ["far", "file-lines"],
+  titleKey: "file_preview",
+  descKey: "filePreviewDesc",
+  fallbackTitle: "File Preview",
+  fallbackDesc: "Preview office documents",
+  getTabTitle: ({ t }) =>
+    t?.("chatView.tools.file_preview", { defaultValue: "File Preview" }) ||
+    "File Preview",
+  render: () => <FilePreviewPlugin />,
+};
 
 function PreviewBody({
   preview,

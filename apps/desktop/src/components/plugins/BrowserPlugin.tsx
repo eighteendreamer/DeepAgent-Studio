@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import type { PluginDefinition } from "./pluginTypes";
 
 interface BrowserPluginProps {
   initialUrl?: string;
@@ -191,3 +192,17 @@ export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
     </div>
   );
 }
+
+export const browserPluginDefinition: PluginDefinition = {
+  type: "browser",
+  icon: ["fas", "globe"],
+  titleKey: "browser",
+  descKey: "browserDesc",
+  fallbackTitle: "Browser",
+  fallbackDesc: "Open website",
+  getTabTitle: ({ t }, options) =>
+    options?.url
+      ? titleFromUrl(options.url)
+      : t?.("chatView.tools.browser", { defaultValue: "Browser" }) || "Browser",
+  render: ({ tab }) => <BrowserPlugin initialUrl={tab.url} />,
+};

@@ -12,6 +12,7 @@ import {
 import type { PreviewResult, ProjectFileEntry } from "../../types";
 import { MarkdownText } from "../MarkdownText";
 import { message as toast } from "../message";
+import type { PluginDefinition } from "./pluginTypes";
 
 interface FilesPluginProps {
   projectPath?: string | null;
@@ -670,12 +671,12 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
 
   return (
     <div className="flex h-full w-full flex-col bg-white">
-      <div className="flex h-[40px] items-center justify-between border-b border-border-theme px-4">
-        <div className="flex min-w-0 items-center text-[13px] text-text-secondary">
+      <div className="flex h-8 items-center justify-between border-b border-border-theme px-3">
+        <div className="flex min-w-0 items-center text-[12px] text-text-secondary">
           {breadcrumbSegments.map((segment, index) => (
             <div key={`${segment}-${index}`} className="flex min-w-0 items-center">
               {index > 0 ? (
-                <FontAwesomeIcon icon={["fas", "chevron-right"]} className="mx-2 text-[10px] text-[#a0a7b4]" />
+                <FontAwesomeIcon icon={["fas", "chevron-right"]} className="mx-1.5 text-[9px] text-[#a0a7b4]" />
               ) : null}
               <span
                 className={`truncate ${index === breadcrumbSegments.length - 1 ? "font-semibold text-text-base" : ""}`}
@@ -687,7 +688,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
           ))}
         </div>
 
-        <div className="ml-4 flex flex-shrink-0 items-center gap-2">
+        <div className="ml-3 flex flex-shrink-0 items-center gap-1.5">
           <div ref={moreMenuRef} className="relative">
             <button
               type="button"
@@ -695,7 +696,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                 setIsMoreMenuOpen((prev) => !prev);
                 setIsOpenMenuOpen(false);
               }}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-[#f4f5f7] hover:text-text-base"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f4f5f7] hover:text-text-base"
             >
               <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[12px]" />
             </button>
@@ -739,7 +740,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                 setIsOpenMenuOpen((prev) => !prev);
                 setIsMoreMenuOpen(false);
               }}
-              className="inline-flex h-8 items-center gap-2 rounded-lg border border-border-theme px-3 text-[13px] font-medium text-text-base transition-colors hover:bg-[#f7f8fa]"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border-theme px-2 text-[12px] font-medium text-text-base transition-colors hover:bg-[#f7f8fa]"
             >
               <FontAwesomeIcon icon={["far", "folder-open"]} className="text-[12px] text-text-secondary" />
               <span>打开</span>
@@ -770,7 +771,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
           <button
             type="button"
             onClick={() => setTreeCollapsed((prev) => !prev)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-[#f4f5f7] hover:text-text-base"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f4f5f7] hover:text-text-base"
             title={treeCollapsed ? "展开文件树" : "收起文件树"}
           >
             <FontAwesomeIcon
@@ -899,3 +900,17 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
     </div>
   );
 }
+
+export const filesPluginDefinition: PluginDefinition = {
+  type: "files",
+  icon: ["far", "folder-open"],
+  titleKey: "files",
+  descKey: "filesDesc",
+  fallbackTitle: "Files",
+  fallbackDesc: "Browse project files",
+  getTabTitle: ({ activeProjectPath, t }) =>
+    getPathLabel(activeProjectPath) ||
+    t?.("chatView.tools.files", { defaultValue: "Files" }) ||
+    "Files",
+  render: ({ activeProjectPath }) => <FilesPlugin projectPath={activeProjectPath} />,
+};

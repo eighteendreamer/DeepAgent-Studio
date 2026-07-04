@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import type { ChatMessage, MessagePart, ToolCall, TokenUsage, TimelineEntry, ApprovalRequest, ProjectMapStatus } from "../types";
 import { Composer } from "./Composer";
 import { ToolCallCard } from "./ToolCallCard";
@@ -10,16 +9,9 @@ import { RenameSessionDialog } from "./RenameSessionDialog";
 import { MarkdownText } from "./MarkdownText";
 import { EnvironmentInfoPanel } from "./EnvironmentInfoPanel";
 import type { OutputItem } from "./EnvironmentInfoPanel";
-import { FilesPlugin } from "./plugins/FilesPlugin";
-import { SideChatPlugin } from "./plugins/SideChatPlugin";
-import { BrowserPlugin } from "./plugins/BrowserPlugin";
-import { TerminalPlugin } from "./plugins/TerminalPlugin";
-import { RecordingPlugin } from "./plugins/RecordingPlugin";
-import { FilePreviewPlugin } from "./plugins/FilePreviewPlugin";
-import { ProjectMapPanel, ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
+import { ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
-import { SidebarPluginHeader } from "./SidebarPluginHeader";
 import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
 import {
@@ -32,6 +24,17 @@ import {
 } from "../api";
 import { useGitStatus } from "../hooks/useGitStatus";
 import { GitWorkbench } from "./git/GitWorkbench";
+import {
+  createPluginTab,
+  PLUGIN_TOOL_CARDS,
+  renderPluginTab,
+  type PluginTab,
+  type PluginToolCard,
+} from "./plugins/pluginRegistry";
+import { RightSidebarWorkbench } from "./RightSidebarWorkbench";
+
+const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
+const PROJECT_MAP_TAB_ID = "project-map";
 
 interface Props {
   /** Active session id for per-session UI persistence. */
@@ -68,7 +71,7 @@ interface Props {
   approvalQueueCount?: number;
   /** Resolve the current approval (allow / deny). */
   onApprovalDecision?: (req: ApprovalRequest, approved: boolean) => void;
-  /** True while a run is streaming — disables the composer send button. */
+  /** True while a run is streaming - disables the composer send button. */
   busy?: boolean;
   /** Stop the in-flight run (manual cancel). */
   onStop?: () => void;
@@ -80,16 +83,6 @@ interface Props {
   projectMapOpenSignal?: number;
 }
 
-export type PluginType = "none" | "files" | "chat" | "browser" | "terminal" | "project_map" | "recording" | "file_preview";
-
-export type Tab = {
-  id: string;
-  type: PluginType;
-  title: string;
-  icon: IconProp;
-  url?: string;
-};
-
 type OfficeContextView = {
   type: string;
   title?: string;
@@ -98,21 +91,8 @@ type OfficeContextView = {
   prompt: string;
 };
 
-const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
-const PROJECT_MAP_TAB_ID = "project-map";
-
-export const TOOL_CARDS: { icon: IconProp; title: string; desc: string; type: PluginType }[] = [
-  { icon: ["far", "folder-open"], title: "files", desc: "filesDesc", type: "files" },
-  { icon: ["far", "comment-dots"], title: "chat", desc: "chatDesc", type: "chat" },
-  { icon: ["fas", "globe"], title: "browser", desc: "browserDesc", type: "browser" },
-  { icon: ["fas", "terminal"], title: "terminal", desc: "terminalDesc", type: "terminal" },
-  { icon: ["fas", "share-nodes"], title: "project_map", desc: "projectMapDesc", type: "project_map" },
-  { icon: ["fas", "microphone"], title: "recording", desc: "recordingDesc", type: "recording" },
-  { icon: ["far", "file-lines"], title: "file_preview", desc: "filePreviewDesc", type: "file_preview" },
-];
-
 /// Count the number of lines in `s`, treating an empty string as 0 lines and
-/// not double-counting a trailing newline (so `"a\nb\n"` → 2, `"a"` → 1, `""` → 0).
+/// not double-counting a trailing newline (so `"a\nb\n"` -> 2, `"a"` -> 1, `""` -> 0).
 /// Used by [`computeChatChanges`] to score `edit_file` / `multi_edit` /
 /// `write_file` tool calls into a `+N -M` summary.
 function countLines(s: string): number {
@@ -133,7 +113,7 @@ function countLines(s: string): number {
 /// actually written to disk via tool calls), not git's working-tree diff.
 /// We surface it in the env panel because:
 /// - In a freshly-opened project that isn't yet a git repo, `git diff
-///   --shortstat HEAD` returns nothing → the panel used to show `+0 -0`
+///   --shortstat HEAD` returns nothing -> the panel used to show `+0 -0`
 ///   regardless of how much the agent had touched the workspace.
 /// - The "what did this conversation do" framing is more directly useful
 ///   for an AI-driven UX than "what's uncommitted in your filesystem"
@@ -143,14 +123,14 @@ function countLines(s: string): number {
 /// per-edit `+/-` accounting, summed across the session.
 ///
 /// Tool wire-format (from `crates/deepagent-builtins/src/file_tools.rs`):
-///   - `write_file` → `{ path, content }`
-///   - `edit_file`  → `{ path, old, new, replace_all? }`
-///   - `multi_edit` → `{ path, edits: [{ old, new, replace_all? }, …] }`
+///   - `write_file` -> `{ path, content }`
+///   - `edit_file`  -> `{ path, old, new, replace_all? }`
+///   - `multi_edit` -> `{ path, edits: [{ old, new, replace_all? }, ...] }`
 ///
 /// Notes / known undercounting:
 ///   - `write_file` deletions are 0 because the agent doesn't ship the prior
 ///     file content; an overwrite of a long file shows only additions.
-///   - Failed (`status !== "ok"`) tool calls are skipped — they didn't
+///   - Failed (`status !== "ok"`) tool calls are skipped - they didn't
 ///     materialize a change.
 function computeChatChanges(messages: ChatMessage[]): {
   additions: number;
@@ -210,7 +190,7 @@ function computeChatChanges(messages: ChatMessage[]): {
 const IMAGE_EXT_PATTERN = /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?|avif)(?:[?#]|$)/i;
 
 /// Tools that materialize a file on disk. We pull the `path` field from
-/// `tool.args` (always full JSON; `tool.detail` is truncated to ≤200 chars
+/// `tool.args` (always full JSON; `tool.detail` is truncated to <=200 chars
 /// upstream and isn't reliable for parsing).
 const FILE_GENERATING_TOOLS: ReadonlySet<string> = new Set([
   "write_file",
@@ -240,10 +220,11 @@ function parseTodoSnapshotFromArgs(argsJson: string | undefined): OutputItem | n
     for (const t of obj.todos) {
       const status = String(t?.status ?? "");
       if (status === "pending") pending++;
-      else if (status === "in_progress" || status === "in-progress" || status === "inprogress")
+      else if (status === "in_progress" || status === "in-progress" || status === "inprogress") {
         inProgress++;
-      else if (status === "completed" || status === "complete" || status === "done")
+      } else if (status === "completed" || status === "complete" || status === "done") {
         completed++;
+      }
     }
     const total = obj.todos.length;
     const parts: string[] = [];
@@ -256,7 +237,6 @@ function parseTodoSnapshotFromArgs(argsJson: string | undefined): OutputItem | n
     return null;
   }
 }
-
 function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
   // Walk every tool call once (legacy `tools` array + ordered `parts`).
   const allTools: ToolCall[] = [];
@@ -273,7 +253,7 @@ function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
 
   // Phase 1: file/image generation + todo snapshots from tool calls.
   for (const tool of allTools) {
-    // Only count completed-OK tools — running calls aren't done, errored
+    // Only count completed-OK tools - running calls aren't done, errored
     // calls didn't materialize their effect.
     if (tool.status !== "ok") continue;
 
@@ -294,7 +274,7 @@ function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
 
     if (tool.name === "todo_write") {
       const snap = parseTodoSnapshotFromArgs(tool.args);
-      // Always overwrite — only the latest snapshot is shown.
+      // Always overwrite - only the latest snapshot is shown.
       if (snap) latestTodo = snap;
     }
   }
@@ -335,10 +315,10 @@ function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
     }
   }
 
-  // Phase 3: todo lands first — it's the most actionable summary.
+  // Phase 3: todo lands first - it's the most actionable summary.
   if (latestTodo) items.unshift(latestTodo);
 
-  // Cap at 15 — enough to surface a turn's worth of output without crowding
+  // Cap at 15 - enough to surface a turn's worth of output without crowding
   // the floating panel.
   return items.slice(0, 15);
 }
@@ -455,14 +435,6 @@ function fallbackCopyText(text: string) {
     document.body.removeChild(textarea);
   }
 }
-
-function getProjectDisplayName(path?: string | null): string | null {
-  const value = path?.trim();
-  if (!value) return null;
-  const parts = value.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? value;
-}
-
 function UserTurn({
   message,
   busy,
@@ -599,14 +571,6 @@ function normalizeBrowserUrl(input: string): string {
   return `https://${trimmed}`;
 }
 
-function browserTitle(url: string): string {
-  try {
-    return new URL(normalizeBrowserUrl(url)).host;
-  } catch {
-    return "浏览器";
-  }
-}
-
 export function ChatView({
   sessionId = null,
   sessionKey = null,
@@ -650,18 +614,16 @@ export function ChatView({
   const [isProjectMapMenuOpen, setIsProjectMapMenuOpen] = useState(false);
   const projectMapMenuRef = useRef<HTMLDivElement>(null);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
+  const [sidebarTabs, setSidebarTabs] = useState<PluginTab[]>([]);
+  const [activeSidebarTabId, setActiveSidebarTabId] = useState<string>("new");
   const [isRewindOpen, setIsRewindOpen] = useState(false);
   const rewindCloseTimerRef = useRef<number | null>(null);
-  const [bottomTabs, setBottomTabs] = useState<Tab[]>([]);
+  const [bottomTabs, setBottomTabs] = useState<PluginTab[]>([]);
   const [activeBottomTabId, setActiveBottomTabId] = useState<string>("new");
 
-  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(600);
-  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
-  const [isRightSidebarMaximized, setIsRightSidebarMaximized] = useState(false);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(280);
   const [isResizingBottom, setIsResizingBottom] = useState(false);
-  const sidebarRestoreWidthRef = useRef(600);
 
   useEffect(() => {
     if (!isResizingBottom) return;
@@ -681,32 +643,8 @@ export function ChatView({
     };
   }, [isResizingBottom]);
 
-  useEffect(() => {
-    if (!isResizingSidebar) return;
-    const handleMouseMove = (e: MouseEvent) => {
-      const newWidth = window.innerWidth - e.clientX;
-      const maxSidebarWidth = Math.max(360, window.innerWidth - 500);
-      if (newWidth >= 360 && newWidth <= maxSidebarWidth) {
-        setRightSidebarWidth(newWidth);
-      } else if (newWidth < 360) {
-        setRightSidebarWidth(360);
-      } else if (newWidth > maxSidebarWidth) {
-        setRightSidebarWidth(maxSidebarWidth);
-      }
-    };
-    const handleMouseUp = () => setIsResizingSidebar(false);
-
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [isResizingSidebar]);
-  const [sidebarTabs, setSidebarTabs] = useState<Tab[]>([]);
-  const [activeSidebarTabId, setActiveSidebarTabId] = useState<string>("new");
   const [mapStatus, setMapStatus] = useState<ProjectMapStatus | null>(null);
-  const activeSidebarTab = sidebarTabs.find((tab) => tab.id === activeSidebarTabId) ?? null;
+
   const activeProjectLabel = useMemo(() => {
     if (!activeProjectPath) return "";
     return activeProjectPath.split(/[\\/]/).filter(Boolean).pop() ?? activeProjectPath;
@@ -809,8 +747,8 @@ export function ChatView({
   const toggleOutputPanel = useCallback(() => {
     setIsOutputPanelOpen((prev) => {
       const next = !prev;
-      // Closing → record the user's intent so future outputs respect it.
-      // Opening → user is engaging again, clear the override.
+      // Closing -> record the user's intent so future outputs respect it.
+      // Opening -> user is engaging again, clear the override.
       if (!next) {
         setEnvPanelAutoOpenEnabled(false);
         if (sessionId) {
@@ -836,60 +774,14 @@ export function ChatView({
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  const getTranslatedToolName = (_title: string, type: string) => {
-    return t(`chatView.tools.${type}`, {
-      defaultValue: type === "project_map" ? "项目地图" : type,
+  const handleOpenBottomPlugin = (c: PluginToolCard) => {
+    const newTab = createPluginTab(c.type, {
+      activeProjectPath,
+      envMode: "local",
+      t,
     });
-  };
-
-  const getTerminalTabTitle = () => {
-    const path = activeProjectPath?.trim();
-    return path && path.length > 0 ? path : "Terminal";
-  };
-
-  const getFilesTabTitle = () => {
-    return getProjectDisplayName(activeProjectPath) ?? getTranslatedToolName("files", "files");
-  };
-
-  const handleOpenBottomPlugin = (c: typeof TOOL_CARDS[0]) => {
-    const newTab: Tab = {
-      id: Date.now().toString(),
-      type: c.type,
-      title: c.title === "terminal" ? getTerminalTabTitle() : 
-             c.title === "files" ? getFilesTabTitle() : getTranslatedToolName(c.title, c.type),
-      icon: c.title === "terminal" ? ["fas", "terminal"] :
-            c.title === "files" ? ["far", "file-lines"] : c.icon
-    };
     setBottomTabs([...bottomTabs, newTab]);
     setActiveBottomTabId(newTab.id);
-  };
-
-  const handleOpenSidebarPlugin = (c: typeof TOOL_CARDS[0]) => {
-    const newTab: Tab = {
-      id: Date.now().toString(),
-      type: c.type,
-      title: c.title === "terminal" ? getTerminalTabTitle() : 
-             c.title === "files" ? getFilesTabTitle() : getTranslatedToolName(c.title, c.type),
-      icon: c.title === "terminal" ? ["fas", "terminal"] :
-            c.title === "files" ? ["far", "file-lines"] : c.icon
-    };
-    setSidebarTabs([...sidebarTabs, newTab]);
-    setActiveSidebarTabId(newTab.id);
-  };
-
-  const closeSidebarTab = (tabId: string) => {
-    const newTabs = sidebarTabs.filter((tab) => tab.id !== tabId);
-    setSidebarTabs(newTabs);
-    if (activeSidebarTabId === tabId) {
-      setActiveSidebarTabId(newTabs.length > 0 ? newTabs[newTabs.length - 1].id : "new");
-    }
-    if (newTabs.length === 0) {
-      setIsRightSidebarOpen(false);
-      if (isRightSidebarMaximized) {
-        setIsRightSidebarMaximized(false);
-        setRightSidebarWidth(sidebarRestoreWidthRef.current);
-      }
-    }
   };
 
   const handleToggleBottomTerminalPanel = () => {
@@ -897,43 +789,54 @@ export function ChatView({
       setIsBottomPanelOpen(false);
     } else {
       setIsBottomPanelOpen(true);
-      if (!bottomTabs.some((t) => t.type === "terminal")) {
-        const terminalCard = TOOL_CARDS.find((c) => c.type === "terminal");
+      if (!bottomTabs.some((tab) => tab.type === "terminal")) {
+        const terminalCard = PLUGIN_TOOL_CARDS.find((card) => card.type === "terminal");
         if (terminalCard) handleOpenBottomPlugin(terminalCard);
       } else {
-        const termTab = bottomTabs.find((t) => t.type === "terminal");
-        if (termTab) setActiveBottomTabId(termTab.id);
+        const terminalTab = bottomTabs.find((tab) => tab.type === "terminal");
+        if (terminalTab) setActiveBottomTabId(terminalTab.id);
       }
     }
   };
 
-  const toggleSidebarMaximize = () => {
-    if (isRightSidebarMaximized) {
-      setRightSidebarWidth(sidebarRestoreWidthRef.current);
-      setIsRightSidebarMaximized(false);
-      return;
-    }
-    sidebarRestoreWidthRef.current = rightSidebarWidth;
-    setIsRightSidebarMaximized(true);
+  const handleOpenSidebarPlugin = (c: PluginToolCard) => {
+    const newTab = createPluginTab(c.type, {
+      activeProjectPath,
+      envMode: "local",
+      t,
+    });
+    setSidebarTabs((tabs) => [...tabs, newTab]);
+    setActiveSidebarTabId(newTab.id);
+  };
+
+  const closeSidebarTab = (tabId: string) => {
+    setSidebarTabs((tabs) => {
+      const newTabs = tabs.filter((tab) => tab.id !== tabId);
+      setActiveSidebarTabId((current) =>
+        current === tabId ? (newTabs.length > 0 ? newTabs[newTabs.length - 1].id : "new") : current,
+      );
+      if (newTabs.length === 0) setIsRightSidebarOpen(false);
+      return newTabs;
+    });
   };
 
   const openProjectMapSidebar = useCallback(() => {
-    const existingTab = sidebarTabs.find((tab) => tab.type === "project_map");
     setIsRightSidebarOpen(true);
-    setActiveSidebarTabId(existingTab?.id ?? PROJECT_MAP_TAB_ID);
     setSidebarTabs((tabs) => {
-      if (tabs.some((tab) => tab.type === "project_map")) return tabs;
+      const existingTab = tabs.find((tab) => tab.type === "project_map");
+      setActiveSidebarTabId(existingTab?.id ?? PROJECT_MAP_TAB_ID);
+      if (existingTab) return tabs;
       return [
         ...tabs,
         {
           id: PROJECT_MAP_TAB_ID,
           type: "project_map",
-          title: "项目地图",
+          title: t("chatView.tools.project_map", { defaultValue: "项目地图" }),
           icon: ["fas", "share-nodes"],
         },
       ];
     });
-  }, [sidebarTabs]);
+  }, [t]);
 
   useEffect(() => {
     if (projectMapOpenSignal > 0) openProjectMapSidebar();
@@ -946,7 +849,7 @@ export function ChatView({
   }, [openProjectMapSidebar]);
 
   // Office-agent panels (file preview / recording) inject messages into the
-  // active chat via this event — routed through the normal send path so the
+  // active chat via this event - routed through the normal send path so the
   // turn respects the model's context budget and approval flow.
   useEffect(() => {
     const onSendToChat = (e: Event) => {
@@ -1021,29 +924,7 @@ export function ChatView({
   const openUrlInSidebarBrowser = (rawUrl: string) => {
     const url = normalizeBrowserUrl(rawUrl);
     if (!url) return;
-    const existingBrowserTab = sidebarTabs.find((tab) => tab.type === "browser");
-    setIsRightSidebarOpen(true);
-    if (existingBrowserTab) {
-      setSidebarTabs((tabs) =>
-        tabs.map((tab) =>
-          tab.id === existingBrowserTab.id
-            ? { ...tab, title: browserTitle(url), url }
-            : tab
-        )
-      );
-      setActiveSidebarTabId(existingBrowserTab.id);
-      return;
-    }
-
-    const newTab: Tab = {
-      id: `browser-${Date.now()}`,
-      type: "browser",
-      title: browserTitle(url),
-      icon: ["fas", "globe"],
-      url,
-    };
-    setSidebarTabs((tabs) => [...tabs, newTab]);
-    setActiveSidebarTabId(newTab.id);
+    window.open(url, "_blank", "noopener,noreferrer");
   };
 
   const submit = () => {
@@ -1055,13 +936,6 @@ export function ChatView({
 
   const handleRename = () => {
     setIsRenameDialogOpen(true);
-    setIsMenuOpen(false);
-  };
-
-  const handleOpenSideChat = () => {
-    const sideChatCard = TOOL_CARDS.find((card) => card.type === "chat");
-    if (sideChatCard) handleOpenSidebarPlugin(sideChatCard);
-    setIsRightSidebarOpen(true);
     setIsMenuOpen(false);
   };
 
@@ -1114,9 +988,11 @@ export function ChatView({
       hour12: false,
     }).format(date);
   }, []);
+  const activeBottomTab =
+    bottomTabs.find((tab) => tab.id === activeBottomTabId) ?? null;
 
   return (
-    <div className="w-full h-full flex flex-col relative">
+    <div className="w-full h-full min-w-0 overflow-hidden flex flex-col relative">
       <RenameSessionDialog
         open={isRenameDialogOpen}
         initialValue={title || t("chatView.chat")}
@@ -1126,11 +1002,38 @@ export function ChatView({
           setIsRenameDialogOpen(false);
         }}
       />
+      {/* Global Window Actions: fixed position in all states. */}
+      <div className="absolute top-0.5 right-6 z-50 flex items-center gap-3 text-text-secondary pointer-events-auto">
+        <button
+          type="button"
+          onClick={() => setIsRightSidebarOpen((v) => !v)}
+          className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+            isRightSidebarOpen ? "text-text-base" : "text-text-secondary hover:bg-gray-100 hover:text-text-base"
+          }`}
+          title={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
+          aria-label={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
+        >
+          <SidebarRightIcon className="text-[15px]" />
+        </button>
+        <button
+          type="button"
+          onClick={handleToggleBottomTerminalPanel}
+          className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+            isBottomPanelOpen ? "text-text-base" : "text-text-secondary hover:bg-gray-100 hover:text-text-base"
+          }`}
+          title="打开底部终端"
+          aria-label="打开底部终端"
+        >
+          <BottomPanelIcon className="text-[15px]" />
+        </button>
+      </div>
+
       {/* Top half: conversation flow & overlay */}
-      <div className="flex-1 flex flex-col h-full w-full relative overflow-hidden">
-        <header className={`h-14 flex items-center pl-6 justify-between flex-shrink-0 w-full ${isRightSidebarOpen ? "pr-0" : "pr-6"}`}>
+      <div className="flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="relative h-8 flex items-center pl-6 pr-6 justify-between flex-shrink-0 w-full">
           <div className="relative" ref={chatMenuRef}>
-            <div 
+            <div
               className="flex items-center text-sm font-medium text-text-base cursor-pointer px-2 py-1 -ml-2 rounded hover:bg-gray-100 transition-colors"
               onClick={() => setIsMenuOpen(!isMenuOpen)}
             >
@@ -1183,15 +1086,6 @@ export function ChatView({
                 
                 <div className="w-full h-px bg-border-theme my-1.5"></div>
                 
-                <div
-                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
-                  onClick={handleOpenSideChat}
-                >
-                  <div className="flex items-center">
-                    <FontAwesomeIcon icon={["far", "window-restore"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                    <span>{t("chatView.openSideChat")}</span>
-                  </div>
-                </div>
                 <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
                   onClick={() => {
                     onCopy?.();
@@ -1306,8 +1200,11 @@ export function ChatView({
               </div>
             )}
           </div>
-          <div className="flex items-center gap-3 text-text-secondary">
-            <div className="flex items-center space-x-3">
+          <div className="flex items-center text-text-secondary">
+            <div
+              className="absolute top-1/2 z-10 flex -translate-y-1/2 items-center gap-3 text-text-secondary transition-[right] duration-300"
+              style={{ right: 104 }}
+            >
               {activeProjectPath && (
                 <div className="relative" ref={projectMapMenuRef}>
                 <button
@@ -1327,17 +1224,6 @@ export function ChatView({
                       className="w-full flex items-center px-3 py-2 text-left text-[13px] text-text-base hover:bg-gray-50"
                       onClick={() => {
                         setIsProjectMapMenuOpen(false);
-                        openProjectMapSidebar();
-                      }}
-                    >
-                      <FontAwesomeIcon icon={["fas", "share-nodes"]} className="text-text-secondary mr-2.5 w-4" />
-                      查看项目地图
-                    </button>
-                    <button
-                      type="button"
-                      className="w-full flex items-center px-3 py-2 text-left text-[13px] text-text-base hover:bg-gray-50"
-                      onClick={() => {
-                        setIsProjectMapMenuOpen(false);
                         refreshProjectMap();
                       }}
                     >
@@ -1349,84 +1235,29 @@ export function ChatView({
               </div>
             )}
             {activeProjectPath && (
-              <ProjectMapStatusBadge status={mapStatus} onClick={openProjectMapSidebar} />
+              <ProjectMapStatusBadge status={mapStatus} onClick={() => setIsProjectMapMenuOpen((v) => !v)} />
             )}
               {hasConversation && (
-                <FontAwesomeIcon
-                  icon={["fas", "sliders"]}
-                  className={`cursor-pointer transition-colors text-sm ${isOutputPanelOpen ? "text-text-base" : "hover:text-text-base"}`}
+                <button
+                  type="button"
+                  className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                    isOutputPanelOpen ? "text-text-base" : "text-text-secondary hover:bg-gray-100 hover:text-text-base"
+                  }`}
                   onClick={toggleOutputPanel}
-                />
+                  title="环境信息"
+                  aria-label="环境信息"
+                >
+                  <FontAwesomeIcon icon={["fas", "sliders"]} className="text-[15px]" />
+                </button>
               )}
             </div>
-            {isRightSidebarOpen ? (
-              <div
-                className={`overflow-hidden border border-border-theme border-b-0 bg-white ${isResizingSidebar ? "" : "transition-[width] duration-300"} ${isRightSidebarMaximized ? "flex-1 min-w-0" : ""}`}
-                style={isRightSidebarMaximized ? { minWidth: "360px" } : { width: `${rightSidebarWidth}px`, minWidth: "360px" }}
-              >
-                <SidebarPluginHeader
-                  tabs={sidebarTabs}
-                  activeTabId={activeSidebarTabId}
-                  onSelectTab={setActiveSidebarTabId}
-                  onCloseTab={closeSidebarTab}
-                  onShowLauncher={() => setActiveSidebarTabId("new")}
-                  extraActions={
-                    <>
-                      {activeSidebarTab?.type === "files" ? (
-                        <button
-                          type="button"
-                          onClick={toggleSidebarMaximize}
-                          className="flex h-9 w-9 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
-                          title={isRightSidebarMaximized ? "Exit full screen file view" : "Full screen file view"}
-                        >
-                          <FontAwesomeIcon
-                            icon={["fas", isRightSidebarMaximized ? "compress" : "expand"]}
-                            className="text-[12px]"
-                          />
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={handleToggleBottomTerminalPanel}
-                        className="flex h-9 w-9 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
-                        title="Open bottom panel"
-                      >
-                        <BottomPanelIcon className="text-[15px]" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setIsRightSidebarOpen(false)}
-                        className="flex h-9 w-9 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
-                        title="Collapse sidebar"
-                      >
-                        <SidebarRightIcon className="text-[15px]" />
-                      </button>
-                    </>
-                  }
-                  className="border-0 bg-transparent"
-                />
-              </div>
-            ) : (
-              <div className="flex items-center space-x-3">
-                <BottomPanelIcon
-                  className="cursor-pointer transition-colors hover:text-text-base"
-                  onClick={handleToggleBottomTerminalPanel}
-                />
-                <SidebarRightIcon
-                  className={`cursor-pointer transition-colors ${isRightSidebarOpen ? 'text-text-base' : 'hover:text-text-base'}`}
-                  onClick={() => setIsRightSidebarOpen(!isRightSidebarOpen)}
-                />
-              </div>
-            )}
           </div>
         </header>
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
             <div className="flex-1 flex flex-col relative min-w-0 min-h-0">
           
 
-        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-6 py-4 pb-44">
+        <div ref={scrollRef} className="stable-scrollbar-gutter flex-1 min-h-0 overflow-y-auto px-6 py-4 pb-44">
           {messages.length === 0 && (
             <div className="w-full max-w-4xl mx-auto text-text-secondary text-[15px] pl-2">
               {t("chatView.startConversation")}
@@ -1483,46 +1314,26 @@ export function ChatView({
 
             </div>
             
-            {isRightSidebarOpen && (
-              <div 
-                className={`relative flex h-full flex-shrink-0 flex-col border-l border-border-theme bg-white shadow-[-12px_0_30px_rgba(0,0,0,0.06)] ${isResizingSidebar ? "" : "transition-[width] duration-300"} ${isRightSidebarMaximized ? "w-full" : ""}`}
-                style={isRightSidebarMaximized ? { minWidth: '360px' } : { width: `${rightSidebarWidth}px`, minWidth: '360px' }}
-              >
-          {/* Resize Handle */}
-          <div 
-            className={`panel-resize-handle-col ${isResizingSidebar ? "is-active" : ""}`}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setIsResizingSidebar(true);
-            }}
+          </div>
+        </div>
+          <RightSidebarWorkbench
+            open={isRightSidebarOpen}
+            tabs={sidebarTabs}
+            activeTabId={activeSidebarTabId}
+            onSelectTab={setActiveSidebarTabId}
+            onCloseTab={closeSidebarTab}
+            onShowLauncher={() => setActiveSidebarTabId("new")}
+            onSelectPlugin={handleOpenSidebarPlugin}
+            renderContext={{ activeProjectPath, envMode: "local", onProjectMapStatusChange: setMapStatus }}
           />
-          <div className="flex-1 overflow-hidden flex flex-col relative">
-            {activeSidebarTabId === "new" && (
-              <ToolLauncherPanel cards={TOOL_CARDS} onSelect={handleOpenSidebarPlugin} variant="sidebar" />
-            )}
+      </div>
 
-            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "files" && <FilesPlugin projectPath={activeProjectPath} />}
-            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "chat" && <SideChatPlugin />}
-            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "browser" && (
-              <BrowserPlugin initialUrl={sidebarTabs.find(t => t.id === activeSidebarTabId)?.url} />
-            )}
-            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "terminal" && (
-              <TerminalPlugin mode="local" />
-            )}
-            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} onStatusChange={setMapStatus} />}
-            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "recording" && <RecordingPlugin />}
-            {activeSidebarTabId !== "new" && sidebarTabs.find(t => t.id === activeSidebarTabId)?.type === "file_preview" && <FilePreviewPlugin />}
-          </div>
-              </div>
-            )}
-          </div>
-
-          {isBottomPanelOpen && (
-            <div 
-              className={`relative flex flex-shrink-0 flex-col border-t border-border-theme bg-white shadow-[0_-12px_30px_rgba(0,0,0,0.06)] ${isResizingBottom ? "" : "transition-[height] duration-300"}`}
-              style={{ height: `${bottomPanelHeight}px`, minHeight: '200px', maxHeight: '80vh' }}
+      {isBottomPanelOpen && (
+            <div
+              className={`relative z-0 flex w-full min-w-0 flex-shrink-0 flex-col overflow-hidden border-t border-border-theme bg-white shadow-[0_-12px_30px_rgba(0,0,0,0.06)] ${isResizingBottom ? "" : "transition-[height] duration-300"}`}
+              style={{ height: `${bottomPanelHeight}px`, minHeight: '200px', maxHeight: '80vh', width: '100%' }}
             >
-              <div 
+              <div
                 className={`panel-resize-handle-row ${isResizingBottom ? "is-active" : ""}`}
                 onMouseDown={(e) => {
                   e.preventDefault();
@@ -1530,22 +1341,22 @@ export function ChatView({
                 }}
               />
               <div className="flex items-center justify-between border-b border-border-theme h-10 px-4 flex-shrink-0 bg-white">
-                <div className="flex items-center text-[13px] text-text-secondary h-full">
+                <div className="flex h-full min-w-0 flex-1 items-center overflow-x-auto text-[13px] text-text-secondary no-scrollbar">
                   {bottomTabs.map(tab => (
-                    <div 
+                    <div
                       key={tab.id}
                       onClick={() => setActiveBottomTabId(tab.id)}
-                      className={`flex items-center h-full px-3 border-b-2 cursor-pointer ${
+                      className={`flex h-full max-w-[220px] flex-shrink-0 cursor-pointer items-center border-b-2 px-3 ${
                         activeBottomTabId === tab.id 
                           ? "border-text-base text-text-base" 
                           : "border-transparent hover:text-text-base"
                       }`}
                     >
-                      <FontAwesomeIcon icon={tab.icon} className="mr-2" />
-                      {tab.title}
+                      <FontAwesomeIcon icon={tab.icon} className="mr-2 flex-shrink-0" />
+                      <span className="min-w-0 truncate">{tab.title}</span>
                       <FontAwesomeIcon 
                         icon={["fas", "xmark"]} 
-                        className="ml-3 hover:text-red-500 text-[10px]" 
+                        className="ml-3 flex-shrink-0 hover:text-red-500 text-[10px]"
                         onClick={(e) => {
                            e.stopPropagation();
                            const newTabs = bottomTabs.filter(t => t.id !== tab.id);
@@ -1557,15 +1368,15 @@ export function ChatView({
                       />
                     </div>
                   ))}
-                  <div 
-                    className={`flex items-center h-full px-3 cursor-pointer ${activeBottomTabId === "new" ? "text-text-base" : "hover:text-text-base"}`}
+                  <div
+                    className={`flex h-full flex-shrink-0 cursor-pointer items-center px-3 ${activeBottomTabId === "new" ? "text-text-base" : "hover:text-text-base"}`}
                     onClick={() => setActiveBottomTabId("new")}
                   >
                     <FontAwesomeIcon icon={["fas", "plus"]} />
                   </div>
                 </div>
-                <div className="flex items-center space-x-3 text-text-secondary">
-                  {bottomTabs.find(t => t.id === activeBottomTabId)?.type === "files" && (
+                <div className="ml-3 flex flex-shrink-0 items-center space-x-3 text-text-secondary">
+                  {activeBottomTab?.type === "files" && (
                     <>
                       <FontAwesomeIcon icon={["fas", "ellipsis"]} className="cursor-pointer hover:text-text-base" />
                       <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} className="cursor-pointer hover:text-text-base text-[13px]" />
@@ -1578,25 +1389,19 @@ export function ChatView({
 
               <div className="flex-1 overflow-hidden flex flex-col relative">
                 {activeBottomTabId === "new" && (
-                  <ToolLauncherPanel cards={TOOL_CARDS} onSelect={handleOpenBottomPlugin} variant="bottom" />
+                  <ToolLauncherPanel cards={PLUGIN_TOOL_CARDS} onSelect={handleOpenBottomPlugin} variant="bottom" />
                 )}
 
-                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "files" && <FilesPlugin projectPath={activeProjectPath} />}
-                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "chat" && <SideChatPlugin />}
-                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "browser" && (
-                  <BrowserPlugin initialUrl={bottomTabs.find(t => t.id === activeBottomTabId)?.url} />
-                )}
-                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "terminal" && (
-                  <TerminalPlugin mode="local" />
-                )}
-                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "project_map" && <ProjectMapPanel projectPath={activeProjectPath} onStatusChange={setMapStatus} />}
-                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "recording" && <RecordingPlugin />}
-                {activeBottomTabId !== "new" && bottomTabs.find(t => t.id === activeBottomTabId)?.type === "file_preview" && <FilePreviewPlugin />}
+                {activeBottomTabId !== "new" && activeBottomTab
+                  ? renderPluginTab(activeBottomTab, {
+                      activeProjectPath,
+                      envMode: "local",
+                      onProjectMapStatusChange: setMapStatus,
+                    })
+                  : null}
               </div>
             </div>
-          )}
-        </div>
-      </div>
+      )}
       {/* Floating sticky note for context state */}
         {isOutputPanelOpen && (
           <EnvironmentInfoPanel
@@ -1626,7 +1431,6 @@ export function ChatView({
             />
           </div>
         )}
-    </div>
     </div>
   );
 }

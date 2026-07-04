@@ -58,6 +58,10 @@ button:focus {
   user-select: none;
 }
 
+.stable-scrollbar-gutter {
+  scrollbar-gutter: stable;
+}
+
 .terminal-surface .xterm {
   height: 100%;
   width: 100%;

@@ -19,6 +19,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { ITerminalDimensions } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import type { PluginDefinition } from "./pluginTypes";
 
 interface TerminalPluginProps {
   mode?: "local" | "remote";
@@ -372,3 +373,26 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
     </div>
   );
 }
+
+export const terminalPluginDefinition: PluginDefinition = {
+  type: "terminal",
+  icon: ["fas", "terminal"],
+  titleKey: "terminal",
+  descKey: "terminalDesc",
+  fallbackTitle: "Terminal",
+  fallbackDesc: "Launch interactive shell",
+  getTabTitle: ({ activeProjectPath, envMode = "local", selectedConnection }) => {
+    if (envMode === "remote") {
+      if (selectedConnection?.name) return selectedConnection.name;
+      if (selectedConnection?.username && selectedConnection?.host) {
+        return `${selectedConnection.username}@${selectedConnection.host}`;
+      }
+      return "SSH Terminal";
+    }
+    const path = activeProjectPath?.trim();
+    return path && path.length > 0 ? path : "Terminal";
+  },
+  render: ({ envMode = "local", selectedConnectionId }) => (
+    <TerminalPlugin mode={envMode} connectionId={selectedConnectionId} />
+  ),
+};

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { runChat } from "../../api";
 import type { RuntimeEvent } from "../../api";
 import type { ChatMessage } from "../../types";
+import type { PluginDefinition } from "./pluginTypes";
 
 /**
  * A lightweight, self-contained side chat: each submission runs an independent
@@ -131,3 +132,15 @@ export function SideChatPlugin() {
     </div>
   );
 }
+
+export const sideChatPluginDefinition: PluginDefinition = {
+  type: "chat",
+  icon: ["far", "comment-dots"],
+  titleKey: "chat",
+  descKey: "chatDesc",
+  fallbackTitle: "Side Chat",
+  fallbackDesc: "Start a side chat",
+  getTabTitle: ({ t }) =>
+    t?.("chatView.tools.chat", { defaultValue: "Side Chat" }) || "Side Chat",
+  render: () => <SideChatPlugin />,
+};
