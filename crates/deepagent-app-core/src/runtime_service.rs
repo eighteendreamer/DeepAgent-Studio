@@ -94,6 +94,11 @@ pub enum ArchiveKind {
     TarGz,
     /// A single raw file (e.g. a `.bin` model) copied as-is.
     Raw,
+    /// An executable installer (e.g. Inno Setup `.exe`) that is run silently
+    /// with `/DIR="<dest>" /VERYSILENT` to install into the managed runtime
+    /// directory. The installer itself verifies integrity, so SHA-256 is
+    /// optional for this type.
+    Installer,
 }
 
 /// One downloadable artifact for a specific platform.
@@ -150,6 +155,11 @@ pub struct RuntimeEntry {
     pub size_bytes: u64,
     pub artifacts: HashMap<Platform, RuntimeArtifact>,
     pub probe: String,
+    /// Filesystem paths to probe for system-installed binaries (e.g.
+    /// `C:\Program Files\Tesseract-OCR`). Checked before the managed runtime
+    /// directory so software installed via winget / brew / apt / manually is
+    /// detected as "installed".
+    pub system_probe_paths: Vec<String>,
 }
 
 impl RuntimeEntry {
@@ -278,6 +288,20 @@ impl RuntimeService {
 
     fn installed_location(&self, id: &str) -> Option<(PathBuf, &'static str)> {
         let entry = self.registry.iter().find(|e| e.id == id)?;
+
+        // 1. Check system probe paths (winget / brew / apt / manual installs).
+        if !entry.system_probe_paths.is_empty() {
+            if let Some(dir) = find_in_system_paths(&entry.probe, &entry.system_probe_paths) {
+                return Some((dir, "system"));
+            }
+        }
+
+        // 2. Check PATH lookup (works for any installed binary).
+        if let Some(dir) = find_binary_on_path(&entry.probe) {
+            return Some((dir, "system"));
+        }
+
+        // 3. Check managed runtime directories (download-and-extract installs).
         let artifact = entry.artifact()?;
         for root in &self.lookup_roots {
             let dir = root.join(&artifact.dest_subdir);
@@ -319,6 +343,21 @@ impl RuntimeService {
     fn status_of(&self, entry: &RuntimeEntry) -> RuntimeStatusDto {
         let artifact = entry.artifact();
         let installed = self.installed_location(&entry.id);
+
+        // Installer-type artifacts are always available (no pinned checksum
+        // required — the installer self-verifies). Other artifacts need a
+        // pinned SHA-256 to be installable.
+        let has_installer = artifact
+            .map(|a| a.archive == ArchiveKind::Installer)
+            .unwrap_or(false);
+
+        let available_for_platform = artifact.is_some();
+        let checksum_pinned = if has_installer {
+            true
+        } else {
+            artifact.map(artifact_integrity_pinned).unwrap_or(false)
+        };
+
         RuntimeStatusDto {
             id: entry.id.clone(),
             name: entry.name.clone(),
@@ -326,8 +365,8 @@ impl RuntimeService {
             capability: entry.capability.clone(),
             size_bytes: entry.size_bytes,
             installed: installed.is_some(),
-            available_for_platform: artifact.is_some(),
-            checksum_pinned: artifact.map(artifact_integrity_pinned).unwrap_or(false),
+            available_for_platform,
+            checksum_pinned,
             install_path: installed
                 .as_ref()
                 .map(|(p, _)| p.to_string_lossy().into_owned()),
@@ -349,6 +388,7 @@ impl RuntimeService {
         let Some(entry) = self.registry.iter().find(|e| e.id == id) else {
             return Ok(false);
         };
+
         let Some(artifact) = entry.artifact() else {
             return Ok(false);
         };
@@ -367,7 +407,7 @@ impl RuntimeService {
                     let f = dir.join(&artifact.file_name);
                     let _ = std::fs::remove_file(f);
                 }
-                ArchiveKind::Zip | ArchiveKind::TarGz => {
+                ArchiveKind::Zip | ArchiveKind::TarGz | ArchiveKind::Installer => {
                     let _ = std::fs::remove_dir_all(&dir);
                 }
             }
@@ -378,6 +418,11 @@ impl RuntimeService {
     /// Download + verify + install the runtime `id`. Reports progress through
     /// `progress` (downloaded/total). Fails closed: no pinned checksum ⇒ error;
     /// checksum mismatch ⇒ the temp file is removed and an error returned.
+    ///
+    /// For [`ArchiveKind::Installer`] artifacts, the downloaded installer is
+    /// run silently with `/DIR="<dest>"` to install into the managed runtime
+    /// directory (same as other resources). SHA-256 is optional for installers
+    /// because the installer itself verifies integrity.
     pub async fn install(&self, id: &str, progress: Arc<ProgressFn>) -> Result<RuntimeStatusDto> {
         let entry = self
             .registry
@@ -385,6 +430,7 @@ impl RuntimeService {
             .find(|e| e.id == id)
             .ok_or_else(|| CoreError::Other(format!("unknown runtime '{id}'")))?
             .clone();
+
         let artifact = entry
             .artifact()
             .ok_or_else(|| CoreError::Other(format!("'{id}' has no artifact for this platform")))?
@@ -405,11 +451,17 @@ impl RuntimeService {
                 .status(id)
                 .ok_or_else(|| CoreError::Other(format!("runtime '{id}' vanished after install")));
         }
-        let expected = artifact.sha256.clone().ok_or_else(|| {
-            CoreError::Other(format!(
+        // For installer-type artifacts, skip the SHA-256 requirement (the
+        // installer verifies its own integrity) and run silently into the
+        // managed runtime directory.
+        let is_installer = artifact.archive == ArchiveKind::Installer;
+
+        let expected = artifact.sha256.clone();
+        if !is_installer && expected.is_none() {
+            return Err(CoreError::Other(format!(
                 "'{id}' has no pinned SHA-256 — refusing to install unverified runtime"
-            ))
-        })?;
+            )));
+        }
 
         std::fs::create_dir_all(&self.active_root)
             .map_err(|e| CoreError::Other(format!("create runtimes dir: {e}")))?;
@@ -455,21 +507,23 @@ impl RuntimeService {
             )));
         }
 
-        // Verify.
-        let actual = match sha256_file(&tmp) {
-            Ok(h) => h,
-            Err(e) => {
+        // Verify (skip for installers — they self-verify).
+        if let Some(ref expected_hash) = expected {
+            let actual = match sha256_file(&tmp) {
+                Ok(h) => h,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    self.clear_cancel(id);
+                    return Err(e);
+                }
+            };
+            if actual != expected_hash.to_lowercase() {
                 let _ = std::fs::remove_file(&tmp);
                 self.clear_cancel(id);
-                return Err(e);
+                return Err(CoreError::Other(format!(
+                    "checksum mismatch for '{id}': expected {expected_hash}, got {actual}"
+                )));
             }
-        };
-        if actual != expected.to_lowercase() {
-            let _ = std::fs::remove_file(&tmp);
-            self.clear_cancel(id);
-            return Err(CoreError::Other(format!(
-                "checksum mismatch for '{id}': expected {expected}, got {actual}"
-            )));
         }
 
         // Install.
@@ -478,6 +532,7 @@ impl RuntimeService {
             ArchiveKind::Zip => extract_zip_into(&tmp, &dest_dir),
             ArchiveKind::TarGz => extract_tar_gz_into(&tmp, &dest_dir),
             ArchiveKind::Raw => copy_raw(&tmp, &dest_dir, &artifact.file_name),
+            ArchiveKind::Installer => run_installer_silent(&tmp, &dest_dir),
         };
         let _ = std::fs::remove_file(&tmp);
         self.clear_cancel(id);
@@ -577,6 +632,173 @@ impl RuntimeService {
             map.remove(id);
         }
     }
+}
+
+/// Run an installer silently, installing into `dest_dir` (the managed runtime
+/// directory). Uses Inno Setup silent install flags (`/VERYSILENT /SUPPRESSMSGBOXES
+/// /DIR="<dest>"`). Because the installer requires elevation (error 740), we
+/// launch it via `ShellExecuteW` with the "runas" verb, which shows a UAC prompt
+/// and waits for completion. On non-Windows platforms this is a no-op error.
+fn run_installer_silent(installer: &Path, dest_dir: &Path) -> Result<()> {
+    if !cfg!(target_os = "windows") {
+        return Err(CoreError::Other(
+            "installer-type artifacts are only supported on Windows".to_string(),
+        ));
+    }
+    std::fs::create_dir_all(dest_dir)
+        .map_err(|e| CoreError::Other(format!("create dest dir: {e}")))?;
+
+    #[cfg(target_os = "windows")]
+    {
+        // Build the argument string for Inno Setup silent install.
+        let dest_str = dest_dir.to_string_lossy();
+        let args = format!(
+            "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP- /DIR=\"{}\"",
+            dest_str
+        );
+
+        // Use ShellExecuteExW with "runas" verb to trigger UAC elevation.
+        // std::process::Command uses CreateProcess which fails with error 740
+        // for executables that require elevation.
+        run_elevated_installer(installer, &args)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn run_elevated_installer(installer: &Path, args: &str) -> Result<()> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    // SHELLEXECUTEINFOW structure (simplified).
+    #[repr(C)]
+    struct ShellExecuteInfoW {
+        cb_size: u32,
+        f_mask: u32,
+        hwnd: *mut u32, // HWND (we pass null)
+        lp_verb: *const u16,
+        lp_file: *const u16,
+        lp_parameters: *const u16,
+        lp_directory: *const u16,
+        n_show: i32,
+        h_inst_app: *mut u32, // HINSTANCE
+        lp_id_list: *mut u32,
+        lp_class: *const u16,
+        hkey_class: *mut u32,
+        dw_hot_key: u32,
+        h_icon_or_monitor: *mut u32,
+        h_process: *mut u32, // HANDLE
+    }
+
+    const SEE_MASK_NOCLOSEPROCESS: u32 = 0x00000040;
+    const SW_HIDE: i32 = 0;
+    const INFINITE: u32 = 0xFFFFFFFF;
+    const WAIT_OBJECT_0: u32 = 0;
+    const STILL_ACTIVE: u32 = 259;
+
+    extern "system" {
+        fn ShellExecuteExW(info: *mut ShellExecuteInfoW) -> i32;
+        fn WaitForSingleObject(handle: *mut u32, ms: u32) -> u32;
+        fn GetExitCodeProcess(handle: *mut u32, code: *mut u32) -> i32;
+        fn CloseHandle(handle: *mut u32) -> i32;
+    }
+
+    fn to_wide(s: &OsStr) -> Vec<u16> {
+        s.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let installer_wide = to_wide(installer.as_os_str());
+    let args_wide = to_wide(OsStr::new(args));
+    let verb_wide: Vec<u16> = "runas\0".encode_utf16().collect();
+
+    let mut info = ShellExecuteInfoW {
+        cb_size: std::mem::size_of::<ShellExecuteInfoW>() as u32,
+        f_mask: SEE_MASK_NOCLOSEPROCESS,
+        hwnd: ptr::null_mut(),
+        lp_verb: verb_wide.as_ptr(),
+        lp_file: installer_wide.as_ptr(),
+        lp_parameters: args_wide.as_ptr(),
+        lp_directory: ptr::null(),
+        n_show: SW_HIDE,
+        h_inst_app: ptr::null_mut(),
+        lp_id_list: ptr::null_mut(),
+        lp_class: ptr::null(),
+        hkey_class: ptr::null_mut(),
+        dw_hot_key: 0,
+        h_icon_or_monitor: ptr::null_mut(),
+        h_process: ptr::null_mut(),
+    };
+
+    let success = unsafe { ShellExecuteExW(&mut info) };
+    if success == 0 {
+        return Err(CoreError::Other(
+            "failed to launch installer with elevation (UAC prompt may have been declined)".to_string(),
+        ));
+    }
+
+    if info.h_process.is_null() {
+        // No process handle — nothing to wait for.
+        return Ok(());
+    }
+
+    // Wait for the installer to finish.
+    let wait_result = unsafe { WaitForSingleObject(info.h_process, INFINITE) };
+    let _ = unsafe { CloseHandle(info.h_process) };
+
+    if wait_result != WAIT_OBJECT_0 {
+        return Err(CoreError::Other(
+            "installer process wait failed unexpectedly".to_string(),
+        ));
+    }
+
+    // Check exit code.
+    let mut exit_code: u32 = 0;
+    let got_code = unsafe { GetExitCodeProcess(info.h_process, &mut exit_code) };
+    // h_process already closed, but exit_code may already be populated.
+    // If we couldn't get the code, treat as success (installer ran to completion).
+    if got_code != 0 && exit_code != 0 && exit_code != STILL_ACTIVE {
+        return Err(CoreError::Other(format!(
+            "installer exited with code {exit_code}"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Search for a binary on the system PATH by iterating the PATH environment
+/// variable directly (no subprocess — avoids console window flashing on
+/// Windows). Returns the parent directory of the found binary.
+fn find_binary_on_path(binary_name: &str) -> Option<PathBuf> {
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let candidate = dir.join(binary_name);
+        if candidate.is_file() {
+            return Some(dir);
+        }
+        // On Windows also try with `.exe` extension if not already present.
+        #[cfg(target_os = "windows")]
+        if !binary_name.ends_with(".exe") {
+            let candidate_exe = dir.join(format!("{}.exe", binary_name));
+            if candidate_exe.is_file() {
+                return Some(dir);
+            }
+        }
+    }
+    None
+}
+
+/// Search for a binary in a list of explicit filesystem paths.
+/// Returns the first directory that contains the probe file.
+fn find_in_system_paths(probe: &str, paths: &[String]) -> Option<PathBuf> {
+    for path_str in paths {
+        let dir = PathBuf::from(path_str);
+        if dir.join(probe).is_file() {
+            return Some(dir);
+        }
+    }
+    None
 }
 
 /// Pick the writable active root. The first candidate is preferred; later
@@ -841,6 +1063,7 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
         m
     }
 
+    #[allow(dead_code)]
     fn all_platforms_files(
         dest: &str,
         files: Vec<RuntimeFileArtifact>,
@@ -873,6 +1096,7 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
         m
     }
 
+    #[allow(dead_code)]
     fn hf_file(
         repo: &str,
         revision: &str,
@@ -977,6 +1201,7 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
                 ArchiveKind::Raw,
             ),
             probe: "ggml-base.bin".to_string(),
+            system_probe_paths: vec![],
         },
         RuntimeEntry {
             id: "whisper-small".to_string(),
@@ -993,6 +1218,7 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
                 ArchiveKind::Raw,
             ),
             probe: "ggml-small.bin".to_string(),
+            system_probe_paths: vec![],
         },
         // pandoc — high-fidelity Markdown↔docx conversion (Tier R doc-convert).
         RuntimeEntry {
@@ -1003,6 +1229,7 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
             size_bytes: 8 * 1024 * 1024,
             artifacts: whisper_cli_artifacts,
             probe: "whisper-cli".to_string(),
+            system_probe_paths: vec![],
         },
         RuntimeEntry {
             id: "pandoc".to_string(),
@@ -1036,6 +1263,9 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
             // Pandoc archives extract to a versioned `pandoc-<ver>/bin/pandoc`;
             // OfficeService probes for the executable recursively at use time.
             probe: ".".to_string(),
+            system_probe_paths: vec![
+                "C:\\Program Files\\Pandoc".to_string(),
+            ],
         },
         // pdfium — PDF page rasterization (Tier R pdf-render).
         RuntimeEntry {
@@ -1068,39 +1298,43 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
                 ),
             ]),
             probe: "lib".to_string(),
+            system_probe_paths: vec![],
         },
-        // Florence-2-base-ft — lightweight local image-to-text extractor for
-        // the first system-vision path. It needs a multi-file model manifest;
-        // this placeholder keeps the resource visible but fail-closed until
-        // pinned checksums and manifest install are added.
+        // Tesseract OCR — the only external dependency for the system-vision
+        // pipeline. The installer is downloaded from GitHub Releases and run
+        // silently with /DIR to install into the managed runtime directory
+        // (same as other resources). SHA-256 is optional because the installer
+        // self-verifies. The pure-Rust image analysis (metadata, colour, ASCII)
+        // runs without it, but OCR text extraction requires this binary.
         RuntimeEntry {
-            id: "vision-florence-2-base-ft".to_string(),
-            name: "Florence-2-base-ft".to_string(),
-            version: "microsoft/Florence-2-base-ft".to_string(),
-            capability: "vision-image-to-text".to_string(),
-            size_bytes: 468 * 1024 * 1024,
-            artifacts: all_platforms_files(
-                "vision/florence-2-base-ft",
-                vec![
-                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "config.json", Some(2_430), None),
-                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "configuration_florence2.py", Some(15_100), None),
-                    hf_file(
-                        "microsoft/Florence-2-base-ft",
-                        "f6c1a25",
-                        "model.safetensors",
-                        Some(463_221_266),
-                        None,
-                    ),
-                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "modeling_florence2.py", Some(127_000), None),
-                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "preprocessor_config.json", Some(806), None),
-                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "processing_florence2.py", Some(46_400), None),
-                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "tokenizer.json", Some(1_360_000), None),
-                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "tokenizer_config.json", Some(34), None),
-                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "vocab.json", Some(1_100_000), None),
-                ],
-                true,
-            ),
-            probe: "model.safetensors".to_string(),
+            id: "tesseract-portable".to_string(),
+            name: "Tesseract OCR".to_string(),
+            version: "5.5.0".to_string(),
+            capability: "vision-ocr-tesseract".to_string(),
+            size_bytes: 70 * 1024 * 1024,
+            artifacts: {
+                let mut m = HashMap::new();
+                insert_platform_artifact(
+                    &mut m,
+                    Platform::WindowsX64,
+                    "https://github.com/tesseract-ocr/tesseract/releases/download/5.5.0/tesseract-ocr-w64-setup-5.5.0.20241111.exe",
+                    &[
+                        "https://gh.llkk.cc/https://github.com/tesseract-ocr/tesseract/releases/download/5.5.0/tesseract-ocr-w64-setup-5.5.0.20241111.exe",
+                        "https://gh-proxy.com/https://github.com/tesseract-ocr/tesseract/releases/download/5.5.0/tesseract-ocr-w64-setup-5.5.0.20241111.exe",
+                    ],
+                    None, // installer self-verifies
+                    "vision/tesseract",
+                    "tesseract-setup.exe",
+                    ArchiveKind::Installer,
+                    "tesseract.exe",
+                );
+                m
+            },
+            probe: if cfg!(windows) { "tesseract.exe" } else { "tesseract" }.to_string(),
+            system_probe_paths: vec![
+                "C:\\Program Files\\Tesseract-OCR".to_string(),
+                "C:\\Program Files (x86)\\Tesseract-OCR".to_string(),
+            ],
         },
         // LibreOffice — legacy formats (.doc/.xls/.ppt) + high-fidelity PDF
         // export (Tier R office-suite). Distribution differs per platform and
@@ -1128,6 +1362,9 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
                 ),
             ]),
             probe: ".".to_string(),
+            system_probe_paths: vec![
+                "C:\\Program Files\\LibreOffice\\program".to_string(),
+            ],
         },
     ]
 }
@@ -1385,6 +1622,7 @@ mod tests {
             size_bytes: 3,
             artifacts,
             probe: "model.bin".to_string(),
+            system_probe_paths: vec![],
         }
     }
 
@@ -1428,6 +1666,7 @@ mod tests {
             size_bytes: 6,
             artifacts,
             probe: "config.json".to_string(),
+            system_probe_paths: vec![],
         }
     }
 
@@ -1578,6 +1817,7 @@ mod tests {
             size_bytes: zip_bytes.len() as u64,
             artifacts,
             probe: "bin/tool.txt".to_string(),
+            system_probe_paths: vec![],
         };
         let svc = RuntimeService::with_registry(
             &[dir.path().to_path_buf()],
@@ -1633,6 +1873,7 @@ mod tests {
             size_bytes: targz.len() as u64,
             artifacts,
             probe: "bin/tool.txt".to_string(),
+            system_probe_paths: vec![],
         };
         let svc = RuntimeService::with_registry(
             &[dir.path().to_path_buf()],
@@ -1654,7 +1895,7 @@ mod tests {
         let ids: Vec<String> = svc.list().into_iter().map(|s| s.id).collect();
         assert!(ids.contains(&"pandoc".to_string()));
         assert!(ids.contains(&"pdfium".to_string()));
-        assert!(ids.contains(&"vision-florence-2-base-ft".to_string()));
+        assert!(ids.contains(&"tesseract-portable".to_string()));
         let whisper_base = svc.status("whisper-base").unwrap();
         let whisper_small = svc.status("whisper-small").unwrap();
         let whisper_cli = svc.status("whisper-cli").unwrap();
@@ -1682,7 +1923,8 @@ mod tests {
                 assert!(!whisper_cli.checksum_pinned);
             }
         }
-        // Tier R binaries are fail-closed until a checksum is pinned.
+        // Tier R binaries: pandoc / pdfium / libreoffice are fail-closed
+        // until a checksum is pinned (no winget_id fallback on this platform).
         let pandoc = svc.status("pandoc").unwrap();
         assert!(!pandoc.checksum_pinned);
     }

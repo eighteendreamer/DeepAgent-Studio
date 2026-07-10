@@ -677,7 +677,8 @@ pub struct AttachmentDto {
 pub struct VisionRecognizeRequestDto {
     /// Absolute path to the saved image.
     pub image_path: String,
-    /// Optional Florence task prompt. `None` means the default auto summary.
+    /// Optional OCR language code (e.g. "eng", "chi_sim", "chi_sim+eng").
+    /// `None` or `"auto"` means the default (chi_sim+eng).
     pub prompt: Option<String>,
 }
 

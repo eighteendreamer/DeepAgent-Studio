@@ -965,7 +965,7 @@ export interface RuntimeStatus {
   available_for_platform: boolean;
   checksum_pinned: boolean;
   install_path: string | null;
-  install_source?: "active" | "fallback" | null;
+  install_source?: "active" | "fallback" | "system" | null;
 }
 
 export interface RuntimeRoots {

@@ -1558,6 +1558,13 @@ async fn vision_recognize_image(
     .map_err(|e| format!("vision recognition task failed: {e}"))?
 }
 
+/// Check whether Tesseract OCR is available (managed runtime or system PATH).
+/// The frontend uses this to decide whether to prompt the user to download OCR.
+#[tauri::command]
+fn vision_ocr_available(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.vision.ocr_available())
+}
+
 // ---- Skill marketplace settings (Skill Marketplace spec, R10) -------------
 
 #[tauri::command]
@@ -3631,6 +3638,7 @@ pub fn run() {
             get_vision_settings,
             set_vision_settings,
             vision_recognize_image,
+            vision_ocr_available,
             get_skill_catalog_enabled,
             set_skill_catalog_enabled,
             get_skill_catalog_char_budget,

@@ -264,7 +264,8 @@ fn normalize_web_search_settings(mut settings: WebSearchSettings) -> WebSearchSe
 pub enum VisionMode {
     /// Do not analyze images automatically.
     Off,
-    /// Use a local system vision runtime, currently Florence-2-base-ft.
+    /// Use pure-Rust local image analysis (metadata, colour, ASCII art) +
+    /// optional Tesseract OCR. No Python or ML runtime required.
     #[default]
     System,
     /// Use a provider model that explicitly supports image input.
@@ -291,7 +292,7 @@ impl VisionMode {
 }
 
 fn default_system_vision_model() -> String {
-    "vision-florence-2-base-ft".to_string()
+    "deepagent-vision-rust".to_string()
 }
 
 fn default_auto_analyze_pasted_images() -> bool {

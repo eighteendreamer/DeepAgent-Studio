@@ -1018,7 +1018,7 @@ export async function getVisionSettings(): Promise<VisionSettings> {
   if (invoke) return invoke<VisionSettings>("get_vision_settings");
   return {
     mode: "system",
-    system_model: "vision-florence-2-base-ft",
+    system_model: "deepagent-vision-rust",
     auto_analyze_pasted_images: true,
     send_original_image_to_model: false,
   };
@@ -1040,6 +1040,13 @@ export async function visionRecognizeImage(
   const invoke = getInvoke();
   if (invoke) return invoke<VisionRecognizeResult>("vision_recognize_image", { request });
   throw new Error("vision recognition requires the desktop app");
+}
+
+/** Check whether Tesseract OCR is available (managed runtime or system PATH). */
+export async function visionOcrAvailable(): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("vision_ocr_available");
+  return false;
 }
 
 // ---- MCP servers (visual config) ------------------------------------------

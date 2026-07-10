@@ -14,6 +14,7 @@ import {
   setChatModel,
   setThinkingDepth,
   visionRecognizeImage,
+  visionOcrAvailable,
 } from "../api";
 import { message } from "./message";
 import type { Command, ComposerAttachment, Skill, VisionSettings } from "../types";
@@ -96,10 +97,10 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   const [skills, setSkills] = useState<Skill[]>([]);
 
   // Cached vision settings — controls whether pasted images are automatically
-  // analyzed by the local Florence-2 system-vision runtime before being sent.
+  // analyzed by the pure-Rust system-vision pipeline before being sent.
   const [visionSettings, setVisionSettings] = useState<VisionSettings>({
     mode: "system",
-    system_model: "vision-florence-2-base-ft",
+    system_model: "deepagent-vision-rust",
     auto_analyze_pasted_images: true,
     send_original_image_to_model: false,
   });
@@ -579,10 +580,35 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
               });
             } catch (err) {
               console.error("vision recognition failed:", err);
-              const errMsg =
-                err instanceof Error ? err.message : String(err);
-              message.error("视觉识别失败，无法分析图片内容");
-              markAttachmentError(id, `视觉识别失败：${errMsg}`);
+              // Even if full analysis fails, the pure-Rust analysis (metadata,
+              // colour, ASCII) may have succeeded. Check if the error is about
+              // OCR specifically — if so, show an info message (not error) and
+              // still mark the attachment ready with whatever text we got.
+              const errMsg = err instanceof Error ? err.message : String(err);
+              // If the error mentions OCR/Tesseract, it means the pure-Rust
+              // analysis ran but OCR was unavailable. Show a helpful prompt.
+              const isOcrIssue = /tesseract|ocr|OCR/i.test(errMsg);
+              if (isOcrIssue) {
+                const ocrAvailable = await visionOcrAvailable();
+                if (!ocrAvailable) {
+                  message.info(
+                    "图片已分析（色彩、轮廓、元数据），但文字识别（OCR）未安装。可在设置中下载 Tesseract OCR 以启用文字提取。"
+                  );
+                }
+                // Mark ready with whatever partial text we got from the error.
+                markAttachmentReady(id, {
+                  dataUrl,
+                  size: persisted.size_bytes || file.size,
+                  storageDir: persisted.storage_dir,
+                  originalPath: imagePath,
+                  extractedText: persisted.extracted_text ?? undefined,
+                  sha256: persisted.sha256 ?? undefined,
+                  backendMessage: persisted.message ?? undefined,
+                });
+              } else {
+                message.error("视觉识别失败，无法分析图片内容");
+                markAttachmentError(id, `视觉识别失败：${errMsg}`);
+              }
             }
           } else {
             // Vision mode is "off" or "model", or auto-analyze is disabled —

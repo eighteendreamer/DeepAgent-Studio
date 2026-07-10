@@ -1110,6 +1110,7 @@ dependencies = [
  "deepagent-session",
  "deepagent-skills",
  "deepagent-tools",
+ "deepagent-vision",
  "deepagent-workspace",
  "flate2",
  "hound",
@@ -1486,6 +1487,16 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "deepagent-vision"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

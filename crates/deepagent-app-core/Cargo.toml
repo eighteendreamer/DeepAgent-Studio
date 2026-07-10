@@ -25,6 +25,7 @@ deepagent-hooks.workspace = true
 deepagent-mcp.workspace = true
 deepagent-intent.workspace = true
 deepagent-prompts.workspace = true
+deepagent-vision.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

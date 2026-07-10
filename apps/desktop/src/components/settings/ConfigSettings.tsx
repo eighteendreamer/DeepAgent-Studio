@@ -131,7 +131,7 @@ const RUNTIME_DESCRIPTIONS: Record<string, string> = {
   pandoc: "增强 Markdown、docx 等文档转换能力。",
   pdfium: "增强 PDF 页面预览和栅格化渲染能力。",
   libreoffice: "用于旧版 Office 格式、高保真转换和导出能力。",
-  "vision-florence-2-base-ft": "轻量本地图片转文本模型，用于把截图和图片转换成可交给文本模型理解的视觉描述。",
+  "tesseract-portable": "Tesseract OCR 便携版，用于图片文字识别（OCR）。安装后系统视觉分析将自动包含文字提取。",
 };
 
 function formatBytes(bytes: number): string {
@@ -336,7 +336,11 @@ function RuntimeResourceSettings() {
                       {runtime.install_path && (
                         <span className="max-w-full truncate">
                           路径: {runtime.install_path}
-                          {runtime.install_source === "fallback" ? "（旧目录）" : ""}
+                          {runtime.install_source === "fallback"
+                            ? "（旧目录）"
+                            : runtime.install_source === "system"
+                              ? "（系统安装）"
+                              : ""}
                         </span>
                       )}
                       {unavailableReason && <span className="text-amber-600">{unavailableReason}</span>}
@@ -402,7 +406,7 @@ function RuntimeResourceSettings() {
 function VisionResourceSettings() {
   const [settings, setSettingsState] = useState<VisionSettings>({
     mode: "system",
-    system_model: "vision-florence-2-base-ft",
+    system_model: "deepagent-vision-rust",
     auto_analyze_pasted_images: true,
     send_original_image_to_model: false,
   });
@@ -443,7 +447,7 @@ function VisionResourceSettings() {
     {
       title: "system",
       displayTitle: "系统视觉",
-      description: "使用本地 Florence-2-base-ft 把图片转换成文本描述。",
+      description: "使用纯 Rust 本地图片分析（色彩、轮廓、元数据）+ Tesseract OCR 文字提取。"
     },
     {
       title: "off",
@@ -485,11 +489,8 @@ function VisionResourceSettings() {
           <div>
             <div className="text-[14px] font-medium text-text-base mb-1">系统视觉模型</div>
             <div className="text-[12px] text-text-secondary">
-              Florence-2-base-ft 资源通过上方“按需下载资源”安装到当前资源目录。
+              纯 Rust 图片分析内置运行，无需下载。Tesseract OCR 可通过上方“按需下载资源”安装以启用文字提取。
             </div>
-          </div>
-          <div className="rounded-md border border-border-theme bg-gray-50 px-3 py-1.5 text-[12px] font-medium text-text-base">
-            Florence-2-base-ft
           </div>
         </div>
         <div className="flex items-center justify-between p-4 border-b border-border-theme">
