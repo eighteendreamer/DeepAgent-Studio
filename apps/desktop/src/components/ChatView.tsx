@@ -16,7 +16,6 @@ import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
 import {
   OPEN_AUTOMATION_EVENT,
-  projectMapRefreshDeep,
   projectMapStatus,
   SEND_TO_CHAT_EVENT,
 } from "../api";
@@ -605,8 +604,6 @@ export function ChatView({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const chatMenuRef = useRef<HTMLDivElement>(null);
-  const [isProjectMapMenuOpen, setIsProjectMapMenuOpen] = useState(false);
-  const projectMapMenuRef = useRef<HTMLDivElement>(null);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
   const [envMode, setEnvMode] = useState<"local" | "remote">(() =>
@@ -646,10 +643,6 @@ export function ChatView({
 
   const [mapStatus, setMapStatus] = useState<ProjectMapStatus | null>(null);
 
-  const activeProjectLabel = useMemo(() => {
-    if (!activeProjectPath) return "";
-    return activeProjectPath.split(/[\\/]/).filter(Boolean).pop() ?? activeProjectPath;
-  }, [activeProjectPath]);
   const outputItems = useMemo(() => collectOutputItems(messages), [messages]);
   // Agent-driven changeset (`write_file` / `edit_file` / `multi_edit`).
   // Replaces the legacy `git diff --shortstat HEAD` source so the env
@@ -763,16 +756,6 @@ export function ChatView({
   }, [onSend]);
 
   useEffect(() => {
-    if (!isProjectMapMenuOpen) return;
-    const onMouseDown = (event: MouseEvent) => {
-      if (projectMapMenuRef.current?.contains(event.target as Node)) return;
-      setIsProjectMapMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [isProjectMapMenuOpen]);
-
-  useEffect(() => {
     if (!isMenuOpen) {
       setIsRewindOpen(false);
       return;
@@ -793,19 +776,6 @@ export function ChatView({
       }
     };
   }, []);
-
-  const refreshProjectMap = async () => {
-    if (!activeProjectPath) return;
-    setMapStatus((current) => current ? { ...current, status: "updating" } : current);
-    try {
-      const result = await projectMapRefreshDeep(activeProjectPath);
-      setMapStatus(result.status);
-      openProjectMapSidebar();
-    } catch {
-      const next = await projectMapStatus(activeProjectPath).catch(() => null);
-      setMapStatus(next);
-    }
-  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1108,37 +1078,8 @@ export function ChatView({
               style={{ right: 104 }}
             >
               {activeProjectPath && (
-                <div className="relative" ref={projectMapMenuRef}>
-                <button
-                  type="button"
-                  className="h-7 max-w-[220px] flex items-center rounded-md px-2 text-[12px] text-text-secondary hover:bg-gray-100 hover:text-text-base transition-colors"
-                  title={activeProjectPath}
-                  onClick={() => setIsProjectMapMenuOpen((v) => !v)}
-                >
-                  <FontAwesomeIcon icon={["far", "folder"]} className="mr-1.5 text-[11px]" />
-                  <span className="truncate">{activeProjectLabel}</span>
-                  <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
-                </button>
-                {isProjectMapMenuOpen && (
-                  <div className="absolute top-full right-0 mt-1 w-48 rounded-xl border border-border-theme bg-white py-1 shadow-[0_4px_24px_rgb(0,0,0,0.12)] z-50">
-                    <button
-                      type="button"
-                      className="w-full flex items-center px-3 py-2 text-left text-[13px] text-text-base hover:bg-gray-50"
-                      onClick={() => {
-                        setIsProjectMapMenuOpen(false);
-                        refreshProjectMap();
-                      }}
-                    >
-                      <FontAwesomeIcon icon={["fas", "rotate-right"]} className="text-text-secondary mr-2.5 w-4" />
-                      重新生成项目地图
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-            {activeProjectPath && (
-              <ProjectMapStatusBadge status={mapStatus} onClick={() => setIsProjectMapMenuOpen((v) => !v)} />
-            )}
+                <ProjectMapStatusBadge status={mapStatus} onClick={openProjectMapSidebar} />
+              )}
               {hasConversation && (
                 <EnvironmentInfoMenu
                   activeProjectPath={activeProjectPath}
