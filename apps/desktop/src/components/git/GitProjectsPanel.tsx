@@ -65,7 +65,7 @@ interface BatchPushRiskSummary {
 
 export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
   const { t } = useTranslation();
-  const { loading, projects, statuses, error, refresh } = useGitProjects();
+  const { loading, refreshing, projects, statuses, error, refresh } = useGitProjects();
   const [busyGroup, setBusyGroup] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [operationResult, setOperationResult] = useState<string | null>(null);
@@ -310,6 +310,13 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
           <span className="ml-2 text-[12px] text-text-secondary">
             {t("git.projectsPanel.gitProjectsCount", { count: statuses.filter((status) => status.is_repo).length })}
           </span>
+          {refreshing && (
+            <FontAwesomeIcon
+              icon={["fas", "rotate-right"]}
+              className="ml-2 text-[11px] text-text-tertiary motion-safe:animate-spin"
+              title={t("git.projectsPanel.loadingBranches")}
+            />
+          )}
         </div>
         <div className="flex items-center gap-1.5">
           <button
@@ -351,7 +358,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
           <button
             type="button"
             onClick={() => void refreshAll()}
-            disabled={loading || busyGroup !== null}
+            disabled={loading || refreshing || busyGroup !== null}
             className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "rotate-right"]} className="mr-1.5 text-[11px]" />

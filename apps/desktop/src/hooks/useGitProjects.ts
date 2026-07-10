@@ -4,16 +4,20 @@ import type { GitProjectStatus, Project } from "../types";
 
 interface GitProjectsState {
   loading: boolean;
+  refreshing: boolean;
   projects: Project[];
   statuses: GitProjectStatus[];
   error: string | null;
+  cachedAt: number | null;
 }
 
 const EMPTY_STATE: GitProjectsState = {
   loading: false,
+  refreshing: false,
   projects: [],
   statuses: [],
   error: null,
+  cachedAt: null,
 };
 
 type GitProjectsCache = {
@@ -24,6 +28,11 @@ type GitProjectsCache = {
 };
 
 const GIT_PROJECTS_CACHE_KEY = "deepagent:git-projects-cache";
+const GIT_PROJECTS_CACHE_TTL_MS = 30_000;
+
+let sharedState: GitProjectsState | null = null;
+let inFlight: Promise<GitProjectsState> | null = null;
+const listeners = new Set<(state: GitProjectsState) => void>();
 
 function readGitProjectsCache(): GitProjectsCache | null {
   if (typeof window === "undefined") return null;
@@ -50,63 +59,105 @@ function writeGitProjectsCache(projects: Project[], statuses: GitProjectStatus[]
   }
 }
 
-export function useGitProjects() {
-  const [state, setState] = useState<GitProjectsState>(() => {
-    const cached = readGitProjectsCache();
-    if (!cached) return EMPTY_STATE;
-    return {
+function stateFromCache(cache: GitProjectsCache): GitProjectsState {
+  return {
+    loading: false,
+    refreshing: false,
+    projects: cache.projects,
+    statuses: cache.statuses,
+    error: null,
+    cachedAt: cache.cachedAt,
+  };
+}
+
+function getInitialState(): GitProjectsState {
+  if (sharedState) return sharedState;
+  const cached = readGitProjectsCache();
+  if (!cached) return EMPTY_STATE;
+  sharedState = stateFromCache(cached);
+  return sharedState;
+}
+
+function publishState(state: GitProjectsState) {
+  sharedState = state;
+  listeners.forEach((listener) => listener(state));
+}
+
+function hasGitProjectsData(state: GitProjectsState): boolean {
+  return state.projects.length > 0 || state.statuses.length > 0;
+}
+
+function isFresh(state: GitProjectsState): boolean {
+  return Boolean(state.cachedAt && Date.now() - state.cachedAt < GIT_PROJECTS_CACHE_TTL_MS);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function fetchGitProjects(): Promise<GitProjectsState> {
+  if (inFlight) return inFlight;
+  inFlight = (async () => {
+    const projects = await listProjects();
+    const paths = projects.map((project) => project.path);
+    const statuses = await gitProjectsStatus(paths.length ? paths : undefined);
+    const cachedAt = Date.now();
+    writeGitProjectsCache(projects, statuses);
+    const nextState: GitProjectsState = {
       loading: false,
-      projects: cached.projects,
-      statuses: cached.statuses,
+      refreshing: false,
+      projects,
+      statuses,
       error: null,
+      cachedAt,
     };
+    publishState(nextState);
+    return nextState;
+  })().finally(() => {
+    inFlight = null;
   });
+  return inFlight;
+}
+
+async function loadGitProjects(showBlockingLoading: boolean) {
+  const current = sharedState ?? getInitialState();
+  const hasData = hasGitProjectsData(current);
+  publishState({
+    ...current,
+    loading: showBlockingLoading && !hasData,
+    refreshing: hasData,
+    error: null,
+  });
+  try {
+    await fetchGitProjects();
+  } catch (error) {
+    const previous = sharedState ?? current;
+    publishState({
+      ...previous,
+      loading: false,
+      refreshing: false,
+      error: errorMessage(error),
+    });
+  }
+}
+
+export function useGitProjects() {
+  const [state, setState] = useState<GitProjectsState>(getInitialState);
 
   const refresh = useCallback(async () => {
-    setState((prev) => ({ ...prev, loading: true, error: null }));
-    try {
-      const projects = await listProjects();
-      const paths = projects.map((project) => project.path);
-      const statuses = await gitProjectsStatus(paths.length ? paths : undefined);
-      writeGitProjectsCache(projects, statuses);
-      setState({
-        loading: false,
-        projects,
-        statuses,
-        error: null,
-      });
-    } catch (error) {
-      setState((prev) => ({
-        ...prev,
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      }));
-    }
+    await loadGitProjects(true);
   }, []);
 
   useEffect(() => {
-    if (readGitProjectsCache()) return;
-    let cancelled = false;
-    const load = async () => {
-      setState((prev) => ({ ...prev, loading: true, error: null }));
-      try {
-        const projects = await listProjects();
-        const paths = projects.map((project) => project.path);
-        const statuses = await gitProjectsStatus(paths.length ? paths : undefined);
-        if (cancelled) return;
-        setState({ loading: false, projects, statuses, error: null });
-      } catch (error) {
-        if (cancelled) return;
-        setState((prev) => ({
-          ...prev,
-          loading: false,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-      }
-    };
-    void load();
+    listeners.add(setState);
+    const current = sharedState ?? getInitialState();
+    if (!hasGitProjectsData(current) || !isFresh(current)) {
+      window.setTimeout(() => {
+        void loadGitProjects(!hasGitProjectsData(current));
+      }, 0);
+    }
     return () => {
-      cancelled = true;
+      listeners.delete(setState);
     };
   }, []);
 
