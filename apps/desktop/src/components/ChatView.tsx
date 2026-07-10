@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import type { ChatMessage, MessagePart, ToolCall, TokenUsage, TimelineEntry, ApprovalRequest, ProjectMapStatus } from "../types";
+import type { ChatMessage, ComposerAttachment, MessagePart, ToolCall, TokenUsage, TimelineEntry, ApprovalRequest, ProjectMapStatus } from "../types";
 import { Composer } from "./Composer";
 import { ToolCallCard } from "./ToolCallCard";
 import { ApprovalDialog } from "./ApprovalDialog";
@@ -40,7 +40,7 @@ interface Props {
   /** Active chat identity, including pending runs before a real session id exists. */
   sessionKey?: string | null;
   messages: ChatMessage[];
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments?: ComposerAttachment[]) => void;
   /** Fork the current session into a new branch from its latest point. */
   onFork?: () => void;
   /** Rewind the current session to a timeline sequence (destructive). */
@@ -662,10 +662,27 @@ export function ChatView({
 
   // Auto-scroll the conversation to the bottom as messages/tokens stream in.
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerFrameRef = useRef<HTMLDivElement>(null);
+  const [composerBottomPadding, setComposerBottomPadding] = useState(176);
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [messages, composerBottomPadding]);
+
+  useEffect(() => {
+    const frame = composerFrameRef.current;
+    if (!frame) return;
+
+    const updatePadding = () => {
+      const height = Math.ceil(frame.getBoundingClientRect().height);
+      setComposerBottomPadding(Math.max(176, height + 56));
+    };
+
+    updatePadding();
+    const observer = new ResizeObserver(updatePadding);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, []);
 
   const handleOpenBottomPlugin = (c: PluginToolCard) => {
     const newTab = createPluginTab(c.type, {
@@ -799,10 +816,10 @@ export function ChatView({
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
-  const submit = () => {
+  const submit = (attachments: ComposerAttachment[] = []) => {
     const t = value.trim();
-    if (!t) return;
-    onSend(t);
+    if (!t && attachments.length === 0) return;
+    onSend(t, attachments);
     setValue("");
   };
 
@@ -1115,7 +1132,11 @@ export function ChatView({
             <div className="flex-1 flex flex-col relative min-w-0 min-h-0">
           
 
-        <div ref={scrollRef} className="stable-scrollbar-gutter flex-1 min-h-0 overflow-y-auto px-6 py-4 pb-44">
+        <div
+          ref={scrollRef}
+          className="stable-scrollbar-gutter flex-1 min-h-0 overflow-y-auto px-6 py-4"
+          style={{ paddingBottom: composerBottomPadding }}
+        >
           {messages.length === 0 && (
             <div className="w-full max-w-4xl mx-auto text-text-secondary text-[15px] pl-2">
               {t("chatView.startConversation")}
@@ -1144,7 +1165,7 @@ export function ChatView({
         </div>
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
-          <div className="w-full max-w-4xl relative">
+          <div ref={composerFrameRef} className="w-full max-w-4xl relative">
             {approval && (
               <div
                 className="absolute left-0 right-0 z-30"

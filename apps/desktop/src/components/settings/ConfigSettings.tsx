@@ -11,7 +11,9 @@ import {
   getToolSearchThreshold,
   setToolSearchThreshold,
   getWebSearchSettings,
+  getVisionSettings,
   setWebSearchSettings,
+  setVisionSettings,
   getSkillCatalogEnabled,
   setSkillCatalogEnabled,
   getSkillCatalogCharBudget,
@@ -23,10 +25,19 @@ import {
   runtimeCancel,
   runtimeInstall,
   runtimeList,
+  runtimeMigrateResources,
+  runtimeRoots,
   runtimeProgressSubscribe,
   runtimeUninstall,
 } from "../../api";
-import type { RuntimeProgress, RuntimeStatus, WebSearchProvider, WebSearchSettings } from "../../types";
+import type {
+  RuntimeProgress,
+  RuntimeRoots,
+  RuntimeStatus,
+  VisionSettings,
+  WebSearchProvider,
+  WebSearchSettings,
+} from "../../types";
 import packageJson from "../../../package.json";
 import { message } from "../message";
 
@@ -110,6 +121,7 @@ const RUNTIME_CAPABILITY_LABEL: Record<string, string> = {
   "doc-convert": "文档转换",
   "pdf-render": "PDF 渲染",
   "office-suite": "Office 套件",
+  "vision-image-to-text": "系统视觉",
 };
 
 const RUNTIME_DESCRIPTIONS: Record<string, string> = {
@@ -119,6 +131,7 @@ const RUNTIME_DESCRIPTIONS: Record<string, string> = {
   pandoc: "增强 Markdown、docx 等文档转换能力。",
   pdfium: "增强 PDF 页面预览和栅格化渲染能力。",
   libreoffice: "用于旧版 Office 格式、高保真转换和导出能力。",
+  "vision-florence-2-base-ft": "轻量本地图片转文本模型，用于把截图和图片转换成可交给文本模型理解的视觉描述。",
 };
 
 function formatBytes(bytes: number): string {
@@ -140,16 +153,20 @@ function runtimeProgressPercent(progress?: RuntimeProgress): number | null {
 
 function RuntimeResourceSettings() {
   const [runtimes, setRuntimes] = useState<RuntimeStatus[]>([]);
+  const [roots, setRoots] = useState<RuntimeRoots | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState<Record<string, RuntimeProgress>>({});
 
   const refresh = () => {
     setLoading(true);
-    runtimeList()
-      .then((items) => setRuntimes(items))
+    Promise.all([runtimeList(), runtimeRoots()])
+      .then(([items, nextRoots]) => {
+        setRuntimes(items);
+        setRoots(nextRoots);
+      })
       .catch((e) => {
-        console.error("runtime_list failed:", e);
+        console.error("runtime resources failed:", e);
         message.error("资源列表加载失败");
       })
       .finally(() => setLoading(false));
@@ -218,24 +235,52 @@ function RuntimeResourceSettings() {
     }
   };
 
+  const migrateResources = async () => {
+    setLoading(true);
+    try {
+      const items = await runtimeMigrateResources();
+      setRuntimes(items);
+      setRoots(await runtimeRoots());
+      message.success("资源已迁移到当前资源目录");
+    } catch (e) {
+      console.error("runtime_migrate_resources failed:", e);
+      message.error("资源迁移失败，旧目录仍会继续作为兼容读取目录");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="mb-12 max-w-[700px]">
       <div className="flex items-end justify-between mb-4">
         <div>
           <h2 className="text-[15px] font-medium text-text-base mb-1">按需下载资源</h2>
           <div className="text-[12px] text-text-secondary">
-            管理本地语音模型、转写引擎、文档转换和 PDF 渲染等可选运行时。资源安装在应用数据目录中，更新应用不会删除，可随时卸载。
+            管理本地语音模型、转写引擎、文档转换、PDF 渲染和视觉模型等可选运行时。新资源安装在当前资源目录中，旧目录仅作为兼容读取来源。
           </div>
         </div>
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={loading}
-          className="flex items-center px-3 py-1.5 rounded-lg border border-border-theme text-[12px] text-text-base hover:bg-gray-50 disabled:opacity-50"
-        >
-          <FontAwesomeIcon icon={["fas", "rotate-right"]} className={`mr-2 text-[11px] ${loading ? "animate-spin" : ""}`} />
-          刷新
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {roots && roots.fallback_roots.length > 0 && (
+            <button
+              type="button"
+              onClick={migrateResources}
+              disabled={loading}
+              className="flex items-center px-3 py-1.5 rounded-lg border border-border-theme text-[12px] text-text-base hover:bg-gray-50 disabled:opacity-50"
+            >
+              <FontAwesomeIcon icon={["fas", "download"]} className="mr-2 text-[11px]" />
+              迁移资源
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={loading}
+            className="flex items-center px-3 py-1.5 rounded-lg border border-border-theme text-[12px] text-text-base hover:bg-gray-50 disabled:opacity-50"
+          >
+            <FontAwesomeIcon icon={["fas", "rotate-right"]} className={`mr-2 text-[11px] ${loading ? "animate-spin" : ""}`} />
+            刷新
+          </button>
+        </div>
       </div>
 
       <div className="border border-border-theme rounded-xl shadow-[0_1px_2px_rgb(0,0,0,0.02)] bg-white overflow-hidden">
@@ -289,7 +334,10 @@ function RuntimeResourceSettings() {
                       <span>版本: {runtime.version}</span>
                       <span>大小: {formatBytes(runtime.size_bytes)}</span>
                       {runtime.install_path && (
-                        <span className="max-w-full truncate">路径: {runtime.install_path}</span>
+                        <span className="max-w-full truncate">
+                          路径: {runtime.install_path}
+                          {runtime.install_source === "fallback" ? "（旧目录）" : ""}
+                        </span>
                       )}
                       {unavailableReason && <span className="text-amber-600">{unavailableReason}</span>}
                     </div>
@@ -346,6 +394,134 @@ function RuntimeResourceSettings() {
             );
           })
         )}
+      </div>
+    </div>
+  );
+}
+
+function VisionResourceSettings() {
+  const [settings, setSettingsState] = useState<VisionSettings>({
+    mode: "system",
+    system_model: "vision-florence-2-base-ft",
+    auto_analyze_pasted_images: true,
+    send_original_image_to_model: false,
+  });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    getVisionSettings()
+      .then((value) => {
+        if (!cancelled) setSettingsState(value);
+      })
+      .catch((e) => {
+        console.error("get_vision_settings failed:", e);
+        message.error("视觉设置加载失败");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const persist = async (next: VisionSettings) => {
+    const previous = settings;
+    setSettingsState(next);
+    try {
+      const saved = await setVisionSettings(next);
+      setSettingsState(saved);
+    } catch (e) {
+      setSettingsState(previous);
+      message.error("视觉设置保存失败");
+      console.error("set_vision_settings failed:", e);
+    }
+  };
+
+  const modeOptions = [
+    {
+      title: "system",
+      displayTitle: "系统视觉",
+      description: "使用本地 Florence-2-base-ft 把图片转换成文本描述。",
+    },
+    {
+      title: "off",
+      displayTitle: "关闭",
+      description: "只保留图片附件，不自动生成视觉描述。",
+    },
+    {
+      title: "model",
+      displayTitle: "大模型视觉",
+      description: "仅在已确认模型支持图片输入后使用。",
+    },
+  ];
+
+  return (
+    <div className="mb-12 max-w-[700px]">
+      <div className="mb-4">
+        <h2 className="text-[15px] font-medium text-text-base mb-1">视觉设置</h2>
+        <div className="text-[12px] text-text-secondary">
+          控制截图、图片附件如何转换成文本模型可读的上下文。
+        </div>
+      </div>
+      <div className={`border border-border-theme rounded-xl bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)] ${loading ? "opacity-60" : ""}`}>
+        <div className="flex items-center justify-between p-4 border-b border-border-theme">
+          <div>
+            <div className="text-[14px] font-medium text-text-base mb-1">图片识别模式</div>
+            <div className="text-[12px] text-text-secondary">默认使用本地系统视觉，不把原图直接发给文本模型。</div>
+          </div>
+          <ComplexDropdown
+            options={modeOptions}
+            selectedTitle={modeOptions.find((item) => item.title === settings.mode)?.displayTitle ?? "系统视觉"}
+            onChange={(display) => {
+              const selected = modeOptions.find((item) => item.displayTitle === display);
+              if (!selected) return;
+              void persist({ ...settings, mode: selected.title as VisionSettings["mode"] });
+            }}
+          />
+        </div>
+        <div className="flex items-center justify-between p-4 border-b border-border-theme">
+          <div>
+            <div className="text-[14px] font-medium text-text-base mb-1">系统视觉模型</div>
+            <div className="text-[12px] text-text-secondary">
+              Florence-2-base-ft 资源通过上方“按需下载资源”安装到当前资源目录。
+            </div>
+          </div>
+          <div className="rounded-md border border-border-theme bg-gray-50 px-3 py-1.5 text-[12px] font-medium text-text-base">
+            Florence-2-base-ft
+          </div>
+        </div>
+        <div className="flex items-center justify-between p-4 border-b border-border-theme">
+          <div>
+            <div className="text-[14px] font-medium text-text-base mb-1">自动分析粘贴图片</div>
+            <div className="text-[12px] text-text-secondary">粘贴截图后自动进入系统视觉识别队列。</div>
+          </div>
+          <ToggleSwitch
+            checked={settings.auto_analyze_pasted_images}
+            onChange={() =>
+              void persist({
+                ...settings,
+                auto_analyze_pasted_images: !settings.auto_analyze_pasted_images,
+              })
+            }
+          />
+        </div>
+        <div className="flex items-center justify-between p-4">
+          <div>
+            <div className="text-[14px] font-medium text-text-base mb-1">向视觉模型发送原图</div>
+            <div className="text-[12px] text-text-secondary">第一版保持关闭，只把系统视觉生成的文本交给聊天模型。</div>
+          </div>
+          <ToggleSwitch
+            checked={settings.send_original_image_to_model}
+            onChange={() =>
+              void persist({
+                ...settings,
+                send_original_image_to_model: !settings.send_original_image_to_model,
+              })
+            }
+          />
+        </div>
       </div>
     </div>
   );
@@ -907,6 +1083,7 @@ export function ConfigSettings() {
       </div>
 
       <RuntimeResourceSettings />
+      <VisionResourceSettings />
 
       {/* Section: 工作空间依赖项 */}
       <div className="mb-12 max-w-[700px]">

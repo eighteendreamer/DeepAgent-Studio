@@ -10,6 +10,7 @@ import type {
   ApprovalRequest,
   ArchiveProjectResult,
   ArchivedConversation,
+  AttachmentIngestInput,
   Balance,
   Command,
   ConversationMessage,
@@ -38,6 +39,7 @@ import type {
   MarketSearchInput,
   McpServer,
   PermissionRules,
+  PersistedAttachment,
   Project,
   ProjectMapHit,
   ProjectMapGraph,
@@ -53,8 +55,12 @@ import type {
   PdfRenderResult,
   RecordingSession,
   RuntimeProgress,
+  RuntimeRoots,
   RuntimeStatus,
   TranscriptSegment,
+  VisionRecognizeRequest,
+  VisionRecognizeResult,
+  VisionSettings,
   RewindResult,
   ScanResult,
   SessionDetail,
@@ -1005,6 +1011,37 @@ export async function setWebSearchSettings(
   return settings;
 }
 
+// ---- vision settings ------------------------------------------------------
+
+export async function getVisionSettings(): Promise<VisionSettings> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<VisionSettings>("get_vision_settings");
+  return {
+    mode: "system",
+    system_model: "vision-florence-2-base-ft",
+    auto_analyze_pasted_images: true,
+    send_original_image_to_model: false,
+  };
+}
+
+export async function setVisionSettings(settings: VisionSettings): Promise<VisionSettings> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const value = await invoke<VisionSettings>("set_vision_settings", { settings });
+    emitSettingsChanged();
+    return value;
+  }
+  return settings;
+}
+
+export async function visionRecognizeImage(
+  request: VisionRecognizeRequest
+): Promise<VisionRecognizeResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<VisionRecognizeResult>("vision_recognize_image", { request });
+  throw new Error("vision recognition requires the desktop app");
+}
+
 // ---- MCP servers (visual config) ------------------------------------------
 
 export async function listMcpServers(): Promise<McpServer[]> {
@@ -1833,6 +1870,33 @@ export async function previewRenderPages(path: string): Promise<PdfRenderResult>
   throw new Error("file preview requires the desktop app");
 }
 
+export async function attachmentIngest(input: AttachmentIngestInput): Promise<PersistedAttachment> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<PersistedAttachment>("attachment_ingest", { input });
+  return {
+    id: input.id ?? `preview-${Date.now()}`,
+    session_id: input.session_id ?? null,
+    kind: input.kind,
+    name: input.name,
+    mime: input.mime,
+    size_bytes: input.text?.length ?? 0,
+    source: input.source,
+    storage_dir: "",
+    original_path: input.local_path ?? null,
+    extracted_text: input.text ?? null,
+    preview: null,
+    sha256: null,
+    status: "ready",
+    message: null,
+  };
+}
+
+export async function attachmentRemove(id: string, sessionId?: string | null): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("attachment_remove", { id, sessionId: sessionId ?? null });
+  return true;
+}
+
 /** List one directory level from the active/current project. */
 export async function listProjectFiles(
   projectPath?: string | null,
@@ -1954,6 +2018,18 @@ export async function runtimeStatus(id: string): Promise<RuntimeStatus | null> {
   const invoke = getInvoke();
   if (invoke) return invoke<RuntimeStatus | null>("runtime_status", { id });
   return null;
+}
+
+export async function runtimeRoots(): Promise<RuntimeRoots> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RuntimeRoots>("runtime_roots");
+  return { active_root: "", fallback_roots: [] };
+}
+
+export async function runtimeMigrateResources(): Promise<RuntimeStatus[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RuntimeStatus[]>("runtime_migrate_resources");
+  return [];
 }
 
 export async function runtimePrepareForUpdate(): Promise<void> {

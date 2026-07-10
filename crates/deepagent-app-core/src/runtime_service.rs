@@ -1,9 +1,11 @@
 //! Managed-runtime manager (office-agent Phase 2).
 //!
 //! Heavy runtimes (speech models, pdfium, pandoc, LibreOffice) are **not**
-//! bundled in the installer. They are downloaded on demand into the app data
-//! runtimes directory, not the OS program dir or `PATH`, and verified by
-//! SHA-256 before install. When a runtime is absent the
+//! bundled in the installer. They are downloaded on demand into the configured
+//! active runtimes directory, not `PATH`, and verified by SHA-256 before
+//! install. Legacy runtime directories can remain as read-only lookup roots so
+//! moving resources does not break already-installed capabilities. When a
+//! runtime is absent the
 //! caller falls back to a pure-Rust Tier C path (handled by the consumer).
 //!
 //! The core (registry / resolution / install-dir selection / checksum verify /
@@ -113,6 +115,27 @@ pub struct RuntimeArtifact {
     pub archive: ArchiveKind,
     /// Optional platform-specific probe path relative to `dest_subdir`.
     pub probe: Option<String>,
+    /// Optional multi-file payload. When non-empty this artifact is installed
+    /// as a directory snapshot instead of a single raw/archive file.
+    pub files: Vec<RuntimeFileArtifact>,
+    /// Allows files without SHA-256 only for immutable HTTPS snapshots whose
+    /// revision is pinned in the URL.
+    pub allow_unpinned_files: bool,
+}
+
+/// One file inside a multi-file runtime artifact.
+#[derive(Debug, Clone)]
+pub struct RuntimeFileArtifact {
+    /// Relative path under the runtime destination directory.
+    pub path: String,
+    /// HTTPS download URL.
+    pub url: String,
+    /// Optional fallback URLs.
+    pub mirror_urls: Vec<String>,
+    /// Optional SHA-256 for this file. Files with a hash are verified.
+    pub sha256: Option<String>,
+    /// Optional expected size, used for aggregate progress.
+    pub size_bytes: Option<u64>,
 }
 
 /// A managed runtime: an id, the capability it provides, and per-platform
@@ -171,20 +194,21 @@ impl Downloader for UnavailableDownloader {
     }
 }
 
-/// Manages download + verified install of optional runtimes into the app data
-/// runtimes directory.
+/// Manages download + verified install of optional runtimes.
 pub struct RuntimeService {
     registry: Vec<RuntimeEntry>,
-    install_root: PathBuf,
+    /// The writable target for downloads, installs, and uninstalls.
+    active_root: PathBuf,
+    /// Read-only lookup roots used for compatibility with older installs.
+    lookup_roots: Vec<PathBuf>,
     downloader: Arc<dyn Downloader>,
     /// Per-id cancellation flags for in-flight installs.
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 impl RuntimeService {
-    /// Build with the default registry, choosing the first writable install
-    /// root from `candidates` (prefer `<app_data>/runtimes`; legacy
-    /// `<exe>/runtimes` can remain as a fallback).
+    /// Build with the default registry. The first candidate is the preferred
+    /// active root; later candidates are read-only fallback roots.
     pub fn new(candidates: &[PathBuf], downloader: Arc<dyn Downloader>) -> Self {
         Self::with_registry(candidates, downloader, default_registry())
     }
@@ -195,18 +219,51 @@ impl RuntimeService {
         downloader: Arc<dyn Downloader>,
         registry: Vec<RuntimeEntry>,
     ) -> Self {
-        let install_root = resolve_install_root(candidates);
+        Self::with_registry_and_lookup(candidates, &[], downloader, registry)
+    }
+
+    /// Build with explicit active-root candidates and read-only lookup roots.
+    /// Downloads only target the resolved active root; lookup roots are used to
+    /// keep older app-data/exe runtime installs usable until the user migrates.
+    pub fn with_lookup_roots(
+        active_candidates: &[PathBuf],
+        lookup_roots: &[PathBuf],
+        downloader: Arc<dyn Downloader>,
+    ) -> Self {
+        Self::with_registry_and_lookup(
+            active_candidates,
+            lookup_roots,
+            downloader,
+            default_registry(),
+        )
+    }
+
+    /// Build with an explicit registry and split active/read-only roots.
+    pub fn with_registry_and_lookup(
+        active_candidates: &[PathBuf],
+        read_only_roots: &[PathBuf],
+        downloader: Arc<dyn Downloader>,
+        registry: Vec<RuntimeEntry>,
+    ) -> Self {
+        let active_root = resolve_active_root(active_candidates);
+        let lookup_roots = normalize_lookup_roots(&active_root, active_candidates, read_only_roots);
         Self {
             registry,
-            install_root,
+            active_root,
+            lookup_roots,
             downloader,
             cancels: Mutex::new(HashMap::new()),
         }
     }
 
-    /// The chosen install root (app data runtimes dir).
+    /// The active install root. Downloads and uninstalls only touch this root.
     pub fn install_root(&self) -> &Path {
-        &self.install_root
+        &self.active_root
+    }
+
+    /// All lookup roots in precedence order. The active root is always first.
+    pub fn lookup_roots(&self) -> &[PathBuf] {
+        &self.lookup_roots
     }
 
     /// True iff the runtime `id` is installed (its probe path exists).
@@ -216,15 +273,25 @@ impl RuntimeService {
 
     /// Absolute install dir for `id` when installed, else `None`.
     pub fn installed_path(&self, id: &str) -> Option<PathBuf> {
+        self.installed_location(id).map(|(path, _source)| path)
+    }
+
+    fn installed_location(&self, id: &str) -> Option<(PathBuf, &'static str)> {
         let entry = self.registry.iter().find(|e| e.id == id)?;
         let artifact = entry.artifact()?;
-        let dir = self.install_root.join(&artifact.dest_subdir);
-        let probe = dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
-        if probe.exists() {
-            Some(dir)
-        } else {
-            None
+        for root in &self.lookup_roots {
+            let dir = root.join(&artifact.dest_subdir);
+            let probe = dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
+            if probe.exists() {
+                let source = if same_path(root, &self.active_root) {
+                    "active"
+                } else {
+                    "fallback"
+                };
+                return Some((dir, source));
+            }
         }
+        None
     }
 
     /// Resolve a capability to its installed runtime dir (Tier R), or `None`
@@ -251,7 +318,7 @@ impl RuntimeService {
 
     fn status_of(&self, entry: &RuntimeEntry) -> RuntimeStatusDto {
         let artifact = entry.artifact();
-        let installed = self.installed_path(&entry.id);
+        let installed = self.installed_location(&entry.id);
         RuntimeStatusDto {
             id: entry.id.clone(),
             name: entry.name.clone(),
@@ -260,8 +327,11 @@ impl RuntimeService {
             size_bytes: entry.size_bytes,
             installed: installed.is_some(),
             available_for_platform: artifact.is_some(),
-            checksum_pinned: artifact.map(|a| a.sha256.is_some()).unwrap_or(false),
-            install_path: installed.map(|p| p.to_string_lossy().into_owned()),
+            checksum_pinned: artifact.map(artifact_integrity_pinned).unwrap_or(false),
+            install_path: installed
+                .as_ref()
+                .map(|(p, _)| p.to_string_lossy().into_owned()),
+            install_source: installed.map(|(_, source)| source.to_string()),
         }
     }
 
@@ -282,20 +352,24 @@ impl RuntimeService {
         let Some(artifact) = entry.artifact() else {
             return Ok(false);
         };
-        let dir = self.install_root.join(&artifact.dest_subdir);
+        let dir = self.active_root.join(&artifact.dest_subdir);
         let probe = dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
         if !probe.exists() {
             return Ok(false);
         }
-        // For raw single-file artifacts, only remove the file; for zip
-        // installs, remove the whole dest subdir.
-        match artifact.archive {
-            ArchiveKind::Raw => {
-                let f = dir.join(&artifact.file_name);
-                let _ = std::fs::remove_file(f);
-            }
-            ArchiveKind::Zip | ArchiveKind::TarGz => {
-                let _ = std::fs::remove_dir_all(&dir);
+        // For raw single-file artifacts, only remove the file; for zip/tar and
+        // multi-file installs, remove the whole destination directory.
+        if !artifact.files.is_empty() {
+            let _ = std::fs::remove_dir_all(&dir);
+        } else {
+            match artifact.archive {
+                ArchiveKind::Raw => {
+                    let f = dir.join(&artifact.file_name);
+                    let _ = std::fs::remove_file(f);
+                }
+                ArchiveKind::Zip | ArchiveKind::TarGz => {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
             }
         }
         Ok(true)
@@ -315,15 +389,31 @@ impl RuntimeService {
             .artifact()
             .ok_or_else(|| CoreError::Other(format!("'{id}' has no artifact for this platform")))?
             .clone();
+        if !artifact.files.is_empty() {
+            std::fs::create_dir_all(&self.active_root)
+                .map_err(|e| CoreError::Other(format!("create runtimes dir: {e}")))?;
+            let cancel = Arc::new(AtomicBool::new(false));
+            if let Ok(mut map) = self.cancels.lock() {
+                map.insert(id.to_string(), cancel.clone());
+            }
+            let install_result = self
+                .install_multi_file_artifact(id, &artifact, &cancel, progress)
+                .await;
+            self.clear_cancel(id);
+            install_result?;
+            return self
+                .status(id)
+                .ok_or_else(|| CoreError::Other(format!("runtime '{id}' vanished after install")));
+        }
         let expected = artifact.sha256.clone().ok_or_else(|| {
             CoreError::Other(format!(
                 "'{id}' has no pinned SHA-256 — refusing to install unverified runtime"
             ))
         })?;
 
-        std::fs::create_dir_all(&self.install_root)
+        std::fs::create_dir_all(&self.active_root)
             .map_err(|e| CoreError::Other(format!("create runtimes dir: {e}")))?;
-        let tmp = self.install_root.join(format!(".dl-{id}.tmp"));
+        let tmp = self.active_root.join(format!(".dl-{id}.tmp"));
 
         // Register a cancel flag for this install.
         let cancel = Arc::new(AtomicBool::new(false));
@@ -383,7 +473,7 @@ impl RuntimeService {
         }
 
         // Install.
-        let dest_dir = self.install_root.join(&artifact.dest_subdir);
+        let dest_dir = self.active_root.join(&artifact.dest_subdir);
         let install_result = match artifact.archive {
             ArchiveKind::Zip => extract_zip_into(&tmp, &dest_dir),
             ArchiveKind::TarGz => extract_tar_gz_into(&tmp, &dest_dir),
@@ -397,6 +487,91 @@ impl RuntimeService {
             .ok_or_else(|| CoreError::Other(format!("runtime '{id}' vanished after install")))
     }
 
+    async fn install_multi_file_artifact(
+        &self,
+        id: &str,
+        artifact: &RuntimeArtifact,
+        cancel: &AtomicBool,
+        progress: Arc<ProgressFn>,
+    ) -> Result<()> {
+        if !artifact_integrity_pinned(artifact) {
+            return Err(CoreError::Other(format!(
+                "'{id}' does not have a pinned runtime snapshot - refusing to install"
+            )));
+        }
+        if !artifact.allow_unpinned_files && artifact.files.iter().any(|file| file.sha256.is_none())
+        {
+            return Err(CoreError::Other(format!(
+                "'{id}' has unpinned files - refusing to install unverified runtime"
+            )));
+        }
+
+        let dest_dir = self.active_root.join(&artifact.dest_subdir);
+        let stage_dir = self.active_root.join(format!(".install-{id}.tmp"));
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        std::fs::create_dir_all(&stage_dir)
+            .map_err(|e| CoreError::Other(format!("create staging dir: {e}")))?;
+
+        let total = aggregate_file_size(&artifact.files);
+        let mut completed = 0u64;
+        for file in &artifact.files {
+            if cancel.load(Ordering::SeqCst) {
+                let _ = std::fs::remove_dir_all(&stage_dir);
+                return Err(CoreError::Other("download cancelled".to_string()));
+            }
+
+            let rel = safe_relative_path(&file.path)?;
+            let out = stage_dir.join(rel);
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| CoreError::Other(format!("create model file parent: {e}")))?;
+            }
+
+            download_with_mirrors(
+                self.downloader.as_ref(),
+                file,
+                &out,
+                cancel,
+                progress.clone(),
+                completed,
+                total,
+            )
+            .await
+            .inspect_err(|_e| {
+                let _ = std::fs::remove_dir_all(&stage_dir);
+            })?;
+
+            if let Some(expected) = file.sha256.as_ref() {
+                let actual = sha256_file(&out).inspect_err(|_e| {
+                    let _ = std::fs::remove_dir_all(&stage_dir);
+                })?;
+                if actual != expected.to_lowercase() {
+                    let _ = std::fs::remove_dir_all(&stage_dir);
+                    return Err(CoreError::Other(format!(
+                        "checksum mismatch for '{id}' file '{}': expected {expected}, got {actual}",
+                        file.path
+                    )));
+                }
+            }
+
+            completed = completed.saturating_add(file.size_bytes.unwrap_or_else(|| {
+                std::fs::metadata(&out)
+                    .map(|meta| meta.len())
+                    .unwrap_or_default()
+            }));
+            progress(completed, total);
+        }
+
+        let _ = std::fs::remove_dir_all(&dest_dir);
+        if let Some(parent) = dest_dir.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CoreError::Other(format!("create runtime parent: {e}")))?;
+        }
+        std::fs::rename(&stage_dir, &dest_dir)
+            .map_err(|e| CoreError::Other(format!("install runtime directory: {e}")))?;
+        Ok(())
+    }
+
     fn clear_cancel(&self, id: &str) {
         if let Ok(mut map) = self.cancels.lock() {
             map.remove(id);
@@ -404,18 +579,125 @@ impl RuntimeService {
     }
 }
 
-/// Pick the first candidate dir we can create/write; falls back to the last
-/// candidate (or the temp dir if none given) so construction never panics.
-fn resolve_install_root(candidates: &[PathBuf]) -> PathBuf {
+/// Pick the writable active root. The first candidate is preferred; later
+/// candidates are fallbacks only when the preferred target cannot be written.
+fn resolve_active_root(candidates: &[PathBuf]) -> PathBuf {
     for c in candidates {
         if std::fs::create_dir_all(c).is_ok() && is_writable_dir(c) {
             return c.clone();
         }
     }
     candidates
-        .last()
+        .first()
         .cloned()
         .unwrap_or_else(|| std::env::temp_dir().join("deepagent-runtimes"))
+}
+
+fn normalize_lookup_roots(
+    active_root: &Path,
+    active_candidates: &[PathBuf],
+    read_only_roots: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut roots = vec![active_root.to_path_buf()];
+    for candidate in active_candidates.iter().chain(read_only_roots.iter()) {
+        if !same_path(active_root, candidate)
+            && !roots.iter().any(|root| same_path(root, candidate))
+        {
+            roots.push(candidate.clone());
+        }
+    }
+    roots
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn artifact_integrity_pinned(artifact: &RuntimeArtifact) -> bool {
+    if artifact.files.is_empty() {
+        artifact.sha256.is_some()
+    } else {
+        artifact.files.iter().all(|file| file.sha256.is_some())
+            || (artifact.allow_unpinned_files
+                && artifact.files.iter().all(file_url_revision_pinned))
+    }
+}
+
+fn file_url_revision_pinned(file: &RuntimeFileArtifact) -> bool {
+    std::iter::once(&file.url)
+        .chain(file.mirror_urls.iter())
+        .all(|url| url.starts_with("https://") && !url.contains("/resolve/main/"))
+}
+
+fn aggregate_file_size(files: &[RuntimeFileArtifact]) -> Option<u64> {
+    files
+        .iter()
+        .try_fold(0u64, |sum, file| file.size_bytes.map(|size| sum + size))
+}
+
+fn safe_relative_path(path: &str) -> Result<PathBuf> {
+    let p = Path::new(path);
+    if p.is_absolute()
+        || p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(CoreError::Other(format!(
+            "unsafe runtime file path '{path}'"
+        )));
+    }
+    Ok(p.to_path_buf())
+}
+
+async fn download_with_mirrors(
+    downloader: &dyn Downloader,
+    file: &RuntimeFileArtifact,
+    dest: &Path,
+    cancel: &AtomicBool,
+    progress: Arc<ProgressFn>,
+    completed: u64,
+    total: Option<u64>,
+) -> Result<()> {
+    let mut urls = Vec::with_capacity(1 + file.mirror_urls.len());
+    urls.push(file.url.clone());
+    urls.extend(file.mirror_urls.clone());
+    let mut last_error = None;
+    for url in &urls {
+        let dl_progress = progress.clone();
+        let file_size = file.size_bytes;
+        let report_total = total;
+        match downloader
+            .download(url, dest, cancel, &move |downloaded, downloaded_total| {
+                let current_total = report_total.or_else(|| {
+                    downloaded_total.map(|inner_total| completed.saturating_add(inner_total))
+                });
+                let current_downloaded = completed
+                    .saturating_add(file_size.map_or(downloaded, |size| downloaded.min(size)));
+                dl_progress(current_downloaded, current_total);
+            })
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_file(dest);
+                if cancel.load(Ordering::SeqCst) {
+                    return Err(e);
+                }
+                last_error = Some(format!("{url}: {e}"));
+            }
+        }
+    }
+    Err(CoreError::Other(format!(
+        "download failed for file '{}' after trying {} URL(s): {}",
+        file.path,
+        urls.len(),
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    )))
 }
 
 /// Probe writability by creating and removing a marker file.
@@ -551,10 +833,62 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
                     file_name: file.to_string(),
                     archive,
                     probe: None,
+                    files: Vec::new(),
+                    allow_unpinned_files: false,
                 },
             );
         }
         m
+    }
+
+    fn all_platforms_files(
+        dest: &str,
+        files: Vec<RuntimeFileArtifact>,
+        allow_unpinned_files: bool,
+    ) -> HashMap<Platform, RuntimeArtifact> {
+        let mut m = HashMap::new();
+        for p in [
+            Platform::WindowsX64,
+            Platform::WindowsArm64,
+            Platform::MacOsX64,
+            Platform::MacOsArm64,
+            Platform::LinuxX64,
+            Platform::LinuxArm64,
+        ] {
+            m.insert(
+                p,
+                RuntimeArtifact {
+                    url: String::new(),
+                    mirror_urls: Vec::new(),
+                    sha256: None,
+                    dest_subdir: dest.to_string(),
+                    file_name: String::new(),
+                    archive: ArchiveKind::Raw,
+                    probe: None,
+                    files: files.clone(),
+                    allow_unpinned_files,
+                },
+            );
+        }
+        m
+    }
+
+    fn hf_file(
+        repo: &str,
+        revision: &str,
+        path: &str,
+        size_bytes: Option<u64>,
+        sha256: Option<&str>,
+    ) -> RuntimeFileArtifact {
+        RuntimeFileArtifact {
+            path: path.to_string(),
+            url: format!("https://huggingface.co/{repo}/resolve/{revision}/{path}"),
+            mirror_urls: vec![format!(
+                "https://hf-mirror.com/{repo}/resolve/{revision}/{path}"
+            )],
+            sha256: sha256.map(str::to_string),
+            size_bytes,
+        }
     }
 
     let mut whisper_cli_artifacts = per_platform_pinned([
@@ -735,6 +1069,39 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
             ]),
             probe: "lib".to_string(),
         },
+        // Florence-2-base-ft — lightweight local image-to-text extractor for
+        // the first system-vision path. It needs a multi-file model manifest;
+        // this placeholder keeps the resource visible but fail-closed until
+        // pinned checksums and manifest install are added.
+        RuntimeEntry {
+            id: "vision-florence-2-base-ft".to_string(),
+            name: "Florence-2-base-ft".to_string(),
+            version: "microsoft/Florence-2-base-ft".to_string(),
+            capability: "vision-image-to-text".to_string(),
+            size_bytes: 468 * 1024 * 1024,
+            artifacts: all_platforms_files(
+                "vision/florence-2-base-ft",
+                vec![
+                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "config.json", Some(2_430), None),
+                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "configuration_florence2.py", Some(15_100), None),
+                    hf_file(
+                        "microsoft/Florence-2-base-ft",
+                        "f6c1a25",
+                        "model.safetensors",
+                        Some(463_221_266),
+                        None,
+                    ),
+                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "modeling_florence2.py", Some(127_000), None),
+                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "preprocessor_config.json", Some(806), None),
+                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "processing_florence2.py", Some(46_400), None),
+                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "tokenizer.json", Some(1_360_000), None),
+                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "tokenizer_config.json", Some(34), None),
+                    hf_file("microsoft/Florence-2-base-ft", "f6c1a25", "vocab.json", Some(1_100_000), None),
+                ],
+                true,
+            ),
+            probe: "model.safetensors".to_string(),
+        },
         // LibreOffice — legacy formats (.doc/.xls/.ppt) + high-fidelity PDF
         // export (Tier R office-suite). Distribution differs per platform and
         // is large; URLs/hashes are pinned at enablement (fail-closed here).
@@ -782,6 +1149,8 @@ fn per_platform<const N: usize>(
                 file_name: file.to_string(),
                 archive,
                 probe: None,
+                files: Vec::new(),
+                allow_unpinned_files: false,
             },
         );
     }
@@ -841,6 +1210,8 @@ fn insert_platform_artifact(
             file_name: file.to_string(),
             archive,
             probe: Some(probe.to_string()),
+            files: Vec::new(),
+            allow_unpinned_files: false,
         },
     );
 }
@@ -1002,6 +1373,8 @@ mod tests {
                 file_name: "model.bin".to_string(),
                 archive: ArchiveKind::Raw,
                 probe: None,
+                files: Vec::new(),
+                allow_unpinned_files: false,
             },
         );
         RuntimeEntry {
@@ -1012,6 +1385,49 @@ mod tests {
             size_bytes: 3,
             artifacts,
             probe: "model.bin".to_string(),
+        }
+    }
+
+    fn multi_file_entry() -> RuntimeEntry {
+        let files = vec![
+            RuntimeFileArtifact {
+                path: "config.json".to_string(),
+                url: "https://example.com/resolve/abc123/config.json".to_string(),
+                mirror_urls: Vec::new(),
+                sha256: None,
+                size_bytes: Some(3),
+            },
+            RuntimeFileArtifact {
+                path: "nested/tokenizer.json".to_string(),
+                url: "https://example.com/resolve/abc123/nested/tokenizer.json".to_string(),
+                mirror_urls: Vec::new(),
+                sha256: None,
+                size_bytes: Some(3),
+            },
+        ];
+        let mut artifacts = HashMap::new();
+        artifacts.insert(
+            Platform::current(),
+            RuntimeArtifact {
+                url: String::new(),
+                mirror_urls: Vec::new(),
+                sha256: None,
+                dest_subdir: "vision/model".to_string(),
+                file_name: String::new(),
+                archive: ArchiveKind::Raw,
+                probe: None,
+                files,
+                allow_unpinned_files: true,
+            },
+        );
+        RuntimeEntry {
+            id: "vision-test".to_string(),
+            name: "Vision Test".to_string(),
+            version: "v1".to_string(),
+            capability: "vision-image-to-text".to_string(),
+            size_bytes: 6,
+            artifacts,
+            probe: "config.json".to_string(),
         }
     }
 
@@ -1065,6 +1481,26 @@ mod tests {
                 "https://mirror.example.com/model.bin".to_string()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn install_places_multi_file_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = RuntimeService::with_registry(
+            &[dir.path().to_path_buf()],
+            Arc::new(BytesDownloader {
+                bytes: b"abc".to_vec(),
+            }),
+            vec![multi_file_entry()],
+        );
+        let status = svc.install("vision-test", noop_progress()).await.unwrap();
+        assert!(status.installed);
+        assert!(status.checksum_pinned);
+        assert!(dir.path().join("vision/model/config.json").exists());
+        assert!(dir
+            .path()
+            .join("vision/model/nested/tokenizer.json")
+            .exists());
     }
 
     #[tokio::test]
@@ -1130,6 +1566,8 @@ mod tests {
                 file_name: "tool.zip".to_string(),
                 archive: ArchiveKind::Zip,
                 probe: None,
+                files: Vec::new(),
+                allow_unpinned_files: false,
             },
         );
         let entry = RuntimeEntry {
@@ -1183,6 +1621,8 @@ mod tests {
                 file_name: "tool.tgz".to_string(),
                 archive: ArchiveKind::TarGz,
                 probe: None,
+                files: Vec::new(),
+                allow_unpinned_files: false,
             },
         );
         let entry = RuntimeEntry {
@@ -1214,6 +1654,7 @@ mod tests {
         let ids: Vec<String> = svc.list().into_iter().map(|s| s.id).collect();
         assert!(ids.contains(&"pandoc".to_string()));
         assert!(ids.contains(&"pdfium".to_string()));
+        assert!(ids.contains(&"vision-florence-2-base-ft".to_string()));
         let whisper_base = svc.status("whisper-base").unwrap();
         let whisper_small = svc.status("whisper-small").unwrap();
         let whisper_cli = svc.status("whisper-cli").unwrap();
@@ -1258,6 +1699,28 @@ mod tests {
             vec![],
         );
         assert_eq!(svc.install_root(), good.path());
+    }
+
+    #[test]
+    fn lookup_roots_keep_legacy_runtime_available() {
+        let active = tempfile::tempdir().unwrap();
+        let legacy = tempfile::tempdir().unwrap();
+        let svc = RuntimeService::with_registry_and_lookup(
+            &[active.path().to_path_buf()],
+            &[legacy.path().to_path_buf()],
+            Arc::new(UnavailableDownloader),
+            vec![raw_entry(Some("x".to_string()))],
+        );
+        let legacy_models = legacy.path().join("speech/models");
+        std::fs::create_dir_all(&legacy_models).unwrap();
+        std::fs::write(legacy_models.join("model.bin"), b"data").unwrap();
+
+        assert!(svc.is_installed("test-model"));
+        assert_eq!(
+            svc.resolve("speech-model").unwrap(),
+            legacy.path().join("speech/models")
+        );
+        assert_eq!(svc.install_root(), active.path());
     }
 
     #[test]

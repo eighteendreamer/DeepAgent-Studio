@@ -204,6 +204,57 @@ export interface ChatMessage {
   runMs?: number;
 }
 
+export type ComposerAttachmentKind = "text" | "image" | "file";
+export type ComposerAttachmentSource = "paste" | "drop" | "picker";
+export type ComposerAttachmentStatus = "ready" | "processing" | "error";
+
+export interface ComposerAttachment {
+  id: string;
+  kind: ComposerAttachmentKind;
+  name: string;
+  mime: string;
+  size: number;
+  source: ComposerAttachmentSource;
+  localPath?: string;
+  dataUrl?: string;
+  extractedText?: string;
+  storageDir?: string;
+  originalPath?: string;
+  sha256?: string;
+  backendMessage?: string;
+  status: ComposerAttachmentStatus;
+  error?: string;
+}
+
+export interface AttachmentIngestInput {
+  id?: string | null;
+  session_id?: string | null;
+  kind: ComposerAttachmentKind;
+  name: string;
+  mime: string;
+  source: ComposerAttachmentSource;
+  local_path?: string | null;
+  data_url?: string | null;
+  text?: string | null;
+}
+
+export interface PersistedAttachment {
+  id: string;
+  session_id?: string | null;
+  kind: ComposerAttachmentKind;
+  name: string;
+  mime: string;
+  size_bytes: number;
+  source: ComposerAttachmentSource;
+  storage_dir: string;
+  original_path?: string | null;
+  extracted_text?: string | null;
+  preview?: PreviewResult | null;
+  sha256?: string | null;
+  status: "ready" | "error";
+  message?: string | null;
+}
+
 /** A skill's Level-1 metadata (mirrors deepagent-app-core::SkillDto). */
 export interface Skill {
   id: string;
@@ -280,6 +331,7 @@ export interface SettingsView {
   terminal_shell: "powershell" | "command_prompt" | "git_bash" | "wsl";
   thinking_depth: "simple" | "medium" | "deep";
   web_search: WebSearchSettings;
+  vision: VisionSettings;
 }
 
 export type WebSearchProvider = "deepseek_first" | "searxng" | "duckduckgo";
@@ -288,6 +340,27 @@ export interface WebSearchSettings {
   enabled: boolean;
   provider: WebSearchProvider;
   searxng_url: string | null;
+}
+
+export type VisionMode = "off" | "system" | "model";
+
+export interface VisionSettings {
+  mode: VisionMode;
+  system_model: string;
+  auto_analyze_pasted_images: boolean;
+  send_original_image_to_model: boolean;
+}
+
+export interface VisionRecognizeRequest {
+  image_path: string;
+  prompt?: string | null;
+}
+
+export interface VisionRecognizeResult {
+  model_id: string;
+  model_path: string;
+  text: string;
+  raw_json: string;
 }
 
 /** A project folder in the sidebar (mirrors deepagent-app-core::ProjectDto). */
@@ -892,6 +965,12 @@ export interface RuntimeStatus {
   available_for_platform: boolean;
   checksum_pinned: boolean;
   install_path: string | null;
+  install_source?: "active" | "fallback" | null;
+}
+
+export interface RuntimeRoots {
+  active_root: string;
+  fallback_roots: string[];
 }
 
 /** Progress payload for `runtime:progress` events (mirrors RuntimeProgressDto). */

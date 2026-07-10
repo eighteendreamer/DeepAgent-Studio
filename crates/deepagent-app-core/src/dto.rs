@@ -625,6 +625,71 @@ pub struct PreviewResultDto {
     pub message: Option<String>,
 }
 
+// ---- composer attachments -------------------------------------------------
+
+/// Attachment payload sent from the desktop composer into the app backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentIngestDto {
+    /// Optional frontend-generated id. A backend id is generated when omitted.
+    pub id: Option<String>,
+    /// Optional session id. Missing values are stored under the pending bucket.
+    pub session_id: Option<String>,
+    /// "text" | "image" | "file".
+    pub kind: String,
+    /// Original display name.
+    pub name: String,
+    /// MIME type reported by the browser/OS.
+    pub mime: String,
+    /// "paste" | "drop" | "picker".
+    pub source: String,
+    /// Optional source path when the frontend has an OS path.
+    pub local_path: Option<String>,
+    /// Optional data URL for pasted/dragged/selected content.
+    pub data_url: Option<String>,
+    /// Optional plain text body for long pasted text.
+    pub text: Option<String>,
+}
+
+/// Persisted attachment metadata plus extracted model-readable text when
+/// available.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentDto {
+    pub id: String,
+    pub session_id: Option<String>,
+    pub kind: String,
+    pub name: String,
+    pub mime: String,
+    pub size_bytes: u64,
+    pub source: String,
+    pub storage_dir: String,
+    pub original_path: Option<String>,
+    pub extracted_text: Option<String>,
+    pub preview: Option<PreviewResultDto>,
+    pub sha256: Option<String>,
+    pub status: String,
+    pub message: Option<String>,
+}
+
+// ---- local vision recognition ---------------------------------------------
+
+/// Request for local system-vision image recognition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VisionRecognizeRequestDto {
+    /// Absolute path to the saved image.
+    pub image_path: String,
+    /// Optional Florence task prompt. `None` means the default auto summary.
+    pub prompt: Option<String>,
+}
+
+/// Result of local system-vision image recognition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VisionRecognizeResultDto {
+    pub model_id: String,
+    pub model_path: String,
+    pub text: String,
+    pub raw_json: String,
+}
+
 // ---- managed runtimes (office-agent RuntimeService) -----------------------
 
 /// Status of one managed runtime (downloadable, installed into the app data
@@ -650,6 +715,19 @@ pub struct RuntimeStatusDto {
     pub checksum_pinned: bool,
     /// Absolute install path when installed, else null.
     pub install_path: Option<String>,
+    /// "active" when installed under the writable runtime root, "fallback"
+    /// when found through a legacy read-only lookup root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_source: Option<String>,
+}
+
+/// Runtime root paths used by the managed-runtime service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeRootsDto {
+    /// Writable root used for new downloads/installs.
+    pub active_root: String,
+    /// Read-only compatibility roots searched after the active root.
+    pub fallback_roots: Vec<String>,
 }
 
 /// Progress event payload for a runtime download (emitted as `runtime:progress`).

@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Composer } from "./Composer";
 import { BalanceChip } from "./BalanceChip";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
-import type { Project } from "../types";
+import type { ComposerAttachment, Project } from "../types";
 import { sshListConnections, type SshConnection } from "../api";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { GitBranchChip } from "./git/GitBranchChip";
@@ -28,7 +28,7 @@ interface Props {
   projects: Project[];
   onSelectProject: (path: string) => void;
   onAddProject: () => void;
-  onSubmit: (text: string, envMode: "local" | "remote", connectionId: string | null) => void;
+  onSubmit: (text: string, attachments: ComposerAttachment[], envMode: "local" | "remote", connectionId: string | null) => void;
 }
 
 export function StartView({ projectName, activeProjectPath = null, projectMapOpenSignal = 0, projects, onSelectProject, onAddProject, onSubmit }: Props) {
@@ -232,8 +232,8 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
       ? `\u8fdc\u7a0b\u6a21\u5f0f \u00b7 ${selectedConnection.name}`
       : "\u8fdc\u7a0b\u6a21\u5f0f";
 
-  const submit = () => {
-    onSubmit(value.trim(), envMode, selectedConnectionId);
+  const submit = (attachments: ComposerAttachment[] = []) => {
+    onSubmit(value.trim(), attachments, envMode, selectedConnectionId);
     setValue("");
   };
   const activeBottomTab =

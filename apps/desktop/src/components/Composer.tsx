@@ -1,9 +1,25 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
-import { SETTINGS_CHANGED_EVENT, getSettings, setChatModel, setThinkingDepth, getApprovalPolicy, setApprovalPolicy, getCommands, listSkills } from "../api";
+import {
+  SETTINGS_CHANGED_EVENT,
+  attachmentIngest,
+  attachmentRemove,
+  getApprovalPolicy,
+  getCommands,
+  getSettings,
+  getVisionSettings,
+  listSkills,
+  setApprovalPolicy,
+  setChatModel,
+  setThinkingDepth,
+  visionRecognizeImage,
+} from "../api";
 import { message } from "./message";
-import type { Command, Skill } from "../types";
+import type { Command, ComposerAttachment, Skill, VisionSettings } from "../types";
+
+const LONG_TEXT_ATTACHMENT_THRESHOLD = 8 * 1024;
+const MAX_COMPOSER_ATTACHMENTS = 5;
 
 /** A slash-dropdown row. `insertText` is used for built-in slash commands;
  *  `skillName` (when set) marks the row as a skill picker — `chooseSlash`
@@ -44,7 +60,7 @@ function labelFor(id: string): { name: string; version: string } {
 interface Props {
   value: string;
   onChange: (v: string) => void;
-  onSubmit: () => void;
+  onSubmit: (attachments?: ComposerAttachment[]) => void;
   placeholder?: string;
   /** True while a run is streaming: disables submit and shows a busy button. */
   busy?: boolean;
@@ -64,6 +80,8 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   const dropdownRef = useRef<HTMLDivElement>(null);
   const thinkingDropdownRef = useRef<HTMLDivElement>(null);
   const approvalDropdownRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   // Real discovered models + the active chat model, loaded from the backend
   // settings (populated by API-key validation at login).
   const [models, setModels] = useState<string[]>([]);
@@ -76,6 +94,15 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   // Reloads on `SETTINGS_CHANGED_EVENT` so install/uninstall mid-session is
   // reflected without a chat-page refresh.
   const [skills, setSkills] = useState<Skill[]>([]);
+
+  // Cached vision settings — controls whether pasted images are automatically
+  // analyzed by the local Florence-2 system-vision runtime before being sent.
+  const [visionSettings, setVisionSettings] = useState<VisionSettings>({
+    mode: "system",
+    system_model: "vision-florence-2-base-ft",
+    auto_analyze_pasted_images: true,
+    send_original_image_to_model: false,
+  });
 
   const reloadSettings = useCallback((cancelled?: () => boolean) => {
     getSettings()
@@ -100,6 +127,27 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
       window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
     };
   }, [reloadSettings]);
+
+  // Load vision settings so image attachments can be analyzed.
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      getVisionSettings()
+        .then((value) => {
+          if (!cancelled) setVisionSettings(value);
+        })
+        .catch(() => {
+          /* browser preview / uninitialized: keep defaults */
+        });
+    };
+    load();
+    const onSettingsChanged = () => load();
+    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+    };
+  }, []);
 
   // Load the skill registry for the slash-command candidate list, and refresh
   // when settings change (catches install / uninstall / reload mid-session).
@@ -369,6 +417,252 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isModelDropdownOpen, isThinkingDropdownOpen, isApprovalDropdownOpen]);
 
+  const submitWithAttachments = () => {
+    const readyAttachments = attachments.filter((item) => item.status === "ready");
+    onSubmit(readyAttachments);
+    if (readyAttachments.length > 0) setAttachments([]);
+  };
+
+  const addAttachment = (attachment: ComposerAttachment) => {
+    setAttachments((prev) => [...prev, attachment]);
+  };
+
+  const showAttachmentLimitWarning = () => {
+    message.warning(`最多只能添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件`);
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => prev.filter((item) => item.id !== id));
+    void attachmentRemove(id).catch(() => {
+      /* The UI removal should not be blocked by cleanup failures. */
+    });
+  };
+
+  const attachmentId = () =>
+    globalThis.crypto?.randomUUID?.() ?? `att_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+  const readFileAsDataUrl = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(reader.error ?? new Error("read file failed"));
+      reader.readAsDataURL(file);
+    });
+
+  const readFileAsText = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(reader.error ?? new Error("read file failed"));
+      reader.readAsText(file);
+    });
+
+  const addTextAttachment = async (text: string, source: ComposerAttachment["source"], name?: string) => {
+    if (attachments.length >= MAX_COMPOSER_ATTACHMENTS) {
+      showAttachmentLimitWarning();
+      return;
+    }
+    const id = attachmentId();
+    const attachmentName =
+      name ?? `pasted-text-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+    const size = new Blob([text]).size;
+    addAttachment({
+      id,
+      kind: "text",
+      name: attachmentName,
+      mime: "text/plain",
+      size,
+      source,
+      status: "processing",
+    });
+    try {
+      const persisted = await attachmentIngest({
+        id,
+        session_id: null,
+        kind: "text",
+        name: attachmentName,
+        mime: "text/plain",
+        source,
+        text,
+      });
+      markAttachmentReady(id, {
+        size: persisted.size_bytes || size,
+        extractedText: persisted.extracted_text ?? text,
+        storageDir: persisted.storage_dir,
+        originalPath: persisted.original_path ?? undefined,
+        sha256: persisted.sha256 ?? undefined,
+        backendMessage: persisted.message ?? undefined,
+      });
+    } catch (error) {
+      markAttachmentError(id, error);
+    }
+  };
+
+  const isTextLikeFile = (file: File) =>
+    file.type.startsWith("text/") ||
+    /\.(txt|md|markdown|json|log|yaml|yml|toml|xml|ts|tsx|js|jsx|mjs|cjs|rs|go|py|java|kt|css|scss|html|htm|env|gitignore|npmrc|toml|ini|conf|cfg|sh|bash|zsh|fish|ps1|bat|cmd)$/i.test(
+      file.name,
+    );
+
+  const markAttachmentReady = (id: string, patch: Partial<ComposerAttachment>) => {
+    setAttachments((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...patch, status: "ready" } : item)),
+    );
+  };
+
+  const markAttachmentError = (id: string, error: unknown) => {
+    setAttachments((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? { ...item, status: "error", error: error instanceof Error ? error.message : String(error) }
+          : item,
+      ),
+    );
+  };
+
+  const addFiles = async (files: FileList | File[], source: ComposerAttachment["source"]) => {
+    const incoming = Array.from(files);
+    const remaining = MAX_COMPOSER_ATTACHMENTS - attachments.length;
+    if (remaining <= 0) {
+      showAttachmentLimitWarning();
+      return;
+    }
+    const accepted = incoming.slice(0, remaining);
+    if (incoming.length > accepted.length) {
+      showAttachmentLimitWarning();
+    }
+
+    for (const file of accepted) {
+      const id = attachmentId();
+      const isImage = file.type.startsWith("image/");
+      const isText = isTextLikeFile(file);
+      const base: ComposerAttachment = {
+        id,
+        kind: isImage ? "image" : isText ? "text" : "file",
+        name: file.name || (isImage ? "pasted-image.png" : "attachment"),
+        mime: file.type || "application/octet-stream",
+        size: file.size,
+        source,
+        status: "processing",
+      };
+      addAttachment(base);
+      try {
+        if (isImage) {
+          const dataUrl = await readFileAsDataUrl(file);
+          const persisted = await attachmentIngest({
+            id,
+            session_id: null,
+            kind: "image",
+            name: base.name,
+            mime: base.mime,
+            source,
+            data_url: dataUrl,
+          });
+          const imagePath = persisted.original_path ?? undefined;
+          const shouldAnalyze =
+            visionSettings.mode === "system" &&
+            visionSettings.auto_analyze_pasted_images &&
+            imagePath;
+          if (shouldAnalyze) {
+            // Keep status "processing" while vision recognition runs.
+            // The attachment card will show "识别中".
+            try {
+              const result = await visionRecognizeImage({ image_path: imagePath! });
+              markAttachmentReady(id, {
+                dataUrl,
+                size: persisted.size_bytes || file.size,
+                storageDir: persisted.storage_dir,
+                originalPath: imagePath,
+                extractedText: result.text,
+                sha256: persisted.sha256 ?? undefined,
+                backendMessage: persisted.message ?? undefined,
+              });
+            } catch (err) {
+              console.error("vision recognition failed:", err);
+              const errMsg =
+                err instanceof Error ? err.message : String(err);
+              message.error("视觉识别失败，无法分析图片内容");
+              markAttachmentError(id, `视觉识别失败：${errMsg}`);
+            }
+          } else {
+            // Vision mode is "off" or "model", or auto-analyze is disabled —
+            // mark ready immediately without system-vision extraction.
+            markAttachmentReady(id, {
+              dataUrl,
+              size: persisted.size_bytes || file.size,
+              storageDir: persisted.storage_dir,
+              originalPath: imagePath,
+              extractedText: persisted.extracted_text ?? undefined,
+              sha256: persisted.sha256 ?? undefined,
+              backendMessage: persisted.message ?? undefined,
+            });
+          }
+        } else if (isText) {
+          const extractedText = await readFileAsText(file);
+          const persisted = await attachmentIngest({
+            id,
+            session_id: null,
+            kind: "text",
+            name: base.name,
+            mime: base.mime,
+            source,
+            text: extractedText,
+          });
+          markAttachmentReady(id, {
+            kind: "text",
+            size: persisted.size_bytes || file.size,
+            extractedText: persisted.extracted_text ?? extractedText,
+            storageDir: persisted.storage_dir,
+            originalPath: persisted.original_path ?? undefined,
+            sha256: persisted.sha256 ?? undefined,
+            backendMessage: persisted.message ?? undefined,
+          });
+        } else {
+          const dataUrl = await readFileAsDataUrl(file);
+          const persisted = await attachmentIngest({
+            id,
+            session_id: null,
+            kind: "file",
+            name: base.name,
+            mime: base.mime,
+            source,
+            data_url: dataUrl,
+          });
+          markAttachmentReady(id, {
+            size: persisted.size_bytes || file.size,
+            extractedText: persisted.extracted_text ?? undefined,
+            storageDir: persisted.storage_dir,
+            originalPath: persisted.original_path ?? undefined,
+            sha256: persisted.sha256 ?? undefined,
+            backendMessage: persisted.message ?? undefined,
+          });
+        }
+      } catch (error) {
+        markAttachmentError(id, error);
+      }
+    }
+  };
+
+  const onPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = event.clipboardData.getData("text/plain");
+    const files = Array.from(event.clipboardData.files);
+    if (files.length > 0) {
+      event.preventDefault();
+      void addFiles(files, "paste");
+      return;
+    }
+    if (text.length > LONG_TEXT_ATTACHMENT_THRESHOLD) {
+      event.preventDefault();
+      void addTextAttachment(text, "paste");
+    }
+  };
+
+  const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (event.dataTransfer.files.length === 0) return;
+    event.preventDefault();
+    void addFiles(event.dataTransfer.files, "drop");
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashOpen && e.key === "ArrowDown") {
       e.preventDefault();
@@ -396,12 +690,16 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!busy) onSubmit();
+      if (!busy) submitWithAttachments();
     }
   };
 
   return (
-    <div className="relative w-full border border-border-theme rounded-2xl shadow-[0_2px_10px_rgba(0,0,0,0.02)] bg-white flex flex-col transition-all focus-within:border-gray-300 focus-within:shadow-md">
+    <div
+      className="relative w-full border border-border-theme rounded-2xl shadow-[0_2px_10px_rgba(0,0,0,0.02)] bg-white flex flex-col transition-all focus-within:border-gray-300 focus-within:shadow-md"
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={onDrop}
+    >
       <div className="p-3 pb-2 flex flex-col relative w-full">
       {slashOpen && (
         <div className="absolute left-3 right-3 bottom-full mb-2 max-h-72 overflow-y-auto rounded-lg border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-50">
@@ -433,17 +731,81 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
           Plan Mode
         </div>
       )}
+
+      {attachments.length > 0 && (
+        <div className="mb-2 flex max-w-full gap-2 overflow-x-auto pb-1">
+          {attachments.map((item) => (
+            <div
+              key={item.id}
+              className="flex h-14 max-w-[220px] shrink-0 items-center gap-2 rounded-xl border border-border-theme bg-gray-50 px-2 text-left"
+            >
+              {item.kind === "image" && item.dataUrl ? (
+                <img src={item.dataUrl} alt="" className="h-10 w-10 rounded-lg object-cover" />
+              ) : (
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-text-secondary">
+                  <FontAwesomeIcon icon={["fas", item.kind === "text" ? "file-lines" : "file"]} />
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[12px] font-medium text-text-base">{item.name}</div>
+                <div className="truncate text-[11px] text-text-secondary">
+                  {item.status === "processing"
+                    ? item.kind === "image"
+                      ? "\u8bc6\u522b\u4e2d"
+                      : "\u5904\u7406\u4e2d"
+                    : item.status === "error"
+                    ? item.error ?? "\u5904\u7406\u5931\u8d25"
+                    : item.kind === "image"
+                    ? "\u56fe\u7247"
+                    : item.kind === "text"
+                    ? "\u6587\u672c"
+                    : "\u6587\u4ef6"}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => removeAttachment(item.id)}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-gray-200 hover:text-text-base"
+              >
+                <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[11px]" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <textarea
         className="w-full min-h-[60px] max-h-[200px] text-text-base placeholder-gray-400 text-sm bg-transparent"
         placeholder={placeholder ?? t("composer.placeholder")}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onPaste={onPaste}
         onKeyDown={onKeyDown}
       />
 
       <div className="flex flex-wrap items-center justify-between mt-2 pt-1 gap-y-2">
         <div className="flex flex-wrap items-center gap-2">
-          <button className="w-7 h-7 flex-shrink-0 rounded flex items-center justify-center text-text-secondary hover:bg-gray-100 transition-colors">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              if (event.target.files) void addFiles(event.target.files, "picker");
+              event.currentTarget.value = "";
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={attachments.length >= MAX_COMPOSER_ATTACHMENTS}
+            title={
+              attachments.length >= MAX_COMPOSER_ATTACHMENTS
+                ? `最多只能添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件`
+                : undefined
+            }
+            className="w-7 h-7 flex-shrink-0 rounded flex items-center justify-center text-text-secondary hover:bg-gray-100 transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+          >
             <FontAwesomeIcon icon={["fas", "plus"]} />
           </button>
           
@@ -570,7 +932,7 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
               if (busy) {
                 onStop?.();
               } else {
-                onSubmit();
+                submitWithAttachments();
               }
             }}
             disabled={busy && !onStop}

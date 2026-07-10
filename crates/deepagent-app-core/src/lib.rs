@@ -13,6 +13,7 @@
 
 pub mod approval_bridge;
 pub mod archive_service;
+pub mod attachment_service;
 pub mod chat_service;
 pub mod commands;
 pub mod cost_service;
@@ -42,26 +43,30 @@ pub mod terminal_service;
 pub mod todo_snapshot_reminder;
 pub mod verification_decorator;
 pub mod verification_dispatcher;
+pub mod vision_service;
 pub mod workspace_service;
 
 pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
 pub use archive_service::ArchiveService;
+pub use attachment_service::AttachmentService;
 pub use chat_service::ChatService;
 pub use commands::{builtin_commands, commands_from_roots, filter_commands};
 pub use cost_service::{BudgetConfig, CostRecord, CostService, CostSummary, ModelPricing};
 pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
 pub use doctor::{format_diagnostics, run_diagnostics, DiagStatus, DiagnosticResult};
 pub use dto::{
-    ApprovalRequestDto, ArchiveProjectResultDto, ArchivedConversationDto, CommandDto,
-    ConversationMessageDto, ConversationPartDto, ConversationUsageDto, ForkResultDto,
-    GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto, GitBranchDto,
-    GitChangedFileDto, GitChangesDto, GitCommitFileDto, GitCommitMessageDraftDto,
-    GitCompareCommitDto, GitDiffDto, GitLogEntryDto, GitOperationResultDto, GitProjectStatusDto,
-    GitPushCommitDto, GitPushPreviewDto, GitPushRiskItemDto, GitPushRiskScanDto, GitRefCompareDto,
-    GitWorktreeDto, PdfRenderResultDto, PreviewMetadataDto, PreviewResultDto, ProjectDto,
-    RecordingSessionDto, RewindResultDto, RuntimeProgressDto, RuntimeStatusDto, SessionDetailDto,
-    SessionStatsDto, SessionSummaryDto, SessionUiPrefsDto, SheetPreviewDto, TerminalResultDto,
-    TimelineEntryDto, TranscriptDto, TranscriptSegmentDto, WorkspaceInfoDto,
+    ApprovalRequestDto, ArchiveProjectResultDto, ArchivedConversationDto, AttachmentDto,
+    AttachmentIngestDto, CommandDto, ConversationMessageDto, ConversationPartDto,
+    ConversationUsageDto, ForkResultDto, GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto,
+    GitBatchProjectResultDto, GitBranchDto, GitChangedFileDto, GitChangesDto, GitCommitFileDto,
+    GitCommitMessageDraftDto, GitCompareCommitDto, GitDiffDto, GitLogEntryDto,
+    GitOperationResultDto, GitProjectStatusDto, GitPushCommitDto, GitPushPreviewDto,
+    GitPushRiskItemDto, GitPushRiskScanDto, GitRefCompareDto, GitWorktreeDto, PdfRenderResultDto,
+    PreviewMetadataDto, PreviewResultDto, ProjectDto, RecordingSessionDto, RewindResultDto,
+    RuntimeProgressDto, RuntimeRootsDto, RuntimeStatusDto, SessionDetailDto, SessionStatsDto,
+    SessionSummaryDto, SessionUiPrefsDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto,
+    TranscriptDto, TranscriptSegmentDto, VisionRecognizeRequestDto, VisionRecognizeResultDto,
+    WorkspaceInfoDto,
 };
 pub use file_preview_service::FilePreviewService;
 pub use git_service::GitService;
@@ -86,7 +91,8 @@ pub use service::AppService;
 pub use session_state_service::SessionStateService;
 pub use settings::{
     AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, SandboxMode, SettingsService,
-    SettingsView, TerminalShell, VerificationPolicy, WebSearchProvider, WebSearchSettings,
+    SettingsView, TerminalShell, VerificationPolicy, VisionMode, VisionSettings, WebSearchProvider,
+    WebSearchSettings,
 };
 pub use skill_catalog_reminder::SkillCatalogSendState;
 pub use skills_service::{
@@ -108,6 +114,7 @@ pub use deepagent_skills::{
 // `deepagent-builtins` directly to get the user-facing config enum.
 pub use deepagent_builtins::ToolSearchMode;
 pub use terminal_service::{LocalPtyHandle, TerminalService};
+pub use vision_service::VisionService;
 pub use workspace_service::WorkspaceService;
 
 // Re-export the live runtime event + approval types so the Tauri/web layer can

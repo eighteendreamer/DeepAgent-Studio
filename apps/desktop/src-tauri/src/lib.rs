@@ -16,9 +16,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
-    AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, BalanceDto,
-    BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary,
-    DiagnosticResult, DiffResult, FilePreviewService, ForkResultDto,
+    AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, AttachmentDto,
+    AttachmentIngestDto, AttachmentService, BalanceDto, BudgetConfig, ChatService, CommandDto,
+    ConversationMessageDto, CostService, CostSummary, DiagnosticResult, DiffResult,
+    FilePreviewService, ForkResultDto,
     GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto,
     GitBranchDto, GitChangesDto, GitCommitMessageDraftDto, GitDiffDto, GitLogEntryDto,
     GitOperationResultDto, GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto,
@@ -27,12 +28,13 @@ use deepagent_app_core::{
     LocalPtyHandle,
     ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto,
     ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
-    ProjectService, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeProgressDto, RuntimeService,
-    RuntimeStatusDto, SecretStore, SessionDetailDto, SessionStateService,
+    ProjectService, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeProgressDto,
+    RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SecretStore, SessionDetailDto, SessionStateService,
     SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
     SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, TerminalResultDto, TerminalService,
-    TerminalShell,
-    TranscriptDto, TranscriptSegmentDto, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
+    TerminalShell, TranscriptDto, TranscriptSegmentDto, VisionRecognizeRequestDto,
+    VisionRecognizeResultDto, VisionService, VisionSettings, WebSearchSettings, WorkspaceInfoDto,
+    WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
@@ -309,10 +311,14 @@ struct AppState {
     git: Arc<GitService>,
     /// File preview for the desktop "File Preview" panel (office-agent).
     preview: Arc<FilePreviewService>,
+    /// Composer attachments persisted under the application data directory.
+    attachments: Arc<AttachmentService>,
     /// Microphone recording for the desktop recording panel (office-agent).
     recording: Arc<RecordingService>,
     /// Managed-runtime download/install manager (office-agent).
     runtime: Arc<RuntimeService>,
+    /// Local system-vision image recognition.
+    vision: Arc<VisionService>,
     /// Speech transcription + meeting-minutes (office-agent).
     speech: Arc<SpeechService>,
     /// Office document read/generate (office-agent).
@@ -425,23 +431,28 @@ fn dir_has_skill_md(dir: &Path) -> bool {
     false
 }
 
-/// Move previously downloaded optional runtimes out of the install directory.
-///
-/// Older builds preferred `<exe>/runtimes`, which can be removed by Windows
-/// updater/uninstaller flows. Runtime assets are user-managed downloads, so the
-/// durable home is `<app_data>/runtimes`.
-fn migrate_legacy_runtime_dir(
-    legacy_dir: &Path,
-    app_data_runtime_dir: &Path,
-) -> std::io::Result<()> {
+/// Copy previously downloaded optional runtimes into a new runtime root without
+/// removing the source. Used by explicit migration flows only; startup keeps
+/// old roots as read-only fallbacks so resources stay usable after path changes.
+fn copy_legacy_runtime_dir(legacy_dir: &Path, target_runtime_dir: &Path) -> std::io::Result<()> {
     if !legacy_dir.exists() {
         return Ok(());
     }
-    if same_path(legacy_dir, app_data_runtime_dir) {
+    if same_path(legacy_dir, target_runtime_dir) {
         return Ok(());
     }
 
-    copy_dir_missing(legacy_dir, app_data_runtime_dir)
+    copy_dir_missing(legacy_dir, target_runtime_dir)
+}
+
+fn preferred_runtime_resource_dir(app: &tauri::AppHandle) -> PathBuf {
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        return resource_dir.join("runtimes");
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("resources").join("runtimes")))
+        .unwrap_or_else(|| std::env::temp_dir().join("deepagent-runtimes"))
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -1511,6 +1522,40 @@ fn set_web_search_settings(
         .settings
         .web_search_settings()
         .map_err(|e| e.to_string())
+}
+
+// ---- vision settings ------------------------------------------------------
+
+#[tauri::command]
+fn get_vision_settings(state: State<'_, AppState>) -> Result<VisionSettings, String> {
+    state
+        .settings
+        .vision_settings()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_vision_settings(
+    state: State<'_, AppState>,
+    settings: VisionSettings,
+) -> Result<VisionSettings, String> {
+    state
+        .settings
+        .set_vision_settings(settings)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn vision_recognize_image(
+    state: State<'_, AppState>,
+    request: VisionRecognizeRequestDto,
+) -> Result<VisionRecognizeResultDto, String> {
+    let vision = state.vision.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        vision.recognize_image(request).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("vision recognition task failed: {e}"))?
 }
 
 // ---- Skill marketplace settings (Skill Marketplace spec, R10) -------------
@@ -2945,6 +2990,28 @@ fn preview_render_pages(
         .map_err(|e| e.to_string())
 }
 
+// ---- composer attachments -------------------------------------------------
+
+#[tauri::command]
+fn attachment_ingest(
+    state: State<'_, AppState>,
+    input: AttachmentIngestDto,
+) -> Result<AttachmentDto, String> {
+    state.attachments.ingest(input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn attachment_remove(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+    id: String,
+) -> Result<bool, String> {
+    state
+        .attachments
+        .remove(session_id.as_deref(), &id)
+        .map_err(|e| e.to_string())
+}
+
 // ---- recording (office-agent: microphone capture for the recording panel) -
 
 #[tauri::command]
@@ -2988,20 +3055,18 @@ fn audio_stop_recording(
 
 #[tauri::command]
 fn runtime_prepare_for_update(app: tauri::AppHandle) -> Result<(), String> {
-    let app_runtime_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("resolve app data dir: {e}"))?
-        .join("runtimes");
+    let runtime_dir = preferred_runtime_resource_dir(&app);
+    std::fs::create_dir_all(&runtime_dir)
+        .map_err(|e| format!("create runtime resource dir '{}': {e}", runtime_dir.display()))?;
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             let legacy_runtime_dir = exe_dir.join("runtimes");
-            migrate_legacy_runtime_dir(&legacy_runtime_dir, &app_runtime_dir).map_err(|e| {
+            copy_legacy_runtime_dir(&legacy_runtime_dir, &runtime_dir).map_err(|e| {
                 format!(
                     "migrate runtimes from '{}' to '{}': {e}",
                     legacy_runtime_dir.display(),
-                    app_runtime_dir.display()
+                    runtime_dir.display()
                 )
             })?;
         }
@@ -3012,6 +3077,45 @@ fn runtime_prepare_for_update(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn runtime_list(state: State<'_, AppState>) -> Result<Vec<RuntimeStatusDto>, String> {
+    Ok(state.runtime.list())
+}
+
+#[tauri::command]
+fn runtime_roots(state: State<'_, AppState>) -> Result<RuntimeRootsDto, String> {
+    let active_root = state.runtime.install_root().to_string_lossy().into_owned();
+    let fallback_roots = state
+        .runtime
+        .lookup_roots()
+        .iter()
+        .skip(1)
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    Ok(RuntimeRootsDto {
+        active_root,
+        fallback_roots,
+    })
+}
+
+#[tauri::command]
+fn runtime_migrate_resources(state: State<'_, AppState>) -> Result<Vec<RuntimeStatusDto>, String> {
+    let active_root = state.runtime.install_root().to_path_buf();
+    std::fs::create_dir_all(&active_root).map_err(|e| {
+        format!(
+            "create active runtime dir '{}': {e}",
+            active_root.display()
+        )
+    })?;
+    for root in state.runtime.lookup_roots().iter().skip(1) {
+        if root.exists() {
+            copy_legacy_runtime_dir(root, &active_root).map_err(|e| {
+                format!(
+                    "migrate runtimes from '{}' to '{}': {e}",
+                    root.display(),
+                    active_root.display()
+                )
+            })?;
+        }
+    }
     Ok(state.runtime.list())
 }
 
@@ -3315,6 +3419,7 @@ pub fn run() {
             // File preview: stateless office-file previewer for the desktop
             // "File Preview" panel (office-agent). Pure-Rust, no external runtime.
             let preview = Arc::new(FilePreviewService::new());
+            let attachments = Arc::new(AttachmentService::new(dir.join("attachments")));
 
             // Recording: microphone capture for the recording panel. Real cpal
             // recorder; WAVs land under <app_data>/recordings.
@@ -3324,29 +3429,24 @@ pub fn run() {
                 Arc::new(deepagent_app_core::recording_service::CpalRecorder::new()),
             ));
 
-            // Managed runtimes are user-downloaded assets. Keep them under
-            // app data so app updates/uninstalls do not remove them.
+            // Managed runtimes are user-downloaded assets. New installs target
+            // the application resource runtime directory; older app-data/exe
+            // locations remain read-only lookup roots until the user migrates.
+            let runtime_resource_dir = preferred_runtime_resource_dir(&app.handle());
             let app_runtime_dir = dir.join("runtimes");
-            let mut runtime_roots = vec![app_runtime_dir.clone()];
+            let mut legacy_runtime_roots = vec![app_runtime_dir.clone()];
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(exe_dir) = exe.parent() {
                     let legacy_runtime_dir = exe_dir.join("runtimes");
-                    if let Err(error) =
-                        migrate_legacy_runtime_dir(&legacy_runtime_dir, &app_runtime_dir)
-                    {
-                        eprintln!(
-                            "[runtime] failed to migrate runtimes from '{}' to '{}': {error}",
-                            legacy_runtime_dir.display(),
-                            app_runtime_dir.display()
-                        );
-                    }
-                    runtime_roots.push(legacy_runtime_dir);
+                    legacy_runtime_roots.push(legacy_runtime_dir);
                 }
             }
-            let runtime = Arc::new(RuntimeService::new(
-                &runtime_roots,
+            let runtime = Arc::new(RuntimeService::with_lookup_roots(
+                &[runtime_resource_dir],
+                &legacy_runtime_roots,
                 Arc::new(deepagent_app_core::runtime_service::ReqwestDownloader::default()),
             ));
+            let vision = Arc::new(VisionService::new(runtime.clone()));
 
             // Cost tracking: records per-run token cost over the shared DB and
             // enforces optional daily/monthly budget limits.
@@ -3446,8 +3546,10 @@ pub fn run() {
                 terminal,
                 git,
                 preview,
+                attachments,
                 recording,
                 runtime,
+                vision,
                 speech,
                 office,
                 ssh,
@@ -3526,6 +3628,9 @@ pub fn run() {
             set_tool_search_threshold,
             get_web_search_settings,
             set_web_search_settings,
+            get_vision_settings,
+            set_vision_settings,
+            vision_recognize_image,
             get_skill_catalog_enabled,
             set_skill_catalog_enabled,
             get_skill_catalog_char_budget,
@@ -3624,6 +3729,8 @@ pub fn run() {
             preview_open_file,
             preview_read_data_url,
             preview_render_pages,
+            attachment_ingest,
+            attachment_remove,
             audio_list_input_devices,
             audio_start_recording,
             audio_pause_recording,
@@ -3631,6 +3738,8 @@ pub fn run() {
             audio_stop_recording,
             runtime_prepare_for_update,
             runtime_list,
+            runtime_roots,
+            runtime_migrate_resources,
             runtime_status,
             runtime_install,
             runtime_cancel,

@@ -179,6 +179,7 @@ fn settings_default() -> AppSettings {
         thinking_depth: Default::default(),
         verification_policy: Default::default(),
         web_search: Default::default(),
+        vision: Default::default(),
         tool_search_mode: Default::default(),
         tool_search_auto_threshold_chars: None,
         skill_catalog_enabled: true,

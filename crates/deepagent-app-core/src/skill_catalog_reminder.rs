@@ -183,6 +183,7 @@ mod tests {
             thinking_depth: deepagent_models::ThinkingDepth::default(),
             verification_policy: crate::settings::VerificationPolicy::default(),
             web_search: crate::settings::WebSearchSettings::default(),
+            vision: crate::settings::VisionSettings::default(),
             tool_search_mode: deepagent_builtins::ToolSearchMode::default(),
             tool_search_auto_threshold_chars: None,
             skill_catalog_enabled: true,

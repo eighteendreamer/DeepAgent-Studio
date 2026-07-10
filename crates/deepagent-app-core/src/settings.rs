@@ -258,6 +258,79 @@ fn normalize_web_search_settings(mut settings: WebSearchSettings) -> WebSearchSe
     settings
 }
 
+/// How pasted/dropped images are converted into model-readable context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VisionMode {
+    /// Do not analyze images automatically.
+    Off,
+    /// Use a local system vision runtime, currently Florence-2-base-ft.
+    #[default]
+    System,
+    /// Use a provider model that explicitly supports image input.
+    Model,
+}
+
+impl VisionMode {
+    pub const fn label(&self) -> &'static str {
+        match self {
+            VisionMode::Off => "off",
+            VisionMode::System => "system",
+            VisionMode::Model => "model",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "system" => Some(Self::System),
+            "model" => Some(Self::Model),
+            _ => None,
+        }
+    }
+}
+
+fn default_system_vision_model() -> String {
+    "vision-florence-2-base-ft".to_string()
+}
+
+fn default_auto_analyze_pasted_images() -> bool {
+    true
+}
+
+/// Persisted image-analysis settings for composer attachments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VisionSettings {
+    #[serde(default)]
+    pub mode: VisionMode,
+    #[serde(default = "default_system_vision_model")]
+    pub system_model: String,
+    #[serde(default = "default_auto_analyze_pasted_images")]
+    pub auto_analyze_pasted_images: bool,
+    #[serde(default)]
+    pub send_original_image_to_model: bool,
+}
+
+impl Default for VisionSettings {
+    fn default() -> Self {
+        Self {
+            mode: VisionMode::default(),
+            system_model: default_system_vision_model(),
+            auto_analyze_pasted_images: default_auto_analyze_pasted_images(),
+            send_original_image_to_model: false,
+        }
+    }
+}
+
+fn normalize_vision_settings(mut settings: VisionSettings) -> VisionSettings {
+    if settings.system_model.trim().is_empty() {
+        settings.system_model = default_system_vision_model();
+    } else {
+        settings.system_model = settings.system_model.trim().to_string();
+    }
+    settings
+}
+
 /// Persisted, **non-secret** application settings (safe to store on disk).
 /// The API key is intentionally absent — it lives in the [`SecretStore`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,6 +366,9 @@ pub struct AppSettings {
     /// Web search provider settings. Defaults to DeepSeek-first.
     #[serde(default)]
     pub web_search: WebSearchSettings,
+    /// Local/model vision settings for image attachments.
+    #[serde(default)]
+    pub vision: VisionSettings,
     /// Tool-search / lazy-tool-loading mode (tool-search spec).
     /// Decides whether deferrable tools (MCP + `should_defer == true`) are
     /// hidden from each request's `tools` array until discovered through the
@@ -370,6 +446,8 @@ pub struct SettingsView {
     pub thinking_depth: String,
     /// Current web-search settings.
     pub web_search: WebSearchSettings,
+    /// Current image-analysis settings.
+    pub vision: VisionSettings,
 }
 
 /// One per-currency balance row exposed to the UI.
@@ -490,6 +568,7 @@ impl SettingsService {
                 .as_ref()
                 .map(|s| s.web_search.clone())
                 .unwrap_or_default(),
+            vision: prior.as_ref().map(|s| s.vision.clone()).unwrap_or_default(),
             tool_search_mode: prior
                 .as_ref()
                 .map(|s| s.tool_search_mode)
@@ -653,6 +732,22 @@ impl SettingsService {
         settings.web_search = normalize_web_search_settings(settings_next);
         self.save(&settings)?;
         Ok(())
+    }
+
+    /// Current image-analysis settings.
+    pub fn vision_settings(&self) -> Result<VisionSettings> {
+        Ok(self.load()?.map(|s| s.vision).unwrap_or_default())
+    }
+
+    /// Set image-analysis settings.
+    pub fn set_vision_settings(&self, settings_next: VisionSettings) -> Result<VisionSettings> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.vision = normalize_vision_settings(settings_next);
+        let saved = settings.vision.clone();
+        self.save(&settings)?;
+        Ok(saved)
     }
 
     /// The current tool-search mode (default `Disabled`).
@@ -904,6 +999,7 @@ impl SettingsService {
             terminal_shell: settings.terminal_shell.label().to_string(),
             thinking_depth: settings.thinking_depth.label().to_string(),
             web_search: settings.web_search.clone(),
+            vision: settings.vision.clone(),
         })
     }
 
@@ -1352,6 +1448,7 @@ mod tests {
             hooks_json: String::new(),
             verification_policy: VerificationPolicy::default(),
             web_search: WebSearchSettings::default(),
+            vision: VisionSettings::default(),
             tool_search_mode: deepagent_builtins::ToolSearchMode::default(),
             tool_search_auto_threshold_chars: None,
             skill_catalog_enabled: default_skill_catalog_enabled(),

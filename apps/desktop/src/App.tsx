@@ -36,6 +36,7 @@ import type { RuntimeEvent } from "./api";
 import type {
   ApprovalRequest,
   ChatMessage,
+  ComposerAttachment,
   ConversationMessage,
   MessagePart,
   Project,
@@ -119,6 +120,37 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
       return { kind: "text", text: p.text };
     }),
   }));
+}
+
+function buildPromptWithAttachments(text: string, attachments: ComposerAttachment[] = []): string {
+  const trimmed = text.trim();
+  if (attachments.length === 0) return trimmed;
+  const blocks = attachments.map((attachment, index) => {
+    const lines = [
+      `<attachment index="${index + 1}" name="${attachment.name}" type="${attachment.mime}" kind="${attachment.kind}">`,
+      `source: ${attachment.source}`,
+      `size: ${attachment.size} bytes`,
+    ];
+    if (attachment.originalPath) {
+      lines.push(`path: ${attachment.originalPath}`);
+    }
+    if (attachment.sha256) {
+      lines.push(`sha256: ${attachment.sha256}`);
+    }
+    if (attachment.extractedText) {
+      lines.push("", attachment.extractedText);
+    } else if (attachment.kind === "image") {
+      lines.push(
+        "",
+        "This image is attached but could not be analyzed by the system vision runtime. Do not infer details that are not present. If the image content is essential, ask the user to install the vision model or describe the image.",
+      );
+    } else {
+      lines.push("", "Binary or unsupported file content was not read. Use file tools if deeper inspection is needed.");
+    }
+    lines.push("</attachment>");
+    return lines.join("\n");
+  });
+  return [trimmed || "\u8bf7\u67e5\u770b\u9644\u4ef6\u5185\u5bb9\u3002", "", "<attachments>", blocks.join("\n\n"), "</attachments>"].join("\n");
 }
 
 export function App() {
@@ -604,10 +636,12 @@ export function App() {
   const onSubmit = useCallback(
     (
       text: string,
+      attachments: ComposerAttachment[] = [],
       envMode?: "local" | "remote",
       connectionId?: string | null
     ) => {
-      if (!text) return;
+      const submittedText = buildPromptWithAttachments(text, attachments);
+      if (!submittedText) return;
       const storedEnvMode = localStorage.getItem("envMode");
       const effectiveEnvMode: "local" | "remote" =
         envMode ?? (storedEnvMode === "remote" ? "remote" : "local");
@@ -654,7 +688,7 @@ export function App() {
         : [];
       const seeded: ChatMessage[] = [
         ...prior,
-        { role: "user", content: text },
+        { role: "user", content: submittedText },
         { role: "assistant", content: "", parts: [] },
       ];
       liveTranscripts.current.set(runKey, seeded);
@@ -973,7 +1007,7 @@ export function App() {
       };
 
       runChat(
-        text,
+        submittedText,
         onEvent,
         (request) => {
           // Queue the approval request; the dialog shows the head of the queue.
