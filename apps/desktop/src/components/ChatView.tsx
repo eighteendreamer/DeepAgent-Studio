@@ -7,20 +7,18 @@ import { ToolCallCard } from "./ToolCallCard";
 import { ApprovalDialog } from "./ApprovalDialog";
 import { RenameSessionDialog } from "./RenameSessionDialog";
 import { MarkdownText } from "./MarkdownText";
-import { EnvironmentInfoPanel } from "./EnvironmentInfoPanel";
-import type { OutputItem } from "./EnvironmentInfoPanel";
+import { EnvironmentInfoMenu } from "./EnvironmentInfoMenu";
+import type { OutputItem } from "./EnvironmentInfoMenu";
 import { ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
 import {
-  getSessionUiPrefs,
   OPEN_AUTOMATION_EVENT,
   projectMapRefreshDeep,
   projectMapStatus,
   SEND_TO_CHAT_EVENT,
-  setSessionEnvPanelAutoOpen,
 } from "../api";
 import { useGitStatus } from "../hooks/useGitStatus";
 import { GitWorkbench } from "./git/GitWorkbench";
@@ -28,6 +26,7 @@ import {
   createPluginTab,
   PLUGIN_TOOL_CARDS,
   renderPluginTab,
+  type PluginConnectionSummary,
   type PluginTab,
   type PluginToolCard,
 } from "./plugins/pluginRegistry";
@@ -572,8 +571,6 @@ function normalizeBrowserUrl(input: string): string {
 }
 
 export function ChatView({
-  sessionId = null,
-  sessionKey = null,
   messages,
   onSend,
   onFork,
@@ -598,9 +595,6 @@ export function ChatView({
 }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
-  const [isOutputPanelOpen, setIsOutputPanelOpen] = useState(false);
-  const [envPanelAutoOpenEnabled, setEnvPanelAutoOpenEnabled] = useState(true);
-  const [envPanelPrefsLoaded, setEnvPanelPrefsLoaded] = useState(true);
   const [isGitWorkbenchOpen, setIsGitWorkbenchOpen] = useState(false);
   const {
     loading: gitLoading,
@@ -615,6 +609,13 @@ export function ChatView({
   const projectMapMenuRef = useRef<HTMLDivElement>(null);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
+  const [envMode, setEnvMode] = useState<"local" | "remote">(() =>
+    localStorage.getItem("envMode") === "remote" ? "remote" : "local",
+  );
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(() =>
+    localStorage.getItem("ssh_connection_id"),
+  );
+  const [selectedConnection, setSelectedConnection] = useState<PluginConnectionSummary | null>(null);
   const [sidebarTabs, setSidebarTabs] = useState<PluginTab[]>([]);
   const [activeSidebarTabId, setActiveSidebarTabId] = useState<string>("new");
   const [isRewindOpen, setIsRewindOpen] = useState(false);
@@ -661,107 +662,6 @@ export function ChatView({
   const gitWorkspaceFilesChanged =
     gitChangesState?.files.length ?? gitStatus?.files_changed ?? 0;
   const hasConversation = messages.length > 0;
-  const outputSignature = useMemo(
-    () => outputItems.map((item) => `${item.kind}:${item.label}`).join("|"),
-    [outputItems]
-  );
-  const lastAutoOpenedOutputRef = useRef<string>("");
-  const previousSessionKeyRef = useRef<string | null>(null);
-  const tempEnvPanelAutoOpenRef = useRef<Map<string, boolean>>(new Map());
-  useEffect(() => {
-    let cancelled = false;
-    const previousSessionKey = previousSessionKeyRef.current;
-    previousSessionKeyRef.current = sessionKey;
-    lastAutoOpenedOutputRef.current = "";
-    setIsOutputPanelOpen(false);
-
-    if (!sessionKey) {
-      setEnvPanelAutoOpenEnabled(true);
-      setEnvPanelPrefsLoaded(true);
-      return;
-    }
-
-    if (
-      sessionId &&
-      previousSessionKey &&
-      previousSessionKey !== sessionKey &&
-      tempEnvPanelAutoOpenRef.current.has(previousSessionKey)
-    ) {
-      const pendingAutoOpen =
-        tempEnvPanelAutoOpenRef.current.get(previousSessionKey) ?? true;
-      tempEnvPanelAutoOpenRef.current.delete(previousSessionKey);
-      setEnvPanelAutoOpenEnabled(pendingAutoOpen);
-      setEnvPanelPrefsLoaded(true);
-      if (!pendingAutoOpen) {
-        void setSessionEnvPanelAutoOpen(sessionId, false).catch((error) => {
-          if (cancelled) return;
-          console.error("set_session_env_panel_auto_open failed:", error);
-        });
-      }
-      return;
-    }
-
-    if (!sessionId) {
-      setEnvPanelAutoOpenEnabled(
-        tempEnvPanelAutoOpenRef.current.get(sessionKey) ?? true,
-      );
-      setEnvPanelPrefsLoaded(true);
-      return;
-    }
-
-    setEnvPanelPrefsLoaded(false);
-    getSessionUiPrefs(sessionId)
-      .then((prefs) => {
-        if (cancelled) return;
-        setEnvPanelAutoOpenEnabled(prefs.env_panel_auto_open);
-        setEnvPanelPrefsLoaded(true);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        console.error("get_session_ui_prefs failed:", error);
-        setEnvPanelAutoOpenEnabled(true);
-        setEnvPanelPrefsLoaded(true);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, sessionKey]);
-  useEffect(() => {
-    if (!hasConversation) {
-      lastAutoOpenedOutputRef.current = "";
-      setIsOutputPanelOpen(false);
-      return;
-    }
-    if (!envPanelPrefsLoaded) return;
-    if (!outputSignature) {
-      lastAutoOpenedOutputRef.current = "";
-      return;
-    }
-    if (lastAutoOpenedOutputRef.current === outputSignature) return;
-    lastAutoOpenedOutputRef.current = outputSignature;
-    if (!envPanelAutoOpenEnabled) return;
-    setIsOutputPanelOpen(true);
-  }, [envPanelAutoOpenEnabled, envPanelPrefsLoaded, hasConversation, outputSignature]);
-
-  const toggleOutputPanel = useCallback(() => {
-    setIsOutputPanelOpen((prev) => {
-      const next = !prev;
-      // Closing -> record the user's intent so future outputs respect it.
-      // Opening -> user is engaging again, clear the override.
-      if (!next) {
-        setEnvPanelAutoOpenEnabled(false);
-        if (sessionId) {
-          void setSessionEnvPanelAutoOpen(sessionId, false).catch((error) => {
-            console.error("set_session_env_panel_auto_open failed:", error);
-          });
-        } else if (sessionKey) {
-          tempEnvPanelAutoOpenRef.current.set(sessionKey, false);
-        }
-      }
-      return next;
-    });
-  }, [sessionId, sessionKey]);
 
   useEffect(() => {
     setIsGitWorkbenchOpen(false);
@@ -777,7 +677,8 @@ export function ChatView({
   const handleOpenBottomPlugin = (c: PluginToolCard) => {
     const newTab = createPluginTab(c.type, {
       activeProjectPath,
-      envMode: "local",
+      envMode,
+      selectedConnection,
       t,
     });
     setBottomTabs([...bottomTabs, newTab]);
@@ -802,7 +703,8 @@ export function ChatView({
   const handleOpenSidebarPlugin = (c: PluginToolCard) => {
     const newTab = createPluginTab(c.type, {
       activeProjectPath,
-      envMode: "local",
+      envMode,
+      selectedConnection,
       t,
     });
     setSidebarTabs((tabs) => [...tabs, newTab]);
@@ -1238,17 +1140,32 @@ export function ChatView({
               <ProjectMapStatusBadge status={mapStatus} onClick={() => setIsProjectMapMenuOpen((v) => !v)} />
             )}
               {hasConversation && (
+                <EnvironmentInfoMenu
+                  activeProjectPath={activeProjectPath}
+                  gitStatus={gitStatus}
+                  gitLoading={gitLoading}
+                  gitWorkspaceAdditions={gitWorkspaceAdditions}
+                  gitWorkspaceDeletions={gitWorkspaceDeletions}
+                  gitWorkspaceFilesChanged={gitWorkspaceFilesChanged}
+                  chatChanges={chatChanges}
+                  outputItems={outputItems}
+                  onOpenGitWorkbench={() => setIsGitWorkbenchOpen(true)}
+                  onOpenUrl={openUrlInSidebarBrowser}
+                  onEnvironmentChange={(mode, connectionId, connection) => {
+                    setEnvMode(mode);
+                    setSelectedConnectionId(connectionId);
+                    setSelectedConnection(connection ?? null);
+                  }}
+                >
                 <button
                   type="button"
-                  className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-                    isOutputPanelOpen ? "text-text-base" : "text-text-secondary hover:bg-gray-100 hover:text-text-base"
-                  }`}
-                  onClick={toggleOutputPanel}
-                  title="环境信息"
-                  aria-label="环境信息"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-gray-100 hover:text-text-base data-[state=open]:text-text-base"
+                  title={t("chatView.environmentInfo")}
+                  aria-label={t("chatView.environmentInfo")}
                 >
                   <FontAwesomeIcon icon={["fas", "sliders"]} className="text-[15px]" />
                 </button>
+                </EnvironmentInfoMenu>
               )}
             </div>
           </div>
@@ -1321,11 +1238,11 @@ export function ChatView({
             tabs={sidebarTabs}
             activeTabId={activeSidebarTabId}
             onSelectTab={setActiveSidebarTabId}
-            onCloseTab={closeSidebarTab}
-            onShowLauncher={() => setActiveSidebarTabId("new")}
-            onSelectPlugin={handleOpenSidebarPlugin}
-            renderContext={{ activeProjectPath, envMode: "local", onProjectMapStatusChange: setMapStatus }}
-          />
+              onCloseTab={closeSidebarTab}
+              onShowLauncher={() => setActiveSidebarTabId("new")}
+              onSelectPlugin={handleOpenSidebarPlugin}
+              renderContext={{ activeProjectPath, envMode, selectedConnectionId, onProjectMapStatusChange: setMapStatus }}
+            />
       </div>
 
       {isBottomPanelOpen && (
@@ -1395,31 +1312,17 @@ export function ChatView({
                 {activeBottomTabId !== "new" && activeBottomTab
                   ? renderPluginTab(activeBottomTab, {
                       activeProjectPath,
-                      envMode: "local",
+                      envMode,
+                      selectedConnectionId,
                       onProjectMapStatusChange: setMapStatus,
                     })
                   : null}
               </div>
             </div>
       )}
-      {/* Floating sticky note for context state */}
-        {isOutputPanelOpen && (
-          <EnvironmentInfoPanel
-            activeProjectPath={activeProjectPath}
-            gitStatus={gitStatus}
-            gitLoading={gitLoading}
-            gitWorkspaceAdditions={gitWorkspaceAdditions}
-            gitWorkspaceDeletions={gitWorkspaceDeletions}
-            gitWorkspaceFilesChanged={gitWorkspaceFilesChanged}
-            chatChanges={chatChanges}
-            outputItems={outputItems}
-            onOpenGitWorkbench={() => setIsGitWorkbenchOpen(true)}
-            onOpenUrl={openUrlInSidebarBrowser}
-          />
-        )}
         {isGitWorkbenchOpen && activeProjectPath && (
           <div
-            className="absolute left-4 right-4 top-12 bottom-4 z-20 overflow-hidden rounded-2xl border border-border-theme bg-white shadow-[0_18px_46px_rgb(0,0,0,0.14)] md:left-6 md:right-6 md:top-16 md:bottom-6"
+            className="absolute left-1/2 top-1/2 z-20 h-[min(620px,calc(100vh-96px))] w-[min(1040px,calc(100vw-48px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border-theme bg-white shadow-[0_18px_46px_rgb(0,0,0,0.14)]"
           >
             <GitWorkbench
               projectPath={activeProjectPath}
