@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
@@ -21,9 +21,23 @@ const GROUPS = [
   { id: "untracked", labelKey: "git.groups.untracked", icon: ["far", "file"] as IconProp },
 ] as const;
 
+const BASE_SIDEBAR_WIDTH = 320;
+const WIDE_SIDEBAR_WIDTH = 360;
+
+function defaultSidebarWidth() {
+  if (typeof window !== "undefined" && window.innerWidth >= 1280) {
+    return WIDE_SIDEBAR_WIDTH;
+  }
+  return BASE_SIDEBAR_WIDTH;
+}
+
 export function GitChangesPanel({ projectPath, changes, loading = false, onRefresh, onClose }: Props) {
   const { t } = useTranslation();
   const files = changes?.files ?? [];
+  const originalSidebarWidth = useMemo(() => defaultSidebarWidth(), []);
+  const minSidebarWidth = originalSidebarWidth / 2;
+  const maxSidebarWidth = originalSidebarWidth;
+  const [sidebarWidth, setSidebarWidth] = useState(originalSidebarWidth);
   const [selectedPath, setSelectedPath] = useState<string | null>(files[0]?.path ?? null);
   const [commitMessage, setCommitMessage] = useState("");
   const [draftSource, setDraftSource] = useState<string | null>(null);
@@ -73,6 +87,32 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
 
   const stageFile = (file: GitChangedFile) => runOperation("stage", () => gitStage(projectPath, [file.path]));
   const unstageFile = (file: GitChangedFile) => runOperation("unstage", () => gitUnstage(projectPath, [file.path]));
+
+  const startSidebarResize = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const nextWidth = startWidth + moveEvent.clientX - startX;
+      setSidebarWidth(Math.max(minSidebarWidth, Math.min(maxSidebarWidth, nextWidth)));
+    };
+
+    const onMouseUp = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  };
 
   const commitStaged = async () => {
     const message = commitMessage.trim();
@@ -134,7 +174,10 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
         )}
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)]">
+      <div
+        className="grid min-h-0 flex-1"
+        style={{ gridTemplateColumns: `${sidebarWidth}px 8px minmax(0,1fr)` }}
+      >
         <div className="flex min-h-0 min-w-0 flex-col border-r border-border-theme bg-gray-50/60">
           <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto py-2">
             {loading ? (
@@ -207,6 +250,19 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
               {busyAction === "commit" ? t("git.committing") : t("git.commitStagedFiles", { count: stagedFiles.length })}
             </button>
           </div>
+        </div>
+
+        <div
+          className="group relative flex min-h-0 cursor-col-resize items-stretch justify-center bg-white"
+          onMouseDown={startSidebarResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-valuemin={minSidebarWidth}
+          aria-valuemax={maxSidebarWidth}
+          aria-valuenow={Math.round(sidebarWidth)}
+          title="拖动调整宽度"
+        >
+          <div className="h-full w-px bg-border-theme transition-colors group-hover:bg-gray-400" />
         </div>
 
         <div className="min-h-0 min-w-0 overflow-hidden">
