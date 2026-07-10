@@ -1075,7 +1075,7 @@ export function ChatView({
           <div className="flex items-center text-text-secondary">
             <div
               className="absolute top-1/2 z-10 flex -translate-y-1/2 items-center gap-3 text-text-secondary transition-[right] duration-300"
-              style={{ right: 104 }}
+              style={{ right: isRightSidebarOpen ? 16 : 104 }}
             >
               {activeProjectPath && (
                 <ProjectMapStatusBadge status={mapStatus} onClick={openProjectMapSidebar} />
