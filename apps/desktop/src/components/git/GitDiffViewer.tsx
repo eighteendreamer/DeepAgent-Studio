@@ -22,7 +22,7 @@ type SplitRow =
       newText: "";
     }
   | {
-      kind: "context" | "add" | "remove";
+      kind: "context" | "add" | "remove" | "change";
       text: "";
       oldLine: number | null;
       newLine: number | null;
@@ -253,11 +253,23 @@ function DiffLine({ line, lineNo }: { line: string; lineNo: number }) {
 function SplitDiffText({ text }: { text: string }) {
   const { t } = useTranslation();
   const rows = useMemo(() => parseSplitDiff(text), [text]);
+  const [horizontalOffset, setHorizontalOffset] = useState(0);
+  const splitColumns = "56px minmax(0,1fr) 56px minmax(0,1fr)";
+  const codeShiftStyle =
+    horizontalOffset > 0 ? { transform: `translateX(-${horizontalOffset}px)` } : undefined;
   return (
-    <div className="w-max min-w-full text-[12px] leading-5">
+    <div
+      className="min-w-full text-[12px] leading-5"
+      onWheel={(event) => {
+        const delta = event.deltaX || (event.shiftKey ? event.deltaY : 0);
+        if (!delta) return;
+        event.preventDefault();
+        setHorizontalOffset((current) => Math.max(0, Math.min(4000, current + delta)));
+      }}
+    >
       <div
-        className="sticky top-0 z-10 grid w-max min-w-full border-b border-border-theme bg-gray-100 text-[11px] font-medium text-text-secondary"
-        style={{ gridTemplateColumns: "64px max-content 64px max-content" }}
+        className="sticky top-0 z-10 grid min-w-full border-b border-border-theme bg-gray-100 text-[11px] font-medium text-text-secondary"
+        style={{ gridTemplateColumns: splitColumns }}
       >
         <div className="border-r border-border-theme px-2 py-1 text-right">{t("git.diffColumns.old")}</div>
         <div className="border-r border-border-theme px-3 py-1">{t("git.diffColumns.before")}</div>
@@ -268,33 +280,58 @@ function SplitDiffText({ text }: { text: string }) {
         isFullWidthRow(row) ? (
           <div
             key={`${index}:${row.text}`}
-            className={`grid w-max min-w-full ${lineClass(row.kind)}`}
-            style={{ gridTemplateColumns: "64px max-content" }}
+            className={`grid min-w-full ${lineClass(row.kind)}`}
+            style={{ gridTemplateColumns: splitColumns }}
           >
             <div className="border-r border-black/5" />
-            <code className="px-3 pr-6 font-mono">{row.text || " "}</code>
+            <code className="col-span-3 overflow-hidden px-3 pr-6 font-mono">
+              <span className="inline-block whitespace-pre" style={codeShiftStyle}>
+                {row.text || " "}
+              </span>
+            </code>
           </div>
         ) : (
-          <SplitDiffRow key={`${index}:${row.oldLine ?? ""}:${row.newLine ?? ""}`} row={row} />
+          <SplitDiffRow
+            key={`${index}:${row.oldLine ?? ""}:${row.newLine ?? ""}`}
+            row={row}
+            columns={splitColumns}
+            codeShiftStyle={codeShiftStyle}
+          />
         ),
       )}
     </div>
   );
 }
 
-function SplitDiffRow({ row }: { row: Extract<SplitRow, { kind: "context" | "add" | "remove" }> }) {
-  const oldCls = row.kind === "remove" ? "bg-red-50 text-red-800" : "text-text-base";
-  const newCls = row.kind === "add" ? "bg-green-50 text-green-800" : "text-text-base";
+function SplitDiffRow({
+  row,
+  columns,
+  codeShiftStyle,
+}: {
+  row: Extract<SplitRow, { kind: "context" | "add" | "remove" | "change" }>;
+  columns: string;
+  codeShiftStyle?: { transform: string };
+}) {
+  const oldCls = row.kind === "remove" || row.kind === "change" ? "bg-red-50 text-red-800" : "text-text-base";
+  const newCls = row.kind === "add" || row.kind === "change" ? "bg-green-50 text-green-800" : "text-text-base";
   return (
-    <div className="grid w-max min-w-full whitespace-pre" style={{ gridTemplateColumns: "64px max-content 64px max-content" }}>
+    <div className="grid min-w-full whitespace-pre" style={{ gridTemplateColumns: columns }}>
       <div className={`${oldCls} select-none border-r border-black/5 px-2 text-right text-[11px] text-text-secondary`}>
         {row.oldLine ?? ""}
       </div>
-      <code className={`${oldCls} border-r border-black/5 px-3 pr-6 font-mono`}>{row.oldText || " "}</code>
+      <code className={`${oldCls} overflow-hidden border-r border-black/5 px-3 pr-6 font-mono`}>
+        <span className="inline-block whitespace-pre" style={codeShiftStyle}>
+          {row.oldText || " "}
+        </span>
+      </code>
       <div className={`${newCls} select-none border-r border-black/5 px-2 text-right text-[11px] text-text-secondary`}>
         {row.newLine ?? ""}
       </div>
-      <code className={`${newCls} px-3 pr-6 font-mono`}>{row.newText || " "}</code>
+      <code className={`${newCls} overflow-hidden px-3 pr-6 font-mono`}>
+        <span className="inline-block whitespace-pre" style={codeShiftStyle}>
+          {row.newText || " "}
+        </span>
+      </code>
     </div>
   );
 }
@@ -329,8 +366,32 @@ function parseSplitDiff(text: string): SplitRow[] {
   const rows: SplitRow[] = [];
   let oldLine = 0;
   let newLine = 0;
-  for (const line of text.split("\n")) {
+  let removedBlock: Array<{ line: number; text: string }> = [];
+  let addedBlock: Array<{ line: number; text: string }> = [];
+
+  const flushChangeBlock = () => {
+    if (removedBlock.length === 0 && addedBlock.length === 0) return;
+    const count = Math.max(removedBlock.length, addedBlock.length);
+    for (let index = 0; index < count; index++) {
+      const removed = removedBlock[index] ?? null;
+      const added = addedBlock[index] ?? null;
+      rows.push({
+        kind: removed && added ? "change" : removed ? "remove" : "add",
+        text: "",
+        oldLine: removed?.line ?? null,
+        newLine: added?.line ?? null,
+        oldText: removed?.text ?? "",
+        newText: added?.text ?? "",
+      });
+    }
+    removedBlock = [];
+    addedBlock = [];
+  };
+
+  const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+  for (const line of lines) {
     if (line.startsWith("@@")) {
+      flushChangeBlock();
       const hunk = parseHunkHeader(line);
       oldLine = hunk?.oldStart ?? oldLine;
       newLine = hunk?.newStart ?? newLine;
@@ -338,24 +399,27 @@ function parseSplitDiff(text: string): SplitRow[] {
       continue;
     }
     if (isMetaLine(line)) {
+      flushChangeBlock();
       rows.push({ kind: "meta", text: line, oldLine: null, newLine: null, oldText: "", newText: "" });
       continue;
     }
     if (line.startsWith("+")) {
-      rows.push({ kind: "add", text: "", oldLine: null, newLine, oldText: "", newText: line.slice(1) });
+      addedBlock.push({ line: newLine, text: line.slice(1) });
       newLine += 1;
       continue;
     }
     if (line.startsWith("-")) {
-      rows.push({ kind: "remove", text: "", oldLine, newLine: null, oldText: line.slice(1), newText: "" });
+      removedBlock.push({ line: oldLine, text: line.slice(1) });
       oldLine += 1;
       continue;
     }
+    flushChangeBlock();
     const content = line.startsWith(" ") ? line.slice(1) : line;
     rows.push({ kind: "context", text: "", oldLine, newLine, oldText: content, newText: content });
     oldLine += 1;
     newLine += 1;
   }
+  flushChangeBlock();
   return rows;
 }
 
