@@ -436,7 +436,12 @@ impl GitService {
 
     /// Create a local commit from the current index. The UI is responsible for
     /// user confirmation before invoking this operation.
-    pub fn commit(&self, project_path: &str, message: &str) -> Result<GitOperationResultDto> {
+    pub fn commit(
+        &self,
+        project_path: &str,
+        message: &str,
+        files: Option<&[String]>,
+    ) -> Result<GitOperationResultDto> {
         let Some(repo_root) = repo_root(project_path) else {
             return Ok(operation_failure("git commit", "not a git repository"));
         };
@@ -447,10 +452,12 @@ impl GitService {
                 "commit message must not be empty",
             ));
         }
-        Ok(run_git_operation(
-            &repo_root,
-            vec!["commit".to_string(), "-m".to_string(), message.to_string()],
-        ))
+        let mut args = vec!["commit".to_string(), "-m".to_string(), message.to_string()];
+        if let Some(files) = files.filter(|files| !files.is_empty()) {
+            args.push("--".to_string());
+            args.extend(files.iter().cloned());
+        }
+        Ok(run_git_operation(&repo_root, args))
     }
 
     /// Produce a commit-message draft from staged changes, falling back to the
@@ -1109,7 +1116,7 @@ impl GitService {
             }
         }
         let commit = self
-            .commit(&target.project_path, &message)
+            .commit(&target.project_path, &message, None)
             .unwrap_or_else(|error| operation_failure("git commit", &error.to_string()));
         GitBatchProjectResultDto {
             project_path: target.project_path.clone(),

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
@@ -33,7 +33,8 @@ function defaultSidebarWidth() {
 
 export function GitChangesPanel({ projectPath, changes, loading = false, onRefresh, onClose }: Props) {
   const { t } = useTranslation();
-  const files = changes?.files ?? [];
+  const [localChanges, setLocalChanges] = useState<GitChanges | null>(changes);
+  const files = localChanges?.files ?? [];
   const originalSidebarWidth = useMemo(() => defaultSidebarWidth(), []);
   const minSidebarWidth = originalSidebarWidth / 2;
   const maxSidebarWidth = originalSidebarWidth;
@@ -43,6 +44,12 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
   const [draftSource, setDraftSource] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
+  const [selectedPathsByCategory, setSelectedPathsByCategory] = useState<Record<string, Set<string>>>(() => ({}));
+  const knownPathsByCategoryRef = useRef<Record<string, Set<string>>>({});
+
+  useEffect(() => {
+    setLocalChanges(changes);
+  }, [changes]);
 
   useEffect(() => {
     if (files.length === 0) {
@@ -58,14 +65,51 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
   }, [files, selectedPath]);
 
   const totals = {
-    additions: changes?.additions ?? 0,
-    deletions: changes?.deletions ?? 0,
+    additions: localChanges?.additions ?? 0,
+    deletions: localChanges?.deletions ?? 0,
   };
-  const stagedFiles = files.filter((file) => file.category === "staged");
+  const stagedFiles = useMemo(() => files.filter((file) => file.category === "staged"), [files]);
+  const filesSelectionKey = useMemo(
+    () => files.map((file) => `${file.category}:${file.path}`).join("\0"),
+    [files],
+  );
+  const selectedStagedFiles = useMemo(
+    () => stagedFiles.filter((file) => selectedPathsByCategory.staged?.has(file.path)),
+    [selectedPathsByCategory, stagedFiles],
+  );
+
+  useEffect(() => {
+    const nextKnown: Record<string, Set<string>> = {};
+    for (const file of files) {
+      nextKnown[file.category] ??= new Set();
+      nextKnown[file.category].add(file.path);
+    }
+    setSelectedPathsByCategory((current) => {
+      const next: Record<string, Set<string>> = {};
+      for (const [category, paths] of Object.entries(nextKnown)) {
+        const previousKnown = knownPathsByCategoryRef.current[category] ?? new Set<string>();
+        const previousSelected = current[category] ?? new Set<string>();
+        const selected = new Set([...previousSelected].filter((path) => paths.has(path)));
+        for (const path of paths) {
+          if (!previousKnown.has(path)) {
+            selected.add(path);
+          }
+        }
+        next[category] = selected;
+      }
+      return next;
+    });
+    knownPathsByCategoryRef.current = nextKnown;
+  }, [filesSelectionKey]);
 
   const runOperation = async (
     action: "stage" | "unstage" | "commit",
     fn: () => Promise<{ ok: boolean; stderr: string; stdout: string }>,
+    options?: {
+      optimisticFiles?: GitChangedFile[];
+      optimisticCategory?: "staged" | "unstaged" | "untracked";
+      backgroundRefresh?: boolean;
+    },
   ) => {
     setBusyAction(action);
     setOperationError(null);
@@ -75,7 +119,13 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
         setOperationError(result.stderr || result.stdout || t("git.operationFailed", { action: t(`git.actions.${action}`) }));
         return false;
       }
-      await onRefresh?.();
+      if (options?.optimisticFiles?.length && options.optimisticCategory) {
+        applyOptimisticCategory(options.optimisticFiles, options.optimisticCategory);
+      }
+      const refresh = onRefresh?.();
+      if (!options?.backgroundRefresh) {
+        await refresh;
+      }
       return true;
     } catch (error) {
       setOperationError(error instanceof Error ? error.message : String(error));
@@ -85,8 +135,78 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
     }
   };
 
-  const stageFile = (file: GitChangedFile) => runOperation("stage", () => gitStage(projectPath, [file.path]));
-  const unstageFile = (file: GitChangedFile) => runOperation("unstage", () => gitUnstage(projectPath, [file.path]));
+  const applyOptimisticCategory = (targets: GitChangedFile[], category: "staged" | "unstaged" | "untracked") => {
+    const targetPaths = new Set(targets.map((file) => file.path));
+    setLocalChanges((current) => {
+      if (!current) return current;
+      const nextFiles = current.files.map((file) =>
+        targetPaths.has(file.path) ? optimisticGitFile(file, category) : file,
+      );
+      const totals = nextFiles.reduce(
+        (sum, file) => ({
+          additions: sum.additions + file.additions,
+          deletions: sum.deletions + file.deletions,
+        }),
+        { additions: 0, deletions: 0 },
+      );
+      return { ...current, files: nextFiles, additions: totals.additions, deletions: totals.deletions };
+    });
+  };
+
+  const stageFile = (file: GitChangedFile) =>
+    runOperation("stage", () => gitStage(projectPath, [file.path]), {
+      optimisticFiles: [file],
+      optimisticCategory: "staged",
+      backgroundRefresh: true,
+    });
+  const unstageFile = (file: GitChangedFile) =>
+    runOperation("unstage", () => gitUnstage(projectPath, [file.path]), {
+      optimisticFiles: [file],
+      optimisticCategory: file.status[0] === "A" ? "untracked" : "unstaged",
+      backgroundRefresh: true,
+    });
+  const toggleFileSelection = (category: string, path: string, selected: boolean) => {
+    setSelectedPathsByCategory((current) => {
+      const next = { ...current };
+      const categorySelected = new Set(next[category] ?? []);
+      if (selected) {
+        categorySelected.add(path);
+      } else {
+        categorySelected.delete(path);
+      }
+      next[category] = categorySelected;
+      return next;
+    });
+  };
+  const toggleAllGroupFiles = (category: string, groupFiles: GitChangedFile[]) => {
+    const paths = groupFiles.map((file) => file.path);
+    setSelectedPathsByCategory((current) => ({
+      ...current,
+      [category]: (current[category]?.size ?? 0) === paths.length ? new Set() : new Set(paths),
+    }));
+  };
+  const stageSelectedFiles = async (targets: GitChangedFile[]) => {
+    if (targets.length === 0) {
+      setOperationError(t("git.selectFilesBeforeStage"));
+      return;
+    }
+    await runOperation("stage", () => gitStage(projectPath, targets.map((file) => file.path)), {
+      optimisticFiles: targets,
+      optimisticCategory: "staged",
+      backgroundRefresh: true,
+    });
+  };
+  const unstageSelectedFiles = async (targets: GitChangedFile[]) => {
+    if (targets.length === 0) {
+      setOperationError(t("git.selectStagedFilesBeforeUnstage"));
+      return;
+    }
+    await runOperation("unstage", () => gitUnstage(projectPath, targets.map((file) => file.path)), {
+      optimisticFiles: targets,
+      optimisticCategory: targets.some((file) => file.status[0] !== "A") ? "unstaged" : "untracked",
+      backgroundRefresh: true,
+    });
+  };
 
   const startSidebarResize = (event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -124,9 +244,20 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
       setOperationError(t("git.stageBeforeCommit"));
       return;
     }
-    const ok = window.confirm(t("git.commitConfirm", { count: stagedFiles.length }));
+    if (selectedStagedFiles.length === 0) {
+      setOperationError(t("git.selectStagedFilesBeforeCommit"));
+      return;
+    }
+    const selectedPaths = selectedStagedFiles.map((file) => file.path);
+    if (selectedPaths.length < stagedFiles.length && selectedStagedFiles.some(hasUnstagedPart)) {
+      setOperationError(t("git.selectedFileHasUnstagedChanges"));
+      return;
+    }
+    const ok = window.confirm(t("git.commitConfirm", { count: selectedPaths.length }));
     if (!ok) return;
-    const committed = await runOperation("commit", () => gitCommit(projectPath, message));
+    const committed = await runOperation("commit", () =>
+      gitCommit(projectPath, message, selectedPaths.length === stagedFiles.length ? undefined : selectedPaths),
+    );
     if (committed) setCommitMessage("");
   };
 
@@ -180,7 +311,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
       >
         <div className="flex min-h-0 min-w-0 flex-col border-r border-border-theme bg-gray-50/60">
           <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto py-2">
-            {loading ? (
+            {loading && files.length === 0 ? (
               <div className="px-4 py-3 text-[13px] text-text-secondary">{t("git.loadingChanges")}</div>
             ) : files.length === 0 ? (
               <div className="px-4 py-3 text-[13px] text-text-secondary">{t("git.workingTreeClean")}</div>
@@ -188,12 +319,46 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
               GROUPS.map((group) => {
                 const groupFiles = files.filter((file) => file.category === group.id);
                 if (groupFiles.length === 0) return null;
+                const selectedInGroup = groupFiles.filter((file) => selectedPathsByCategory[group.id]?.has(file.path));
+                const canBatchStage = group.id === "unstaged" || group.id === "untracked";
+                const canBatchUnstage = group.id === "staged";
                 return (
                   <div key={group.id} className="mb-2">
-                    <div className="flex items-center px-3 py-1 text-[11px] font-medium text-text-secondary">
-                      <FontAwesomeIcon icon={group.icon} className="mr-2 w-3" />
-                      {t(group.labelKey)}
-                      <span className="ml-1.5">{groupFiles.length}</span>
+                    <div className="flex items-center justify-between px-3 py-1 text-[11px] font-medium text-text-secondary">
+                      <div className="flex min-w-0 items-center">
+                        <FontAwesomeIcon icon={group.icon} className="mr-2 w-3" />
+                        {t(group.labelKey)}
+                        <span className="ml-1.5">{groupFiles.length}</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          className="rounded px-1.5 py-0.5 text-[10px] text-text-secondary hover:bg-white hover:text-text-base"
+                          onClick={() => toggleAllGroupFiles(group.id, groupFiles)}
+                        >
+                          {selectedInGroup.length === groupFiles.length ? t("git.deselectAll") : t("git.selectAll")}
+                        </button>
+                        {canBatchStage && (
+                          <button
+                            type="button"
+                            disabled={busyAction !== null || selectedInGroup.length === 0}
+                            className="rounded bg-white px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-blue-600 disabled:opacity-50"
+                            onClick={() => stageSelectedFiles(selectedInGroup)}
+                          >
+                            {t("git.stageSelected", { count: selectedInGroup.length })}
+                          </button>
+                        )}
+                        {canBatchUnstage && (
+                          <button
+                            type="button"
+                            disabled={busyAction !== null || selectedInGroup.length === 0}
+                            className="rounded bg-white px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-amber-700 disabled:opacity-50"
+                            onClick={() => unstageSelectedFiles(selectedInGroup)}
+                          >
+                            {t("git.unstageSelected", { count: selectedInGroup.length })}
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {groupFiles.map((file) => (
                       <ChangedFileRow
@@ -201,7 +366,11 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
                         file={file}
                         active={selected?.path === file.path}
                         busy={busyAction !== null}
+                        checked={isSelectableChange(file) ? (selectedPathsByCategory[file.category]?.has(file.path) ?? false) : undefined}
                         onClick={() => setSelectedPath(file.path)}
+                        onToggleChecked={
+                          isSelectableChange(file) ? (checked) => toggleFileSelection(file.category, file.path, checked) : undefined
+                        }
                         onStage={() => stageFile(file)}
                         onUnstage={() => unstageFile(file)}
                       />
@@ -243,11 +412,11 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
             )}
             <button
               type="button"
-              disabled={busyAction !== null || stagedFiles.length === 0 || !commitMessage.trim()}
+              disabled={busyAction !== null || selectedStagedFiles.length === 0 || !commitMessage.trim()}
               onClick={commitStaged}
               className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-md bg-text-base px-3 text-[12px] font-medium text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:bg-gray-300"
             >
-              {busyAction === "commit" ? t("git.committing") : t("git.commitStagedFiles", { count: stagedFiles.length })}
+              {busyAction === "commit" ? t("git.committing") : t("git.commitStagedFiles", { count: selectedStagedFiles.length })}
             </button>
           </div>
         </div>
@@ -283,14 +452,18 @@ function ChangedFileRow({
   file,
   active,
   busy,
+  checked,
   onClick,
+  onToggleChecked,
   onStage,
   onUnstage,
 }: {
   file: GitChangedFile;
   active: boolean;
   busy: boolean;
+  checked?: boolean;
   onClick: () => void;
+  onToggleChecked?: (checked: boolean) => void;
   onStage: () => void;
   onUnstage: () => void;
 }) {
@@ -305,6 +478,17 @@ function ChangedFileRow({
       }`}
       title={file.old_path ? `${file.old_path} -> ${file.path}` : file.path}
     >
+      {onToggleChecked && (
+        <input
+          type="checkbox"
+          checked={Boolean(checked)}
+          disabled={busy}
+          onChange={(event) => onToggleChecked(event.target.checked)}
+          onClick={(event) => event.stopPropagation()}
+          className="mr-2 h-3.5 w-3.5 flex-shrink-0 rounded border-border-theme accent-text-base"
+          aria-label={file.path}
+        />
+      )}
       <button type="button" className="flex min-w-0 flex-1 items-center text-left" onClick={onClick}>
         <span className={`mr-2 w-7 text-[11px] font-semibold ${statusColor(file.status)}`}>{file.status.trim() || "M"}</span>
         <span className="truncate">{file.path}</span>
@@ -346,4 +530,37 @@ function statusColor(status: string): string {
   if (status.includes("D")) return "text-red-500";
   if (status.includes("R")) return "text-purple-600";
   return "text-amber-600";
+}
+
+function hasUnstagedPart(file: GitChangedFile): boolean {
+  return file.status.length > 1 && file.status[1] !== " ";
+}
+
+function isSelectableChange(file: GitChangedFile): boolean {
+  return file.category === "staged" || file.category === "unstaged" || file.category === "untracked";
+}
+
+function optimisticGitFile(
+  file: GitChangedFile,
+  targetCategory: "staged" | "unstaged" | "untracked",
+): GitChangedFile {
+  if (targetCategory === "staged") {
+    return {
+      ...file,
+      category: "staged",
+      status: file.category === "untracked" ? "A " : `${file.status.trim()[0] || "M"} `,
+    };
+  }
+  if (targetCategory === "untracked" || file.status[0] === "A") {
+    return {
+      ...file,
+      category: "untracked",
+      status: "??",
+    };
+  }
+  return {
+    ...file,
+    category: "unstaged",
+    status: ` ${file.status.trim()[0] || "M"}`,
+  };
 }

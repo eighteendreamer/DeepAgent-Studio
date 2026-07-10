@@ -49,10 +49,10 @@ export function GitDiffViewer({ projectPath, file, onRefresh }: Props) {
   const [mode, setMode] = useState<DiffMode>("unified");
   const staged = file.category === "staged";
 
-  const loadDiff = useCallback(() => {
+  const loadDiff = useCallback((nextStaged = staged) => {
     setLoading(true);
     setError(null);
-    return gitDiff(projectPath, file.path, staged)
+    return gitDiff(projectPath, file.path, nextStaged)
       .then((next) => {
         setDiff(next);
       })
@@ -72,7 +72,7 @@ export function GitDiffViewer({ projectPath, file, onRefresh }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [loadDiff]);
+  }, [file.path, projectPath]);
 
   const applyHunk = async (hunkIndex: number, patch: string) => {
     if (hunkBusy !== null) return;

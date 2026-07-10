@@ -1310,9 +1310,9 @@ export async function gitApplyHunk(
   };
 }
 
-export async function gitCommit(path: string, message: string): Promise<GitOperationResult> {
+export async function gitCommit(path: string, message: string, files?: string[]): Promise<GitOperationResult> {
   const invoke = getInvoke();
-  if (invoke) return invoke<GitOperationResult>("git_commit", { path, message });
+  if (invoke) return invoke<GitOperationResult>("git_commit", { path, message, files: files?.length ? files : null });
   return { ok: true, command: "git commit", stdout: "mock commit", stderr: "" };
 }
 

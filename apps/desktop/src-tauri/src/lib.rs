@@ -2752,8 +2752,12 @@ fn git_commit(
     state: State<'_, AppState>,
     path: String,
     message: String,
+    files: Option<Vec<String>>,
 ) -> Result<GitOperationResultDto, String> {
-    state.git.commit(&path, &message).map_err(|e| e.to_string())
+    state
+        .git
+        .commit(&path, &message, files.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
