@@ -34,6 +34,7 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
   const { t } = useTranslation();
   const [downloadingUpdate, setDownloadingUpdate] = useState(false);
   const [updateDownloadPercent, setUpdateDownloadPercent] = useState<number | null>(null);
+  const [updateDownloadedMB, setUpdateDownloadedMB] = useState<number | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const MENUS = [
     { key: "file", label: t("titleBar.file") },
@@ -61,10 +62,14 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
     if (downloadingUpdate || !updateAvailable) return;
     setDownloadingUpdate(true);
     setUpdateDownloadPercent(0);
+    setUpdateDownloadedMB(0);
     const ready = await downloadUpdateForNextShutdown((progress) => {
       if (typeof progress.percent === "number") {
         setUpdateDownloadPercent(progress.percent);
       }
+      setUpdateDownloadedMB(
+        Math.round((progress.downloadedBytes / 1024 / 1024) * 10) / 10
+      );
     });
     setUpdateAvailable(!ready);
     if (ready) {
@@ -72,6 +77,7 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
       message.success(t("titleBar.updateReady"));
     } else {
       setUpdateDownloadPercent(null);
+      setUpdateDownloadedMB(null);
       message.error(t("titleBar.updateDownloadFailed"));
     }
     setDownloadingUpdate(false);
@@ -162,11 +168,15 @@ export function TitleBar({ onToggleSidebar, isSidebarOpen, canGoBack, canGoForwa
               />
               <span className="relative z-10">
                 {downloadingUpdate
-                  ? typeof updateDownloadPercent === "number"
+                  ? typeof updateDownloadPercent === "number" && updateDownloadPercent > 0
                     ? t("titleBar.downloadingUpdatePercent", {
                         percent: updateDownloadPercent,
                       })
-                    : t("titleBar.downloadingUpdate")
+                    : typeof updateDownloadedMB === "number" && updateDownloadedMB > 0
+                      ? t("titleBar.downloadingUpdateMB", {
+                          mb: updateDownloadedMB,
+                        })
+                      : t("titleBar.downloadingUpdate")
                   : t("titleBar.downloadUpdate")}
               </span>
             </button>

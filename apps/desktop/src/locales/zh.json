@@ -650,6 +650,7 @@
     "downloadUpdate": "下载更新",
     "downloadingUpdate": "下载中",
     "downloadingUpdatePercent": "下载中 {{percent}}%",
+    "downloadingUpdateMB": "{{mb}} MB",
     "updateReady": "更新已下载，关闭应用后将自动安装",
     "updateDownloadFailed": "下载更新失败，请稍后重试",
     "updateInstallFailed": "安装更新失败，请关闭应用后重试"
