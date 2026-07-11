@@ -1505,6 +1505,7 @@ impl ChatService {
         access: deepagent_builtins::FsAccess,
         env_mode: Option<&str>,
         connection_id: Option<&str>,
+        local_exec_mode: Option<crate::settings::LocalExecutionMode>,
     ) -> Result<(ToolRegistry, deepagent_builtins::TodoStore)> {
         use deepagent_builtins::{
             register_builtins, AskUserQuestionTool, BuiltinConfig, DeclineResponder, WorkspaceRoot,
@@ -1522,8 +1523,14 @@ impl ChatService {
         {
             config = config.with_command_executor(factory(conn_id.to_string()));
         } else if env_mode != Some("remote") {
-            if let Some(executor) = &self.local_command_executor {
-                config = config.with_command_executor(executor.clone());
+            let use_sandbox = match local_exec_mode {
+                Some(crate::settings::LocalExecutionMode::Direct) => false,
+                _ => true,
+            };
+            if use_sandbox {
+                if let Some(executor) = &self.local_command_executor {
+                    config = config.with_command_executor(executor.clone());
+                }
             }
         }
         let todo_store = register_builtins(&mut registry, config)?;
@@ -2005,8 +2012,10 @@ impl ChatService {
         if let Some(knowledge) = &self.knowledge {
             knowledge.activate_project(&root)?;
         }
-        let policy = self.settings.approval_policy()?;
-        let sandbox_mode = self.settings.sandbox_mode()?;
+        let profile = self.settings.effective_permission_profile()?;
+        let policy = profile.approval_policy;
+        let sandbox_mode = profile.sandbox_mode;
+        let local_execution_mode = profile.local_execution_mode;
         let access = Self::fs_access_for(sandbox_mode);
         let plan = continue_session
             .map(|id| self.plan_mode_for_session(id))
@@ -2063,6 +2072,7 @@ impl ChatService {
             deepagent_builtins::FsAccess::Full,
             effective_env_mode,
             connection_id,
+            Some(local_execution_mode),
         )?;
         let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
 
@@ -2133,7 +2143,7 @@ impl ChatService {
         // (Req 4.6 default behavior, now extended with snapshot inheritance).
         {
             use deepagent_builtins::TaskTool;
-            let sub_registry = Arc::new(self.build_registry(&root, access, None, None)?.0);
+            let sub_registry = Arc::new(self.build_registry(&root, access, None, None, Some(local_execution_mode))?.0);
             let parent_discovered_snapshot: std::collections::HashSet<String> =
                 tool_search_discovered
                     .lock()
@@ -3797,7 +3807,7 @@ mod tests {
 
         // The main registry must advertise both knowledge tools.
         let (registry, _todo_store) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None)
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None, None)
             .unwrap();
         assert!(
             registry
@@ -3814,7 +3824,7 @@ mod tests {
         let (_db, _settings, dir) = seeded().await;
         let chat = ChatService::new(_db, _settings, chat_transport(), dir.path());
         let (registry, _todo_store) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None)
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None, None)
             .unwrap();
         assert!(
             registry
@@ -3839,7 +3849,7 @@ mod tests {
             .unwrap();
         let chat = ChatService::new(_db, settings, chat_transport(), dir.path());
         let (registry, _todo_store) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None)
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None, None)
             .unwrap();
         assert!(
             registry.get("web_fetch").is_some(),
@@ -4785,7 +4795,7 @@ mod tests {
         // Build the same registry the run uses (built-ins shared between
         // main and sub-agents) and apply the skill-tool wiring helper.
         let (mut registry, _todo) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None)
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None, None)
             .unwrap();
         chat.maybe_register_skill_tool(&mut registry).unwrap();
 
@@ -4803,7 +4813,7 @@ mod tests {
         let chat = ChatService::new(db, settings, chat_transport(), dir.path());
 
         let (mut registry, _todo) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None)
+            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None, None)
             .unwrap();
         chat.maybe_register_skill_tool(&mut registry).unwrap();
 

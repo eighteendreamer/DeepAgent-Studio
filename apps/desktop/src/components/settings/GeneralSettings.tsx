@@ -6,6 +6,8 @@ import {
   getPermissionRules,
   setPermissionRules,
   setTerminalShell as persistTerminalShell,
+  getPermissionPresetVisibility,
+  setPermissionPresetVisibility,
 } from "../../api";
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
@@ -355,14 +357,31 @@ export function GeneralSettings() {
     setWorkMode(mode);
     localStorage.setItem("workMode", mode);
   };
-  const [permDefault, setPermDefault] = useState(() => localStorage.getItem("approvalMenu_default") !== "false");
-  const [permAuto, setPermAuto] = useState(() => localStorage.getItem("approvalMenu_auto") !== "false");
-  const [permFull, setPermFull] = useState(() => localStorage.getItem("approvalMenu_full") !== "false");
+  const [permDefault, setPermDefault] = useState(true);
+  const [permAuto, setPermAuto] = useState(true);
+  const [permFull, setPermFull] = useState(true);
+
+  useEffect(() => {
+    getPermissionPresetVisibility()
+      .then((v) => {
+        setPermDefault(v.default_enabled);
+        setPermAuto(v.auto_review_enabled);
+        setPermFull(v.full_access_enabled);
+      })
+      .catch(() => {});
+  }, []);
 
   const togglePerm = (type: "default" | "auto" | "full", val: boolean) => {
-    if (type === "default") { setPermDefault(val); localStorage.setItem("approvalMenu_default", String(val)); }
-    if (type === "auto") { setPermAuto(val); localStorage.setItem("approvalMenu_auto", String(val)); }
-    if (type === "full") { setPermFull(val); localStorage.setItem("approvalMenu_full", String(val)); }
+    const next = {
+      default_enabled: type === "default" ? val : permDefault,
+      auto_review_enabled: type === "auto" ? val : permAuto,
+      full_access_enabled: type === "full" ? val : permFull,
+    };
+    if (!next.default_enabled && !next.auto_review_enabled && !next.full_access_enabled) return;
+    if (type === "default") setPermDefault(val);
+    if (type === "auto") setPermAuto(val);
+    if (type === "full") setPermFull(val);
+    setPermissionPresetVisibility(next).catch(() => {});
     window.dispatchEvent(new Event("approvalMenuChanged"));
   };
 

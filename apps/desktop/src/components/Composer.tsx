@@ -5,11 +5,12 @@ import {
   SETTINGS_CHANGED_EVENT,
   attachmentIngest,
   attachmentRemove,
-  getApprovalPolicy,
+  getActivePermissionPreset,
   getCommands,
+  getPermissionPresetVisibility,
   getSettings,
   listSkills,
-  setApprovalPolicy,
+  setActivePermissionPreset,
   setChatModel,
   setThinkingDepth,
 } from "../api";
@@ -36,14 +37,14 @@ function rewriteToSkillRequest(skillName: string, args: string): string {
   return `Please use the ${skillName} skill: ${trimmed}`;
 }
 
-/** Map composer dropdown option id ↔ backend approval-policy label. */
-const OPTION_TO_POLICY: Record<string, string> = {
-  default: "always_ask",
+/** Map composer dropdown option id ↔ backend permission preset label. */
+const OPTION_TO_PRESET: Record<string, string> = {
+  default: "default",
   auto: "auto_review",
   full: "full_access",
 };
-const POLICY_TO_OPTION: Record<string, string> = {
-  always_ask: "default",
+const PRESET_TO_OPTION: Record<string, string> = {
+  default: "default",
   auto_review: "auto",
   full_access: "full",
 };
@@ -205,13 +206,13 @@ export function Composer({
   const [visibleOptions, setVisibleOptions] = useState(ALL_APPROVAL_OPTIONS);
   const [selectedApproval, setSelectedApproval] = useState(ALL_APPROVAL_OPTIONS[0]);
 
-  // Load the current backend approval policy and reflect it in the dropdown.
+  // Load the current backend permission preset and reflethe dropdown.
   useEffect(() => {
     let cancelled = false;
-    getApprovalPolicy()
-      .then((policy) => {
+    getActivePermissionPreset()
+      .then((preset) => {
         if (cancelled) return;
-        const optId = POLICY_TO_OPTION[policy] ?? "default";
+        const optId = PRESET_TO_OPTION[preset] ?? "default";
         const opt = ALL_APPROVAL_OPTIONS.find((o) => o.id === optId);
         if (opt) setSelectedApproval(opt);
       })
@@ -224,37 +225,38 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Apply the chosen permission level to the backend, then reflect it locally.
+  // Apply the chosen permission preset to the backend, then reflect it locally.
   const chooseApproval = async (opt: (typeof ALL_APPROVAL_OPTIONS)[number]) => {
     setIsApprovalDropdownOpen(false);
     const prev = selectedApproval;
     setSelectedApproval(opt); // optimistic
     try {
-      await setApprovalPolicy(OPTION_TO_POLICY[opt.id] ?? "always_ask");
+      await setActivePermissionPreset((OPTION_TO_PRESET[opt.id] ?? "default") as any);
     } catch (e) {
       setSelectedApproval(prev); // revert on failure
       message.error(t("composer.approvalSwitchFailed"));
-      console.error("set_approval_policy failed:", e);
+      console.error("set_active_permission_preset failed:", e);
     }
   };
 
   useEffect(() => {
-    const updateVisibleOptions = () => {
-      const showDefault = localStorage.getItem("approvalMenu_default") !== "false";
-      const showAuto = localStorage.getItem("approvalMenu_auto") !== "false";
-      const showFull = localStorage.getItem("approvalMenu_full") !== "false";
-      
-      const newOptions: typeof ALL_APPROVAL_OPTIONS[number][] = [];
-      if (showDefault) newOptions.push(ALL_APPROVAL_OPTIONS[0]);
-      if (showAuto) newOptions.push(ALL_APPROVAL_OPTIONS[1]);
-      if (showFull) newOptions.push(ALL_APPROVAL_OPTIONS[2]);
-      
-      setVisibleOptions(newOptions);
-      
-      setSelectedApproval((prev) => {
-        if (newOptions.find(o => o.id === prev.id)) return prev;
-        return newOptions.length > 0 ? newOptions[0] : prev;
-      });
+    const updateVisibleOptions = async () => {
+      try {
+        const vis = await getPermissionPresetVisibility();
+        const newOptions: typeof ALL_APPROVAL_OPTIONS[number][] = [];
+        if (vis.default_enabled) newOptions.push(ALL_APPROVAL_OPTIONS[0]);
+        if (vis.auto_review_enabled) newOptions.push(ALL_APPROVAL_OPTIONS[1]);
+        if (vis.full_access_enabled) newOptions.push(ALL_APPROVAL_OPTIONS[2]);
+
+        setVisibleOptions(newOptions);
+
+        setSelectedApproval((prev) => {
+          if (newOptions.find((o) => o.id === prev.id)) return prev;
+          return newOptions.length > 0 ? newOptions[0] : prev;
+        });
+      } catch {
+        /* fallback: show all */
+      }
     };
 
     updateVisibleOptions();

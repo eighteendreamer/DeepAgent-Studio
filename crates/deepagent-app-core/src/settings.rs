@@ -71,6 +71,111 @@ impl ApprovalPolicy {
     }
 }
 
+/// The user-facing permission preset that governs the full runtime policy.
+///
+/// This is what the Composer dropdown selects. Each preset maps to a complete
+/// [`EffectivePermissionProfile`] (approval policy + fs access + network
+/// policy + executor mode) at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionPreset {
+    /// 默认权限: ask for external file edits and internet access.
+    #[default]
+    Default,
+    /// 自动审查: only prompt on detected-risk operations; still sandboxed.
+    AutoReview,
+    /// 完全访问权限: unrestricted file/network/execution, no Sandboxie.
+    FullAccess,
+}
+
+impl PermissionPreset {
+    pub const fn label(&self) -> &'static str {
+        match self {
+            PermissionPreset::Default => "default",
+            PermissionPreset::AutoReview => "auto_review",
+            PermissionPreset::FullAccess => "full_access",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "default" => Some(Self::Default),
+            "auto_review" => Some(Self::AutoReview),
+            "full_access" => Some(Self::FullAccess),
+            _ => None,
+        }
+    }
+}
+
+/// Controls which permission options are visible in the Composer dropdown.
+/// The GeneralSettings toggles write this; Composer reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionPresetVisibility {
+    #[serde(default = "default_true")]
+    pub default_enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_review_enabled: bool,
+    #[serde(default = "default_true")]
+    pub full_access_enabled: bool,
+}
+
+impl Default for PermissionPresetVisibility {
+    fn default() -> Self {
+        Self {
+            default_enabled: true,
+            auto_review_enabled: true,
+            full_access_enabled: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// How local shell commands are executed at the OS level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalExecutionMode {
+    /// Commands run inside Sandboxie-Plus.
+    SandboxiePreferred,
+    /// Commands run directly on the system (no sandbox).
+    Direct,
+}
+
+/// The effective runtime policy derived from a [`PermissionPreset`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectivePermissionProfile {
+    pub approval_policy: ApprovalPolicy,
+    pub sandbox_mode: SandboxMode,
+    pub local_execution_mode: LocalExecutionMode,
+    pub network_always_ask: bool,
+}
+
+impl PermissionPreset {
+    pub fn to_effective_profile(&self) -> EffectivePermissionProfile {
+        match self {
+            PermissionPreset::Default => EffectivePermissionProfile {
+                approval_policy: ApprovalPolicy::AlwaysAsk,
+                sandbox_mode: SandboxMode::WorkspaceWrite,
+                local_execution_mode: LocalExecutionMode::SandboxiePreferred,
+                network_always_ask: true,
+            },
+            PermissionPreset::AutoReview => EffectivePermissionProfile {
+                approval_policy: ApprovalPolicy::AutoReview,
+                sandbox_mode: SandboxMode::FullAccess,
+                local_execution_mode: LocalExecutionMode::SandboxiePreferred,
+                network_always_ask: false,
+            },
+            PermissionPreset::FullAccess => EffectivePermissionProfile {
+                approval_policy: ApprovalPolicy::FullAccess,
+                sandbox_mode: SandboxMode::FullAccess,
+                local_execution_mode: LocalExecutionMode::Direct,
+                network_always_ask: false,
+            },
+        }
+    }
+}
+
 /// Maximum filesystem boundary for tools. This is separate from
 /// [`ApprovalPolicy`]: sandbox mode decides what the system may touch at all,
 /// while approval policy decides whether risky calls need a human decision.
@@ -449,6 +554,12 @@ pub struct AppSettings {
     /// default) means "use the currently selected chat model".
     #[serde(default)]
     pub skill_install_ai_review_model: Option<String>,
+    /// The user-selected permission preset (governs the full runtime policy).
+    #[serde(default)]
+    pub active_permission_preset: PermissionPreset,
+    /// Which permission presets are visible in the Composer dropdown.
+    #[serde(default)]
+    pub permission_preset_visibility: PermissionPresetVisibility,
 }
 
 fn default_skill_catalog_enabled() -> bool {
@@ -633,6 +744,14 @@ impl SettingsService {
             skill_install_ai_review_model: prior
                 .as_ref()
                 .and_then(|s| s.skill_install_ai_review_model.clone()),
+            active_permission_preset: prior
+                .as_ref()
+                .map(|s| s.active_permission_preset)
+                .unwrap_or_default(),
+            permission_preset_visibility: prior
+                .as_ref()
+                .map(|s| s.permission_preset_visibility.clone())
+                .unwrap_or_default(),
         };
         self.save(&settings)?;
 
@@ -943,6 +1062,84 @@ impl SettingsService {
             .filter(|m| !m.is_empty());
         self.save(&settings)?;
         Ok(())
+    }
+
+    // ---- Permission Preset (Sandboxie integration) --------------------------
+
+    /// The current active permission preset (default `Default`).
+    pub fn active_permission_preset(&self) -> Result<PermissionPreset> {
+        Ok(self
+            .load()?
+            .map(|s| s.active_permission_preset)
+            .unwrap_or_default())
+    }
+
+    /// Set the active permission preset, persisting it. Also syncs the legacy
+    /// `approval_policy` and `sandbox_mode` fields for backward compatibility.
+    pub fn set_active_permission_preset(&self, preset: PermissionPreset) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.active_permission_preset = preset;
+        let profile = preset.to_effective_profile();
+        settings.approval_policy = profile.approval_policy;
+        settings.sandbox_mode = profile.sandbox_mode;
+        self.save(&settings)?;
+        Ok(())
+    }
+
+    /// Which permission presets are visible in the Composer dropdown.
+    pub fn permission_preset_visibility(&self) -> Result<PermissionPresetVisibility> {
+        Ok(self
+            .load()?
+            .map(|s| s.permission_preset_visibility)
+            .unwrap_or_default())
+    }
+
+    /// Set which permission presets are visible. At least one must remain
+    /// enabled; returns an error if all three are disabled.
+    pub fn set_permission_preset_visibility(
+        &self,
+        visibility: PermissionPresetVisibility,
+    ) -> Result<()> {
+        if !visibility.default_enabled
+            && !visibility.auto_review_enabled
+            && !visibility.full_access_enabled
+        {
+            return Err(CoreError::invalid(
+                "at least one permission preset must remain visible",
+            ));
+        }
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        // If the current preset is being hidden, fall back to the first visible one.
+        let current_hidden = match settings.active_permission_preset {
+            PermissionPreset::Default => !visibility.default_enabled,
+            PermissionPreset::AutoReview => !visibility.auto_review_enabled,
+            PermissionPreset::FullAccess => !visibility.full_access_enabled,
+        };
+        if current_hidden {
+            let fallback = if visibility.default_enabled {
+                PermissionPreset::Default
+            } else if visibility.auto_review_enabled {
+                PermissionPreset::AutoReview
+            } else {
+                PermissionPreset::FullAccess
+            };
+            settings.active_permission_preset = fallback;
+            let profile = fallback.to_effective_profile();
+            settings.approval_policy = profile.approval_policy;
+            settings.sandbox_mode = profile.sandbox_mode;
+        }
+        settings.permission_preset_visibility = visibility;
+        self.save(&settings)?;
+        Ok(())
+    }
+
+    /// Derive the full effective runtime profile from the current preset.
+    pub fn effective_permission_profile(&self) -> Result<EffectivePermissionProfile> {
+        Ok(self.active_permission_preset()?.to_effective_profile())
     }
 
     /// Set the Thinking Mode depth, persisting it. Returns the redacted view.
@@ -1521,6 +1718,8 @@ mod tests {
             skill_catalog_char_budget: default_skill_catalog_char_budget(),
             skill_install_ai_review_enabled: default_skill_install_ai_review_enabled(),
             skill_install_ai_review_model: None,
+            active_permission_preset: PermissionPreset::default(),
+            permission_preset_visibility: PermissionPresetVisibility::default(),
         };
         svc.save(&settings).unwrap();
 
