@@ -273,7 +273,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
             <div className="flex flex-1 flex-col items-center justify-center min-w-0 px-8">
               <div className="flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full">
-        <h1 className="text-[28px] font-medium text-text-base mb-8">
+        <h1 className="text-[28px] font-medium text-text-base mb-8 flex-shrink-0 line-clamp-2">
           {projectName ? t("startView.greeting", { projectName }) : t("startView.greetingNoProject")}
         </h1>
 
