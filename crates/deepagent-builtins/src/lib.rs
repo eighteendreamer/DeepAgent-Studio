@@ -256,11 +256,19 @@ pub fn register_guard_hooks(
     // Full access (the root's FsAccess::Full mode) lets the bash guard pass
     // every command without prompting; otherwise the allow-list + danger
     // classifier apply (dangerous/unlisted commands ask for approval).
-    let full_access = root.access() == fs_guard::FsAccess::Full;
-    hooks.register(HookPoint::BeforeToolUse, Arc::new(PathGuardHook::new(root)));
+    let access = root.access();
+    let full_access = access == fs_guard::FsAccess::Full;
     hooks.register(
         HookPoint::BeforeToolUse,
-        Arc::new(BashGuardHook::new(bash_allow).with_full_access(full_access)),
+        Arc::new(PathGuardHook::new(root)),
+    );
+    hooks.register(
+        HookPoint::BeforeToolUse,
+        Arc::new(
+            BashGuardHook::new(bash_allow)
+                .with_full_access(full_access)
+                .with_sandbox_mode(access),
+        ),
     );
 }
 

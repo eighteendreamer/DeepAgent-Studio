@@ -1137,9 +1137,24 @@ impl SettingsService {
         Ok(())
     }
 
-    /// Derive the full effective runtime profile from the current preset.
+    /// Derive the full effective runtime profile from the persisted fields.
+    /// Both the preset setter and the legacy setters (set_approval_policy,
+    /// set_sandbox_mode) write to the same underlying fields, so reading them
+    /// directly is always authoritative.
     pub fn effective_permission_profile(&self) -> Result<EffectivePermissionProfile> {
-        Ok(self.active_permission_preset()?.to_effective_profile())
+        let policy = self.approval_policy()?;
+        let sandbox = self.sandbox_mode()?;
+        let local_execution_mode = match sandbox {
+            SandboxMode::FullAccess => LocalExecutionMode::Direct,
+            _ => LocalExecutionMode::SandboxiePreferred,
+        };
+        let network_always_ask = matches!(policy, ApprovalPolicy::AlwaysAsk);
+        Ok(EffectivePermissionProfile {
+            approval_policy: policy,
+            sandbox_mode: sandbox,
+            local_execution_mode,
+            network_always_ask,
+        })
     }
 
     /// Set the Thinking Mode depth, persisting it. Returns the redacted view.

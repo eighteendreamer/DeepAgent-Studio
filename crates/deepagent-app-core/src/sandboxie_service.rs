@@ -6,12 +6,15 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use deepagent_builtins::bash_tool::{CommandExecutor, CommandOutcome, SystemExecutor};
 use deepagent_core::error::{CoreError, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::settings::SandboxMode;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -117,6 +120,23 @@ impl SandboxieService {
         &self,
         project_root: impl AsRef<Path>,
     ) -> Result<SandboxieStatusDto> {
+        self.initialize_for_project_with_mode(project_root, SandboxMode::WorkspaceWrite)
+    }
+
+    /// Create/update the app sandbox with mode-aware file access configuration.
+    ///
+    /// - **ReadOnly**: project directory is added to `ClosedFilePath` (denies
+    ///   writes at the kernel level); reads still work because Sandboxie's
+    ///   default allows reading.
+    /// - **WorkspaceWrite**: project directory is added to `OpenFilePath`
+    ///   (allows reads and writes within the project).
+    /// - **FullAccess**: should not reach here (caller uses `SystemExecutor`
+    ///   directly), but if it does, behaves like WorkspaceWrite.
+    pub fn initialize_for_project_with_mode(
+        &self,
+        project_root: impl AsRef<Path>,
+        mode: SandboxMode,
+    ) -> Result<SandboxieStatusDto> {
         let Some(tools) = self.ensure_tools_available()? else {
             return Ok(self.status());
         };
@@ -127,15 +147,30 @@ impl SandboxieService {
         self.run_sbie_ini(&tools, ["set", self.box_name.as_str(), "AutoRecover", "n"])?;
         if !project_root.as_os_str().is_empty() {
             let project = display_path(project_root);
-            self.run_sbie_ini(
-                &tools,
-                [
-                    "append",
-                    self.box_name.as_str(),
-                    "OpenFilePath",
-                    project.as_str(),
-                ],
-            )?;
+            match mode {
+                SandboxMode::ReadOnly => {
+                    self.run_sbie_ini(
+                        &tools,
+                        [
+                            "append",
+                            self.box_name.as_str(),
+                            "ClosedFilePath",
+                            project.as_str(),
+                        ],
+                    )?;
+                }
+                SandboxMode::WorkspaceWrite | SandboxMode::FullAccess => {
+                    self.run_sbie_ini(
+                        &tools,
+                        [
+                            "append",
+                            self.box_name.as_str(),
+                            "OpenFilePath",
+                            project.as_str(),
+                        ],
+                    )?;
+                }
+            }
         }
 
         Ok(SandboxieStatusDto {
@@ -223,13 +258,13 @@ impl SandboxieService {
         )))
     }
 
-    fn run_command_in_box(&self, command: &str, cwd: &str) -> Result<CommandOutcome> {
+    fn run_command_in_box(&self, command: &str, cwd: &str, mode: SandboxMode) -> Result<CommandOutcome> {
         let Some(tools) = self.ensure_tools_available()? else {
             return Err(CoreError::not_found(
                 "Sandboxie-Plus Start.exe was not found",
             ));
         };
-        let _ = self.initialize_for_project(cwd);
+        let _ = self.initialize_for_project_with_mode(cwd, mode);
 
         let box_arg = format!("/box:{}", self.box_name);
         let output = std::thread::scope(|_| {
@@ -303,6 +338,9 @@ impl SandboxieService {
 pub struct SandboxieExecutor {
     service: Arc<SandboxieService>,
     fallback: SystemExecutor,
+    /// Atomic sandbox mode: 0=ReadOnly, 1=WorkspaceWrite, 2=FullAccess.
+    /// Updated per-run so concurrent sessions use the correct confinement.
+    sandbox_mode: Arc<AtomicU8>,
 }
 
 impl SandboxieExecutor {
@@ -310,6 +348,31 @@ impl SandboxieExecutor {
         Self {
             service,
             fallback: SystemExecutor,
+            sandbox_mode: Arc::new(AtomicU8::new(1)),
+        }
+    }
+
+    /// Set the sandbox mode for OS-level file access configuration (builder).
+    pub fn with_sandbox_mode(self, mode: SandboxMode) -> Self {
+        self.set_sandbox_mode(mode);
+        self
+    }
+
+    /// Dynamically update the sandbox mode (called per-chat-run).
+    pub fn set_sandbox_mode(&self, mode: SandboxMode) {
+        let val = match mode {
+            SandboxMode::ReadOnly => 0,
+            SandboxMode::WorkspaceWrite => 1,
+            SandboxMode::FullAccess => 2,
+        };
+        self.sandbox_mode.store(val, Ordering::Relaxed);
+    }
+
+    fn current_mode(&self) -> SandboxMode {
+        match self.sandbox_mode.load(Ordering::Relaxed) {
+            0 => SandboxMode::ReadOnly,
+            2 => SandboxMode::FullAccess,
+            _ => SandboxMode::WorkspaceWrite,
         }
     }
 }
@@ -322,8 +385,9 @@ impl CommandExecutor for SandboxieExecutor {
         let service = self.service.clone();
         let sandbox_command = command.clone();
         let sandbox_cwd = cwd.clone();
+        let mode = self.current_mode();
         match tokio::task::spawn_blocking(move || {
-            service.run_command_in_box(&sandbox_command, &sandbox_cwd)
+            service.run_command_in_box(&sandbox_command, &sandbox_cwd, mode)
         })
         .await
         {

@@ -25,6 +25,7 @@ pub mod git_service;
 pub mod knowledge_service;
 pub mod mcp_service;
 pub mod office_service;
+pub mod permissions_prompt;
 pub mod plan_mode_reminder;
 pub mod project_map_service;
 pub mod project_service;

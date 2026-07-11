@@ -3639,7 +3639,8 @@ pub fn run() {
                             connection_id,
                         })
                     })
-                    .with_local_command_executor(sandboxie_executor)
+                    .with_local_command_executor(sandboxie_executor.clone())
+                    .with_sandboxie_executor(sandboxie_executor)
                     .with_remote_context_factory(move |connection_id: String| {
                         build_remote_context(ssh_context.clone(), connection_id)
                     })

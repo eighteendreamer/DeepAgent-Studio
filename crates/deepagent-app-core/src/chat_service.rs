@@ -472,6 +472,8 @@ pub struct ChatService {
     /// Optional executor for local command execution. The desktop app uses this
     /// to wrap local shell/git commands in Sandboxie-Plus when available.
     local_command_executor: Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>,
+    /// Typed reference to the sandboxie executor for per-run mode updates.
+    sandboxie_executor: Option<Arc<crate::sandboxie_service::SandboxieExecutor>>,
     /// Optional remote-context factory for remote (SSH) sessions. When set,
     /// remote runs can inject a concise SSH snapshot so the model reasons from
     /// the remote host's actual state rather than the local workspace alone.
@@ -672,6 +674,7 @@ impl ChatService {
             invoked_skills: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             executor_factory: None,
             local_command_executor: None,
+            sandboxie_executor: None,
             remote_context_factory: None,
             remote_ops_factory: None,
         }
@@ -814,6 +817,15 @@ impl ChatService {
         executor: Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>,
     ) -> Self {
         self.local_command_executor = Some(executor);
+        self
+    }
+
+    /// Bind a typed Sandboxie executor for per-run mode updates.
+    pub fn with_sandboxie_executor(
+        mut self,
+        executor: Arc<crate::sandboxie_service::SandboxieExecutor>,
+    ) -> Self {
+        self.sandboxie_executor = Some(executor);
         self
     }
 
@@ -2017,6 +2029,10 @@ impl ChatService {
         let sandbox_mode = profile.sandbox_mode;
         let local_execution_mode = profile.local_execution_mode;
         let access = Self::fs_access_for(sandbox_mode);
+        // Update the Sandboxie executor's OS-level confinement for this run.
+        if let Some(sbox) = &self.sandboxie_executor {
+            sbox.set_sandbox_mode(sandbox_mode);
+        }
         let plan = continue_session
             .map(|id| self.plan_mode_for_session(id))
             .unwrap_or_default();
@@ -2357,6 +2373,14 @@ impl ChatService {
         if let Some(git) = deepagent_workspace::detect_git_context(&root) {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&git.to_prompt_block());
+        }
+        // Sandbox permissions injection: tell the model its current sandbox
+        // constraints so it doesn't attempt blocked operations or retry
+        // indefinitely after a denial.
+        {
+            let perm_block = crate::permissions_prompt::sandbox_instructions(sandbox_mode);
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&perm_block);
         }
         // Tool-search announcement (Phase 3B). Lists the deferred tool names
         // the model can `tool_search` for. Lives in the dynamic section so

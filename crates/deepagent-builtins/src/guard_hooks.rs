@@ -20,7 +20,7 @@ use deepagent_core::error::Result;
 use deepagent_hooks::{DecisionSource, Hook, HookContext, HookData, HookOutcome};
 
 use crate::bash_tool::{is_allowed, is_dangerous};
-use crate::fs_guard::WorkspaceRoot;
+use crate::fs_guard::{FsAccess, WorkspaceRoot};
 
 /// Argument keys that carry a filesystem path across the built-in tools.
 const PATH_KEYS: &[&str] = &["path", "file_path", "filename"];
@@ -97,19 +97,61 @@ impl Hook for PathGuardHook {
     }
 }
 
+/// Patterns that indicate a shell command will write to the filesystem via
+/// redirections or pipe-to-file idioms. Used by `BashGuardHook` to deny
+/// write-through-bash in ReadOnly/Workspace sandbox modes.
+const WRITE_REDIRECT_PATTERNS: &[&str] = &[
+    " > ", " >> ", ">|", " tee ", "<<EOF", "<<'EOF'", "<<\"EOF\"",
+];
+
+/// Detect whether a shell command contains file-write redirections or idioms.
+fn has_write_redirect(command: &str) -> bool {
+    // Check known patterns
+    if WRITE_REDIRECT_PATTERNS
+        .iter()
+        .any(|p| command.contains(p))
+    {
+        return true;
+    }
+    // Also catch `>file` without leading space (e.g. `echo foo >out.txt`)
+    // Look for `>` that isn't `>>` and isn't preceded by a digit (fd redirect like 2>&1)
+    let bytes = command.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'>' {
+            // Skip `>>` (already covered above as " >> ")
+            if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+                continue;
+            }
+            // Skip fd redirects like `2>` or `2>&1`
+            if i > 0 && bytes[i - 1].is_ascii_digit() {
+                continue;
+            }
+            // Skip `>&` (fd duplication)
+            if i + 1 < bytes.len() && bytes[i + 1] == b'&' {
+                continue;
+            }
+            return true;
+        }
+    }
+    false
+}
+
 /// Guards `bash` tool calls: denies commands outside the allow-list and asks
 /// for approval on dangerous ones. Registered at [`HookPoint::BeforeToolUse`].
 ///
 /// Policy-aware: under **full access** every command is allowed without prompt
-/// (the user has opted into unrestricted computer operation). Otherwise the
-/// allow-list + danger classifier apply: dangerous fragments ask for approval,
-/// non-allow-listed commands ask too (so the user can approve a one-off rather
+/// (the user has opted into unrestricted computer operation). Otherwmands ask too (so the user can approve a one-off rather
 /// than being hard-denied — "computer operations need manual approval").
+///
+/// Sandbox-aware: in **ReadOnly** mode, commands containing file-write
+/// redirections (`>`, `>>`, `tee`, etc.) are denied outright so the model
+/// cannot bypass the file-write restriction through shell idioms.
 ///
 /// [`HookPoint::BeforeToolUse`]: deepagent_hooks::HookPoint::BeforeToolUse
 pub struct BashGuardHook {
     allow: Vec<String>,
     full_access: bool,
+    sandbox_mode: FsAccess,
 }
 
 impl BashGuardHook {
@@ -118,12 +160,19 @@ impl BashGuardHook {
         Self {
             allow: allow.into_iter().collect(),
             full_access: false,
+            sandbox_mode: FsAccess::Workspace,
         }
     }
 
     /// Allow every command without prompting (builder style; for 完全访问).
     pub fn with_full_access(mut self, full_access: bool) -> Self {
         self.full_access = full_access;
+        self
+    }
+
+    /// Set the sandbox mode so write-redirect detection can enforce it.
+    pub fn with_sandbox_mode(mut self, mode: FsAccess) -> Self {
+        self.sandbox_mode = mode;
         self
     }
 
@@ -155,6 +204,36 @@ impl Hook for BashGuardHook {
             let Some(command) = arguments.get("command").and_then(|v| v.as_str()) else {
                 return Ok(HookOutcome::Continue);
             };
+
+            // Escalation protocol: if the model requests `require_escalated`,
+            // surface the justification to the user for approval rather than
+            // applying the normal sandbox deny/ask logic.
+            let escalated = arguments
+                .get("sandbox_permissions")
+                .and_then(|v| v.as_str())
+                == Some("require_escalated");
+            if escalated {
+                let justification = arguments
+                    .get("justification")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("This command needs elevated permissions to run outside the sandbox.");
+                return Ok(HookOutcome::ask_from(
+                    format!("[Sandbox escalation] {justification}\nCommand: {command}"),
+                    DecisionSource::Policy,
+                ));
+            }
+
+            // Sandbox write-redirect check: in ReadOnly mode, deny commands
+            // that contain file-write shell idioms (>, >>, tee, etc.) so the
+            // model cannot bypass the sandbox through bash.
+            if self.sandbox_mode == FsAccess::ReadOnly && has_write_redirect(command) {
+                return Ok(HookOutcome::deny_from(
+                    format!(
+                        "command contains file-write operations which are blocked in read-only sandbox mode: '{command}'"
+                    ),
+                    DecisionSource::Policy,
+                ));
+            }
 
             // Dangerous fragments require human approval (ask), classified by
             // the danger detector.
@@ -337,5 +416,132 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out, HookOutcome::Continue);
+    }
+
+    #[tokio::test]
+    async fn bash_guard_readonly_denies_write_redirect() {
+        use crate::fs_guard::FsAccess;
+        let guard = BashGuardHook::new(["echo".to_string()])
+            .with_sandbox_mode(FsAccess::ReadOnly);
+        // `echo > file` should be denied
+        let out = guard
+            .run(&tool_ctx(
+                "bash",
+                serde_json::json!({"command": "echo hello > output.txt"}),
+            ))
+            .await
+            .unwrap();
+        assert!(out.is_deny());
+    }
+
+    #[tokio::test]
+    async fn bash_guard_readonly_denies_append_redirect() {
+        use crate::fs_guard::FsAccess;
+        let guard = BashGuardHook::new(["echo".to_string()])
+            .with_sandbox_mode(FsAccess::ReadOnly);
+        let out = guard
+            .run(&tool_ctx(
+                "bash",
+                serde_json::json!({"command": "echo hello >> output.txt"}),
+            ))
+            .await
+            .unwrap();
+        assert!(out.is_deny());
+    }
+
+    #[tokio::test]
+    async fn bash_guard_readonly_denies_tee() {
+        use crate::fs_guard::FsAccess;
+        let guard = BashGuardHook::new(["cat".to_string()])
+            .with_sandbox_mode(FsAccess::ReadOnly);
+        let out = guard
+            .run(&tool_ctx(
+                "bash",
+                serde_json::json!({"command": "cat file | tee output.txt"}),
+            ))
+            .await
+            .unwrap();
+        assert!(out.is_deny());
+    }
+
+    #[tokio::test]
+    async fn bash_guard_readonly_allows_safe_command() {
+        use crate::fs_guard::FsAccess;
+        let guard = BashGuardHook::new(["git".to_string(), "cargo".to_string()])
+            .with_sandbox_mode(FsAccess::ReadOnly);
+        // `git status` has no write redirects → allowed
+        let out = guard
+            .run(&tool_ctx(
+                "bash",
+                serde_json::json!({"command": "cargo test"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out, HookOutcome::Continue);
+    }
+
+    #[tokio::test]
+    async fn bash_guard_workspace_mode_allows_write_redirect() {
+        use crate::fs_guard::FsAccess;
+        let guard = BashGuardHook::new(["echo".to_string()])
+            .with_sandbox_mode(FsAccess::Workspace);
+        // In Workspace mode, write redirects are allowed (Sandboxie handles confinement)
+        let out = guard
+            .run(&tool_ctx(
+                "bash",
+                serde_json::json!({"command": "echo hello > output.txt"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out, HookOutcome::Continue);
+    }
+
+    #[tokio::test]
+    async fn has_write_redirect_detects_patterns() {
+        assert!(super::has_write_redirect("echo foo > bar.txt"));
+        assert!(super::has_write_redirect("echo foo >> bar.txt"));
+        assert!(super::has_write_redirect("cat x | tee y.txt"));
+        assert!(super::has_write_redirect("cat <<EOF\nhello\nEOF"));
+        assert!(super::has_write_redirect("echo x >out.txt"));
+        // Should NOT trigger on stderr redirect or fd dup
+        assert!(!super::has_write_redirect("cmd 2>&1"));
+        assert!(!super::has_write_redirect("git status"));
+        assert!(!super::has_write_redirect("cargo test"));
+    }
+
+    #[tokio::test]
+    async fn bash_guard_escalation_asks_user() {
+        use crate::fs_guard::FsAccess;
+        let guard = BashGuardHook::new(["echo".to_string()])
+            .with_sandbox_mode(FsAccess::ReadOnly);
+        let out = guard
+            .run(&tool_ctx(
+                "bash",
+                serde_json::json!({
+                    "command": "echo hello > output.txt",
+                    "sandbox_permissions": "require_escalated",
+                    "justification": "Need to create the output file for the build"
+                }),
+            ))
+            .await
+            .unwrap();
+        // Escalation should ASK (not deny), even in ReadOnly mode
+        assert!(out.is_ask());
+    }
+
+    #[tokio::test]
+    async fn bash_guard_escalation_without_justification_still_asks() {
+        let guard = BashGuardHook::new(["echo".to_string()]);
+        let out = guard
+            .run(&tool_ctx(
+                "bash",
+                serde_json::json!({
+                    "command": "echo hello > output.txt",
+                    "sandbox_permissions": "require_escalated"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert!(out.is_ask());
     }
 }

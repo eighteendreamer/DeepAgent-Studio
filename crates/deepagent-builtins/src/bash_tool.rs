@@ -186,7 +186,18 @@ impl<E: CommandExecutor> Tool for BashTool<E> {
                 - A command that exits 0 with empty stdout/stderr is success. The runtime substitutes a stub payload so the model doesn't mistake an empty body for a stop signal — do NOT retry just because the output was empty.".into(),
             parameters: serde_json::json!({
                 "type": "object",
-                "properties": { "command": { "type": "string" } },
+                "properties": {
+                    "command": { "type": "string" },
+                    "sandbox_permissions": {
+                        "type": "string",
+                        "enum": ["use_default", "require_escalated"],
+                        "description": "Set to 'require_escalated' when a previous command failed due to sandbox restrictions and user approval is needed to bypass the sandbox for this specific command."
+                    },
+                    "justification": {
+                        "type": "string",
+                        "description": "User-facing explanation of why this command needs escalated permissions. Required when sandbox_permissions is 'require_escalated'."
+                    }
+                },
                 "required": ["command"]
             }),
             // The descriptor advertises ShellSafe; dangerous commands are
