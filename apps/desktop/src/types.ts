@@ -322,6 +322,25 @@ export interface WorkspaceInfo {
   path: string;
 }
 
+export interface SandboxieStatus {
+  supported: boolean;
+  ready: boolean;
+  box_name: string;
+  install_dir?: string | null;
+  start_exe?: string | null;
+  sbie_ini_exe?: string | null;
+  bundled_installer?: string | null;
+  message: string;
+}
+
+export type PermissionPreset = "default" | "auto_review" | "full_access";
+
+export interface PermissionPresetVisibility {
+  default_enabled: boolean;
+  auto_review_enabled: boolean;
+  full_access_enabled: boolean;
+}
+
 /** Redacted settings view (mirrors deepagent-app-core::SettingsView). */
 export interface SettingsView {
   api_key_masked: string;

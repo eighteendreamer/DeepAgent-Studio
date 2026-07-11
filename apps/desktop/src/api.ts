@@ -38,6 +38,8 @@ import type {
   MarketSearchData,
   MarketSearchInput,
   McpServer,
+  PermissionPreset,
+  PermissionPresetVisibility,
   PermissionRules,
   PersistedAttachment,
   Project,
@@ -63,6 +65,7 @@ import type {
   VisionSettings,
   RewindResult,
   ScanResult,
+  SandboxieStatus,
   SessionDetail,
   SessionSummary,
   SessionUiPrefs,
@@ -819,6 +822,59 @@ export interface RuntimeEvent {
 interface RunEventEnvelope<T> {
   run_id: string;
   payload: T;
+}
+
+export async function sandboxieStatus(): Promise<SandboxieStatus> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SandboxieStatus>("sandboxie_status");
+  return {
+    supported: false,
+    ready: false,
+    box_name: "DeepAgentStudio",
+    message: "Sandboxie-Plus status requires the desktop app",
+  };
+}
+
+export async function sandboxieInitialize(): Promise<SandboxieStatus> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SandboxieStatus>("sandboxie_initialize");
+  return sandboxieStatus();
+}
+
+export async function sandboxieInstall(): Promise<SandboxieStatus> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SandboxieStatus>("sandboxie_install");
+  return sandboxieStatus();
+}
+
+// ---- permission presets (Sandboxie integration) -----------------------------
+
+/** Get the current active permission preset label. */
+export async function getActivePermissionPreset(): Promise<PermissionPreset> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<PermissionPreset>("get_active_permission_preset");
+  return "default";
+}
+
+/** Set the active permission preset. */
+export async function setActivePermissionPreset(preset: PermissionPreset): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("set_active_permission_preset", { preset });
+}
+
+/** Get which permission presets are visible in the Composer dropdown. */
+export async function getPermissionPresetVisibility(): Promise<PermissionPresetVisibility> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<PermissionPresetVisibility>("get_permission_preset_visibility");
+  return { default_enabled: true, auto_review_enabled: true, full_access_enabled: true };
+}
+
+/** Set which permission presets are visible in the Composer dropdown. */
+export async function setPermissionPresetVisibility(
+  visibility: PermissionPresetVisibility,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("set_permission_preset_visibility", { visibility });
 }
 
 export interface PreflightToolCall {

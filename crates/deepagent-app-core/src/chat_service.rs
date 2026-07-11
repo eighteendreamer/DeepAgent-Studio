@@ -469,6 +469,9 @@ pub struct ChatService {
     /// [`CommandExecutor`] that routes bash/git commands through SSH instead
     /// of local execution.
     executor_factory: Option<ExecutorFactory>,
+    /// Optional executor for local command execution. The desktop app uses this
+    /// to wrap local shell/git commands in Sandboxie-Plus when available.
+    local_command_executor: Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>,
     /// Optional remote-context factory for remote (SSH) sessions. When set,
     /// remote runs can inject a concise SSH snapshot so the model reasons from
     /// the remote host's actual state rather than the local workspace alone.
@@ -483,7 +486,7 @@ pub struct ChatService {
 /// Used for remote (SSH) sessions — the factory is set up by the desktop
 /// app and captures the `SshService` handle.
 type ExecutorFactory =
-    Arc<dyn Fn(String) -> Box<dyn deepagent_builtins::bash_tool::CommandExecutor> + Send + Sync>;
+    Arc<dyn Fn(String) -> Arc<dyn deepagent_builtins::bash_tool::CommandExecutor> + Send + Sync>;
 
 type RemoteContextFuture = Pin<Box<dyn Future<Output = Result<Option<String>>> + Send>>;
 type RemoteContextFactory = Arc<dyn Fn(String) -> RemoteContextFuture + Send + Sync>;
@@ -668,6 +671,7 @@ impl ChatService {
             skill_catalog_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             invoked_skills: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             executor_factory: None,
+            local_command_executor: None,
             remote_context_factory: None,
             remote_ops_factory: None,
         }
@@ -793,12 +797,23 @@ impl ChatService {
     /// bash/git commands through SSH instead of local execution.
     pub fn with_executor_factory<F>(mut self, factory: F) -> Self
     where
-        F: Fn(String) -> Box<dyn deepagent_builtins::bash_tool::CommandExecutor>
+        F: Fn(String) -> Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>
             + Send
             + Sync
             + 'static,
     {
         self.executor_factory = Some(Arc::new(factory));
+        self
+    }
+
+    /// Bind a local command executor. Used by the desktop shell to run local
+    /// shell/git commands through Sandboxie-Plus while remote sessions keep
+    /// using the SSH executor factory above.
+    pub fn with_local_command_executor(
+        mut self,
+        executor: Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>,
+    ) -> Self {
+        self.local_command_executor = Some(executor);
         self
     }
 
@@ -1506,6 +1521,10 @@ impl ChatService {
             (env_mode, &self.executor_factory, connection_id)
         {
             config = config.with_command_executor(factory(conn_id.to_string()));
+        } else if env_mode != Some("remote") {
+            if let Some(executor) = &self.local_command_executor {
+                config = config.with_command_executor(executor.clone());
+            }
         }
         let todo_store = register_builtins(&mut registry, config)?;
         // Network web tools (web_fetch / web_search) when built with `web`.

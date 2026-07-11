@@ -31,6 +31,7 @@ use deepagent_app_core::{
     PreflightToolCallDto, ProjectService, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeProgressDto,
     RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SecretStore, SessionDetailDto, SessionStateService,
     SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
+    SandboxieExecutor, SandboxieService, SandboxieStatusDto,
     SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, TerminalResultDto, TerminalService,
     TerminalShell, TranscriptDto, TranscriptSegmentDto, VisionRecognizeRequestDto,
     VisionRecognizeResultDto, VisionService, VisionSettings, WebSearchSettings, WorkspaceInfoDto,
@@ -319,6 +320,8 @@ struct AppState {
     runtime: Arc<RuntimeService>,
     /// Local system-vision image recognition.
     vision: Arc<VisionService>,
+    /// Windows software sandbox integration (Sandboxie-Plus).
+    sandboxie: Arc<SandboxieService>,
     /// Speech transcription + meeting-minutes (office-agent).
     speech: Arc<SpeechService>,
     /// Office document read/generate (office-agent).
@@ -429,6 +432,25 @@ fn dir_has_skill_md(dir: &Path) -> bool {
         }
     }
     false
+}
+
+fn locate_bundled_sandboxie_installer(resource_dir: &Path) -> Option<PathBuf> {
+    let candidates = [
+        resource_dir
+            .join("resources")
+            .join("sandbox")
+            .join("Sandboxie-Plus-x64-v1.17.9.exe"),
+        resource_dir
+            .join("sandbox")
+            .join("Sandboxie-Plus-x64-v1.17.9.exe"),
+        resource_dir
+            .join("_up_")
+            .join("resources")
+            .join("sandbox")
+            .join("Sandboxie-Plus-x64-v1.17.9.exe"),
+    ];
+
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 /// Copy previously downloaded optional runtimes into a new runtime root without
@@ -674,15 +696,55 @@ fn save_text_file(path: String, content: String) -> Result<(), String> {
 #[tauri::command]
 fn initialize_project(state: State<'_, AppState>, api_key: String) -> Result<SettingsView, String> {
     let settings = state.settings.clone();
-    state
+    let view = state
         .rt
         .block_on(async move { settings.initialize(&api_key).await })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    let project_root = state
+        .projects
+        .active()
+        .ok()
+        .flatten()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(std::env::temp_dir);
+    if let Err(err) = state.sandboxie.initialize_for_project(project_root) {
+        eprintln!("sandboxie initialize after login failed: {err}");
+    }
+
+    Ok(view)
 }
 
 #[tauri::command]
 fn get_settings(state: State<'_, AppState>) -> Result<Option<SettingsView>, String> {
     state.settings.view().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn sandboxie_status(state: State<'_, AppState>) -> Result<SandboxieStatusDto, String> {
+    Ok(state.sandboxie.status())
+}
+
+#[tauri::command]
+fn sandboxie_initialize(state: State<'_, AppState>) -> Result<SandboxieStatusDto, String> {
+    let project_root = state
+        .projects
+        .active()
+        .ok()
+        .flatten()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(std::env::temp_dir);
+    state
+        .sandboxie
+        .initialize_for_project(project_root)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn sandboxie_install(state: State<'_, AppState>) -> Result<SandboxieStatusDto, String> {
+    state.sandboxie.install_bundled().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1407,6 +1469,48 @@ fn set_sandbox_mode(state: State<'_, AppState>, mode: String) -> Result<Settings
     state
         .settings
         .set_sandbox_mode(parsed)
+        .map_err(|e| e.to_string())
+}
+
+// ---- permission presets (Sandboxie integration) -----------------------------
+
+#[tauri::command]
+fn get_active_permission_preset(state: State<'_, AppState>) -> Result<String, String> {
+    state
+        .settings
+        .active_permission_preset()
+        .map(|p| p.label().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_active_permission_preset(state: State<'_, AppState>, preset: String) -> Result<(), String> {
+    let parsed = deepagent_app_core::PermissionPreset::parse(&preset)
+        .ok_or_else(|| format!("unknown permission preset: {preset}"))?;
+    state
+        .settings
+        .set_active_permission_preset(parsed)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_permission_preset_visibility(
+    state: State<'_, AppState>,
+) -> Result<deepagent_app_core::PermissionPresetVisibility, String> {
+    state
+        .settings
+        .permission_preset_visibility()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_permission_preset_visibility(
+    state: State<'_, AppState>,
+    visibility: deepagent_app_core::PermissionPresetVisibility,
+) -> Result<(), String> {
+    state
+        .settings
+        .set_permission_preset_visibility(visibility)
         .map_err(|e| e.to_string())
 }
 
@@ -3465,6 +3569,23 @@ pub fn run() {
                 settings_arc.clone(),
                 dir.join("vision-cache"),
             ));
+            let bundled_sandboxie_installer = app
+                .path()
+                .resource_dir()
+                .ok()
+                .and_then(|resource_dir| locate_bundled_sandboxie_installer(&resource_dir));
+            let sandboxie = Arc::new(SandboxieService::new(bundled_sandboxie_installer));
+            if let Ok(Some(_)) = settings_arc.view() {
+                let project_root = projects
+                    .active()
+                    .ok()
+                    .flatten()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| workspace_root.clone());
+                if let Err(err) = sandboxie.initialize_for_project(project_root) {
+                    eprintln!("sandboxie startup initialize failed: {err}");
+                }
+            }
 
             // Cost tracking: records per-run token cost over the shared DB and
             // enforces optional daily/monthly budget limits.
@@ -3504,6 +3625,7 @@ pub fn run() {
                 let ssh_clone = ssh.clone();
                 let ssh_context = ssh.clone();
                 let ssh_ops = ssh.clone();
+                let sandboxie_executor = Arc::new(SandboxieExecutor::new(sandboxie.clone()));
                 Arc::new(
                     ChatService::new(
                         service.shared_database(),
@@ -3512,11 +3634,12 @@ pub fn run() {
                         workspace_root,
                     )
                     .with_executor_factory(move |connection_id: String| {
-                        Box::new(SshExecutor {
+                        Arc::new(SshExecutor {
                             ssh: ssh_clone.clone(),
                             connection_id,
                         })
                     })
+                    .with_local_command_executor(sandboxie_executor)
                     .with_remote_context_factory(move |connection_id: String| {
                         build_remote_context(ssh_context.clone(), connection_id)
                     })
@@ -3568,6 +3691,7 @@ pub fn run() {
                 recording,
                 runtime,
                 vision,
+                sandboxie,
                 speech,
                 office,
                 ssh,
@@ -3591,6 +3715,9 @@ pub fn run() {
             save_text_file,
             initialize_project,
             get_settings,
+            sandboxie_status,
+            sandboxie_initialize,
+            sandboxie_install,
             refresh_models,
             get_balance,
             clear_api_key,
@@ -3636,6 +3763,10 @@ pub fn run() {
             set_approval_policy,
             get_sandbox_mode,
             set_sandbox_mode,
+            get_active_permission_preset,
+            set_active_permission_preset,
+            get_permission_preset_visibility,
+            set_permission_preset_visibility,
             set_terminal_shell,
             set_thinking_depth,
             get_verification_policy,

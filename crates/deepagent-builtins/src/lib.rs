@@ -154,8 +154,8 @@ pub struct BuiltinConfig {
     pub todo_store: TodoStore,
     /// Optional custom command executor for bash/git commands.
     /// When set, this overrides the default SystemExecutor.
-    /// Used for remote execution over SSH.
-    pub command_executor: Option<Box<dyn bash_tool::CommandExecutor + 'static>>,
+    /// Used for remote execution over SSH or local software sandboxes.
+    pub command_executor: Option<std::sync::Arc<dyn bash_tool::CommandExecutor>>,
 }
 
 impl BuiltinConfig {
@@ -175,9 +175,9 @@ impl BuiltinConfig {
     /// Set a custom command executor for bash/git commands.
     pub fn with_command_executor(
         mut self,
-        executor: impl bash_tool::CommandExecutor + 'static,
+        executor: std::sync::Arc<dyn bash_tool::CommandExecutor>,
     ) -> Self {
-        self.command_executor = Some(Box::new(executor));
+        self.command_executor = Some(executor);
         self
     }
 }
@@ -199,16 +199,15 @@ pub fn builtin_tools(config: BuiltinConfig) -> (Vec<Arc<dyn Tool>>, TodoStore) {
 
     let mut tools = file_tools(root);
     if let Some(exec) = command_executor {
-        tools.push(Arc::new(BashTool::new(exec, bash_cwd.clone(), bash_allow)));
-        // Git tools always use the local SystemExecutor — only bash commands
-        // are routed remotely.
-        tools.push(Arc::new(GitStatusTool::new(
-            SystemExecutor,
+        tools.push(Arc::new(BashTool::new(
+            exec.clone(),
             bash_cwd.clone(),
+            bash_allow,
         )));
-        tools.push(Arc::new(GitDiffTool::new(SystemExecutor, bash_cwd.clone())));
-        tools.push(Arc::new(GitLogTool::new(SystemExecutor, bash_cwd.clone())));
-        tools.push(Arc::new(GitCommitTool::new(SystemExecutor, bash_cwd)));
+        tools.push(Arc::new(GitStatusTool::new(exec.clone(), bash_cwd.clone())));
+        tools.push(Arc::new(GitDiffTool::new(exec.clone(), bash_cwd.clone())));
+        tools.push(Arc::new(GitLogTool::new(exec.clone(), bash_cwd.clone())));
+        tools.push(Arc::new(GitCommitTool::new(exec, bash_cwd)));
     } else {
         tools.push(Arc::new(BashTool::new(
             SystemExecutor,

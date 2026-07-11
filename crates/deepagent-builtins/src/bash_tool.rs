@@ -46,6 +46,13 @@ impl CommandExecutor for Box<dyn CommandExecutor> {
     }
 }
 
+#[async_trait]
+impl CommandExecutor for std::sync::Arc<dyn CommandExecutor> {
+    async fn run(&self, command: &str, cwd: &str) -> Result<CommandOutcome> {
+        self.as_ref().run(command, cwd).await
+    }
+}
+
 /// Real OS process executor (runs via the platform shell).
 #[derive(Debug, Clone, Default)]
 pub struct SystemExecutor;

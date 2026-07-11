@@ -30,6 +30,7 @@ pub mod project_map_service;
 pub mod project_service;
 pub mod recording_service;
 pub mod runtime_service;
+pub mod sandboxie_service;
 pub mod secret_store;
 pub mod service;
 pub mod session_state_service;
@@ -88,11 +89,13 @@ pub use runtime_service::{
     default_registry, ArchiveKind, Downloader, Platform, RuntimeArtifact, RuntimeEntry,
     RuntimeService, UnavailableDownloader,
 };
+pub use sandboxie_service::{SandboxieExecutor, SandboxieService, SandboxieStatusDto};
 pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore};
 pub use service::AppService;
 pub use session_state_service::SessionStateService;
 pub use settings::{
-    AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, SandboxMode, SettingsService,
+    AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, EffectivePermissionProfile,
+    LocalExecutionMode, PermissionPreset, PermissionPresetVisibility, SandboxMode, SettingsService,
     SettingsView, TerminalShell, VerificationPolicy, VisionMode, VisionSettings, WebSearchProvider,
     WebSearchSettings,
 };
