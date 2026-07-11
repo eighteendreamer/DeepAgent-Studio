@@ -101,16 +101,19 @@ impl Hook for PathGuardHook {
 /// redirections or pipe-to-file idioms. Used by `BashGuardHook` to deny
 /// write-through-bash in ReadOnly/Workspace sandbox modes.
 const WRITE_REDIRECT_PATTERNS: &[&str] = &[
-    " > ", " >> ", ">|", " tee ", "<<EOF", "<<'EOF'", "<<\"EOF\"",
+    " > ",
+    " >> ",
+    ">|",
+    " tee ",
+    "<<EOF",
+    "<<'EOF'",
+    "<<\"EOF\"",
 ];
 
 /// Detect whether a shell command contains file-write redirections or idioms.
 fn has_write_redirect(command: &str) -> bool {
     // Check known patterns
-    if WRITE_REDIRECT_PATTERNS
-        .iter()
-        .any(|p| command.contains(p))
-    {
+    if WRITE_REDIRECT_PATTERNS.iter().any(|p| command.contains(p)) {
         return true;
     }
     // Also catch `>file` without leading space (e.g. `echo foo >out.txt`)
@@ -216,7 +219,9 @@ impl Hook for BashGuardHook {
                 let justification = arguments
                     .get("justification")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("This command needs elevated permissions to run outside the sandbox.");
+                    .unwrap_or(
+                        "This command needs elevated permissions to run outside the sandbox.",
+                    );
                 return Ok(HookOutcome::ask_from(
                     format!("[Sandbox escalation] {justification}\nCommand: {command}"),
                     DecisionSource::Policy,
@@ -421,8 +426,7 @@ mod tests {
     #[tokio::test]
     async fn bash_guard_readonly_denies_write_redirect() {
         use crate::fs_guard::FsAccess;
-        let guard = BashGuardHook::new(["echo".to_string()])
-            .with_sandbox_mode(FsAccess::ReadOnly);
+        let guard = BashGuardHook::new(["echo".to_string()]).with_sandbox_mode(FsAccess::ReadOnly);
         // `echo > file` should be denied
         let out = guard
             .run(&tool_ctx(
@@ -437,8 +441,7 @@ mod tests {
     #[tokio::test]
     async fn bash_guard_readonly_denies_append_redirect() {
         use crate::fs_guard::FsAccess;
-        let guard = BashGuardHook::new(["echo".to_string()])
-            .with_sandbox_mode(FsAccess::ReadOnly);
+        let guard = BashGuardHook::new(["echo".to_string()]).with_sandbox_mode(FsAccess::ReadOnly);
         let out = guard
             .run(&tool_ctx(
                 "bash",
@@ -452,8 +455,7 @@ mod tests {
     #[tokio::test]
     async fn bash_guard_readonly_denies_tee() {
         use crate::fs_guard::FsAccess;
-        let guard = BashGuardHook::new(["cat".to_string()])
-            .with_sandbox_mode(FsAccess::ReadOnly);
+        let guard = BashGuardHook::new(["cat".to_string()]).with_sandbox_mode(FsAccess::ReadOnly);
         let out = guard
             .run(&tool_ctx(
                 "bash",
@@ -483,8 +485,7 @@ mod tests {
     #[tokio::test]
     async fn bash_guard_workspace_mode_allows_write_redirect() {
         use crate::fs_guard::FsAccess;
-        let guard = BashGuardHook::new(["echo".to_string()])
-            .with_sandbox_mode(FsAccess::Workspace);
+        let guard = BashGuardHook::new(["echo".to_string()]).with_sandbox_mode(FsAccess::Workspace);
         // In Workspace mode, write redirects are allowed (Sandboxie handles confinement)
         let out = guard
             .run(&tool_ctx(
@@ -512,8 +513,7 @@ mod tests {
     #[tokio::test]
     async fn bash_guard_escalation_asks_user() {
         use crate::fs_guard::FsAccess;
-        let guard = BashGuardHook::new(["echo".to_string()])
-            .with_sandbox_mode(FsAccess::ReadOnly);
+        let guard = BashGuardHook::new(["echo".to_string()]).with_sandbox_mode(FsAccess::ReadOnly);
         let out = guard
             .run(&tool_ctx(
                 "bash",

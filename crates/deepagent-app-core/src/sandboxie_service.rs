@@ -258,7 +258,12 @@ impl SandboxieService {
         )))
     }
 
-    fn run_command_in_box(&self, command: &str, cwd: &str, mode: SandboxMode) -> Result<CommandOutcome> {
+    fn run_command_in_box(
+        &self,
+        command: &str,
+        cwd: &str,
+        mode: SandboxMode,
+    ) -> Result<CommandOutcome> {
         let Some(tools) = self.ensure_tools_available()? else {
             return Err(CoreError::not_found(
                 "Sandboxie-Plus Start.exe was not found",

@@ -258,10 +258,7 @@ pub fn register_guard_hooks(
     // classifier apply (dangerous/unlisted commands ask for approval).
     let access = root.access();
     let full_access = access == fs_guard::FsAccess::Full;
-    hooks.register(
-        HookPoint::BeforeToolUse,
-        Arc::new(PathGuardHook::new(root)),
-    );
+    hooks.register(HookPoint::BeforeToolUse, Arc::new(PathGuardHook::new(root)));
     hooks.register(
         HookPoint::BeforeToolUse,
         Arc::new(

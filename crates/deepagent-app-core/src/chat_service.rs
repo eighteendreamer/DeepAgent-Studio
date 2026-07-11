@@ -2159,7 +2159,10 @@ impl ChatService {
         // (Req 4.6 default behavior, now extended with snapshot inheritance).
         {
             use deepagent_builtins::TaskTool;
-            let sub_registry = Arc::new(self.build_registry(&root, access, None, None, Some(local_execution_mode))?.0);
+            let sub_registry = Arc::new(
+                self.build_registry(&root, access, None, None, Some(local_execution_mode))?
+                    .0,
+            );
             let parent_discovered_snapshot: std::collections::HashSet<String> =
                 tool_search_discovered
                     .lock()
@@ -3831,7 +3834,13 @@ mod tests {
 
         // The main registry must advertise both knowledge tools.
         let (registry, _todo_store) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None, None)
+            .build_registry(
+                dir.path(),
+                deepagent_builtins::FsAccess::Full,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert!(
             registry
@@ -3848,7 +3857,13 @@ mod tests {
         let (_db, _settings, dir) = seeded().await;
         let chat = ChatService::new(_db, _settings, chat_transport(), dir.path());
         let (registry, _todo_store) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None, None)
+            .build_registry(
+                dir.path(),
+                deepagent_builtins::FsAccess::Full,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert!(
             registry
@@ -3873,7 +3888,13 @@ mod tests {
             .unwrap();
         let chat = ChatService::new(_db, settings, chat_transport(), dir.path());
         let (registry, _todo_store) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None, None)
+            .build_registry(
+                dir.path(),
+                deepagent_builtins::FsAccess::Full,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert!(
             registry.get("web_fetch").is_some(),
@@ -4819,7 +4840,13 @@ mod tests {
         // Build the same registry the run uses (built-ins shared between
         // main and sub-agents) and apply the skill-tool wiring helper.
         let (mut registry, _todo) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None, None)
+            .build_registry(
+                dir.path(),
+                deepagent_builtins::FsAccess::Full,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         chat.maybe_register_skill_tool(&mut registry).unwrap();
 
@@ -4837,7 +4864,13 @@ mod tests {
         let chat = ChatService::new(db, settings, chat_transport(), dir.path());
 
         let (mut registry, _todo) = chat
-            .build_registry(dir.path(), deepagent_builtins::FsAccess::Full, None, None, None)
+            .build_registry(
+                dir.path(),
+                deepagent_builtins::FsAccess::Full,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         chat.maybe_register_skill_tool(&mut registry).unwrap();
 
