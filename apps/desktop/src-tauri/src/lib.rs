@@ -28,7 +28,7 @@ use deepagent_app_core::{
     LocalPtyHandle,
     ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto,
     ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
-    ProjectService, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeProgressDto,
+    PreflightToolCallDto, ProjectService, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeProgressDto,
     RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SecretStore, SessionDetailDto, SessionStateService,
     SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
     SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, TerminalResultDto, TerminalService,
@@ -1236,6 +1236,8 @@ async fn run_chat(
     env_mode: Option<String>,
     connection_id: Option<String>,
     run_id: Option<String>,
+    preflight_tools: Option<Vec<PreflightToolCallDto>>,
+    preflight_abort_message: Option<String>,
 ) -> Result<String, String> {
     // IMPORTANT: this command is `async` so Tauri runs it on a worker thread,
     // never the main (UI) thread. A streamed run can pause mid-flight to await
@@ -1258,6 +1260,7 @@ async fn run_chat(
     let approval_emitter = app.clone();
     let completion_emitter = app.clone();
     let title_emitter = app;
+    let preflight_tools = preflight_tools.unwrap_or_default();
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.rt.spawn(async move {
         let event_run_id = run_id.clone();
@@ -1268,6 +1271,8 @@ async fn run_chat(
                 session_id.as_deref(),
                 env_mode.as_deref(),
                 connection_id.as_deref(),
+                preflight_tools,
+                preflight_abort_message,
                 move |event| {
                     let _ = event_emitter.emit(
                         "chat://event",
@@ -1550,19 +1555,22 @@ async fn vision_recognize_image(
     state: State<'_, AppState>,
     request: VisionRecognizeRequestDto,
 ) -> Result<VisionRecognizeResultDto, String> {
-    let vision = state.vision.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        vision.recognize_image(request).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("vision recognition task failed: {e}"))?
+    state
+        .vision
+        .recognize_image(request)
+        .await
+        .map_err(|e| e.to_string())
 }
 
-/// Check whether Tesseract OCR is available (managed runtime or system PATH).
-/// The frontend uses this to decide whether to prompt the user to download OCR.
 #[tauri::command]
-fn vision_ocr_available(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.vision.ocr_available())
+async fn vision_test_connection(
+    state: State<'_, AppState>,
+) -> Result<VisionRecognizeResultDto, String> {
+    state
+        .vision
+        .test_connection()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ---- Skill marketplace settings (Skill Marketplace spec, R10) -------------
@@ -3453,7 +3461,10 @@ pub fn run() {
                 &legacy_runtime_roots,
                 Arc::new(deepagent_app_core::runtime_service::ReqwestDownloader::default()),
             ));
-            let vision = Arc::new(VisionService::new(runtime.clone()));
+            let vision = Arc::new(VisionService::new(
+                settings_arc.clone(),
+                dir.join("vision-cache"),
+            ));
 
             // Cost tracking: records per-run token cost over the shared DB and
             // enforces optional daily/monthly budget limits.
@@ -3638,7 +3649,7 @@ pub fn run() {
             get_vision_settings,
             set_vision_settings,
             vision_recognize_image,
-            vision_ocr_available,
+            vision_test_connection,
             get_skill_catalog_enabled,
             set_skill_catalog_enabled,
             get_skill_catalog_char_budget,

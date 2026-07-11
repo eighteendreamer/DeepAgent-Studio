@@ -1110,7 +1110,6 @@ dependencies = [
  "deepagent-session",
  "deepagent-skills",
  "deepagent-tools",
- "deepagent-vision",
  "deepagent-workspace",
  "flate2",
  "hound",

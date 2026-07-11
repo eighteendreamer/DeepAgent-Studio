@@ -155,10 +155,9 @@ pub struct RuntimeEntry {
     pub size_bytes: u64,
     pub artifacts: HashMap<Platform, RuntimeArtifact>,
     pub probe: String,
-    /// Filesystem paths to probe for system-installed binaries (e.g.
-    /// `C:\Program Files\Tesseract-OCR`). Checked after the managed runtime
-    /// directory so software installed via winget / brew / apt / manually is
-    /// still detected as "installed".
+    /// Filesystem paths to probe for system-installed binaries. Checked after
+    /// the managed runtime directory so software installed via package manager
+    /// or manually is still detected as "installed".
     pub system_probe_paths: Vec<String>,
 }
 
@@ -480,23 +479,6 @@ impl RuntimeService {
             )));
         }
 
-        if is_installer {
-            if let Some(winget_id) = winget_package_id(id) {
-                progress(0, None);
-                install_winget_package(winget_id)?;
-                progress(1, Some(1));
-                let status = self.status(id).ok_or_else(|| {
-                    CoreError::Other(format!("runtime '{id}' vanished after winget install"))
-                })?;
-                if !status.installed {
-                    return Err(CoreError::Other(format!(
-                        "winget installed {winget_id}, but runtime probe was not found"
-                    )));
-                }
-                return Ok(status);
-            }
-        }
-
         std::fs::create_dir_all(&self.active_root)
             .map_err(|e| CoreError::Other(format!("create runtimes dir: {e}")))?;
         let tmp = download_temp_path(&self.active_root, id, &artifact);
@@ -679,10 +661,10 @@ impl RuntimeService {
 
 /// Run an installer silently into `dest_dir` (the managed runtime directory).
 ///
-/// The bundled Tesseract Windows installer is NSIS-based. NSIS uses `/S` for
-/// silent mode and `/D=...` for the target directory, with `/D` as the final
-/// argument. We intentionally do not elevate with `runas`: resource installs
-/// must stay background-only and must not show UAC or installer wizard prompts.
+/// NSIS-based installers use `/S` for silent mode and `/D=...` for the target
+/// directory, with `/D` as the final argument. We intentionally do not elevate
+/// with `runas`: resource installs must stay background-only and must not show
+/// UAC or installer wizard prompts.
 fn run_installer_silent(installer: &Path, dest_dir: &Path) -> Result<()> {
     if !cfg!(target_os = "windows") {
         return Err(CoreError::Other(
@@ -725,66 +707,6 @@ fn run_installer_silent(installer: &Path, dest_dir: &Path) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn winget_package_id(runtime_id: &str) -> Option<&'static str> {
-    match runtime_id {
-        "tesseract-portable" if cfg!(target_os = "windows") => Some("tesseract-ocr.tesseract"),
-        _ => None,
-    }
-}
-
-fn install_winget_package(package_id: &str) -> Result<()> {
-    if !cfg!(target_os = "windows") {
-        return Err(CoreError::Other(
-            "winget runtime install is only supported on Windows".to_string(),
-        ));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-        let output = std::process::Command::new("winget")
-            .args([
-                "install",
-                "--id",
-                package_id,
-                "--exact",
-                "--silent",
-                "--accept-package-agreements",
-                "--accept-source-agreements",
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| {
-                CoreError::Other(format!("winget is not available or failed to launch: {e}"))
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if stderr.is_empty() { stdout } else { stderr };
-            if winget_output_means_already_installed(&detail) {
-                return Ok(());
-            }
-            return Err(CoreError::Other(format!(
-                "winget install failed for {package_id}: {detail}"
-            )));
-        }
-    }
-
-    Ok(())
-}
-
-fn winget_output_means_already_installed(output: &str) -> bool {
-    let output = output.to_ascii_lowercase();
-    output.contains("existing package already installed")
-        || output.contains("no available upgrade found")
-        || output.contains("no newer package versions are available")
-        || output.contains("already installed")
 }
 
 #[cfg(target_os = "windows")]
@@ -935,10 +857,6 @@ fn find_in_system_paths(probe: &str, paths: &[String]) -> Option<PathBuf> {
             return Some(dir);
         }
     }
-    #[cfg(target_os = "windows")]
-    if probe.eq_ignore_ascii_case("tesseract.exe") {
-        return find_tesseract_from_windows_uninstall_registry(probe);
-    }
     None
 }
 
@@ -963,90 +881,6 @@ fn expand_system_probe_path(path: &str) -> PathBuf {
     }
 
     PathBuf::from(path)
-}
-
-#[cfg(target_os = "windows")]
-fn find_tesseract_from_windows_uninstall_registry(probe: &str) -> Option<PathBuf> {
-    const UNINSTALL_KEYS: [&str; 3] = [
-        r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Tesseract-OCR",
-        r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Tesseract-OCR",
-        r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Tesseract-OCR",
-    ];
-
-    for key in UNINSTALL_KEYS {
-        if let Some(dir) = tesseract_dir_from_registry_key(key, probe) {
-            return Some(dir);
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "windows")]
-fn tesseract_dir_from_registry_key(key: &str, probe: &str) -> Option<PathBuf> {
-    use std::os::windows::process::CommandExt;
-
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-    let output = std::process::Command::new("reg")
-        .args(["query", key])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    for name in ["InstallLocation", "DisplayIcon", "UninstallString"] {
-        if let Some(value) = registry_value(&text, name) {
-            if let Some(dir) = probe_dir_from_registry_value(&value, probe) {
-                return Some(dir);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "windows")]
-fn registry_value(text: &str, name: &str) -> Option<String> {
-    for line in text.lines() {
-        let line = line.trim();
-        if !line.starts_with(name) {
-            continue;
-        }
-        let rest = line.strip_prefix(name)?.trim_start();
-        let value = if let Some(rest) = rest.strip_prefix("REG_SZ") {
-            rest
-        } else if let Some(rest) = rest.strip_prefix("REG_EXPAND_SZ") {
-            rest
-        } else {
-            continue;
-        };
-        let value = value.trim().trim_matches('"').to_string();
-        if !value.is_empty() {
-            return Some(value);
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "windows")]
-fn probe_dir_from_registry_value(value: &str, probe: &str) -> Option<PathBuf> {
-    let value = value.trim().trim_matches('"');
-    let mut path = PathBuf::from(value);
-    if path.is_file() {
-        path = path.parent()?.to_path_buf();
-    }
-    if path.join(probe).is_file() {
-        return Some(path);
-    }
-
-    if let Some(parent) = path.parent() {
-        if parent.join(probe).is_file() {
-            return Some(parent.to_path_buf());
-        }
-    }
-    None
 }
 
 /// Pick the writable active root. The first candidate is preferred; later
@@ -1559,43 +1393,6 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
             ]),
             probe: "lib".to_string(),
             system_probe_paths: vec![],
-        },
-        // Tesseract OCR — the only external dependency for the system-vision
-        // pipeline. The installer is downloaded from GitHub Releases and run
-        // silently with /DIR to install into the managed runtime directory
-        // (same as other resources). SHA-256 is optional because the installer
-        // self-verifies. The pure-Rust image analysis (metadata, colour, ASCII)
-        // runs without it, but OCR text extraction requires this binary.
-        RuntimeEntry {
-            id: "tesseract-portable".to_string(),
-            name: "Tesseract OCR".to_string(),
-            version: "5.5.0".to_string(),
-            capability: "vision-ocr-tesseract".to_string(),
-            size_bytes: 70 * 1024 * 1024,
-            artifacts: {
-                let mut m = HashMap::new();
-                insert_platform_artifact(
-                    &mut m,
-                    Platform::WindowsX64,
-                    "https://github.com/tesseract-ocr/tesseract/releases/download/5.5.0/tesseract-ocr-w64-setup-5.5.0.20241111.exe",
-                    &[
-                        "https://gh.llkk.cc/https://github.com/tesseract-ocr/tesseract/releases/download/5.5.0/tesseract-ocr-w64-setup-5.5.0.20241111.exe",
-                        "https://gh-proxy.com/https://github.com/tesseract-ocr/tesseract/releases/download/5.5.0/tesseract-ocr-w64-setup-5.5.0.20241111.exe",
-                    ],
-                    None, // installer self-verifies
-                    "vision/tesseract",
-                    "tesseract-setup.exe",
-                    ArchiveKind::Installer,
-                    "tesseract.exe",
-                );
-                m
-            },
-            probe: if cfg!(windows) { "tesseract.exe" } else { "tesseract" }.to_string(),
-            system_probe_paths: vec![
-                "%LOCALAPPDATA%\\Programs\\Tesseract-OCR".to_string(),
-                "C:\\Program Files\\Tesseract-OCR".to_string(),
-                "C:\\Program Files (x86)\\Tesseract-OCR".to_string(),
-            ],
         },
         // LibreOffice — legacy formats (.doc/.xls/.ppt) + high-fidelity PDF
         // export (Tier R office-suite). Distribution differs per platform and
@@ -2156,7 +1953,6 @@ mod tests {
         let ids: Vec<String> = svc.list().into_iter().map(|s| s.id).collect();
         assert!(ids.contains(&"pandoc".to_string()));
         assert!(ids.contains(&"pdfium".to_string()));
-        assert!(ids.contains(&"tesseract-portable".to_string()));
         let whisper_base = svc.status("whisper-base").unwrap();
         let whisper_small = svc.status("whisper-small").unwrap();
         let whisper_cli = svc.status("whisper-cli").unwrap();

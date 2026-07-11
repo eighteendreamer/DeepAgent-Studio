@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 
 use deepagent_core::error::Result;
+use deepagent_core::message::Message;
 use deepagent_tools::ToolInvocation;
 
 /// What the agent decided to do on a given `think` step.
@@ -23,6 +24,9 @@ pub enum AgentDecision {
     CallTools(Vec<ToolInvocation>),
     /// The task is finished; carry a final message.
     Complete(String),
+    /// The task is finished; carry the full final assistant message, including
+    /// provider-specific metadata such as DeepSeek `reasoning_content`.
+    CompleteMessage(Message),
     /// The agent cannot proceed and needs human input / approval.
     NeedsApproval(String),
 }

@@ -350,7 +350,12 @@ export type VisionMode = "off" | "system" | "model";
 
 export interface VisionSettings {
   mode: VisionMode;
+  provider: string;
+  base_url: string;
+  api_key?: string | null;
+  api_key_configured: boolean;
   system_model: string;
+  timeout_ms: number;
   auto_analyze_pasted_images: boolean;
   send_original_image_to_model: boolean;
 }

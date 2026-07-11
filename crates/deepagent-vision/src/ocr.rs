@@ -99,6 +99,16 @@ pub fn run_ocr(
         }
     };
 
+    if !output.status.success() && lang != "eng" {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("Failed loading language")
+            || stderr.contains("Error opening data file")
+            || stderr.contains("Tesseract couldn't load any languages")
+        {
+            return run_ocr(image_path, tesseract_path, tessdata_dir, Some("eng"));
+        }
+    }
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return OcrResult {

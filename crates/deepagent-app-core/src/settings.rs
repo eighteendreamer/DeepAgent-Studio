@@ -32,6 +32,8 @@ const SETTINGS_COLLECTION: &str = "settings";
 const SETTINGS_ID: &str = "app";
 /// The logical name the API key is stored under in the secret store.
 const API_KEY_NAME: &str = "deepseek_api_key";
+/// The third-party system-vision API key lives in the same SecretStore.
+const VISION_API_KEY_NAME: &str = "vision_api_key";
 
 /// How tool-approval requests are resolved (maps to the 设置 → 权限 panel).
 ///
@@ -264,8 +266,8 @@ fn normalize_web_search_settings(mut settings: WebSearchSettings) -> WebSearchSe
 pub enum VisionMode {
     /// Do not analyze images automatically.
     Off,
-    /// Use pure-Rust local image analysis (metadata, colour, ASCII art) +
-    /// optional Tesseract OCR. No Python or ML runtime required.
+    /// Use the configured third-party vision API, then pass the text result to
+    /// the main chat model.
     #[default]
     System,
     /// Use a provider model that explicitly supports image input.
@@ -291,8 +293,20 @@ impl VisionMode {
     }
 }
 
+fn default_vision_provider() -> String {
+    "modelscope".to_string()
+}
+
+fn default_vision_base_url() -> String {
+    "https://api-inference.modelscope.cn/v1".to_string()
+}
+
 fn default_system_vision_model() -> String {
-    "deepagent-vision-rust".to_string()
+    "moonshotai/Kimi-K2.5:DashScope".to_string()
+}
+
+fn default_vision_timeout_ms() -> u64 {
+    60_000
 }
 
 fn default_auto_analyze_pasted_images() -> bool {
@@ -304,8 +318,18 @@ fn default_auto_analyze_pasted_images() -> bool {
 pub struct VisionSettings {
     #[serde(default)]
     pub mode: VisionMode,
+    #[serde(default = "default_vision_provider")]
+    pub provider: String,
+    #[serde(default = "default_vision_base_url")]
+    pub base_url: String,
+    #[serde(default, skip_serializing)]
+    pub api_key: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub api_key_configured: bool,
     #[serde(default = "default_system_vision_model")]
     pub system_model: String,
+    #[serde(default = "default_vision_timeout_ms")]
+    pub timeout_ms: u64,
     #[serde(default = "default_auto_analyze_pasted_images")]
     pub auto_analyze_pasted_images: bool,
     #[serde(default)]
@@ -316,7 +340,12 @@ impl Default for VisionSettings {
     fn default() -> Self {
         Self {
             mode: VisionMode::default(),
+            provider: default_vision_provider(),
+            base_url: default_vision_base_url(),
+            api_key: None,
+            api_key_configured: false,
             system_model: default_system_vision_model(),
+            timeout_ms: default_vision_timeout_ms(),
             auto_analyze_pasted_images: default_auto_analyze_pasted_images(),
             send_original_image_to_model: false,
         }
@@ -324,11 +353,23 @@ impl Default for VisionSettings {
 }
 
 fn normalize_vision_settings(mut settings: VisionSettings) -> VisionSettings {
+    settings.provider = settings.provider.trim().to_ascii_lowercase();
+    if settings.provider.is_empty() {
+        settings.provider = default_vision_provider();
+    }
+    settings.base_url = settings.base_url.trim().trim_end_matches('/').to_string();
+    if settings.base_url.is_empty() {
+        settings.base_url = default_vision_base_url();
+    }
     if settings.system_model.trim().is_empty() {
         settings.system_model = default_system_vision_model();
     } else {
         settings.system_model = settings.system_model.trim().to_string();
     }
+    if settings.timeout_ms == 0 {
+        settings.timeout_ms = default_vision_timeout_ms();
+    }
+    settings.api_key_configured = false;
     settings
 }
 
@@ -737,7 +778,8 @@ impl SettingsService {
 
     /// Current image-analysis settings.
     pub fn vision_settings(&self) -> Result<VisionSettings> {
-        Ok(self.load()?.map(|s| s.vision).unwrap_or_default())
+        let settings = self.load()?.map(|s| s.vision).unwrap_or_default();
+        self.vision_settings_view(settings)
     }
 
     /// Set image-analysis settings.
@@ -745,10 +787,33 @@ impl SettingsService {
         let mut settings = self
             .load()?
             .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        if let Some(api_key) = settings_next.api_key.as_deref() {
+            let api_key = api_key.trim();
+            if api_key.is_empty() {
+                self.secrets.delete(VISION_API_KEY_NAME)?;
+            } else {
+                self.secrets.set(VISION_API_KEY_NAME, api_key)?;
+            }
+        }
         settings.vision = normalize_vision_settings(settings_next);
         let saved = settings.vision.clone();
         self.save(&settings)?;
-        Ok(saved)
+        self.vision_settings_view(saved)
+    }
+
+    /// The configured third-party system-vision API key, if present.
+    pub fn vision_api_key(&self) -> Result<Option<String>> {
+        self.secrets.get(VISION_API_KEY_NAME)
+    }
+
+    fn vision_settings_view(&self, mut settings: VisionSettings) -> Result<VisionSettings> {
+        settings.api_key = None;
+        settings.api_key_configured = self
+            .secrets
+            .get(VISION_API_KEY_NAME)?
+            .map(|key| !key.trim().is_empty())
+            .unwrap_or(false);
+        Ok(settings)
     }
 
     /// The current tool-search mode (default `Disabled`).
@@ -1000,7 +1065,7 @@ impl SettingsService {
             terminal_shell: settings.terminal_shell.label().to_string(),
             thinking_depth: settings.thinking_depth.label().to_string(),
             web_search: settings.web_search.clone(),
-            vision: settings.vision.clone(),
+            vision: self.vision_settings_view(settings.vision.clone())?,
         })
     }
 

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import {
@@ -8,19 +8,18 @@ import {
   getApprovalPolicy,
   getCommands,
   getSettings,
-  getVisionSettings,
   listSkills,
   setApprovalPolicy,
   setChatModel,
   setThinkingDepth,
-  visionRecognizeImage,
-  visionOcrAvailable,
 } from "../api";
 import { message } from "./message";
-import type { Command, ComposerAttachment, Skill, VisionSettings } from "../types";
+import type { Command, ComposerAttachment, Skill } from "../types";
 
 const LONG_TEXT_ATTACHMENT_THRESHOLD = 8 * 1024;
 const MAX_COMPOSER_ATTACHMENTS = 5;
+const COMPOSER_TEXTAREA_MIN_HEIGHT = 60;
+const COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT = 600;
 
 /** A slash-dropdown row. `insertText` is used for built-in slash commands;
  *  `skillName` (when set) marks the row as a skill picker — `chooseSlash`
@@ -71,9 +70,21 @@ interface Props {
   planMode?: boolean;
   /** Optional footer content rendered seamlessly at the bottom of the composer. */
   footer?: React.ReactNode;
+  /** Maximum auto-expanded textarea height in pixels. */
+  textareaMaxHeight?: number;
 }
 
-export function Composer({ value, onChange, onSubmit, placeholder, busy = false, onStop, planMode = false, footer }: Props) {
+export function Composer({
+  value,
+  onChange,
+  onSubmit,
+  placeholder,
+  busy = false,
+  onStop,
+  planMode = false,
+  footer,
+  textareaMaxHeight = COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT,
+}: Props) {
   const { t } = useTranslation();
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const [isThinkingDropdownOpen, setIsThinkingDropdownOpen] = useState(false);
@@ -82,6 +93,7 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   const thinkingDropdownRef = useRef<HTMLDivElement>(null);
   const approvalDropdownRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   // Real discovered models + the active chat model, loaded from the backend
   // settings (populated by API-key validation at login).
@@ -95,15 +107,6 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   // Reloads on `SETTINGS_CHANGED_EVENT` so install/uninstall mid-session is
   // reflected without a chat-page refresh.
   const [skills, setSkills] = useState<Skill[]>([]);
-
-  // Cached vision settings — controls whether pasted images are automatically
-  // analyzed by the pure-Rust system-vision pipeline before being sent.
-  const [visionSettings, setVisionSettings] = useState<VisionSettings>({
-    mode: "system",
-    system_model: "deepagent-vision-rust",
-    auto_analyze_pasted_images: true,
-    send_original_image_to_model: false,
-  });
 
   const reloadSettings = useCallback((cancelled?: () => boolean) => {
     getSettings()
@@ -128,27 +131,6 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
       window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
     };
   }, [reloadSettings]);
-
-  // Load vision settings so image attachments can be analyzed.
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      getVisionSettings()
-        .then((value) => {
-          if (!cancelled) setVisionSettings(value);
-        })
-        .catch(() => {
-          /* browser preview / uninitialized: keep defaults */
-        });
-    };
-    load();
-    const onSettingsChanged = () => load();
-    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
-    };
-  }, []);
 
   // Load the skill registry for the slash-command candidate list, and refresh
   // when settings change (catches install / uninstall / reload mid-session).
@@ -284,6 +266,23 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
   const selectedLabel = labelFor(selectedModel);
 
   const slashOpen = value.startsWith("/") && slashResults.length > 0;
+
+  const resizeTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(
+      Math.max(textarea.scrollHeight, COMPOSER_TEXTAREA_MIN_HEIGHT),
+      textareaMaxHeight,
+    );
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > textareaMaxHeight ? "auto" : "hidden";
+  }, [textareaMaxHeight]);
+
+  useLayoutEffect(() => {
+    resizeTextarea();
+  }, [resizeTextarea, value]);
 
   useEffect(() => {
     if (!value.startsWith("/")) {
@@ -560,69 +559,15 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
             data_url: dataUrl,
           });
           const imagePath = persisted.original_path ?? undefined;
-          const shouldAnalyze =
-            visionSettings.mode === "system" &&
-            visionSettings.auto_analyze_pasted_images &&
-            imagePath;
-          if (shouldAnalyze) {
-            // Keep status "processing" while vision recognition runs.
-            // The attachment card will show "识别中".
-            try {
-              const result = await visionRecognizeImage({ image_path: imagePath! });
-              markAttachmentReady(id, {
-                dataUrl,
-                size: persisted.size_bytes || file.size,
-                storageDir: persisted.storage_dir,
-                originalPath: imagePath,
-                extractedText: result.text,
-                sha256: persisted.sha256 ?? undefined,
-                backendMessage: persisted.message ?? undefined,
-              });
-            } catch (err) {
-              console.error("vision recognition failed:", err);
-              // Even if full analysis fails, the pure-Rust analysis (metadata,
-              // colour, ASCII) may have succeeded. Check if the error is about
-              // OCR specifically — if so, show an info message (not error) and
-              // still mark the attachment ready with whatever text we got.
-              const errMsg = err instanceof Error ? err.message : String(err);
-              // If the error mentions OCR/Tesseract, it means the pure-Rust
-              // analysis ran but OCR was unavailable. Show a helpful prompt.
-              const isOcrIssue = /tesseract|ocr|OCR/i.test(errMsg);
-              if (isOcrIssue) {
-                const ocrAvailable = await visionOcrAvailable();
-                if (!ocrAvailable) {
-                  message.info(
-                    "图片已分析（色彩、轮廓、元数据），但文字识别（OCR）未安装。可在设置中下载 Tesseract OCR 以启用文字提取。"
-                  );
-                }
-                // Mark ready with whatever partial text we got from the error.
-                markAttachmentReady(id, {
-                  dataUrl,
-                  size: persisted.size_bytes || file.size,
-                  storageDir: persisted.storage_dir,
-                  originalPath: imagePath,
-                  extractedText: persisted.extracted_text ?? undefined,
-                  sha256: persisted.sha256 ?? undefined,
-                  backendMessage: persisted.message ?? undefined,
-                });
-              } else {
-                message.error("视觉识别失败，无法分析图片内容");
-                markAttachmentError(id, `视觉识别失败：${errMsg}`);
-              }
-            }
-          } else {
-            // Vision mode is "off" or "model", or auto-analyze is disabled —
-            // mark ready immediately without system-vision extraction.
-            markAttachmentReady(id, {
-              dataUrl,
-              size: persisted.size_bytes || file.size,
-              storageDir: persisted.storage_dir,
-              originalPath: imagePath,
-              extractedText: persisted.extracted_text ?? undefined,
-              sha256: persisted.sha256 ?? undefined,
-              backendMessage: persisted.message ?? undefined,
-            });
-          }
+          markAttachmentReady(id, {
+            dataUrl,
+            size: persisted.size_bytes || file.size,
+            storageDir: persisted.storage_dir,
+            originalPath: imagePath,
+            extractedText: persisted.extracted_text ?? undefined,
+            sha256: persisted.sha256 ?? undefined,
+            backendMessage: persisted.message ?? undefined,
+          });
         } else if (isText) {
           const extractedText = await readFileAsText(file);
           const persisted = await attachmentIngest({
@@ -801,7 +746,12 @@ export function Composer({ value, onChange, onSubmit, placeholder, busy = false,
       )}
 
       <textarea
-        className="w-full min-h-[60px] max-h-[200px] text-text-base placeholder-gray-400 text-sm bg-transparent"
+        ref={textareaRef}
+        className="custom-scrollbar w-full text-text-base placeholder-gray-400 text-sm bg-transparent"
+        style={{
+          minHeight: `${COMPOSER_TEXTAREA_MIN_HEIGHT}px`,
+          maxHeight: `${textareaMaxHeight}px`,
+        }}
         placeholder={placeholder ?? t("composer.placeholder")}
         value={value}
         onChange={(e) => onChange(e.target.value)}

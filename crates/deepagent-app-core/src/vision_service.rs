@@ -1,42 +1,39 @@
-//! Local system-vision service.
+//! Third-party system-vision service.
 //!
-//! Pure-Rust image analysis — no Python, no external ML runtime required.
-//! The pipeline combines:
-//!   1. Image metadata (dimensions, format, colour mode, EXIF)
-//!   2. Pixel-level colour analysis (dominant colours, brightness, saturated regions)
-//!   3. ASCII art rendering (layout reference for the model)
-//!   4. Optional Tesseract OCR (when a binary is available on PATH or installed
-//!      as a managed runtime)
-//!
-//! The entire pipeline runs in-process; the only external dependency is the
-//! optional Tesseract executable.
+//! Image attachments are sent to an OpenAI-compatible vision endpoint
+//! (ModelScope by default). The returned description is then injected into the
+//! text-only main model context by the desktop app.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_vision::analyze::{analyze_image, AnalysisOptions};
 
 use crate::dto::{VisionRecognizeRequestDto, VisionRecognizeResultDto};
-use crate::runtime_service::RuntimeService;
-
-/// Runtime capability for the Tesseract OCR engine.
-const TESSERACT_CAPABILITY: &str = "vision-ocr-tesseract";
-
-/// Model identifier reported back to the caller.
-const VISION_MODEL_ID: &str = "deepagent-vision-rust";
+use crate::settings::{SettingsService, VisionMode};
+use crate::vision_cache_service::{VisionCacheEntry, VisionCacheService};
+use crate::vision_provider_service::{
+    default_vision_prompt, hash_bytes, VisionProviderRequest, VisionProviderService,
+    VISION_PROMPT_VERSION,
+};
 
 #[derive(Clone)]
 pub struct VisionService {
-    runtime: Arc<RuntimeService>,
+    settings: Arc<SettingsService>,
+    provider: VisionProviderService,
+    cache: VisionCacheService,
 }
 
 impl VisionService {
-    pub fn new(runtime: Arc<RuntimeService>) -> Self {
-        Self { runtime }
+    pub fn new(settings: Arc<SettingsService>, cache_root: PathBuf) -> Self {
+        Self {
+            settings,
+            provider: VisionProviderService::new(),
+            cache: VisionCacheService::new(cache_root),
+        }
     }
 
-    pub fn recognize_image(
+    pub async fn recognize_image(
         &self,
         request: VisionRecognizeRequestDto,
     ) -> Result<VisionRecognizeResultDto> {
@@ -48,89 +45,134 @@ impl VisionService {
             )));
         }
 
-        // Resolve Tesseract binary: check managed runtime first, then PATH.
-        let (tesseract_path, tessdata_dir) = self.resolve_tesseract();
-
-        let options = AnalysisOptions {
-            tesseract_path: tesseract_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned()),
-            tessdata_dir: tessdata_dir
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned()),
-            ocr_language: request.prompt.as_deref().map(|p| {
-                // The prompt field is reused as the OCR language code.
-                // Empty or "auto" falls back to the default (chi_sim+eng).
-                if p.trim().is_empty() || p == "auto" {
-                    "chi_sim+eng".to_string()
-                } else {
-                    p.to_string()
-                }
-            }),
-            include_ascii: true,
-            include_color: true,
-        };
-
-        let analysis = analyze_image(&image_path, &options).map_err(CoreError::Other)?;
-
-        // Serialize the full structured result as raw_json.
-        let raw_json = serde_json::to_string(&analysis).unwrap_or_else(|_| "{}".to_string());
-
-        // The `text` field is the human-readable composite description.
-        let text = analysis.text;
-
-        // Determine the "model path" to report.
-        let model_path = tesseract_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "rust-in-process".to_string());
-
-        if text.trim().is_empty() {
+        let settings = self.settings.vision_settings()?;
+        if settings.mode == VisionMode::Off {
+            return Err(CoreError::Other("system vision is disabled".to_string()));
+        }
+        let api_key = self
+            .settings
+            .vision_api_key()?
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| {
+                CoreError::Other("system vision API key is not configured".to_string())
+            })?;
+        if settings.system_model.trim().is_empty() {
             return Err(CoreError::Other(
-                "image analysis returned empty text".to_string(),
+                "system vision model name is not configured".to_string(),
             ));
         }
 
+        let image_bytes =
+            std::fs::read(&image_path).map_err(|e| CoreError::Other(format!("read image: {e}")))?;
+        let image_hash = hash_bytes(&image_bytes);
+        let prompt = request
+            .prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| default_vision_prompt().to_string());
+        let cache_key = self.cache.key_for(
+            &image_hash,
+            &settings.provider,
+            &settings.base_url,
+            &settings.system_model,
+            VISION_PROMPT_VERSION,
+            &prompt,
+        );
+
+        if let Some(cached) = self.cache.get(&cache_key)? {
+            return Ok(VisionRecognizeResultDto {
+                model_id: cached.model,
+                model_path: cached.base_url,
+                text: cached.result,
+                raw_json: cached.raw_json,
+            });
+        }
+
+        let mime = mime_from_path(&image_path);
+        let response = self
+            .provider
+            .recognize_image(VisionProviderRequest {
+                base_url: settings.base_url.clone(),
+                api_key,
+                model: settings.system_model.clone(),
+                timeout_ms: settings.timeout_ms,
+                prompt,
+                image_mime: mime.to_string(),
+                image_bytes,
+            })
+            .await?;
+
+        self.cache.put(
+            &cache_key,
+            &VisionCacheEntry {
+                image_hash,
+                provider: settings.provider,
+                base_url: response.base_url.clone(),
+                model: response.model.clone(),
+                prompt_version: VISION_PROMPT_VERSION.to_string(),
+                result: response.text.clone(),
+                raw_json: response.raw_json.clone(),
+                created_at_ms: now_ms(),
+            },
+        )?;
+
         Ok(VisionRecognizeResultDto {
-            model_id: VISION_MODEL_ID.to_string(),
-            model_path,
-            text,
-            raw_json,
+            model_id: response.model,
+            model_path: response.base_url,
+            text: response.text,
+            raw_json: response.raw_json,
         })
     }
 
-    /// Check whether Tesseract OCR is available (either as a managed runtime
-    /// or on the system PATH). Exposed so the Tauri layer can tell the UI
-    /// whether to prompt the user to download it.
-    pub fn ocr_available(&self) -> bool {
-        if let Some(dir) = self.runtime.resolve(TESSERACT_CAPABILITY) {
-            return deepagent_vision::ocr::is_available(Some(&dir));
-        }
-        deepagent_vision::ocr::is_available(None)
+    pub async fn test_connection(&self) -> Result<VisionRecognizeResultDto> {
+        let settings = self.settings.vision_settings()?;
+        let api_key = self
+            .settings
+            .vision_api_key()?
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| {
+                CoreError::Other("system vision API key is not configured".to_string())
+            })?;
+        let response = self
+            .provider
+            .recognize_image_url(
+                &settings.base_url,
+                &api_key,
+                &settings.system_model,
+                settings.timeout_ms,
+                default_vision_prompt(),
+                "https://modelscope.oss-cn-beijing.aliyuncs.com/demo/images/audrey_hepburn.jpg",
+            )
+            .await?;
+        Ok(VisionRecognizeResultDto {
+            model_id: response.model,
+            model_path: response.base_url,
+            text: response.text,
+            raw_json: response.raw_json,
+        })
     }
+}
 
-    /// Resolve the Tesseract binary path and tessdata directory.
-    ///
-    /// Returns `(tesseract_path, tessdata_dir)` where either may be `None`.
-    fn resolve_tesseract(&self) -> (Option<PathBuf>, Option<PathBuf>) {
-        if let Some(dir) = self.runtime.resolve(TESSERACT_CAPABILITY) {
-            // Managed runtime: the directory contains tesseract.exe and a
-            // tessdata/ subdirectory.
-            let tessdata = dir.join("tessdata");
-            let tessdata_dir = if tessdata.is_dir() {
-                Some(tessdata)
-            } else {
-                None
-            };
-            return (Some(dir), tessdata_dir);
-        }
-
-        // Check PATH — no tessdata override needed (system Tesseract uses
-        // its own compiled data path).
-        if deepagent_vision::ocr::is_available(None) {
-            return (None, None);
-        }
-
-        (None, None)
+fn mime_from_path(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => "image/png",
     }
+}
+
+fn now_ms() -> i64 {
+    use deepagent_core::clock::{Clock, SystemClock};
+    SystemClock.now().as_millis()
 }

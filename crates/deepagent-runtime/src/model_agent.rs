@@ -6,9 +6,8 @@
 //! the runtime's [`AgentDecision`] vocabulary.
 //!
 //! Thinking Mode persistence (开发计划.md Phase 2 §5): when the model returns a
-//! turn that contains tool calls, the assistant message — including its
-//! `reasoning_content` — is appended to the conversation so it is replayed on
-//! the next request, exactly as DeepSeek's Thinking Mode protocol requires.
+//! turn includes `reasoning_content`, the assistant message preserves it so the
+//! session event log can replay the same thinking trace after refresh.
 
 use std::sync::Arc;
 
@@ -202,13 +201,12 @@ impl Agent for ModelAgent {
             }
         }
 
-        // Persist the assistant turn. Thinking Mode: keep reasoning_content when
-        // the turn carries tool calls so it is replayed next request.
+        // Persist the assistant turn in the agent's running conversation.
+        // Thinking Mode reasoning is preserved for both tool-call and final
+        // turns so the outer session log can replay it after refresh.
         let mut assistant = Message::text(Role::Assistant, response.message.content.clone());
         assistant.tool_calls = response.message.tool_calls.clone();
-        if response.message.has_tool_calls() {
-            assistant.reasoning_content = response.message.reasoning_content.clone();
-        }
+        assistant.reasoning_content = response.message.reasoning_content.clone();
         self.messages.push(assistant);
 
         // Decide the next action. The model may emit several tool calls in one
@@ -236,7 +234,7 @@ impl Agent for ModelAgent {
             Some(FinishReason::ContentFilter) => {
                 Err(CoreError::other("model stopped due to content filter"))
             }
-            _ => Ok(AgentDecision::Complete(response.message.content)),
+            _ => Ok(AgentDecision::CompleteMessage(response.message)),
         }
     }
 
@@ -270,9 +268,54 @@ mod tests {
         let mut agent =
             ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "do it", vec![]);
         let decision = agent.think(0, &[]).await.unwrap();
-        assert_eq!(decision, AgentDecision::Complete("All done.".to_string()));
+        match decision {
+            AgentDecision::CompleteMessage(message) => {
+                assert_eq!(message.content, "All done.");
+                assert!(message.reasoning_content.is_none());
+            }
+            other => panic!("expected CompleteMessage, got {other:?}"),
+        }
         // System + user + assistant.
         assert_eq!(agent.conversation().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn final_answer_preserves_reasoning_for_replay() {
+        let events = vec![
+            r#"{"choices":[{"delta":{"reasoning_content":"I should inspect the image. "}}]}"#
+                .to_string(),
+            r#"{"choices":[{"delta":{"content":"It shows a compile error."},"finish_reason":"stop"}]}"#
+                .to_string(),
+            "[DONE]".to_string(),
+        ];
+        let mut agent = ModelAgent::new(
+            client(events),
+            "deepseek-v4-flash",
+            "sys",
+            "describe",
+            vec![],
+        );
+        let decision = agent.think(0, &[]).await.unwrap();
+        match decision {
+            AgentDecision::CompleteMessage(message) => {
+                assert_eq!(message.content, "It shows a compile error.");
+                assert_eq!(
+                    message.reasoning_content.as_deref(),
+                    Some("I should inspect the image. ")
+                );
+            }
+            other => panic!("expected CompleteMessage, got {other:?}"),
+        }
+
+        let assistant = agent
+            .conversation()
+            .iter()
+            .find(|m| m.role == Role::Assistant)
+            .unwrap();
+        assert_eq!(
+            assistant.reasoning_content.as_deref(),
+            Some("I should inspect the image. ")
+        );
     }
 
     #[tokio::test]

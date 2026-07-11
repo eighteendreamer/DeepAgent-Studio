@@ -20,6 +20,7 @@ import {
   setProjectPinned,
   setSessionPinned,
   clearApiKey,
+  getVisionSettings,
   getSettings,
   runChat,
   resolveApproval,
@@ -31,8 +32,9 @@ import {
   saveTranscriptFile,
   openSessionInNewWindow,
   renameSession,
+  visionRecognizeImage,
 } from "./api";
-import type { RuntimeEvent } from "./api";
+import type { PreflightToolCall, RuntimeEvent } from "./api";
 import type {
   ApprovalRequest,
   ChatMessage,
@@ -100,22 +102,10 @@ function mapPersistedAttachment(attachment: PersistedAttachment): ComposerAttach
 }
 
 function mapConversationToChatMessages(conversation: ConversationMessage[]): ChatMessage[] {
-  return conversation.map((m) => ({
-    role: m.role,
-    content: m.content,
-    attachments: m.attachments?.map(mapPersistedAttachment),
-    usage: m.usage
-      ? {
-          promptTokens: m.usage.prompt_tokens,
-          completionTokens: m.usage.completion_tokens,
-          totalTokens: m.usage.total_tokens,
-          cacheHitTokens: m.usage.prompt_cache_hit_tokens,
-          cacheMissTokens: m.usage.prompt_cache_miss_tokens,
-          costYuan: m.usage.cost_yuan,
-        }
-      : undefined,
-    runMs: m.usage?.duration_ms,
-    parts: m.parts.map((p): MessagePart => {
+  const mapped: ChatMessage[] = [];
+  conversation.forEach((m) => {
+    const attachments = m.attachments?.map(mapPersistedAttachment);
+    const parts = m.parts.map((p): MessagePart => {
       if (p.kind === "tool") {
         return {
           kind: "tool",
@@ -139,8 +129,26 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
       }
       if (p.kind === "reasoning") return { kind: "reasoning", text: p.text };
       return { kind: "text", text: p.text };
-    }),
-  }));
+    });
+    mapped.push({
+      role: m.role,
+      content: m.content,
+      attachments,
+      usage: m.usage
+        ? {
+            promptTokens: m.usage.prompt_tokens,
+            completionTokens: m.usage.completion_tokens,
+            totalTokens: m.usage.total_tokens,
+            cacheHitTokens: m.usage.prompt_cache_hit_tokens,
+            cacheMissTokens: m.usage.prompt_cache_miss_tokens,
+            costYuan: m.usage.cost_yuan,
+          }
+        : undefined,
+      runMs: m.usage?.duration_ms,
+      parts,
+    });
+  });
+  return mapped;
 }
 
 function buildPromptWithAttachments(text: string, attachments: ComposerAttachment[] = []): string {
@@ -163,7 +171,7 @@ function buildPromptWithAttachments(text: string, attachments: ComposerAttachmen
     } else if (attachment.kind === "image") {
       lines.push(
         "",
-        "This image is attached but could not be analyzed by the system vision runtime. Do not infer details that are not present. If the image content is essential, ask the user to install the vision model or describe the image.",
+        "This image is attached but could not be recognized by the configured system vision API. Do not infer details that are not present. If the image content is essential, ask the user to configure system vision or describe the image.",
       );
     } else {
       lines.push("", "Binary or unsupported file content was not read. Use file tools if deeper inspection is needed.");
@@ -172,6 +180,109 @@ function buildPromptWithAttachments(text: string, attachments: ComposerAttachmen
     return lines.join("\n");
   });
   return [trimmed || "\u8bf7\u67e5\u770b\u9644\u4ef6\u5185\u5bb9\u3002", "", "<attachments>", blocks.join("\n\n"), "</attachments>"].join("\n");
+}
+
+async function recognizeImageAttachmentsOnSend(
+  attachments: ComposerAttachment[] = [],
+): Promise<{
+  attachments: ComposerAttachment[];
+  skipped: boolean;
+  failed: boolean;
+  error?: string;
+  recognizedCount: number;
+}> {
+  const pendingImages = attachments.filter((attachment) => attachment.kind === "image" && !attachment.extractedText);
+  if (pendingImages.length === 0) {
+    return { attachments, skipped: true, failed: false, recognizedCount: 0 };
+  }
+
+  let visionSettings;
+  try {
+    visionSettings = await getVisionSettings();
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("get_vision_settings failed before send:", error);
+    return {
+      attachments: attachments.map((attachment) =>
+        attachment.kind === "image" && !attachment.extractedText
+          ? {
+              ...attachment,
+              status: "error",
+              error: `Vision settings load failed: ${errorMessage}`,
+              backendMessage: `Vision settings load failed: ${errorMessage}`,
+            }
+          : attachment
+      ),
+      skipped: false,
+      failed: true,
+      error: `Vision settings load failed: ${errorMessage}`,
+      recognizedCount: 0,
+    };
+  }
+
+  if (visionSettings.mode !== "system" || !visionSettings.auto_analyze_pasted_images) {
+    return { attachments, skipped: true, failed: false, recognizedCount: 0 };
+  }
+
+  const next: ComposerAttachment[] = [];
+  const errors: string[] = [];
+  let recognizedCount = 0;
+  for (const attachment of attachments) {
+    if (attachment.kind !== "image" || attachment.extractedText) {
+      next.push(attachment);
+      continue;
+    }
+    if (!attachment.originalPath) {
+      const errorMessage = "Image file path is missing.";
+      errors.push(`${attachment.name}: ${errorMessage}`);
+      next.push({
+        ...attachment,
+        status: "error",
+        error: `Vision recognition failed: ${errorMessage}`,
+        backendMessage: `Vision recognition failed: ${errorMessage}`,
+      });
+      continue;
+    }
+    try {
+      const result = await visionRecognizeImage({ image_path: attachment.originalPath });
+      if (!result.text.trim()) {
+        const errorMessage = "Vision API returned an empty result.";
+        errors.push(`${attachment.name}: ${errorMessage}`);
+        next.push({
+          ...attachment,
+          status: "error",
+          error: `Vision recognition failed: ${errorMessage}`,
+          backendMessage: `Vision recognition failed: ${errorMessage}`,
+        });
+        continue;
+      }
+      recognizedCount += 1;
+      next.push({
+        ...attachment,
+        extractedText: result.text,
+        backendMessage: "Image recognized by system vision.",
+        status: "ready",
+        error: undefined,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error("vision recognition failed before send:", error);
+      errors.push(`${attachment.name}: ${errorMessage}`);
+      next.push({
+        ...attachment,
+        status: "error",
+        error: `Vision recognition failed: ${errorMessage}`,
+        backendMessage: `Vision recognition failed: ${errorMessage}`,
+      });
+    }
+  }
+  return {
+    attachments: next,
+    skipped: false,
+    failed: errors.length > 0,
+    error: errors.join("\n"),
+    recognizedCount,
+  };
 }
 
 export function App() {
@@ -655,15 +766,13 @@ export function App() {
   }, []);
 
   const onSubmit = useCallback(
-    (
+    async (
       text: string,
       attachments: ComposerAttachment[] = [],
       envMode?: "local" | "remote",
       connectionId?: string | null
     ) => {
-      const submittedText = buildPromptWithAttachments(text, attachments);
-      if (!submittedText) return;
-      const visibleUserText = text.trim() || (attachments.length > 0 ? "请查看附件内容。" : "");
+      if (!text.trim() && attachments.length === 0) return;
       const storedEnvMode = localStorage.getItem("envMode");
       const effectiveEnvMode: "local" | "remote" =
         envMode ?? (storedEnvMode === "remote" ? "remote" : "local");
@@ -681,6 +790,8 @@ export function App() {
       const continueId = view === "chat" && activeId ? activeId : null;
       if (continueId && runningSessionIds.has(continueId)) return;
       if (!continueId && activePendingRunKey) return;
+
+      const visibleUserText = text.trim() || (attachments.length > 0 ? "请查看附件内容。" : "");
 
       // Wall-clock start of this run, for the "total time" footer metric.
       const runStart = Date.now();
@@ -733,9 +844,22 @@ export function App() {
         const current = liveTranscripts.current.get(runKey) ?? [];
         const updated = fn(current);
         liveTranscripts.current.set(runKey, updated);
-        if (activeIdRef.current === runKey || activePendingRunKeyRef.current === runKey) {
+        if (activeIdRef.current === runKey || activePendingRunKeyRef.current === runKey || runKey === pendingKey) {
           setMessages(updated);
         }
+      };
+
+      const replaceLastUserAttachments = (nextAttachments: ComposerAttachment[]) => {
+        updateTranscript((prev) => {
+          const next = [...prev];
+          for (let i = next.length - 1; i >= 0; i -= 1) {
+            if (next[i].role === "user") {
+              next[i] = { ...next[i], attachments: nextAttachments };
+              break;
+            }
+          }
+          return next;
+        });
       };
 
       // --- ordered-parts helpers ------------------------------------------
@@ -1028,6 +1152,156 @@ export function App() {
         }
       };
 
+      const finishRun = () => {
+        setRunningSessionIds((prev) => {
+          const next = new Set(prev);
+          next.delete(runKey);
+          if (continueId) next.delete(continueId);
+          return next;
+        });
+        setActivePendingRunKey((current) => (current === pendingKey ? null : current));
+        setApprovals((prev) => prev.filter((a) => a.run_id !== runId));
+        // Keep the finished session's live transcript in memory so returning
+        // to it preserves streamed reasoning deltas. The DB replay currently
+        // reconstructs tool cards and final messages, but tool-call reasoning
+        // only exists in the live stream. Only clear the temporary pending key.
+        if (pendingKey !== runKey) {
+          liveTranscripts.current.delete(pendingKey);
+        }
+      };
+
+      let submittedText = buildPromptWithAttachments(text, attachments);
+      const preflightTools: PreflightToolCall[] = [];
+      let preflightAbortMessage: string | null = null;
+      const imageAttachments = attachments.filter((attachment) => attachment.kind === "image");
+      const pendingImageCount = imageAttachments.filter((attachment) => !attachment.extractedText).length;
+      if (imageAttachments.length > 0) {
+        const visionCallId = `system_vision:${runId}`;
+        const visionStartedAt = Date.now();
+        const visionArguments = {
+          images: imageAttachments.map((attachment) => ({
+            name: attachment.name,
+            mime: attachment.mime,
+            path: attachment.originalPath,
+            cached: !!attachment.extractedText,
+          })),
+        };
+        upsertTool(visionCallId, {
+          name: "system_vision",
+          args: JSON.stringify(visionArguments, null, 2),
+          status: pendingImageCount > 0 ? "running" : "ok",
+          detail:
+            pendingImageCount > 0
+              ? `正在识别 ${pendingImageCount} 张图片...`
+              : `已使用系统视觉识别 ${imageAttachments.length} 张图片，继续交给主模型。`,
+        });
+
+        if (pendingImageCount === 0) {
+          const output = {
+            ok: true,
+            cached: true,
+            recognized_images: imageAttachments.length,
+            attachments: imageAttachments.map((attachment) => ({
+              name: attachment.name,
+              status: attachment.status,
+              vision_result: attachment.extractedText ?? "",
+            })),
+          };
+          upsertTool(visionCallId, {
+            name: "system_vision",
+            status: "ok",
+            durationMs: Date.now() - visionStartedAt,
+            detail: `已使用系统视觉识别 ${imageAttachments.length} 张图片，继续交给主模型。`,
+            output,
+          });
+          preflightTools.push({
+            call_id: visionCallId,
+            name: "system_vision",
+            arguments: visionArguments,
+            ok: true,
+            output,
+            duration_ms: Date.now() - visionStartedAt,
+          });
+        } else {
+          const visionResult = await recognizeImageAttachmentsOnSend(attachments);
+          replaceLastUserAttachments(visionResult.attachments);
+
+          if (visionResult.skipped) {
+            submittedText = buildPromptWithAttachments(text, visionResult.attachments);
+            const output = {
+              skipped: true,
+              reason: "system vision is disabled or automatic image recognition is disabled",
+            };
+            upsertTool(visionCallId, {
+              name: "system_vision",
+              status: "blocked",
+              durationMs: Date.now() - visionStartedAt,
+              detail: "系统视觉未启用或未设置自动识别，已跳过图片识别。",
+              output,
+            });
+            preflightTools.push({
+              call_id: visionCallId,
+              name: "system_vision",
+              arguments: visionArguments,
+              ok: false,
+              output,
+              duration_ms: Date.now() - visionStartedAt,
+            });
+          } else if (visionResult.failed) {
+            const output = {
+              ok: false,
+              error: visionResult.error ?? "image recognition failed",
+              recognized_images: visionResult.recognizedCount,
+            };
+            upsertTool(visionCallId, {
+              name: "system_vision",
+              status: "error",
+              durationMs: Date.now() - visionStartedAt,
+              detail: visionResult.error ?? "图片识别失败",
+              output,
+            });
+            preflightTools.push({
+              call_id: visionCallId,
+              name: "system_vision",
+              arguments: visionArguments,
+              ok: false,
+              output,
+              duration_ms: Date.now() - visionStartedAt,
+            });
+            submittedText = buildPromptWithAttachments(text, visionResult.attachments);
+            preflightAbortMessage = `图片识别失败：${visionResult.error ?? "未知错误"}\n\n已停止本轮请求，避免主模型在没有图片识别结果的情况下猜测图片内容。请检查系统视觉设置后重试。`;
+          } else {
+            submittedText = buildPromptWithAttachments(text, visionResult.attachments);
+            const output = {
+              ok: true,
+              recognized_images: visionResult.recognizedCount,
+              attachments: visionResult.attachments
+                .filter((attachment) => attachment.kind === "image")
+                .map((attachment) => ({
+                  name: attachment.name,
+                  status: attachment.status,
+                  vision_result: attachment.extractedText ?? "",
+                })),
+            };
+            upsertTool(visionCallId, {
+              name: "system_vision",
+              status: "ok",
+              durationMs: Date.now() - visionStartedAt,
+              detail: `已识别 ${visionResult.recognizedCount} 张图片，继续交给主模型。`,
+              output,
+            });
+            preflightTools.push({
+              call_id: visionCallId,
+              name: "system_vision",
+              arguments: visionArguments,
+              ok: true,
+              output,
+              duration_ms: Date.now() - visionStartedAt,
+            });
+          }
+        }
+      }
+
       runChat(
         submittedText,
         onEvent,
@@ -1038,7 +1312,9 @@ export function App() {
         continueId,
         runId,
         effectiveEnvMode,
-        effectiveConnectionId
+        effectiveConnectionId,
+        preflightTools,
+        preflightAbortMessage
       )
         .then((newSessionId) => {
           // The run created (or continued) a session under the active project;
@@ -1072,23 +1348,7 @@ export function App() {
             return next;
           });
         })
-        .finally(() => {
-          setRunningSessionIds((prev) => {
-            const next = new Set(prev);
-            next.delete(runKey);
-            if (continueId) next.delete(continueId);
-            return next;
-          });
-          setActivePendingRunKey((current) => (current === pendingKey ? null : current));
-          setApprovals((prev) => prev.filter((a) => a.run_id !== runId));
-          // Keep the finished session's live transcript in memory so returning
-          // to it preserves streamed reasoning deltas. The DB replay currently
-          // reconstructs tool cards and final messages, but tool-call reasoning
-          // only exists in the live stream. Only clear the temporary pending key.
-          if (pendingKey !== runKey) {
-            liveTranscripts.current.delete(pendingKey);
-          }
-        });
+        .finally(finishRun);
     },
     [activeId, view, refreshSessions, runningSessionIds, activePendingRunKey]
   );

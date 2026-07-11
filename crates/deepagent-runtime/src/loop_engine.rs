@@ -307,6 +307,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
 
             match decision {
                 AgentDecision::Complete(msg) => {
+                    let message = Message::assistant(&msg);
+                    let content = msg;
                     // Post-completion verification / self-healing.
                     if let (Some(plan), Some(engine)) =
                         (self.verification, reflection_engine.as_mut())
@@ -326,14 +328,43 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         }
                     }
 
-                    session.append(EventPayload::MessageAppended {
-                        message: Message::assistant(&msg),
-                    })?;
+                    session.append(EventPayload::MessageAppended { message })?;
                     session.transition_task(task, TaskState::Completed)?;
                     self.emit(RuntimeEvent::RunCompleted {
-                        message: msg.clone(),
+                        message: content.clone(),
                     });
-                    outcome = RunOutcome::Completed(msg);
+                    outcome = RunOutcome::Completed(content);
+                    finished = true;
+                    break;
+                }
+
+                AgentDecision::CompleteMessage(message) => {
+                    let content = message.content.clone();
+                    // Post-completion verification / self-healing.
+                    if let (Some(plan), Some(engine)) =
+                        (self.verification, reflection_engine.as_mut())
+                    {
+                        match self
+                            .verify_after_completion(session, session_id, plan, engine)
+                            .await?
+                        {
+                            VerifyStep::Passed | VerifyStep::GaveUp => {
+                                // Either clean or exhausted: accept completion.
+                            }
+                            VerifyStep::Retry(obs) => {
+                                // Hand the reflection back; keep the task running.
+                                last_observations = vec![obs];
+                                continue;
+                            }
+                        }
+                    }
+
+                    session.append(EventPayload::MessageAppended { message })?;
+                    session.transition_task(task, TaskState::Completed)?;
+                    self.emit(RuntimeEvent::RunCompleted {
+                        message: content.clone(),
+                    });
+                    outcome = RunOutcome::Completed(content);
                     finished = true;
                     break;
                 }
@@ -1096,6 +1127,42 @@ mod tests {
         // Metrics recorded the call.
         assert_eq!(metrics.get(names::TOOL_CALLS), 1);
         assert_eq!(metrics.get(names::TOOL_FAILURES), 0);
+    }
+
+    #[tokio::test]
+    async fn complete_message_persists_final_reasoning() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("run")).unwrap();
+        let session_id = session.id();
+        let task = session.create_task("explain screenshot").unwrap();
+        let final_message =
+            Message::assistant("final answer").with_reasoning("reasoning visible after refresh");
+        let mut agent = ScriptedAgent::new([AgentDecision::CompleteMessage(final_message)]);
+
+        let reg = registry();
+        let engine = RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default());
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+        assert_eq!(outcome, RunOutcome::Completed("final answer".into()));
+
+        let events = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session_id)
+            .unwrap();
+        let assistant = events
+            .iter()
+            .find_map(|ev| match &ev.payload {
+                EventPayload::MessageAppended { message }
+                    if message.role == deepagent_core::message::Role::Assistant =>
+                {
+                    Some(message)
+                }
+                _ => None,
+            })
+            .expect("assistant message event");
+        assert_eq!(
+            assistant.reasoning_content.as_deref(),
+            Some("reasoning visible after refresh")
+        );
     }
 
     #[tokio::test]

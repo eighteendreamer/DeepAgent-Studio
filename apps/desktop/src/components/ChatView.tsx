@@ -17,6 +17,7 @@ import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
 import {
   OPEN_AUTOMATION_EVENT,
+  previewReadDataUrl,
   projectMapStatus,
   SEND_TO_CHAT_EVENT,
 } from "../api";
@@ -501,49 +502,96 @@ function formatAttachmentSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function attachmentImageSrc(item: ComposerAttachment): string | null {
-  if (item.kind !== "image") return null;
-  if (item.dataUrl) return item.dataUrl;
+function attachmentPath(item: ComposerAttachment): string | null {
   const path = item.originalPath ?? item.localPath;
-  return path ? convertFileSrc(path) : null;
+  return path?.trim() || null;
+}
+
+function UserAttachmentCard({ item }: { item: ComposerAttachment }) {
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(() => item.dataUrl ?? null);
+  const [imageFailed, setImageFailed] = useState(false);
+  const path = attachmentPath(item);
+
+  useEffect(() => {
+    let cancelled = false;
+    setImageFailed(false);
+
+    if (item.kind !== "image") {
+      setLoadedSrc(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (item.dataUrl) {
+      setLoadedSrc(item.dataUrl);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (!path) {
+      setLoadedSrc(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setLoadedSrc(null);
+    previewReadDataUrl(path)
+      .then((dataUrl) => {
+        if (!cancelled && dataUrl) setLoadedSrc(dataUrl);
+      })
+      .catch(() => {
+        const assetSrc = convertFileSrc(path);
+        if (!cancelled) setLoadedSrc(assetSrc);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [item.kind, item.dataUrl, path]);
+
+  const imageSrc = item.kind === "image" && !imageFailed ? loadedSrc : null;
+
+  return (
+    <div
+      className="group/attachment flex min-h-14 max-w-[220px] items-center gap-2 overflow-hidden rounded-xl border border-border-theme bg-white px-2 py-2 shadow-sm"
+      title={item.originalPath ?? item.localPath ?? item.name}
+    >
+      {imageSrc ? (
+        <img
+          src={imageSrc}
+          alt={item.name}
+          className="h-12 w-12 shrink-0 rounded-lg border border-border-theme object-cover"
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border-theme bg-gray-50 text-text-secondary">
+          <FontAwesomeIcon
+            icon={["fas", item.kind === "image" ? "image" : item.kind === "text" ? "file-lines" : "file"]}
+            className="text-[15px]"
+          />
+        </div>
+      )}
+      <div className="min-w-0 flex-1 text-left">
+        <div className="truncate text-[12px] font-medium text-text-base">{item.name}</div>
+        <div className="truncate text-[11px] text-text-secondary">
+          {attachmentLabel(item)}
+          {formatAttachmentSize(item.size) ? ` · ${formatAttachmentSize(item.size)}` : ""}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function UserAttachments({ attachments }: { attachments: ComposerAttachment[] }) {
   if (attachments.length === 0) return null;
   return (
     <div className="mb-2 flex max-w-[80%] flex-wrap justify-end gap-2">
-      {attachments.map((item) => {
-        const imageSrc = attachmentImageSrc(item);
-        return (
-          <div
-            key={item.id}
-            className="group/attachment flex min-h-14 max-w-[220px] items-center gap-2 overflow-hidden rounded-xl border border-border-theme bg-white px-2 py-2 shadow-sm"
-            title={item.originalPath ?? item.localPath ?? item.name}
-          >
-            {imageSrc ? (
-              <img
-                src={imageSrc}
-                alt={item.name}
-                className="h-12 w-12 shrink-0 rounded-lg border border-border-theme object-cover"
-              />
-            ) : (
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border-theme bg-gray-50 text-text-secondary">
-                <FontAwesomeIcon
-                  icon={["fas", item.kind === "image" ? "image" : item.kind === "text" ? "file-lines" : "file"]}
-                  className="text-[15px]"
-                />
-              </div>
-            )}
-            <div className="min-w-0 flex-1 text-left">
-              <div className="truncate text-[12px] font-medium text-text-base">{item.name}</div>
-              <div className="truncate text-[11px] text-text-secondary">
-                {attachmentLabel(item)}
-                {formatAttachmentSize(item.size) ? ` · ${formatAttachmentSize(item.size)}` : ""}
-              </div>
-            </div>
-          </div>
-        );
-      })}
+      {attachments.map((item) => (
+        <UserAttachmentCard key={item.id} item={item} />
+      ))}
     </div>
   );
 }
@@ -1310,6 +1358,7 @@ export function ChatView({
               busy={busy}
               onStop={onStop}
               planMode={planMode}
+              textareaMaxHeight={600}
             />
           </div>
         </div>
@@ -1481,6 +1530,7 @@ function AssistantTurn({
       return <ToolCallCard key={`tool-${part.tool.call_id}`} tool={part.tool} />;
     }
     if (part.kind === "reasoning") {
+      if (!part.text.trim()) return null;
       return <ReasoningBlock key={`r-${pi}`} text={part.text} defaultOpen={streamTail} />;
     }
     return (

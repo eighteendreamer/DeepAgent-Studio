@@ -25,7 +25,7 @@ use deepagent_context::{
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
-use deepagent_core::message::Message;
+use deepagent_core::message::{Message, ToolCall};
 use deepagent_hooks::{
     DecisionSource, Hook, HookCommandRunner, HookContext, HookData, HookOutcome, HookPoint,
     HookRegistry, PermissionRulesHook, SystemHookRunner,
@@ -42,7 +42,7 @@ use deepagent_tools::{PermissionSet, ToolRegistry};
 
 use crate::approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
 use crate::cost_service::CostRecordRequest;
-use crate::dto::ApprovalRequestDto;
+use crate::dto::{ApprovalRequestDto, PreflightToolCallDto};
 use crate::office_service::OfficeService;
 use crate::project_map_service::ProjectMapService;
 use crate::settings::SettingsService;
@@ -1930,8 +1930,17 @@ impl ChatService {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
-        self.run_in_session(prompt, None, None, None, on_event, on_approval)
-            .await
+        self.run_in_session(
+            prompt,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            on_event,
+            on_approval,
+        )
+        .await
     }
 
     /// Like [`ChatService::run`], but when `continue_session` names an existing
@@ -1945,6 +1954,8 @@ impl ChatService {
         continue_session: Option<&str>,
         env_mode: Option<&str>,
         connection_id: Option<&str>,
+        preflight_tools: Vec<PreflightToolCallDto>,
+        preflight_abort_message: Option<String>,
         on_event: F,
         on_approval: A,
     ) -> Result<String>
@@ -2247,6 +2258,61 @@ impl ChatService {
             message: Message::user(prompt),
         })?;
         let task = session.create_task(prompt)?;
+        for tool in &preflight_tools {
+            let call = ToolCall {
+                id: tool.call_id.clone(),
+                name: tool.name.clone(),
+                arguments: tool.arguments.clone(),
+            };
+            sink.emit(RuntimeEvent::ToolStarted {
+                name: call.name.clone(),
+                call_id: call.id.clone(),
+                arguments: call.arguments.clone(),
+            });
+            session.append(EventPayload::ToolCallRequested { call })?;
+            session.append(EventPayload::ToolCallCompleted {
+                call_id: tool.call_id.clone(),
+                ok: tool.ok,
+                output: tool.output.clone(),
+                duration_ms: tool.duration_ms,
+            })?;
+            sink.emit(RuntimeEvent::ToolCompleted {
+                name: tool.name.clone(),
+                call_id: tool.call_id.clone(),
+                ok: tool.ok,
+                output: tool.output.clone(),
+                duration_ms: tool.duration_ms,
+            });
+        }
+        if let Some(abort_message) = preflight_abort_message
+            .as_deref()
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+        {
+            let abort_message = abort_message.to_string();
+            session.transition_task(task, deepagent_core::task::TaskState::Running)?;
+            sink.emit(RuntimeEvent::RunStarted {
+                task_id: task.to_string(),
+            });
+            sink.emit(RuntimeEvent::SessionRegistered {
+                session_id: session_id.clone(),
+                title: session.state().title.clone(),
+            });
+            sink.emit(RuntimeEvent::TurnStarted { step: 0 });
+            sink.emit(RuntimeEvent::ContentDelta {
+                text: abort_message.clone(),
+            });
+            session.append(EventPayload::MessageAppended {
+                message: Message::assistant(&abort_message),
+            })?;
+            session.transition_task(task, deepagent_core::task::TaskState::Completed)?;
+            sink.emit(RuntimeEvent::RunCompleted {
+                message: abort_message,
+            });
+            drop(sink);
+            let _ = pump.await;
+            return Ok(session_id);
+        }
 
         // Passive knowledge injection (primary precision channel): retrieve
         // entries relevant to this prompt and inject them as a `<system-
@@ -3251,6 +3317,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preflight_tools_are_persisted_as_session_tool_events() {
+        let (db, settings, dir) = seeded().await;
+        let chat = ChatService::new(db.clone(), settings, chat_transport(), dir.path());
+        let events = Arc::new(std::sync::Mutex::new(Vec::<RuntimeEvent>::new()));
+        let sink = events.clone();
+
+        let session_id = chat
+            .run_in_session(
+                "analyze this screenshot",
+                None,
+                None,
+                None,
+                vec![PreflightToolCallDto {
+                    call_id: "system_vision:test".to_string(),
+                    name: "system_vision".to_string(),
+                    arguments: serde_json::json!({"images":[{"name":"shot.png"}]}),
+                    ok: true,
+                    output: serde_json::json!({"recognized_images":1}),
+                    duration_ms: 42,
+                }],
+                None,
+                move |ev| {
+                    sink.lock().unwrap().push(ev);
+                },
+                |_| {},
+            )
+            .await
+            .unwrap();
+
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        let id = deepagent_core::id::SessionId::from_str(&session_id).unwrap();
+        let persisted = store.load_session(id).unwrap();
+        assert!(persisted.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ToolCallRequested { call }
+                if call.id == "system_vision:test" && call.name == "system_vision"
+        )));
+        assert!(persisted.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ToolCallCompleted { call_id, ok, duration_ms, .. }
+                if call_id == "system_vision:test" && *ok && *duration_ms == 42
+        )));
+
+        let live = events.lock().unwrap();
+        assert!(live.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::ToolStarted { call_id, name, .. }
+                if call_id == "system_vision:test" && name == "system_vision"
+        )));
+        assert!(live.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::ToolCompleted { call_id, name, ok, .. }
+                if call_id == "system_vision:test" && name == "system_vision" && *ok
+        )));
+    }
+
+    #[tokio::test]
+    async fn preflight_abort_persists_failure_without_calling_model() {
+        let (db, settings, dir) = seeded().await;
+        let transport = Arc::new(RecordingTransport::default());
+        let chat = ChatService::new(db.clone(), settings, transport.clone(), dir.path());
+
+        let session_id = chat
+            .run_in_session(
+                "analyze this broken screenshot",
+                None,
+                None,
+                None,
+                vec![PreflightToolCallDto {
+                    call_id: "system_vision:error".to_string(),
+                    name: "system_vision".to_string(),
+                    arguments: serde_json::json!({"images":[{"name":"shot.png"}]}),
+                    ok: false,
+                    output: serde_json::json!({"error":"input size exceed limit"}),
+                    duration_ms: 9,
+                }],
+                Some("图片识别失败，已停止本轮请求。".to_string()),
+                |_| {},
+                |_| {},
+            )
+            .await
+            .unwrap();
+
+        assert!(transport.last_body.lock().unwrap().is_none());
+
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        let id = deepagent_core::id::SessionId::from_str(&session_id).unwrap();
+        let persisted = store.load_session(id).unwrap();
+        assert!(persisted.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ToolCallCompleted { call_id, ok, .. }
+                if call_id == "system_vision:error" && !*ok
+        )));
+        assert!(persisted.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::MessageAppended { message }
+                if message.role == deepagent_core::message::Role::Assistant
+                    && message.content.contains("图片识别失败")
+        )));
+    }
+
+    #[tokio::test]
     async fn slash_plan_and_execute_toggle_session_state_without_model() {
         let (db, settings, dir) = seeded().await;
         let chat = ChatService::new(db.clone(), settings, chat_transport(), dir.path());
@@ -3272,9 +3440,18 @@ mod tests {
             matches!(ev, RuntimeEvent::RunCompleted { message } if message.contains("Entered Plan mode"))
         }));
 
-        chat.run_in_session("/execute", Some(&sid), None, None, |_| {}, |_| {})
-            .await
-            .unwrap();
+        chat.run_in_session(
+            "/execute",
+            Some(&sid),
+            None,
+            None,
+            Vec::new(),
+            None,
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
         assert!(!chat.is_plan_mode(&sid));
 
         let id = deepagent_core::id::SessionId::from_str(&sid).unwrap();
@@ -3433,7 +3610,16 @@ mod tests {
         let first = chat.run("hello", |_| {}, |_| {}).await.unwrap();
         // Second turn → continue the same session.
         let second = chat
-            .run_in_session("follow up", Some(&first), None, None, |_| {}, |_| {})
+            .run_in_session(
+                "follow up",
+                Some(&first),
+                None,
+                None,
+                Vec::new(),
+                None,
+                |_| {},
+                |_| {},
+            )
             .await
             .unwrap();
         assert_eq!(first, second, "continuation reuses the same session id");

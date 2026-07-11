@@ -821,6 +821,15 @@ interface RunEventEnvelope<T> {
   payload: T;
 }
 
+export interface PreflightToolCall {
+  call_id: string;
+  name: string;
+  arguments: unknown;
+  ok: boolean;
+  output: unknown;
+  duration_ms: number;
+}
+
 function randomRunId(): string {
   const cryptoApi = globalThis.crypto;
   if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
@@ -853,7 +862,9 @@ export async function runChat(
   sessionId?: string | null,
   runId?: string,
   envMode?: string | null,
-  connectionId?: string | null
+  connectionId?: string | null,
+  preflightTools: PreflightToolCall[] = [],
+  preflightAbortMessage?: string | null
 ): Promise<string> {
   const invoke = getInvoke();
   if (invoke) {
@@ -871,7 +882,15 @@ export async function runChat(
       }
     );
     try {
-      const nextSessionId = await invoke<string>("run_chat", { prompt, sessionId: sessionId ?? null, envMode: envMode ?? null, connectionId: connectionId ?? null, runId: actualRunId });
+      const nextSessionId = await invoke<string>("run_chat", {
+        prompt,
+        sessionId: sessionId ?? null,
+        envMode: envMode ?? null,
+        connectionId: connectionId ?? null,
+        runId: actualRunId,
+        preflightTools,
+        preflightAbortMessage: preflightAbortMessage ?? null,
+      });
       if (promptMayChangeSettings(prompt)) emitSettingsChanged();
       return nextSessionId;
     } finally {
@@ -1018,7 +1037,12 @@ export async function getVisionSettings(): Promise<VisionSettings> {
   if (invoke) return invoke<VisionSettings>("get_vision_settings");
   return {
     mode: "system",
-    system_model: "deepagent-vision-rust",
+    provider: "modelscope",
+    base_url: "https://api-inference.modelscope.cn/v1",
+    api_key: null,
+    api_key_configured: false,
+    system_model: "moonshotai/Kimi-K2.5:DashScope",
+    timeout_ms: 60000,
     auto_analyze_pasted_images: true,
     send_original_image_to_model: false,
   };
@@ -1042,11 +1066,10 @@ export async function visionRecognizeImage(
   throw new Error("vision recognition requires the desktop app");
 }
 
-/** Check whether Tesseract OCR is available (managed runtime or system PATH). */
-export async function visionOcrAvailable(): Promise<boolean> {
+export async function visionTestConnection(): Promise<VisionRecognizeResult> {
   const invoke = getInvoke();
-  if (invoke) return invoke<boolean>("vision_ocr_available");
-  return false;
+  if (invoke) return invoke<VisionRecognizeResult>("vision_test_connection");
+  throw new Error("vision test requires the desktop app");
 }
 
 // ---- MCP servers (visual config) ------------------------------------------

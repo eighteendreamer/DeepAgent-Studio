@@ -21,6 +21,7 @@
 pub mod analyze;
 pub mod ascii;
 pub mod color;
+pub mod layout;
 pub mod metadata;
 pub mod ocr;
 

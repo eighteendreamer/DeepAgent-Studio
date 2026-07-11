@@ -25,7 +25,6 @@ deepagent-hooks.workspace = true
 deepagent-mcp.workspace = true
 deepagent-intent.workspace = true
 deepagent-prompts.workspace = true
-deepagent-vision.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -90,7 +89,7 @@ web = ["deepagent-builtins/http", "deepagent-mcp/http"]
 # RuntimeService core (registry / resolve / sha256 verify / extract) is always
 # compiled; this only adds the reqwest-backed `ReqwestDownloader`. The desktop
 # app turns it on.
-runtimes = ["dep:reqwest"]
+runtimes = ["dep:reqwest", "dep:image"]
 # Real microphone capture for the recording panel (office-agent). The desktop
 # app turns it on; without it the RecordingService state machine still compiles
 # and runs (capture returns an "audio not enabled" error).

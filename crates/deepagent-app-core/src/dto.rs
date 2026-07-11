@@ -673,19 +673,31 @@ pub struct AttachmentDto {
     pub message: Option<String>,
 }
 
-// ---- local vision recognition ---------------------------------------------
+/// A tool call completed before the main chat model starts. The UI uses this
+/// for first-class persisted steps such as system vision recognition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreflightToolCallDto {
+    pub call_id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+    pub ok: bool,
+    pub output: serde_json::Value,
+    pub duration_ms: u64,
+}
 
-/// Request for local system-vision image recognition.
+// ---- third-party system vision recognition --------------------------------
+
+/// Request for system-vision image recognition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VisionRecognizeRequestDto {
     /// Absolute path to the saved image.
     pub image_path: String,
-    /// Optional OCR language code (e.g. "eng", "chi_sim", "chi_sim+eng").
-    /// `None` or `"auto"` means the default (chi_sim+eng).
+    /// Optional prompt override. When omitted, the built-in structured
+    /// screenshot/image understanding prompt is used.
     pub prompt: Option<String>,
 }
 
-/// Result of local system-vision image recognition.
+/// Result of third-party system-vision image recognition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VisionRecognizeResultDto {
     pub model_id: String,

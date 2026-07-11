@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ascii::{render_ascii, AsciiArt};
 use crate::color::{analyze_colors, ColorAnalysis};
+use crate::layout::{analyze_layout, LayoutAnalysis};
 use crate::metadata::{extract_metadata, ImageMetadata};
 use crate::ocr::{run_ocr, OcrResult};
 
@@ -50,6 +51,8 @@ pub struct ImageAnalysis {
     pub color: Option<ColorAnalysis>,
     /// ASCII art rendering (if enabled).
     pub ascii: Option<AsciiArt>,
+    /// Pixel-derived layout facts: content bounds and row/column activity.
+    pub layout: LayoutAnalysis,
     /// OCR result (if Tesseract was available).
     pub ocr: Option<OcrResult>,
 }
@@ -70,6 +73,7 @@ pub fn analyze_image(path: &Path, options: &AnalysisOptions) -> Result<ImageAnal
     } else {
         None
     };
+    let layout = analyze_layout(&img);
 
     let ocr = if let Some(tess_path) = &options.tesseract_path {
         let tess_path = PathBuf::from(tess_path);
@@ -106,6 +110,7 @@ pub fn analyze_image(path: &Path, options: &AnalysisOptions) -> Result<ImageAnal
         metadata,
         color,
         ascii,
+        layout,
         ocr,
     })
 }

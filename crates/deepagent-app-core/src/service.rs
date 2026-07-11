@@ -553,6 +553,7 @@ fn parse_conversation_attachments(content: &str, session_id: &str) -> Vec<Attach
             .unwrap_or_default();
         let source = attachment_body_value(body, "source:").unwrap_or_else(|| "paste".to_string());
         let sha256 = attachment_body_value(body, "sha256:");
+        let extracted_text = attachment_body_extracted_text(body);
         let id = attrs
             .get("index")
             .map(|index| format!("history-{index}-{name}"))
@@ -568,7 +569,7 @@ fn parse_conversation_attachments(content: &str, session_id: &str) -> Vec<Attach
             source,
             storage_dir,
             original_path,
-            extracted_text: None,
+            extracted_text,
             preview: None,
             sha256,
             status: "ready".to_string(),
@@ -602,6 +603,37 @@ fn attachment_body_value(body: &str, prefix: &str) -> Option<String> {
         .find_map(|line| line.trim().strip_prefix(prefix).map(str::trim))
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn attachment_body_extracted_text(body: &str) -> Option<String> {
+    let mut content = Vec::new();
+    let mut in_content = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if !in_content
+            && (trimmed.is_empty()
+                || trimmed.starts_with("source:")
+                || trimmed.starts_with("size:")
+                || trimmed.starts_with("path:")
+                || trimmed.starts_with("sha256:"))
+        {
+            if trimmed.is_empty() {
+                in_content = true;
+            }
+            continue;
+        }
+        in_content = true;
+        content.push(line);
+    }
+    let text = content.join("\n").trim().to_string();
+    if text.is_empty()
+        || text.starts_with("This image is attached but could not be recognized")
+        || text.starts_with("Binary or unsupported file content was not read")
+    {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 fn infer_attachment_kind(mime: &str) -> &str {

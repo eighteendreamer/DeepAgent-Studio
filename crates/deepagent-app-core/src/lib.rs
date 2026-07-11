@@ -43,6 +43,8 @@ pub mod terminal_service;
 pub mod todo_snapshot_reminder;
 pub mod verification_decorator;
 pub mod verification_dispatcher;
+pub mod vision_cache_service;
+pub mod vision_provider_service;
 pub mod vision_service;
 pub mod workspace_service;
 
@@ -62,11 +64,11 @@ pub use dto::{
     GitCommitMessageDraftDto, GitCompareCommitDto, GitDiffDto, GitLogEntryDto,
     GitOperationResultDto, GitProjectStatusDto, GitPushCommitDto, GitPushPreviewDto,
     GitPushRiskItemDto, GitPushRiskScanDto, GitRefCompareDto, GitWorktreeDto, PdfRenderResultDto,
-    PreviewMetadataDto, PreviewResultDto, ProjectDto, RecordingSessionDto, RewindResultDto,
-    RuntimeProgressDto, RuntimeRootsDto, RuntimeStatusDto, SessionDetailDto, SessionStatsDto,
-    SessionSummaryDto, SessionUiPrefsDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto,
-    TranscriptDto, TranscriptSegmentDto, VisionRecognizeRequestDto, VisionRecognizeResultDto,
-    WorkspaceInfoDto,
+    PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, RecordingSessionDto,
+    RewindResultDto, RuntimeProgressDto, RuntimeRootsDto, RuntimeStatusDto, SessionDetailDto,
+    SessionStatsDto, SessionSummaryDto, SessionUiPrefsDto, SheetPreviewDto, TerminalResultDto,
+    TimelineEntryDto, TranscriptDto, TranscriptSegmentDto, VisionRecognizeRequestDto,
+    VisionRecognizeResultDto, WorkspaceInfoDto,
 };
 pub use file_preview_service::FilePreviewService;
 pub use git_service::GitService;
