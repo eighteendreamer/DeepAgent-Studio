@@ -1358,7 +1358,7 @@ export function ChatView({
               busy={busy}
               onStop={onStop}
               planMode={planMode}
-              textareaMaxHeight={600}
+              textareaMaxHeight={300}
             />
           </div>
         </div>

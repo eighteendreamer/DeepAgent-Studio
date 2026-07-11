@@ -19,7 +19,7 @@ import type { Command, ComposerAttachment, Skill } from "../types";
 const LONG_TEXT_ATTACHMENT_THRESHOLD = 8 * 1024;
 const MAX_COMPOSER_ATTACHMENTS = 5;
 const COMPOSER_TEXTAREA_MIN_HEIGHT = 60;
-const COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT = 600;
+const COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT = 300;
 
 /** A slash-dropdown row. `insertText` is used for built-in slash commands;
  *  `skillName` (when set) marks the row as a skill picker — `chooseSlash`

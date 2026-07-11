@@ -282,6 +282,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           onChange={setValue} 
           onSubmit={submit} 
           placeholder={t("startView.placeholder")}
+          textareaMaxHeight={300}
           footer={
             <div className="flex items-center w-full relative" ref={dropdownRef}>
               <div className="flex items-center space-x-4">
