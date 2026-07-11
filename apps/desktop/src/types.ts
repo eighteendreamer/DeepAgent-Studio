@@ -118,6 +118,7 @@ export type ConversationPart =
 export interface ConversationMessage {
   role: "user" | "assistant";
   content: string;
+  attachments?: PersistedAttachment[];
   parts: ConversationPart[];
   usage?: ConversationUsage;
 }
@@ -186,6 +187,9 @@ export interface DiagnosticResult {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  /** Attachments displayed with a user turn. Model-readable attachment text is
+   * kept out of this field and injected only into the backend prompt. */
+  attachments?: ComposerAttachment[];
   tone?: "normal" | "error";
   /** Tool-call cards attached to an assistant turn (in invocation order). */
   tools?: ToolCall[];

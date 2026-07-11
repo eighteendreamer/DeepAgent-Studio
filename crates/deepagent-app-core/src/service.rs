@@ -18,9 +18,9 @@ use deepagent_session::Session;
 use crate::commands::{builtin_commands, commands_from_roots, filter_commands};
 use crate::diff::{diff_lines, DiffResult};
 use crate::dto::{
-    CommandDto, ConversationMessageDto, ConversationPartDto, ConversationUsageDto, ForkResultDto,
-    RewindResultDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto,
-    TranscriptDto,
+    AttachmentDto, CommandDto, ConversationMessageDto, ConversationPartDto, ConversationUsageDto,
+    ForkResultDto, RewindResultDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto,
+    TimelineEntryDto, TranscriptDto,
 };
 use crate::{ArchiveService, ProjectService, SessionStateService};
 
@@ -219,6 +219,7 @@ impl AppService {
             messages.push(ConversationMessageDto {
                 role: "assistant".to_string(),
                 content: String::new(),
+                attachments: Vec::new(),
                 parts: Vec::new(),
                 usage: None,
             });
@@ -236,9 +237,11 @@ impl AppService {
                         // A new user turn ends the previous assistant turn's
                         // tool-card grouping.
                         tool_pos.clear();
+                        let attachments = parse_conversation_attachments(&text, session_id);
                         messages.push(ConversationMessageDto {
                             role: "user".to_string(),
                             content: text.clone(),
+                            attachments,
                             parts: vec![ConversationPartDto::Text { text }],
                             usage: None,
                         });
@@ -498,6 +501,119 @@ fn summarize_output(output: &serde_json::Value) -> String {
     }
 }
 
+fn parse_conversation_attachments(content: &str, session_id: &str) -> Vec<AttachmentDto> {
+    let Some((_, after_open)) = content.split_once("<attachments>") else {
+        return Vec::new();
+    };
+    let Some((attachments_block, _)) = after_open.split_once("</attachments>") else {
+        return Vec::new();
+    };
+
+    let mut attachments = Vec::new();
+    let mut rest = attachments_block;
+    while let Some(start) = rest.find("<attachment") {
+        rest = &rest[start + "<attachment".len()..];
+        let Some(tag_end) = rest.find('>') else {
+            break;
+        };
+        let attrs = parse_attachment_attrs(&rest[..tag_end]);
+        let body_start = tag_end + 1;
+        let Some(body_end) = rest[body_start..].find("</attachment>") else {
+            break;
+        };
+        let body = &rest[body_start..body_start + body_end];
+        rest = &rest[body_start + body_end + "</attachment>".len()..];
+
+        let name = attrs
+            .get("name")
+            .cloned()
+            .unwrap_or_else(|| "attachment".to_string());
+        let mime = attrs
+            .get("type")
+            .cloned()
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let kind = attrs
+            .get("kind")
+            .cloned()
+            .unwrap_or_else(|| infer_attachment_kind(&mime).to_string());
+        let original_path = attachment_body_value(body, "path:");
+        let storage_dir = original_path
+            .as_deref()
+            .and_then(|path| std::path::Path::new(path).parent())
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let size_bytes = attachment_body_value(body, "size:")
+            .and_then(|value| {
+                value
+                    .strip_suffix("bytes")
+                    .map(str::trim)
+                    .map(str::to_string)
+            })
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_default();
+        let source = attachment_body_value(body, "source:").unwrap_or_else(|| "paste".to_string());
+        let sha256 = attachment_body_value(body, "sha256:");
+        let id = attrs
+            .get("index")
+            .map(|index| format!("history-{index}-{name}"))
+            .unwrap_or_else(|| format!("history-{}-{name}", attachments.len() + 1));
+
+        attachments.push(AttachmentDto {
+            id,
+            session_id: Some(session_id.to_string()),
+            kind,
+            name,
+            mime,
+            size_bytes,
+            source,
+            storage_dir,
+            original_path,
+            extracted_text: None,
+            preview: None,
+            sha256,
+            status: "ready".to_string(),
+            message: None,
+        });
+    }
+    attachments
+}
+
+fn parse_attachment_attrs(raw: &str) -> std::collections::HashMap<String, String> {
+    let mut attrs = std::collections::HashMap::new();
+    let mut rest = raw.trim();
+    while let Some(eq) = rest.find('=') {
+        let key = rest[..eq].trim();
+        rest = rest[eq + 1..].trim_start();
+        if key.is_empty() || !rest.starts_with('"') {
+            break;
+        }
+        rest = &rest[1..];
+        let Some(end_quote) = rest.find('"') else {
+            break;
+        };
+        attrs.insert(key.to_string(), rest[..end_quote].to_string());
+        rest = rest[end_quote + 1..].trim_start();
+    }
+    attrs
+}
+
+fn attachment_body_value(body: &str, prefix: &str) -> Option<String> {
+    body.lines()
+        .find_map(|line| line.trim().strip_prefix(prefix).map(str::trim))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn infer_attachment_kind(mime: &str) -> &str {
+    if mime.starts_with("image/") {
+        "image"
+    } else if mime.starts_with("text/") {
+        "text"
+    } else {
+        "file"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,6 +748,42 @@ mod tests {
         assert_eq!(output["provider"], "searxng");
         assert_eq!(output["attempts"][0]["provider"], "deepseek");
         assert_eq!(output["attempts"][1]["ok"], true);
+    }
+
+    #[test]
+    fn session_conversation_parses_user_attachments() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let sid;
+        {
+            let mut s = Session::create(&db, &clock, Some("image")).unwrap();
+            sid = s.id().to_string();
+            s.append(deepagent_core::event::EventPayload::MessageAppended {
+                message: deepagent_core::message::Message::user(
+                    "check this\n\n<attachments>\n<attachment index=\"1\" name=\"shot.png\" type=\"image/png\" kind=\"image\">\nsource: paste\nsize: 42 bytes\npath: G:\\Temp\\shot.png\nsha256: abc123\n\nvisual text\n</attachment>\n</attachments>",
+                ),
+            })
+            .unwrap();
+        }
+
+        let svc = AppService::new(db);
+        let conversation = svc.session_conversation(&sid).unwrap();
+        let user = conversation
+            .iter()
+            .find(|message| message.role == "user")
+            .expect("user message with attachment");
+
+        assert_eq!(user.attachments.len(), 1);
+        let attachment = &user.attachments[0];
+        assert_eq!(attachment.kind, "image");
+        assert_eq!(attachment.name, "shot.png");
+        assert_eq!(attachment.mime, "image/png");
+        assert_eq!(attachment.size_bytes, 42);
+        assert_eq!(
+            attachment.original_path.as_deref(),
+            Some("G:\\Temp\\shot.png")
+        );
+        assert_eq!(attachment.sha256.as_deref(), Some("abc123"));
     }
 
     #[test]

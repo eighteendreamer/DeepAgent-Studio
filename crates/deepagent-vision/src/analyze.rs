@@ -87,7 +87,11 @@ pub fn analyze_image(path: &Path, options: &AnalysisOptions) -> Result<ImageAnal
             Some(run_ocr(
                 path,
                 None,
-                options.tessdata_dir.as_deref().map(PathBuf::from).as_deref(),
+                options
+                    .tessdata_dir
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .as_deref(),
                 options.ocr_language.as_deref(),
             ))
         } else {
@@ -118,11 +122,7 @@ fn compose_text(
     // 1. Basic metadata
     parts.push(format!(
         "图片信息：格式 {}，尺寸 {}×{} 像素，色彩模式 {}，文件大小 {} 字节",
-        metadata.format,
-        metadata.width,
-        metadata.height,
-        metadata.color_mode,
-        metadata.file_size
+        metadata.format, metadata.width, metadata.height, metadata.color_mode, metadata.file_size
     ));
 
     // 2. EXIF metadata (if any)

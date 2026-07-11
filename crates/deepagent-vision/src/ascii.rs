@@ -20,9 +20,7 @@ pub struct AsciiArt {
 }
 
 /// Characters from darkest (high density) to lightest (low density).
-const CHARSET: &[char] = &[
-    '@', '#', 'S', '%', '?', '*', '+', ':', ',', '.',
-];
+const CHARSET: &[char] = &['@', '#', 'S', '%', '?', '*', '+', ':', ',', '.'];
 
 /// Maximum grid width in characters — keeps the output manageable for the model.
 const MAX_WIDTH: usize = 80;
@@ -114,11 +112,7 @@ fn average_brightness(
             count += 1;
         }
     }
-    if count == 0 {
-        0
-    } else {
-        (sum / count) as u8
-    }
+    sum.checked_div(count).unwrap_or_default() as u8
 }
 
 /// Map a brightness value (0-255) to an index in CHARSET (0=darkest char).

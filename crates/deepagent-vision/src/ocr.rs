@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// OCR result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OcrResult {
@@ -33,12 +39,10 @@ const DEFAULT_LANG: &str = "chi_sim+eng";
 /// managed-runtime installer to point at a downloaded portable Tesseract).
 pub fn is_available(tesseract_path: Option<&Path>) -> bool {
     let (program, pre_args) = resolve_tesseract(tesseract_path);
-    Command::new(&program)
-        .args(&pre_args)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    let mut cmd = Command::new(&program);
+    cmd.args(&pre_args).arg("--version");
+    hide_command_window(&mut cmd);
+    cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Run Tesseract OCR on an image file.
@@ -78,6 +82,7 @@ pub fn run_ocr(
     if let Some(dir) = tessdata_dir {
         cmd.env("TESSDATA_PREFIX", dir);
     }
+    hide_command_window(&mut cmd);
 
     let output = match cmd.output() {
         Ok(o) => o,
@@ -120,6 +125,18 @@ pub fn run_ocr(
         } else {
             None
         },
+    }
+}
+
+fn hide_command_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
     }
 }
 

@@ -71,12 +71,10 @@ impl VisionService {
             include_color: true,
         };
 
-        let analysis =
-            analyze_image(&image_path, &options).map_err(|e| CoreError::Other(e))?;
+        let analysis = analyze_image(&image_path, &options).map_err(CoreError::Other)?;
 
         // Serialize the full structured result as raw_json.
-        let raw_json = serde_json::to_string(&analysis)
-            .unwrap_or_else(|_| "{}".to_string());
+        let raw_json = serde_json::to_string(&analysis).unwrap_or_else(|_| "{}".to_string());
 
         // The `text` field is the human-readable composite description.
         let text = analysis.text;

@@ -39,6 +39,7 @@ import type {
   ComposerAttachment,
   ConversationMessage,
   MessagePart,
+  PersistedAttachment,
   Project,
   SessionDetail,
   SessionSummary,
@@ -79,10 +80,30 @@ interface SessionTitleUpdatedPayload {
   title: string;
 }
 
+function mapPersistedAttachment(attachment: PersistedAttachment): ComposerAttachment {
+  return {
+    id: attachment.id,
+    kind: attachment.kind,
+    name: attachment.name,
+    mime: attachment.mime,
+    size: attachment.size_bytes,
+    source: attachment.source,
+    localPath: attachment.original_path ?? undefined,
+    originalPath: attachment.original_path ?? undefined,
+    extractedText: attachment.extracted_text ?? undefined,
+    storageDir: attachment.storage_dir,
+    sha256: attachment.sha256 ?? undefined,
+    backendMessage: attachment.message ?? undefined,
+    status: attachment.status,
+    error: attachment.status === "error" ? attachment.message ?? undefined : undefined,
+  };
+}
+
 function mapConversationToChatMessages(conversation: ConversationMessage[]): ChatMessage[] {
   return conversation.map((m) => ({
     role: m.role,
     content: m.content,
+    attachments: m.attachments?.map(mapPersistedAttachment),
     usage: m.usage
       ? {
           promptTokens: m.usage.prompt_tokens,
@@ -642,6 +663,7 @@ export function App() {
     ) => {
       const submittedText = buildPromptWithAttachments(text, attachments);
       if (!submittedText) return;
+      const visibleUserText = text.trim() || (attachments.length > 0 ? "请查看附件内容。" : "");
       const storedEnvMode = localStorage.getItem("envMode");
       const effectiveEnvMode: "local" | "remote" =
         envMode ?? (storedEnvMode === "remote" ? "remote" : "local");
@@ -688,7 +710,7 @@ export function App() {
         : [];
       const seeded: ChatMessage[] = [
         ...prior,
-        { role: "user", content: submittedText },
+        { role: "user", content: visibleUserText, attachments },
         { role: "assistant", content: "", parts: [] },
       ];
       liveTranscripts.current.set(runKey, seeded);

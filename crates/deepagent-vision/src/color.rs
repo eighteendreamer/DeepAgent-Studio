@@ -71,7 +71,7 @@ pub fn analyze_colors(img: &DynamicImage) -> ColorAnalysis {
     let mut region_counts: std::collections::HashMap<&'static str, u64> =
         std::collections::HashMap::new();
 
-    for (_, pixel) in rgba.pixels().enumerate() {
+    for pixel in rgba.pixels() {
         let Rgba([r, g, b, _a]) = *pixel;
         // Quantise for dominant-colour bucketing.
         let step = 256u32 / QUANT_LEVELS as u32;
@@ -100,7 +100,7 @@ pub fn analyze_colors(img: &DynamicImage) -> ColorAnalysis {
 
     // Dominant colours: sort buckets by count, take top 8.
     let mut sorted_buckets: Vec<_> = color_buckets.into_iter().collect();
-    sorted_buckets.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted_buckets.sort_by_key(|bucket| std::cmp::Reverse(bucket.1));
     let dominant_colors: Vec<DominantColor> = sorted_buckets
         .iter()
         .take(8)
@@ -131,7 +131,7 @@ pub fn analyze_colors(img: &DynamicImage) -> ColorAnalysis {
                 ratio: *count as f64 * 100.0 / total_pixels as f64,
             })
             .collect();
-        regions.sort_by(|a, b| b.count.cmp(&a.count));
+        regions.sort_by_key(|region| std::cmp::Reverse(region.count));
         regions
     };
 

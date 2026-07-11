@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ChatMessage, ComposerAttachment, MessagePart, ToolCall, TokenUsage, TimelineEntry, ApprovalRequest, ProjectMapStatus } from "../types";
 import { Composer } from "./Composer";
 import { ToolCallCard } from "./ToolCallCard";
@@ -433,6 +434,120 @@ function fallbackCopyText(text: string) {
     document.body.removeChild(textarea);
   }
 }
+
+function stripAttachmentContext(content: string): string {
+  return content.replace(/\n*<attachments>[\s\S]*?<\/attachments>\s*/g, "").trim();
+}
+
+function parseAttachmentContext(content: string): ComposerAttachment[] {
+  const match = content.match(/<attachments>\s*([\s\S]*?)\s*<\/attachments>/);
+  if (!match) return [];
+  const attachments: ComposerAttachment[] = [];
+  const blockRegex = /<attachment\s+([^>]*)>([\s\S]*?)<\/attachment>/g;
+  let block: RegExpExecArray | null;
+  while ((block = blockRegex.exec(match[1])) !== null) {
+    const attrs = parseAttachmentAttrs(block[1]);
+    const body = block[2];
+    const path = body.match(/^path:\s*(.+)$/m)?.[1]?.trim();
+    const sizeText = body.match(/^size:\s*(\d+)\s+bytes$/m)?.[1];
+    const kind = normalizeAttachmentKind(attrs.kind, attrs.type);
+    attachments.push({
+      id: `parsed-${attrs.index ?? attachments.length + 1}-${attrs.name ?? "attachment"}`,
+      kind,
+      name: attrs.name ?? (kind === "image" ? "image" : "attachment"),
+      mime: attrs.type ?? (kind === "image" ? "image/*" : "application/octet-stream"),
+      size: sizeText ? Number(sizeText) || 0 : 0,
+      source: "paste",
+      originalPath: path,
+      localPath: path,
+      status: "ready",
+    });
+  }
+  return attachments;
+}
+
+function parseAttachmentAttrs(raw: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const attrRegex = /(\w+)="([^"]*)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = attrRegex.exec(raw)) !== null) {
+    attrs[match[1]] = match[2];
+  }
+  return attrs;
+}
+
+function normalizeAttachmentKind(
+  kind?: string,
+  mime?: string
+): ComposerAttachment["kind"] {
+  if (kind === "image" || kind === "text" || kind === "file") return kind;
+  if (mime?.startsWith("image/")) return "image";
+  if (mime?.startsWith("text/")) return "text";
+  return "file";
+}
+
+function attachmentLabel(item: ComposerAttachment): string {
+  if (item.status === "processing") return item.kind === "image" ? "识别中" : "处理中";
+  if (item.status === "error") return item.error ?? "处理失败";
+  if (item.kind === "image") return item.mime || "图片";
+  if (item.kind === "text") return "文本";
+  return item.mime || "文件";
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function attachmentImageSrc(item: ComposerAttachment): string | null {
+  if (item.kind !== "image") return null;
+  if (item.dataUrl) return item.dataUrl;
+  const path = item.originalPath ?? item.localPath;
+  return path ? convertFileSrc(path) : null;
+}
+
+function UserAttachments({ attachments }: { attachments: ComposerAttachment[] }) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className="mb-2 flex max-w-[80%] flex-wrap justify-end gap-2">
+      {attachments.map((item) => {
+        const imageSrc = attachmentImageSrc(item);
+        return (
+          <div
+            key={item.id}
+            className="group/attachment flex min-h-14 max-w-[220px] items-center gap-2 overflow-hidden rounded-xl border border-border-theme bg-white px-2 py-2 shadow-sm"
+            title={item.originalPath ?? item.localPath ?? item.name}
+          >
+            {imageSrc ? (
+              <img
+                src={imageSrc}
+                alt={item.name}
+                className="h-12 w-12 shrink-0 rounded-lg border border-border-theme object-cover"
+              />
+            ) : (
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border-theme bg-gray-50 text-text-secondary">
+                <FontAwesomeIcon
+                  icon={["fas", item.kind === "image" ? "image" : item.kind === "text" ? "file-lines" : "file"]}
+                  className="text-[15px]"
+                />
+              </div>
+            )}
+            <div className="min-w-0 flex-1 text-left">
+              <div className="truncate text-[12px] font-medium text-text-base">{item.name}</div>
+              <div className="truncate text-[11px] text-text-secondary">
+                {attachmentLabel(item)}
+                {formatAttachmentSize(item.size) ? ` · ${formatAttachmentSize(item.size)}` : ""}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function UserTurn({
   message,
   busy,
@@ -442,9 +557,12 @@ function UserTurn({
   busy: boolean;
   onResend: (text: string) => void;
 }) {
-  const office = parseOfficeContextMessage(message.content);
+  const parsedAttachments = parseAttachmentContext(message.content);
+  const attachments = message.attachments?.length ? message.attachments : parsedAttachments;
+  const visibleContent = stripAttachmentContext(message.content);
+  const office = parseOfficeContextMessage(visibleContent);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(message.content);
+  const [draft, setDraft] = useState(visibleContent);
 
   const submitEdit = () => {
     const text = draft.trim();
@@ -467,7 +585,7 @@ function UserTurn({
             <button
               type="button"
               onClick={() => {
-                setDraft(message.content);
+                setDraft(visibleContent);
                 setEditing(false);
               }}
               className="rounded-lg px-3 py-1.5 text-[12px] text-text-secondary hover:bg-white"
@@ -485,9 +603,14 @@ function UserTurn({
           </div>
         </div>
       ) : (
-        <div className="bg-gray-100 text-text-base px-4 py-3 rounded-2xl rounded-tr-sm text-[15px] max-w-[80%]">
-          {office ? <OfficeContextBubble office={office} /> : message.content}
-        </div>
+        <>
+          <UserAttachments attachments={attachments} />
+          {visibleContent && (
+            <div className="bg-gray-100 text-text-base px-4 py-3 rounded-2xl rounded-tr-sm text-[15px] max-w-[80%]">
+              {office ? <OfficeContextBubble office={office} /> : visibleContent}
+            </div>
+          )}
+        </>
       )}
       {!editing && (
         <div className="flex text-text-secondary mt-2 space-x-3 text-sm opacity-0 group-hover:opacity-100 transition-opacity w-full justify-end">
@@ -495,7 +618,7 @@ function UserTurn({
             type="button"
             title="复制"
             aria-label="复制"
-            onClick={() => copyText(message.content)}
+            onClick={() => copyText(visibleContent)}
             className="hover:text-text-base"
           >
             <FontAwesomeIcon icon={["far", "copy"]} />
@@ -505,7 +628,7 @@ function UserTurn({
             title="编辑后重发"
             aria-label="编辑后重发"
             onClick={() => setEditing(true)}
-            disabled={busy}
+            disabled={busy || !visibleContent}
             className="hover:text-text-base disabled:opacity-40"
           >
             <FontAwesomeIcon icon={["fas", "pen"]} />

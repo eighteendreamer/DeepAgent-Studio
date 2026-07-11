@@ -458,6 +458,9 @@ pub struct ConversationMessageDto {
     pub role: String,
     /// Flat text mirror (for user turns / copy / fallback).
     pub content: String,
+    /// Attachments parsed from a user turn's persisted attachment context.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AttachmentDto>,
     /// Ordered parts (assistant turns carry reasoning / tool / text in order).
     pub parts: Vec<ConversationPartDto>,
     /// Persisted token usage for this turn, when recorded (assistant turns).

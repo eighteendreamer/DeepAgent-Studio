@@ -156,9 +156,9 @@ pub struct RuntimeEntry {
     pub artifacts: HashMap<Platform, RuntimeArtifact>,
     pub probe: String,
     /// Filesystem paths to probe for system-installed binaries (e.g.
-    /// `C:\Program Files\Tesseract-OCR`). Checked before the managed runtime
+    /// `C:\Program Files\Tesseract-OCR`). Checked after the managed runtime
     /// directory so software installed via winget / brew / apt / manually is
-    /// detected as "installed".
+    /// still detected as "installed".
     pub system_probe_paths: Vec<String>,
 }
 
@@ -289,31 +289,48 @@ impl RuntimeService {
     fn installed_location(&self, id: &str) -> Option<(PathBuf, &'static str)> {
         let entry = self.registry.iter().find(|e| e.id == id)?;
 
-        // 1. Check system probe paths (winget / brew / apt / manual installs).
+        // 1. Check managed runtime directories first. On-demand resources
+        // should prefer the app-controlled runtime directory over any manual
+        // system install.
+        if let Some(artifact) = entry.artifact() {
+            for root in &self.lookup_roots {
+                let dir = root.join(&artifact.dest_subdir);
+                let probe = dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
+                if probe.exists() {
+                    let source = if same_path(root, &self.active_root) {
+                        "active"
+                    } else {
+                        "fallback"
+                    };
+                    return Some((dir, source));
+                }
+                if artifact.archive == ArchiveKind::Installer {
+                    if let Some(parent) = dir.parent() {
+                        let parent_probe =
+                            parent.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
+                        if parent_probe.exists() {
+                            let source = if same_path(root, &self.active_root) {
+                                "active"
+                            } else {
+                                "fallback"
+                            };
+                            return Some((parent.to_path_buf(), source));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check system probe paths (winget / brew / apt / manual installs).
         if !entry.system_probe_paths.is_empty() {
             if let Some(dir) = find_in_system_paths(&entry.probe, &entry.system_probe_paths) {
                 return Some((dir, "system"));
             }
         }
 
-        // 2. Check PATH lookup (works for any installed binary).
+        // 3. Check PATH lookup (works for any installed binary).
         if let Some(dir) = find_binary_on_path(&entry.probe) {
             return Some((dir, "system"));
-        }
-
-        // 3. Check managed runtime directories (download-and-extract installs).
-        let artifact = entry.artifact()?;
-        for root in &self.lookup_roots {
-            let dir = root.join(&artifact.dest_subdir);
-            let probe = dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
-            if probe.exists() {
-                let source = if same_path(root, &self.active_root) {
-                    "active"
-                } else {
-                    "fallback"
-                };
-                return Some((dir, source));
-            }
         }
         None
     }
@@ -420,9 +437,9 @@ impl RuntimeService {
     /// checksum mismatch ⇒ the temp file is removed and an error returned.
     ///
     /// For [`ArchiveKind::Installer`] artifacts, the downloaded installer is
-    /// run silently with `/DIR="<dest>"` to install into the managed runtime
-    /// directory (same as other resources). SHA-256 is optional for installers
-    /// because the installer itself verifies integrity.
+    /// run silently into the managed runtime directory (same as other
+    /// resources). SHA-256 is optional for installers because the installer
+    /// itself verifies integrity.
     pub async fn install(&self, id: &str, progress: Arc<ProgressFn>) -> Result<RuntimeStatusDto> {
         let entry = self
             .registry
@@ -463,9 +480,26 @@ impl RuntimeService {
             )));
         }
 
+        if is_installer {
+            if let Some(winget_id) = winget_package_id(id) {
+                progress(0, None);
+                install_winget_package(winget_id)?;
+                progress(1, Some(1));
+                let status = self.status(id).ok_or_else(|| {
+                    CoreError::Other(format!("runtime '{id}' vanished after winget install"))
+                })?;
+                if !status.installed {
+                    return Err(CoreError::Other(format!(
+                        "winget installed {winget_id}, but runtime probe was not found"
+                    )));
+                }
+                return Ok(status);
+            }
+        }
+
         std::fs::create_dir_all(&self.active_root)
             .map_err(|e| CoreError::Other(format!("create runtimes dir: {e}")))?;
-        let tmp = self.active_root.join(format!(".dl-{id}.tmp"));
+        let tmp = download_temp_path(&self.active_root, id, &artifact);
 
         // Register a cancel flag for this install.
         let cancel = Arc::new(AtomicBool::new(false));
@@ -537,6 +571,15 @@ impl RuntimeService {
         let _ = std::fs::remove_file(&tmp);
         self.clear_cancel(id);
         install_result?;
+        if is_installer {
+            let probe = dest_dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
+            if !probe.is_file() {
+                return Err(CoreError::Other(format!(
+                    "installer finished but runtime probe was not found: {}",
+                    probe.display()
+                )));
+            }
+        }
 
         self.status(id)
             .ok_or_else(|| CoreError::Other(format!("runtime '{id}' vanished after install")))
@@ -634,11 +677,12 @@ impl RuntimeService {
     }
 }
 
-/// Run an installer silently, installing into `dest_dir` (the managed runtime
-/// directory). Uses Inno Setup silent install flags (`/VERYSILENT /SUPPRESSMSGBOXES
-/// /DIR="<dest>"`). Because the installer requires elevation (error 740), we
-/// launch it via `ShellExecuteW` with the "runas" verb, which shows a UAC prompt
-/// and waits for completion. On non-Windows platforms this is a no-op error.
+/// Run an installer silently into `dest_dir` (the managed runtime directory).
+///
+/// The bundled Tesseract Windows installer is NSIS-based. NSIS uses `/S` for
+/// silent mode and `/D=...` for the target directory, with `/D` as the final
+/// argument. We intentionally do not elevate with `runas`: resource installs
+/// must stay background-only and must not show UAC or installer wizard prompts.
 fn run_installer_silent(installer: &Path, dest_dir: &Path) -> Result<()> {
     if !cfg!(target_os = "windows") {
         return Err(CoreError::Other(
@@ -650,23 +694,101 @@ fn run_installer_silent(installer: &Path, dest_dir: &Path) -> Result<()> {
 
     #[cfg(target_os = "windows")]
     {
-        // Build the argument string for Inno Setup silent install.
-        let dest_str = dest_dir.to_string_lossy();
-        let args = format!(
-            "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP- /DIR=\"{}\"",
-            dest_str
-        );
+        use std::os::windows::process::CommandExt;
 
-        // Use ShellExecuteExW with "runas" verb to trigger UAC elevation.
-        // std::process::Command uses CreateProcess which fails with error 740
-        // for executables that require elevation.
-        run_elevated_installer(installer, &args)?;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let installer = shell_execute_path(installer);
+        let dest = shell_execute_path(dest_dir);
+        let status = std::process::Command::new(&installer)
+            .arg("/S")
+            // NSIS requires /D to be the last argument.
+            .arg(format!("/D={}", dest.to_string_lossy()))
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|e| {
+                if e.raw_os_error() == Some(740) {
+                    CoreError::Other(
+                        "silent installer requires elevation; use a portable runtime package or an installer that supports per-user silent install"
+                            .to_string(),
+                    )
+                } else {
+                    CoreError::Other(format!("run silent installer: {e}"))
+                }
+            })?;
+
+        if !status.success() {
+            return Err(CoreError::Other(format!(
+                "silent installer exited with status {status}"
+            )));
+        }
     }
 
     Ok(())
 }
 
+fn winget_package_id(runtime_id: &str) -> Option<&'static str> {
+    match runtime_id {
+        "tesseract-portable" if cfg!(target_os = "windows") => Some("tesseract-ocr.tesseract"),
+        _ => None,
+    }
+}
+
+fn install_winget_package(package_id: &str) -> Result<()> {
+    if !cfg!(target_os = "windows") {
+        return Err(CoreError::Other(
+            "winget runtime install is only supported on Windows".to_string(),
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let output = std::process::Command::new("winget")
+            .args([
+                "install",
+                "--id",
+                package_id,
+                "--exact",
+                "--silent",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| {
+                CoreError::Other(format!("winget is not available or failed to launch: {e}"))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if stderr.is_empty() { stdout } else { stderr };
+            if winget_output_means_already_installed(&detail) {
+                return Ok(());
+            }
+            return Err(CoreError::Other(format!(
+                "winget install failed for {package_id}: {detail}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn winget_output_means_already_installed(output: &str) -> bool {
+    let output = output.to_ascii_lowercase();
+    output.contains("existing package already installed")
+        || output.contains("no available upgrade found")
+        || output.contains("no newer package versions are available")
+        || output.contains("already installed")
+}
+
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn run_elevated_installer(installer: &Path, args: &str) -> Result<()> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -709,8 +831,13 @@ fn run_elevated_installer(installer: &Path, args: &str) -> Result<()> {
         s.encode_wide().chain(std::iter::once(0)).collect()
     }
 
-    let installer_wide = to_wide(installer.as_os_str());
+    let shell_installer = shell_execute_path(installer);
+    let installer_wide = to_wide(shell_installer.as_os_str());
     let args_wide = to_wide(OsStr::new(args));
+    let directory_wide = shell_installer
+        .parent()
+        .map(|dir| to_wide(dir.as_os_str()))
+        .unwrap_or_else(|| vec![0]);
     let verb_wide: Vec<u16> = "runas\0".encode_utf16().collect();
 
     let mut info = ShellExecuteInfoW {
@@ -720,7 +847,7 @@ fn run_elevated_installer(installer: &Path, args: &str) -> Result<()> {
         lp_verb: verb_wide.as_ptr(),
         lp_file: installer_wide.as_ptr(),
         lp_parameters: args_wide.as_ptr(),
-        lp_directory: ptr::null(),
+        lp_directory: directory_wide.as_ptr(),
         n_show: SW_HIDE,
         h_inst_app: ptr::null_mut(),
         lp_id_list: ptr::null_mut(),
@@ -734,7 +861,8 @@ fn run_elevated_installer(installer: &Path, args: &str) -> Result<()> {
     let success = unsafe { ShellExecuteExW(&mut info) };
     if success == 0 {
         return Err(CoreError::Other(
-            "failed to launch installer with elevation (UAC prompt may have been declined)".to_string(),
+            "failed to launch installer with elevation (UAC prompt may have been declined)"
+                .to_string(),
         ));
     }
 
@@ -745,9 +873,9 @@ fn run_elevated_installer(installer: &Path, args: &str) -> Result<()> {
 
     // Wait for the installer to finish.
     let wait_result = unsafe { WaitForSingleObject(info.h_process, INFINITE) };
-    let _ = unsafe { CloseHandle(info.h_process) };
 
     if wait_result != WAIT_OBJECT_0 {
+        let _ = unsafe { CloseHandle(info.h_process) };
         return Err(CoreError::Other(
             "installer process wait failed unexpectedly".to_string(),
         ));
@@ -756,7 +884,7 @@ fn run_elevated_installer(installer: &Path, args: &str) -> Result<()> {
     // Check exit code.
     let mut exit_code: u32 = 0;
     let got_code = unsafe { GetExitCodeProcess(info.h_process, &mut exit_code) };
-    // h_process already closed, but exit_code may already be populated.
+    let _ = unsafe { CloseHandle(info.h_process) };
     // If we couldn't get the code, treat as success (installer ran to completion).
     if got_code != 0 && exit_code != 0 && exit_code != STILL_ACTIVE {
         return Err(CoreError::Other(format!(
@@ -765,6 +893,15 @@ fn run_elevated_installer(installer: &Path, args: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn shell_execute_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(stripped) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(stripped);
+    }
+    path.to_path_buf()
 }
 
 /// Search for a binary on the system PATH by iterating the PATH environment
@@ -793,9 +930,120 @@ fn find_binary_on_path(binary_name: &str) -> Option<PathBuf> {
 /// Returns the first directory that contains the probe file.
 fn find_in_system_paths(probe: &str, paths: &[String]) -> Option<PathBuf> {
     for path_str in paths {
-        let dir = PathBuf::from(path_str);
+        let dir = expand_system_probe_path(path_str);
         if dir.join(probe).is_file() {
             return Some(dir);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    if probe.eq_ignore_ascii_case("tesseract.exe") {
+        return find_tesseract_from_windows_uninstall_registry(probe);
+    }
+    None
+}
+
+fn expand_system_probe_path(path: &str) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(rest) = path.strip_prefix("%LOCALAPPDATA%") {
+            if let Some(base) = std::env::var_os("LOCALAPPDATA") {
+                return PathBuf::from(base).join(rest.trim_start_matches(['\\', '/']));
+            }
+        }
+        if let Some(rest) = path.strip_prefix("%ProgramFiles%") {
+            if let Some(base) = std::env::var_os("ProgramFiles") {
+                return PathBuf::from(base).join(rest.trim_start_matches(['\\', '/']));
+            }
+        }
+        if let Some(rest) = path.strip_prefix("%ProgramFiles(x86)%") {
+            if let Some(base) = std::env::var_os("ProgramFiles(x86)") {
+                return PathBuf::from(base).join(rest.trim_start_matches(['\\', '/']));
+            }
+        }
+    }
+
+    PathBuf::from(path)
+}
+
+#[cfg(target_os = "windows")]
+fn find_tesseract_from_windows_uninstall_registry(probe: &str) -> Option<PathBuf> {
+    const UNINSTALL_KEYS: [&str; 3] = [
+        r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Tesseract-OCR",
+        r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Tesseract-OCR",
+        r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Tesseract-OCR",
+    ];
+
+    for key in UNINSTALL_KEYS {
+        if let Some(dir) = tesseract_dir_from_registry_key(key, probe) {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn tesseract_dir_from_registry_key(key: &str, probe: &str) -> Option<PathBuf> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let output = std::process::Command::new("reg")
+        .args(["query", key])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    for name in ["InstallLocation", "DisplayIcon", "UninstallString"] {
+        if let Some(value) = registry_value(&text, name) {
+            if let Some(dir) = probe_dir_from_registry_value(&value, probe) {
+                return Some(dir);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn registry_value(text: &str, name: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.starts_with(name) {
+            continue;
+        }
+        let rest = line.strip_prefix(name)?.trim_start();
+        let value = if let Some(rest) = rest.strip_prefix("REG_SZ") {
+            rest
+        } else if let Some(rest) = rest.strip_prefix("REG_EXPAND_SZ") {
+            rest
+        } else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"').to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn probe_dir_from_registry_value(value: &str, probe: &str) -> Option<PathBuf> {
+    let value = value.trim().trim_matches('"');
+    let mut path = PathBuf::from(value);
+    if path.is_file() {
+        path = path.parent()?.to_path_buf();
+    }
+    if path.join(probe).is_file() {
+        return Some(path);
+    }
+
+    if let Some(parent) = path.parent() {
+        if parent.join(probe).is_file() {
+            return Some(parent.to_path_buf());
         }
     }
     None
@@ -839,6 +1087,18 @@ fn same_path(a: &Path, b: &Path) -> bool {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
+}
+
+fn download_temp_path(root: &Path, id: &str, artifact: &RuntimeArtifact) -> PathBuf {
+    if artifact.archive == ArchiveKind::Installer {
+        let installer_name = Path::new(&artifact.file_name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("installer.exe");
+        return root.join(format!(".dl-{id}-{installer_name}"));
+    }
+    root.join(format!(".dl-{id}.tmp"))
 }
 
 fn artifact_integrity_pinned(artifact: &RuntimeArtifact) -> bool {
@@ -1332,6 +1592,7 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
             },
             probe: if cfg!(windows) { "tesseract.exe" } else { "tesseract" }.to_string(),
             system_probe_paths: vec![
+                "%LOCALAPPDATA%\\Programs\\Tesseract-OCR".to_string(),
                 "C:\\Program Files\\Tesseract-OCR".to_string(),
                 "C:\\Program Files (x86)\\Tesseract-OCR".to_string(),
             ],

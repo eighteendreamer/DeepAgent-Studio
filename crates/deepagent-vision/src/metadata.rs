@@ -60,7 +60,11 @@ pub fn extract_metadata_from_bytes(raw: &[u8], file_size: u64) -> Result<ImageMe
             let img = image::load_from_memory(raw).map_err(|e2| {
                 format!("decode image (dimension probe failed: {e}; full decode: {e2})")
             })?;
-            (img.width(), img.height(), format!("{:?}", img.color()).to_lowercase())
+            (
+                img.width(),
+                img.height(),
+                format!("{:?}", img.color()).to_lowercase(),
+            )
         }
     };
 
@@ -107,9 +111,7 @@ fn parse_exif(raw: &[u8]) -> Vec<(String, String)> {
             let seg_end = (seg_start + seg_len - 2).min(raw.len());
 
             // Check for "Exif\0\0" header.
-            if seg_end > seg_start + 6
-                && &raw[seg_start..seg_start + 6] == b"Exif\x00\x00"
-            {
+            if seg_end > seg_start + 6 && &raw[seg_start..seg_start + 6] == b"Exif\x00\x00" {
                 let tiff_data = &raw[seg_start + 6..seg_end];
                 return parse_tiff_ifd(tiff_data);
             }
