@@ -149,6 +149,7 @@ impl SkillCatalogSendState {
 mod tests {
     use super::*;
     use deepagent_skills::{frontmatter, Skill, SkillOrigin, SkillRegistry};
+    use crate::{PermissionPreset, PermissionPresetVisibility};
 
     /// Build an [`AppSettings`] preconfigured for catalog-on with the default
     /// budget. Tests that want a different budget / disabled state mutate
@@ -190,6 +191,8 @@ mod tests {
             skill_catalog_char_budget: 8000,
             skill_install_ai_review_enabled: true,
             skill_install_ai_review_model: None,
+            active_permission_preset: PermissionPreset::default(),
+            permission_preset_visibility: PermissionPresetVisibility::default(),
             welcome_name: String::new(),
         }
     }

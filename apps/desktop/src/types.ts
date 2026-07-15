@@ -363,6 +363,20 @@ export interface WebSearchSettings {
   enabled: boolean;
   provider: WebSearchProvider;
   searxng_url: string | null;
+  anysearch_enabled: boolean;
+  anysearch_base_url: string | null;
+  anysearch_api_key_configured: boolean;
+}
+
+export interface AnySearchApiKeyInfo {
+  has_user_key: boolean;
+}
+
+export interface AnySearchTestResult {
+  ok: boolean;
+  error: string | null;
+  provider: string | null;
+  count: number | null;
 }
 
 export type VisionMode = "off" | "system" | "model";

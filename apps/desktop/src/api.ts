@@ -7,6 +7,8 @@
 
 import type {
   ApiKeyInfo,
+  AnySearchApiKeyInfo,
+  AnySearchTestResult,
   ApprovalRequest,
   ArchiveProjectResult,
   ArchivedConversation,
@@ -1087,7 +1089,14 @@ export async function setToolSearchThreshold(
 export async function getWebSearchSettings(): Promise<WebSearchSettings> {
   const invoke = getInvoke();
   if (invoke) return invoke<WebSearchSettings>("get_web_search_settings");
-  return { enabled: true, provider: "deepseek_first", searxng_url: null };
+  return {
+    enabled: true,
+    provider: "deepseek_first",
+    searxng_url: null,
+    anysearch_enabled: false,
+    anysearch_base_url: null,
+    anysearch_api_key_configured: false,
+  };
 }
 
 export async function setWebSearchSettings(
@@ -1100,6 +1109,32 @@ export async function setWebSearchSettings(
     return value;
   }
   return settings;
+}
+
+/** Inspect whether an AnySearch API key is configured. */
+export async function getAnySearchApiKeyInfo(): Promise<AnySearchApiKeyInfo> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<AnySearchApiKeyInfo>("get_anysearch_api_key");
+  return { has_user_key: false };
+}
+
+/** Save the AnySearch API key to the OS keychain. */
+export async function setAnySearchApiKey(key: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("set_anysearch_api_key", { key });
+}
+
+/** Clear the AnySearch API key from the OS keychain. */
+export async function clearAnySearchApiKey(): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) await invoke("clear_anysearch_api_key");
+}
+
+/** Run a tiny search to validate the configured AnySearch key. */
+export async function testAnySearchApiKey(): Promise<AnySearchTestResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<AnySearchTestResult>("test_anysearch_api_key");
+  return { ok: false, error: "desktop runtime is unavailable", provider: null, count: null };
 }
 
 // ---- vision settings ------------------------------------------------------

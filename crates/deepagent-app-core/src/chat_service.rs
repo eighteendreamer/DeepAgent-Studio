@@ -1464,6 +1464,11 @@ impl ChatService {
             return Ok(());
         }
 
+        let anysearch = if settings.anysearch_enabled {
+            self.anysearch_config(settings.anysearch_base_url.clone())
+        } else {
+            None
+        };
         let (deepseek, searxng_url) = match settings.provider {
             WebSearchProvider::DeepSeekFirst => (
                 self.deepseek_web_search_config(),
@@ -1473,9 +1478,26 @@ impl ChatService {
             WebSearchProvider::DuckDuckGo => (None, None),
         };
         registry.register(Arc::new(WebSearchTool::new(
-            ReqwestWebClient::with_search_config(deepseek, searxng_url),
+            ReqwestWebClient::with_search_chain(anysearch, deepseek, searxng_url),
         )))?;
         Ok(())
+    }
+
+    #[cfg(feature = "web")]
+    fn anysearch_config(
+        &self,
+        base_url: Option<String>,
+    ) -> Option<deepagent_builtins::AnySearchConfig> {
+        use deepagent_builtins::AnySearchConfig;
+
+        let api_key = self.settings.anysearch_api_key().ok().flatten()?;
+        if api_key.trim().is_empty() {
+            return None;
+        }
+        Some(AnySearchConfig::new(
+            Some(api_key),
+            base_url.unwrap_or_else(|| "https://api.anysearch.com".to_string()),
+        ))
     }
 
     #[cfg(feature = "web")]

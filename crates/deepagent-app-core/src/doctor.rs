@@ -454,6 +454,9 @@ mod tests {
             enabled: true,
             provider: WebSearchProvider::Searxng,
             searxng_url: None,
+            anysearch_enabled: false,
+            anysearch_base_url: None,
+            anysearch_api_key_configured: false,
         });
         assert_eq!(result.status, DiagStatus::Warning);
         assert!(result.detail.contains("no SearXNG URL"));

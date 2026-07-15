@@ -42,7 +42,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # Enable the OS keychain so the API key is stored in Windows Credential Manager
 # / macOS Keychain / Linux Secret Service — never in plaintext on disk.
 deepagent-app-core = { path = "../../../crates/deepagent-app-core", features = ["keychain", "web", "audio", "runtimes"] }
-deepagent-builtins = { path = "../../../crates/deepagent-builtins" }
+deepagent-builtins = { path = "../../../crates/deepagent-builtins", features = ["http"] }
 deepagent-core = { path = "../../../crates/deepagent-core" }
 deepagent-ssh = { path = "../../../crates/deepagent-ssh" }
 deepagent-models = { path = "../../../crates/deepagent-models", features = ["http"] }

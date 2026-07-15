@@ -31,6 +31,43 @@ pub struct DeepSeekWebSearchConfig {
     pub max_uses: usize,
 }
 
+/// Configuration for AnySearch's unified Search API.
+#[derive(Debug, Clone)]
+pub struct AnySearchConfig {
+    /// Optional AnySearch API key. Empty keys use anonymous access.
+    pub api_key: Option<String>,
+    /// AnySearch API base URL, usually `https://api.anysearch.com`.
+    pub base_url: String,
+}
+
+const ANYSEARCH_DEFAULT_BASE_URL: &str = "https://api.anysearch.com";
+
+impl AnySearchConfig {
+    /// Build a config. Empty base URLs fall back to AnySearch's public endpoint.
+    pub fn new(api_key: Option<String>, base_url: impl Into<String>) -> Self {
+        let base_url = base_url.into();
+        Self {
+            api_key: api_key
+                .map(|key| key.trim().to_string())
+                .filter(|key| !key.is_empty()),
+            base_url: if base_url.trim().is_empty() {
+                ANYSEARCH_DEFAULT_BASE_URL.to_string()
+            } else {
+                normalize_anysearch_base_url(&base_url)
+            },
+        }
+    }
+}
+
+fn normalize_anysearch_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if matches!(trimmed, "https://www.anysearch.com" | "https://anysearch.com") {
+        ANYSEARCH_DEFAULT_BASE_URL.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 impl DeepSeekWebSearchConfig {
     /// Build a config. Empty base URLs fall back to DeepSeek's API endpoint;
     /// the model is intentionally not defaulted here so the host can decide.
@@ -56,6 +93,7 @@ impl DeepSeekWebSearchConfig {
 
 #[derive(Debug, Clone)]
 enum SearchProvider {
+    AnySearch(AnySearchConfig),
     DeepSeek(DeepSeekWebSearchConfig),
     Searxng { base_url: String },
     DuckDuckGo,
@@ -64,6 +102,7 @@ enum SearchProvider {
 impl SearchProvider {
     fn name(&self) -> &'static str {
         match self {
+            Self::AnySearch(_) => "anysearch",
             Self::DeepSeek(_) => "deepseek",
             Self::Searxng { .. } => "searxng",
             Self::DuckDuckGo => "duckduckgo",
@@ -99,6 +138,15 @@ impl ReqwestWebClient {
         deepseek: Option<DeepSeekWebSearchConfig>,
         searxng_url: Option<String>,
     ) -> Self {
+        Self::with_search_chain(None, deepseek, searxng_url)
+    }
+
+    /// Build a client with explicit search providers, optionally AnySearch first.
+    pub fn with_search_chain(
+        anysearch: Option<AnySearchConfig>,
+        deepseek: Option<DeepSeekWebSearchConfig>,
+        searxng_url: Option<String>,
+    ) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             // A browser-like UA so search/content endpoints return real HTML
@@ -111,7 +159,7 @@ impl ReqwestWebClient {
             .unwrap_or_default();
         Self {
             client,
-            search_providers: build_search_providers(deepseek, searxng_url),
+            search_providers: build_search_providers(anysearch, deepseek, searxng_url),
         }
     }
 }
@@ -158,6 +206,9 @@ impl WebClient for ReqwestWebClient {
         for provider in &self.search_providers {
             let provider_name = provider.name();
             let result = match provider {
+                SearchProvider::AnySearch(config) => {
+                    self.search_anysearch(config, query, limit).await
+                }
                 SearchProvider::DeepSeek(config) => {
                     self.search_deepseek(config, query, limit).await
                 }
@@ -215,6 +266,46 @@ impl WebClient for ReqwestWebClient {
 }
 
 impl ReqwestWebClient {
+    async fn search_anysearch(
+        &self,
+        config: &AnySearchConfig,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let endpoint = format!("{}/v1/search", config.base_url.trim_end_matches('/'));
+        let max_results = limit.clamp(1, 100);
+        let body = serde_json::json!({
+            "query": query,
+            "max_results": max_results
+        });
+        let mut request = self
+            .client
+            .post(&endpoint)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::ACCEPT, "application/json")
+            .body(body.to_string());
+        if let Some(api_key) = config.api_key.as_deref().filter(|key| !key.trim().is_empty()) {
+            request = request.bearer_auth(api_key.trim());
+        }
+        let resp = request
+            .send()
+            .await
+            .map_err(|e| CoreError::other(format!("AnySearch request failed: {e}")))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let detail = resp.text().await.unwrap_or_default();
+            let detail = truncate_error_detail(&detail, 500);
+            return Err(CoreError::other(format!(
+                "AnySearch returned {status}: {detail}"
+            )));
+        }
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| CoreError::other(format!("reading AnySearch body failed: {e}")))?;
+        parse_anysearch_results(&text, limit)
+    }
+
     async fn search_deepseek(
         &self,
         config: &DeepSeekWebSearchConfig,
@@ -330,11 +421,25 @@ impl ReqwestWebClient {
     }
 }
 
+fn truncate_error_detail(detail: &str, max_chars: usize) -> String {
+    let compact = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+    let mut truncated = compact.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
 fn build_search_providers(
+    anysearch: Option<AnySearchConfig>,
     deepseek: Option<DeepSeekWebSearchConfig>,
     searxng_url: Option<String>,
 ) -> Vec<SearchProvider> {
     let mut providers = Vec::new();
+    if let Some(config) = anysearch {
+        providers.push(SearchProvider::AnySearch(config));
+    }
     if let Some(config) =
         deepseek.filter(|c| !c.api_key.trim().is_empty() && !c.model.trim().is_empty())
     {
@@ -451,6 +556,50 @@ fn parse_searxng_results(body: &str, limit: usize) -> Result<Vec<SearchResult>> 
     Ok(results)
 }
 
+fn parse_anysearch_results(body: &str, limit: usize) -> Result<Vec<SearchResult>> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| CoreError::other(format!("parsing AnySearch JSON failed: {e}")))?;
+    let rows = value
+        .get("results")
+        .and_then(|v| v.as_array())
+        .or_else(|| {
+            value
+                .get("data")
+                .and_then(|data| data.get("results"))
+                .and_then(|v| v.as_array())
+        })
+        .ok_or_else(|| CoreError::other("AnySearch response missing results array"))?;
+    let mut results = rows
+        .iter()
+        .filter_map(|v| v.as_object())
+        .filter_map(result_from_anysearch_object)
+        .collect::<Vec<_>>();
+    dedupe_results(&mut results);
+    results.truncate(limit);
+    if results.is_empty() {
+        return Err(CoreError::other("AnySearch returned no parseable results"));
+    }
+    Ok(results)
+}
+
+fn result_from_anysearch_object(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<SearchResult> {
+    let url = json_string(map, &["url", "href", "link"])?;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return None;
+    }
+    let title = json_string(map, &["title", "name"]).unwrap_or_else(|| url.clone());
+    let snippet = json_string(map, &["snippet", "summary", "description", "content"])
+        .map(|s| truncate_snippet(&s, 500))
+        .unwrap_or_default();
+    Some(SearchResult {
+        title,
+        url,
+        snippet,
+    })
+}
+
 fn result_from_json_object(
     map: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<SearchResult> {
@@ -466,6 +615,16 @@ fn result_from_json_object(
         url,
         snippet: snippet.trim().to_string(),
     })
+}
+
+fn truncate_snippet(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut snippet = trimmed.chars().take(max_chars).collect::<String>();
+    snippet.push_str("...");
+    snippet
 }
 
 fn json_string(map: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<String> {
@@ -836,8 +995,36 @@ mod tests {
     }
 
     #[test]
+    fn parses_anysearch_json_results() {
+        let body = r#"
+        {
+          "results": [
+            {
+              "title": "AnySearch Docs",
+              "url": "https://www.anysearch.com/docs",
+              "snippet": "Unified search infrastructure"
+            },
+            {
+              "title": "Skip non-http",
+              "url": "mailto:support@example.com"
+            }
+          ],
+          "metadata": {
+            "total_results": 2
+          }
+        }
+        "#;
+        let results = parse_anysearch_results(body, 5).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "AnySearch Docs");
+        assert_eq!(results[0].url, "https://www.anysearch.com/docs");
+        assert_eq!(results[0].snippet, "Unified search infrastructure");
+    }
+
+    #[test]
     fn builds_provider_chain_in_deepseek_first_order() {
         let providers = build_search_providers(
+            None,
             Some(DeepSeekWebSearchConfig::new(
                 "sk-test",
                 "https://api.deepseek.com",
@@ -850,8 +1037,33 @@ mod tests {
     }
 
     #[test]
+    fn builds_provider_chain_with_anysearch_first() {
+        let providers = build_search_providers(
+            Some(AnySearchConfig::new(
+                Some("as-test".to_string()),
+                "https://www.anysearch.com",
+            )),
+            Some(DeepSeekWebSearchConfig::new(
+                "sk-test",
+                "https://api.deepseek.com",
+                "test-search-model",
+            )),
+            Some("https://search.example.com".to_string()),
+        );
+        let names: Vec<&str> = providers.iter().map(SearchProvider::name).collect();
+        assert_eq!(names, vec!["anysearch", "deepseek", "searxng", "duckduckgo"]);
+    }
+
+    #[test]
+    fn anysearch_config_maps_website_origin_to_api_origin() {
+        let config = AnySearchConfig::new(Some("as-test".to_string()), "https://www.anysearch.com/");
+        assert_eq!(config.base_url, "https://api.anysearch.com");
+    }
+
+    #[test]
     fn provider_chain_skips_deepseek_when_model_missing() {
         let providers = build_search_providers(
+            None,
             Some(DeepSeekWebSearchConfig::new(
                 "sk-test",
                 "https://api.deepseek.com",

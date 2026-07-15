@@ -783,6 +783,84 @@ fn clear_api_key(state: State<'_, AppState>) -> Result<(), String> {
     state.settings.clear_key().map_err(|e| e.to_string())
 }
 
+/// AnySearch API-key state surfaced to the web-search settings panel.
+#[derive(Debug, serde::Serialize)]
+struct AnySearchApiKeyInfo {
+    has_user_key: bool,
+}
+
+#[tauri::command]
+fn get_anysearch_api_key(state: State<'_, AppState>) -> Result<AnySearchApiKeyInfo, String> {
+    let has_user_key = state
+        .settings
+        .anysearch_api_key()
+        .map_err(|e| e.to_string())?
+        .map(|key| !key.trim().is_empty())
+        .unwrap_or(false);
+    Ok(AnySearchApiKeyInfo { has_user_key })
+}
+
+#[tauri::command]
+fn set_anysearch_api_key(state: State<'_, AppState>, key: String) -> Result<(), String> {
+    state
+        .settings
+        .set_anysearch_api_key(&key)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_anysearch_api_key(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .settings
+        .clear_anysearch_api_key()
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Serialize)]
+struct AnySearchTestResult {
+    ok: bool,
+    error: Option<String>,
+    provider: Option<String>,
+    count: Option<usize>,
+}
+
+#[tauri::command]
+async fn test_anysearch_api_key(state: State<'_, AppState>) -> Result<AnySearchTestResult, String> {
+    use deepagent_builtins::{AnySearchConfig, ReqwestWebClient, WebClient};
+
+    let key = state
+        .settings
+        .anysearch_api_key()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "AnySearch API key not set".to_string())?;
+    let settings = state
+        .settings
+        .web_search_settings()
+        .map_err(|e| e.to_string())?;
+    let base_url = settings
+        .anysearch_base_url
+        .unwrap_or_else(|| "https://api.anysearch.com".to_string());
+    let client = ReqwestWebClient::with_search_chain(
+        Some(AnySearchConfig::new(Some(key), base_url)),
+        None,
+        None,
+    );
+    match client.search_response("test", 1).await {
+        Ok(resp) => Ok(AnySearchTestResult {
+            ok: true,
+            error: None,
+            provider: Some(resp.provider),
+            count: Some(resp.results.len()),
+        }),
+        Err(e) => Ok(AnySearchTestResult {
+            ok: false,
+            error: Some(e.to_string()),
+            provider: None,
+            count: None,
+        }),
+    }
+}
+
 /// Switch the active chat model to a discovered model id. Returns the updated
 /// (redacted) settings view. The id must be one of `available_models`.
 #[tauri::command]
@@ -3737,6 +3815,10 @@ pub fn run() {
             refresh_models,
             get_balance,
             clear_api_key,
+            get_anysearch_api_key,
+            set_anysearch_api_key,
+            clear_anysearch_api_key,
+            test_anysearch_api_key,
             set_chat_model,
             list_skills,
             reload_skills,

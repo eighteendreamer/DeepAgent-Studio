@@ -11,7 +11,11 @@ import {
   getToolSearchThreshold,
   setToolSearchThreshold,
   getWebSearchSettings,
+  getAnySearchApiKeyInfo,
   getVisionSettings,
+  setAnySearchApiKey,
+  clearAnySearchApiKey,
+  testAnySearchApiKey,
   setWebSearchSettings,
   setVisionSettings,
   getSkillCatalogEnabled,
@@ -46,6 +50,7 @@ import { message } from "../message";
 const SKILL_REVIEW_MODEL_DEFAULT = "__default__";
 // Hard cap on the catalog reminder character budget input (R10.2 / task 21).
 const SKILL_CATALOG_BUDGET_MAX = 32000;
+const ANYSEARCH_DEFAULT_BASE_URL = "https://api.anysearch.com";
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
@@ -617,8 +622,14 @@ export function ConfigSettings() {
     enabled: true,
     provider: "deepseek_first",
     searxng_url: null,
+    anysearch_enabled: false,
+    anysearch_base_url: null,
+    anysearch_api_key_configured: false,
   });
   const [searxngInput, setSearxngInput] = useState<string>("");
+  const [anysearchBaseUrlInput, setAnysearchBaseUrlInput] = useState<string>(ANYSEARCH_DEFAULT_BASE_URL);
+  const [anysearchApiKeyConfigured, setAnysearchApiKeyConfigured] = useState<boolean>(false);
+  const [anysearchKeyInput, setAnysearchKeyInput] = useState<string>("");
 
   // Skill marketplace settings (R10.1-R10.5 / task 21).
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -660,9 +671,16 @@ export function ConfigSettings() {
         if (!cancelled) {
           setWebSearchSettingsState(v);
           setSearxngInput(v.searxng_url ?? "");
+          setAnysearchBaseUrlInput(v.anysearch_base_url ?? ANYSEARCH_DEFAULT_BASE_URL);
+          setAnysearchApiKeyConfigured(v.anysearch_api_key_configured);
         }
       })
       .catch((e) => console.error("get_web_search_settings failed:", e));
+    getAnySearchApiKeyInfo()
+      .then((v) => {
+        if (!cancelled) setAnysearchApiKeyConfigured(v.has_user_key);
+      })
+      .catch((e) => console.error("get_anysearch_api_key failed:", e));
     // Skill marketplace settings (R10).
     getSkillCatalogEnabled()
       .then((v) => {
@@ -763,11 +781,41 @@ export function ConfigSettings() {
       const persisted = await setWebSearchSettings(next);
       setWebSearchSettingsState(persisted);
       setSearxngInput(persisted.searxng_url ?? "");
+      setAnysearchBaseUrlInput(persisted.anysearch_base_url ?? ANYSEARCH_DEFAULT_BASE_URL);
+      setAnysearchApiKeyConfigured(persisted.anysearch_api_key_configured);
     } catch (e) {
       setWebSearchSettingsState(previous);
       setSearxngInput(previous.searxng_url ?? "");
+      setAnysearchBaseUrlInput(previous.anysearch_base_url ?? ANYSEARCH_DEFAULT_BASE_URL);
+      setAnysearchApiKeyConfigured(previous.anysearch_api_key_configured);
       message.error(t("settings.config.webSearch.saveFailed"));
       console.error("set_web_search_settings failed:", e);
+    }
+  };
+
+  const persistAnySearchApiKey = async (nextKey: string) => {
+    const trimmed = nextKey.trim();
+    if (!trimmed) return;
+    try {
+      await setAnySearchApiKey(trimmed);
+      setAnysearchApiKeyConfigured(true);
+      setWebSearchSettingsState((prev) => ({ ...prev, anysearch_api_key_configured: true }));
+      setAnysearchKeyInput("");
+    } catch (e) {
+      message.error("AnySearch API Key 保存失败");
+      console.error("set_anysearch_api_key failed:", e);
+    }
+  };
+
+  const clearAnySearchApiKeyLocal = async () => {
+    try {
+      await clearAnySearchApiKey();
+      setAnysearchApiKeyConfigured(false);
+      setWebSearchSettingsState((prev) => ({ ...prev, anysearch_api_key_configured: false }));
+      setAnysearchKeyInput("");
+    } catch (e) {
+      message.error("AnySearch API Key 清除失败");
+      console.error("clear_anysearch_api_key failed:", e);
     }
   };
 
@@ -937,6 +985,112 @@ export function ConfigSettings() {
                   searxng_url: searxngInput.trim() || null,
                 })
               }
+            />
+          </div>
+          <div
+            className={`flex items-center justify-between p-4 border-b border-border-theme ${
+              webSearchSettings.enabled ? "" : "opacity-50 pointer-events-none"
+            }`}
+          >
+            <div>
+              <div className="text-[14px] font-medium text-text-base mb-1">优先使用 AnySearch</div>
+              <div className="text-[12px] text-text-secondary">
+                启用后，web_search 会先尝试 AnySearch，再回退到当前 provider 链。
+              </div>
+            </div>
+            <ToggleSwitch
+              checked={webSearchSettings.anysearch_enabled}
+              onChange={() =>
+                persistWebSearchSettings({
+                  ...webSearchSettings,
+                  anysearch_enabled: !webSearchSettings.anysearch_enabled,
+                  anysearch_base_url: anysearchBaseUrlInput.trim() || null,
+                  searxng_url: searxngInput.trim() || null,
+                })
+              }
+            />
+          </div>
+          <div
+            className={`flex items-center justify-between p-4 border-b border-border-theme ${
+              webSearchSettings.enabled && webSearchSettings.anysearch_enabled
+                ? ""
+                : "opacity-50 pointer-events-none"
+            }`}
+          >
+            <div className="min-w-0 pr-4">
+              <div className="text-[14px] font-medium text-text-base mb-1">AnySearch API Key</div>
+              <div className="text-[12px] text-text-secondary">
+                只保存到系统密钥串，不写入数据库；未配置时会继续回退到后备 provider。
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                value={anysearchKeyInput}
+                placeholder={anysearchApiKeyConfigured ? "已配置，重新输入可覆盖" : "请输入 AnySearch API Key"}
+                disabled={!webSearchSettings.enabled || !webSearchSettings.anysearch_enabled}
+                onChange={(e) => setAnysearchKeyInput(e.target.value)}
+                onBlur={() => {
+                  void persistAnySearchApiKey(anysearchKeyInput);
+                }}
+                className="w-[260px] px-2 py-1 text-[13px] font-mono border border-border-theme rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:bg-gray-50"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  if (anysearchKeyInput.trim()) {
+                    await persistAnySearchApiKey(anysearchKeyInput);
+                  }
+                  const result = await testAnySearchApiKey();
+                  if (result.ok) {
+                    message.success(`AnySearch 可用${result.provider ? ` (${result.provider})` : ""}`);
+                  } else {
+                    message.error(result.error || "AnySearch 测试失败");
+                  }
+                }}
+                disabled={!webSearchSettings.enabled || !webSearchSettings.anysearch_enabled}
+                className="px-3 py-1.5 text-[12px] font-medium text-text-base bg-gray-100 border border-border-theme rounded-md hover:bg-gray-200 disabled:opacity-50"
+              >
+                测试
+              </button>
+              <button
+                type="button"
+                onClick={clearAnySearchApiKeyLocal}
+                disabled={!anysearchApiKeyConfigured}
+                className="px-3 py-1.5 text-[12px] font-medium text-text-base bg-white border border-border-theme rounded-md hover:bg-gray-50 disabled:opacity-50"
+              >
+                清除
+              </button>
+            </div>
+          </div>
+          <div
+            className={`flex items-center justify-between p-4 border-b border-border-theme ${
+              webSearchSettings.enabled && webSearchSettings.anysearch_enabled
+                ? ""
+                : "opacity-50 pointer-events-none"
+            }`}
+          >
+            <div>
+              <div className="text-[14px] font-medium text-text-base mb-1">AnySearch Base URL</div>
+              <div className="text-[12px] text-text-secondary">
+                默认使用 https://api.anysearch.com，可按需改成自建网关。
+              </div>
+            </div>
+            <input
+              type="url"
+              value={anysearchBaseUrlInput}
+              placeholder={ANYSEARCH_DEFAULT_BASE_URL}
+              disabled={!webSearchSettings.enabled || !webSearchSettings.anysearch_enabled}
+              onChange={(e) => setAnysearchBaseUrlInput(e.target.value)}
+              onBlur={() =>
+                persistWebSearchSettings({
+                  ...webSearchSettings,
+                  anysearch_enabled: webSearchSettings.anysearch_enabled,
+                  anysearch_base_url: anysearchBaseUrlInput.trim() || null,
+                  searxng_url: searxngInput.trim() || null,
+                })
+              }
+              className="w-[260px] px-2 py-1 text-[13px] font-mono border border-border-theme rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:bg-gray-50"
             />
           </div>
           <div

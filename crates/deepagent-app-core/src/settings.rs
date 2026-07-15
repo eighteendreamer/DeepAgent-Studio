@@ -34,6 +34,9 @@ const SETTINGS_ID: &str = "app";
 const API_KEY_NAME: &str = "deepseek_api_key";
 /// The third-party system-vision API key lives in the same SecretStore.
 const VISION_API_KEY_NAME: &str = "vision_api_key";
+/// The AnySearch API key lives in the same SecretStore.
+const ANYSEARCH_API_KEY_NAME: &str = "anysearch_api_key";
+const ANYSEARCH_DEFAULT_BASE_URL: &str = "https://api.anysearch.com";
 
 /// How tool-approval requests are resolved (maps to the 设置 → 权限 panel).
 ///
@@ -341,6 +344,15 @@ pub struct WebSearchSettings {
     /// Optional SearXNG base URL, for example `https://search.example.com`.
     #[serde(default)]
     pub searxng_url: Option<String>,
+    /// Whether AnySearch should be attempted before the selected fallback chain.
+    #[serde(default)]
+    pub anysearch_enabled: bool,
+    /// Optional AnySearch API base URL. Defaults to `https://api.anysearch.com`.
+    #[serde(default)]
+    pub anysearch_base_url: Option<String>,
+    /// Redacted view-only flag, populated by [`SettingsService`].
+    #[serde(default)]
+    pub anysearch_api_key_configured: bool,
 }
 
 impl Default for WebSearchSettings {
@@ -349,6 +361,9 @@ impl Default for WebSearchSettings {
             enabled: default_web_search_enabled(),
             provider: WebSearchProvider::default(),
             searxng_url: None,
+            anysearch_enabled: false,
+            anysearch_base_url: None,
+            anysearch_api_key_configured: false,
         }
     }
 }
@@ -362,7 +377,21 @@ fn normalize_web_search_settings(mut settings: WebSearchSettings) -> WebSearchSe
         .searxng_url
         .map(|s| s.trim().trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty());
+    settings.anysearch_base_url = settings
+        .anysearch_base_url
+        .map(|s| normalize_anysearch_base_url(&s))
+        .filter(|s| !s.is_empty());
+    settings.anysearch_api_key_configured = false;
     settings
+}
+
+fn normalize_anysearch_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if matches!(trimmed, "https://www.anysearch.com" | "https://anysearch.com") {
+        ANYSEARCH_DEFAULT_BASE_URL.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// How pasted/dropped images are converted into model-readable context.
@@ -722,7 +751,7 @@ impl SettingsService {
                 .unwrap_or_default(),
             web_search: prior
                 .as_ref()
-                .map(|s| s.web_search.clone())
+                .map(|s| normalize_web_search_settings(s.web_search.clone()))
                 .unwrap_or_default(),
             vision: prior.as_ref().map(|s| s.vision.clone()).unwrap_or_default(),
             tool_search_mode: prior
@@ -913,7 +942,10 @@ impl SettingsService {
 
     /// Current web-search settings (default DeepSeek-first when uninitialized).
     pub fn web_search_settings(&self) -> Result<WebSearchSettings> {
-        Ok(self.load()?.map(|s| s.web_search).unwrap_or_default())
+        let settings = normalize_web_search_settings(
+            self.load()?.map(|s| s.web_search).unwrap_or_default(),
+        );
+        self.web_search_settings_view(settings)
     }
 
     /// Persist web-search settings.
@@ -924,6 +956,35 @@ impl SettingsService {
         settings.web_search = normalize_web_search_settings(settings_next);
         self.save(&settings)?;
         Ok(())
+    }
+
+    /// The configured AnySearch API key, if present.
+    pub fn anysearch_api_key(&self) -> Result<Option<String>> {
+        self.secrets.get(ANYSEARCH_API_KEY_NAME)
+    }
+
+    /// Save the AnySearch API key to the secret store.
+    pub fn set_anysearch_api_key(&self, api_key: &str) -> Result<()> {
+        let api_key = api_key.trim();
+        if api_key.is_empty() {
+            return Err(CoreError::invalid("AnySearch API key must not be empty"));
+        }
+        self.secrets.set(ANYSEARCH_API_KEY_NAME, api_key)
+    }
+
+    /// Delete the configured AnySearch API key.
+    pub fn clear_anysearch_api_key(&self) -> Result<()> {
+        let _ = self.secrets.delete(ANYSEARCH_API_KEY_NAME);
+        Ok(())
+    }
+
+    fn web_search_settings_view(&self, mut settings: WebSearchSettings) -> Result<WebSearchSettings> {
+        settings.anysearch_api_key_configured = self
+            .secrets
+            .get(ANYSEARCH_API_KEY_NAME)?
+            .map(|key| !key.trim().is_empty())
+            .unwrap_or(false);
+        Ok(settings)
     }
 
     /// Current image-analysis settings.
@@ -1307,7 +1368,9 @@ impl SettingsService {
             sandbox_mode: settings.sandbox_mode.label().to_string(),
             terminal_shell: settings.terminal_shell.label().to_string(),
             thinking_depth: settings.thinking_depth.label().to_string(),
-            web_search: settings.web_search.clone(),
+            web_search: self.web_search_settings_view(normalize_web_search_settings(
+                settings.web_search.clone(),
+            ))?,
             vision: self.vision_settings_view(settings.vision.clone())?,
         })
     }
@@ -1370,7 +1433,7 @@ mod tests {
         let persisted = svc.load().unwrap().unwrap();
         let json = serde_json::to_string(&persisted).unwrap();
         assert!(!json.contains("sk-secret-1234"));
-        assert!(!json.contains("api_key"));
+        assert!(!json.contains("\"deepseek_api_key\""));
     }
 
     #[tokio::test]
@@ -1499,6 +1562,9 @@ mod tests {
             enabled: true,
             provider: WebSearchProvider::Searxng,
             searxng_url: Some(" https://search.example.com/ ".into()),
+            anysearch_enabled: true,
+            anysearch_base_url: Some(" https://api.anysearch.com/ ".into()),
+            anysearch_api_key_configured: false,
         })
         .unwrap();
         let persisted = svc.web_search_settings().unwrap();
