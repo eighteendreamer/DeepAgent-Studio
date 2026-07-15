@@ -59,6 +59,7 @@ pub struct SkillActivationDto {
 /// UI-facing skill management service.
 pub struct SkillsService {
     manager: SkillManager,
+    roots: Option<SkillsRoots>,
 }
 
 impl SkillsService {
@@ -67,7 +68,10 @@ impl SkillsService {
     pub fn open(workspace_dir: Option<PathBuf>, install_dir: impl Into<PathBuf>) -> Result<Self> {
         let mut manager = SkillManager::new(workspace_dir, install_dir);
         manager.load_all()?;
-        Ok(Self { manager })
+        Ok(Self {
+            manager,
+            roots: None,
+        })
     }
 
     /// Build over the four-tier marketplace storage layout
@@ -81,6 +85,13 @@ impl SkillsService {
     /// `None`, etc.) are handled gracefully: they contribute zero skills, no
     /// error.
     pub fn open_v2(roots: SkillsRoots) -> Result<Self> {
+        Ok(Self {
+            manager: Self::build_v2_manager(&roots)?,
+            roots: Some(roots),
+        })
+    }
+
+    fn build_v2_manager(roots: &SkillsRoots) -> Result<SkillManager> {
         // The legacy install/uninstall path needs an install_dir; the
         // marketplace path is the natural place to land newly-installed skills.
         let mut manager = SkillManager::new(None, &roots.marketplace);
@@ -119,12 +130,15 @@ impl SkillsService {
                 manager.register(skill);
             }
         }
-        Ok(Self { manager })
+        Ok(manager)
     }
 
     /// Build over an existing manager (e.g. for tests).
     pub fn from_manager(manager: SkillManager) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            roots: None,
+        }
     }
 
     /// Read-only access to the underlying [`SkillManager`].
@@ -140,7 +154,12 @@ impl SkillsService {
 
     /// Reload all skills from disk.
     pub fn reload(&mut self) -> Result<usize> {
-        self.manager.load_all()
+        if let Some(roots) = &self.roots {
+            self.manager = Self::build_v2_manager(roots)?;
+            Ok(self.manager.registry().len())
+        } else {
+            self.manager.load_all()
+        }
     }
 
     /// List all known skills as DTOs (sorted by id).
@@ -828,6 +847,47 @@ mod tests {
         assert!(ids.contains(&"b1".to_string()));
         assert!(ids.contains(&"u1".to_string()));
         assert_eq!(svc.list().len(), 2);
+    }
+
+    #[test]
+    fn open_v2_reload_keeps_builtin_and_installed_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let builtin = tmp.path().join("builtin");
+        let user = tmp.path().join("user");
+        let marketplace = user.join("marketplace");
+
+        write(
+            &builtin.join("builtin-skill").join("SKILL.md"),
+            "---\nname: Builtin Skill\ndescription: \"builtin\"\n---\nbuiltin body",
+        );
+        write(
+            &user.join("user-skill").join("SKILL.md"),
+            "---\nname: User Skill\ndescription: \"user\"\n---\nuser body",
+        );
+        write(
+            &marketplace.join("installed-skill").join("SKILL.md"),
+            "---\nname: Installed Skill\ndescription: \"installed\"\n---\ninstalled body",
+        );
+
+        let mut svc = SkillsService::open_v2(SkillsRoots {
+            builtin,
+            user,
+            marketplace,
+            workspace: None,
+        })
+        .unwrap();
+
+        assert!(svc.list().iter().any(|s| s.id == "builtin-skill"));
+        assert!(svc.list().iter().any(|s| s.id == "user-skill"));
+        assert!(svc.list().iter().any(|s| s.id == "installed-skill"));
+
+        svc.reload().unwrap();
+
+        let ids: Vec<_> = svc.list().into_iter().map(|s| s.id).collect();
+        assert!(ids.contains(&"builtin-skill".to_string()));
+        assert!(ids.contains(&"user-skill".to_string()));
+        assert!(ids.contains(&"installed-skill".to_string()));
+        assert_eq!(ids.len(), 3);
     }
 
     #[test]
