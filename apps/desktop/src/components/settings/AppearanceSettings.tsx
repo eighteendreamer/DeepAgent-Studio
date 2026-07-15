@@ -1,7 +1,9 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { motion } from "framer-motion";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import { useTheme, type ThemeMode, type ThemeSwitchOrigin } from "../../hooks/useTheme";
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
@@ -14,18 +16,45 @@ function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () =>
   );
 }
 
-function SegmentedControl({ options, value, onChange }: { options: { label: React.ReactNode, value: string }[], value: string, onChange: (val: string) => void }) {
+function SegmentedControl({
+  options,
+  value,
+  onChange,
+  indicatorLayoutId,
+}: {
+  options: { label: React.ReactNode, value: string }[];
+  value: string;
+  onChange: (val: string, origin: ThemeSwitchOrigin) => void;
+  indicatorLayoutId?: string;
+}) {
   return (
-    <div className="flex items-center bg-gray-100 p-0.5 rounded-lg border border-border-theme">
-      {options.map((opt) => (
-        <div 
-          key={opt.value}
-          onClick={() => onChange(opt.value)}
-          className={`flex items-center justify-center px-3 py-1 text-[12px] font-medium cursor-pointer transition-all rounded-md ${value === opt.value ? 'bg-white shadow-[0_1px_2px_rgb(0,0,0,0.1)] text-text-base' : 'text-text-secondary hover:text-text-base'}`}
-        >
-          {opt.label}
-        </div>
-      ))}
+    <div className="relative flex items-center bg-gray-100 p-0.5 rounded-lg border border-border-theme">
+      {options.map((opt) => {
+        const selected = value === opt.value;
+        return (
+          <button
+            type="button"
+            key={opt.value}
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              onChange(opt.value, {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2,
+              });
+            }}
+            className={`relative flex items-center justify-center px-3 py-1 text-[12px] font-medium transition-colors rounded-md ${selected ? `text-text-base ${indicatorLayoutId ? '' : 'bg-white shadow-[0_1px_2px_rgb(0,0,0,0.1)]'}` : 'text-text-secondary hover:text-text-base'}`}
+          >
+            {selected && indicatorLayoutId && (
+              <motion.span
+                layoutId={indicatorLayoutId}
+                transition={{ type: "spring", bounce: 0, duration: 0.18 }}
+                className="absolute inset-0 z-0 rounded-md bg-white shadow-[0_1px_2px_rgb(0,0,0,0.1)]"
+              />
+            )}
+            <span className="relative z-10 flex items-center">{opt.label}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -116,11 +145,9 @@ function ThemeDropdown({
     </div>
   );
 }
-import { useTheme } from "../../hooks/useTheme";
-
 export function AppearanceSettings() {
   const { t } = useTranslation();
-  const { config, activeIsDark, updateConfig, updateThemeDetails } = useTheme();
+  const { config, activeIsDark, updateThemeDetails, switchTheme } = useTheme();
 
   const [reduceMotion, setReduceMotion] = useState("system");
   const [diffMarker, setDiffMarker] = useState("color");
@@ -158,7 +185,8 @@ export function AppearanceSettings() {
                   {label: <><FontAwesomeIcon icon={["fas", "desktop"]} className="mr-1.5"/>{t("settings.appearance.system")}</>, value: 'system'}
                 ]} 
                 value={config.mode} 
-                onChange={(val: any) => updateConfig({ mode: val })} 
+                onChange={(val, origin) => switchTheme(val as ThemeMode, origin)}
+                indicatorLayoutId="appearance-theme-mode"
               />
             </div>
 

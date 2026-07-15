@@ -1,5 +1,13 @@
 import { useState, useEffect } from "react";
+import { flushSync } from "react-dom";
 import deepmerge from "deepmerge";
+
+export type ThemeMode = "light" | "dark" | "system";
+
+export interface ThemeSwitchOrigin {
+  x: number;
+  y: number;
+}
 
 export interface ThemeConfigDetails {
   accent: string;
@@ -13,10 +21,22 @@ export interface ThemeConfigDetails {
 }
 
 export interface ThemeConfig {
-  mode: "light" | "dark" | "system";
+  mode: ThemeMode;
   light: ThemeConfigDetails;
   dark: ThemeConfigDetails;
 }
+
+interface ViewTransitionLike {
+  finished: Promise<void>;
+  skipTransition?: () => void;
+}
+
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (update: () => void) => ViewTransitionLike;
+};
+
+let activeThemeTransition: ViewTransitionLike | null = null;
+const THEME_TRANSITION_DURATION_MS = 2400;
 
 export const DEFAULT_THEME_CONFIG: ThemeConfig = {
   mode: "system",
@@ -74,6 +94,12 @@ function applyCssVariables(theme: ThemeConfigDetails, isDark: boolean) {
   }
 }
 
+function resolveIsDark(mode: ThemeMode): boolean {
+  return mode === "dark" || (
+    mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches
+  );
+}
+
 function computeCssVariables(details: Omit<ThemeConfigDetails, 'cssVariables'>, isDark: boolean): Record<string, string> {
   // A simple heuristic for derivatives based on bg/fg/accent
   // In a real app, you'd use a color library like 'color' or 'd3-color'
@@ -125,16 +151,14 @@ export function useTheme() {
     const handleSystemChange = (e: MediaQueryListEvent) => {
       if (config.mode === "system") {
         setActiveIsDark(e.matches);
+        applyCssVariables(e.matches ? config.dark : config.light, e.matches);
       }
     };
     
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     mediaQuery.addEventListener("change", handleSystemChange);
     
-    let isDark = config.mode === "dark";
-    if (config.mode === "system") {
-      isDark = mediaQuery.matches;
-    }
+    const isDark = resolveIsDark(config.mode);
     
     setActiveIsDark(isDark);
     const activeTheme = isDark ? config.dark : config.light;
@@ -145,24 +169,81 @@ export function useTheme() {
     };
   }, [config]);
 
-  const updateConfig = (newConfig: Partial<ThemeConfig> | ((prev: ThemeConfig) => ThemeConfig)) => {
-    setConfigState(prev => {
-      let updated: ThemeConfig;
-      if (typeof newConfig === 'function') {
-        updated = newConfig(prev);
-      } else {
-        updated = { ...prev, ...newConfig };
-      }
-      
-      // Recompute CSS variables whenever config changes
-      updated.light.cssVariables = computeCssVariables(updated.light, false);
-      updated.dark.cssVariables = computeCssVariables(updated.dark, true);
+  const normalizeConfig = (next: ThemeConfig): ThemeConfig => ({
+    ...next,
+    light: {
+      ...next.light,
+      cssVariables: computeCssVariables(next.light, false),
+    },
+    dark: {
+      ...next.dark,
+      cssVariables: computeCssVariables(next.dark, true),
+    },
+  });
 
-      localStorage.setItem("codex-theme-config", JSON.stringify(updated));
-      // Dispatch an event so other tabs/windows or components can listen if needed
-      window.dispatchEvent(new Event("codex-theme-changed"));
-      return updated;
+  const commitConfig = (next: ThemeConfig) => {
+    const updated = normalizeConfig(next);
+    const isDark = resolveIsDark(updated.mode);
+    applyCssVariables(isDark ? updated.dark : updated.light, isDark);
+    setActiveIsDark(isDark);
+    setConfigState(updated);
+    localStorage.setItem("codex-theme-config", JSON.stringify(updated));
+    window.dispatchEvent(new Event("codex-theme-changed"));
+  };
+
+  const updateConfig = (newConfig: Partial<ThemeConfig> | ((prev: ThemeConfig) => ThemeConfig)) => {
+    const next = typeof newConfig === "function"
+      ? newConfig(config)
+      : { ...config, ...newConfig };
+    commitConfig(next);
+  };
+
+  const switchTheme = (mode: ThemeMode, origin: ThemeSwitchOrigin) => {
+    if (mode === config.mode) return;
+
+    const nextConfig = { ...config, mode };
+    const currentIsDark = resolveIsDark(config.mode);
+    const nextIsDark = resolveIsDark(mode);
+    const root = document.documentElement;
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const commit = () => commitConfig(nextConfig);
+
+    // Switching to "system" can change only the selected control while keeping
+    // the same effective palette. Avoid a full-screen reveal in that case.
+    if (prefersReducedMotion || currentIsDark === nextIsDark) {
+      commit();
+      return;
+    }
+
+    const x = Number.isFinite(origin.x) ? origin.x : window.innerWidth / 2;
+    const y = Number.isFinite(origin.y) ? origin.y : window.innerHeight / 2;
+    root.style.setProperty("--theme-switch-x", `${x}px`);
+    root.style.setProperty("--theme-switch-y", `${y}px`);
+
+    const transitionDocument = document as ViewTransitionDocument;
+    if (!transitionDocument.startViewTransition) {
+      root.classList.add("theme-transition-fallback");
+      flushSync(commit);
+      window.setTimeout(
+        () => root.classList.remove("theme-transition-fallback"),
+        THEME_TRANSITION_DURATION_MS,
+      );
+      return;
+    }
+
+    activeThemeTransition?.skipTransition?.();
+    root.classList.add("theme-transition-active");
+    const transition = transitionDocument.startViewTransition(() => {
+      flushSync(commit);
     });
+    activeThemeTransition = transition;
+    const finishTransition = () => {
+      if (activeThemeTransition === transition) {
+        activeThemeTransition = null;
+        root.classList.remove("theme-transition-active");
+      }
+    };
+    void transition.finished.then(finishTransition, finishTransition);
   };
 
   const updateThemeDetails = (isDarkTheme: boolean, updates: Partial<Omit<ThemeConfigDetails, 'cssVariables'>>) => {
@@ -178,5 +259,5 @@ export function useTheme() {
     });
   };
 
-  return { config, activeIsDark, updateConfig, updateThemeDetails };
+  return { config, activeIsDark, updateConfig, updateThemeDetails, switchTheme };
 }

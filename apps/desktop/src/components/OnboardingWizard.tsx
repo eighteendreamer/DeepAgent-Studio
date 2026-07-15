@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { getWelcomeName, initializeProject, isTauri, setSandboxMode, setWelcomeName as persistWelcomeName, type SandboxMode } from "../api";
 import { message } from "./message";
 import { useTranslation } from "react-i18next";
-import { useTheme } from "../hooks/useTheme";
+import { useTheme, type ThemeMode } from "../hooks/useTheme";
 interface Props {
   onComplete: () => void;
 }
@@ -32,7 +32,7 @@ export function OnboardingWizard({ onComplete }: Props) {
   const [isFinishing, setIsFinishing] = useState(false);
   
   const { t, i18n } = useTranslation();
-  const { updateConfig, activeIsDark } = useTheme();
+  const { activeIsDark, switchTheme } = useTheme();
   
   const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
   const [language, setLanguage] = useState("zh");
@@ -345,11 +345,19 @@ export function OnboardingWizard({ onComplete }: Props) {
                     { id: "dark", icon: ["fas", "moon"], label: "深色" },
                     { id: "system", icon: ["fas", "desktop"], label: "系统" },
                   ].map((tItem) => (
-                    <button
+                    <motion.button
                       key={tItem.id}
-                      onClick={() => {
-                        setTheme(tItem.id as any);
-                        updateConfig({ mode: tItem.id as any });
+                      type="button"
+                      whileTap={{ scale: 0.98 }}
+                      transition={{ type: "spring", bounce: 0, duration: 0.18 }}
+                      onClick={(event) => {
+                        const mode = tItem.id as ThemeMode;
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        setTheme(mode);
+                        switchTheme(mode, {
+                          x: rect.left + rect.width / 2,
+                          y: rect.top + rect.height / 2,
+                        });
                       }}
                       className={`flex-1 flex flex-col items-center justify-center py-6 border rounded-xl text-sm transition-all ${
                         theme === tItem.id
@@ -359,7 +367,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                     >
                       <FontAwesomeIcon icon={tItem.icon as any} className="mb-2 text-lg" />
                       <span className="font-medium">{tItem.label}</span>
-                    </button>
+                    </motion.button>
                   ))}
                 </div>
               </div>
