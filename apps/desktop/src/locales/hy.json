@@ -162,6 +162,11 @@
     },
     "personalize": {
       "title": "Անհատականացում",
+      "greeting": "Ողջույնի հաղորդագրություն",
+      "greetingDesc": "Սահմանեք հավելվածը բացելիս ողջույնի մեջ ցուցադրվող անունը",
+      "greetingPrefix": "Բարի գալուստ, ",
+      "greetingPlaceholder": "Անհատական անուն",
+      "greetingDefaultName": "Մշակող",
       "personality": "Բնավորություն",
       "personalityDesc": "Ընտրեք լռելյայն տոնը Codex-ի պատասխանների համար",
       "affable": "Սիրալիր",

@@ -31,7 +31,7 @@ export function OnboardingWizard({ onComplete }: Props) {
   const [isConnecting, setIsConnecting] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
   
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { updateConfig } = useTheme();
   
   const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
@@ -39,6 +39,7 @@ export function OnboardingWizard({ onComplete }: Props) {
   const [isLangDropdownOpen, setIsLangDropdownOpen] = useState(false);
   const [workMode, setWorkMode] = useState<"code" | "daily">("code");
   const [sandboxMode, setSandboxModeState] = useState<SandboxMode>("workspace_write");
+  const [animStage, setAnimStage] = useState<'idle' | 'contentBlur' | 'welcomeText' | 'welcomeOut' | 'lineAppear' | 'doorsOpen'>('idle');
 
   const handleConnect = async () => {
     const key = apiKey.trim();
@@ -100,10 +101,18 @@ export function OnboardingWizard({ onComplete }: Props) {
     localStorage.setItem("workMode", workMode);
     
     localStorage.setItem("onboarding_complete", "true");
-    onComplete();
     
-    // Reload the app to ensure all contexts (i18n, theme, App) start with the new defaults
-    window.location.reload();
+    // Start the cinematic entrance animation
+    setAnimStage('contentBlur');
+    setTimeout(() => setAnimStage('welcomeText'), 600);
+    setTimeout(() => setAnimStage('welcomeOut'), 2400); // Text starts exiting
+    setTimeout(() => setAnimStage('lineAppear'), 3400); // Triggers exactly as text fades out
+    setTimeout(() => setAnimStage('doorsOpen'), 4600); // Line grows for 1.2s, then doors open
+    setTimeout(() => {
+      onComplete();
+      // We no longer reload here to preserve the smooth transition.
+      // i18n and theme are already updated via state, so it should be fine.
+    }, 6200); // wait for sliding door
   };
 
   const nextStep = () => setStep((s) => Math.min(s + 1, 4) as any);
@@ -121,8 +130,88 @@ export function OnboardingWizard({ onComplete }: Props) {
   };
 
   return (
-    <div className="absolute top-10 inset-x-0 bottom-0 z-50 flex items-center justify-center bg-sidebar-bg/95 backdrop-blur-md overflow-hidden">
-      <div className={`w-full max-w-lg bg-bg-base rounded-3xl shadow-2xl border ${themeStyles.borderTheme} relative min-h-[400px]`}>
+    <div className="absolute top-10 inset-x-0 bottom-0 z-50 flex items-center justify-center overflow-hidden">
+      {/* Keep a solid transition surface behind the animation. It fades only when
+          the doors open, so the blurred card never exposes the app underneath. */}
+      <motion.div
+        aria-hidden="true"
+        initial={{ opacity: 1 }}
+        animate={{ opacity: animStage === 'doorsOpen' ? 0 : 1 }}
+        transition={{ duration: 1.5, ease: [0.76, 0, 0.24, 1] }}
+        className="absolute inset-0 z-0 bg-sidebar-bg"
+      />
+
+      {/* Sliding Doors Backdrop */}
+      <div className="absolute inset-0 z-10 pointer-events-none">
+        <motion.div
+            initial={{ width: '50%' }}
+            animate={{ width: animStage === 'doorsOpen' ? '0%' : '50%' }}
+            transition={{ duration: 1.5, ease: [0.76, 0, 0.24, 1] }}
+            className="absolute top-0 bottom-0 left-0 bg-sidebar-bg/95 backdrop-blur-md overflow-visible"
+          >
+            <div className="absolute right-0 top-0 bottom-0 flex items-center">
+              <motion.div 
+                initial={{ height: '0%', opacity: 0 }} 
+                animate={{ 
+                  height: (animStage === 'lineAppear' || animStage === 'doorsOpen') ? '100%' : '0%',
+                  opacity: (animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0 
+                }}
+                transition={{ duration: 1.2, ease: "easeInOut" }}
+                className="w-[1px] bg-white/30 shadow-[0_0_12px_rgba(255,255,255,0.4)]" 
+              />
+            </div>
+          </motion.div>
+          <motion.div
+            initial={{ width: '50%' }}
+            animate={{ width: animStage === 'doorsOpen' ? '0%' : '50%' }}
+            transition={{ duration: 1.5, ease: [0.76, 0, 0.24, 1] }}
+            className="absolute top-0 bottom-0 right-0 bg-sidebar-bg/95 backdrop-blur-md overflow-visible"
+          >
+            <div className="absolute left-0 top-0 bottom-0 flex items-center">
+              <motion.div 
+                initial={{ height: '0%', opacity: 0 }} 
+                animate={{ 
+                  height: (animStage === 'lineAppear' || animStage === 'doorsOpen') ? '100%' : '0%',
+                  opacity: (animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0 
+                }}
+                transition={{ duration: 1.2, ease: "easeInOut" }}
+                className="w-[1px] bg-white/30 shadow-[0_0_12px_rgba(255,255,255,0.4)]" 
+              />
+            </div>
+          </motion.div>
+        </div>
+
+        {/* The dot bridges the text exit and the vertical line without a blank frame. */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.4 }}
+          animate={{
+            opacity: (animStage === 'welcomeOut' || animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0,
+            scale: (animStage === 'welcomeOut' || animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0.4,
+          }}
+          transition={{ duration: 0.35, ease: "easeOut" }}
+          className="absolute left-1/2 top-1/2 z-20 h-[1px] w-[1px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/45 shadow-[0_0_8px_rgba(255,255,255,0.28)]"
+        />
+
+      {/* Welcome Text */}
+      <AnimatePresence>
+        {animStage === 'welcomeText' && (
+          <motion.div
+            initial={{ filter: 'blur(10px)', opacity: 0, scale: 0.95 }}
+            animate={{ filter: 'blur(0px)', opacity: 1, scale: 1 }}
+            exit={{ filter: 'blur(10px)', opacity: 0, scale: 1.05 }}
+            transition={{ duration: 1.2 }}
+            className={`absolute z-50 text-3xl font-bold tracking-wider ${themeStyles.textBase} pointer-events-none drop-shadow-lg`}
+          >
+            {t("settings.personalize.greetingPrefix")}{localStorage.getItem("userName") || t("settings.personalize.greetingDefaultName")}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <motion.div 
+        animate={animStage !== 'idle' ? { filter: 'blur(15px)', opacity: 0, scale: 0.9 } : { opacity: 1, scale: 1 }}
+        transition={{ duration: 0.6 }}
+        className={`w-full max-w-lg bg-bg-base rounded-3xl shadow-2xl border ${themeStyles.borderTheme} relative min-h-[400px] z-30`}
+      >
         <AnimatePresence mode="wait">
           {/* STEP 0: API Key */}
           {step === 0 && (
@@ -456,7 +545,7 @@ export function OnboardingWizard({ onComplete }: Props) {
             </motion.div>
           )}
         </AnimatePresence>
-      </div>
+      </motion.div>
     </div>
   );
 }

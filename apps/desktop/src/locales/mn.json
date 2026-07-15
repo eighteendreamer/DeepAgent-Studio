@@ -162,6 +162,11 @@
     },
     "personalize": {
       "title": "Хувийн болгох",
+      "greeting": "Мэндчилгээ",
+      "greetingDesc": "Аппыг нээх үед мэндчилгээнд харагдах нэрийг тохируулна уу",
+      "greetingPrefix": "Тавтай морил, ",
+      "greetingPlaceholder": "Тусгай нэр",
+      "greetingDefaultName": "Хөгжүүлэгч",
       "personality": "Зан чанар",
       "personalityDesc": "Codex-ийн хариултын анхдагч өнгө аясыг сонгоно уу",
       "affable": "Найрсаг",

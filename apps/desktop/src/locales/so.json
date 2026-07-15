@@ -162,6 +162,11 @@
     },
     "personalize": {
       "title": "Shakhsiyeysi",
+      "greeting": "Farriinta soo dhaweynta",
+      "greetingDesc": "Deji magaca lagu muujiyo farriinta soo dhaweynta marka abka la furo",
+      "greetingPrefix": "Soo dhawoow, ",
+      "greetingPlaceholder": "Magac gaar ah",
+      "greetingDefaultName": "Horumariye",
       "personality": "Shakhsiyadda",
       "personalityDesc": "Dooro dhawaaqa asalka ah ee jawaabaha Codex",
       "affable": "Saaxiibtinimo",

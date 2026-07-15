@@ -162,6 +162,11 @@
     },
     "personalize": {
       "title": "Персонализација",
+      "greeting": "Поздравна порака",
+      "greetingDesc": "Поставете го името што се прикажува во поздравната порака при отворање на апликацијата",
+      "greetingPrefix": "Добредојдовте, ",
+      "greetingPlaceholder": "Прилагодено име",
+      "greetingDefaultName": "Програмер",
       "personality": "Личност",
       "personalityDesc": "Изберете го стандардниот тон за одговорите на Codex",
       "affable": "Пријателски",

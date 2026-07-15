@@ -162,6 +162,11 @@
     },
     "personalize": {
       "title": "個人化",
+      "greeting": "歡迎語",
+      "greetingDesc": "設定進入應用程式時歡迎語中顯示的自訂名稱",
+      "greetingPrefix": "歡迎使用，",
+      "greetingPlaceholder": "自訂名稱",
+      "greetingDefaultName": "開發者",
       "personality": "個性",
       "personalityDesc": "選擇 Codex 回覆的預設語氣",
       "affable": "和藹可親",

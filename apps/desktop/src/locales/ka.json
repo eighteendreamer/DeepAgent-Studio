@@ -169,6 +169,11 @@
     },
     "personalize": {
       "title": "პერსონალიზაცია",
+      "greeting": "მისასალმებელი ტექსტი",
+      "greetingDesc": "დააყენეთ სახელი, რომელიც აპის გახსნისას მისასალმებელ ტექსტში გამოჩნდება",
+      "greetingPrefix": "მოგესალმებით, ",
+      "greetingPlaceholder": "მორგებული სახელი",
+      "greetingDefaultName": "დეველოპერი",
       "personality": "პიროვნება",
       "personalityDesc": "აირჩიეთ ნაგულისხმევი ტონი Codex-ის პასუხებისთვის",
       "affable": "მოსიყვარულე",

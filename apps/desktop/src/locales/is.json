@@ -162,6 +162,11 @@
     },
     "personalize": {
       "title": "Sérstillingar",
+      "greeting": "Kveðja",
+      "greetingDesc": "Stilltu sérsniðna nafnið sem birtist í kveðjunni þegar forritið er opnað",
+      "greetingPrefix": "Velkomin, ",
+      "greetingPlaceholder": "Sérsniðið nafn",
+      "greetingDefaultName": "Forritari",
       "personality": "Persónuleiki",
       "personalityDesc": "Veldu sjálfgefinn tón fyrir svör frá Codex",
       "affable": "Viðkunnanlegur",

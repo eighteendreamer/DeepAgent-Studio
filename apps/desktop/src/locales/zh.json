@@ -197,6 +197,11 @@
     },
     "personalize": {
       "title": "个性化",
+      "greeting": "欢迎语",
+      "greetingDesc": "设置进入应用时欢迎语中显示的自定义名称",
+      "greetingPrefix": "欢迎使用，",
+      "greetingPlaceholder": "自定义名称",
+      "greetingDefaultName": "开发者",
       "personality": "个性",
       "personalityDesc": "选择 Codex 回复的默认语气",
       "affable": "亲和",

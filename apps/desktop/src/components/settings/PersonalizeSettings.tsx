@@ -72,6 +72,18 @@ export function PersonalizeSettings() {
   const [customInstruction, setCustomInstruction] = useState("");
   const [enableMemory, setEnableMemory] = useState(false);
   const [skipToolMemory, setSkipToolMemory] = useState(false);
+  const [userName, setUserName] = useState(() => localStorage.getItem("userName") || "");
+  const [savedUserName, setSavedUserName] = useState(() => localStorage.getItem("userName") || "");
+
+  const normalizedUserName = userName.trim();
+  const canSaveUserName = normalizedUserName !== "" && normalizedUserName !== savedUserName;
+
+  const saveUserName = () => {
+    if (!canSaveUserName) return;
+    localStorage.setItem("userName", normalizedUserName);
+    setUserName(normalizedUserName);
+    setSavedUserName(normalizedUserName);
+  };
 
   return (
     <>
@@ -89,6 +101,42 @@ export function PersonalizeSettings() {
             </div>
             <PersonalityDropdown />
           </div>
+        </div>
+      </div>
+
+      {/* Section: Welcome message */}
+      <div className="mb-8 max-w-[700px]">
+        <div className="mb-2">
+          <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.personalize.greeting")}</div>
+          <div className="text-[12px] text-text-secondary">{t("settings.personalize.greetingDesc")}</div>
+        </div>
+
+        <div className="border border-border-theme rounded-xl bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)] p-4 flex items-center gap-3">
+          <div className="min-w-0 flex-1 flex items-center border border-border-theme rounded-lg overflow-hidden bg-white focus-within:border-gray-400 transition-colors">
+            <span className="shrink-0 px-3 py-2 bg-gray-50 border-r border-border-theme text-[13px] text-text-secondary">
+              {t("settings.personalize.greetingPrefix")}
+            </span>
+            <input
+              type="text"
+              value={userName}
+              maxLength={32}
+              placeholder={t("settings.personalize.greetingPlaceholder")}
+              aria-label={t("settings.personalize.greetingPlaceholder")}
+              onChange={(e) => setUserName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveUserName();
+              }}
+              className="min-w-0 flex-1 px-3 py-2 text-[13px] text-text-base bg-transparent outline-none placeholder:text-gray-400"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={saveUserName}
+            disabled={!canSaveUserName}
+            className={`shrink-0 px-4 py-2 rounded-md text-[13px] font-medium transition-colors ${canSaveUserName ? 'bg-blue-500 text-white hover:bg-blue-600 shadow-sm' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+          >
+            {t("settings.personalize.save")}
+          </button>
         </div>
       </div>
 

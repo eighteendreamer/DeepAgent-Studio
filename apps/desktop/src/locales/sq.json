@@ -162,6 +162,11 @@
     },
     "personalize": {
       "title": "Personalizimi",
+      "greeting": "Mesazhi i mirëseardhjes",
+      "greetingDesc": "Vendosni emrin e personalizuar që shfaqet në mesazhin e mirëseardhjes",
+      "greetingPrefix": "Mirë se vini, ",
+      "greetingPlaceholder": "Emër i personalizuar",
+      "greetingDefaultName": "Zhvillues",
       "personality": "Personaliteti",
       "personalityDesc": "Zgjidhni tonin e paracaktuar për përgjigjet e Codex",
       "affable": "I dashur",

@@ -162,6 +162,11 @@
     },
     "personalize": {
       "title": "パーソナライズ",
+      "greeting": "ウェルカムメッセージ",
+      "greetingDesc": "アプリを開いたときのウェルカムメッセージに表示する名前を設定します",
+      "greetingPrefix": "ようこそ、",
+      "greetingPlaceholder": "カスタム名",
+      "greetingDefaultName": "開発者",
       "personality": "性格",
       "personalityDesc": "Codexの応答のデフォルトトーンを選択します",
       "affable": "親しみやすい",

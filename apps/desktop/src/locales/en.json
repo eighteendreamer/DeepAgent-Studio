@@ -197,6 +197,11 @@
     },
     "personalize": {
       "title": "Personalization",
+      "greeting": "Welcome message",
+      "greetingDesc": "Set the custom name shown in the welcome message when entering the app",
+      "greetingPrefix": "Welcome, ",
+      "greetingPlaceholder": "Custom name",
+      "greetingDefaultName": "Developer",
       "personality": "Personality",
       "personalityDesc": "Choose the default tone for Codex's replies",
       "affable": "Affable",
