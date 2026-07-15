@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { motion, AnimatePresence } from "framer-motion";
-import { initializeProject, isTauri, setSandboxMode, type SandboxMode } from "../api";
+import { getWelcomeName, initializeProject, isTauri, setSandboxMode, setWelcomeName as persistWelcomeName, type SandboxMode } from "../api";
 import { message } from "./message";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "../hooks/useTheme";
@@ -32,7 +32,7 @@ export function OnboardingWizard({ onComplete }: Props) {
   const [isFinishing, setIsFinishing] = useState(false);
   
   const { t, i18n } = useTranslation();
-  const { updateConfig } = useTheme();
+  const { updateConfig, activeIsDark } = useTheme();
   
   const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
   const [language, setLanguage] = useState("zh");
@@ -40,6 +40,39 @@ export function OnboardingWizard({ onComplete }: Props) {
   const [workMode, setWorkMode] = useState<"code" | "daily">("code");
   const [sandboxMode, setSandboxModeState] = useState<SandboxMode>("workspace_write");
   const [animStage, setAnimStage] = useState<'idle' | 'contentBlur' | 'welcomeText' | 'welcomeOut' | 'lineAppear' | 'doorsOpen'>('idle');
+  const [welcomeName, setWelcomeName] = useState(() => localStorage.getItem("userName")?.trim() || "");
+
+  useEffect(() => {
+    let active = true;
+    const legacyName = localStorage.getItem("userName")?.trim() || "";
+
+    getWelcomeName()
+      .then(async (storedName) => {
+        if (!active) return;
+        const databaseName = storedName.trim();
+        if (databaseName) {
+          setWelcomeName(databaseName);
+          if (isTauri()) localStorage.removeItem("userName");
+          return;
+        }
+
+        if (legacyName) {
+          try {
+            const migratedName = await persistWelcomeName(legacyName);
+            if (!active) return;
+            setWelcomeName(migratedName);
+            if (isTauri()) localStorage.removeItem("userName");
+          } catch (error) {
+            console.error("failed to migrate welcome name:", error);
+          }
+        }
+      })
+      .catch((error) => console.error("failed to load welcome name:", error));
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleConnect = async () => {
     const key = apiKey.trim();
@@ -129,6 +162,19 @@ export function OnboardingWizard({ onComplete }: Props) {
     selectedBg: "bg-sidebar-bg",
   };
 
+  // Keep the cinematic transition visible in both themes. The door surface is
+  // a subtle tint over the base layer, while the seam uses the opposite neutral
+  // contrast instead of a hard-coded white that disappears on light themes.
+  const transitionColor = activeIsDark
+    ? "rgba(255, 255, 255, 0.72)"
+    : "rgba(17, 24, 39, 0.58)";
+  const transitionShadow = activeIsDark
+    ? "0 0 12px rgba(255, 255, 255, 0.32)"
+    : "0 0 12px rgba(17, 24, 39, 0.18)";
+  const doorSurface = activeIsDark
+    ? "rgba(255, 255, 255, 0.06)"
+    : "rgba(17, 24, 39, 0.055)";
+
   return (
     <div className="absolute top-10 inset-x-0 bottom-0 z-50 flex items-center justify-center overflow-hidden">
       {/* Keep a solid transition surface behind the animation. It fades only when
@@ -138,7 +184,7 @@ export function OnboardingWizard({ onComplete }: Props) {
         initial={{ opacity: 1 }}
         animate={{ opacity: animStage === 'doorsOpen' ? 0 : 1 }}
         transition={{ duration: 1.5, ease: [0.76, 0, 0.24, 1] }}
-        className="absolute inset-0 z-0 bg-sidebar-bg"
+        className="absolute inset-0 z-0 bg-bg-base"
       />
 
       {/* Sliding Doors Backdrop */}
@@ -147,7 +193,10 @@ export function OnboardingWizard({ onComplete }: Props) {
             initial={{ width: '50%' }}
             animate={{ width: animStage === 'doorsOpen' ? '0%' : '50%' }}
             transition={{ duration: 1.5, ease: [0.76, 0, 0.24, 1] }}
-            className="absolute top-0 bottom-0 left-0 bg-sidebar-bg/95 backdrop-blur-md overflow-visible"
+            className="absolute top-0 bottom-0 left-0 backdrop-blur-md overflow-visible"
+            style={{
+              backgroundColor: doorSurface,
+            }}
           >
             <div className="absolute right-0 top-0 bottom-0 flex items-center">
               <motion.div 
@@ -157,7 +206,8 @@ export function OnboardingWizard({ onComplete }: Props) {
                   opacity: (animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0 
                 }}
                 transition={{ duration: 1.2, ease: "easeInOut" }}
-                className="w-[1px] bg-white/30 shadow-[0_0_12px_rgba(255,255,255,0.4)]" 
+                className="w-[1px]"
+                style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }}
               />
             </div>
           </motion.div>
@@ -165,7 +215,10 @@ export function OnboardingWizard({ onComplete }: Props) {
             initial={{ width: '50%' }}
             animate={{ width: animStage === 'doorsOpen' ? '0%' : '50%' }}
             transition={{ duration: 1.5, ease: [0.76, 0, 0.24, 1] }}
-            className="absolute top-0 bottom-0 right-0 bg-sidebar-bg/95 backdrop-blur-md overflow-visible"
+            className="absolute top-0 bottom-0 right-0 backdrop-blur-md overflow-visible"
+            style={{
+              backgroundColor: doorSurface,
+            }}
           >
             <div className="absolute left-0 top-0 bottom-0 flex items-center">
               <motion.div 
@@ -175,7 +228,8 @@ export function OnboardingWizard({ onComplete }: Props) {
                   opacity: (animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0 
                 }}
                 transition={{ duration: 1.2, ease: "easeInOut" }}
-                className="w-[1px] bg-white/30 shadow-[0_0_12px_rgba(255,255,255,0.4)]" 
+                className="w-[1px]"
+                style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }}
               />
             </div>
           </motion.div>
@@ -189,7 +243,8 @@ export function OnboardingWizard({ onComplete }: Props) {
             scale: (animStage === 'welcomeOut' || animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0.4,
           }}
           transition={{ duration: 0.35, ease: "easeOut" }}
-          className="absolute left-1/2 top-1/2 z-20 h-[1px] w-[1px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/45 shadow-[0_0_8px_rgba(255,255,255,0.28)]"
+          className="absolute left-1/2 top-1/2 z-20 h-[1px] w-[1px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+          style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }}
         />
 
       {/* Welcome Text */}
@@ -202,7 +257,7 @@ export function OnboardingWizard({ onComplete }: Props) {
             transition={{ duration: 1.2 }}
             className={`absolute z-50 text-3xl font-bold tracking-wider ${themeStyles.textBase} pointer-events-none drop-shadow-lg`}
           >
-            {t("settings.personalize.greetingPrefix")}{localStorage.getItem("userName") || t("settings.personalize.greetingDefaultName")}
+            {t("settings.personalize.greetingPrefix")}{welcomeName || t("settings.personalize.greetingDefaultName")}
           </motion.div>
         )}
       </AnimatePresence>

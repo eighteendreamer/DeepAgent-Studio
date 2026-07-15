@@ -223,6 +223,22 @@ export async function getSettings(): Promise<SettingsView | null> {
   return null;
 }
 
+/** Read the user-defined welcome name from the persistent app settings. */
+export async function getWelcomeName(): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("get_welcome_name");
+  return localStorage.getItem("userName") || "";
+}
+
+/** Persist the user-defined welcome name in the desktop app database. */
+export async function setWelcomeName(name: string): Promise<string> {
+  const normalized = name.trim();
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("set_welcome_name", { name: normalized });
+  localStorage.setItem("userName", normalized);
+  return normalized;
+}
+
 /** Re-run model discovery with the stored key. */
 export async function refreshModels(): Promise<SettingsView> {
   const invoke = getInvoke();

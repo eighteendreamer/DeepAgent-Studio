@@ -190,6 +190,7 @@ mod tests {
             skill_catalog_char_budget: 8000,
             skill_install_ai_review_enabled: true,
             skill_install_ai_review_model: None,
+            welcome_name: String::new(),
         }
     }
 

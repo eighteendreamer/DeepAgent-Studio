@@ -1,6 +1,7 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { getWelcomeName, isTauri, setWelcomeName } from "../../api";
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
@@ -74,15 +75,55 @@ export function PersonalizeSettings() {
   const [skipToolMemory, setSkipToolMemory] = useState(false);
   const [userName, setUserName] = useState(() => localStorage.getItem("userName") || "");
   const [savedUserName, setSavedUserName] = useState(() => localStorage.getItem("userName") || "");
+  const [isSavingUserName, setIsSavingUserName] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const legacyName = localStorage.getItem("userName")?.trim() || "";
+
+    getWelcomeName()
+      .then(async (storedName) => {
+        if (!active) return;
+        const databaseName = storedName.trim();
+        if (databaseName) {
+          setUserName(databaseName);
+          setSavedUserName(databaseName);
+          if (isTauri()) localStorage.removeItem("userName");
+          return;
+        }
+
+        // Migrate names saved by the previous localStorage implementation.
+        if (legacyName) {
+          const migratedName = await setWelcomeName(legacyName);
+          if (!active) return;
+          setUserName(migratedName);
+          setSavedUserName(migratedName);
+          if (isTauri()) localStorage.removeItem("userName");
+        }
+      })
+      .catch((error) => console.error("failed to load welcome name:", error));
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const normalizedUserName = userName.trim();
   const canSaveUserName = normalizedUserName !== "" && normalizedUserName !== savedUserName;
 
-  const saveUserName = () => {
-    if (!canSaveUserName) return;
-    localStorage.setItem("userName", normalizedUserName);
-    setUserName(normalizedUserName);
-    setSavedUserName(normalizedUserName);
+  const saveUserName = async () => {
+    if (!canSaveUserName || isSavingUserName) return;
+    setIsSavingUserName(true);
+    try {
+      const persistedName = await setWelcomeName(normalizedUserName);
+      setUserName(persistedName);
+      setSavedUserName(persistedName);
+      if (isTauri()) localStorage.removeItem("userName");
+    } catch (error) {
+      console.error("failed to save welcome name:", error);
+    } finally {
+      setIsSavingUserName(false);
+    }
   };
 
   return (
@@ -124,16 +165,16 @@ export function PersonalizeSettings() {
               aria-label={t("settings.personalize.greetingPlaceholder")}
               onChange={(e) => setUserName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") saveUserName();
+                if (e.key === "Enter") void saveUserName();
               }}
               className="min-w-0 flex-1 px-3 py-2 text-[13px] text-text-base bg-transparent outline-none placeholder:text-gray-400"
             />
           </div>
           <button
             type="button"
-            onClick={saveUserName}
-            disabled={!canSaveUserName}
-            className={`shrink-0 px-4 py-2 rounded-md text-[13px] font-medium transition-colors ${canSaveUserName ? 'bg-blue-500 text-white hover:bg-blue-600 shadow-sm' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+            onClick={() => void saveUserName()}
+            disabled={!canSaveUserName || isSavingUserName}
+            className={`shrink-0 px-4 py-2 rounded-md text-[13px] font-medium transition-colors ${canSaveUserName && !isSavingUserName ? 'bg-blue-500 text-white hover:bg-blue-600 shadow-sm' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
           >
             {t("settings.personalize.save")}
           </button>

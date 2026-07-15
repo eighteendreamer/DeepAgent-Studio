@@ -722,6 +722,19 @@ fn get_settings(state: State<'_, AppState>) -> Result<Option<SettingsView>, Stri
 }
 
 #[tauri::command]
+fn get_welcome_name(state: State<'_, AppState>) -> Result<String, String> {
+    state.settings.welcome_name().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_welcome_name(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    state
+        .settings
+        .set_welcome_name(&name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn sandboxie_status(state: State<'_, AppState>) -> Result<SandboxieStatusDto, String> {
     Ok(state.sandboxie.status())
 }
@@ -3716,6 +3729,8 @@ pub fn run() {
             save_text_file,
             initialize_project,
             get_settings,
+            get_welcome_name,
+            set_welcome_name,
             sandboxie_status,
             sandboxie_initialize,
             sandboxie_install,

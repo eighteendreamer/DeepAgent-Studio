@@ -560,6 +560,9 @@ pub struct AppSettings {
     /// Which permission presets are visible in the Composer dropdown.
     #[serde(default)]
     pub permission_preset_visibility: PermissionPresetVisibility,
+    /// User-defined name displayed in the onboarding welcome message.
+    #[serde(default)]
+    pub welcome_name: String,
 }
 
 fn default_skill_catalog_enabled() -> bool {
@@ -752,6 +755,10 @@ impl SettingsService {
                 .as_ref()
                 .map(|s| s.permission_preset_visibility.clone())
                 .unwrap_or_default(),
+            welcome_name: prior
+                .as_ref()
+                .map(|s| s.welcome_name.clone())
+                .unwrap_or_default(),
         };
         self.save(&settings)?;
 
@@ -799,6 +806,30 @@ impl SettingsService {
             Some(doc) => Ok(Some(serde_json::from_str(&doc.body)?)),
             None => Ok(None),
         }
+    }
+
+    /// Read the persisted welcome name. An empty value means the UI should use
+    /// its localized default name.
+    pub fn welcome_name(&self) -> Result<String> {
+        Ok(self
+            .load()?
+            .map(|settings| settings.welcome_name)
+            .unwrap_or_default())
+    }
+
+    /// Persist the welcome name in the shared SQLite-backed settings document.
+    pub fn set_welcome_name(&self, name: &str) -> Result<String> {
+        let name = name.trim();
+        if name.chars().count() > 32 {
+            return Err(CoreError::invalid("welcome name must be at most 32 characters"));
+        }
+
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.welcome_name = name.to_string();
+        self.save(&settings)?;
+        Ok(settings.welcome_name)
     }
 
     /// The raw API key from the secret store (for internal runtime use only).
@@ -1735,6 +1766,7 @@ mod tests {
             skill_install_ai_review_model: None,
             active_permission_preset: PermissionPreset::default(),
             permission_preset_visibility: PermissionPresetVisibility::default(),
+            welcome_name: String::new(),
         };
         svc.save(&settings).unwrap();
 
