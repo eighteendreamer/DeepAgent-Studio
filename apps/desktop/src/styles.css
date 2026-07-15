@@ -22,18 +22,29 @@
   }
 }
 
-.theme-switch-overlay {
+.theme-switch-ripple-stack {
   position: fixed;
   inset: 0;
   z-index: 2147483000;
   pointer-events: none;
   overflow: hidden;
+}
+
+.theme-switch-ripple-base,
+.theme-switch-ripple-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
   background: var(--theme-bg, #ffffff);
+}
+
+.theme-switch-ripple-layer {
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
 }
 
-.theme-switch-overlay__snapshot {
+.theme-switch-ripple-snapshot {
   width: 100%;
   height: 100%;
   pointer-events: none;

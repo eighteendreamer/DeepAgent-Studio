@@ -28,12 +28,20 @@ export interface ThemeConfig {
 
 const THEME_TRANSITION_DURATION_MS = 2400;
 
-interface ActiveThemeOverlay {
+interface ThemeRippleLayer {
   element: HTMLDivElement;
   animationFrame: number | null;
+  id: number;
 }
 
-let activeThemeOverlay: ActiveThemeOverlay | null = null;
+interface ActiveThemeRippleStack {
+  container: HTMLDivElement;
+  latestLayerId: number;
+  layers: ThemeRippleLayer[];
+}
+
+let activeThemeRippleStack: ActiveThemeRippleStack | null = null;
+let nextThemeRippleId = 1;
 
 export const DEFAULT_THEME_CONFIG: ThemeConfig = {
   mode: "system",
@@ -135,13 +143,15 @@ function computeCssVariables(details: Omit<ThemeConfigDetails, 'cssVariables'>, 
   };
 }
 
-function removeActiveThemeOverlay() {
-  if (!activeThemeOverlay) return;
-  if (activeThemeOverlay.animationFrame !== null) {
-    cancelAnimationFrame(activeThemeOverlay.animationFrame);
+function removeActiveThemeRippleStack() {
+  if (!activeThemeRippleStack) return;
+  for (const layer of activeThemeRippleStack.layers) {
+    if (layer.animationFrame !== null) {
+      cancelAnimationFrame(layer.animationFrame);
+    }
   }
-  activeThemeOverlay.element.remove();
-  activeThemeOverlay = null;
+  activeThemeRippleStack.container.remove();
+  activeThemeRippleStack = null;
 }
 
 function easeThemeReveal(t: number) {
@@ -150,15 +160,55 @@ function easeThemeReveal(t: number) {
     : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-function startThemeRevealOverlay(
-  origin: ThemeSwitchOrigin,
-  previousTheme: ThemeConfigDetails,
-  previousIsDark: boolean,
+function createThemeSnapshot(
+  className: string,
+  theme: ThemeConfigDetails,
+  isDark: boolean,
 ) {
-  removeActiveThemeOverlay();
-
   const appRoot = document.getElementById("root");
-  if (!appRoot || !document.body) return;
+  if (!appRoot) return null;
+
+  const wrapper = document.createElement("div");
+  wrapper.className = className;
+  if (isDark) wrapper.classList.add("dark");
+  applyCssVariablesToElement(wrapper, theme);
+
+  const snapshot = appRoot.cloneNode(true) as HTMLElement;
+  snapshot.setAttribute("aria-hidden", "true");
+  snapshot.classList.add("theme-switch-ripple-snapshot");
+  wrapper.appendChild(snapshot);
+
+  return wrapper;
+}
+
+function ensureThemeRippleStack(currentTheme: ThemeConfigDetails, currentIsDark: boolean) {
+  if (activeThemeRippleStack) return activeThemeRippleStack;
+  if (!document.body) return null;
+
+  const container = document.createElement("div");
+  container.className = "theme-switch-ripple-stack";
+
+  const base = createThemeSnapshot("theme-switch-ripple-base", currentTheme, currentIsDark);
+  if (!base) return null;
+
+  container.appendChild(base);
+  document.body.appendChild(container);
+
+  activeThemeRippleStack = {
+    container,
+    latestLayerId: 0,
+    layers: [],
+  };
+  return activeThemeRippleStack;
+}
+
+function appendThemeRippleLayer(
+  origin: ThemeSwitchOrigin,
+  targetTheme: ThemeConfigDetails,
+  targetIsDark: boolean,
+) {
+  const stack = activeThemeRippleStack;
+  if (!stack) return;
 
   const x = Number.isFinite(origin.x) ? origin.x : window.innerWidth / 2;
   const y = Number.isFinite(origin.y) ? origin.y : window.innerHeight / 2;
@@ -169,41 +219,42 @@ function startThemeRevealOverlay(
     Math.hypot(window.innerWidth - x, window.innerHeight - y),
   ) + 2;
 
-  const overlay = document.createElement("div");
-  overlay.className = "theme-switch-overlay";
-  if (previousIsDark) overlay.classList.add("dark");
-  applyCssVariablesToElement(overlay, previousTheme);
+  const layer = createThemeSnapshot("theme-switch-ripple-layer", targetTheme, targetIsDark);
+  if (!layer) return;
 
-  const snapshot = appRoot.cloneNode(true) as HTMLElement;
-  snapshot.setAttribute("aria-hidden", "true");
-  snapshot.classList.add("theme-switch-overlay__snapshot");
-  overlay.appendChild(snapshot);
-  document.body.appendChild(overlay);
+  const layerId = nextThemeRippleId++;
+  stack.latestLayerId = layerId;
+  stack.container.appendChild(layer);
 
   const startedAt = performance.now();
   const setMask = (radius: number) => {
-    const mask = `radial-gradient(circle at ${x}px ${y}px, transparent 0px, transparent ${radius}px, black ${radius + 1}px)`;
-    overlay.style.setProperty("-webkit-mask-image", mask);
-    overlay.style.maskImage = mask;
+    const mask = `radial-gradient(circle at ${x}px ${y}px, black 0px, black ${radius}px, transparent ${radius + 1}px)`;
+    layer.style.setProperty("-webkit-mask-image", mask);
+    layer.style.maskImage = mask;
   };
 
   const tick = (now: number) => {
     const progress = Math.min((now - startedAt) / THEME_TRANSITION_DURATION_MS, 1);
     setMask(easeThemeReveal(progress) * maxRadius);
-    if (progress < 1 && activeThemeOverlay?.element === overlay) {
-      activeThemeOverlay.animationFrame = requestAnimationFrame(tick);
+    const activeLayer = activeThemeRippleStack?.layers.find((item) => item.id === layerId);
+    if (progress < 1 && activeLayer) {
+      activeLayer.animationFrame = requestAnimationFrame(tick);
       return;
     }
-    if (activeThemeOverlay?.element === overlay) {
-      removeActiveThemeOverlay();
+    if (activeLayer) {
+      activeLayer.animationFrame = null;
+    }
+    if (activeThemeRippleStack?.latestLayerId === layerId) {
+      removeActiveThemeRippleStack();
     }
   };
 
   setMask(0);
-  activeThemeOverlay = {
-    element: overlay,
+  stack.layers.push({
+    element: layer,
     animationFrame: requestAnimationFrame(tick),
-  };
+    id: layerId,
+  });
 }
 
 export function useTheme() {
@@ -281,18 +332,23 @@ export function useTheme() {
     const root = document.documentElement;
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const commit = () => commitConfig(nextConfig);
+    const currentTheme = currentIsDark ? config.dark : config.light;
 
     // Switching to "system" can change only the selected control while keeping
     // the same effective palette. Avoid a full-screen reveal in that case.
     if (prefersReducedMotion || currentIsDark === nextIsDark) {
-      removeActiveThemeOverlay();
+      removeActiveThemeRippleStack();
       commit();
       return;
     }
 
+    const normalizedNextConfig = normalizeConfig(nextConfig);
+    const targetTheme = nextIsDark ? normalizedNextConfig.dark : normalizedNextConfig.light;
+
     root.style.setProperty("--theme-switch-duration", `${THEME_TRANSITION_DURATION_MS}ms`);
-    startThemeRevealOverlay(origin, currentIsDark ? config.dark : config.light, currentIsDark);
+    ensureThemeRippleStack(currentTheme, currentIsDark);
     flushSync(commit);
+    appendThemeRippleLayer(origin, targetTheme, nextIsDark);
   };
 
   const updateThemeDetails = (isDarkTheme: boolean, updates: Partial<Omit<ThemeConfigDetails, 'cssVariables'>>) => {
