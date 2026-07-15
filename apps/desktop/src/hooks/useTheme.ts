@@ -26,17 +26,14 @@ export interface ThemeConfig {
   dark: ThemeConfigDetails;
 }
 
-interface ViewTransitionLike {
-  finished: Promise<void>;
-  skipTransition?: () => void;
+const THEME_TRANSITION_DURATION_MS = 2400;
+
+interface ActiveThemeOverlay {
+  element: HTMLDivElement;
+  animationFrame: number | null;
 }
 
-type ViewTransitionDocument = Document & {
-  startViewTransition?: (update: () => void) => ViewTransitionLike;
-};
-
-let activeThemeTransition: ViewTransitionLike | null = null;
-const THEME_TRANSITION_DURATION_MS = 2400;
+let activeThemeOverlay: ActiveThemeOverlay | null = null;
 
 export const DEFAULT_THEME_CONFIG: ThemeConfig = {
   mode: "system",
@@ -94,6 +91,12 @@ function applyCssVariables(theme: ThemeConfigDetails, isDark: boolean) {
   }
 }
 
+function applyCssVariablesToElement(element: HTMLElement, theme: ThemeConfigDetails) {
+  for (const [key, value] of Object.entries(theme.cssVariables)) {
+    element.style.setProperty(key, value);
+  }
+}
+
 function resolveIsDark(mode: ThemeMode): boolean {
   return mode === "dark" || (
     mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -129,6 +132,77 @@ function computeCssVariables(details: Omit<ThemeConfigDetails, 'cssVariables'>, 
     "--theme-border": border,
     "--ui-font": details.uiFont,
     "--code-font": details.codeFont
+  };
+}
+
+function removeActiveThemeOverlay() {
+  if (!activeThemeOverlay) return;
+  if (activeThemeOverlay.animationFrame !== null) {
+    cancelAnimationFrame(activeThemeOverlay.animationFrame);
+  }
+  activeThemeOverlay.element.remove();
+  activeThemeOverlay = null;
+}
+
+function easeThemeReveal(t: number) {
+  return t < 0.5
+    ? 4 * t * t * t
+    : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function startThemeRevealOverlay(
+  origin: ThemeSwitchOrigin,
+  previousTheme: ThemeConfigDetails,
+  previousIsDark: boolean,
+) {
+  removeActiveThemeOverlay();
+
+  const appRoot = document.getElementById("root");
+  if (!appRoot || !document.body) return;
+
+  const x = Number.isFinite(origin.x) ? origin.x : window.innerWidth / 2;
+  const y = Number.isFinite(origin.y) ? origin.y : window.innerHeight / 2;
+  const maxRadius = Math.max(
+    Math.hypot(x, y),
+    Math.hypot(window.innerWidth - x, y),
+    Math.hypot(x, window.innerHeight - y),
+    Math.hypot(window.innerWidth - x, window.innerHeight - y),
+  ) + 2;
+
+  const overlay = document.createElement("div");
+  overlay.className = "theme-switch-overlay";
+  if (previousIsDark) overlay.classList.add("dark");
+  applyCssVariablesToElement(overlay, previousTheme);
+
+  const snapshot = appRoot.cloneNode(true) as HTMLElement;
+  snapshot.setAttribute("aria-hidden", "true");
+  snapshot.classList.add("theme-switch-overlay__snapshot");
+  overlay.appendChild(snapshot);
+  document.body.appendChild(overlay);
+
+  const startedAt = performance.now();
+  const setMask = (radius: number) => {
+    const mask = `radial-gradient(circle at ${x}px ${y}px, transparent 0px, transparent ${radius}px, black ${radius + 1}px)`;
+    overlay.style.setProperty("-webkit-mask-image", mask);
+    overlay.style.maskImage = mask;
+  };
+
+  const tick = (now: number) => {
+    const progress = Math.min((now - startedAt) / THEME_TRANSITION_DURATION_MS, 1);
+    setMask(easeThemeReveal(progress) * maxRadius);
+    if (progress < 1 && activeThemeOverlay?.element === overlay) {
+      activeThemeOverlay.animationFrame = requestAnimationFrame(tick);
+      return;
+    }
+    if (activeThemeOverlay?.element === overlay) {
+      removeActiveThemeOverlay();
+    }
+  };
+
+  setMask(0);
+  activeThemeOverlay = {
+    element: overlay,
+    animationFrame: requestAnimationFrame(tick),
   };
 }
 
@@ -211,39 +285,14 @@ export function useTheme() {
     // Switching to "system" can change only the selected control while keeping
     // the same effective palette. Avoid a full-screen reveal in that case.
     if (prefersReducedMotion || currentIsDark === nextIsDark) {
+      removeActiveThemeOverlay();
       commit();
       return;
     }
 
-    const x = Number.isFinite(origin.x) ? origin.x : window.innerWidth / 2;
-    const y = Number.isFinite(origin.y) ? origin.y : window.innerHeight / 2;
-    root.style.setProperty("--theme-switch-x", `${x}px`);
-    root.style.setProperty("--theme-switch-y", `${y}px`);
-
-    const transitionDocument = document as ViewTransitionDocument;
-    if (!transitionDocument.startViewTransition) {
-      root.classList.add("theme-transition-fallback");
-      flushSync(commit);
-      window.setTimeout(
-        () => root.classList.remove("theme-transition-fallback"),
-        THEME_TRANSITION_DURATION_MS,
-      );
-      return;
-    }
-
-    activeThemeTransition?.skipTransition?.();
-    root.classList.add("theme-transition-active");
-    const transition = transitionDocument.startViewTransition(() => {
-      flushSync(commit);
-    });
-    activeThemeTransition = transition;
-    const finishTransition = () => {
-      if (activeThemeTransition === transition) {
-        activeThemeTransition = null;
-        root.classList.remove("theme-transition-active");
-      }
-    };
-    void transition.finished.then(finishTransition, finishTransition);
+    root.style.setProperty("--theme-switch-duration", `${THEME_TRANSITION_DURATION_MS}ms`);
+    startThemeRevealOverlay(origin, currentIsDark ? config.dark : config.light, currentIsDark);
+    flushSync(commit);
   };
 
   const updateThemeDetails = (isDarkTheme: boolean, updates: Partial<Omit<ThemeConfigDetails, 'cssVariables'>>) => {
