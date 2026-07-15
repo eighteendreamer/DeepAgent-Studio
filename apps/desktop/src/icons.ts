@@ -11,7 +11,7 @@ import {
   faCircleCheck as faCircleCheckSolid, faLaptop, faCompress, faFolderPlus, faFileExport, faClockRotateLeft,
   faKey, faLock, faMoon, faCircleNotch, faHand, faCircleExclamation, faWrench, faListCheck, faShieldHalved,
   faBook, faToggleOn, faToggleOff, faTriangleExclamation, faNoteSticky, faTrash, faShareNodes, faList, faInbox, faLightbulb, faStop, faBolt, faCoins, faWallet,
-  faStar, faPlay, faFolderTree, faMicrophone, faPause, faDownload, faTable, faAnglesLeft, faAnglesRight
+  faStar, faPlay, faFolderTree, faMicrophone, faPause, faDownload, faTable, faAnglesLeft, faAnglesRight, faUpload
 } from "@fortawesome/free-solid-svg-icons";
 
 import {
@@ -33,7 +33,7 @@ const solidIcons = [
   faSliders, faServer, faAnchor, faLink, faLeaf, faDesktop, faCircleCheckSolid, faLaptop,
   faCompress, faFolderPlus, faFileExport, faClockRotateLeft, faKey, faLock, faMoon, faCircleNotch, faHand, faCircleExclamation, faWrench, faListCheck, faShieldHalved,
   faBook, faToggleOn, faToggleOff, faTriangleExclamation, faNoteSticky, faTrash, faShareNodes, faList, faInbox, faLightbulb, faStop, faBolt, faCoins, faWallet,
-  faStar, faPlay, faFolderTree, faMicrophone, faPause, faDownload, faTable, faAnglesLeft, faAnglesRight
+  faStar, faPlay, faFolderTree, faMicrophone, faPause, faDownload, faTable, faAnglesLeft, faAnglesRight, faUpload
 ];
 
 const regularIcons = [
