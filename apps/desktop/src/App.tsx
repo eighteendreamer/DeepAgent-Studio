@@ -39,6 +39,7 @@ import type {
   ApprovalRequest,
   ChatMessage,
   ComposerAttachment,
+  ComposerSkillSelection,
   ConversationMessage,
   MessagePart,
   PersistedAttachment,
@@ -149,6 +150,20 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
     });
   });
   return mapped;
+}
+
+function escapeXmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function buildSkillContext(skill: ComposerSkillSelection): string {
+  return `<skill-context id="${escapeXmlAttr(skill.id)}" name="${escapeXmlAttr(skill.name)}">
+Please use the ${skill.name} skill.
+</skill-context>`;
 }
 
 function buildPromptWithAttachments(text: string, attachments: ComposerAttachment[] = []): string {
@@ -770,9 +785,17 @@ export function App() {
       text: string,
       attachments: ComposerAttachment[] = [],
       envMode?: "local" | "remote",
-      connectionId?: string | null
+      connectionId?: string | null,
+      selectedSkill?: ComposerSkillSelection | null,
     ) => {
-      if (!text.trim() && attachments.length === 0) return;
+      const trimmedText = text.trim();
+      const skillContext = selectedSkill ? buildSkillContext(selectedSkill) : "";
+      const promptText = skillContext
+        ? trimmedText
+          ? `${skillContext}\n\n${trimmedText}`
+          : skillContext
+        : trimmedText;
+      if (!promptText.trim() && attachments.length === 0) return;
       const storedEnvMode = localStorage.getItem("envMode");
       const effectiveEnvMode: "local" | "remote" =
         envMode ?? (storedEnvMode === "remote" ? "remote" : "local");
@@ -790,8 +813,6 @@ export function App() {
       const continueId = view === "chat" && activeId ? activeId : null;
       if (continueId && runningSessionIds.has(continueId)) return;
       if (!continueId && activePendingRunKey) return;
-
-      const visibleUserText = text.trim() || (attachments.length > 0 ? "请查看附件内容。" : "");
 
       // Wall-clock start of this run, for the "total time" footer metric.
       const runStart = Date.now();
@@ -819,9 +840,10 @@ export function App() {
       const prior: ChatMessage[] = continueId
         ? liveTranscripts.current.get(continueId) ?? messagesRef.current
         : [];
+      const userContent = buildPromptWithAttachments(promptText, attachments);
       const seeded: ChatMessage[] = [
         ...prior,
-        { role: "user", content: visibleUserText, attachments },
+        { role: "user", content: userContent, attachments },
         { role: "assistant", content: "", parts: [] },
       ];
       liveTranscripts.current.set(runKey, seeded);
@@ -1170,7 +1192,7 @@ export function App() {
         }
       };
 
-      let submittedText = buildPromptWithAttachments(text, attachments);
+      let submittedText = userContent;
       const preflightTools: PreflightToolCall[] = [];
       let preflightAbortMessage: string | null = null;
       const imageAttachments = attachments.filter((attachment) => attachment.kind === "image");
@@ -1227,7 +1249,7 @@ export function App() {
           replaceLastUserAttachments(visionResult.attachments);
 
           if (visionResult.skipped) {
-            submittedText = buildPromptWithAttachments(text, visionResult.attachments);
+            submittedText = buildPromptWithAttachments(promptText, visionResult.attachments);
             const output = {
               skipped: true,
               reason: "system vision is disabled or automatic image recognition is disabled",
@@ -1268,10 +1290,10 @@ export function App() {
               output,
               duration_ms: Date.now() - visionStartedAt,
             });
-            submittedText = buildPromptWithAttachments(text, visionResult.attachments);
+            submittedText = buildPromptWithAttachments(promptText, visionResult.attachments);
             preflightAbortMessage = `图片识别失败：${visionResult.error ?? "未知错误"}\n\n已停止本轮请求，避免主模型在没有图片识别结果的情况下猜测图片内容。请检查系统视觉设置后重试。`;
           } else {
-            submittedText = buildPromptWithAttachments(text, visionResult.attachments);
+            submittedText = buildPromptWithAttachments(promptText, visionResult.attachments);
             const output = {
               ok: true,
               recognized_images: visionResult.recognizedCount,
@@ -1607,7 +1629,9 @@ export function App() {
                   sessionId={activeId}
                   sessionKey={activeId ?? activePendingRunKey ?? null}
                   messages={chatMessages}
-                  onSend={onSubmit}
+                  onSend={(text, attachments, selectedSkill) =>
+                    onSubmit(text, attachments, undefined, undefined, selectedSkill)
+                  }
                   onFork={onForkSession}
                   onRewind={onRewindSession}
                   onExport={onExportSession}

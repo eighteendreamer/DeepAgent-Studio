@@ -683,6 +683,8 @@
     "thinkingDeep": "Deep",
     "thinkingSwitchFailed": "Failed to change thinking level",
     "stop": "Stop",
+    "systemCommands": "System Commands",
+    "skillsGroup": "Skills",
     "models": {
       "lingsiAPI": "Lingsi API",
       "lingsiAPI_5_5_zh": "5.5 ZH"

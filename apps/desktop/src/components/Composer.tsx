@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
+﻿import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import {
@@ -15,29 +15,29 @@ import {
   setThinkingDepth,
 } from "../api";
 import { message } from "./message";
-import type { Command, ComposerAttachment, Skill } from "../types";
+import type { Command, ComposerAttachment, ComposerSkillSelection, Skill } from "../types";
 
 const LONG_TEXT_ATTACHMENT_THRESHOLD = 8 * 1024;
 const MAX_COMPOSER_ATTACHMENTS = 5;
 const COMPOSER_TEXTAREA_MIN_HEIGHT = 60;
 const COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT = 300;
+const SKILL_MARKER = "\uE000";
 
 /** A slash-dropdown row. `insertText` is used for built-in slash commands;
- *  `skillName` (when set) marks the row as a skill picker — `chooseSlash`
- *  rewrites the textarea to a natural-language request instead of inserting
- *  the literal command string (Channel C v1, see design.md §Auto-Activation). */
-type SlashChoice = Command & { insertText?: string; skillName?: string };
+ *  `skillName` / `skillId` mark a row as a skill picker. */
+type SlashChoice = Command & { insertText?: string; skillId?: string; skillName?: string };
+type SlashSection = {
+  key: string;
+  label: string;
+  items: SlashChoice[];
+};
+type SlashToken = {
+  start: number;
+  end: number;
+  query: string;
+};
 
-/** Channel C v1: rewrite the composer to a plain user message so the model
- *  picks up the catalog reminder and invokes the `skill` tool itself.
- *  `args` is the substring after the matched `/<token>` prefix. */
-function rewriteToSkillRequest(skillName: string, args: string): string {
-  const trimmed = args.trim();
-  if (trimmed.length === 0) return `Please use the ${skillName} skill.`;
-  return `Please use the ${skillName} skill: ${trimmed}`;
-}
-
-/** Map composer dropdown option id ↔ backend permission preset label. */
+/** Map composer dropdown option id -> backend permission preset label. */
 const OPTION_TO_PRESET: Record<string, string> = {
   default: "default",
   auto: "auto_review",
@@ -58,10 +58,36 @@ function labelFor(id: string): { name: string; version: string } {
   return { name: id.slice(0, dash), version: id.slice(dash + 1) };
 }
 
+function stripSkillMarkers(value: string): string {
+  return value.replace(/\uE000/g, "");
+}
+
+function countVisibleChars(value: string): number {
+  return stripSkillMarkers(value).length;
+}
+
+function findActiveSlashToken(value: string, cursor: number): SlashToken | null {
+  const beforeCursor = value.slice(0, cursor);
+  const match = beforeCursor.match(/(^|[\s\uE000])\/([a-zA-Z0-9_:-]*)$/);
+  if (!match || match.index === undefined) return null;
+  const start = match.index + match[1].length;
+  const after = value.slice(start + 1);
+  const fullCommand = after.match(/^[a-zA-Z0-9_:-]*/)?.[0] ?? "";
+  if (cursor > start + 1 + fullCommand.length) return null;
+  return {
+    start,
+    end: start + 1 + fullCommand.length,
+    query: fullCommand,
+  };
+}
+
 interface Props {
   value: string;
   onChange: (v: string) => void;
-  onSubmit: (attachments?: ComposerAttachment[]) => void;
+  onSubmit: (
+    attachments?: ComposerAttachment[],
+    selectedSkill?: ComposerSkillSelection | null,
+  ) => void;
   placeholder?: string;
   /** True while a run is streaming: disables submit and shows a busy button. */
   busy?: boolean;
@@ -95,6 +121,7 @@ export function Composer({
   const approvalDropdownRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   // Real discovered models + the active chat model, loaded from the backend
   // settings (populated by API-key validation at login).
@@ -104,6 +131,10 @@ export function Composer({
   const [switching, setSwitching] = useState(false);
   const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
   const [slashSelected, setSlashSelected] = useState(0);
+  const [selectedSkill, setSelectedSkill] = useState<ComposerSkillSelection | null>(null);
+  const [draftValue, setDraftValue] = useState(value);
+  const [cursorPos, setCursorPos] = useState(value.length);
+  const pendingDraftValueRef = useRef(value);
   // Skill registry mirror, used to populate slash candidates (Channel C v1).
   // Reloads on `SETTINGS_CHANGED_EVENT` so install/uninstall mid-session is
   // reflected without a chat-page refresh.
@@ -154,6 +185,20 @@ export function Composer({
       window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
     };
   }, []);
+
+  useEffect(() => {
+    if (value === pendingDraftValueRef.current) return;
+    if (stripSkillMarkers(draftValue) === value) {
+      pendingDraftValueRef.current = value;
+      return;
+    }
+    setDraftValue(value);
+    setCursorPos(value.length);
+    setSlashResults([]);
+    setSlashSelected(0);
+    setSelectedSkill(null);
+    pendingDraftValueRef.current = value;
+  }, [draftValue, value]);
 
   const chooseModel = async (id: string) => {
     setIsModelDropdownOpen(false);
@@ -267,7 +312,38 @@ export function Composer({
   // The active model's two-tier label (empty until settings load).
   const selectedLabel = labelFor(selectedModel);
 
-  const slashOpen = value.startsWith("/") && slashResults.length > 0;
+  const slashSections = useMemo<SlashSection[]>(() => {
+    const systemCommands = slashResults.filter((cmd) => cmd.skillName === undefined);
+    const skillsGroup = slashResults.filter((cmd) => cmd.skillName !== undefined);
+    const sections: SlashSection[] = [];
+    if (systemCommands.length > 0) {
+      sections.push({
+        key: "system",
+        label: t("composer.systemCommands", { defaultValue: "System Commands" }),
+        items: systemCommands,
+      });
+    }
+    if (skillsGroup.length > 0) {
+      sections.push({
+        key: "skills",
+        label: t("composer.skillsGroup", { defaultValue: "Skills" }),
+        items: skillsGroup,
+      });
+    }
+    return sections;
+  }, [slashResults, t]);
+
+  const slashEntries = useMemo(
+    () => slashSections.flatMap((section) => section.items),
+    [slashSections],
+  );
+
+  const activeSlashToken = useMemo(
+    () => findActiveSlashToken(draftValue, cursorPos),
+    [cursorPos, draftValue],
+  );
+
+  const slashOpen = Boolean((draftValue.startsWith("/") || activeSlashToken) && slashEntries.length > 0);
 
   const resizeTextarea = useCallback(() => {
     const textarea = textareaRef.current;
@@ -284,65 +360,59 @@ export function Composer({
 
   useLayoutEffect(() => {
     resizeTextarea();
-  }, [resizeTextarea, value]);
+  }, [draftValue, resizeTextarea]);
 
   useEffect(() => {
-    if (!value.startsWith("/")) {
-      setSlashResults([]);
-      setSlashSelected(0);
-      return;
-    }
-    const body = value.slice(1);
-    const firstSpace = body.search(/\s/);
-    const commandName = firstSpace >= 0 ? body.slice(0, firstSpace) : body;
-    const argQuery = firstSpace >= 0 ? body.slice(firstSpace + 1).trim().toLowerCase() : "";
-    const exactArgCommand = firstSpace < 0 && (commandName === "model" || commandName === "thinking");
+    if (draftValue.startsWith("/")) {
+      const body = draftValue.slice(1);
+      const firstSpace = body.search(/\s/);
+      const commandName = firstSpace >= 0 ? body.slice(0, firstSpace) : body;
+      const argQuery = firstSpace >= 0 ? body.slice(firstSpace + 1).trim().toLowerCase() : "";
+      const exactArgCommand = firstSpace < 0 && (commandName === "model" || commandName === "thinking");
 
-    if (commandName === "model" && (firstSpace >= 0 || exactArgCommand)) {
-      const choices = models
-        .filter((id) => id.toLowerCase().includes(argQuery))
-        .map((id) => ({
-          id: `slash-arg.model.${id}`,
-          title: id,
-          description: id === selectedModel ? "当前模型" : "切换到这个 DeepSeek 模型",
-          category: "模型",
-          shortcut: null,
-          insertText: `/model ${id} `,
-        }));
-      setSlashResults(choices);
-      setSlashSelected(0);
-      return;
-    }
+      if (commandName === "model" && (firstSpace >= 0 || exactArgCommand)) {
+        const choices = models
+          .filter((id) => id.toLowerCase().includes(argQuery))
+          .map((id) => ({
+            id: `slash-arg.model.${id}`,
+            title: id,
+            description: id === selectedModel ? "当前模型" : "切换到这个 DeepSeek 模型",
+            category: "模型",
+            shortcut: null,
+            insertText: `/model ${id} `,
+          }));
+        setSlashResults(choices);
+        setSlashSelected(0);
+        return;
+      }
 
-    if (commandName === "thinking" && (firstSpace >= 0 || exactArgCommand)) {
-      const choices = [
-        { id: "simple", title: "simple", description: "简单思考，响应更快", category: "思考" },
-        { id: "medium", title: "medium", description: "中度思考，默认平衡模式", category: "思考" },
-        { id: "deep", title: "deep", description: "深度思考，给复杂任务更多推理预算", category: "思考" },
-      ]
-        .filter((opt) => opt.title.includes(argQuery) || opt.description.includes(argQuery))
-        .map((opt) => ({
-          ...opt,
-          id: `slash-arg.thinking.${opt.id}`,
-          shortcut: null,
-          insertText: `/thinking ${opt.id} `,
-        }));
-      setSlashResults(choices);
-      setSlashSelected(0);
-      return;
+      if (commandName === "thinking" && (firstSpace >= 0 || exactArgCommand)) {
+        const choices = [
+          { id: "simple", title: "simple", description: "简单思考，响应更快", category: "思考" },
+          { id: "medium", title: "medium", description: "中度思考，默认平衡模式", category: "思考" },
+          { id: "deep", title: "deep", description: "深度思考，给复杂任务更多推理预留", category: "思考" },
+        ]
+          .filter((opt) => opt.title.includes(argQuery) || opt.description.includes(argQuery))
+          .map((opt) => ({
+            ...opt,
+            id: `slash-arg.thinking.${opt.id}`,
+            shortcut: null,
+            insertText: `/thinking ${opt.id} `,
+          }));
+        setSlashResults(choices);
+        setSlashSelected(0);
+        return;
+      }
     }
 
-    if (firstSpace >= 0) {
+    if (!activeSlashToken) {
       setSlashResults([]);
       setSlashSelected(0);
       return;
     }
 
     let cancelled = false;
-    const q = body.trim().toLowerCase();
-    // Build skill candidates: filter on id + name, sort alphabetically by id,
-    // cap at 8 (R7.5). Hidden when no slash command is being typed (handled
-    // by the `firstSpace >= 0` early-return above).
+    const q = activeSlashToken.query.trim().toLowerCase();
     const skillChoices: SlashChoice[] = skills
       .filter(
         (sk) =>
@@ -358,6 +428,7 @@ export function Composer({
         description: sk.description,
         category: "Skill",
         shortcut: null,
+        skillId: sk.id,
         skillName: sk.name,
       }));
     getCommands("")
@@ -368,15 +439,11 @@ export function Composer({
           const name = c.title.replace(/^\//, "").toLowerCase();
           return !q || name.includes(q);
         });
-        // Built-in slash commands first, skills second (R7.1: name + description
-        // sourced from the live registry).
         setSlashResults([...slash, ...skillChoices]);
         setSlashSelected(0);
       })
       .catch(() => {
         if (!cancelled) {
-          // Even if the built-in command index is unavailable (e.g. browser
-          // preview), still surface skill suggestions so Channel C v1 works.
           setSlashResults(skillChoices);
           setSlashSelected(0);
         }
@@ -384,18 +451,51 @@ export function Composer({
     return () => {
       cancelled = true;
     };
-  }, [models, selectedModel, skills, value]);
+  }, [activeSlashToken, draftValue, models, selectedModel, skills]);
 
   const chooseSlash = (cmd: SlashChoice) => {
+    const source = stripSkillMarkers(draftValue);
+    const replaceWholeRootSlash = !activeSlashToken && draftValue.startsWith("/");
+    const visibleStart = activeSlashToken
+      ? countVisibleChars(draftValue.slice(0, activeSlashToken.start))
+      : replaceWholeRootSlash
+      ? 0
+      : cursorPos;
+    const visibleEnd = activeSlashToken
+      ? countVisibleChars(draftValue.slice(0, activeSlashToken.end))
+      : replaceWholeRootSlash
+      ? source.length
+      : cursorPos;
+    const prefix = source.slice(0, visibleStart);
+    const suffix = source.slice(visibleEnd);
+
     if (cmd.skillName !== undefined) {
-      // Channel C v1: rewrite to plain text (R7.2 / R7.3). Args = whatever
-      // the user typed after `/<token>`; in practice empty since the dropdown
-      // hides once a space is typed, but we still respect any pre-typed tail.
-      const slashMatch = /^\/(\S*)\s*([\s\S]*)$/.exec(value);
-      const argsAfter = slashMatch ? slashMatch[2] : "";
-      onChange(rewriteToSkillRequest(cmd.skillName, argsAfter));
+      const nextValue = `${prefix}${SKILL_MARKER}${suffix}`;
+      setSelectedSkill({
+        id: cmd.skillId ?? cmd.id,
+        name: cmd.skillName,
+      });
+      setDraftValue(nextValue);
+      pendingDraftValueRef.current = stripSkillMarkers(nextValue);
+      onChange(stripSkillMarkers(nextValue));
+      setCursorPos(visibleStart + 1);
+      requestAnimationFrame(() => {
+        textareaRef.current?.setSelectionRange(visibleStart + 1, visibleStart + 1);
+        textareaRef.current?.focus();
+      });
     } else {
-      onChange(cmd.insertText ?? `${cmd.title} `);
+      const insertText = cmd.insertText ?? `${cmd.title} `;
+      const nextValue = `${prefix}${insertText}${suffix}`;
+      setSelectedSkill(null);
+      setDraftValue(nextValue);
+      pendingDraftValueRef.current = stripSkillMarkers(nextValue);
+      onChange(stripSkillMarkers(nextValue));
+      setCursorPos(visibleStart + insertText.length);
+      requestAnimationFrame(() => {
+        const caret = visibleStart + insertText.length;
+        textareaRef.current?.setSelectionRange(caret, caret);
+        textareaRef.current?.focus();
+      });
     }
     setSlashResults([]);
     setSlashSelected(0);
@@ -421,8 +521,12 @@ export function Composer({
 
   const submitWithAttachments = () => {
     const readyAttachments = attachments.filter((item) => item.status === "ready");
-    onSubmit(readyAttachments);
+    onSubmit(readyAttachments, selectedSkill);
     if (readyAttachments.length > 0) setAttachments([]);
+    if (selectedSkill) setSelectedSkill(null);
+    setDraftValue("");
+    setCursorPos(0);
+    pendingDraftValueRef.current = "";
   };
 
   const addAttachment = (attachment: ComposerAttachment) => {
@@ -430,7 +534,7 @@ export function Composer({
   };
 
   const showAttachmentLimitWarning = () => {
-    message.warning(`最多只能添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件`);
+    message.warning(`Maximum ${MAX_COMPOSER_ATTACHMENTS} attachments allowed`);
   };
 
   const removeAttachment = (id: string) => {
@@ -636,10 +740,52 @@ export function Composer({
     void addFiles(event.dataTransfer.files, "drop");
   };
 
+  const syncCursorFromTextarea = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    setCursorPos(textarea.selectionStart ?? textarea.value.length);
+  };
+
+  const handleEditorChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const next = event.currentTarget.value;
+    const stripped = stripSkillMarkers(next);
+    setDraftValue(next);
+    setCursorPos(event.currentTarget.selectionStart ?? next.length);
+    if (selectedSkill && !next.includes(SKILL_MARKER)) {
+      setSelectedSkill(null);
+    }
+    pendingDraftValueRef.current = stripped;
+    onChange(stripped);
+  };
+
+  const editorPlaceholder = placeholder ?? t("composer.placeholder");
+  const mirrorContent = (() => {
+    if (!draftValue) {
+      return <span className="text-gray-400">{editorPlaceholder}</span>;
+    }
+    const parts = draftValue.split(SKILL_MARKER);
+    return parts.flatMap((part, index) => {
+      const nodes: React.ReactNode[] = [];
+      if (part) nodes.push(<span key={`text-${index}`}>{part}</span>);
+      if (index < parts.length - 1 && selectedSkill) {
+        nodes.push(
+          <span
+            key={`skill-${index}`}
+            className="mx-0.5 inline-flex h-[20px] max-w-[180px] items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 text-[12px] font-medium leading-none text-primary align-baseline"
+            title={selectedSkill.name}
+          >
+            /{selectedSkill.id}
+          </span>,
+        );
+      }
+      return nodes;
+    });
+  })();
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashOpen && e.key === "ArrowDown") {
       e.preventDefault();
-      setSlashSelected((s) => Math.min(s + 1, slashResults.length - 1));
+      setSlashSelected((s) => Math.min(s + 1, slashEntries.length - 1));
       return;
     }
     if (slashOpen && e.key === "ArrowUp") {
@@ -648,8 +794,8 @@ export function Composer({
       return;
     }
     if (slashOpen && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
-      const selected = slashResults[slashSelected];
-      const exact = selected?.title === value.trim();
+      const selected = slashEntries[slashSelected];
+      const exact = selected?.skillName ? false : selected?.title === stripSkillMarkers(draftValue).trim();
       if (selected && !exact) {
         e.preventDefault();
         chooseSlash(selected);
@@ -676,26 +822,45 @@ export function Composer({
       <div className="p-3 pb-2 flex flex-col relative w-full">
       {slashOpen && (
         <div className="absolute left-3 right-3 bottom-full mb-2 max-h-72 overflow-y-auto rounded-lg border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-50">
-          {slashResults.map((cmd, index) => (
-            <button
-              key={cmd.id}
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                chooseSlash(cmd);
-              }}
-              onMouseEnter={() => setSlashSelected(index)}
-              className={`grid w-full grid-cols-[150px_minmax(0,1fr)_72px] items-center gap-3 px-3 py-2 text-left text-[12px] transition-colors ${
-                index === slashSelected ? "bg-gray-100 text-text-base" : "text-text-secondary"
-              }`}
-            >
-              <span className="truncate font-medium text-text-base">{cmd.title}</span>
-              <span className="truncate text-[12px] leading-snug text-text-secondary">
-                {cmd.description}
-              </span>
-              <span className="truncate text-right text-[11px] text-text-secondary">{cmd.category}</span>
-            </button>
-          ))}
+          {slashSections.map((section, sectionIndex) => {
+            let baseIndex = 0;
+            for (let i = 0; i < sectionIndex; i += 1) {
+              baseIndex += slashSections[i].items.length;
+            }
+
+            return (
+              <div key={section.key} className={sectionIndex > 0 ? "mt-1" : ""}>
+                <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                  {section.label}
+                </div>
+                {section.items.map((cmd, index) => {
+                  const flatIndex = baseIndex + index;
+                  return (
+                    <button
+                      key={cmd.id}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        chooseSlash(cmd);
+                      }}
+                      onMouseEnter={() => setSlashSelected(flatIndex)}
+                      className={`grid w-full grid-cols-[150px_minmax(0,1fr)_72px] items-center gap-3 px-3 py-2 text-left text-[12px] transition-colors ${
+                        flatIndex === slashSelected ? "bg-gray-100 text-text-base" : "text-text-secondary"
+                      }`}
+                    >
+                      <span className="truncate font-medium text-text-base">{cmd.title}</span>
+                      <span className="truncate text-[12px] leading-snug text-text-secondary">
+                        {cmd.description}
+                      </span>
+                      <span className="truncate text-right text-[11px] text-text-secondary">
+                        {cmd.category}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
         </div>
       )}
       {planMode && (
@@ -724,15 +889,15 @@ export function Composer({
                 <div className="truncate text-[11px] text-text-secondary">
                   {item.status === "processing"
                     ? item.kind === "image"
-                      ? "\u8bc6\u522b\u4e2d"
-                      : "\u5904\u7406\u4e2d"
+                      ? "识别中"
+                      : "处理中"
                     : item.status === "error"
-                    ? item.error ?? "\u5904\u7406\u5931\u8d25"
+                    ? item.error ?? "处理失败"
                     : item.kind === "image"
-                    ? "\u56fe\u7247"
+                    ? "图片"
                     : item.kind === "text"
-                    ? "\u6587\u672c"
-                    : "\u6587\u4ef6"}
+                    ? "文本"
+                    : "文件"}
                 </div>
               </div>
               <button
@@ -747,19 +912,41 @@ export function Composer({
         </div>
       )}
 
-      <textarea
-        ref={textareaRef}
-        className="custom-scrollbar w-full text-text-base placeholder-gray-400 text-sm bg-transparent"
-        style={{
-          minHeight: `${COMPOSER_TEXTAREA_MIN_HEIGHT}px`,
-          maxHeight: `${textareaMaxHeight}px`,
-        }}
-        placeholder={placeholder ?? t("composer.placeholder")}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onPaste={onPaste}
-        onKeyDown={onKeyDown}
-      />
+      <div className="relative w-full">
+        <div
+          ref={mirrorRef}
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 overflow-hidden custom-scrollbar whitespace-pre-wrap break-words bg-transparent text-sm leading-6 text-text-base"
+          style={{
+            minHeight: `${COMPOSER_TEXTAREA_MIN_HEIGHT}px`,
+            maxHeight: `${textareaMaxHeight}px`,
+          }}
+        >
+          {mirrorContent}
+        </div>
+        <textarea
+          ref={textareaRef}
+          aria-label={editorPlaceholder}
+          className="custom-scrollbar relative z-10 w-full resize-none bg-transparent text-sm leading-6 text-transparent caret-text-base outline-none placeholder-transparent"
+          style={{
+            minHeight: `${COMPOSER_TEXTAREA_MIN_HEIGHT}px`,
+            maxHeight: `${textareaMaxHeight}px`,
+          }}
+          placeholder={editorPlaceholder}
+          value={draftValue}
+          onChange={handleEditorChange}
+          onPaste={onPaste}
+          onKeyDown={onKeyDown}
+          onSelect={syncCursorFromTextarea}
+          onClick={syncCursorFromTextarea}
+          onKeyUp={syncCursorFromTextarea}
+          onScroll={(event) => {
+            if (!mirrorRef.current) return;
+            mirrorRef.current.scrollTop = event.currentTarget.scrollTop;
+            mirrorRef.current.scrollLeft = event.currentTarget.scrollLeft;
+          }}
+        />
+      </div>
 
       <div className="flex flex-wrap items-center justify-between mt-2 pt-1 gap-y-2">
         <div className="flex flex-wrap items-center gap-2">
@@ -779,7 +966,7 @@ export function Composer({
             disabled={attachments.length >= MAX_COMPOSER_ATTACHMENTS}
             title={
               attachments.length >= MAX_COMPOSER_ATTACHMENTS
-                ? `最多只能添加 ${MAX_COMPOSER_ATTACHMENTS} 个附件`
+                ? `Maximum ${MAX_COMPOSER_ATTACHMENTS} attachments allowed`
                 : undefined
             }
             className="w-7 h-7 flex-shrink-0 rounded flex items-center justify-center text-text-secondary hover:bg-gray-100 transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
@@ -939,3 +1126,6 @@ export function Composer({
     </div>
   );
 }
+
+
+

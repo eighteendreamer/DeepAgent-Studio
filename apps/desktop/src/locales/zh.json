@@ -1,4 +1,4 @@
-{
+﻿{
   "sidebar": {
     "projects": "项目",
     "pinned": "置顶",
@@ -683,6 +683,8 @@
     "thinkingDeep": "深度",
     "thinkingSwitchFailed": "切换思考档位失败",
     "stop": "停止",
+    "systemCommands": "系统命令",
+    "skillsGroup": "技能",
     "models": {
       "lingsiAPI": "灵思API",
       "lingsiAPI_5_5_zh": "5.5 中"

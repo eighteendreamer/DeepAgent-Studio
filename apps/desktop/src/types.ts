@@ -50,6 +50,11 @@ export interface Command {
   shortcut: string | null;
 }
 
+export interface ComposerSkillSelection {
+  id: string;
+  name: string;
+}
+
 export interface ApprovalRequest {
   call_id: string;
   tool: string;

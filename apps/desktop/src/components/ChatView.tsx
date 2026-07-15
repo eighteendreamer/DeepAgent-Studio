@@ -2,7 +2,17 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { ChatMessage, ComposerAttachment, MessagePart, ToolCall, TokenUsage, TimelineEntry, ApprovalRequest, ProjectMapStatus } from "../types";
+import type {
+  ChatMessage,
+  ComposerAttachment,
+  ComposerSkillSelection,
+  MessagePart,
+  ToolCall,
+  TokenUsage,
+  TimelineEntry,
+  ApprovalRequest,
+  ProjectMapStatus,
+} from "../types";
 import { Composer } from "./Composer";
 import { ToolCallCard } from "./ToolCallCard";
 import { ApprovalDialog } from "./ApprovalDialog";
@@ -42,7 +52,11 @@ interface Props {
   /** Active chat identity, including pending runs before a real session id exists. */
   sessionKey?: string | null;
   messages: ChatMessage[];
-  onSend: (text: string, attachments?: ComposerAttachment[]) => void;
+  onSend: (
+    text: string,
+    attachments?: ComposerAttachment[],
+    selectedSkill?: ComposerSkillSelection | null,
+  ) => void;
   /** Fork the current session into a new branch from its latest point. */
   onFork?: () => void;
   /** Rewind the current session to a timeline sequence (destructive). */
@@ -440,6 +454,20 @@ function stripAttachmentContext(content: string): string {
   return content.replace(/\n*<attachments>[\s\S]*?<\/attachments>\s*/g, "").trim();
 }
 
+function stripSkillContext(content: string): string {
+  return content.replace(/\n*<skill-context\b[^>]*>[\s\S]*?<\/skill-context>\s*/g, "").trim();
+}
+
+function parseSkillContext(content: string): ComposerSkillSelection | null {
+  const match = content.match(/<skill-context\b([^>]*)>/);
+  if (!match) return null;
+  const attrs = parseAttachmentAttrs(match[1]);
+  const id = attrs.id?.trim();
+  const name = attrs.name?.trim();
+  if (!id || !name) return null;
+  return { id, name };
+}
+
 function parseAttachmentContext(content: string): ComposerAttachment[] {
   const match = content.match(/<attachments>\s*([\s\S]*?)\s*<\/attachments>/);
   if (!match) return [];
@@ -603,11 +631,12 @@ function UserTurn({
 }: {
   message: ChatMessage;
   busy: boolean;
-  onResend: (text: string) => void;
+  onResend: (text: string, skill?: ComposerSkillSelection | null) => void;
 }) {
+  const skill = parseSkillContext(message.content);
   const parsedAttachments = parseAttachmentContext(message.content);
   const attachments = message.attachments?.length ? message.attachments : parsedAttachments;
-  const visibleContent = stripAttachmentContext(message.content);
+  const visibleContent = stripAttachmentContext(stripSkillContext(message.content));
   const office = parseOfficeContextMessage(visibleContent);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(visibleContent);
@@ -616,7 +645,7 @@ function UserTurn({
     const text = draft.trim();
     if (!text || busy) return;
     setEditing(false);
-    onResend(text);
+    onResend(text, skill);
   };
 
   return (
@@ -987,10 +1016,13 @@ export function ChatView({
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
-  const submit = (attachments: ComposerAttachment[] = []) => {
+  const submit = (
+    attachments: ComposerAttachment[] = [],
+    selectedSkill?: ComposerSkillSelection | null,
+  ) => {
     const t = value.trim();
-    if (!t && attachments.length === 0) return;
-    onSend(t, attachments);
+    if (!t && attachments.length === 0 && !selectedSkill) return;
+    onSend(t, attachments, selectedSkill);
     setValue("");
   };
 
@@ -1319,9 +1351,9 @@ export function ChatView({
                 key={i}
                 message={m}
                 busy={busy}
-                onResend={(text) => {
+                onResend={(text, skill) => {
                   if (busy) return;
-                  onSend(text);
+                  onSend(text, [], skill);
                 }}
               />
             ) : (
