@@ -25,7 +25,7 @@ use deepagent_verification::{CommandRunner, ReflectionEngine, VerificationStep, 
 use crate::agent::{Agent, AgentDecision, Observation};
 use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyGate};
 use crate::empty_stub::ensure_non_empty_output;
-use crate::events::{NullEventSink, RuntimeEvent, RuntimeEventSink};
+use crate::events::{tool_ui_metadata, NullEventSink, RuntimeEvent, RuntimeEventSink};
 use crate::tool_budget::{
     apply_tool_result_budget, cleanup_tool_result_paths, saved_path, ToolResultBudgetConfig,
 };
@@ -548,10 +548,15 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 .id
                 .clone()
                 .unwrap_or_else(|| format!("call_{}", deepagent_core::id::EventId::new()));
+            let metadata = tool_ui_metadata(&inv.name, &inv.arguments, None);
             self.emit(RuntimeEvent::ToolStarted {
                 name: inv.name.clone(),
                 call_id: call_id.clone(),
                 arguments: inv.arguments.clone(),
+                tool_kind: metadata.tool_kind,
+                file_path: metadata.file_path,
+                summary: metadata.summary,
+                meta: metadata.meta,
             });
             call_ids.insert(i, call_id);
         }
@@ -563,6 +568,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             let call_id = call_ids[&i].clone();
             let name = inv.name.clone();
             let args = inv.arguments.clone();
+            let metadata_args = args.clone();
             let registry = self.registry;
             let perms = self.config.permissions.clone();
             let auto = self.config.auto_approve;
@@ -597,7 +603,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     Err(e) => Err(e),
                 };
                 let duration_ms = start.elapsed().as_millis() as u64;
-                (i, call_id, name, result, duration_ms)
+                (i, call_id, name, metadata_args, result, duration_ms)
             });
         }
         let mut results: std::collections::HashMap<
@@ -608,17 +614,22 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         // so each parallel tool flips to ok/error the moment it actually
         // finishes (live, out-of-order progress) — the session-log append still
         // happens deterministically below in the model's original order.
-        while let Some((i, call_id, name, result, duration_ms)) = futs.next().await {
+        while let Some((i, call_id, name, arguments, result, duration_ms)) = futs.next().await {
             let (ok, value) = match &result {
                 Ok(out) => (out.ok, out.value.clone()),
                 Err(e) => (false, serde_json::json!({ "error": e.to_string() })),
             };
+            let metadata = tool_ui_metadata(&name, &arguments, Some(&value));
             self.emit(RuntimeEvent::ToolCompleted {
                 name: name.clone(),
                 call_id: call_id.clone(),
                 ok,
                 output: value,
                 duration_ms,
+                tool_kind: metadata.tool_kind,
+                file_path: metadata.file_path,
+                summary: metadata.summary,
+                meta: metadata.meta,
             });
             results.insert(i, (call_id, name, result, duration_ms));
         }
@@ -856,10 +867,15 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             },
         })?;
         self.metrics.incr(names::TOOL_CALLS, 1);
+        let metadata = tool_ui_metadata(&tool_name, &invocation.arguments, None);
         self.emit(RuntimeEvent::ToolStarted {
             name: tool_name.clone(),
             call_id: call_id.clone(),
             arguments: invocation.arguments.clone(),
+            tool_kind: metadata.tool_kind,
+            file_path: metadata.file_path,
+            summary: metadata.summary,
+            meta: metadata.meta,
         });
 
         let start = std::time::Instant::now();
@@ -892,12 +908,17 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 if !out.ok {
                     self.metrics.incr(names::TOOL_FAILURES, 1);
                 }
+                let metadata = tool_ui_metadata(&tool_name, &invocation.arguments, Some(&out.value));
                 self.emit(RuntimeEvent::ToolCompleted {
                     name: tool_name.clone(),
                     call_id: call_id.clone(),
                     ok: out.ok,
                     output: out.value.clone(),
                     duration_ms,
+                    tool_kind: metadata.tool_kind,
+                    file_path: metadata.file_path,
+                    summary: metadata.summary,
+                    meta: metadata.meta,
                 });
                 session.append(EventPayload::ToolCallCompleted {
                     call_id: call_id.clone(),
@@ -918,12 +939,17 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 // can reflect / choose an alternative.
                 self.metrics.incr(names::TOOL_FAILURES, 1);
                 let err_value = serde_json::json!({ "error": e.to_string() });
+                let metadata = tool_ui_metadata(&tool_name, &invocation.arguments, Some(&err_value));
                 self.emit(RuntimeEvent::ToolCompleted {
                     name: tool_name.clone(),
                     call_id: call_id.clone(),
                     ok: false,
                     output: err_value.clone(),
                     duration_ms,
+                    tool_kind: metadata.tool_kind,
+                    file_path: metadata.file_path,
+                    summary: metadata.summary,
+                    meta: metadata.meta,
                 });
                 session.append(EventPayload::ToolCallCompleted {
                     call_id: call_id.clone(),

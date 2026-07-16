@@ -447,6 +447,18 @@ pub enum ConversationPartDto {
         /// `detail` as a compact fallback.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<serde_json::Value>,
+        /// Coarse UI category for row-based rendering.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_kind: Option<String>,
+        /// Primary file path / URL / target, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_path: Option<String>,
+        /// Compact one-line row summary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        /// Lightweight structured UI hints.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        meta: Option<serde_json::Value>,
     },
 }
 

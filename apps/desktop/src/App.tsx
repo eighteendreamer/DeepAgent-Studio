@@ -104,6 +104,12 @@ function mapPersistedAttachment(attachment: PersistedAttachment): ComposerAttach
   };
 }
 
+function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 function mapConversationToChatMessages(conversation: ConversationMessage[]): ChatMessage[] {
   const mapped: ChatMessage[] = [];
   conversation.forEach((m) => {
@@ -127,6 +133,10 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
             durationMs: p.duration_ms ?? undefined,
             detail: p.detail ?? undefined,
             output: p.output ?? undefined,
+            toolKind: p.tool_kind ?? undefined,
+            filePath: p.file_path ?? undefined,
+            summary: p.summary ?? undefined,
+            meta: p.meta ?? undefined,
           },
         };
       }
@@ -1002,6 +1012,10 @@ export function App() {
                 durationMs: patch.durationMs,
                 detail: patch.detail,
                 output: patch.output,
+                toolKind: patch.toolKind,
+                filePath: patch.filePath,
+                summary: patch.summary,
+                meta: patch.meta,
               },
             });
           }
@@ -1188,6 +1202,10 @@ export function App() {
               name: String(event.name ?? "tool"),
               args: event.arguments ? JSON.stringify(event.arguments, null, 2) : "",
               status: "running",
+              toolKind: typeof event.tool_kind === "string" ? event.tool_kind : undefined,
+              filePath: typeof event.file_path === "string" ? event.file_path : undefined,
+              summary: typeof event.summary === "string" ? event.summary : undefined,
+              meta: asObjectRecord(event.meta),
             });
             break;
           case "tool_completed":
@@ -1196,8 +1214,15 @@ export function App() {
               status: event.ok ? "ok" : "error",
               durationMs:
                 typeof event.duration_ms === "number" ? event.duration_ms : undefined,
-              detail: summarize(String(event.name ?? "tool"), event.output),
+              detail:
+                typeof event.summary === "string"
+                  ? event.summary
+                  : summarize(String(event.name ?? "tool"), event.output),
               output: event.output,
+              toolKind: typeof event.tool_kind === "string" ? event.tool_kind : undefined,
+              filePath: typeof event.file_path === "string" ? event.file_path : undefined,
+              summary: typeof event.summary === "string" ? event.summary : undefined,
+              meta: asObjectRecord(event.meta),
             });
             break;
           case "tool_blocked":

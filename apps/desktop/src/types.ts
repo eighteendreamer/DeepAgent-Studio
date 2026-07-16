@@ -95,6 +95,14 @@ export interface ToolCall {
   detail?: string;
   /** Raw tool output, when available, for richer tool cards. */
   output?: unknown;
+  /** Coarse backend-provided category for row-based rendering. */
+  toolKind?: string;
+  /** Primary file path / URL / target, when known. */
+  filePath?: string;
+  /** Compact backend-provided one-line summary. */
+  summary?: string;
+  /** Lightweight structured backend hints for the row renderer. */
+  meta?: Record<string, unknown>;
 }
 
 /** One ordered segment of an assistant turn, in the order it streamed in. */
@@ -117,6 +125,10 @@ export type ConversationPart =
       duration_ms: number | null;
       detail: string | null;
       output?: unknown | null;
+      tool_kind?: string | null;
+      file_path?: string | null;
+      summary?: string | null;
+      meta?: Record<string, unknown> | null;
     };
 
 /** A reconstructed conversation message (mirrors ConversationMessageDto). */

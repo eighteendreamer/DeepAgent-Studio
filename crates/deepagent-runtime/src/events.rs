@@ -16,6 +16,28 @@
 
 use serde::{Deserialize, Serialize};
 
+/// UI-oriented metadata for rendering a tool call as a lightweight timeline
+/// row. This is a derived projection: the persisted event log remains the
+/// source of truth, while live/replayed UI surfaces can use these fields
+/// instead of re-parsing arbitrary JSON in the frontend.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolUiMetadata {
+    /// Coarse presentation category, e.g. `file_read`, `file_change`,
+    /// `search`, `command_execution`, or `tool`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_kind: Option<String>,
+    /// Primary path/URL/command target when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    /// Compact one-line row text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Small structured hints for the frontend. Raw args/output are still
+    /// carried separately; this is intentionally lightweight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+}
+
 /// A live event emitted during a run, mirroring the loop's phases.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -57,6 +79,18 @@ pub enum RuntimeEvent {
         call_id: String,
         /// JSON arguments.
         arguments: serde_json::Value,
+        /// Coarse UI category for row-based rendering.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_kind: Option<String>,
+        /// Primary file path / URL / target, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_path: Option<String>,
+        /// Compact one-line row summary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        /// Lightweight structured UI hints.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        meta: Option<serde_json::Value>,
     },
     /// A tool finished (success or failure).
     ToolCompleted {
@@ -70,6 +104,18 @@ pub enum RuntimeEvent {
         output: serde_json::Value,
         /// Wall-clock duration in milliseconds.
         duration_ms: u64,
+        /// Coarse UI category for row-based rendering.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_kind: Option<String>,
+        /// Primary file path / URL / target, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_path: Option<String>,
+        /// Compact one-line row summary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        /// Lightweight structured UI hints.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        meta: Option<serde_json::Value>,
     },
     /// A tool call was blocked by a hook (deny) or needs approval (ask).
     ToolBlocked {
@@ -121,6 +167,168 @@ pub enum RuntimeEvent {
     },
     /// The run was cancelled by the user (manual stop).
     RunCancelled,
+}
+
+/// Derive row-rendering metadata from a tool name, arguments and optional
+/// output. Keep this helper deterministic and side-effect free so both live
+/// events and historical session replay can share it.
+pub fn tool_ui_metadata(
+    name: &str,
+    arguments: &serde_json::Value,
+    output: Option<&serde_json::Value>,
+) -> ToolUiMetadata {
+    let lower = name.to_ascii_lowercase();
+    let tool_kind = classify_tool(&lower).to_string();
+    let path = first_string(
+        arguments,
+        &[
+            "path",
+            "file_path",
+            "file",
+            "target_path",
+            "source_path",
+            "remote_path",
+            "local_path",
+            "url",
+        ],
+    )
+    .or_else(|| output.and_then(|o| first_string(o, &["path", "file_path", "url"])));
+    let pattern = first_string(arguments, &["pattern", "glob", "regex"]);
+    let query = first_string(arguments, &["query", "text", "q"]);
+    let command = first_string(arguments, &["command", "cmd", "script"]);
+    let prompt = first_string(arguments, &["prompt", "description", "task"]);
+
+    let matches_count = output.and_then(|o| {
+        array_len(o, "matches")
+            .or_else(|| array_len(o, "results"))
+            .or_else(|| number_value(o, "count"))
+    });
+    let provider = output.and_then(|o| first_string(o, &["provider"]));
+    let exit_code = output.and_then(|o| number_value(o, "exit_code"));
+    let error = output.and_then(|o| first_string(o, &["error"]));
+
+    let primary = match lower.as_str() {
+        "bash" | "shell" => command.clone(),
+        "glob" | "grep" => pattern.clone().or_else(|| path.clone()),
+        "web_search" | "knowledge_search" | "tool_search" | "code_map_search" => query.clone(),
+        "web_fetch" => path.clone(),
+        "task" => prompt.clone(),
+        _ => path
+            .clone()
+            .or_else(|| command.clone())
+            .or_else(|| query.clone())
+            .or_else(|| pattern.clone())
+            .or_else(|| prompt.clone()),
+    };
+
+    let summary = if let Some(err) = error.as_deref() {
+        Some(compact(err, 140))
+    } else if lower == "web_search" {
+        match (provider.as_deref(), matches_count) {
+            (Some(provider), Some(count)) => {
+                Some(format!("web_search: {provider} returned {count} result(s)"))
+            }
+            (_, Some(count)) => Some(format!("web_search returned {count} result(s)")),
+            _ => query.as_deref().map(|q| format!("web_search {}", compact(q, 96))),
+        }
+    } else if matches!(lower.as_str(), "glob" | "grep") {
+        match matches_count {
+            Some(count) => Some(format!("{name} {count} match(es)")),
+            None => primary.as_deref().map(|p| format!("{name} {}", compact(p, 96))),
+        }
+    } else if lower == "bash" || lower == "shell" {
+        primary.as_deref().map(|p| compact(p, 140))
+    } else if let Some(primary) = primary.as_deref() {
+        Some(format!("{name} {}", compact(primary, 120)))
+    } else {
+        Some(name.to_string())
+    };
+
+    let mut meta = serde_json::Map::new();
+    if let Some(path) = path.as_deref() {
+        meta.insert("path".into(), serde_json::Value::String(path.to_string()));
+    }
+    if let Some(pattern) = pattern.as_deref() {
+        meta.insert("pattern".into(), serde_json::Value::String(pattern.to_string()));
+    }
+    if let Some(query) = query.as_deref() {
+        meta.insert("query".into(), serde_json::Value::String(query.to_string()));
+    }
+    if let Some(command) = command.as_deref() {
+        meta.insert(
+            "command".into(),
+            serde_json::Value::String(compact(command, 240)),
+        );
+    }
+    if let Some(count) = matches_count {
+        meta.insert("matches_count".into(), serde_json::json!(count));
+    }
+    if let Some(provider) = provider {
+        meta.insert("provider".into(), serde_json::Value::String(provider));
+    }
+    if let Some(code) = exit_code {
+        meta.insert("exit_code".into(), serde_json::json!(code));
+    }
+
+    ToolUiMetadata {
+        tool_kind: Some(tool_kind),
+        file_path: path,
+        summary,
+        meta: if meta.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(meta))
+        },
+    }
+}
+
+fn classify_tool(name: &str) -> &'static str {
+    match name {
+        "read_file" | "list_dir" | "web_fetch" | "office_read" => "file_read",
+        "write_file" | "edit_file" | "multi_edit" | "git_commit" | "remote_push_file"
+        | "remote_push_bundle" | "office_docx_create" | "office_xlsx_create" => "file_change",
+        "glob" | "grep" | "web_search" | "knowledge_search" | "tool_search"
+        | "code_map_search" | "codegraph_locate" | "codegraph_search" => "search",
+        "bash" | "shell" | "remote_install" | "remote_require" | "remote_probe" => {
+            "command_execution"
+        }
+        "git_status" | "git_diff" | "git_log" => "git",
+        "todo_write" | "task_list" | "enter_plan_mode" | "exit_plan_mode" => "planning",
+        "task" => "agent",
+        _ => "tool",
+    }
+}
+
+fn first_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn array_len(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|items| items.len() as u64)
+}
+
+fn number_value(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(|v| v.as_u64())
+}
+
+fn compact(value: &str, max: usize) -> String {
+    let one_line = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= max {
+        return one_line;
+    }
+    let mut truncated = one_line.chars().take(max.saturating_sub(1)).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 impl RuntimeEvent {
@@ -244,6 +452,10 @@ mod tests {
             name: "read_file".into(),
             call_id: "c1".into(),
             arguments: serde_json::json!({"path": "a.rs"}),
+            tool_kind: Some("file_read".into()),
+            file_path: Some("a.rs".into()),
+            summary: Some("read_file a.rs".into()),
+            meta: Some(serde_json::json!({"path": "a.rs"})),
         };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!(json["type"], "tool_started");

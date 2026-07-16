@@ -13,6 +13,7 @@ use deepagent_observation::{build_timeline, export_transcript, SessionStats, Tra
 use deepagent_persistence::cost_store::CostStore;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::Database;
+use deepagent_runtime::tool_ui_metadata;
 use deepagent_session::Session;
 
 use crate::commands::{builtin_commands, commands_from_roots, filter_commands};
@@ -280,6 +281,7 @@ impl AppService {
                 EventPayload::ToolCallRequested { call } => {
                     let idx = ensure_assistant(&mut messages);
                     let part_idx = messages[idx].parts.len();
+                    let metadata = tool_ui_metadata(&call.name, &call.arguments, None);
                     messages[idx].parts.push(ConversationPartDto::Tool {
                         call_id: call.id.clone(),
                         name: call.name.clone(),
@@ -289,6 +291,10 @@ impl AppService {
                         duration_ms: None,
                         detail: None,
                         output: None,
+                        tool_kind: metadata.tool_kind,
+                        file_path: metadata.file_path,
+                        summary: metadata.summary,
+                        meta: metadata.meta,
                     });
                     tool_pos.insert(call.id.clone(), (idx, part_idx));
                 }
@@ -302,9 +308,14 @@ impl AppService {
                         if let Some(ConversationPartDto::Tool {
                             status,
                             name,
+                            args,
                             duration_ms: dm,
                             detail,
                             output: tool_output,
+                            tool_kind,
+                            file_path,
+                            summary,
+                            meta,
                             ..
                         }) = messages[idx].parts.get_mut(part_idx)
                         {
@@ -316,6 +327,12 @@ impl AppService {
                             *dm = Some(*duration_ms);
                             *detail = Some(summarize_output_for_tool(name, output));
                             *tool_output = Some(output.clone());
+                            let arguments = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+                            let metadata = tool_ui_metadata(name, &arguments, Some(output));
+                            *tool_kind = metadata.tool_kind;
+                            *file_path = metadata.file_path;
+                            *summary = metadata.summary;
+                            *meta = metadata.meta;
                         }
                     }
                 }

@@ -19,6 +19,18 @@ type ToolSummary = {
   isError: boolean;
 };
 
+type ToolIcon =
+  | "folder"
+  | "terminal"
+  | "file"
+  | "magnifying-glass"
+  | "wrench"
+  | "code"
+  | "code-branch"
+  | "list-check"
+  | "robot"
+  | "globe";
+
 function parseJsonObject(value?: string): Record<string, unknown> | null {
   if (!value?.trim()) return null;
   try {
@@ -37,9 +49,14 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function readString(record: Record<string, unknown> | null, key: string): string {
+function readString(record: Record<string, unknown> | null | undefined, key: string): string {
   const value = record?.[key];
   return typeof value === "string" ? value : "";
+}
+
+function readNumber(record: Record<string, unknown> | null | undefined, key: string): number | null {
+  const value = record?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function readStringArray(record: Record<string, unknown> | null, key: string): string[] {
@@ -75,10 +92,28 @@ function parsePayload(tool: ToolCall): ParsedToolPayload {
   };
 }
 
-function toolIcon(name: string): "folder" | "terminal" | "file" | "magnifying-glass" | "wrench" | "code" {
+function stripToolName(summary: string, name: string): string {
+  const trimmed = summary.trim();
+  const prefix = `${name} `;
+  if (trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
+    return trimmed.slice(prefix.length).trim();
+  }
+  return trimmed;
+}
+
+function toolIcon(name: string, kind?: string): ToolIcon {
+  if (kind === "command_execution") return "terminal";
+  if (kind === "file_change") return "code";
+  if (kind === "file_read") return name.toLowerCase().includes("list") ? "folder" : "file";
+  if (kind === "search") return "magnifying-glass";
+  if (kind === "git") return "code-branch";
+  if (kind === "planning") return "list-check";
+  if (kind === "agent") return "robot";
+
   const normalized = name.toLowerCase();
   if (normalized.includes("glob") || normalized.includes("list") || normalized.includes("ls")) return "folder";
   if (normalized.includes("bash") || normalized.includes("shell") || normalized.includes("exec")) return "terminal";
+  if (normalized.includes("fetch") || normalized.includes("web")) return "globe";
   if (normalized.includes("read") || normalized.includes("file")) return "file";
   if (normalized.includes("grep") || normalized.includes("search") || normalized.includes("find")) return "magnifying-glass";
   if (normalized.includes("edit") || normalized.includes("write") || normalized.includes("patch")) return "code";
@@ -105,18 +140,25 @@ function looksLikeUnifiedDiff(text: string): boolean {
 function summarizeTool(tool: ToolCall, payload: ParsedToolPayload): ToolSummary {
   const name = tool.name.toLowerCase();
   const data = payload.output ?? payload.detailObject;
+  const meta = tool.meta ?? null;
   const matches = readStringArray(data, "matches");
-  const pattern = readString(payload.args, "pattern") || readString(data, "pattern");
+  const matchesCount = readNumber(meta, "matches_count");
+  const provider = readString(meta, "provider");
+  const pattern = readString(meta, "pattern") || readString(payload.args, "pattern") || readString(data, "pattern");
   const path =
+    tool.filePath ||
+    readString(meta, "path") ||
     readString(payload.args, "path") ||
     readString(payload.args, "file_path") ||
     readString(payload.args, "file") ||
     readString(data, "path");
-  const command = readString(payload.args, "command") || readString(payload.args, "cmd");
-  const query = readString(payload.args, "query") || readString(payload.args, "text");
+  const command = readString(meta, "command") || readString(payload.args, "command") || readString(payload.args, "cmd");
+  const query = readString(meta, "query") || readString(payload.args, "query") || readString(payload.args, "text");
   const inlineMeta: string[] = [];
 
   if (matches.length > 0) inlineMeta.push(`${matches.length} matches`);
+  else if (typeof matchesCount === "number") inlineMeta.push(`${matchesCount} matches`);
+  if (provider) inlineMeta.push(provider);
 
   let monoText = "";
   if (matches.length > 0) {
@@ -129,6 +171,8 @@ function summarizeTool(tool: ToolCall, payload: ParsedToolPayload): ToolSummary 
     monoText = command;
   } else if (query) {
     monoText = query;
+  } else if (tool.summary) {
+    monoText = stripToolName(tool.summary, tool.name);
   } else if (tool.detail) {
     monoText = tool.detail;
   }
@@ -139,7 +183,7 @@ function summarizeTool(tool: ToolCall, payload: ParsedToolPayload): ToolSummary 
       : prettyJson(tool.output ?? payload.detailObject ?? tool.detail ?? payload.args ?? "");
 
   return {
-    inlineMeta,
+    inlineMeta: Array.from(new Set(inlineMeta)),
     monoText: compactText(monoText, 140),
     detail,
     matches,
@@ -154,7 +198,7 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
   const summary = useMemo(() => summarizeTool(tool, payload), [tool, payload]);
   const status = statusMeta(tool);
   const canOpen = Boolean(summary.detail.trim());
-  const icon = toolIcon(tool.name);
+  const icon = toolIcon(tool.name, tool.toolKind);
   const running = tool.status === "running";
 
   return (

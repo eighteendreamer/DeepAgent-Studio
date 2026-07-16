@@ -35,7 +35,8 @@ use deepagent_models::transport::HttpTransport;
 use deepagent_models::{ModelClient, ModelConfig, ModelRole, ThinkingDepth, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{
-    Agent, ChannelSink, ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent, RuntimeEventSink,
+    tool_ui_metadata, Agent, ChannelSink, ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent,
+    RuntimeEventSink,
 };
 use deepagent_session::Session;
 use deepagent_tools::{PermissionSet, ToolRegistry};
@@ -2337,10 +2338,15 @@ impl ChatService {
                 name: tool.name.clone(),
                 arguments: tool.arguments.clone(),
             };
+            let started_meta = tool_ui_metadata(&call.name, &call.arguments, None);
             sink.emit(RuntimeEvent::ToolStarted {
                 name: call.name.clone(),
                 call_id: call.id.clone(),
                 arguments: call.arguments.clone(),
+                tool_kind: started_meta.tool_kind,
+                file_path: started_meta.file_path,
+                summary: started_meta.summary,
+                meta: started_meta.meta,
             });
             session.append(EventPayload::ToolCallRequested { call })?;
             session.append(EventPayload::ToolCallCompleted {
@@ -2349,12 +2355,18 @@ impl ChatService {
                 output: tool.output.clone(),
                 duration_ms: tool.duration_ms,
             })?;
+            let completed_meta =
+                tool_ui_metadata(&tool.name, &tool.arguments, Some(&tool.output));
             sink.emit(RuntimeEvent::ToolCompleted {
                 name: tool.name.clone(),
                 call_id: tool.call_id.clone(),
                 ok: tool.ok,
                 output: tool.output.clone(),
                 duration_ms: tool.duration_ms,
+                tool_kind: completed_meta.tool_kind,
+                file_path: completed_meta.file_path,
+                summary: completed_meta.summary,
+                meta: completed_meta.meta,
             });
         }
         if let Some(abort_message) = preflight_abort_message

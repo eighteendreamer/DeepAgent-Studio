@@ -32,7 +32,9 @@ pub use agent::{Agent, AgentDecision, Observation};
 pub use approval::{
     ApprovalDecision, ApprovalGate, ApprovalRequest, AutoApproveGate, AutoDenyGate,
 };
-pub use events::{ChannelSink, NullEventSink, RuntimeEvent, RuntimeEventSink};
+pub use events::{
+    tool_ui_metadata, ChannelSink, NullEventSink, RuntimeEvent, RuntimeEventSink, ToolUiMetadata,
+};
 pub use loop_engine::{PromptDecision, RunOutcome, RuntimeConfig, RuntimeEngine, VerificationPlan};
 pub use model_agent::ModelAgent;
 pub use phase::LoopPhase;
