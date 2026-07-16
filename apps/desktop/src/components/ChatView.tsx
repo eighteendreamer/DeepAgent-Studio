@@ -5,6 +5,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import type {
   ChatMessage,
   ComposerAttachment,
+  ComposerMention,
   ComposerSkillSelection,
   MessagePart,
   ToolCall,
@@ -56,6 +57,7 @@ interface Props {
     text: string,
     attachments?: ComposerAttachment[],
     selectedSkills?: ComposerSkillSelection[],
+    mentions?: ComposerMention[],
   ) => void;
   /** Fork the current session into a new branch from its latest point. */
   onFork?: () => void;
@@ -1022,10 +1024,11 @@ export function ChatView({
   const submit = (
     attachments: ComposerAttachment[] = [],
     selectedSkills: ComposerSkillSelection[] = [],
+    mentions: ComposerMention[] = [],
   ) => {
     const t = value.trim();
-    if (!t && attachments.length === 0 && selectedSkills.length === 0) return;
-    onSend(t, attachments, selectedSkills);
+    if (!t && attachments.length === 0 && selectedSkills.length === 0 && mentions.length === 0) return;
+    onSend(t, attachments, selectedSkills, mentions);
     setValue("");
   };
 
@@ -1393,6 +1396,7 @@ export function ChatView({
               busy={busy}
               onStop={onStop}
               planMode={planMode}
+              activeProjectPath={activeProjectPath}
               textareaMaxHeight={300}
             />
           </div>

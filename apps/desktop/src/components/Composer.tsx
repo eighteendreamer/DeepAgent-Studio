@@ -10,18 +10,27 @@ import {
   getPermissionPresetVisibility,
   getSettings,
   listSkills,
+  searchProjectFiles,
   setActivePermissionPreset,
   setChatModel,
   setThinkingDepth,
 } from "../api";
 import { message } from "./message";
-import type { Command, ComposerAttachment, ComposerSkillSelection, Skill } from "../types";
+import type {
+  Command,
+  ComposerAttachment,
+  ComposerMention,
+  ComposerSkillSelection,
+  ProjectFileEntry,
+  Skill,
+} from "../types";
 
 const LONG_TEXT_ATTACHMENT_THRESHOLD = 8 * 1024;
 const MAX_COMPOSER_ATTACHMENTS = 5;
 const COMPOSER_TEXTAREA_MIN_HEIGHT = 60;
 const COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT = 300;
 const SKILL_MARKER = "\uE000";
+const MENTION_MARKER = "\uE001";
 
 /** A slash-dropdown row. `insertText` is used for built-in slash commands;
  *  `skillName` / `skillId` mark a row as a skill picker. */
@@ -36,9 +45,53 @@ type SlashToken = {
   end: number;
   query: string;
 };
+type AtToken = SlashToken;
 type SelectionRange = {
   start: number;
   end: number;
+};
+type AtChoice =
+  | {
+      id: "add-files";
+      type: "add-files";
+      title: string;
+      description: string;
+      icon: "paperclip";
+    }
+  | {
+      id: "goal";
+      type: "goal";
+      title: string;
+      description: string;
+      icon: "bullseye";
+    }
+  | {
+      id: "plan-mode";
+      type: "plan-mode";
+      title: string;
+      description: string;
+      icon: "list-check";
+    }
+  | {
+      id: string;
+      type: "file";
+      title: string;
+      description: string;
+      icon: "file" | "folder";
+      entry: ProjectFileEntry;
+    }
+  | {
+      id: string;
+      type: "skill";
+      title: string;
+      description: string;
+      icon: "cube";
+      skill: Skill;
+    };
+type AtSection = {
+  key: string;
+  label: string;
+  items: AtChoice[];
 };
 
 /** Map composer dropdown option id -> backend permission preset label. */
@@ -63,11 +116,15 @@ function labelFor(id: string): { name: string; version: string } {
 }
 
 function stripSkillMarkers(value: string): string {
-  return value.replace(/\uE000/g, "");
+  return value.replace(/[\uE000\uE001]/g, "");
 }
 
 function countSkillMarkers(value: string): number {
   return (value.match(/\uE000/g) ?? []).length;
+}
+
+function countMentionMarkers(value: string): number {
+  return (value.match(/\uE001/g) ?? []).length;
 }
 
 function normalizeSelectionRange(start: number, end: number): SelectionRange | null {
@@ -84,7 +141,7 @@ function rangesOverlap(range: SelectionRange | null, start: number, end: number)
 
 function findActiveSlashToken(value: string, cursor: number): SlashToken | null {
   const beforeCursor = value.slice(0, cursor);
-  const match = beforeCursor.match(/(^|[\s\uE000])\/([a-zA-Z0-9_:-]*)$/);
+  const match = beforeCursor.match(/(^|[\s\uE000\uE001])\/([a-zA-Z0-9_:-]*)$/);
   if (!match || match.index === undefined) return null;
   const start = match.index + match[1].length;
   const after = value.slice(start + 1);
@@ -97,12 +154,34 @@ function findActiveSlashToken(value: string, cursor: number): SlashToken | null 
   };
 }
 
+function findActiveAtToken(value: string, cursor: number): AtToken | null {
+  const beforeCursor = value.slice(0, cursor);
+  const match = beforeCursor.match(/(^|[\s\uE000\uE001])@([^\s\uE000\uE001]*)$/);
+  if (!match || match.index === undefined) return null;
+  const start = match.index + match[1].length;
+  const after = value.slice(start + 1);
+  const fullMention = after.match(/^[^\s\uE000\uE001]*/)?.[0] ?? "";
+  if (cursor > start + 1 + fullMention.length) return null;
+  return {
+    start,
+    end: start + 1 + fullMention.length,
+    query: fullMention,
+  };
+}
+
+function mentionLabel(mention: ComposerMention): string {
+  if (mention.kind === "plan_mode") return "计划模式";
+  if (mention.kind === "goal") return "目标";
+  return mention.relPath || mention.name;
+}
+
 interface Props {
   value: string;
   onChange: (v: string) => void;
   onSubmit: (
     attachments?: ComposerAttachment[],
     selectedSkills?: ComposerSkillSelection[],
+    mentions?: ComposerMention[],
   ) => void;
   placeholder?: string;
   /** True while a run is streaming: disables submit and shows a busy button. */
@@ -111,6 +190,8 @@ interface Props {
   onStop?: () => void;
   /** True when the current session is in read-only Plan mode. */
   planMode?: boolean;
+  /** Active project path used for @ file/folder search. */
+  activeProjectPath?: string | null;
   /** Optional footer content rendered seamlessly at the bottom of the composer. */
   footer?: React.ReactNode;
   /** Maximum auto-expanded textarea height in pixels. */
@@ -125,6 +206,7 @@ export function Composer({
   busy = false,
   onStop,
   planMode = false,
+  activeProjectPath = null,
   footer,
   textareaMaxHeight = COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT,
 }: Props) {
@@ -147,7 +229,10 @@ export function Composer({
   const [switching, setSwitching] = useState(false);
   const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
   const [slashSelected, setSlashSelected] = useState(0);
+  const [atSections, setAtSections] = useState<AtSection[]>([]);
+  const [atSelected, setAtSelected] = useState(0);
   const [selectedSkills, setSelectedSkills] = useState<ComposerSkillSelection[]>([]);
+  const [selectedMentions, setSelectedMentions] = useState<ComposerMention[]>([]);
   const [draftValue, setDraftValue] = useState(value);
   const [cursorPos, setCursorPos] = useState(value.length);
   const [selectionRange, setSelectionRange] = useState<SelectionRange | null>(null);
@@ -216,6 +301,9 @@ export function Composer({
     setSlashResults([]);
     setSlashSelected(0);
     setSelectedSkills([]);
+    setAtSections([]);
+    setAtSelected(0);
+    setSelectedMentions([]);
     pendingDraftValueRef.current = value;
   }, [draftValue, value]);
 
@@ -357,12 +445,23 @@ export function Composer({
     [slashSections],
   );
 
+  const atEntries = useMemo(
+    () => atSections.flatMap((section) => section.items),
+    [atSections],
+  );
+
   const activeSlashToken = useMemo(
     () => findActiveSlashToken(draftValue, cursorPos),
     [cursorPos, draftValue],
   );
 
+  const activeAtToken = useMemo(
+    () => findActiveAtToken(draftValue, cursorPos),
+    [cursorPos, draftValue],
+  );
+
   const slashOpen = Boolean((draftValue.startsWith("/") || activeSlashToken) && slashEntries.length > 0);
+  const atOpen = Boolean(!slashOpen && activeAtToken && atEntries.length > 0);
 
   const resizeTextarea = useCallback(() => {
     const textarea = textareaRef.current;
@@ -474,6 +573,138 @@ export function Composer({
     };
   }, [activeSlashToken, draftValue, models, selectedModel, selectedSkills, skills]);
 
+  useEffect(() => {
+    if (!activeAtToken || slashOpen) {
+      setAtSections([]);
+      setAtSelected(0);
+      return;
+    }
+
+    let cancelled = false;
+    const q = activeAtToken.query.trim().toLowerCase();
+    const matches = (value: string) => !q || value.toLowerCase().includes(q);
+    const sections: AtSection[] = [];
+    const addChoices: AtChoice[] = [
+      {
+        id: "add-files",
+        type: "add-files",
+        title: "文件和文件夹",
+        description: q ? "继续输入以搜索项目文件和文件夹" : "",
+        icon: "paperclip",
+      },
+      {
+        id: "goal",
+        type: "goal",
+        title: "目标",
+        description: "设置要持续追求的目标",
+        icon: "bullseye",
+      },
+      {
+        id: "plan-mode",
+        type: "plan-mode",
+        title: "计划模式",
+        description: "开启计划模式",
+        icon: "list-check",
+      },
+    ];
+    const addItems = addChoices.filter((item) => matches(item.title) || matches(item.description));
+    if (addItems.length > 0) {
+      sections.push({ key: "add", label: "添加", items: addItems });
+    }
+
+    const selectedSkillIds = new Set(selectedSkills.map((skill) => skill.id));
+    const skillItems: AtChoice[] = skills
+      .filter(
+        (skill) =>
+          !selectedSkillIds.has(skill.id) &&
+          (matches(skill.id) || matches(skill.name) || matches(skill.description ?? "")),
+      )
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .slice(0, 6)
+      .map((skill) => ({
+        id: `at-skill.${skill.id}`,
+        type: "skill",
+        title: skill.name || skill.id,
+        description: skill.description,
+        icon: "cube",
+        skill,
+      }));
+    if (skillItems.length > 0) {
+      sections.push({ key: "plugins", label: "插件", items: skillItems });
+    } else if (!q) {
+      sections.push({
+        key: "plugins",
+        label: "插件",
+        items: [
+          {
+            id: "add-files",
+            type: "add-files",
+            title: "正在加载插件…",
+            description: "",
+            icon: "paperclip",
+          },
+        ],
+      });
+    }
+
+    if (!q) {
+      sections.push({
+        key: "files",
+        label: "文件和任务",
+        items: [
+          {
+            id: "add-files",
+            type: "add-files",
+            title: "输入以搜索文件或任务",
+            description: "",
+            icon: "paperclip",
+          },
+        ],
+      });
+      setAtSections(sections);
+      setAtSelected(0);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      searchProjectFiles(activeProjectPath, q, 24).then((result) => {
+        if (cancelled) return;
+        const mentionedPaths = new Set(
+          selectedMentions.flatMap((mention) =>
+            mention.kind === "file" || mention.kind === "folder" ? [mention.path] : [],
+          ),
+        );
+        const fileItems: AtChoice[] = result.entries
+          .filter((entry) => !mentionedPaths.has(entry.path))
+          .slice(0, 12)
+          .map((entry) => ({
+            id: `at-file.${entry.path}`,
+            type: "file",
+            title: entry.name,
+            description: entry.rel_path,
+            icon: entry.is_dir ? "folder" : "file",
+            entry,
+          }));
+        if (fileItems.length > 0) {
+          sections.push({ key: "files", label: "文件和任务", items: fileItems });
+        }
+        setAtSections(sections);
+        setAtSelected(0);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAtSections(sections);
+          setAtSelected(0);
+        }
+      });
+    }, 80);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeAtToken, activeProjectPath, selectedMentions, selectedSkills, skills, slashOpen]);
+
   const chooseSlash = (cmd: SlashChoice) => {
     const replaceWholeRootSlash = !activeSlashToken && draftValue.startsWith("/");
     const rawStart = activeSlashToken
@@ -534,6 +765,109 @@ export function Composer({
     setSlashSelected(0);
   };
 
+  const insertSkillMarker = (
+    rawStart: number,
+    rawEnd: number,
+    skill: ComposerSkillSelection,
+  ) => {
+    if (selectedSkills.some((item) => item.id === skill.id)) {
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return;
+    }
+    const prefix = draftValue.slice(0, rawStart);
+    const suffix = draftValue.slice(rawEnd);
+    const spacer = suffix && !/^\s/.test(suffix) ? " " : "";
+    const nextValue = `${prefix}${SKILL_MARKER}${spacer}${suffix}`;
+    const insertAt = countSkillMarkers(prefix);
+    setSelectedSkills((prev) => {
+      const next = [...prev];
+      next.splice(insertAt, 0, skill);
+      return next;
+    });
+    setDraftValue(nextValue);
+    pendingDraftValueRef.current = stripSkillMarkers(nextValue);
+    onChange(stripSkillMarkers(nextValue));
+    const caret = rawStart + 1 + spacer.length;
+    setCursorPos(caret);
+    setSelectionRange(null);
+    requestAnimationFrame(() => {
+      textareaRef.current?.setSelectionRange(caret, caret);
+      textareaRef.current?.focus();
+    });
+  };
+
+  const insertMentionMarker = (
+    rawStart: number,
+    rawEnd: number,
+    mention: ComposerMention,
+  ) => {
+    const prefix = draftValue.slice(0, rawStart);
+    const suffix = draftValue.slice(rawEnd);
+    const spacer = suffix && !/^\s/.test(suffix) ? " " : " ";
+    const nextValue = `${prefix}${MENTION_MARKER}${spacer}${suffix}`;
+    const insertAt = countMentionMarkers(prefix);
+    setSelectedMentions((prev) => {
+      const next = [...prev];
+      next.splice(insertAt, 0, mention);
+      return next;
+    });
+    setDraftValue(nextValue);
+    pendingDraftValueRef.current = stripSkillMarkers(nextValue);
+    onChange(stripSkillMarkers(nextValue));
+    const caret = rawStart + 1 + spacer.length;
+    setCursorPos(caret);
+    setSelectionRange(null);
+    requestAnimationFrame(() => {
+      textareaRef.current?.setSelectionRange(caret, caret);
+      textareaRef.current?.focus();
+    });
+  };
+
+  const chooseAt = (choice: AtChoice) => {
+    if (!activeAtToken) return;
+    const rawStart = activeAtToken.start;
+    const rawEnd = activeAtToken.end;
+
+    if (choice.type === "add-files") {
+      message.info("继续在 @ 后输入文件名或文件夹名即可搜索");
+      setAtSelected(0);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return;
+    }
+
+    if (choice.type === "goal") {
+      const goal = window.prompt("请输入要持续追踪的目标");
+      if (!goal?.trim()) {
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return;
+      }
+      insertMentionMarker(rawStart, rawEnd, {
+        kind: "goal",
+        text: goal.trim(),
+      });
+    } else if (choice.type === "plan-mode") {
+      if (!selectedMentions.some((mention) => mention.kind === "plan_mode")) {
+        insertMentionMarker(rawStart, rawEnd, { kind: "plan_mode" });
+      }
+    } else if (choice.type === "file") {
+      insertMentionMarker(rawStart, rawEnd, {
+        kind: choice.entry.is_dir ? "folder" : "file",
+        path: choice.entry.path,
+        relPath: choice.entry.rel_path,
+        name: choice.entry.name,
+        isDir: choice.entry.is_dir,
+      });
+    } else if (choice.type === "skill") {
+      insertSkillMarker(rawStart, rawEnd, {
+        id: choice.skill.id,
+        name: choice.skill.name,
+      });
+    }
+
+    setAtSections([]);
+    setAtSelected(0);
+  };
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -554,9 +888,10 @@ export function Composer({
 
   const submitWithAttachments = () => {
     const readyAttachments = attachments.filter((item) => item.status === "ready");
-    onSubmit(readyAttachments, selectedSkills);
+    onSubmit(readyAttachments, selectedSkills, selectedMentions);
     if (readyAttachments.length > 0) setAttachments([]);
     if (selectedSkills.length > 0) setSelectedSkills([]);
+    if (selectedMentions.length > 0) setSelectedMentions([]);
     setDraftValue("");
     setCursorPos(0);
     setSelectionRange(null);
@@ -809,6 +1144,22 @@ export function Composer({
         return reconciled.slice(0, nextMarkerCount);
       });
     }
+    const previousMentionCount = countMentionMarkers(previousDraft);
+    const nextMentionCount = countMentionMarkers(next);
+    if (nextMentionCount !== previousMentionCount) {
+      setSelectedMentions((prev) => {
+        if (nextMentionCount <= 0) return [];
+        if (nextMentionCount >= previousMentionCount) return prev.slice(0, nextMentionCount);
+        const removed = previousMentionCount - nextMentionCount;
+        const removeAt = Math.min(
+          countMentionMarkers(next.slice(0, caret)),
+          Math.max(prev.length - removed, 0),
+        );
+        const reconciled = [...prev];
+        reconciled.splice(removeAt, removed);
+        return reconciled.slice(0, nextMentionCount);
+      });
+    }
     pendingDraftValueRef.current = stripped;
     onChange(stripped);
   };
@@ -862,28 +1213,34 @@ export function Composer({
         </>
       );
     }
-    const parts = draftValue.split(SKILL_MARKER);
+    const markerRegex = /[\uE000\uE001]/g;
     let offset = 0;
     let skillIndex = 0;
-    return parts.flatMap((part, index) => {
-      const nodes: React.ReactNode[] = [];
-      const textStart = offset;
-      if (part) nodes.push(...renderMirrorText(part, textStart, `text-${index}`));
-      offset += part.length;
-      if (index < parts.length - 1) {
-        const caretBeforeSkill = renderCaretAt(offset, `skill-${index}-before-caret`);
-        if (caretBeforeSkill) nodes.push(caretBeforeSkill);
+    let mentionIndex = 0;
+    const nodes: React.ReactNode[] = [];
+    let match: RegExpExecArray | null;
+    let segmentIndex = 0;
+    while ((match = markerRegex.exec(draftValue)) !== null) {
+      const markerStart = match.index;
+      const text = draftValue.slice(offset, markerStart);
+      if (text) nodes.push(...renderMirrorText(text, offset, `text-${segmentIndex}`));
+      offset = markerStart;
+      const marker = match[0];
+      const markerSelected = rangesOverlap(selectionRange, offset, offset + 1);
+      const caretBefore = renderCaretAt(offset, `marker-${segmentIndex}-before-caret`);
+      if (caretBefore) nodes.push(caretBefore);
+
+      if (marker === SKILL_MARKER) {
         const skill = selectedSkills[skillIndex];
         if (skill) {
-          const skillSelected = rangesOverlap(selectionRange, offset, offset + 1);
           const skillLabel = skill.name || skill.id;
           nodes.push(
             <span
-              key={`skill-${index}`}
+              key={`skill-${segmentIndex}`}
               className={`mx-0.5 inline-flex h-[20px] max-w-[180px] items-center rounded-[3px] px-1 text-[13px] font-medium leading-none align-baseline ${
-                skillSelected
+                markerSelected
                   ? "bg-primary text-white"
-                : "border border-primary/20 bg-primary/10 text-primary"
+                  : "border border-primary/20 bg-primary/10 text-primary"
               }`}
               title={`${skill.name} (${skill.id})`}
             >
@@ -893,12 +1250,50 @@ export function Composer({
           );
         }
         skillIndex += 1;
-        offset += 1;
-        const caretAfterSkill = renderCaretAt(offset, `skill-${index}-after-caret`);
-        if (caretAfterSkill) nodes.push(caretAfterSkill);
+      } else {
+        const mention = selectedMentions[mentionIndex];
+        if (mention) {
+          const icon =
+            mention.kind === "folder"
+              ? "folder"
+              : mention.kind === "file"
+              ? "file"
+              : mention.kind === "goal"
+              ? "bullseye"
+              : "list-check";
+          const label = mentionLabel(mention);
+          const title =
+            mention.kind === "goal"
+              ? mention.text
+              : mention.kind === "plan_mode"
+              ? "开启计划模式"
+              : mention.path;
+          nodes.push(
+            <span
+              key={`mention-${segmentIndex}`}
+              className={`mx-0.5 inline-flex h-[20px] max-w-[220px] items-center rounded-[3px] px-1 text-[13px] font-medium leading-none align-baseline ${
+                markerSelected
+                  ? "bg-primary text-white"
+                  : "border border-gray-300 bg-gray-100 text-text-base"
+              }`}
+              title={title}
+            >
+              <FontAwesomeIcon icon={["fas", icon as any]} className="mr-1 text-[11px] text-text-secondary" />
+              <span className="truncate">{label}</span>
+            </span>,
+          );
+        }
+        mentionIndex += 1;
       }
-      return nodes;
-    });
+
+      offset += 1;
+      const caretAfter = renderCaretAt(offset, `marker-${segmentIndex}-after-caret`);
+      if (caretAfter) nodes.push(caretAfter);
+      segmentIndex += 1;
+    }
+    const tail = draftValue.slice(offset);
+    if (tail) nodes.push(...renderMirrorText(tail, offset, `text-${segmentIndex}`));
+    return nodes;
   })();
 
   const handleCopy = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -933,6 +1328,15 @@ export function Composer({
         return next;
       });
     }
+    const removedMentionMarkers = countMentionMarkers(textarea.value.slice(start, end));
+    if (removedMentionMarkers > 0) {
+      const removeAt = countMentionMarkers(textarea.value.slice(0, start));
+      setSelectedMentions((prev) => {
+        const next = [...prev];
+        next.splice(removeAt, removedMentionMarkers);
+        return next;
+      });
+    }
     pendingDraftValueRef.current = stripped;
     onChange(stripped);
     requestAnimationFrame(() => {
@@ -942,6 +1346,29 @@ export function Composer({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (atOpen && e.key === "ArrowDown") {
+      e.preventDefault();
+      setAtSelected((s) => Math.min(s + 1, atEntries.length - 1));
+      return;
+    }
+    if (atOpen && e.key === "ArrowUp") {
+      e.preventDefault();
+      setAtSelected((s) => Math.max(s - 1, 0));
+      return;
+    }
+    if (atOpen && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+      const selected = atEntries[atSelected];
+      if (selected) {
+        e.preventDefault();
+        chooseAt(selected);
+        return;
+      }
+    }
+    if (atOpen && e.key === "Escape") {
+      e.preventDefault();
+      setAtSections([]);
+      return;
+    }
     if (slashOpen && e.key === "ArrowDown") {
       e.preventDefault();
       setSlashSelected((s) => Math.min(s + 1, slashEntries.length - 1));
@@ -979,6 +1406,54 @@ export function Composer({
       onDrop={onDrop}
     >
       <div className="p-3 pb-2 flex flex-col relative w-full">
+      {atOpen && (
+        <div className="absolute left-3 bottom-full mb-2 max-h-60 w-[min(680px,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border-theme bg-white py-1.5 shadow-[0_10px_30px_rgb(0,0,0,0.10)] z-50">
+          {atSections.map((section, sectionIndex) => {
+            let baseIndex = 0;
+            for (let i = 0; i < sectionIndex; i += 1) {
+              baseIndex += atSections[i].items.length;
+            }
+
+            return (
+              <div key={section.key} className={sectionIndex > 0 ? "mt-1" : ""}>
+                <div className="px-4 py-1 text-[12px] font-medium text-text-secondary">
+                  {section.label}
+                </div>
+                {section.items.map((item, index) => {
+                  const flatIndex = baseIndex + index;
+                  const selected = flatIndex === atSelected;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        chooseAt(item);
+                      }}
+                      onMouseEnter={() => setAtSelected(flatIndex)}
+                      className={`grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors ${
+                        selected ? "bg-gray-100 text-text-base" : "text-text-secondary"
+                      }`}
+                    >
+                      <span className="flex h-4 w-4 items-center justify-center text-text-base">
+                        <FontAwesomeIcon icon={["fas", item.icon as any]} className="text-[12px]" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="truncate font-medium text-text-base">{item.title}</span>
+                        {item.description && (
+                          <span className="ml-2 truncate text-[12px] text-text-secondary">
+                            {item.description}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      )}
       {slashOpen && (
         <div className="absolute left-3 right-3 bottom-full mb-2 max-h-72 overflow-y-auto rounded-lg border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-50">
           {slashSections.map((section, sectionIndex) => {

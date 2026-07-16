@@ -55,6 +55,7 @@ import type {
   ProjectMapStatus,
   PreviewMetadata,
   ProjectFileListResult,
+  ProjectFileSearchResult,
   PreviewResult,
   PdfRenderResult,
   RecordingSession,
@@ -938,7 +939,8 @@ export async function runChat(
   envMode?: string | null,
   connectionId?: string | null,
   preflightTools: PreflightToolCall[] = [],
-  preflightAbortMessage?: string | null
+  preflightAbortMessage?: string | null,
+  initialPlanMode = false
 ): Promise<string> {
   const invoke = getInvoke();
   if (invoke) {
@@ -964,6 +966,7 @@ export async function runChat(
         runId: actualRunId,
         preflightTools,
         preflightAbortMessage: preflightAbortMessage ?? null,
+        initialPlanMode,
       });
       if (promptMayChangeSettings(prompt)) emitSettingsChanged();
       return nextSessionId;
@@ -2044,6 +2047,26 @@ export async function listProjectFiles(
     return invoke<ProjectFileListResult>("list_project_files", {
       projectPath: projectPath ?? null,
       path: path ?? null,
+    });
+  }
+  return {
+    root_path: projectPath ?? "",
+    entries: [],
+  };
+}
+
+/** Recursively fuzzy-search files and folders in the active/current project. */
+export async function searchProjectFiles(
+  projectPath?: string | null,
+  query?: string | null,
+  limit = 30,
+): Promise<ProjectFileSearchResult> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<ProjectFileSearchResult>("search_project_files", {
+      projectPath: projectPath ?? null,
+      query: query ?? "",
+      limit,
     });
   }
   return {

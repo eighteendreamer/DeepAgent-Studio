@@ -26,6 +26,7 @@ import {
   resolveApproval,
   stopChat,
   getPlanMode,
+  setPlanMode as setSessionPlanMode,
   forkSession,
   rewindSession,
   exportTranscript,
@@ -39,6 +40,7 @@ import type {
   ApprovalRequest,
   ChatMessage,
   ComposerAttachment,
+  ComposerMention,
   ComposerSkillSelection,
   ConversationMessage,
   MessagePart,
@@ -160,6 +162,13 @@ function escapeXmlAttr(value: string): string {
     .replace(/>/g, "&gt;");
 }
 
+function escapeXmlText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function buildSkillContext(skill: ComposerSkillSelection): string {
   return `<skill-context id="${escapeXmlAttr(skill.id)}" name="${escapeXmlAttr(skill.name)}">
 Please use the ${skill.name} skill.
@@ -175,6 +184,29 @@ function normalizeSkillSelections(
 
 function buildSkillContexts(skills: ComposerSkillSelection[]): string {
   return skills.map(buildSkillContext).join("\n\n");
+}
+
+function buildMentionContexts(mentions: ComposerMention[]): string {
+  if (mentions.length === 0) return "";
+  const blocks = mentions.map((mention, index) => {
+    if (mention.kind === "plan_mode") {
+      return `<context-item index="${index + 1}" kind="plan_mode">Plan mode was requested for this turn.</context-item>`;
+    }
+    if (mention.kind === "goal") {
+      return `<context-item index="${index + 1}" kind="goal">${escapeXmlText(mention.text)}</context-item>`;
+    }
+    const kind = mention.kind === "folder" ? "folder" : "file";
+    const relPath = mention.relPath || mention.name;
+    const lines = [
+      `<context-item index="${index + 1}" kind="${kind}" path="${escapeXmlAttr(relPath)}" absolute_path="${escapeXmlAttr(mention.path)}">`,
+      kind === "folder"
+        ? "The user selected this folder as relevant context. Inspect it with file tools as needed; do not assume every file is already inlined."
+        : "The user selected this file as relevant context. Read it with file tools if details are needed.",
+      "</context-item>",
+    ];
+    return lines.join("\n");
+  });
+  return ["<context-items>", blocks.join("\n\n"), "</context-items>"].join("\n");
 }
 
 function buildPromptWithAttachments(text: string, attachments: ComposerAttachment[] = []): string {
@@ -798,14 +830,13 @@ export function App() {
       envMode?: "local" | "remote",
       connectionId?: string | null,
       selectedSkills?: ComposerSkillSelection | ComposerSkillSelection[] | null,
+      mentions: ComposerMention[] = [],
     ) => {
       const trimmedText = text.trim();
       const skillContext = buildSkillContexts(normalizeSkillSelections(selectedSkills));
-      const promptText = skillContext
-        ? trimmedText
-          ? `${skillContext}\n\n${trimmedText}`
-          : skillContext
-        : trimmedText;
+      const mentionContext = buildMentionContexts(mentions);
+      const contextBlocks = [skillContext, mentionContext].filter((block) => block.trim().length > 0);
+      const promptText = [...contextBlocks, trimmedText].filter((block) => block.trim().length > 0).join("\n\n");
       if (!promptText.trim() && attachments.length === 0) return;
       const storedEnvMode = localStorage.getItem("envMode");
       const effectiveEnvMode: "local" | "remote" =
@@ -824,6 +855,18 @@ export function App() {
       const continueId = view === "chat" && activeId ? activeId : null;
       if (continueId && runningSessionIds.has(continueId)) return;
       if (!continueId && activePendingRunKey) return;
+      const requestedPlanMode = mentions.some((mention) => mention.kind === "plan_mode");
+      if (continueId && requestedPlanMode) {
+        try {
+          const active = await setSessionPlanMode(continueId, true);
+          setPlanMode(active);
+        } catch {
+          message.error("开启计划模式失败");
+          return;
+        }
+      } else if (!continueId && requestedPlanMode) {
+        setPlanMode(true);
+      }
 
       // Wall-clock start of this run, for the "total time" footer metric.
       const runStart = Date.now();
@@ -1347,7 +1390,8 @@ export function App() {
         effectiveEnvMode,
         effectiveConnectionId,
         preflightTools,
-        preflightAbortMessage
+        preflightAbortMessage,
+        !continueId && requestedPlanMode
       )
         .then((newSessionId) => {
           // The run created (or continued) a session under the active project;
@@ -1640,8 +1684,8 @@ export function App() {
                   sessionId={activeId}
                   sessionKey={activeId ?? activePendingRunKey ?? null}
                   messages={chatMessages}
-                  onSend={(text, attachments, selectedSkills) =>
-                    onSubmit(text, attachments, undefined, undefined, selectedSkills)
+                  onSend={(text, attachments, selectedSkills, mentions) =>
+                    onSubmit(text, attachments, undefined, undefined, selectedSkills, mentions)
                   }
                   onFork={onForkSession}
                   onRewind={onRewindSession}

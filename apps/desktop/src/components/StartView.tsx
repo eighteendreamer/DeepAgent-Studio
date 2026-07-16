@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Composer } from "./Composer";
 import { BalanceChip } from "./BalanceChip";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
-import type { ComposerAttachment, ComposerSkillSelection, Project } from "../types";
+import type { ComposerAttachment, ComposerMention, ComposerSkillSelection, Project } from "../types";
 import { sshListConnections, type SshConnection } from "../api";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { GitBranchChip } from "./git/GitBranchChip";
@@ -34,6 +34,7 @@ interface Props {
     envMode: "local" | "remote",
     connectionId: string | null,
     selectedSkills?: ComposerSkillSelection[],
+    mentions?: ComposerMention[],
   ) => void;
 }
 
@@ -241,8 +242,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   const submit = (
     attachments: ComposerAttachment[] = [],
     selectedSkills: ComposerSkillSelection[] = [],
+    mentions: ComposerMention[] = [],
   ) => {
-    onSubmit(value.trim(), attachments, envMode, selectedConnectionId, selectedSkills);
+    onSubmit(value.trim(), attachments, envMode, selectedConnectionId, selectedSkills, mentions);
     setValue("");
   };
   const activeBottomTab =
@@ -291,6 +293,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           onChange={setValue} 
           onSubmit={submit} 
           placeholder={t("startView.placeholder")}
+          activeProjectPath={activeProjectPath}
           textareaMaxHeight={300}
           footer={
             <div className="flex items-center w-full relative" ref={dropdownRef}>

@@ -976,6 +976,28 @@ export interface ProjectFileListResult {
   entries: ProjectFileEntry[];
 }
 
+/** Recursive fuzzy-search result for @ file/folder mentions. */
+export interface ProjectFileSearchResult {
+  root_path: string;
+  entries: ProjectFileEntry[];
+}
+
+export type ComposerMention =
+  | {
+      kind: "file" | "folder";
+      path: string;
+      relPath: string;
+      name: string;
+      isDir: boolean;
+    }
+  | {
+      kind: "goal";
+      text: string;
+    }
+  | {
+      kind: "plan_mode";
+    };
+
 // ---- recording + transcription (office-agent) -----------------------------
 
 /** A recording session's lifecycle (mirrors RecordingSessionDto). */

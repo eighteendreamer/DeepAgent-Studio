@@ -1997,6 +1997,7 @@ impl ChatService {
             None,
             Vec::new(),
             None,
+            false,
             on_event,
             on_approval,
         )
@@ -2016,6 +2017,7 @@ impl ChatService {
         connection_id: Option<&str>,
         preflight_tools: Vec<PreflightToolCallDto>,
         preflight_abort_message: Option<String>,
+        initial_plan_mode: bool,
         on_event: F,
         on_approval: A,
     ) -> Result<String>
@@ -2055,9 +2057,6 @@ impl ChatService {
         if let Some(sbox) = &self.sandboxie_executor {
             sbox.set_sandbox_mode(sandbox_mode);
         }
-        let plan = continue_session
-            .map(|id| self.plan_mode_for_session(id))
-            .unwrap_or_default();
         // The main run's tools are built permissive (Full, sensitive-blocked):
         // the BeforeToolUse path guard is the SINGLE policy gate, asking/denying
         // per the sandbox-derived `access`. This way an out-of-workspace access
@@ -2115,6 +2114,10 @@ impl ChatService {
         let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
 
         let session_id_str = session.id().to_string();
+        let plan = self.plan_mode_for_session(&session_id_str);
+        if continue_session.is_none() && initial_plan_mode {
+            plan.set(true);
+        }
 
         // Restore previously-discovered tools from the event log (Phase 3C).
         // `ToolsDiscovered` events carry deltas; the cumulative set is the
@@ -3416,6 +3419,7 @@ mod tests {
                     duration_ms: 42,
                 }],
                 None,
+                false,
                 move |ev| {
                     sink.lock().unwrap().push(ev);
                 },
@@ -3472,6 +3476,7 @@ mod tests {
                     duration_ms: 9,
                 }],
                 Some("图片识别失败，已停止本轮请求。".to_string()),
+                false,
                 |_| {},
                 |_| {},
             )
@@ -3525,6 +3530,7 @@ mod tests {
             None,
             Vec::new(),
             None,
+            false,
             |_| {},
             |_| {},
         )
@@ -3695,6 +3701,7 @@ mod tests {
                 None,
                 Vec::new(),
                 None,
+                false,
                 |_| {},
                 |_| {},
             )

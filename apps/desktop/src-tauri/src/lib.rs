@@ -19,26 +19,26 @@ use deepagent_app_core::{
     AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, AttachmentDto,
     AttachmentIngestDto, AttachmentService, BalanceDto, BudgetConfig, ChatService, CommandDto,
     ConversationMessageDto, CostService, CostSummary, DiagnosticResult, DiffResult,
-    FilePreviewService, ForkResultDto,
-    GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto,
-    GitBranchDto, GitChangesDto, GitCommitMessageDraftDto, GitDiffDto, GitLogEntryDto,
-    GitOperationResultDto, GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto,
-    GitRefCompareDto, GitService, GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto,
-    KnowledgeHitDto, KnowledgeService, McpServerDto, McpService, OfficeService, PdfRenderResultDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto,
-    LocalPtyHandle,
-    ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto,
-    ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
-    PreflightToolCallDto, ProjectService, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeProgressDto,
-    RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SecretStore, SessionDetailDto, SessionStateService,
-    SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
-    SandboxieExecutor, SandboxieService, SandboxieStatusDto,
-    SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, TerminalResultDto, TerminalService,
-    TerminalShell, TranscriptDto, TranscriptSegmentDto, VisionRecognizeRequestDto,
-    VisionRecognizeResultDto, VisionService, VisionSettings, WebSearchSettings, WorkspaceInfoDto,
-    WorkspaceService,
+    FilePreviewService, ForkResultDto, GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto,
+    GitBatchProjectResultDto, GitBranchDto, GitChangesDto, GitCommitMessageDraftDto, GitDiffDto,
+    GitLogEntryDto, GitOperationResultDto, GitProjectStatusDto, GitPushPreviewDto,
+    GitPushRiskScanDto, GitRefCompareDto, GitService, GitWorktreeDto, KeychainStore,
+    KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, LocalPtyHandle,
+    McpServerDto, McpService, OfficeService, PdfRenderResultDto, PreflightToolCallDto,
+    PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
+    ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
+    ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, RecordingService,
+    RecordingSessionDto, RewindResultDto, RuntimeProgressDto, RuntimeRootsDto, RuntimeService,
+    RuntimeStatusDto, SandboxieExecutor, SandboxieService, SandboxieStatusDto, SecretStore,
+    SessionDetailDto, SessionStateService, SessionSummaryDto, SessionUiPrefsDto, SettingsService,
+    SettingsView, SkillActivationDto, SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService,
+    SpeechService, TerminalResultDto, TerminalService, TerminalShell, TranscriptDto,
+    TranscriptSegmentDto, VisionRecognizeRequestDto, VisionRecognizeResultDto, VisionService,
+    VisionSettings, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
+use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
@@ -100,7 +100,10 @@ async fn build_remote_context(
         lines.push(format!("Working directory: {cwd}"));
     }
     if !probe.package_managers.is_empty() {
-        lines.push(format!("Package managers: {}", probe.package_managers.join(", ")));
+        lines.push(format!(
+            "Package managers: {}",
+            probe.package_managers.join(", ")
+        ));
     }
     let available_commands: Vec<String> = probe
         .commands
@@ -142,11 +145,10 @@ impl deepagent_builtins::bash_tool::CommandExecutor for SshExecutor {
         _cwd: &str,
     ) -> Result<deepagent_builtins::bash_tool::CommandOutcome, deepagent_core::error::CoreError>
     {
-        let handle = self
-            .ssh
-            .connect(&self.connection_id)
-            .await
-            .map_err(|e| deepagent_core::error::CoreError::other(format!("SSH connect: {e}")))?;
+        let handle =
+            self.ssh.connect(&self.connection_id).await.map_err(|e| {
+                deepagent_core::error::CoreError::other(format!("SSH connect: {e}"))
+            })?;
         let result = self
             .ssh
             .exec(&handle, command)
@@ -211,7 +213,9 @@ impl deepagent_builtins::RemoteOpsBackend for SshRemoteOpsBackend {
             .ssh
             .remote_push_bundle(&self.connection_id, request)
             .await
-            .map_err(|e| deepagent_core::error::CoreError::other(format!("SSH push bundle: {e}")))?;
+            .map_err(|e| {
+                deepagent_core::error::CoreError::other(format!("SSH push bundle: {e}"))
+            })?;
         serde_json::to_value(result)
             .map_err(|e| deepagent_core::error::CoreError::other(e.to_string()))
     }
@@ -400,7 +404,10 @@ fn locate_builtin_skills_dir(resource_dir: &Path) -> PathBuf {
             .collect::<Vec<_>>()
             .join(" | ")
     );
-    candidates.into_iter().next().expect("non-empty candidate list")
+    candidates
+        .into_iter()
+        .next()
+        .expect("non-empty candidate list")
 }
 
 /// True iff `dir` is a directory and *looks like a skills collection root*.
@@ -473,7 +480,10 @@ fn preferred_runtime_resource_dir(app: &tauri::AppHandle) -> PathBuf {
     }
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("resources").join("runtimes")))
+        .and_then(|exe| {
+            exe.parent()
+                .map(|dir| dir.join("resources").join("runtimes"))
+        })
         .unwrap_or_else(|| std::env::temp_dir().join("deepagent-runtimes"))
 }
 
@@ -894,7 +904,9 @@ fn reload_skills(state: State<'_, AppState>) -> Result<Vec<SkillDto>, String> {
 #[tauri::command]
 fn install_skill(state: State<'_, AppState>, source_dir: String) -> Result<SkillDto, String> {
     let mut svc = state.skills.lock().map_err(|e| e.to_string())?;
-    let dto = svc.install_from_dir(&source_dir).map_err(|e| e.to_string())?;
+    let dto = svc
+        .install_from_dir(&source_dir)
+        .map_err(|e| e.to_string())?;
     drop(svc);
     state.chat.reset_all_sent_skills();
     Ok(dto)
@@ -1180,14 +1192,13 @@ async fn skill_market_ai_review(
     tokio::spawn(async move {
         let id_for_token = id.clone();
         let app_for_token = app_handle.clone();
-        let result =
-            deepagent_app_core::ai_security_review(&chat, &report, depth, move |tok| {
-                let _ = app_for_token.emit(
-                    "skill-ai-review",
-                    serde_json::json!({ "temp_id": id_for_token.clone(), "token": tok }),
-                );
-            })
-            .await;
+        let result = deepagent_app_core::ai_security_review(&chat, &report, depth, move |tok| {
+            let _ = app_for_token.emit(
+                "skill-ai-review",
+                serde_json::json!({ "temp_id": id_for_token.clone(), "token": tok }),
+            );
+        })
+        .await;
         let payload = match &result {
             Ok(r) => serde_json::json!({
                 "temp_id": id,
@@ -1391,6 +1402,7 @@ async fn run_chat(
     run_id: Option<String>,
     preflight_tools: Option<Vec<PreflightToolCallDto>>,
     preflight_abort_message: Option<String>,
+    initial_plan_mode: Option<bool>,
 ) -> Result<String, String> {
     // IMPORTANT: this command is `async` so Tauri runs it on a worker thread,
     // never the main (UI) thread. A streamed run can pause mid-flight to await
@@ -1426,6 +1438,7 @@ async fn run_chat(
                 connection_id.as_deref(),
                 preflight_tools,
                 preflight_abort_message,
+                initial_plan_mode.unwrap_or(false),
                 move |event| {
                     let _ = event_emitter.emit(
                         "chat://event",
@@ -1607,8 +1620,9 @@ fn set_permission_preset_visibility(
 
 #[tauri::command]
 fn set_terminal_shell(state: State<'_, AppState>, shell: String) -> Result<SettingsView, String> {
-    let parsed = TerminalShell::parse(&shell)
-        .ok_or_else(|| "shell must be one of: powershell, command_prompt, git_bash, wsl".to_string())?;
+    let parsed = TerminalShell::parse(&shell).ok_or_else(|| {
+        "shell must be one of: powershell, command_prompt, git_bash, wsl".to_string()
+    })?;
     state
         .settings
         .set_terminal_shell(parsed)
@@ -1728,10 +1742,7 @@ fn set_web_search_settings(
 
 #[tauri::command]
 fn get_vision_settings(state: State<'_, AppState>) -> Result<VisionSettings, String> {
-    state
-        .settings
-        .vision_settings()
-        .map_err(|e| e.to_string())
+    state.settings.vision_settings().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1840,9 +1851,7 @@ fn set_skill_install_ai_review_enabled(
 
 /// Returns the AI review model override, or `None` to mean "follow chat model".
 #[tauri::command]
-fn get_skill_install_ai_review_model(
-    state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
+fn get_skill_install_ai_review_model(state: State<'_, AppState>) -> Result<Option<String>, String> {
     state
         .settings
         .skill_install_ai_review_model()
@@ -1951,6 +1960,12 @@ struct ProjectFileEntryDto {
 
 #[derive(Debug, Clone, Serialize)]
 struct ProjectFileListDto {
+    root_path: String,
+    entries: Vec<ProjectFileEntryDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProjectFileSearchDto {
     root_path: String,
     entries: Vec<ProjectFileEntryDto>,
 }
@@ -2068,6 +2083,163 @@ fn list_project_files(
     let dir = resolve_browse_dir(&root, path)?;
     let entries = list_project_directory(&root, &dir)?;
     Ok(ProjectFileListDto {
+        root_path: root.to_string_lossy().into_owned(),
+        entries,
+    })
+}
+
+fn should_skip_search_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".hg"
+            | ".svn"
+            | "node_modules"
+            | "dist"
+            | "build"
+            | "target"
+            | ".next"
+            | ".nuxt"
+            | ".turbo"
+            | ".cache"
+            | "__pycache__"
+            | ".venv"
+            | "venv"
+    )
+}
+
+fn fuzzy_file_score(query: &str, rel_path: &str, name: &str, is_dir: bool) -> Option<i64> {
+    let q = query.trim().replace('\\', "/").to_lowercase();
+    let path = rel_path.replace('\\', "/").to_lowercase();
+    let file_name = name.to_lowercase();
+
+    if q.is_empty() {
+        let depth = path.matches('/').count() as i64;
+        return Some(depth * 20 + if is_dir { 0 } else { 6 } + path.len() as i64);
+    }
+
+    if file_name == q {
+        return Some(if is_dir { 0 } else { 2 });
+    }
+    if path == q {
+        return Some(if is_dir { 1 } else { 3 });
+    }
+    if file_name.starts_with(&q) {
+        return Some(20 + file_name.len() as i64 + if is_dir { 0 } else { 4 });
+    }
+    if path.starts_with(&q) {
+        return Some(40 + path.len() as i64 + if is_dir { 0 } else { 4 });
+    }
+    if file_name.contains(&q) {
+        return Some(80 + file_name.find(&q).unwrap_or(0) as i64 + file_name.len() as i64);
+    }
+    if path.contains(&q) {
+        return Some(120 + path.find(&q).unwrap_or(0) as i64 + path.len() as i64);
+    }
+
+    let mut score = 220i64;
+    let mut last = 0usize;
+    for ch in q.chars() {
+        let tail = &path[last..];
+        let found = tail.find(ch)?;
+        score += found as i64;
+        last += found + ch.len_utf8();
+    }
+    Some(score + path.len() as i64 + if is_dir { 0 } else { 8 })
+}
+
+#[tauri::command]
+fn search_project_files(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+    query: Option<String>,
+    limit: Option<usize>,
+) -> Result<ProjectFileSearchDto, String> {
+    let root = canonicalize_path(&resolve_project_root(&state, project_path)?)?;
+    let q = query.unwrap_or_default();
+    let limit = limit.unwrap_or(30).clamp(1, 100);
+    let mut scored: Vec<(i64, ProjectFileEntryDto)> = Vec::new();
+
+    let mut builder = WalkBuilder::new(&root);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .require_git(false)
+        .filter_entry(|entry| {
+            let Some(name) = entry.file_name().to_str() else {
+                return true;
+            };
+            !(entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
+                && should_skip_search_dir(name))
+        });
+
+    for result in builder.build().take(20_000) {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if entry.path() == root {
+            continue;
+        }
+        let file_type = match entry.file_type() {
+            Some(file_type) if !file_type.is_symlink() => file_type,
+            _ => continue,
+        };
+        let visible_path = entry.path().to_path_buf();
+        let canonical_path = match canonicalize_path(&visible_path) {
+            Ok(path) if path.starts_with(&root) => path,
+            _ => continue,
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel_path = visible_path
+            .strip_prefix(&root)
+            .map(normalize_relative_path)
+            .unwrap_or_else(|_| name.clone());
+        let is_dir = file_type.is_dir();
+        let Some(score) = fuzzy_file_score(&q, &rel_path, &name, is_dir) else {
+            continue;
+        };
+        let meta = entry.metadata().ok();
+        let ext = visible_path
+            .extension()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        scored.push((
+            score,
+            ProjectFileEntryDto {
+                path: canonical_path.to_string_lossy().into_owned(),
+                name,
+                rel_path,
+                is_dir,
+                size_bytes: if file_type.is_file() {
+                    meta.as_ref().map(|m| m.len())
+                } else {
+                    None
+                },
+                ext,
+            },
+        ));
+    }
+
+    scored.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| b.1.is_dir.cmp(&a.1.is_dir))
+            .then_with(|| {
+                a.1.rel_path
+                    .to_lowercase()
+                    .cmp(&b.1.rel_path.to_lowercase())
+            })
+    });
+    let entries = scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, entry)| entry)
+        .collect();
+
+    Ok(ProjectFileSearchDto {
         root_path: root.to_string_lossy().into_owned(),
         entries,
     })
@@ -2394,10 +2566,7 @@ fn terminal_cwd(state: State<'_, AppState>) -> String {
 #[tauri::command]
 fn open_system_terminal(state: State<'_, AppState>) -> Result<String, String> {
     let shell = state.settings.terminal_shell().map_err(|e| e.to_string())?;
-    state
-        .terminal
-        .open_system(shell)
-        .map_err(|e| e.to_string())
+    state.terminal.open_system(shell).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2415,7 +2584,11 @@ async fn local_pty_spawn(
 }
 
 #[tauri::command]
-async fn local_pty_write(state: State<'_, AppState>, pty_id: String, data: String) -> Result<(), String> {
+async fn local_pty_write(
+    state: State<'_, AppState>,
+    pty_id: String,
+    data: String,
+) -> Result<(), String> {
     state
         .terminal
         .pty_write(
@@ -2452,15 +2625,7 @@ async fn local_pty_resize(
 ) -> Result<(), String> {
     state
         .terminal
-        .pty_resize(
-            &LocalPtyHandle {
-                pty_id,
-                cols,
-                rows,
-            },
-            cols,
-            rows,
-        )
+        .pty_resize(&LocalPtyHandle { pty_id, cols, rows }, cols, rows)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2482,22 +2647,14 @@ async fn local_pty_close(state: State<'_, AppState>, pty_id: String) -> Result<(
 
 use deepagent_ssh::{
     CreateSshConnectionRequest as DtoCreateSshConnectionRequest,
-    RemoteBundleRequest as DtoRemoteBundleRequest,
-    RemoteBundleResult as DtoRemoteBundleResult,
-    RemoteInstallRequest as DtoRemoteInstallRequest,
-    RemoteInstallResult as DtoRemoteInstallResult,
-    RemoteProbeResult as DtoRemoteProbeResult,
-    RemotePushFileRequest as DtoRemotePushFileRequest,
+    RemoteBundleRequest as DtoRemoteBundleRequest, RemoteBundleResult as DtoRemoteBundleResult,
+    RemoteInstallRequest as DtoRemoteInstallRequest, RemoteInstallResult as DtoRemoteInstallResult,
+    RemoteProbeResult as DtoRemoteProbeResult, RemotePushFileRequest as DtoRemotePushFileRequest,
     RemotePushFileResult as DtoRemotePushFileResult,
-    RemoteRequireRequest as DtoRemoteRequireRequest,
-    RemoteRequireResult as DtoRemoteRequireResult,
-    SshAuthType as DtoSshAuthType,
-    SshConnectionDto as DtoSshConnectionDto,
-    SshExecResult as DtoSshExecResult,
-    SshServiceHandle as DtoSshServiceHandle,
-    SshStatus as DtoSshStatus,
-    UpdateSshConnectionRequest as DtoUpdateSshConnectionRequest,
-    SshError,
+    RemoteRequireRequest as DtoRemoteRequireRequest, RemoteRequireResult as DtoRemoteRequireResult,
+    SshAuthType as DtoSshAuthType, SshConnectionDto as DtoSshConnectionDto, SshError,
+    SshExecResult as DtoSshExecResult, SshServiceHandle as DtoSshServiceHandle,
+    SshStatus as DtoSshStatus, UpdateSshConnectionRequest as DtoUpdateSshConnectionRequest,
 };
 
 fn to_dto_auth_type(t: DtoSshAuthType) -> &'static str {
@@ -2603,9 +2760,9 @@ async fn ssh_create_connection(
         key_path,
         password,
     })
-        .await
-        .map(Into::into)
-        .map_err(|e| e.to_string())
+    .await
+    .map(Into::into)
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2637,34 +2794,28 @@ async fn ssh_update_connection(
         key_path,
         password,
     })
-        .await
-        .map(Into::into)
-        .map_err(|e| e.to_string())
+    .await
+    .map(Into::into)
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn ssh_remove_connection(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+async fn ssh_remove_connection(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let ssh = state.ssh.clone();
     ssh.remove_connection(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn ssh_connect(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+async fn ssh_connect(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let ssh = state.ssh.clone();
-    ssh.connect(&id).await.map(|_| ()).map_err(|e| e.to_string())
+    ssh.connect(&id)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn ssh_disconnect(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+async fn ssh_disconnect(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let ssh = state.ssh.clone();
     ssh.disconnect(&id).await.map_err(|e| e.to_string())
 }
@@ -2677,9 +2828,10 @@ async fn ssh_status(
     let ssh = state.ssh.clone();
     let snap = ssh.status(&id).await.map_err(|e: SshError| e.to_string())?;
     let configs = ssh.list_connections().await;
-    let cfg = configs.into_iter().find(|c| c.id == id).ok_or_else(|| {
-        format!("SSH connection not found: {id}")
-    })?;
+    let cfg = configs
+        .into_iter()
+        .find(|c| c.id == id)
+        .ok_or_else(|| format!("SSH connection not found: {id}"))?;
     Ok(SshConnectionFrontendDto {
         id: cfg.id,
         name: cfg.name,
@@ -2701,10 +2853,14 @@ async fn ssh_test_connection(
 ) -> Result<SshTestResultFrontend, String> {
     let ssh = state.ssh.clone();
     let configs = ssh.list_connections().await;
-    let cfg = configs.into_iter().find(|c| c.id == id).ok_or_else(|| {
-        format!("SSH connection not found: {id}")
-    })?;
-    let result = ssh.test_connection(&cfg).await.map_err(|e: SshError| e.to_string())?;
+    let cfg = configs
+        .into_iter()
+        .find(|c| c.id == id)
+        .ok_or_else(|| format!("SSH connection not found: {id}"))?;
+    let result = ssh
+        .test_connection(&cfg)
+        .await
+        .map_err(|e: SshError| e.to_string())?;
     Ok(SshTestResultFrontend {
         ok: result.ok,
         latency_ms: result.latency_ms,
@@ -2742,7 +2898,10 @@ async fn ssh_exec(
         cols: 80,
         rows: 24,
     };
-    ssh.exec(&handle, &command).await.map(Into::into).map_err(|e| e.to_string())
+    ssh.exec(&handle, &command)
+        .await
+        .map(Into::into)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3036,10 +3195,7 @@ fn git_push_risk_scan(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<GitPushRiskScanDto, String> {
-    state
-        .git
-        .push_risk_scan(&path)
-        .map_err(|e| e.to_string())
+    state.git.push_risk_scan(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3172,10 +3328,7 @@ fn preview_extract_text(
 /// Open a file for preview — returns the full preview result (metadata +
 /// extracted content). The primary entry point the File Preview panel calls.
 #[tauri::command]
-fn preview_open_file(
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<PreviewResultDto, String> {
+fn preview_open_file(state: State<'_, AppState>, path: String) -> Result<PreviewResultDto, String> {
     state.preview.extract_text(&path).map_err(|e| e.to_string())
 }
 
@@ -3183,7 +3336,10 @@ fn preview_open_file(
 /// without the asset protocol.
 #[tauri::command]
 fn preview_read_data_url(state: State<'_, AppState>, path: String) -> Result<String, String> {
-    state.preview.read_data_url(&path).map_err(|e| e.to_string())
+    state
+        .preview
+        .read_data_url(&path)
+        .map_err(|e| e.to_string())
 }
 
 /// Render PDF pages. Tier C degrades to text extraction (with a note that
@@ -3226,7 +3382,10 @@ fn attachment_remove(
 
 #[tauri::command]
 fn audio_list_input_devices(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    state.recording.list_input_devices().map_err(|e| e.to_string())
+    state
+        .recording
+        .list_input_devices()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3234,7 +3393,10 @@ fn audio_start_recording(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<RecordingSessionDto, String> {
-    state.recording.start_recording(&name).map_err(|e| e.to_string())
+    state
+        .recording
+        .start_recording(&name)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3242,7 +3404,10 @@ fn audio_pause_recording(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<RecordingSessionDto, String> {
-    state.recording.pause_recording(&session_id).map_err(|e| e.to_string())
+    state
+        .recording
+        .pause_recording(&session_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3250,7 +3415,10 @@ fn audio_resume_recording(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<RecordingSessionDto, String> {
-    state.recording.resume_recording(&session_id).map_err(|e| e.to_string())
+    state
+        .recording
+        .resume_recording(&session_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3258,7 +3426,10 @@ fn audio_stop_recording(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<RecordingSessionDto, String> {
-    state.recording.stop_recording(&session_id).map_err(|e| e.to_string())
+    state
+        .recording
+        .stop_recording(&session_id)
+        .map_err(|e| e.to_string())
 }
 
 // ---- managed runtimes (office-agent: on-demand download into app data) ----
@@ -3266,8 +3437,12 @@ fn audio_stop_recording(
 #[tauri::command]
 fn runtime_prepare_for_update(app: tauri::AppHandle) -> Result<(), String> {
     let runtime_dir = preferred_runtime_resource_dir(&app);
-    std::fs::create_dir_all(&runtime_dir)
-        .map_err(|e| format!("create runtime resource dir '{}': {e}", runtime_dir.display()))?;
+    std::fs::create_dir_all(&runtime_dir).map_err(|e| {
+        format!(
+            "create runtime resource dir '{}': {e}",
+            runtime_dir.display()
+        )
+    })?;
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
@@ -3309,12 +3484,8 @@ fn runtime_roots(state: State<'_, AppState>) -> Result<RuntimeRootsDto, String> 
 #[tauri::command]
 fn runtime_migrate_resources(state: State<'_, AppState>) -> Result<Vec<RuntimeStatusDto>, String> {
     let active_root = state.runtime.install_root().to_path_buf();
-    std::fs::create_dir_all(&active_root).map_err(|e| {
-        format!(
-            "create active runtime dir '{}': {e}",
-            active_root.display()
-        )
-    })?;
+    std::fs::create_dir_all(&active_root)
+        .map_err(|e| format!("create active runtime dir '{}': {e}", active_root.display()))?;
     for root in state.runtime.lookup_roots().iter().skip(1) {
         if root.exists() {
             copy_legacy_runtime_dir(root, &active_root).map_err(|e| {
@@ -3360,7 +3531,10 @@ async fn runtime_install(
                 },
             );
         });
-    runtime.install(&id, progress).await.map_err(|e| e.to_string())
+    runtime
+        .install(&id, progress)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3897,6 +4071,7 @@ pub fn run() {
             set_hooks_json,
             workspace_info,
             list_project_files,
+            search_project_files,
             project_map_status,
             project_map_overview,
             project_map_search,
@@ -4021,7 +4196,11 @@ mod tests {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
-        fs::write(path, b"---\nname: x\ndescription: \"test fixture\"\n---\nbody").unwrap();
+        fs::write(
+            path,
+            b"---\nname: x\ndescription: \"test fixture\"\n---\nbody",
+        )
+        .unwrap();
     }
 
     /// Production layout (Windows / standard Tauri 2 desktop bundle):
