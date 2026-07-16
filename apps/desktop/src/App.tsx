@@ -831,6 +831,7 @@ export function App() {
       connectionId?: string | null,
       selectedSkills?: ComposerSkillSelection | ComposerSkillSelection[] | null,
       mentions: ComposerMention[] = [],
+      displayText?: string,
     ) => {
       const trimmedText = text.trim();
       const skillContext = buildSkillContexts(normalizeSkillSelections(selectedSkills));
@@ -895,9 +896,17 @@ export function App() {
         ? liveTranscripts.current.get(continueId) ?? messagesRef.current
         : [];
       const userContent = buildPromptWithAttachments(promptText, attachments);
+      const visibleUserContent = displayText ?? trimmedText;
+      const displaySkills = normalizeSkillSelections(selectedSkills);
       const seeded: ChatMessage[] = [
         ...prior,
-        { role: "user", content: userContent, attachments },
+        {
+          role: "user",
+          content: visibleUserContent,
+          attachments,
+          selectedSkills: displaySkills,
+          mentions,
+        },
         { role: "assistant", content: "", parts: [] },
       ];
       liveTranscripts.current.set(runKey, seeded);
@@ -1684,8 +1693,8 @@ export function App() {
                   sessionId={activeId}
                   sessionKey={activeId ?? activePendingRunKey ?? null}
                   messages={chatMessages}
-                  onSend={(text, attachments, selectedSkills, mentions) =>
-                    onSubmit(text, attachments, undefined, undefined, selectedSkills, mentions)
+                  onSend={(text, attachments, selectedSkills, mentions, displayText) =>
+                    onSubmit(text, attachments, undefined, undefined, selectedSkills, mentions, displayText)
                   }
                   onFork={onForkSession}
                   onRewind={onRewindSession}

@@ -35,6 +35,7 @@ interface Props {
     connectionId: string | null,
     selectedSkills?: ComposerSkillSelection[],
     mentions?: ComposerMention[],
+    displayText?: string,
   ) => void;
 }
 
@@ -243,8 +244,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
     attachments: ComposerAttachment[] = [],
     selectedSkills: ComposerSkillSelection[] = [],
     mentions: ComposerMention[] = [],
+    displayText?: string,
   ) => {
-    onSubmit(value.trim(), attachments, envMode, selectedConnectionId, selectedSkills, mentions);
+    onSubmit(value.trim(), attachments, envMode, selectedConnectionId, selectedSkills, mentions, displayText);
     setValue("");
   };
   const activeBottomTab =

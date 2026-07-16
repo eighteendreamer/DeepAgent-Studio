@@ -192,6 +192,10 @@ export interface DiagnosticResult {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  /** Inline skill chips selected from slash/typeahead for this user turn. */
+  selectedSkills?: ComposerSkillSelection[];
+  /** Inline @ mentions selected as context for this user turn. */
+  mentions?: ComposerMention[];
   /** Attachments displayed with a user turn. Model-readable attachment text is
    * kept out of this field and injected only into the backend prompt. */
   attachments?: ComposerAttachment[];

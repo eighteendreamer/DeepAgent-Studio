@@ -183,6 +183,7 @@ interface Props {
     attachments?: ComposerAttachment[],
     selectedSkills?: ComposerSkillSelection[],
     mentions?: ComposerMention[],
+    displayText?: string,
   ) => void;
   placeholder?: string;
   /** True while a run is streaming: disables submit and shows a busy button. */
@@ -889,7 +890,7 @@ export function Composer({
 
   const submitWithAttachments = () => {
     const readyAttachments = attachments.filter((item) => item.status === "ready");
-    onSubmit(readyAttachments, selectedSkills, selectedMentions);
+    onSubmit(readyAttachments, selectedSkills, selectedMentions, draftValue);
     if (readyAttachments.length > 0) setAttachments([]);
     if (selectedSkills.length > 0) setSelectedSkills([]);
     if (selectedMentions.length > 0) setSelectedMentions([]);

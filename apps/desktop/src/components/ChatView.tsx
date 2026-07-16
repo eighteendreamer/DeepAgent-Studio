@@ -58,6 +58,7 @@ interface Props {
     attachments?: ComposerAttachment[],
     selectedSkills?: ComposerSkillSelection[],
     mentions?: ComposerMention[],
+    displayText?: string,
   ) => void;
   /** Fork the current session into a new branch from its latest point. */
   onFork?: () => void;
@@ -460,6 +461,10 @@ function stripSkillContext(content: string): string {
   return content.replace(/\n*<skill-context\b[^>]*>[\s\S]*?<\/skill-context>\s*/g, "").trim();
 }
 
+function stripMentionContext(content: string): string {
+  return content.replace(/\n*<context-items>[\s\S]*?<\/context-items>\s*/g, "").trim();
+}
+
 function parseSkillContexts(content: string): ComposerSkillSelection[] {
   const skills: ComposerSkillSelection[] = [];
   const contextRegex = /<skill-context\b([^>]*)>/g;
@@ -471,6 +476,50 @@ function parseSkillContexts(content: string): ComposerSkillSelection[] {
     if (id && name) skills.push({ id, name });
   }
   return skills;
+}
+
+function unescapeXmlText(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function parseMentionContexts(content: string): ComposerMention[] {
+  const match = content.match(/<context-items>\s*([\s\S]*?)\s*<\/context-items>/);
+  if (!match) return [];
+  const mentions: ComposerMention[] = [];
+  const itemRegex = /<context-item\b([^>]*)>([\s\S]*?)<\/context-item>/g;
+  let item: RegExpExecArray | null;
+  while ((item = itemRegex.exec(match[1])) !== null) {
+    const attrs = parseAttachmentAttrs(item[1]);
+    const kind = attrs.kind;
+    if (kind === "plan_mode") {
+      mentions.push({ kind: "plan_mode" });
+      continue;
+    }
+    if (kind === "goal") {
+      const text = unescapeXmlText(item[2].trim());
+      if (text) mentions.push({ kind: "goal", text });
+      continue;
+    }
+    if (kind === "file" || kind === "folder") {
+      const relPath = unescapeXmlText(attrs.path ?? "");
+      const path = unescapeXmlText(attrs.absolute_path ?? relPath);
+      if (!relPath && !path) continue;
+      const normalized = relPath || path.replace(/\\/g, "/");
+      const name = normalized.split(/[\\/]/).filter(Boolean).pop() ?? normalized;
+      mentions.push({
+        kind,
+        path,
+        relPath: normalized,
+        name,
+        isDir: kind === "folder",
+      });
+    }
+  }
+  return mentions;
 }
 
 function parseAttachmentContext(content: string): ComposerAttachment[] {
@@ -629,6 +678,145 @@ function UserAttachments({ attachments }: { attachments: ComposerAttachment[] })
   );
 }
 
+export function UserContextChips({
+  skills,
+  mentions,
+}: {
+  skills: ComposerSkillSelection[];
+  mentions: ComposerMention[];
+}) {
+  if (skills.length === 0 && mentions.length === 0) return null;
+  const mentionIcon = (mention: ComposerMention) => {
+    if (mention.kind === "folder") return "folder";
+    if (mention.kind === "file") return "file";
+    if (mention.kind === "goal") return "bullseye";
+    return "list-check";
+  };
+  const mentionLabel = (mention: ComposerMention) => {
+    if (mention.kind === "goal") return "目标";
+    if (mention.kind === "plan_mode") return "计划模式";
+    return mention.relPath || mention.name;
+  };
+  const mentionTitle = (mention: ComposerMention) => {
+    if (mention.kind === "goal") return mention.text;
+    if (mention.kind === "plan_mode") return "开启计划模式";
+    return mention.path;
+  };
+
+  return (
+    <div className="mb-2 flex max-w-[80%] flex-wrap justify-end gap-1.5">
+      {skills.map((skill) => (
+        <span
+          key={`skill-${skill.id}`}
+          className="inline-flex max-w-[220px] items-center rounded-md border border-primary/20 bg-primary/10 px-2 py-1 text-[13px] font-medium text-primary"
+          title={`${skill.name} (${skill.id})`}
+        >
+          <FontAwesomeIcon icon={["fas", "cube"]} className="mr-1.5 text-[11px]" />
+          <span className="truncate">{skill.name || skill.id}</span>
+        </span>
+      ))}
+      {mentions.map((mention, index) => (
+        <span
+          key={`mention-${index}-${mentionLabel(mention)}`}
+          className="inline-flex max-w-[260px] items-center rounded-md border border-gray-300 bg-gray-50 px-2 py-1 text-[13px] font-medium text-text-base"
+          title={mentionTitle(mention)}
+        >
+          <FontAwesomeIcon icon={["fas", mentionIcon(mention) as any]} className="mr-1.5 text-[11px] text-text-secondary" />
+          <span className="truncate">{mentionLabel(mention)}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+const USER_SKILL_MARKER = "\uE000";
+const USER_MENTION_MARKER = "\uE001";
+
+function UserInlineContent({
+  content,
+  skills,
+  mentions,
+}: {
+  content: string;
+  skills: ComposerSkillSelection[];
+  mentions: ComposerMention[];
+}) {
+  const mentionIcon = (mention: ComposerMention) => {
+    if (mention.kind === "folder") return "folder";
+    if (mention.kind === "file") return "file";
+    if (mention.kind === "goal") return "bullseye";
+    return "list-check";
+  };
+  const mentionLabel = (mention: ComposerMention) => {
+    if (mention.kind === "goal") return "目标";
+    if (mention.kind === "plan_mode") return "计划模式";
+    return mention.relPath || mention.name;
+  };
+  const mentionTitle = (mention: ComposerMention) => {
+    if (mention.kind === "goal") return mention.text;
+    if (mention.kind === "plan_mode") return "开启计划模式";
+    return mention.path;
+  };
+  const renderSkillChip = (skill: ComposerSkillSelection, key: string) => (
+    <span
+      key={key}
+      className="mx-0.5 inline-flex max-w-[220px] translate-y-[2px] items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[13px] font-medium leading-none text-primary"
+      title={`${skill.name} (${skill.id})`}
+    >
+      <FontAwesomeIcon icon={["fas", "cube"]} className="mr-1 text-[11px]" />
+      <span className="truncate">{skill.name || skill.id}</span>
+    </span>
+  );
+  const renderMentionChip = (mention: ComposerMention, key: string) => (
+    <span
+      key={key}
+      className="mx-0.5 inline-flex max-w-[260px] translate-y-[2px] items-center rounded-md border border-gray-300 bg-gray-50 px-1.5 py-0.5 text-[13px] font-medium leading-none text-text-base"
+      title={mentionTitle(mention)}
+    >
+      <FontAwesomeIcon icon={["fas", mentionIcon(mention) as any]} className="mr-1 text-[11px] text-text-secondary" />
+      <span className="truncate">{mentionLabel(mention)}</span>
+    </span>
+  );
+
+  const markerRegex = /[\uE000\uE001]/g;
+  const hasMarkers = markerRegex.test(content);
+  markerRegex.lastIndex = 0;
+  if (!hasMarkers) {
+    return (
+      <>
+        {skills.map((skill) => renderSkillChip(skill, `skill-prefix-${skill.id}`))}
+        {mentions.map((mention, index) => renderMentionChip(mention, `mention-prefix-${index}`))}
+        {content}
+      </>
+    );
+  }
+
+  const nodes: ReactNode[] = [];
+  let offset = 0;
+  let skillIndex = 0;
+  let mentionIndex = 0;
+  let index = 0;
+  let match: RegExpExecArray | null;
+  while ((match = markerRegex.exec(content)) !== null) {
+    const text = content.slice(offset, match.index);
+    if (text) nodes.push(<span key={`text-${index}`}>{text}</span>);
+    if (match[0] === USER_SKILL_MARKER) {
+      const skill = skills[skillIndex];
+      if (skill) nodes.push(renderSkillChip(skill, `skill-${index}`));
+      skillIndex += 1;
+    } else if (match[0] === USER_MENTION_MARKER) {
+      const mention = mentions[mentionIndex];
+      if (mention) nodes.push(renderMentionChip(mention, `mention-${index}`));
+      mentionIndex += 1;
+    }
+    offset = match.index + 1;
+    index += 1;
+  }
+  const tail = content.slice(offset);
+  if (tail) nodes.push(<span key="text-tail">{tail}</span>);
+  return <>{nodes}</>;
+}
+
 function UserTurn({
   message,
   busy,
@@ -636,12 +824,14 @@ function UserTurn({
 }: {
   message: ChatMessage;
   busy: boolean;
-  onResend: (text: string, skills?: ComposerSkillSelection[]) => void;
+  onResend: (text: string, skills?: ComposerSkillSelection[], mentions?: ComposerMention[]) => void;
 }) {
-  const skills = parseSkillContexts(message.content);
+  const skills = message.selectedSkills?.length ? message.selectedSkills : parseSkillContexts(message.content);
+  const mentions = message.mentions?.length ? message.mentions : parseMentionContexts(message.content);
   const parsedAttachments = parseAttachmentContext(message.content);
   const attachments = message.attachments?.length ? message.attachments : parsedAttachments;
-  const visibleContent = stripAttachmentContext(stripSkillContext(message.content));
+  const visibleContent = stripMentionContext(stripAttachmentContext(stripSkillContext(message.content)));
+  const hasVisibleMessage = Boolean(visibleContent || skills.length > 0 || mentions.length > 0);
   const office = parseOfficeContextMessage(visibleContent);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(visibleContent);
@@ -650,7 +840,7 @@ function UserTurn({
     const text = draft.trim();
     if (!text || busy) return;
     setEditing(false);
-    onResend(text, skills);
+    onResend(text, skills, mentions);
   };
 
   return (
@@ -687,9 +877,13 @@ function UserTurn({
       ) : (
         <>
           <UserAttachments attachments={attachments} />
-          {visibleContent && (
+          {hasVisibleMessage && (
             <div className="bg-gray-100 text-text-base px-4 py-3 rounded-2xl rounded-tr-sm text-[15px] max-w-[80%]">
-              {office ? <OfficeContextBubble office={office} /> : visibleContent}
+              {office && !message.selectedSkills?.length && !message.mentions?.length ? (
+                <OfficeContextBubble office={office} />
+              ) : (
+                <UserInlineContent content={visibleContent} skills={skills} mentions={mentions} />
+              )}
             </div>
           )}
         </>
@@ -1025,10 +1219,11 @@ export function ChatView({
     attachments: ComposerAttachment[] = [],
     selectedSkills: ComposerSkillSelection[] = [],
     mentions: ComposerMention[] = [],
+    displayText?: string,
   ) => {
     const t = value.trim();
     if (!t && attachments.length === 0 && selectedSkills.length === 0 && mentions.length === 0) return;
-    onSend(t, attachments, selectedSkills, mentions);
+    onSend(t, attachments, selectedSkills, mentions, displayText);
     setValue("");
   };
 
@@ -1357,9 +1552,9 @@ export function ChatView({
                 key={i}
                 message={m}
                 busy={busy}
-                onResend={(text, skills) => {
+                onResend={(text, skills, mentions) => {
                   if (busy) return;
-                  onSend(text, [], skills);
+                  onSend(text, [], skills, mentions);
                 }}
               />
             ) : (
