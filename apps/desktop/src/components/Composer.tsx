@@ -1,6 +1,7 @@
 ﻿import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
+import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import {
   SETTINGS_CHANGED_EVENT,
   attachmentIngest,
@@ -1406,97 +1407,56 @@ export function Composer({
       onDrop={onDrop}
     >
       <div className="p-3 pb-2 flex flex-col relative w-full">
-      {atOpen && (
-        <div className="absolute left-3 bottom-full mb-2 max-h-60 w-[min(680px,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border-theme bg-white py-1.5 shadow-[0_10px_30px_rgb(0,0,0,0.10)] z-50">
-          {atSections.map((section, sectionIndex) => {
-            let baseIndex = 0;
-            for (let i = 0; i < sectionIndex; i += 1) {
-              baseIndex += atSections[i].items.length;
-            }
-
-            return (
-              <div key={section.key} className={sectionIndex > 0 ? "mt-1" : ""}>
-                <div className="px-4 py-1 text-[12px] font-medium text-text-secondary">
-                  {section.label}
-                </div>
-                {section.items.map((item, index) => {
-                  const flatIndex = baseIndex + index;
-                  const selected = flatIndex === atSelected;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        chooseAt(item);
-                      }}
-                      onMouseEnter={() => setAtSelected(flatIndex)}
-                      className={`grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors ${
-                        selected ? "bg-gray-100 text-text-base" : "text-text-secondary"
-                      }`}
-                    >
-                      <span className="flex h-4 w-4 items-center justify-center text-text-base">
-                        <FontAwesomeIcon icon={["fas", item.icon as any]} className="text-[12px]" />
-                      </span>
-                      <span className="min-w-0">
-                        <span className="truncate font-medium text-text-base">{item.title}</span>
-                        {item.description && (
-                          <span className="ml-2 truncate text-[12px] text-text-secondary">
-                            {item.description}
-                          </span>
-                        )}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {slashOpen && (
-        <div className="absolute left-3 right-3 bottom-full mb-2 max-h-72 overflow-y-auto rounded-lg border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-50">
-          {slashSections.map((section, sectionIndex) => {
-            let baseIndex = 0;
-            for (let i = 0; i < sectionIndex; i += 1) {
-              baseIndex += slashSections[i].items.length;
-            }
-
-            return (
-              <div key={section.key} className={sectionIndex > 0 ? "mt-1" : ""}>
-                <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-                  {section.label}
-                </div>
-                {section.items.map((cmd, index) => {
-                  const flatIndex = baseIndex + index;
-                  return (
-                    <button
-                      key={cmd.id}
-                      type="button"
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        chooseSlash(cmd);
-                      }}
-                      onMouseEnter={() => setSlashSelected(flatIndex)}
-                      className={`grid w-full grid-cols-[150px_minmax(0,1fr)_72px] items-center gap-3 px-3 py-2 text-left text-[12px] transition-colors ${
-                        flatIndex === slashSelected ? "bg-gray-100 text-text-base" : "text-text-secondary"
-                      }`}
-                    >
-                      <span className="truncate font-medium text-text-base">{cmd.title}</span>
-                      <span className="truncate text-[12px] leading-snug text-text-secondary">
-                        {cmd.description}
-                      </span>
-                      <span className="truncate text-right text-[11px] text-text-secondary">
-                        {cmd.category}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
-      )}
+      <ComposerSuggestPanel
+        open={atOpen}
+        sections={atSections}
+        selectedIndex={atSelected}
+        getKey={(item) => item.id}
+        onSelect={chooseAt}
+        onHover={setAtSelected}
+        renderItem={(item, selected) => (
+          <div
+            className={`grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors ${
+              selected ? "bg-gray-100 text-text-base" : "text-text-secondary"
+            }`}
+          >
+            <span className="flex h-4 w-4 items-center justify-center text-text-base">
+              <FontAwesomeIcon icon={["fas", item.icon as any]} className="text-[12px]" />
+            </span>
+            <span className="min-w-0">
+              <span className="truncate font-medium text-text-base">{item.title}</span>
+              {item.description && (
+                <span className="ml-2 truncate text-[12px] text-text-secondary">
+                  {item.description}
+                </span>
+              )}
+            </span>
+          </div>
+        )}
+      />
+      <ComposerSuggestPanel
+        open={slashOpen}
+        sections={slashSections}
+        selectedIndex={slashSelected}
+        getKey={(cmd) => cmd.id}
+        onSelect={chooseSlash}
+        onHover={setSlashSelected}
+        renderItem={(cmd, selected) => (
+          <div
+            className={`grid w-full grid-cols-[130px_minmax(0,1fr)_64px] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors ${
+              selected ? "bg-gray-100 text-text-base" : "text-text-secondary"
+            }`}
+          >
+            <span className="truncate font-medium text-text-base">{cmd.title}</span>
+            <span className="truncate text-[12px] leading-snug text-text-secondary">
+              {cmd.description}
+            </span>
+            <span className="truncate text-right text-[11px] text-text-secondary">
+              {cmd.category}
+            </span>
+          </div>
+        )}
+      />
       {planMode && (
         <div className="mb-2 inline-flex w-fit items-center rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700">
           <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-1.5 text-[10px]" />
