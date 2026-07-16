@@ -36,6 +36,10 @@ type SlashToken = {
   end: number;
   query: string;
 };
+type SelectionRange = {
+  start: number;
+  end: number;
+};
 
 /** Map composer dropdown option id -> backend permission preset label. */
 const OPTION_TO_PRESET: Record<string, string> = {
@@ -64,6 +68,18 @@ function stripSkillMarkers(value: string): string {
 
 function countVisibleChars(value: string): number {
   return stripSkillMarkers(value).length;
+}
+
+function normalizeSelectionRange(start: number, end: number): SelectionRange | null {
+  if (start === end) return null;
+  return {
+    start: Math.min(start, end),
+    end: Math.max(start, end),
+  };
+}
+
+function rangesOverlap(range: SelectionRange | null, start: number, end: number): boolean {
+  return Boolean(range && start < range.end && end > range.start);
 }
 
 function findActiveSlashToken(value: string, cursor: number): SlashToken | null {
@@ -134,6 +150,8 @@ export function Composer({
   const [selectedSkill, setSelectedSkill] = useState<ComposerSkillSelection | null>(null);
   const [draftValue, setDraftValue] = useState(value);
   const [cursorPos, setCursorPos] = useState(value.length);
+  const [selectionRange, setSelectionRange] = useState<SelectionRange | null>(null);
+  const [editorFocused, setEditorFocused] = useState(false);
   const pendingDraftValueRef = useRef(value);
   // Skill registry mirror, used to populate slash candidates (Channel C v1).
   // Reloads on `SETTINGS_CHANGED_EVENT` so install/uninstall mid-session is
@@ -194,6 +212,7 @@ export function Composer({
     }
     setDraftValue(value);
     setCursorPos(value.length);
+    setSelectionRange(null);
     setSlashResults([]);
     setSlashSelected(0);
     setSelectedSkill(null);
@@ -479,6 +498,7 @@ export function Composer({
       pendingDraftValueRef.current = stripSkillMarkers(nextValue);
       onChange(stripSkillMarkers(nextValue));
       setCursorPos(visibleStart + 1);
+      setSelectionRange(null);
       requestAnimationFrame(() => {
         textareaRef.current?.setSelectionRange(visibleStart + 1, visibleStart + 1);
         textareaRef.current?.focus();
@@ -491,6 +511,7 @@ export function Composer({
       pendingDraftValueRef.current = stripSkillMarkers(nextValue);
       onChange(stripSkillMarkers(nextValue));
       setCursorPos(visibleStart + insertText.length);
+      setSelectionRange(null);
       requestAnimationFrame(() => {
         const caret = visibleStart + insertText.length;
         textareaRef.current?.setSelectionRange(caret, caret);
@@ -526,6 +547,7 @@ export function Composer({
     if (selectedSkill) setSelectedSkill(null);
     setDraftValue("");
     setCursorPos(0);
+    setSelectionRange(null);
     pendingDraftValueRef.current = "";
   };
 
@@ -743,7 +765,10 @@ export function Composer({
   const syncCursorFromTextarea = () => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    setCursorPos(textarea.selectionStart ?? textarea.value.length);
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? start;
+    setCursorPos(start);
+    setSelectionRange(normalizeSelectionRange(start, end));
   };
 
   const handleEditorChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -751,6 +776,12 @@ export function Composer({
     const stripped = stripSkillMarkers(next);
     setDraftValue(next);
     setCursorPos(event.currentTarget.selectionStart ?? next.length);
+    setSelectionRange(
+      normalizeSelectionRange(
+        event.currentTarget.selectionStart ?? next.length,
+        event.currentTarget.selectionEnd ?? event.currentTarget.selectionStart ?? next.length,
+      ),
+    );
     if (selectedSkill && !next.includes(SKILL_MARKER)) {
       setSelectedSkill(null);
     }
@@ -760,27 +791,122 @@ export function Composer({
 
   const editorPlaceholder = placeholder ?? t("composer.placeholder");
   const mirrorContent = (() => {
+    const showMirrorCaret = editorFocused && !selectionRange;
+    let caretRendered = false;
+    const renderCaretAt = (position: number, key: string) => {
+      if (!showMirrorCaret || caretRendered || cursorPos !== position) return null;
+      caretRendered = true;
+      return <span key={key} className="composer-mirror-caret" aria-hidden="true" />;
+    };
+    const renderMirrorText = (text: string, startOffset: number, keyPrefix: string) => {
+      if (!text) return [];
+      if (!selectionRange || !rangesOverlap(selectionRange, startOffset, startOffset + text.length)) {
+        const caret = cursorPos >= startOffset && cursorPos <= startOffset + text.length
+          ? renderCaretAt(cursorPos, `${keyPrefix}-caret`)
+          : null;
+        if (!caret) return [<span key={`${keyPrefix}-plain`}>{text}</span>];
+        const caretIndex = cursorPos - startOffset;
+        return [
+          caretIndex > 0 ? <span key={`${keyPrefix}-before-caret`}>{text.slice(0, caretIndex)}</span> : null,
+          caret,
+          caretIndex < text.length ? <span key={`${keyPrefix}-after-caret`}>{text.slice(caretIndex)}</span> : null,
+        ].filter(Boolean);
+      }
+
+      const nodes: React.ReactNode[] = [];
+      const selectedStart = Math.max(selectionRange.start, startOffset) - startOffset;
+      const selectedEnd = Math.min(selectionRange.end, startOffset + text.length) - startOffset;
+      if (selectedStart > 0) {
+        nodes.push(<span key={`${keyPrefix}-before`}>{text.slice(0, selectedStart)}</span>);
+      }
+      nodes.push(
+        <span key={`${keyPrefix}-selected`} className="rounded-[2px] bg-primary text-white">
+          {text.slice(selectedStart, selectedEnd)}
+        </span>,
+      );
+      if (selectedEnd < text.length) {
+        nodes.push(<span key={`${keyPrefix}-after`}>{text.slice(selectedEnd)}</span>);
+      }
+      return nodes;
+    };
+
     if (!draftValue) {
-      return <span className="text-gray-400">{editorPlaceholder}</span>;
+      return (
+        <>
+          {renderCaretAt(0, "empty-caret")}
+          <span className="text-gray-400">{editorPlaceholder}</span>
+        </>
+      );
     }
     const parts = draftValue.split(SKILL_MARKER);
+    let offset = 0;
     return parts.flatMap((part, index) => {
       const nodes: React.ReactNode[] = [];
-      if (part) nodes.push(<span key={`text-${index}`}>{part}</span>);
-      if (index < parts.length - 1 && selectedSkill) {
-        nodes.push(
-          <span
-            key={`skill-${index}`}
-            className="mx-0.5 inline-flex h-[20px] max-w-[180px] items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 text-[12px] font-medium leading-none text-primary align-baseline"
-            title={selectedSkill.name}
-          >
-            /{selectedSkill.id}
-          </span>,
-        );
+      const textStart = offset;
+      if (part) nodes.push(...renderMirrorText(part, textStart, `text-${index}`));
+      offset += part.length;
+      if (index < parts.length - 1) {
+        const caretBeforeSkill = renderCaretAt(offset, `skill-${index}-before-caret`);
+        if (caretBeforeSkill) nodes.push(caretBeforeSkill);
+        if (selectedSkill) {
+          const skillSelected = rangesOverlap(selectionRange, offset, offset + 1);
+          const skillLabel = selectedSkill.name || selectedSkill.id;
+          nodes.push(
+            <span
+              key={`skill-${index}`}
+              className={`mx-0.5 inline-flex h-[20px] max-w-[180px] items-center rounded-[3px] px-1 text-[13px] font-medium leading-none align-baseline ${
+                skillSelected
+                  ? "bg-primary text-white"
+                  : "border border-primary/20 bg-primary/10 text-primary"
+              }`}
+              title={`${selectedSkill.name} (${selectedSkill.id})`}
+            >
+              <FontAwesomeIcon icon={["fas", "cube"]} className="mr-1 text-[11px]" />
+              <span className="truncate">{skillLabel}</span>
+            </span>,
+          );
+        }
+        offset += 1;
+        const caretAfterSkill = renderCaretAt(offset, `skill-${index}-after-caret`);
+        if (caretAfterSkill) nodes.push(caretAfterSkill);
       }
       return nodes;
     });
   })();
+
+  const handleCopy = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const textarea = event.currentTarget;
+    const start = textarea.selectionStart ?? 0;
+    const end = textarea.selectionEnd ?? start;
+    if (start === end) return;
+    const selectedText = stripSkillMarkers(textarea.value.slice(start, end));
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", selectedText);
+  };
+
+  const handleCut = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const textarea = event.currentTarget;
+    const start = textarea.selectionStart ?? 0;
+    const end = textarea.selectionEnd ?? start;
+    if (start === end) return;
+    const selectedText = stripSkillMarkers(textarea.value.slice(start, end));
+    const nextValue = `${textarea.value.slice(0, start)}${textarea.value.slice(end)}`;
+    const stripped = stripSkillMarkers(nextValue);
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", selectedText);
+    setDraftValue(nextValue);
+    setCursorPos(start);
+    setSelectionRange(null);
+    if (selectedSkill && !nextValue.includes(SKILL_MARKER)) {
+      setSelectedSkill(null);
+    }
+    pendingDraftValueRef.current = stripped;
+    onChange(stripped);
+    requestAnimationFrame(() => {
+      textareaRef.current?.setSelectionRange(start, start);
+      textareaRef.current?.focus();
+    });
+  };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashOpen && e.key === "ArrowDown") {
@@ -927,7 +1053,7 @@ export function Composer({
         <textarea
           ref={textareaRef}
           aria-label={editorPlaceholder}
-          className="custom-scrollbar relative z-10 w-full resize-none bg-transparent text-sm leading-6 text-transparent caret-text-base outline-none placeholder-transparent"
+          className="composer-textarea custom-scrollbar relative z-10 w-full resize-none bg-transparent text-sm leading-6 text-transparent caret-text-base outline-none placeholder-transparent"
           style={{
             minHeight: `${COMPOSER_TEXTAREA_MIN_HEIGHT}px`,
             maxHeight: `${textareaMaxHeight}px`,
@@ -936,10 +1062,20 @@ export function Composer({
           value={draftValue}
           onChange={handleEditorChange}
           onPaste={onPaste}
+          onCopy={handleCopy}
+          onCut={handleCut}
           onKeyDown={onKeyDown}
           onSelect={syncCursorFromTextarea}
           onClick={syncCursorFromTextarea}
           onKeyUp={syncCursorFromTextarea}
+          onFocus={() => {
+            setEditorFocused(true);
+            syncCursorFromTextarea();
+          }}
+          onBlur={() => {
+            setEditorFocused(false);
+            setSelectionRange(null);
+          }}
           onScroll={(event) => {
             if (!mirrorRef.current) return;
             mirrorRef.current.scrollTop = event.currentTarget.scrollTop;

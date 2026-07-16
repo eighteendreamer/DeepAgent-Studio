@@ -82,6 +82,46 @@ button:focus {
   outline: none;
 }
 
+/*
+ * The composer renders rich inline context chips in a mirror layer above a
+ * transparent textarea. Hide the textarea's native selection so it cannot leak
+ * private marker characters; Composer.tsx paints the visible selection itself.
+ */
+.composer-textarea {
+  caret-color: transparent;
+}
+
+.composer-textarea::selection {
+  background: transparent;
+  color: transparent;
+}
+
+.composer-textarea::-moz-selection {
+  background: transparent;
+  color: transparent;
+}
+
+.composer-mirror-caret {
+  display: inline-block;
+  width: 1px;
+  height: 1.25em;
+  margin: 0 -0.5px;
+  vertical-align: -0.2em;
+  background: var(--theme-fg, #111827);
+  animation: composer-caret-blink 1.05s steps(1) infinite;
+}
+
+@keyframes composer-caret-blink {
+  0%,
+  52% {
+    opacity: 1;
+  }
+  53%,
+  100% {
+    opacity: 0;
+  }
+}
+
 .no-select {
   user-select: none;
 }
