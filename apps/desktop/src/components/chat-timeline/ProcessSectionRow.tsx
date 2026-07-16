@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { ChatBlock, ProcessSection } from "./timelineTypes";
 import { MarkdownText } from "../MarkdownText";
-import { ToolCallCard } from "../ToolCallCard";
+import { ProcessToolRow } from "./ProcessToolRow";
 
 function toolLabel(block: Extract<ChatBlock, { kind: "tool" }>): string {
   const tool = block.tool;
@@ -39,7 +39,7 @@ function ProcessBlockDetail({ block }: { block: ChatBlock }) {
     return <MarkdownText text={block.text} tone={block.tone} className="text-[13.5px]" />;
   }
   if (block.kind === "tool") {
-    return <ToolCallCard tool={block.tool} />;
+    return <ProcessToolRow tool={block.tool} />;
   }
   return null;
 }
@@ -77,7 +77,7 @@ export function ProcessSectionRow({
         />
       </button>
       {open && (
-        <div className="ml-5 mt-1 flex min-w-0 flex-col gap-2 border-l border-border-theme/80 pl-3">
+        <div className="ml-5 mt-1 flex min-w-0 flex-col gap-0.5 border-l border-border-theme/80 pl-3">
           {section.blocks.map((block) => (
             <ProcessBlockDetail key={block.id} block={block} />
           ))}
