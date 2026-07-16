@@ -43,6 +43,7 @@ import {
   type PluginToolCard,
 } from "./plugins/pluginRegistry";
 import { RightSidebarWorkbench } from "./RightSidebarWorkbench";
+import { ChatTimeline } from "./chat-timeline/ChatTimeline";
 
 const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
 const PROJECT_MAP_TAB_ID = "project-map";
@@ -817,7 +818,7 @@ function UserInlineContent({
   return <>{nodes}</>;
 }
 
-function UserTurn({
+export function UserTurn({
   message,
   busy,
   onResend,
@@ -1546,26 +1547,15 @@ export function ChatView({
               {t("chatView.startConversation")}
             </div>
           )}
-          {messages.map((m, i) =>
-            m.role === "user" ? (
-              <UserTurn
-                key={i}
-                message={m}
-                busy={busy}
-                onResend={(text, skills, mentions) => {
-                  if (busy) return;
-                  onSend(text, [], skills, mentions);
-                }}
-              />
-            ) : (
-              <AssistantTurn
-                key={i}
-                message={m}
-                busy={busy && i === messages.length - 1}
-                onOpenUrl={openUrlInSidebarBrowser}
-              />
-            )
-          )}
+          <ChatTimeline
+            messages={messages}
+            busy={busy}
+            onOpenUrl={openUrlInSidebarBrowser}
+            onResend={(text, skills, mentions) => {
+              if (busy) return;
+              onSend(text, [], skills, mentions);
+            }}
+          />
         </div>
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
@@ -1714,7 +1704,7 @@ export function ChatView({
  * run is still working with no answer yet, the steps stay expanded for live
  * progress.
  */
-function AssistantTurn({
+export function AssistantTurn({
   message: m,
   busy,
   onOpenUrl,
