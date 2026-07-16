@@ -166,6 +166,17 @@ Please use the ${skill.name} skill.
 </skill-context>`;
 }
 
+function normalizeSkillSelections(
+  selectedSkills?: ComposerSkillSelection | ComposerSkillSelection[] | null,
+): ComposerSkillSelection[] {
+  if (!selectedSkills) return [];
+  return Array.isArray(selectedSkills) ? selectedSkills : [selectedSkills];
+}
+
+function buildSkillContexts(skills: ComposerSkillSelection[]): string {
+  return skills.map(buildSkillContext).join("\n\n");
+}
+
 function buildPromptWithAttachments(text: string, attachments: ComposerAttachment[] = []): string {
   const trimmed = text.trim();
   if (attachments.length === 0) return trimmed;
@@ -786,10 +797,10 @@ export function App() {
       attachments: ComposerAttachment[] = [],
       envMode?: "local" | "remote",
       connectionId?: string | null,
-      selectedSkill?: ComposerSkillSelection | null,
+      selectedSkills?: ComposerSkillSelection | ComposerSkillSelection[] | null,
     ) => {
       const trimmedText = text.trim();
-      const skillContext = selectedSkill ? buildSkillContext(selectedSkill) : "";
+      const skillContext = buildSkillContexts(normalizeSkillSelections(selectedSkills));
       const promptText = skillContext
         ? trimmedText
           ? `${skillContext}\n\n${trimmedText}`
@@ -1629,8 +1640,8 @@ export function App() {
                   sessionId={activeId}
                   sessionKey={activeId ?? activePendingRunKey ?? null}
                   messages={chatMessages}
-                  onSend={(text, attachments, selectedSkill) =>
-                    onSubmit(text, attachments, undefined, undefined, selectedSkill)
+                  onSend={(text, attachments, selectedSkills) =>
+                    onSubmit(text, attachments, undefined, undefined, selectedSkills)
                   }
                   onFork={onForkSession}
                   onRewind={onRewindSession}

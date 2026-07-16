@@ -33,7 +33,7 @@ interface Props {
     attachments: ComposerAttachment[],
     envMode: "local" | "remote",
     connectionId: string | null,
-    selectedSkill?: ComposerSkillSelection | null,
+    selectedSkills?: ComposerSkillSelection[],
   ) => void;
 }
 
@@ -240,9 +240,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
 
   const submit = (
     attachments: ComposerAttachment[] = [],
-    selectedSkill?: ComposerSkillSelection | null,
+    selectedSkills: ComposerSkillSelection[] = [],
   ) => {
-    onSubmit(value.trim(), attachments, envMode, selectedConnectionId, selectedSkill);
+    onSubmit(value.trim(), attachments, envMode, selectedConnectionId, selectedSkills);
     setValue("");
   };
   const activeBottomTab =

@@ -66,8 +66,8 @@ function stripSkillMarkers(value: string): string {
   return value.replace(/\uE000/g, "");
 }
 
-function countVisibleChars(value: string): number {
-  return stripSkillMarkers(value).length;
+function countSkillMarkers(value: string): number {
+  return (value.match(/\uE000/g) ?? []).length;
 }
 
 function normalizeSelectionRange(start: number, end: number): SelectionRange | null {
@@ -102,7 +102,7 @@ interface Props {
   onChange: (v: string) => void;
   onSubmit: (
     attachments?: ComposerAttachment[],
-    selectedSkill?: ComposerSkillSelection | null,
+    selectedSkills?: ComposerSkillSelection[],
   ) => void;
   placeholder?: string;
   /** True while a run is streaming: disables submit and shows a busy button. */
@@ -147,7 +147,7 @@ export function Composer({
   const [switching, setSwitching] = useState(false);
   const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
   const [slashSelected, setSlashSelected] = useState(0);
-  const [selectedSkill, setSelectedSkill] = useState<ComposerSkillSelection | null>(null);
+  const [selectedSkills, setSelectedSkills] = useState<ComposerSkillSelection[]>([]);
   const [draftValue, setDraftValue] = useState(value);
   const [cursorPos, setCursorPos] = useState(value.length);
   const [selectionRange, setSelectionRange] = useState<SelectionRange | null>(null);
@@ -215,7 +215,7 @@ export function Composer({
     setSelectionRange(null);
     setSlashResults([]);
     setSlashSelected(0);
-    setSelectedSkill(null);
+    setSelectedSkills([]);
     pendingDraftValueRef.current = value;
   }, [draftValue, value]);
 
@@ -432,12 +432,14 @@ export function Composer({
 
     let cancelled = false;
     const q = activeSlashToken.query.trim().toLowerCase();
+    const selectedSkillIds = new Set(selectedSkills.map((skill) => skill.id));
     const skillChoices: SlashChoice[] = skills
       .filter(
         (sk) =>
-          !q ||
-          sk.id.toLowerCase().includes(q) ||
-          sk.name.toLowerCase().includes(q),
+          !selectedSkillIds.has(sk.id) &&
+          (!q ||
+            sk.id.toLowerCase().includes(q) ||
+            sk.name.toLowerCase().includes(q)),
       )
       .sort((a, b) => a.id.localeCompare(b.id))
       .slice(0, 8)
@@ -470,50 +472,60 @@ export function Composer({
     return () => {
       cancelled = true;
     };
-  }, [activeSlashToken, draftValue, models, selectedModel, skills]);
+  }, [activeSlashToken, draftValue, models, selectedModel, selectedSkills, skills]);
 
   const chooseSlash = (cmd: SlashChoice) => {
-    const source = stripSkillMarkers(draftValue);
     const replaceWholeRootSlash = !activeSlashToken && draftValue.startsWith("/");
-    const visibleStart = activeSlashToken
-      ? countVisibleChars(draftValue.slice(0, activeSlashToken.start))
+    const rawStart = activeSlashToken
+      ? activeSlashToken.start
       : replaceWholeRootSlash
       ? 0
       : cursorPos;
-    const visibleEnd = activeSlashToken
-      ? countVisibleChars(draftValue.slice(0, activeSlashToken.end))
+    const rawEnd = activeSlashToken
+      ? activeSlashToken.end
       : replaceWholeRootSlash
-      ? source.length
+      ? draftValue.length
       : cursorPos;
-    const prefix = source.slice(0, visibleStart);
-    const suffix = source.slice(visibleEnd);
+    const prefix = draftValue.slice(0, rawStart);
+    const suffix = draftValue.slice(rawEnd);
 
     if (cmd.skillName !== undefined) {
+      if (selectedSkills.some((skill) => skill.id === (cmd.skillId ?? cmd.id))) {
+        setSlashResults([]);
+        setSlashSelected(0);
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return;
+      }
       const nextValue = `${prefix}${SKILL_MARKER}${suffix}`;
-      setSelectedSkill({
+      const insertedSkill = {
         id: cmd.skillId ?? cmd.id,
         name: cmd.skillName,
+      };
+      const insertAt = countSkillMarkers(prefix);
+      setSelectedSkills((prev) => {
+        const next = [...prev];
+        next.splice(insertAt, 0, insertedSkill);
+        return next;
       });
       setDraftValue(nextValue);
       pendingDraftValueRef.current = stripSkillMarkers(nextValue);
       onChange(stripSkillMarkers(nextValue));
-      setCursorPos(visibleStart + 1);
+      setCursorPos(rawStart + 1);
       setSelectionRange(null);
       requestAnimationFrame(() => {
-        textareaRef.current?.setSelectionRange(visibleStart + 1, visibleStart + 1);
+        textareaRef.current?.setSelectionRange(rawStart + 1, rawStart + 1);
         textareaRef.current?.focus();
       });
     } else {
       const insertText = cmd.insertText ?? `${cmd.title} `;
       const nextValue = `${prefix}${insertText}${suffix}`;
-      setSelectedSkill(null);
       setDraftValue(nextValue);
       pendingDraftValueRef.current = stripSkillMarkers(nextValue);
       onChange(stripSkillMarkers(nextValue));
-      setCursorPos(visibleStart + insertText.length);
+      setCursorPos(rawStart + insertText.length);
       setSelectionRange(null);
       requestAnimationFrame(() => {
-        const caret = visibleStart + insertText.length;
+        const caret = rawStart + insertText.length;
         textareaRef.current?.setSelectionRange(caret, caret);
         textareaRef.current?.focus();
       });
@@ -542,9 +554,9 @@ export function Composer({
 
   const submitWithAttachments = () => {
     const readyAttachments = attachments.filter((item) => item.status === "ready");
-    onSubmit(readyAttachments, selectedSkill);
+    onSubmit(readyAttachments, selectedSkills);
     if (readyAttachments.length > 0) setAttachments([]);
-    if (selectedSkill) setSelectedSkill(null);
+    if (selectedSkills.length > 0) setSelectedSkills([]);
     setDraftValue("");
     setCursorPos(0);
     setSelectionRange(null);
@@ -774,16 +786,28 @@ export function Composer({
   const handleEditorChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const next = event.currentTarget.value;
     const stripped = stripSkillMarkers(next);
+    const caret = event.currentTarget.selectionStart ?? next.length;
+    const previousDraft = draftValue;
     setDraftValue(next);
-    setCursorPos(event.currentTarget.selectionStart ?? next.length);
+    setCursorPos(caret);
     setSelectionRange(
       normalizeSelectionRange(
-        event.currentTarget.selectionStart ?? next.length,
-        event.currentTarget.selectionEnd ?? event.currentTarget.selectionStart ?? next.length,
+        caret,
+        event.currentTarget.selectionEnd ?? caret,
       ),
     );
-    if (selectedSkill && !next.includes(SKILL_MARKER)) {
-      setSelectedSkill(null);
+    const previousMarkerCount = countSkillMarkers(previousDraft);
+    const nextMarkerCount = countSkillMarkers(next);
+    if (nextMarkerCount !== previousMarkerCount) {
+      setSelectedSkills((prev) => {
+        if (nextMarkerCount <= 0) return [];
+        if (nextMarkerCount >= previousMarkerCount) return prev.slice(0, nextMarkerCount);
+        const removed = previousMarkerCount - nextMarkerCount;
+        const removeAt = Math.min(countSkillMarkers(next.slice(0, caret)), Math.max(prev.length - removed, 0));
+        const reconciled = [...prev];
+        reconciled.splice(removeAt, removed);
+        return reconciled.slice(0, nextMarkerCount);
+      });
     }
     pendingDraftValueRef.current = stripped;
     onChange(stripped);
@@ -840,6 +864,7 @@ export function Composer({
     }
     const parts = draftValue.split(SKILL_MARKER);
     let offset = 0;
+    let skillIndex = 0;
     return parts.flatMap((part, index) => {
       const nodes: React.ReactNode[] = [];
       const textStart = offset;
@@ -848,24 +873,26 @@ export function Composer({
       if (index < parts.length - 1) {
         const caretBeforeSkill = renderCaretAt(offset, `skill-${index}-before-caret`);
         if (caretBeforeSkill) nodes.push(caretBeforeSkill);
-        if (selectedSkill) {
+        const skill = selectedSkills[skillIndex];
+        if (skill) {
           const skillSelected = rangesOverlap(selectionRange, offset, offset + 1);
-          const skillLabel = selectedSkill.name || selectedSkill.id;
+          const skillLabel = skill.name || skill.id;
           nodes.push(
             <span
               key={`skill-${index}`}
               className={`mx-0.5 inline-flex h-[20px] max-w-[180px] items-center rounded-[3px] px-1 text-[13px] font-medium leading-none align-baseline ${
                 skillSelected
                   ? "bg-primary text-white"
-                  : "border border-primary/20 bg-primary/10 text-primary"
+                : "border border-primary/20 bg-primary/10 text-primary"
               }`}
-              title={`${selectedSkill.name} (${selectedSkill.id})`}
+              title={`${skill.name} (${skill.id})`}
             >
               <FontAwesomeIcon icon={["fas", "cube"]} className="mr-1 text-[11px]" />
               <span className="truncate">{skillLabel}</span>
             </span>,
           );
         }
+        skillIndex += 1;
         offset += 1;
         const caretAfterSkill = renderCaretAt(offset, `skill-${index}-after-caret`);
         if (caretAfterSkill) nodes.push(caretAfterSkill);
@@ -897,8 +924,14 @@ export function Composer({
     setDraftValue(nextValue);
     setCursorPos(start);
     setSelectionRange(null);
-    if (selectedSkill && !nextValue.includes(SKILL_MARKER)) {
-      setSelectedSkill(null);
+    const removedMarkers = countSkillMarkers(textarea.value.slice(start, end));
+    if (removedMarkers > 0) {
+      const removeAt = countSkillMarkers(textarea.value.slice(0, start));
+      setSelectedSkills((prev) => {
+        const next = [...prev];
+        next.splice(removeAt, removedMarkers);
+        return next;
+      });
     }
     pendingDraftValueRef.current = stripped;
     onChange(stripped);

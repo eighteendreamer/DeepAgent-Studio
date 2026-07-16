@@ -55,7 +55,7 @@ interface Props {
   onSend: (
     text: string,
     attachments?: ComposerAttachment[],
-    selectedSkill?: ComposerSkillSelection | null,
+    selectedSkills?: ComposerSkillSelection[],
   ) => void;
   /** Fork the current session into a new branch from its latest point. */
   onFork?: () => void;
@@ -458,14 +458,17 @@ function stripSkillContext(content: string): string {
   return content.replace(/\n*<skill-context\b[^>]*>[\s\S]*?<\/skill-context>\s*/g, "").trim();
 }
 
-function parseSkillContext(content: string): ComposerSkillSelection | null {
-  const match = content.match(/<skill-context\b([^>]*)>/);
-  if (!match) return null;
-  const attrs = parseAttachmentAttrs(match[1]);
-  const id = attrs.id?.trim();
-  const name = attrs.name?.trim();
-  if (!id || !name) return null;
-  return { id, name };
+function parseSkillContexts(content: string): ComposerSkillSelection[] {
+  const skills: ComposerSkillSelection[] = [];
+  const contextRegex = /<skill-context\b([^>]*)>/g;
+  let match: RegExpExecArray | null;
+  while ((match = contextRegex.exec(content)) !== null) {
+    const attrs = parseAttachmentAttrs(match[1]);
+    const id = attrs.id?.trim();
+    const name = attrs.name?.trim();
+    if (id && name) skills.push({ id, name });
+  }
+  return skills;
 }
 
 function parseAttachmentContext(content: string): ComposerAttachment[] {
@@ -631,9 +634,9 @@ function UserTurn({
 }: {
   message: ChatMessage;
   busy: boolean;
-  onResend: (text: string, skill?: ComposerSkillSelection | null) => void;
+  onResend: (text: string, skills?: ComposerSkillSelection[]) => void;
 }) {
-  const skill = parseSkillContext(message.content);
+  const skills = parseSkillContexts(message.content);
   const parsedAttachments = parseAttachmentContext(message.content);
   const attachments = message.attachments?.length ? message.attachments : parsedAttachments;
   const visibleContent = stripAttachmentContext(stripSkillContext(message.content));
@@ -645,7 +648,7 @@ function UserTurn({
     const text = draft.trim();
     if (!text || busy) return;
     setEditing(false);
-    onResend(text, skill);
+    onResend(text, skills);
   };
 
   return (
@@ -1018,11 +1021,11 @@ export function ChatView({
 
   const submit = (
     attachments: ComposerAttachment[] = [],
-    selectedSkill?: ComposerSkillSelection | null,
+    selectedSkills: ComposerSkillSelection[] = [],
   ) => {
     const t = value.trim();
-    if (!t && attachments.length === 0 && !selectedSkill) return;
-    onSend(t, attachments, selectedSkill);
+    if (!t && attachments.length === 0 && selectedSkills.length === 0) return;
+    onSend(t, attachments, selectedSkills);
     setValue("");
   };
 
@@ -1351,9 +1354,9 @@ export function ChatView({
                 key={i}
                 message={m}
                 busy={busy}
-                onResend={(text, skill) => {
+                onResend={(text, skills) => {
                   if (busy) return;
-                  onSend(text, [], skill);
+                  onSend(text, [], skills);
                 }}
               />
             ) : (
