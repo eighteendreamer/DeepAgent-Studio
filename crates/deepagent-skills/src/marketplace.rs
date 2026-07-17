@@ -8,8 +8,9 @@
 //!
 //! - [`MarketSkill`] / [`MarketSearchData`] / [`Pagination`] — typed responses
 //!   for `GET https://skillsmp.com/api/v1/skills/search` (camelCase fields are
-//!   renamed to snake_case via serde; `updatedAt` is a string of unix epoch
-//!   seconds and decodes through [`de_epoch_str`]).
+//!   renamed to snake_case via serde; `updatedAt` is unix epoch seconds that
+//!   skillsmp ships as *either* a string or a bare integer, so it decodes
+//!   through the tolerant [`de_epoch_str`]).
 //! - [`SortBy`] / [`SearchQuery`] — request-side knobs.
 //! - [`SkillsMpClient`] — the HTTP client. It carries an optional API key
 //!   (sent as `Authorization: Bearer …`), tracks the most recent
@@ -146,16 +147,55 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Custom serde deserializer that turns `"1781073435"` into `1_781_073_435i64`.
+/// Custom serde deserializer that normalizes `updatedAt` to `i64` unix epoch
+/// seconds, accepting *either* a JSON string (`"1781073435"`) or a bare JSON
+/// number (`1781073435`).
 ///
-/// The skillsmp.com payload encodes `updatedAt` as a *string* of unix epoch
-/// seconds; serde-json refuses to coerce strings into integers without an
-/// explicit deserializer, so this helper plugs the gap.
+/// skillsmp.com's search endpoint is not schema-stable for this field: within
+/// a single response some records ship `updatedAt` as a quoted string while
+/// others ship it as a bare integer (confirmed live). serde-json will not
+/// coerce between the two, so this visitor handles both — plus a defensive
+/// float / null path — to stop one odd row from failing the entire search
+/// response.
 pub(crate) fn de_epoch_str<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> std::result::Result<i64, D::Error> {
-    let s: String = serde::Deserialize::deserialize(d)?;
-    s.parse::<i64>().map_err(serde::de::Error::custom)
+    struct EpochVisitor;
+
+    impl serde::de::Visitor<'_> for EpochVisitor {
+        type Value = i64;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("unix epoch seconds as a string or integer")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<i64, E> {
+            v.trim().parse::<i64>().map_err(serde::de::Error::custom)
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<i64, E> {
+            Ok(v)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<i64, E> {
+            Ok(v as i64)
+        }
+
+        fn visit_f64<E: serde::de::Error>(self, v: f64) -> std::result::Result<i64, E> {
+            Ok(v as i64)
+        }
+
+        // Tolerate a missing / null timestamp rather than failing the page.
+        fn visit_none<E: serde::de::Error>(self) -> std::result::Result<i64, E> {
+            Ok(0)
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<i64, E> {
+            Ok(0)
+        }
+    }
+
+    d.deserialize_any(EpochVisitor)
 }
 
 /// One row of `data.skills` from `GET /api/v1/skills/search`.
@@ -178,7 +218,8 @@ pub struct MarketSkill {
     pub skill_url: String,
     /// Stargazer count of the host repo.
     pub stars: u64,
-    /// Last update — unix epoch seconds (encoded as a string by skillsmp).
+    /// Last update — unix epoch seconds (skillsmp ships this as either a
+    /// string or a bare integer; [`de_epoch_str`] accepts both).
     #[serde(rename = "updatedAt", deserialize_with = "de_epoch_str")]
     pub updated_at: i64,
 }
@@ -1442,6 +1483,65 @@ mod tests {
         assert_eq!(s.updated_at, 1_781_073_435i64);
         assert_eq!(s.stars, 19551);
         assert_eq!(s.author, "comet-ml");
+    }
+
+    #[test]
+    fn de_epoch_str_accepts_bare_integer() {
+        // Regression: skillsmp ships some rows with `updatedAt` as a bare JSON
+        // integer (no quotes), not a string. Confirmed live — a single such
+        // row used to fail the whole search response. The tolerant visitor
+        // must accept it.
+        let json = r#"{
+            "id": "x",
+            "name": "x",
+            "author": "a",
+            "description": "d",
+            "githubUrl": "https://github.com/a/x/tree/main",
+            "skillUrl": "https://skillsmp.com/skills/x",
+            "stars": 0,
+            "updatedAt": 1782701240
+        }"#;
+        let s: MarketSkill = serde_json::from_str(json).expect("decodes integer updatedAt");
+        assert_eq!(s.updated_at, 1_782_701_240i64);
+    }
+
+    #[test]
+    fn search_response_decodes_mixed_updated_at_types() {
+        // Regression for the real failure: one page mixing a string and a
+        // bare-integer `updatedAt` must decode without failing the whole
+        // response. Extra server-side fields (totalPages, filters, meta) are
+        // ignored by serde.
+        let json = r#"{
+            "success": true,
+            "data": {
+                "skills": [
+                    {
+                        "id": "a", "name": "a", "author": "a", "description": "d",
+                        "githubUrl": "https://github.com/a/a/tree/main",
+                        "skillUrl": "https://skillsmp.com/skills/a",
+                        "stars": 1, "updatedAt": "1783863855"
+                    },
+                    {
+                        "id": "b", "name": "b", "author": "b", "description": "d",
+                        "githubUrl": "https://github.com/b/b/tree/main",
+                        "skillUrl": "https://skillsmp.com/skills/b",
+                        "stars": 0, "updatedAt": 1782701240
+                    }
+                ],
+                "pagination": {
+                    "page": 1, "limit": 20, "total": 2,
+                    "totalPages": 1, "hasNext": false, "hasPrev": false,
+                    "totalIsExact": false
+                }
+            },
+            "meta": { "requestId": "r", "responseTimeMs": 10 }
+        }"#;
+        let resp: MarketSearchResponse =
+            serde_json::from_str(json).expect("decodes mixed updatedAt types");
+        assert!(resp.success);
+        assert_eq!(resp.data.skills.len(), 2);
+        assert_eq!(resp.data.skills[0].updated_at, 1_783_863_855i64);
+        assert_eq!(resp.data.skills[1].updated_at, 1_782_701_240i64);
     }
 
     #[test]
