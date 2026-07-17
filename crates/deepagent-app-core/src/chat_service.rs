@@ -1373,9 +1373,14 @@ impl ChatService {
                     if list.is_empty() {
                         "尚未安装任何技能。打开「技能」页可浏览技能市场。".to_string()
                     } else {
-                        let mut lines = vec![format!("已安装技能：{}", list.len())];
-                        for s in list.iter().take(20) {
-                            lines.push(format!("- {} ({}) — {}", s.name, s.origin, s.description));
+                        let mut lines = vec![format!("**已安装技能：{}**\n", list.len())];
+                        for s in list.iter().take(30) {
+                            lines.push(format!(
+                                "- **{}** ({}) — {}",
+                                s.name,
+                                s.origin,
+                                truncate_desc(&s.description, 90)
+                            ));
                         }
                         lines.join("\n")
                     }
@@ -1392,7 +1397,7 @@ impl ChatService {
                 let matcher_count: usize = defs.hooks.values().map(|v| v.len()).sum();
                 let events: Vec<String> = defs.hooks.keys().take(8).cloned().collect();
                 format!(
-                    "Hooks:\n- 事件类型: {}\n- matcher 组: {}\n- 已配置事件: {}\n权限规则:\n- allow: {}\n- ask: {}\n- deny: {}",
+                    "**Hooks**\n\n- 事件类型: {}\n- matcher 组: {}\n- 已配置事件: {}\n\n**权限规则**\n\n- allow: {}\n- ask: {}\n- deny: {}",
                     event_count,
                     matcher_count,
                     if events.is_empty() {
@@ -1429,7 +1434,11 @@ impl ChatService {
                         if let Some(def) = deepagent_prompts::AgentDef::parse(&content) {
                             count += 1;
                             if lines.len() < 20 {
-                                lines.push(format!("- {} — {}", def.name, def.description));
+                                lines.push(format!(
+                                    "- **{}** — {}",
+                                    def.name,
+                                    truncate_desc(&def.description, 90)
+                                ));
                             }
                         }
                     }
@@ -1437,7 +1446,7 @@ impl ChatService {
                 if count == 0 {
                     "未发现子代理定义。可在 .deepagent/agents/ 下添加 <name>.md（YAML frontmatter + 系统提示）。".to_string()
                 } else {
-                    let mut out = vec![format!("可用子代理：{count}")];
+                    let mut out = vec![format!("**可用子代理：{count}**\n")];
                     out.extend(lines);
                     out.join("\n")
                 }
@@ -1452,7 +1461,7 @@ impl ChatService {
                     .map(|m| counter.count(&format!("{:?}: {}", m.role, m.content)))
                     .sum();
                 format!(
-                    "上下文使用：\n- 消息条数: {}\n- 事件条数: {}\n- 估算 token: {tokens}\n提示：可用 /compact 压缩上下文以降低后续请求体积。",
+                    "**上下文使用**\n\n- 消息条数: {}\n- 事件条数: {}\n- 估算 token: {tokens}\n\n提示：可用 `/compact` 压缩上下文以降低后续请求体积。",
                     history.len(),
                     events.len()
                 )
@@ -1493,7 +1502,7 @@ impl ChatService {
                     None => "费用跟踪未启用。".to_string(),
                 };
                 format!(
-                    "用量统计：\n- 会话总数: {}\n- {}",
+                    "**用量统计**\n\n- 会话总数: {}\n- {}",
                     sessions.len(),
                     cost_line
                 )
@@ -3116,6 +3125,19 @@ fn format_rule_count(rules: &[String]) -> String {
         "0".to_string()
     } else {
         format!("{} ({})", rules.len(), rules.join(", "))
+    }
+}
+
+/// Truncate a one-line description to at most `max` characters (on a char
+/// boundary), collapsing internal newlines to spaces so it renders cleanly as
+/// a single Markdown list item. Appends an ellipsis when truncated.
+fn truncate_desc(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        let head: String = flat.chars().take(max).collect();
+        format!("{head}\u{2026}")
     }
 }
 
