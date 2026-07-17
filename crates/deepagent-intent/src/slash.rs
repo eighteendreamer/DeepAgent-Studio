@@ -59,6 +59,36 @@ pub enum SlashAction {
     Clear,
     /// Run post-edit verification across the current workspace (Phase 4C).
     Verify,
+    /// Export the current conversation transcript to a file.
+    Export,
+    /// Show how to restore the session to an earlier point (rewind info).
+    Rewind,
+    /// Rename the current session's title.
+    Rename {
+        /// Optional new title (rest of the line).
+        title: Option<String>,
+    },
+    /// List installed skills.
+    Skills,
+    /// Show the plugin management entry point.
+    Plugins,
+    /// Show hook configuration + permission summary.
+    Hooks,
+    /// Show the theme / appearance entry point.
+    Theme,
+    /// List available agent definitions.
+    Agents,
+    /// Show the current session's context / token usage.
+    Context,
+    /// Scaffold a project guide document (AGENTS.md).
+    Init,
+    /// Show usage and cost statistics.
+    Usage,
+    /// Register an extra working directory as a project.
+    AddDir {
+        /// Target directory path (rest of the line).
+        path: Option<String>,
+    },
 }
 
 /// Mutable context passed to slash handlers.
@@ -254,6 +284,76 @@ impl SlashRegistry {
                 "verify",
                 "对当前工作区跑一次 post-edit verifier（Rust / TS / Python / JSON）",
                 StaticHandler::new(SlashActionTemplate::Verify),
+            ))
+            .register_command(SlashCommand::new(
+                "export",
+                "导出当前会话记录到项目内的 Markdown 文件",
+                StaticHandler::new(SlashActionTemplate::Export),
+            ))
+            .register_command(SlashCommand::new(
+                "rewind",
+                "查看如何将会话回退到较早的检查点",
+                StaticHandler::new(SlashActionTemplate::Rewind),
+            ))
+            .register_command(SlashCommand::new(
+                "rename",
+                "重命名当前会话标题，例如 /rename 新标题",
+                StaticHandler::new(SlashActionTemplate::Rename),
+            ))
+            .register_command(SlashCommand::new(
+                "skills",
+                "查看已安装的技能列表",
+                StaticHandler::new(SlashActionTemplate::Skills),
+            ))
+            .register_command(SlashCommand::new(
+                "plugin",
+                "查看插件管理入口",
+                StaticHandler::new(SlashActionTemplate::Plugins),
+            ))
+            .register_command(SlashCommand::new(
+                "plugins",
+                "/plugin 的别名，查看插件管理入口",
+                StaticHandler::new(SlashActionTemplate::Plugins),
+            ))
+            .register_command(SlashCommand::new(
+                "hooks",
+                "查看工具 Hook 配置与权限规则摘要",
+                StaticHandler::new(SlashActionTemplate::Hooks),
+            ))
+            .register_command(SlashCommand::new(
+                "theme",
+                "查看主题与外观设置入口",
+                StaticHandler::new(SlashActionTemplate::Theme),
+            ))
+            .register_command(SlashCommand::new(
+                "agents",
+                "查看可用的子代理定义",
+                StaticHandler::new(SlashActionTemplate::Agents),
+            ))
+            .register_command(SlashCommand::new(
+                "context",
+                "查看当前会话的上下文与 token 占用",
+                StaticHandler::new(SlashActionTemplate::Context),
+            ))
+            .register_command(SlashCommand::new(
+                "init",
+                "在当前项目生成一个项目说明文档（AGENTS.md）",
+                StaticHandler::new(SlashActionTemplate::Init),
+            ))
+            .register_command(SlashCommand::new(
+                "usage",
+                "查看用量与费用统计",
+                StaticHandler::new(SlashActionTemplate::Usage),
+            ))
+            .register_command(SlashCommand::new(
+                "stats",
+                "/usage 的别名，查看用量与费用统计",
+                StaticHandler::new(SlashActionTemplate::Usage),
+            ))
+            .register_command(SlashCommand::new(
+                "add-dir",
+                "把一个目录添加为工作项目，例如 /add-dir D:/path",
+                StaticHandler::new(SlashActionTemplate::AddDir),
             ));
         registry
     }
@@ -310,6 +410,18 @@ enum SlashActionTemplate {
     Model,
     Clear,
     Verify,
+    Export,
+    Rewind,
+    Rename,
+    Skills,
+    Plugins,
+    Hooks,
+    Theme,
+    Agents,
+    Context,
+    Init,
+    Usage,
+    AddDir,
 }
 
 #[derive(Debug, Clone)]
@@ -402,6 +514,46 @@ impl SlashHandler for StaticHandler {
                 SlashAction::Verify,
                 "Running post-edit verification on the workspace…",
             ),
+            SlashActionTemplate::Export => {
+                CommandResult::new(SlashAction::Export, "Exporting conversation…")
+            }
+            SlashActionTemplate::Rewind => CommandResult::new(SlashAction::Rewind, "Rewind info."),
+            SlashActionTemplate::Rename => CommandResult::new(
+                SlashAction::Rename {
+                    title: if args.is_empty() {
+                        None
+                    } else {
+                        Some(args.to_string())
+                    },
+                },
+                "Rename session.",
+            ),
+            SlashActionTemplate::Skills => {
+                CommandResult::new(SlashAction::Skills, "Installed skills.")
+            }
+            SlashActionTemplate::Plugins => {
+                CommandResult::new(SlashAction::Plugins, "Plugin management.")
+            }
+            SlashActionTemplate::Hooks => CommandResult::new(SlashAction::Hooks, "Hook summary."),
+            SlashActionTemplate::Theme => CommandResult::new(SlashAction::Theme, "Theme settings."),
+            SlashActionTemplate::Agents => {
+                CommandResult::new(SlashAction::Agents, "Agent definitions.")
+            }
+            SlashActionTemplate::Context => {
+                CommandResult::new(SlashAction::Context, "Context usage.")
+            }
+            SlashActionTemplate::Init => CommandResult::new(SlashAction::Init, "Project guide."),
+            SlashActionTemplate::Usage => CommandResult::new(SlashAction::Usage, "Usage summary."),
+            SlashActionTemplate::AddDir => CommandResult::new(
+                SlashAction::AddDir {
+                    path: if args.is_empty() {
+                        None
+                    } else {
+                        Some(args.to_string())
+                    },
+                },
+                "Add working directory.",
+            ),
         };
         Ok(result)
     }
@@ -442,6 +594,21 @@ mod tests {
             "resume",
             "model",
             "clear",
+            "verify",
+            "export",
+            "rewind",
+            "rename",
+            "skills",
+            "plugin",
+            "plugins",
+            "hooks",
+            "theme",
+            "agents",
+            "context",
+            "init",
+            "usage",
+            "stats",
+            "add-dir",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }

@@ -1311,6 +1311,213 @@ impl ChatService {
                 // when no recent edit happened.
                 self.run_workspace_verification().await
             }
+            SlashAction::Export => {
+                // Render the current conversation to Markdown and persist it
+                // under the project's `.deepagent/exports/` directory.
+                let store = deepagent_persistence::event_store::EventStore::new(&self.db);
+                let events = store.load_session(session.id())?;
+                let history = conversation_from_events(&events);
+                let title = session
+                    .state()
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "session".to_string());
+                let mut md = format!("# {title}\n\n");
+                for m in &history {
+                    md.push_str(&format!("## {:?}\n\n{}\n\n", m.role, m.content));
+                }
+                let dir = self.effective_root().join(".deepagent").join("exports");
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| CoreError::other(format!("create export dir: {e}")))?;
+                let file = dir.join(format!("{session_id}.md"));
+                std::fs::write(&file, md)
+                    .map_err(|e| CoreError::other(format!("write export: {e}")))?;
+                format!("已导出 {} 条消息到 {}", history.len(), file.display())
+            }
+            SlashAction::Rewind => {
+                // Rewind is destructive and self-referential when run from
+                // inside the live session, so the slash command is advisory:
+                // it reports the event count and points to the safe entry
+                // points (chat-menu Rewind / non-destructive Fork).
+                let store = deepagent_persistence::event_store::EventStore::new(&self.db);
+                let events = store.load_session(session.id())?;
+                format!(
+                    "当前会话共有 {} 条事件。回退是破坏性操作：它会永久删除某个检查点之后的所有事件。请使用聊天菜单中的 Rewind 选择回退点，或用 Fork 进行非破坏性分支。",
+                    events.len()
+                )
+            }
+            SlashAction::Rename { title } => match title {
+                Some(title) => {
+                    let trimmed = title.trim();
+                    if trimmed.is_empty() {
+                        "用法: /rename <新标题>".to_string()
+                    } else {
+                        let store =
+                            deepagent_persistence::event_store::EventStore::new(&self.db);
+                        let clock = SystemClock;
+                        if store.rename_session(session.id(), Some(trimmed), clock.now())? {
+                            format!("会话已重命名为「{trimmed}」。")
+                        } else {
+                            "重命名失败：找不到当前会话。".to_string()
+                        }
+                    }
+                }
+                None => "用法: /rename <新标题>".to_string(),
+            },
+            SlashAction::Skills => match &self.skills {
+                Some(skills) => {
+                    let list = skills
+                        .lock()
+                        .map_err(|_| CoreError::other("skills lock poisoned"))?
+                        .list();
+                    if list.is_empty() {
+                        "尚未安装任何技能。打开「技能」页可浏览技能市场。".to_string()
+                    } else {
+                        let mut lines = vec![format!("已安装技能：{}", list.len())];
+                        for s in list.iter().take(20) {
+                            lines.push(format!("- {} ({}) — {}", s.name, s.origin, s.description));
+                        }
+                        lines.join("\n")
+                    }
+                }
+                None => "当前运行时未启用技能系统。".to_string(),
+            },
+            SlashAction::Plugins => {
+                "插件在「插件」页管理（安装、启用、配置）。可用的运行时能力包括终端、文件预览、录音、浏览器、侧栏聊天等。".to_string()
+            }
+            SlashAction::Hooks => {
+                let defs = self.settings.hook_definitions()?;
+                let rules = self.settings.permission_rules()?;
+                let event_count = defs.hooks.len();
+                let matcher_count: usize = defs.hooks.values().map(|v| v.len()).sum();
+                let events: Vec<String> = defs.hooks.keys().take(8).cloned().collect();
+                format!(
+                    "Hooks:\n- 事件类型: {}\n- matcher 组: {}\n- 已配置事件: {}\n权限规则:\n- allow: {}\n- ask: {}\n- deny: {}",
+                    event_count,
+                    matcher_count,
+                    if events.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        events.join(", ")
+                    },
+                    format_rule_count(&rules.allow),
+                    format_rule_count(&rules.ask),
+                    format_rule_count(&rules.deny)
+                )
+            }
+            SlashAction::Theme => {
+                "主题与外观在「设置 → 外观」中调整（暗色/亮色、界面选项）。".to_string()
+            }
+            SlashAction::Agents => {
+                let mut roots = vec![self.effective_root(), self.workspace.clone()];
+                roots.dedup();
+                let mut lines: Vec<String> = Vec::new();
+                let mut count = 0usize;
+                for root in roots {
+                    let dir = root.join(".deepagent").join("agents");
+                    let Ok(entries) = std::fs::read_dir(&dir) else {
+                        continue;
+                    };
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                            continue;
+                        }
+                        let Ok(content) = std::fs::read_to_string(&path) else {
+                            continue;
+                        };
+                        if let Some(def) = deepagent_prompts::AgentDef::parse(&content) {
+                            count += 1;
+                            if lines.len() < 20 {
+                                lines.push(format!("- {} — {}", def.name, def.description));
+                            }
+                        }
+                    }
+                }
+                if count == 0 {
+                    "未发现子代理定义。可在 .deepagent/agents/ 下添加 <name>.md（YAML frontmatter + 系统提示）。".to_string()
+                } else {
+                    let mut out = vec![format!("可用子代理：{count}")];
+                    out.extend(lines);
+                    out.join("\n")
+                }
+            }
+            SlashAction::Context => {
+                let store = deepagent_persistence::event_store::EventStore::new(&self.db);
+                let events = store.load_session(session.id())?;
+                let history = conversation_from_events(&events);
+                let counter = HeuristicTokenizer::new();
+                let tokens: usize = history
+                    .iter()
+                    .map(|m| counter.count(&format!("{:?}: {}", m.role, m.content)))
+                    .sum();
+                format!(
+                    "上下文使用：\n- 消息条数: {}\n- 事件条数: {}\n- 估算 token: {tokens}\n提示：可用 /compact 压缩上下文以降低后续请求体积。",
+                    history.len(),
+                    events.len()
+                )
+            }
+            SlashAction::Init => {
+                let root = self.effective_root();
+                let file = root.join("AGENTS.md");
+                if file.exists() {
+                    format!("项目说明文档已存在：{}", file.display())
+                } else {
+                    let project_name = root
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Project")
+                        .to_string();
+                    let template = format!(
+                        "# {project_name}\n\n## 项目概述\n\n<!-- 一句话描述这个项目的目标 -->\n\n## 技术栈\n\n<!-- 主要语言、框架、构建工具 -->\n\n## 目录结构\n\n<!-- 关键目录及其职责 -->\n\n## 开发约定\n\n<!-- 代码风格、命名、提交规范 -->\n\n## 构建与测试\n\n<!-- 常用命令 -->\n\n## 注意事项\n\n<!-- 易踩的坑、需要人工确认的高风险操作 -->\n"
+                    );
+                    std::fs::write(&file, template)
+                        .map_err(|e| CoreError::other(format!("write AGENTS.md: {e}")))?;
+                    format!(
+                        "已生成项目说明模板：{}。请补全其中的占位内容。",
+                        file.display()
+                    )
+                }
+            }
+            SlashAction::Usage => {
+                let store = deepagent_persistence::event_store::EventStore::new(&self.db);
+                let sessions = store.list_sessions()?;
+                let cost_line = match &self.cost {
+                    Some(cost) => {
+                        let s = cost.summary(session_id)?;
+                        format!(
+                            "费用（{}）：本会话 {:.4}，今日 {:.4}，本月 {:.4}，累计 {:.4}",
+                            s.currency, s.session_cost, s.today_cost, s.month_cost, s.total_cost
+                        )
+                    }
+                    None => "费用跟踪未启用。".to_string(),
+                };
+                format!(
+                    "用量统计：\n- 会话总数: {}\n- {}",
+                    sessions.len(),
+                    cost_line
+                )
+            }
+            SlashAction::AddDir { path } => match path {
+                Some(path) => match &self.projects {
+                    Some(projects) => {
+                        let trimmed = path.trim();
+                        if trimmed.is_empty() {
+                            "用法: /add-dir <目录路径>".to_string()
+                        } else if !std::path::Path::new(trimmed).is_dir() {
+                            format!("目录不存在或不是文件夹：{trimmed}")
+                        } else {
+                            let dto = projects.add_project(trimmed)?;
+                            format!(
+                                "已添加工作目录：{} ({})。在侧栏切换项目即可以它为根开始新会话。",
+                                dto.name, dto.path
+                            )
+                        }
+                    }
+                    None => "当前运行时未启用项目管理。".to_string(),
+                },
+                None => "用法: /add-dir <目录路径>".to_string(),
+            },
         };
         Ok(message)
     }
