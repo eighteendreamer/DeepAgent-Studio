@@ -23,6 +23,7 @@ const FALLBACK_TOOL_NAMES: Record<string, string> = {
   project_map: "Project Map",
   recording: "Recording",
   file_preview: "File Preview",
+  canvas: "Studio Canvas",
 };
 
 const FALLBACK_TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -33,6 +34,7 @@ const FALLBACK_TOOL_DESCRIPTIONS: Record<string, string> = {
   project_map: "Inspect module relationships",
   recording: "Meeting recording and transcription",
   file_preview: "Preview office documents",
+  canvas: "Open extensible workspace",
 };
 
 function toolLabel(type: string) {
@@ -51,6 +53,7 @@ const TOOL_SHORTCUTS: Record<string, string> = {
   terminal: "",
   recording: "",
   file_preview: "",
+  canvas: "",
 };
 
 export function ToolLauncherPanel<T extends ToolLauncherCard>({

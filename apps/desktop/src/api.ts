@@ -1392,6 +1392,39 @@ export async function openSessionInNewWindow(sessionId: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+export async function openStudioCanvasWindow(): Promise<void> {
+  const url = `${window.location.origin}${window.location.pathname}${window.location.search}#window=canvas`;
+  if (typeof window !== "undefined" && (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    const label = "studio-canvas";
+    const existing = await WebviewWindow.getByLabel(label);
+    if (existing) {
+      await existing.unminimize().catch(() => {});
+      await existing.show().catch(() => {});
+      await existing.setFocus();
+      return;
+    }
+
+    const webview = new WebviewWindow(label, {
+      url,
+      title: "DeepAgent Studio · 工作画布",
+      width: 1280,
+      height: 820,
+      minWidth: 840,
+      minHeight: 560,
+      decorations: false,
+      shadow: true,
+      focus: true,
+    });
+    await new Promise<void>((resolve, reject) => {
+      webview.once("tauri://created", () => resolve());
+      webview.once("tauri://error", (event) => reject(new Error(String(event.payload))));
+    });
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 export async function gitChanges(path: string): Promise<GitChanges> {
   const invoke = getInvoke();
   if (invoke) return invoke<GitChanges>("git_changes", { path });

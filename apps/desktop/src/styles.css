@@ -256,3 +256,22 @@ button:focus {
   background-color: #ef4444;
   color: white;
 }
+
+.studio-canvas-dockview .dockview-theme-light,
+.studio-canvas-dockview .dockview-theme-dark {
+  --dv-group-view-background-color: var(--theme-bg, #ffffff);
+  --dv-tabs-and-actions-container-background-color: var(--theme-sidebar, #f8f7f5);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--theme-bg, #ffffff);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--theme-sidebar, #f8f7f5);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--theme-bg, #ffffff);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--theme-sidebar, #f8f7f5);
+  --dv-activegroup-visiblepanel-tab-color: var(--theme-fg, #1f2937);
+  --dv-activegroup-hiddenpanel-tab-color: var(--theme-text-secondary, #6b7280);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--theme-text-secondary, #6b7280);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--theme-text-secondary, #6b7280);
+  --dv-separator-border: var(--theme-border, #e5e7eb);
+  --dv-tab-divider-color: var(--theme-border, #e5e7eb);
+  --dv-tabs-and-actions-container-height: 34px;
+  --dv-tabs-and-actions-container-font-size: 12px;
+  --dv-paneview-active-outline-color: var(--theme-primary, #3b82f6);
+}

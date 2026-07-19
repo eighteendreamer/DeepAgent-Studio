@@ -744,7 +744,9 @@
       "recording": "录音",
       "recordingDesc": "会议录音与转写",
       "file_preview": "文件预览",
-      "file_previewDesc": "预览办公文件"
+      "file_previewDesc": "预览办公文件",
+      "canvas": "工作画布",
+      "canvasDesc": "打开可扩展工作区"
     },
     "chat": "对话",
     "pinChat": "置顶对话",

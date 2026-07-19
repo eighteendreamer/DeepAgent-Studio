@@ -744,7 +744,9 @@
       "recording": "Recording",
       "recordingDesc": "Meeting recording & transcription",
       "file_preview": "File Preview",
-      "file_previewDesc": "Preview office documents"
+      "file_previewDesc": "Preview office documents",
+      "canvas": "Studio Canvas",
+      "canvasDesc": "Open extensible workspace"
     },
     "chat": "Chat",
     "pinChat": "Pin Chat",

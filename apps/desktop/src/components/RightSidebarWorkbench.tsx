@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { SidebarPluginHeader } from "./SidebarPluginHeader";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
+import type { ToolLauncherCard } from "./ToolLauncherPanel";
 import {
   createPluginTab,
   PLUGIN_TOOL_CARDS,
@@ -14,6 +15,15 @@ import {
   type PluginType,
 } from "./plugins/pluginRegistry";
 import { useResizableSidebar } from "../hooks/useResizableSidebar";
+import { openStudioCanvasWindow } from "../api";
+import { message } from "./message";
+
+const STUDIO_CANVAS_CARD: ToolLauncherCard = {
+  type: "canvas",
+  icon: ["fas", "border-all"],
+  title: "Studio Canvas",
+  desc: "Open extensible workspace",
+};
 
 interface RightSidebarWorkbenchProps {
   open: boolean;
@@ -52,6 +62,17 @@ export function RightSidebarWorkbench({
     useResizableSidebar();
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const launcherCards: ToolLauncherCard[] = [...PLUGIN_TOOL_CARDS, STUDIO_CANVAS_CARD];
+
+  const handleLauncherSelect = (card: ToolLauncherCard) => {
+    if (card.type === STUDIO_CANVAS_CARD.type) {
+      void openStudioCanvasWindow().catch((error) => {
+        message.error(`打开工作画布失败：${String(error)}`);
+      });
+      return;
+    }
+    onSelectPlugin(card as PluginToolCard);
+  };
 
   // Dropping back to zero open tabs (all closed) should also drop out of
   // maximize mode so the next open starts at the default width.
@@ -123,8 +144,8 @@ export function RightSidebarWorkbench({
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {activeTabId === "new" || !activeTab ? (
           <ToolLauncherPanel
-            cards={PLUGIN_TOOL_CARDS}
-            onSelect={(card) => onSelectPlugin(card)}
+            cards={launcherCards}
+            onSelect={handleLauncherSelect}
             variant="sidebar"
           />
         ) : (
