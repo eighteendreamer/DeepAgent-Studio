@@ -1112,6 +1112,7 @@ dependencies = [
  "deepagent-tools",
  "deepagent-workspace",
  "flate2",
+ "futures",
  "hound",
  "image",
  "keyring",

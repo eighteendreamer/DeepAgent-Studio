@@ -30,6 +30,9 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tokio = { workspace = true }
+# Concurrent MCP server probing (McpService::connection_status fans out the
+# per-server connect + tools/list handshakes with join_all).
+futures.workspace = true
 # Office document parsing for file preview (Tier C, pure Rust): zip for
 # docx/pptx OOXML containers, calamine for xlsx sheet reads.
 zip.workspace = true

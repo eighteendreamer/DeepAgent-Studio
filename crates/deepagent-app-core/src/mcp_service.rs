@@ -300,25 +300,31 @@ impl McpService {
     /// Live status of every saved server: disabled ones are reported as
     /// `"disabled"` without connecting; enabled ones are probed (connect +
     /// `tools/list`) with failures captured per-server. Ordered by name.
+    ///
+    /// The per-server probes run **concurrently** (`join_all`): each probe is
+    /// IO-bound (spawn / network + handshake), so fanning them out means a
+    /// "refresh status" over N servers costs roughly the slowest one rather
+    /// than the sum. Result order still matches the (name-sorted) server map.
     pub async fn connection_status(&self) -> Result<Vec<McpConnectionStatusDto>> {
         let state = self.load_state()?;
-        let mut out = Vec::with_capacity(state.config.servers.len());
-        for (name, cfg) in &state.config.servers {
-            let enabled = state.enabled.get(name).copied().unwrap_or(true);
-            if !enabled {
-                out.push(McpConnectionStatusDto {
-                    name: name.clone(),
-                    status: "disabled".into(),
-                    error: None,
-                    tools: Vec::new(),
-                });
-                continue;
-            }
+        let probes = state.config.servers.iter().map(|(name, cfg)| {
+            let name = name.clone();
+            let enabled = state.enabled.get(&name).copied().unwrap_or(true);
             let mut cfg = cfg.clone();
-            cfg.expand_with(&|var| std::env::var(var).ok());
-            out.push(Self::probe(name, &cfg).await);
-        }
-        Ok(out)
+            async move {
+                if !enabled {
+                    return McpConnectionStatusDto {
+                        name,
+                        status: "disabled".into(),
+                        error: None,
+                        tools: Vec::new(),
+                    };
+                }
+                cfg.expand_with(&|var| std::env::var(var).ok());
+                Self::probe(&name, &cfg).await
+            }
+        });
+        Ok(futures::future::join_all(probes).await)
     }
 
     /// Connect + `initialize` + `tools/list` one config, mapping any failure to
@@ -552,6 +558,27 @@ mod tests {
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0].status, "failed");
         assert!(statuses[0].error.is_some());
+    }
+
+    #[tokio::test]
+    async fn connection_status_mixes_states_in_name_order() {
+        // Concurrent probing must preserve the (name-sorted) order and each
+        // server's own status: enabled+bad → failed, disabled → disabled.
+        let svc = service();
+        for name in ["a_on", "b_off", "c_on"] {
+            let mut dto = stdio_dto(name);
+            dto.command = Some("definitely-not-a-real-binary-xyz".into());
+            dto.args = vec![];
+            svc.upsert(dto).unwrap();
+        }
+        svc.set_enabled("b_off", false).unwrap();
+
+        let statuses = svc.connection_status().await.unwrap();
+        let names: Vec<_> = statuses.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["a_on", "b_off", "c_on"]);
+        assert_eq!(statuses[0].status, "failed");
+        assert_eq!(statuses[1].status, "disabled");
+        assert_eq!(statuses[2].status, "failed");
     }
 
     /// Live smoke test against the official MCP "everything" reference server.
