@@ -1011,21 +1011,33 @@ export function ConfigSettings() {
             />
           </div>
           <div
-            className={`flex items-center justify-between p-4 border-b border-border-theme ${
+            className={`p-4 border-b border-border-theme ${
               webSearchSettings.enabled && webSearchSettings.anysearch_enabled
                 ? ""
                 : "opacity-50 pointer-events-none"
             }`}
           >
-            <div className="min-w-0 pr-4">
-              <div className="text-[14px] font-medium text-text-base mb-1">AnySearch API Key</div>
+            <div className="min-w-0">
+              <div className="mb-1 flex items-center gap-2">
+                <div className="text-[14px] font-medium text-text-base">AnySearch API Key</div>
+                <span
+                  className={`inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[11px] font-medium ${
+                    anysearchApiKeyConfigured
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-gray-100 text-text-secondary"
+                  }`}
+                >
+                  {anysearchApiKeyConfigured ? "已配置" : "未配置"}
+                </span>
+              </div>
               <div className="text-[12px] text-text-secondary">
                 只保存到系统密钥串，不写入数据库；未配置时会继续回退到后备 provider。
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2">
               <input
                 type="password"
+                aria-label="AnySearch API Key"
                 value={anysearchKeyInput}
                 placeholder={anysearchApiKeyConfigured ? "已配置，重新输入可覆盖" : "请输入 AnySearch API Key"}
                 disabled={!webSearchSettings.enabled || !webSearchSettings.anysearch_enabled}
@@ -1033,10 +1045,11 @@ export function ConfigSettings() {
                 onBlur={() => {
                   void persistAnySearchApiKey(anysearchKeyInput);
                 }}
-                className="w-[260px] px-2 py-1 text-[13px] font-mono border border-border-theme rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:bg-gray-50"
+                className="h-9 min-w-0 w-full rounded-md border border-border-theme bg-white px-3 text-[13px] font-mono text-text-base placeholder:text-text-secondary/70 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-gray-50"
               />
               <button
                 type="button"
+                aria-label="测试 AnySearch API Key"
                 onClick={async () => {
                   if (anysearchKeyInput.trim()) {
                     await persistAnySearchApiKey(anysearchKeyInput);
@@ -1049,15 +1062,16 @@ export function ConfigSettings() {
                   }
                 }}
                 disabled={!webSearchSettings.enabled || !webSearchSettings.anysearch_enabled}
-                className="px-3 py-1.5 text-[12px] font-medium text-text-base bg-gray-100 border border-border-theme rounded-md hover:bg-gray-200 disabled:opacity-50"
+                className="h-9 min-w-[64px] shrink-0 whitespace-nowrap rounded-md border border-blue-200 bg-blue-50 px-4 text-[12px] font-medium text-blue-600 transition-colors hover:border-blue-300 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 测试
               </button>
               <button
                 type="button"
+                aria-label="清除 AnySearch API Key"
                 onClick={clearAnySearchApiKeyLocal}
                 disabled={!anysearchApiKeyConfigured}
-                className="px-3 py-1.5 text-[12px] font-medium text-text-base bg-white border border-border-theme rounded-md hover:bg-gray-50 disabled:opacity-50"
+                className="h-9 min-w-[64px] shrink-0 whitespace-nowrap rounded-md border border-border-theme bg-white px-4 text-[12px] font-medium text-text-secondary transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:hover:border-border-theme disabled:hover:bg-white disabled:hover:text-text-secondary disabled:opacity-50"
               >
                 清除
               </button>
