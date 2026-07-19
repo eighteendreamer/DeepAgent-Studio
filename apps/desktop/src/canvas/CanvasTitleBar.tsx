@@ -38,7 +38,7 @@ export function CanvasTitleBar() {
           {t("canvas.title", { defaultValue: "工作画布" })}
         </span>
         <span data-tauri-drag-region className="hidden text-[12px] text-text-secondary sm:inline">
-          {t("canvas.subtitle", { defaultValue: "可扩展工作区" })}
+          {t("canvas.subtitle", { defaultValue: "无限工作区" })}
         </span>
       </div>
 

@@ -257,21 +257,66 @@ button:focus {
   color: white;
 }
 
-.studio-canvas-dockview .dockview-theme-light,
-.studio-canvas-dockview .dockview-theme-dark {
-  --dv-group-view-background-color: var(--theme-bg, #ffffff);
-  --dv-tabs-and-actions-container-background-color: var(--theme-sidebar, #f8f7f5);
-  --dv-activegroup-visiblepanel-tab-background-color: var(--theme-bg, #ffffff);
-  --dv-activegroup-hiddenpanel-tab-background-color: var(--theme-sidebar, #f8f7f5);
-  --dv-inactivegroup-visiblepanel-tab-background-color: var(--theme-bg, #ffffff);
-  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--theme-sidebar, #f8f7f5);
-  --dv-activegroup-visiblepanel-tab-color: var(--theme-fg, #1f2937);
-  --dv-activegroup-hiddenpanel-tab-color: var(--theme-text-secondary, #6b7280);
-  --dv-inactivegroup-visiblepanel-tab-color: var(--theme-text-secondary, #6b7280);
-  --dv-inactivegroup-hiddenpanel-tab-color: var(--theme-text-secondary, #6b7280);
-  --dv-separator-border: var(--theme-border, #e5e7eb);
-  --dv-tab-divider-color: var(--theme-border, #e5e7eb);
-  --dv-tabs-and-actions-container-height: 34px;
-  --dv-tabs-and-actions-container-font-size: 12px;
-  --dv-paneview-active-outline-color: var(--theme-primary, #3b82f6);
+.studio-infinite-canvas {
+  background: var(--theme-bg, #ffffff);
+}
+
+.studio-infinite-canvas .react-flow__pane {
+  cursor: grab;
+}
+
+.studio-infinite-canvas .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+.studio-infinite-canvas .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--theme-border, #e5e7eb);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--theme-bg, #ffffff) 92%, transparent);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1);
+  backdrop-filter: blur(12px);
+}
+
+.studio-infinite-canvas .react-flow__controls-button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-bottom: 1px solid var(--theme-border, #e5e7eb);
+  background: transparent;
+  color: var(--theme-text-secondary, #6b7280);
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.studio-infinite-canvas .react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+
+.studio-infinite-canvas .react-flow__controls-button:hover {
+  background: var(--theme-sidebar, #f8f7f5);
+  color: var(--theme-fg, #1f2937);
+}
+
+.studio-infinite-canvas .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.studio-canvas-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px 12px !important;
+  color: var(--theme-text-secondary, #6b7280);
+  font-size: 11px;
+  line-height: 1;
+  user-select: none;
+  pointer-events: none;
+}
+
+.studio-canvas-hint-separator {
+  width: 2px;
+  height: 2px;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.55;
 }
