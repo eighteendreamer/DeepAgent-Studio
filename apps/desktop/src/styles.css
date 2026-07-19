@@ -284,6 +284,11 @@ button:focus {
   background: color-mix(in srgb, var(--theme-bg, #ffffff) 94%, transparent);
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.09);
   backdrop-filter: blur(12px);
+  transition: box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.studio-canvas-toolbar.is-collapsed {
+  gap: 0;
 }
 
 .studio-canvas-toolbar button {
@@ -311,6 +316,10 @@ button:focus {
 .studio-canvas-toolbar button.is-active {
   background: color-mix(in srgb, var(--theme-primary, #3b82f6) 12%, transparent);
   color: var(--theme-primary, #2563eb);
+}
+
+.studio-canvas-toolbar .studio-toolbar-collapse {
+  color: color-mix(in srgb, var(--theme-text-secondary, #6b7280) 82%, transparent);
 }
 
 .studio-canvas-toolbar button:disabled {
