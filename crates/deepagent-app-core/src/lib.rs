@@ -77,7 +77,7 @@ pub use git_service::GitService;
 pub use knowledge_service::{
     KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, KnowledgeServiceBackend,
 };
-pub use mcp_service::{McpServerDto, McpService};
+pub use mcp_service::{McpConnectionStatusDto, McpServerDto, McpService, McpToolInfoDto};
 pub use office_service::{markdown_to_docspec, DocBlock, DocSpec, OfficeService};
 pub use project_map_service::{
     ProjectMapEdgeDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto,

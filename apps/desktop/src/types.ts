@@ -308,6 +308,20 @@ export interface McpServer {
   headers: Record<string, string>;
 }
 
+/** A tool exposed by a connected MCP server (mirrors McpToolInfoDto). */
+export interface McpToolInfo {
+  name: string;
+  description: string;
+}
+
+/** Live connection status of an MCP server (mirrors McpConnectionStatusDto). */
+export interface McpConnectionStatus {
+  name: string;
+  status: "connected" | "failed" | "disabled";
+  error: string | null;
+  tools: McpToolInfo[];
+}
+
 /** Declarative permission rules (mirrors deepagent-hooks::PermissionRules). */
 export interface PermissionRules {
   allow: string[];

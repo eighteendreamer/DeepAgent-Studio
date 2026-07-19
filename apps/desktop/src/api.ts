@@ -39,6 +39,7 @@ import type {
   KnowledgeHit,
   MarketSearchData,
   MarketSearchInput,
+  McpConnectionStatus,
   McpServer,
   PermissionPreset,
   PermissionPresetVisibility,
@@ -1211,6 +1212,20 @@ export async function setMcpServerEnabled(
   return true;
 }
 
+export async function testMcpServer(
+  server: McpServer
+): Promise<McpConnectionStatus> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<McpConnectionStatus>("test_mcp_server", { server });
+  return { name: server.name, status: "failed", error: "desktop app required", tools: [] };
+}
+
+export async function mcpConnectionStatus(): Promise<McpConnectionStatus[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<McpConnectionStatus[]>("mcp_connection_status");
+  return mockMcpConnectionStatus();
+}
+
 // ---- permission rules (declarative allow/ask/deny) ------------------------
 
 export async function getPermissionRules(): Promise<PermissionRules> {
@@ -2278,6 +2293,17 @@ function mockMcpServers(): McpServer[] {
       env: {},
       url: null,
       headers: {},
+    },
+  ];
+}
+
+function mockMcpConnectionStatus(): McpConnectionStatus[] {
+  return [
+    {
+      name: "node_repl",
+      status: "connected",
+      error: null,
+      tools: [{ name: "eval", description: "Evaluate a JS expression" }],
     },
   ];
 }

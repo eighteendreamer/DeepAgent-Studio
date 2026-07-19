@@ -1917,6 +1917,25 @@ fn set_mcp_server_enabled(
         .map_err(|e| e.to_string())
 }
 
+/// Test-connect a single server config (may be an unsaved draft): runs the
+/// initialize + tools/list handshake and returns its live status + tool list.
+#[tauri::command]
+async fn test_mcp_server(
+    state: State<'_, AppState>,
+    server: McpServerDto,
+) -> Result<deepagent_app_core::McpConnectionStatusDto, String> {
+    state.mcp.test_server(server).await.map_err(|e| e.to_string())
+}
+
+/// Live connection status of every saved server (disabled ones reported
+/// without connecting), each with its discovered tools.
+#[tauri::command]
+async fn mcp_connection_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<deepagent_app_core::McpConnectionStatusDto>, String> {
+    state.mcp.connection_status().await.map_err(|e| e.to_string())
+}
+
 // ---- permission rules + hooks.json ----------------------------------------
 
 #[tauri::command]
@@ -4075,6 +4094,8 @@ pub fn run() {
             save_mcp_server,
             remove_mcp_server,
             set_mcp_server_enabled,
+            test_mcp_server,
+            mcp_connection_status,
             get_permission_rules,
             set_permission_rules,
             get_hooks_json,

@@ -1,4 +1,4 @@
-﻿{
+{
   "sidebar": {
     "projects": "项目",
     "pinned": "置顶",
@@ -193,7 +193,13 @@
       "addServer": "添加服务器",
       "noServers": "还没有 MCP 服务器。点击「添加服务器」连接外部工具。",
       "edit": "编辑",
-      "delete": "删除"
+      "delete": "删除",
+      "testConnection": "测试连接",
+      "refreshStatus": "刷新状态",
+      "statusConnected": "已连接",
+      "statusFailed": "连接失败",
+      "statusDisabled": "已禁用",
+      "toolsFound": "{{count}} 个工具"
     },
     "personalize": {
       "title": "个性化",

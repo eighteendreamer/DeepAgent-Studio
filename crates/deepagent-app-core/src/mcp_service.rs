@@ -124,6 +124,34 @@ impl McpServerDto {
     }
 }
 
+/// A tool exposed by a connected MCP server (name + description), surfaced in
+/// the UI's per-server tool list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpToolInfoDto {
+    /// Server-local tool name (as advertised by `tools/list`).
+    pub name: String,
+    /// Human-readable description.
+    pub description: String,
+}
+
+/// The live connection status of one MCP server, with its discovered tools.
+///
+/// `status` is one of `"connected"` | `"failed"` | `"disabled"`, kept as a
+/// plain string so the React UI can switch on it directly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpConnectionStatusDto {
+    /// Server name (matches the [`McpServerDto`] key).
+    pub name: String,
+    /// `"connected"` | `"failed"` | `"disabled"`.
+    pub status: String,
+    /// Error message when `status == "failed"`.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Tools discovered via `tools/list` (empty unless connected).
+    #[serde(default)]
+    pub tools: Vec<McpToolInfoDto>,
+}
+
 /// UI-facing MCP server management.
 pub struct McpService {
     db: Arc<Database>,
@@ -257,6 +285,72 @@ impl McpService {
         client.initialize("deepagent-studio").await?;
         tracing::info!(server = name, "MCP server initialized");
         Ok(client)
+    }
+
+    /// Test-connect a single (possibly unsaved) server config: expand `${VAR}`
+    /// placeholders, connect + `initialize` + `tools/list`, then close the
+    /// connection. Connection problems never error — they are captured as a
+    /// `"failed"` status so the "test connection" button can render the reason.
+    pub async fn test_server(&self, dto: McpServerDto) -> Result<McpConnectionStatusDto> {
+        let mut cfg = dto.to_config()?;
+        cfg.expand_with(&|var| std::env::var(var).ok());
+        Ok(Self::probe(&dto.name, &cfg).await)
+    }
+
+    /// Live status of every saved server: disabled ones are reported as
+    /// `"disabled"` without connecting; enabled ones are probed (connect +
+    /// `tools/list`) with failures captured per-server. Ordered by name.
+    pub async fn connection_status(&self) -> Result<Vec<McpConnectionStatusDto>> {
+        let state = self.load_state()?;
+        let mut out = Vec::with_capacity(state.config.servers.len());
+        for (name, cfg) in &state.config.servers {
+            let enabled = state.enabled.get(name).copied().unwrap_or(true);
+            if !enabled {
+                out.push(McpConnectionStatusDto {
+                    name: name.clone(),
+                    status: "disabled".into(),
+                    error: None,
+                    tools: Vec::new(),
+                });
+                continue;
+            }
+            let mut cfg = cfg.clone();
+            cfg.expand_with(&|var| std::env::var(var).ok());
+            out.push(Self::probe(name, &cfg).await);
+        }
+        Ok(out)
+    }
+
+    /// Connect + `initialize` + `tools/list` one config, mapping any failure to
+    /// a `"failed"` status. The connection is closed before returning.
+    async fn probe(name: &str, cfg: &McpServerConfig) -> McpConnectionStatusDto {
+        let failed = |e: CoreError| McpConnectionStatusDto {
+            name: name.to_string(),
+            status: "failed".into(),
+            error: Some(e.to_string()),
+            tools: Vec::new(),
+        };
+        let client = match Self::connect_one(name, cfg).await {
+            Ok(client) => client,
+            Err(e) => return failed(e),
+        };
+        let result = client.list_tools().await;
+        let _ = client.close().await;
+        match result {
+            Ok(defs) => McpConnectionStatusDto {
+                name: name.to_string(),
+                status: "connected".into(),
+                error: None,
+                tools: defs
+                    .into_iter()
+                    .map(|d| McpToolInfoDto {
+                        name: d.name,
+                        description: d.description,
+                    })
+                    .collect(),
+            },
+            Err(e) => failed(e),
+        }
     }
 }
 
@@ -403,5 +497,93 @@ mod tests {
         // Disabled server is not even attempted → no failures.
         let (_registry, failures) = svc.connect_enabled().await.unwrap();
         assert!(failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_server_reports_failed_for_bad_command() {
+        let svc = service();
+        let mut dto = stdio_dto("ghost");
+        dto.command = Some("definitely-not-a-real-binary-xyz".into());
+        dto.args = vec![];
+        // test_server never errors on connect problems — it captures them.
+        let status = svc.test_server(dto).await.unwrap();
+        assert_eq!(status.name, "ghost");
+        assert_eq!(status.status, "failed");
+        assert!(status.error.is_some());
+        assert!(status.tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_server_invalid_config_errors() {
+        // An invalid DTO (insecure http url) is rejected before any connection
+        // attempt — this is a genuine Err, not a "failed" status.
+        let svc = service();
+        let mut dto = stdio_dto("api");
+        dto.transport = "http".into();
+        dto.command = None;
+        dto.url = Some("http://evil.example.com/mcp".into());
+        assert!(svc.test_server(dto).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn connection_status_marks_disabled_without_connecting() {
+        let svc = service();
+        let mut dto = stdio_dto("off");
+        dto.command = Some("definitely-not-a-real-binary-xyz".into());
+        svc.upsert(dto).unwrap();
+        svc.set_enabled("off", false).unwrap();
+
+        let statuses = svc.connection_status().await.unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].name, "off");
+        assert_eq!(statuses[0].status, "disabled");
+        assert!(statuses[0].error.is_none());
+    }
+
+    #[tokio::test]
+    async fn connection_status_probes_enabled_servers() {
+        let svc = service();
+        let mut dto = stdio_dto("ghost");
+        dto.command = Some("definitely-not-a-real-binary-xyz".into());
+        dto.args = vec![];
+        svc.upsert(dto).unwrap();
+
+        let statuses = svc.connection_status().await.unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].status, "failed");
+        assert!(statuses[0].error.is_some());
+    }
+
+    /// Live smoke test against the official MCP "everything" reference server.
+    /// Ignored by default (needs network + npx). Run manually on Windows:
+    ///   cargo test -p deepagent-app-core --lib -- --ignored everything
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires network + npx (Node)"]
+    async fn connects_to_everything_reference_server() {
+        let svc = service();
+        let dto = McpServerDto {
+            name: "everything".into(),
+            transport: "stdio".into(),
+            enabled: true,
+            // On Windows `npx` is `npx.cmd`; spawn it via `cmd /c`.
+            command: Some("cmd".into()),
+            args: vec![
+                "/c".into(),
+                "npx".into(),
+                "-y".into(),
+                "@modelcontextprotocol/server-everything".into(),
+            ],
+            env: BTreeMap::new(),
+            url: None,
+            headers: BTreeMap::new(),
+        };
+        let status = svc.test_server(dto).await.unwrap();
+        assert_eq!(status.status, "connected", "connect error: {:?}", status.error);
+        assert!(
+            status.tools.iter().any(|t| t.name == "echo"),
+            "expected an 'echo' tool, got: {:?}",
+            status.tools.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
     }
 }

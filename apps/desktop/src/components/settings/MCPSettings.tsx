@@ -1,13 +1,44 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { McpServer } from "../../types";
+import type { McpServer, McpConnectionStatus } from "../../types";
 import {
   listMcpServers,
   saveMcpServer,
   removeMcpServer,
   setMcpServerEnabled,
+  testMcpServer,
+  mcpConnectionStatus,
 } from "../../api";
+
+function StatusBadge({ status }: { status: McpConnectionStatus["status"] }) {
+  const { t } = useTranslation();
+  const cfg: Record<McpConnectionStatus["status"], { cls: string; icon: IconProp; label: string }> = {
+    connected: {
+      cls: "bg-green-100 text-green-700",
+      icon: ["fas", "circle-check"],
+      label: t("settings.mcp.statusConnected"),
+    },
+    failed: {
+      cls: "bg-red-100 text-red-600",
+      icon: ["fas", "circle-exclamation"],
+      label: t("settings.mcp.statusFailed"),
+    },
+    disabled: {
+      cls: "bg-gray-100 text-gray-500",
+      icon: ["fas", "minus"],
+      label: t("settings.mcp.statusDisabled"),
+    },
+  };
+  const c = cfg[status];
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${c.cls}`}>
+      <FontAwesomeIcon icon={c.icon} className="mr-1 text-[10px]" />
+      {c.label}
+    </span>
+  );
+}
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
@@ -46,6 +77,12 @@ export function MCPSettings() {
   const [draft, setDraft] = useState<McpServer>(emptyDraft());
   const [error, setError] = useState<string | null>(null);
   const [envPairs, setEnvPairs] = useState<{ key: string; value: string }[]>([]);
+  const [statuses, setStatuses] = useState<Record<string, McpConnectionStatus>>({});
+  const [checking, setChecking] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Add-view "test connection" state.
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<McpConnectionStatus | null>(null);
 
   async function refresh() {
     try {
@@ -55,44 +92,87 @@ export function MCPSettings() {
     }
   }
 
+  async function refreshStatuses() {
+    setChecking(true);
+    try {
+      const list = await mcpConnectionStatus();
+      const map: Record<string, McpConnectionStatus> = {};
+      for (const s of list) map[s.name] = s;
+      setStatuses(map);
+    } catch {
+      setStatuses({});
+    } finally {
+      setChecking(false);
+    }
+  }
+
   useEffect(() => {
     refresh();
+    refreshStatuses();
   }, []);
+
+  function toggleExpanded(name: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
 
   function openAdd(existing?: McpServer) {
     const d = existing ? { ...existing } : emptyDraft();
     setDraft(d);
     setEnvPairs(Object.entries(d.env).map(([key, value]) => ({ key, value })));
     setError(null);
+    setTestResult(null);
     setView("add");
   }
 
   async function onToggle(s: McpServer) {
     await setMcpServerEnabled(s.name, !s.enabled).catch(() => {});
-    refresh();
+    await refresh();
+    refreshStatuses();
   }
 
   async function onRemove(name: string) {
     await removeMcpServer(name).catch(() => {});
-    refresh();
+    await refresh();
+    refreshStatuses();
   }
 
-  async function onSave() {
-    setError(null);
+  function draftPayload(): McpServer {
     const env: Record<string, string> = {};
     for (const { key, value } of envPairs) {
       if (key.trim()) env[key.trim()] = value;
     }
-    const payload: McpServer = {
+    return {
       ...draft,
       env,
       args: draft.args.filter((a) => a.trim() !== ""),
       command: draft.transport === "stdio" ? draft.command : null,
       url: draft.transport !== "stdio" ? draft.url : null,
     };
+  }
+
+  async function onTest() {
+    setTesting(true);
+    setTestResult(null);
     try {
-      await saveMcpServer(payload);
+      setTestResult(await testMcpServer(draftPayload()));
+    } catch (e) {
+      setTestResult({ name: draft.name, status: "failed", error: String(e), tools: [] });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function onSave() {
+    setError(null);
+    try {
+      await saveMcpServer(draftPayload());
       await refresh();
+      refreshStatuses();
       setView("list");
     } catch (e) {
       setError(String(e));
@@ -263,7 +343,53 @@ export function MCPSettings() {
 
           {error && <div className="text-[12px] text-red-500">{error}</div>}
 
-          <div className="flex justify-end pt-4 pb-20">
+          {testResult && (
+            <div
+              className={`rounded-lg border p-3 text-[12px] ${
+                testResult.status === "connected"
+                  ? "border-green-200 bg-green-50"
+                  : "border-red-200 bg-red-50"
+              }`}
+            >
+              <div className="flex items-center mb-1">
+                <StatusBadge status={testResult.status} />
+                {testResult.status === "connected" && (
+                  <span className="ml-2 text-text-secondary">
+                    {t("settings.mcp.toolsFound", { count: testResult.tools.length })}
+                  </span>
+                )}
+              </div>
+              {testResult.error && (
+                <div className="font-mono text-[11px] text-red-600 break-all">{testResult.error}</div>
+              )}
+              {testResult.tools.length > 0 && (
+                <ul className="mt-1 space-y-0.5">
+                  {testResult.tools.map((tool) => (
+                    <li key={tool.name} className="text-text-secondary">
+                      <span className="font-mono text-text-base">{tool.name}</span>
+                      {tool.description && <span className="ml-1">— {tool.description}</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end items-center space-x-3 pt-4 pb-20">
+            <button
+              disabled={!canSave || testing}
+              onClick={onTest}
+              className={`px-5 py-1.5 rounded-full text-[13px] font-medium border transition-colors ${
+                canSave && !testing
+                  ? "border-border-theme text-text-base hover:bg-gray-100"
+                  : "border-gray-200 text-gray-400 cursor-not-allowed"
+              }`}
+            >
+              {testing && (
+                <FontAwesomeIcon icon={["fas", "circle-notch"]} spin className="mr-1.5 text-[12px]" />
+              )}
+              {t("settings.mcp.testConnection")}
+            </button>
             <button
               disabled={!canSave}
               onClick={onSave}
@@ -294,12 +420,29 @@ export function MCPSettings() {
       <div className="max-w-[700px]">
         <div className="flex items-center justify-between mb-4">
           <div className="text-[14px] font-medium text-text-base">{t("settings.mcp.servers")}</div>
-          <button
-            className="flex items-center px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-full text-[12px] font-medium text-text-base transition-colors"
-            onClick={() => openAdd()}
-          >
-            <FontAwesomeIcon icon={["fas", "plus"]} className="mr-1.5 text-[10px]" /> {t("settings.mcp.addServer")}
-          </button>
+          <div className="flex items-center space-x-2">
+            {servers.length > 0 && (
+              <button
+                className="flex items-center px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-full text-[12px] font-medium text-text-base transition-colors disabled:opacity-50"
+                onClick={refreshStatuses}
+                disabled={checking}
+                title={t("settings.mcp.refreshStatus")}
+              >
+                <FontAwesomeIcon
+                  icon={["fas", "circle-notch"]}
+                  spin={checking}
+                  className="mr-1.5 text-[10px]"
+                />{" "}
+                {t("settings.mcp.refreshStatus")}
+              </button>
+            )}
+            <button
+              className="flex items-center px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-full text-[12px] font-medium text-text-base transition-colors"
+              onClick={() => openAdd()}
+            >
+              <FontAwesomeIcon icon={["fas", "plus"]} className="mr-1.5 text-[10px]" /> {t("settings.mcp.addServer")}
+            </button>
+          </div>
         </div>
 
         {servers.length === 0 ? (
@@ -308,35 +451,77 @@ export function MCPSettings() {
           </div>
         ) : (
           <div className="border border-border-theme rounded-xl bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)] divide-y divide-border-theme">
-            {servers.map((s) => (
-              <div key={s.name} className="flex items-center justify-between p-4">
-                <div className="min-w-0">
-                  <div className="text-[13px] font-mono text-text-base font-medium truncate">
-                    {s.name}
+            {servers.map((s) => {
+              const st = statuses[s.name];
+              const isOpen = expanded.has(s.name);
+              const toolCount = st?.tools.length ?? 0;
+              const canExpand = st?.status === "connected" && toolCount > 0;
+              return (
+                <div key={s.name}>
+                  <div className="flex items-center justify-between p-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-[13px] font-mono text-text-base font-medium truncate">
+                          {s.name}
+                        </span>
+                        {st && <StatusBadge status={st.status} />}
+                      </div>
+                      <div className="text-[11px] text-text-secondary truncate mt-0.5">
+                        {s.transport} · {s.transport === "stdio" ? s.command : s.url}
+                        {canExpand && (
+                          <button
+                            className="ml-2 text-blue-500 hover:underline"
+                            onClick={() => toggleExpanded(s.name)}
+                          >
+                            <FontAwesomeIcon
+                              icon={["fas", isOpen ? "chevron-down" : "chevron-right"]}
+                              className="mr-1 text-[9px]"
+                            />
+                            {t("settings.mcp.toolsFound", { count: toolCount })}
+                          </button>
+                        )}
+                      </div>
+                      {st?.status === "failed" && st.error && (
+                        <div className="text-[11px] text-red-500 truncate mt-0.5" title={st.error}>
+                          {st.error}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center space-x-4 flex-shrink-0">
+                      <button
+                        className="text-gray-400 hover:text-text-base transition-colors"
+                        title={t("settings.mcp.edit")}
+                        onClick={() => openAdd(s)}
+                      >
+                        <FontAwesomeIcon icon={["fas", "gear"]} className="text-[14px]" />
+                      </button>
+                      <button
+                        className="text-gray-400 hover:text-red-500 transition-colors"
+                        title={t("settings.mcp.delete")}
+                        onClick={() => onRemove(s.name)}
+                      >
+                        <FontAwesomeIcon icon={["fas", "minus"]} className="text-[14px]" />
+                      </button>
+                      <ToggleSwitch checked={s.enabled} onChange={() => onToggle(s)} />
+                    </div>
                   </div>
-                  <div className="text-[11px] text-text-secondary truncate">
-                    {s.transport} · {s.transport === "stdio" ? s.command : s.url}
-                  </div>
+                  {isOpen && canExpand && (
+                    <div className="px-4 pb-4 -mt-1">
+                      <ul className="rounded-lg bg-gray-50 border border-border-theme divide-y divide-border-theme">
+                        {st!.tools.map((tool) => (
+                          <li key={tool.name} className="p-2.5">
+                            <div className="text-[12px] font-mono text-text-base">{tool.name}</div>
+                            {tool.description && (
+                              <div className="text-[11px] text-text-secondary mt-0.5">{tool.description}</div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
-                <div className="flex items-center space-x-4 flex-shrink-0">
-                  <button
-                    className="text-gray-400 hover:text-text-base transition-colors"
-                    title={t("settings.mcp.edit")}
-                    onClick={() => openAdd(s)}
-                  >
-                    <FontAwesomeIcon icon={["fas", "gear"]} className="text-[14px]" />
-                  </button>
-                  <button
-                    className="text-gray-400 hover:text-red-500 transition-colors"
-                    title={t("settings.mcp.delete")}
-                    onClick={() => onRemove(s.name)}
-                  >
-                    <FontAwesomeIcon icon={["fas", "minus"]} className="text-[14px]" />
-                  </button>
-                  <ToggleSwitch checked={s.enabled} onChange={() => onToggle(s)} />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

@@ -193,7 +193,13 @@
       "addServer": "Add Server",
       "noServers": "No MCP servers yet. Click \"Add Server\" to connect external tools.",
       "edit": "Edit",
-      "delete": "Delete"
+      "delete": "Delete",
+      "testConnection": "Test connection",
+      "refreshStatus": "Refresh status",
+      "statusConnected": "Connected",
+      "statusFailed": "Failed",
+      "statusDisabled": "Disabled",
+      "toolsFound": "{{count}} tool(s)"
     },
     "personalize": {
       "title": "Personalization",
