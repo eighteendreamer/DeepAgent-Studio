@@ -14,6 +14,7 @@ import {
   faGripVertical,
   faHand,
   faMagnifyingGlass,
+  faMobileScreenButton,
   faNoteSticky,
   faPencil,
   faRotateLeft,
@@ -62,6 +63,11 @@ import {
 import "@xyflow/react/dist/style.css";
 import { isTauri } from "../api";
 import { CanvasTitleBar } from "./CanvasTitleBar";
+import {
+  DEFAULT_MINIAPP_PREVIEW,
+  MiniAppPreviewNode,
+  type MiniAppPreviewConfig,
+} from "./MiniAppPreviewNode";
 
 const LEGACY_CANVAS_LAYOUT_KEY = "deepagent:studio-canvas-layout:v1";
 const CANVAS_VIEWPORT_KEY = "deepagent:studio-canvas-viewport:v1";
@@ -72,7 +78,7 @@ const SNAP_GRID: [number, number] = [24, 24];
 const HISTORY_LIMIT = 100;
 
 type CanvasTool = "select" | "pan" | "rectangle" | "draw" | "lasso" | "eraser";
-type CanvasNodeKind = "note" | "text" | "shape" | "drawing" | "group";
+type CanvasNodeKind = "note" | "text" | "shape" | "drawing" | "group" | "miniapp-preview";
 type ShapeKind = "rectangle" | "ellipse";
 
 type CanvasNodeData = {
@@ -82,6 +88,7 @@ type CanvasNodeData = {
   locked?: boolean;
   shape?: ShapeKind;
   points?: XYPosition[];
+  preview?: MiniAppPreviewConfig;
 };
 
 type CanvasNode = Node<CanvasNodeData, CanvasNodeKind>;
@@ -748,7 +755,11 @@ function InfiniteCanvas() {
       if (!nodePosition && instance && bounds) {
         const center = instance.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 });
         const offset = (nodesRef.current.length % 5) * 24;
-        nodePosition = { x: center.x - 120 + offset, y: center.y - 80 + offset };
+        const isMiniAppPreview = kind === "miniapp-preview";
+        nodePosition = {
+          x: center.x - (isMiniAppPreview ? 210 : 120) + offset,
+          y: center.y - (isMiniAppPreview ? 325 : 80) + offset,
+        };
       }
       const rawPosition = nodePosition ?? { x: 48, y: 48 };
       const snappedPosition = {
@@ -759,6 +770,7 @@ function InfiniteCanvas() {
         note: { title: "新建便签", body: "", width: 240, height: 160 },
         text: { title: "文本", body: "双击或直接编辑文本", width: 240, height: 96 },
         shape: { title: "", body: "", width: 216, height: 144 },
+        "miniapp-preview": { title: "小程序预览", body: "前端交互原型", width: 420, height: 650 },
       };
       const preset = defaults[kind];
       const id = `${kind}-${crypto.randomUUID()}`;
@@ -766,8 +778,15 @@ function InfiniteCanvas() {
         id,
         type: kind,
         position: snappedPosition,
-        data: { title: preset.title, body: preset.body, shape: kind === "shape" ? "rectangle" : undefined, ...dataPatch },
+        data: {
+          title: preset.title,
+          body: preset.body,
+          shape: kind === "shape" ? "rectangle" : undefined,
+          preview: kind === "miniapp-preview" ? { ...DEFAULT_MINIAPP_PREVIEW } : undefined,
+          ...dataPatch,
+        },
         style: { width: preset.width, height: preset.height },
+        dragHandle: kind === "miniapp-preview" ? ".studio-preview-drag-handle" : undefined,
         selected: true,
       };
       commitCanvas({
@@ -775,6 +794,11 @@ function InfiniteCanvas() {
         edges: edgesRef.current.map((edge) => ({ ...edge, selected: false })),
       });
       setTool("select");
+      if (kind === "miniapp-preview" && instance) {
+        window.setTimeout(() => {
+          void instance.fitView({ nodes: [nextNode], duration: 240, padding: 0.18, maxZoom: 0.9 });
+        }, 20);
+      }
       requestAnimationFrame(() => {
         wrapperRef.current?.querySelector<HTMLInputElement>(`[data-id="${id}"] .studio-note-title`)?.select();
       });
@@ -881,11 +905,11 @@ function InfiniteCanvas() {
         </NodeToolbar>
       );
 
-      const resizer = (selected: boolean, locked?: boolean) => (
+      const resizer = (selected: boolean, locked?: boolean, minWidth = 72, minHeight = 48) => (
         <NodeResizer
           isVisible={selected && !locked}
-          minWidth={72}
-          minHeight={48}
+          minWidth={minWidth}
+          minHeight={minHeight}
           onResizeStart={beginInteraction}
           onResizeEnd={finishInteraction}
           lineClassName="studio-note-resize-line"
@@ -949,6 +973,21 @@ function InfiniteCanvas() {
               {resizer(selected, data.locked)}
               <div className="studio-group-title"><FontAwesomeIcon icon={faGripVertical} /> {data.title}</div>
             </div>
+          );
+        },
+        "miniapp-preview": function MiniAppCanvasNode({ id, data, selected }: NodeProps<CanvasNode>) {
+          return (
+            <MiniAppPreviewNode
+              data={data}
+              selected={selected}
+              toolbar={toolbar(id, data)}
+              resizer={resizer(selected, data.locked, 340, 500)}
+              onChange={(patch) => {
+                beginInteraction();
+                updateNodeData(id, { preview: { ...(data.preview ?? DEFAULT_MINIAPP_PREVIEW), ...patch } });
+                finishInteraction();
+              }}
+            />
           );
         },
       };
@@ -1045,6 +1084,7 @@ function InfiniteCanvas() {
       else if (!commandKey && key === "h") setTool("pan");
       else if (!commandKey && key === "n") createNode("note");
       else if (!commandKey && key === "t") createNode("text");
+      else if (!commandKey && key === "m") createNode("miniapp-preview");
       else if (!commandKey && key === "r") setTool("rectangle");
       else if (!commandKey && key === "p") setTool("draw");
       else if (!commandKey && key === "l") setTool("lasso");
@@ -1247,6 +1287,7 @@ function InfiniteCanvas() {
           <span className="studio-toolbar-divider" />
           <button type="button" aria-label="新建便签" title="新建便签 (N)" draggable onDragStart={(event) => event.dataTransfer.setData("application/deepagent-canvas-node", "note")} onClick={() => createNode("note")}><FontAwesomeIcon icon={faNoteSticky} /></button>
           <button type="button" aria-label="新建文本" title="新建文本 (T)" draggable onDragStart={(event) => event.dataTransfer.setData("application/deepagent-canvas-node", "text")} onClick={() => createNode("text")}><FontAwesomeIcon icon={faFont} /></button>
+          <button type="button" aria-label="新建小程序预览" title="新建小程序预览 (M)" onClick={() => createNode("miniapp-preview")}><FontAwesomeIcon icon={faMobileScreenButton} /></button>
           <button type="button" className={tool === "rectangle" ? "is-active" : ""} aria-label="矩形工具" title="绘制矩形 (R)" onClick={() => setTool("rectangle")}><FontAwesomeIcon icon={faSquare} /></button>
           <button type="button" aria-label="新建圆形" title="新建圆形" draggable onDragStart={(event) => event.dataTransfer.setData("application/deepagent-canvas-node", "shape")} onClick={() => createNode("shape", undefined, { shape: "ellipse" })}><FontAwesomeIcon icon={faCircle} /></button>
           <button type="button" className={tool === "draw" ? "is-active" : ""} aria-label="画笔工具" title="自由画笔 (P)" onClick={() => setTool("draw")}><FontAwesomeIcon icon={faPencil} /></button>
@@ -1292,7 +1333,7 @@ function InfiniteCanvas() {
           </Panel>
         )}
 
-        {showMiniMap && <MiniMap className="studio-canvas-minimap" pannable zoomable nodeColor={(node) => node.type === "group" ? "#cbd5e1" : node.type === "shape" ? "#93c5fd" : "#e2e8f0"} />}
+        {showMiniMap && <MiniMap className="studio-canvas-minimap" pannable zoomable nodeColor={(node) => node.type === "group" ? "#cbd5e1" : node.type === "shape" ? "#93c5fd" : node.type === "miniapp-preview" ? "#60a5fa" : "#e2e8f0"} />}
         <Controls position="bottom-right" showFitView={false} showInteractive={false} aria-label="画布缩放与全屏控制">
           <ControlButton
             type="button"
