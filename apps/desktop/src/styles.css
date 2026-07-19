@@ -91,6 +91,10 @@ button:focus {
   caret-color: transparent;
 }
 
+.composer-textarea.composer-textarea--empty {
+  caret-color: var(--theme-fg, #111827);
+}
+
 .composer-textarea::selection {
   background: transparent;
   color: transparent;

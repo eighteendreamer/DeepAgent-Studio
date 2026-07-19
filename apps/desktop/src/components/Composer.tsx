@@ -1208,12 +1208,7 @@ export function Composer({
     };
 
     if (!draftValue) {
-      return (
-        <>
-          {renderCaretAt(0, "empty-caret")}
-          <span className="text-gray-400">{editorPlaceholder}</span>
-        </>
-      );
+      return <span className="text-gray-400">{editorPlaceholder}</span>;
     }
     const markerRegex = /[\uE000\uE001]/g;
     let offset = 0;
@@ -1522,7 +1517,9 @@ export function Composer({
         <textarea
           ref={textareaRef}
           aria-label={editorPlaceholder}
-          className="composer-textarea custom-scrollbar relative z-10 w-full resize-none bg-transparent text-sm leading-6 text-transparent caret-text-base outline-none placeholder-transparent"
+          className={`composer-textarea custom-scrollbar relative z-10 w-full resize-none bg-transparent text-sm leading-6 text-transparent outline-none placeholder-transparent ${
+            draftValue ? "" : "composer-textarea--empty"
+          }`}
           style={{
             minHeight: `${COMPOSER_TEXTAREA_MIN_HEIGHT}px`,
             maxHeight: `${textareaMaxHeight}px`,
