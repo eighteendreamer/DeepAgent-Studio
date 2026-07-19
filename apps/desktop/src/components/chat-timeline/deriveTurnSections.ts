@@ -1,25 +1,42 @@
 import type { ChatBlock, ProcessSection, Turn, TurnSections } from "./timelineTypes";
 
-function findLastAssistantContentIndex(blocks: ChatBlock[]): number {
+/**
+ * Index of the turn's final-answer block: the last assistant block with visible
+ * content, but ONLY when no tool call appears after it. Text emitted before or
+ * between tool calls (preambles / narration) is NOT the final answer — it stays
+ * in the process timeline. The trailing block (nothing after it) is always the
+ * live-streaming answer, so it renders OUTSIDE the collapsed timeline and streams
+ * token-by-token during a run instead of being hidden inside a collapsed
+ * "中间输出" process section (which only auto-expands for reasoning).
+ *
+ * This satisfies both cases at once:
+ *  - a preamble followed by tool calls → stays inside the process timeline
+ *    (never shown as a fake final answer while the model is still working),
+ *  - the actively-streaming tail (nothing after it) → renders outside and
+ *    streams live, whether it is an early preamble or the real final answer.
+ */
+function findFinalAssistantContentIndex(blocks: ChatBlock[]): number {
+  let lastContent = -1;
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const block = blocks[index];
-    if (block.kind === "assistant" && block.text.trim()) return index;
+    if (block.kind === "assistant" && block.text.trim()) {
+      lastContent = index;
+      break;
+    }
   }
-  return -1;
+  if (lastContent === -1) return -1;
+  // A tool call after the last assistant text means the model is still working
+  // (or the turn ended on a tool) — there is no final answer to surface yet.
+  for (let index = lastContent + 1; index < blocks.length; index += 1) {
+    if (blocks[index].kind === "tool") return -1;
+  }
+  return lastContent;
 }
 
-export function deriveTurnSections(turn: Turn, isProcessing: boolean): TurnSections {
+export function deriveTurnSections(turn: Turn, _isProcessing: boolean): TurnSections {
   const processBlocks: ChatBlock[] = [];
   const assistantContentBlocks: Extract<ChatBlock, { kind: "assistant" }>[] = [];
-  // Only the SINGLE last assistant text segment is the final answer bubble
-  // (rendered outside the collapsed timeline). Every earlier "先看一下…" preface
-  // / intermediate narration stays inside the process timeline. While the turn
-  // is still processing, NOTHING is promoted to the final body yet — every
-  // assistant segment is part of the live trace (mirrors Kun's
-  // derive-turn-sections: `isProcessing ? -1 : findLastAssistantContentIndex`).
-  const finalAssistantContentIndex = isProcessing
-    ? -1
-    : findLastAssistantContentIndex(turn.blocks);
+  const finalAssistantContentIndex = findFinalAssistantContentIndex(turn.blocks);
 
   turn.blocks.forEach((block, index) => {
     if (block.kind === "assistant") {
