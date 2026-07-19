@@ -8,10 +8,18 @@ function findLastAssistantContentIndex(blocks: ChatBlock[]): number {
   return -1;
 }
 
-export function deriveTurnSections(turn: Turn, _isProcessing: boolean): TurnSections {
+export function deriveTurnSections(turn: Turn, isProcessing: boolean): TurnSections {
   const processBlocks: ChatBlock[] = [];
   const assistantContentBlocks: Extract<ChatBlock, { kind: "assistant" }>[] = [];
-  const finalAssistantContentIndex = findLastAssistantContentIndex(turn.blocks);
+  // Only the SINGLE last assistant text segment is the final answer bubble
+  // (rendered outside the collapsed timeline). Every earlier "先看一下…" preface
+  // / intermediate narration stays inside the process timeline. While the turn
+  // is still processing, NOTHING is promoted to the final body yet — every
+  // assistant segment is part of the live trace (mirrors Kun's
+  // derive-turn-sections: `isProcessing ? -1 : findLastAssistantContentIndex`).
+  const finalAssistantContentIndex = isProcessing
+    ? -1
+    : findLastAssistantContentIndex(turn.blocks);
 
   turn.blocks.forEach((block, index) => {
     if (block.kind === "assistant") {
