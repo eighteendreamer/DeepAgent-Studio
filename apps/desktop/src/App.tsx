@@ -483,6 +483,12 @@ export function App() {
   useEffect(() => {
     if (view !== "chat" || !activeId) return;
 
+    // A brand-new run is seeding/streaming under a pending key while `activeId`
+    // still points at the previously-active (global-latest) session. Don't load
+    // that old session's conversation over the pending transcript — the run's
+    // `session_registered` event will set the real id and re-run this effect.
+    if (activePendingRunKeyRef.current) return;
+
     const live = liveTranscripts.current.get(activeId);
     if (live) {
       setMessages(live);
