@@ -12,6 +12,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@fortawesome/fontawesome-svg-core": "^6.6.0",
     "@fortawesome/free-brands-svg-icons": "^6.7.2",
     "@fortawesome/free-regular-svg-icons": "^6.6.0",
@@ -27,6 +28,7 @@
     "deepmerge": "^4.3.1",
     "echarts": "^6.1.0",
     "framer-motion": "^12.40.0",
+    "html-to-image": "^1.11.13",
     "i18next": "^26.3.0",
     "katex": "^0.16.11",
     "pnpm": "^11.7.0",

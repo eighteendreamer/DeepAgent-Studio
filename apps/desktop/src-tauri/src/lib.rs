@@ -701,6 +701,15 @@ fn save_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&target, content).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn save_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&target, bytes).map_err(|e| e.to_string())
+}
+
 // ---- settings / initialization commands -----------------------------------
 
 #[tauri::command]
@@ -3979,6 +3988,7 @@ pub fn run() {
             rewind_session,
             export_transcript,
             save_text_file,
+            save_binary_file,
             initialize_project,
             get_settings,
             get_welcome_name,
