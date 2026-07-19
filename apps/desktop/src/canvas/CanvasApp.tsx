@@ -555,21 +555,69 @@ function InfiniteCanvas() {
 
   const autoLayout = useCallback(
     (direction: "LR" | "TB" = "LR") => {
-      const layoutNodes = nodesRef.current.filter((node) => !node.parentId && node.type !== "group");
+      const selectedTopLevelNodes = nodesRef.current.filter(
+        (node) => node.selected && !node.parentId && node.type !== "group" && !node.data.locked,
+      );
+      const layoutNodes = (
+        selectedTopLevelNodes.length >= 2
+          ? selectedTopLevelNodes
+          : nodesRef.current.filter(
+              (node) => !node.parentId && node.type !== "group" && !node.data.locked,
+            )
+      );
       if (!layoutNodes.length) return;
-      const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
-      graph.setGraph({ rankdir: direction, nodesep: 48, ranksep: 72, marginx: 24, marginy: 24 });
-      layoutNodes.forEach((node) => graph.setNode(node.id, nodeSize(node)));
-      edgesRef.current.forEach((edge) => {
-        if (graph.hasNode(edge.source) && graph.hasNode(edge.target)) graph.setEdge(edge.source, edge.target);
-      });
-      dagre.layout(graph);
+      const layoutNodeIds = new Set(layoutNodes.map((node) => node.id));
+      const layoutEdges = edgesRef.current.filter(
+        (edge) => layoutNodeIds.has(edge.source) && layoutNodeIds.has(edge.target),
+      );
+      const positions = new Map<string, XYPosition>();
+
+      if (layoutEdges.length === 0) {
+        const sorted = [...layoutNodes].sort((left, right) =>
+          direction === "LR"
+            ? left.position.x - right.position.x || left.position.y - right.position.y
+            : left.position.y - right.position.y || left.position.x - right.position.x,
+        );
+        const startX = Math.min(...sorted.map((node) => node.position.x));
+        const startY = Math.min(...sorted.map((node) => node.position.y));
+        if (direction === "LR") {
+          const centerY =
+            sorted.reduce((sum, node) => sum + node.position.y + nodeSize(node).height / 2, 0) /
+            sorted.length;
+          let cursorX = startX;
+          sorted.forEach((node) => {
+            const size = nodeSize(node);
+            positions.set(node.id, { x: cursorX, y: centerY - size.height / 2 });
+            cursorX += size.width + 48;
+          });
+        } else {
+          const centerX =
+            sorted.reduce((sum, node) => sum + node.position.x + nodeSize(node).width / 2, 0) /
+            sorted.length;
+          let cursorY = startY;
+          sorted.forEach((node) => {
+            const size = nodeSize(node);
+            positions.set(node.id, { x: centerX - size.width / 2, y: cursorY });
+            cursorY += size.height + 48;
+          });
+        }
+      } else {
+        const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
+        graph.setGraph({ rankdir: direction, nodesep: 48, ranksep: 72, marginx: 24, marginy: 24 });
+        layoutNodes.forEach((node) => graph.setNode(node.id, nodeSize(node)));
+        layoutEdges.forEach((edge) => graph.setEdge(edge.source, edge.target));
+        dagre.layout(graph);
+        layoutNodes.forEach((node) => {
+          const point = graph.node(node.id) as { x: number; y: number };
+          const size = nodeSize(node);
+          positions.set(node.id, { x: point.x - size.width / 2, y: point.y - size.height / 2 });
+        });
+      }
+
       commitCanvas({
         nodes: nodesRef.current.map((node) => {
-          const point = graph.node(node.id) as { x: number; y: number } | undefined;
-          if (!point || node.parentId || node.data.locked) return node;
-          const size = nodeSize(node);
-          return { ...node, position: { x: point.x - size.width / 2, y: point.y - size.height / 2 } };
+          const position = positions.get(node.id);
+          return position ? { ...node, position } : node;
         }),
         edges: edgesRef.current,
       });
