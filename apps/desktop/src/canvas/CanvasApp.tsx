@@ -194,6 +194,7 @@ function InfiniteCanvas() {
   const pastRef = useRef<CanvasSnapshot[]>([]);
   const futureRef = useRef<CanvasSnapshot[]>([]);
   const interactionStartRef = useRef<CanvasSnapshot | null>(null);
+  const noticeTimerRef = useRef<number | null>(null);
   const [historyStatus, setHistoryStatus] = useState({ canUndo: false, canRedo: false });
   const [tool, setTool] = useState<CanvasTool>("select");
   const [canvasLocked, setCanvasLocked] = useState(false);
@@ -205,6 +206,16 @@ function InfiniteCanvas() {
   const [searchQuery, setSearchQuery] = useState("");
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [drawDraft, setDrawDraft] = useState<DrawDraft>(null);
+  const [commandNotice, setCommandNotice] = useState<string | null>(null);
+
+  const notifyCommand = useCallback((message: string) => {
+    setCommandNotice(message);
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => {
+      setCommandNotice(null);
+      noticeTimerRef.current = null;
+    }, 1800);
+  }, []);
 
   const currentSnapshot = useCallback(
     (): CanvasSnapshot => ({ nodes: nodesRef.current, edges: edgesRef.current }),
@@ -271,6 +282,17 @@ function InfiniteCanvas() {
 
   const selectedNodes = useMemo(() => nodes.filter((node) => node.selected), [nodes]);
   const selectedEdges = useMemo(() => edges.filter((edge) => edge.selected), [edges]);
+  const selectionCapabilities = useMemo(() => {
+    const unlocked = selectedNodes.filter((node) => !node.data.locked);
+    const parentIds = new Set(unlocked.map((node) => node.parentId ?? "__root__"));
+    return {
+      canObjectAction: selectedNodes.length > 0,
+      canGroup: selectedNodes.filter((node) => !node.parentId && node.type !== "group").length >= 2,
+      canUngroup: selectedNodes.some((node) => node.type === "group"),
+      canAlign: unlocked.length >= 2 && parentIds.size === 1,
+      canDistribute: unlocked.length >= 3 && parentIds.size === 1,
+    };
+  }, [selectedNodes]);
 
   const updateNodeData = useCallback((nodeId: string, patch: Partial<CanvasNodeData>) => {
     const nextNodes = nodesRef.current.map((node) =>
@@ -407,7 +429,10 @@ function InfiniteCanvas() {
 
   const toggleSelectedLock = useCallback(() => {
     const selected = nodesRef.current.filter((node) => node.selected);
-    if (!selected.length) return;
+    if (!selected.length) {
+      notifyCommand("请先选择至少一个节点");
+      return;
+    }
     const shouldLock = selected.some((node) => !node.data.locked);
     commitCanvas({
       nodes: nodesRef.current.map((node) =>
@@ -417,25 +442,39 @@ function InfiniteCanvas() {
       ),
       edges: edgesRef.current,
     });
-  }, [commitCanvas]);
+    notifyCommand(shouldLock ? `已锁定 ${selected.length} 个节点` : `已解锁 ${selected.length} 个节点`);
+  }, [commitCanvas, notifyCommand]);
 
   const moveSelectionLayer = useCallback(
     (direction: "front" | "back") => {
-      if (!nodesRef.current.some((node) => node.selected)) return;
+      const selectedCount = nodesRef.current.filter((node) => node.selected).length;
+      if (!selectedCount) {
+        notifyCommand("请先选择至少一个节点");
+        return;
+      }
       const zValues = nodesRef.current.map((node) => node.zIndex ?? 0);
       const zIndex = direction === "front" ? Math.max(0, ...zValues) + 1 : Math.min(0, ...zValues) - 1;
       commitCanvas({
         nodes: nodesRef.current.map((node) => (node.selected ? { ...node, zIndex } : node)),
         edges: edgesRef.current,
       });
+      notifyCommand(direction === "front" ? `已将 ${selectedCount} 个节点置于顶层` : `已将 ${selectedCount} 个节点置于底层`);
     },
-    [commitCanvas],
+    [commitCanvas, notifyCommand],
   );
 
   const alignSelection = useCallback(
     (alignment: "left" | "center" | "right" | "top" | "middle" | "bottom") => {
-      const selected = nodesRef.current.filter((node) => node.selected && !node.parentId && !node.data.locked);
-      if (selected.length < 2) return;
+      const selected = nodesRef.current.filter((node) => node.selected && !node.data.locked);
+      if (selected.length < 2) {
+        notifyCommand("对齐至少需要选择两个未锁定节点");
+        return;
+      }
+      if (new Set(selected.map((node) => node.parentId ?? "__root__")).size > 1) {
+        notifyCommand("只能对齐画布同一层级或同一分组内的节点");
+        return;
+      }
+      const selectedIds = new Set(selected.map((node) => node.id));
       const rects = selected.map((node) => ({ node, ...nodeSize(node) }));
       const left = Math.min(...rects.map(({ node }) => node.position.x));
       const right = Math.max(...rects.map(({ node, width }) => node.position.x + width));
@@ -445,7 +484,7 @@ function InfiniteCanvas() {
       const middle = (top + bottom) / 2;
       commitCanvas({
         nodes: nodesRef.current.map((node) => {
-          if (!node.selected || node.parentId || node.data.locked) return node;
+          if (!selectedIds.has(node.id)) return node;
           const size = nodeSize(node);
           if (alignment === "left") return { ...node, position: { ...node.position, x: left } };
           if (alignment === "center") return { ...node, position: { ...node.position, x: center - size.width / 2 } };
@@ -456,16 +495,25 @@ function InfiniteCanvas() {
         }),
         edges: edgesRef.current,
       });
+      const labels = { left: "左对齐", center: "水平居中", right: "右对齐", top: "顶部对齐", middle: "垂直居中", bottom: "底部对齐" };
+      notifyCommand(`已${labels[alignment]} ${selected.length} 个节点`);
     },
-    [commitCanvas],
+    [commitCanvas, notifyCommand],
   );
 
   const distributeSelection = useCallback(
     (axis: "horizontal" | "vertical") => {
       const selected = nodesRef.current
-        .filter((node) => node.selected && !node.parentId && !node.data.locked)
+        .filter((node) => node.selected && !node.data.locked)
         .sort((a, b) => (axis === "horizontal" ? a.position.x - b.position.x : a.position.y - b.position.y));
-      if (selected.length < 3) return;
+      if (selected.length < 3) {
+        notifyCommand("等距分布至少需要选择三个未锁定节点");
+        return;
+      }
+      if (new Set(selected.map((node) => node.parentId ?? "__root__")).size > 1) {
+        notifyCommand("只能分布画布同一层级或同一分组内的节点");
+        return;
+      }
       const first = selected[0];
       const last = selected[selected.length - 1];
       const firstSize = nodeSize(first);
@@ -496,13 +544,17 @@ function InfiniteCanvas() {
         }),
         edges: edgesRef.current,
       });
+      notifyCommand(axis === "horizontal" ? `已水平等距分布 ${selected.length} 个节点` : `已垂直等距分布 ${selected.length} 个节点`);
     },
-    [commitCanvas],
+    [commitCanvas, notifyCommand],
   );
 
   const groupSelection = useCallback(() => {
     const selected = nodesRef.current.filter((node) => node.selected && !node.parentId && node.type !== "group");
-    if (selected.length < 2) return;
+    if (selected.length < 2) {
+      notifyCommand("组合至少需要选择两个画布顶层节点");
+      return;
+    }
     const minX = Math.min(...selected.map((node) => node.position.x));
     const minY = Math.min(...selected.map((node) => node.position.y));
     const maxX = Math.max(...selected.map((node) => node.position.x + nodeSize(node).width));
@@ -529,13 +581,17 @@ function InfiniteCanvas() {
         : node,
     );
     commitCanvas({ nodes: [group, ...children], edges: edgesRef.current });
-  }, [commitCanvas]);
+    notifyCommand(`已组合 ${selected.length} 个节点`);
+  }, [commitCanvas, notifyCommand]);
 
   const ungroupSelection = useCallback(() => {
     const groupIds = new Set(
       nodesRef.current.filter((node) => node.selected && node.type === "group").map((node) => node.id),
     );
-    if (!groupIds.size) return;
+    if (!groupIds.size) {
+      notifyCommand("请先选择一个分组");
+      return;
+    }
     const groups = new Map(nodesRef.current.filter((node) => groupIds.has(node.id)).map((node) => [node.id, node]));
     const nextNodes = nodesRef.current
       .filter((node) => !groupIds.has(node.id))
@@ -551,7 +607,8 @@ function InfiniteCanvas() {
         };
       });
     commitCanvas({ nodes: nextNodes, edges: edgesRef.current });
-  }, [commitCanvas]);
+    notifyCommand(`已取消 ${groupIds.size} 个分组`);
+  }, [commitCanvas, notifyCommand]);
 
   const autoLayout = useCallback(
     (direction: "LR" | "TB" = "LR") => {
@@ -849,6 +906,13 @@ function InfiniteCanvas() {
     return () => observer.disconnect();
   }, []);
 
+  useEffect(
+    () => () => {
+      if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    },
+    [],
+  );
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const persistedNodes = nodes.map(({ selected: _selected, dragging: _dragging, ...node }) => node);
@@ -1077,6 +1141,7 @@ function InfiniteCanvas() {
         nodesDraggable={!canvasLocked && tool === "select"}
         nodesConnectable={!canvasLocked && tool === "select"}
         elementsSelectable={!canvasLocked && (tool === "select" || tool === "eraser")}
+        elevateNodesOnSelect={false}
         zoomOnDoubleClick={false}
         snapToGrid
         snapGrid={SNAP_GRID}
@@ -1120,8 +1185,8 @@ function InfiniteCanvas() {
         {moreOpen && (
           <Panel position="top-left" className="studio-more-menu">
             <div className="studio-menu-section"><span>编辑</span><button onClick={() => void copySelection()}>复制 <kbd>Ctrl+C</kbd></button><button onClick={() => void pasteClipboard()}>粘贴 <kbd>Ctrl+V</kbd></button><button onClick={() => void duplicateSelection()}>创建副本 <kbd>Ctrl+D</kbd></button><button onClick={selectAll}>全选 <kbd>Ctrl+A</kbd></button></div>
-            <div className="studio-menu-section"><span>对象</span><button onClick={toggleSelectedLock}>{selectedNodes.some((node) => node.data.locked) ? "解锁选中" : "锁定选中"}</button><button onClick={() => moveSelectionLayer("front")}>置于顶层</button><button onClick={() => moveSelectionLayer("back")}>置于底层</button><button onClick={groupSelection}>组合</button><button onClick={ungroupSelection}>取消组合</button></div>
-            <div className="studio-menu-section"><span>对齐</span><button onClick={() => alignSelection("left")}>左对齐</button><button onClick={() => alignSelection("center")}>水平居中</button><button onClick={() => alignSelection("top")}>顶部对齐</button><button onClick={() => alignSelection("middle")}>垂直居中</button><button onClick={() => distributeSelection("horizontal")}>水平等距</button><button onClick={() => distributeSelection("vertical")}>垂直等距</button></div>
+            <div className="studio-menu-section"><span>对象</span><button disabled={!selectionCapabilities.canObjectAction} title={selectionCapabilities.canObjectAction ? "切换选中节点锁定状态" : "请先选择节点"} onClick={toggleSelectedLock}>{selectedNodes.some((node) => node.data.locked) ? "解锁选中" : "锁定选中"}</button><button disabled={!selectionCapabilities.canObjectAction} title={selectionCapabilities.canObjectAction ? "将选中节点置于所有节点上方" : "请先选择节点"} onClick={() => moveSelectionLayer("front")}>置于顶层</button><button disabled={!selectionCapabilities.canObjectAction} title={selectionCapabilities.canObjectAction ? "将选中节点置于所有节点下方" : "请先选择节点"} onClick={() => moveSelectionLayer("back")}>置于底层</button><button disabled={!selectionCapabilities.canGroup} title={selectionCapabilities.canGroup ? "将选中的顶层节点组合" : "至少选择两个未分组节点"} onClick={groupSelection}>组合</button><button disabled={!selectionCapabilities.canUngroup} title={selectionCapabilities.canUngroup ? "解除选中的分组" : "请先选择分组"} onClick={ungroupSelection}>取消组合</button></div>
+            <div className="studio-menu-section"><span>对齐</span><button disabled={!selectionCapabilities.canAlign} title={selectionCapabilities.canAlign ? "对齐选中节点左边缘" : "至少选择两个同层级未锁定节点"} onClick={() => alignSelection("left")}>左对齐</button><button disabled={!selectionCapabilities.canAlign} title={selectionCapabilities.canAlign ? "对齐选中节点水平中心" : "至少选择两个同层级未锁定节点"} onClick={() => alignSelection("center")}>水平居中</button><button disabled={!selectionCapabilities.canAlign} title={selectionCapabilities.canAlign ? "对齐选中节点顶部" : "至少选择两个同层级未锁定节点"} onClick={() => alignSelection("top")}>顶部对齐</button><button disabled={!selectionCapabilities.canAlign} title={selectionCapabilities.canAlign ? "对齐选中节点垂直中心" : "至少选择两个同层级未锁定节点"} onClick={() => alignSelection("middle")}>垂直居中</button><button disabled={!selectionCapabilities.canDistribute} title={selectionCapabilities.canDistribute ? "在最左和最右节点间等距分布" : "至少选择三个同层级未锁定节点"} onClick={() => distributeSelection("horizontal")}>水平等距</button><button disabled={!selectionCapabilities.canDistribute} title={selectionCapabilities.canDistribute ? "在最上和最下节点间等距分布" : "至少选择三个同层级未锁定节点"} onClick={() => distributeSelection("vertical")}>垂直等距</button></div>
             <div className="studio-menu-section"><span>画布</span><button onClick={() => autoLayout("LR")}>横向自动布局</button><button onClick={() => autoLayout("TB")}>纵向自动布局</button><button onClick={() => setShowMiniMap((show) => !show)}>{showMiniMap ? "隐藏小地图" : "显示小地图"}</button><button onClick={() => setCanvasLocked((locked) => !locked)}>{canvasLocked ? "解锁画布" : "锁定画布"}</button></div>
             <div className="studio-menu-section"><span>文件</span><button onClick={() => importInputRef.current?.click()}>导入 JSON</button><button onClick={exportJson}>导出 JSON</button><button onClick={() => void exportImage()}><FontAwesomeIcon icon={faDownload} /> 导出 PNG</button><button className="is-danger" onClick={clearCanvas}>清空画布</button></div>
           </Panel>
@@ -1131,6 +1196,8 @@ function InfiniteCanvas() {
         <Controls position="bottom-right" showInteractive={false} />
         <Panel position="bottom-left" className="studio-canvas-hint"><span>{canvasLocked ? "画布已锁定" : tool === "pan" ? "左键拖动画布" : tool === "select" ? "左键框选或拖动节点" : tool === "rectangle" ? "拖动绘制矩形" : tool === "draw" ? "拖动自由绘制" : tool === "lasso" ? "圈选节点" : "拖动擦除对象"}</span><span className="studio-canvas-hint-separator" /><span>{selectedNodes.length || selectedEdges.length ? `已选 ${selectedNodes.length + selectedEdges.length} 项` : "双击新建便签"}</span><span className="studio-canvas-hint-separator" /><span>{Math.round(zoom * 100)}%</span></Panel>
       </ReactFlow>
+
+      {commandNotice && <div key={commandNotice} className="studio-command-notice" role="status">{commandNotice}</div>}
 
       {(tool === "rectangle" || tool === "draw" || tool === "lasso" || tool === "eraser") && !canvasLocked && (
         <div

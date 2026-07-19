@@ -500,6 +500,26 @@ button:focus {
   cursor: not-allowed;
 }
 
+.studio-note-node.is-locked::after,
+.studio-text-node.is-locked::after,
+.studio-shape-node.is-locked::after,
+.studio-drawing-node.is-locked::after,
+.studio-group-node.is-locked::after {
+  content: "已锁定";
+  position: absolute;
+  z-index: 3;
+  top: 6px;
+  right: 7px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--theme-bg, #ffffff) 90%, transparent);
+  padding: 3px 6px;
+  color: var(--theme-text-secondary, #6b7280);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: none;
+}
+
 .studio-text-node {
   position: relative;
   display: flex;
@@ -720,6 +740,13 @@ button:focus {
   background: var(--theme-sidebar, #f8f7f5);
 }
 
+.studio-menu-section button:disabled {
+  background: transparent;
+  color: var(--theme-text-secondary, #6b7280);
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
 .studio-menu-section button.is-danger {
   color: #dc2626;
 }
@@ -746,6 +773,30 @@ button:focus {
 
 .studio-context-menu button {
   width: 100%;
+}
+
+.studio-command-notice {
+  position: absolute;
+  z-index: 80;
+  left: 50%;
+  bottom: 42px;
+  transform: translateX(-50%);
+  border: 1px solid var(--theme-border, #e5e7eb);
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--theme-bg, #ffffff) 94%, transparent);
+  padding: 7px 12px;
+  color: var(--theme-fg, #1f2937);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(12px);
+  font-size: 11px;
+  line-height: 1;
+  pointer-events: none;
+  animation: studio-command-notice-in 160ms ease-out;
+}
+
+@keyframes studio-command-notice-in {
+  from { opacity: 0; transform: translate(-50%, 5px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 
 .studio-canvas-minimap {
