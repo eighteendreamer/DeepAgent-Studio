@@ -2530,7 +2530,7 @@ impl ChatService {
         // non-fatal (logged + skipped) so one bad server never blocks a run.
         let mut registry = registry;
         if let Some(mcp) = &self.mcp {
-            match mcp.connect_enabled().await {
+            match mcp.connected_registry().await {
                 Ok((mcp_registry, failures)) => {
                     if !failures.is_empty() {
                         tracing::warn!(
@@ -2538,7 +2538,6 @@ impl ChatService {
                             "some MCP servers failed to connect"
                         );
                     }
-                    let mcp_registry = std::sync::Arc::new(mcp_registry);
                     for adapter in deepagent_mcp::adapters_for(mcp_registry) {
                         if let Err(e) = registry.register(adapter) {
                             tracing::warn!(error = %e, "failed to register MCP tool adapter");
@@ -2546,7 +2545,7 @@ impl ChatService {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "MCP connect_enabled failed; continuing without MCP tools");
+                    tracing::warn!(error = %e, "MCP connected_registry failed; continuing without MCP tools");
                 }
             }
         }

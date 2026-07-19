@@ -19,6 +19,7 @@ use deepagent_mcp::{connect_transport, McpClient, McpConfig, McpRegistry};
 use deepagent_persistence::document_store::DocumentStore;
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex as AsyncMutex;
 
 /// Document-store location for the MCP config.
 const MCP_COLLECTION: &str = "mcp";
@@ -155,12 +156,28 @@ pub struct McpConnectionStatusDto {
 /// UI-facing MCP server management.
 pub struct McpService {
     db: Arc<Database>,
+    /// Cross-run cache of the connected registry, keyed by a fingerprint of the
+    /// enabled-server config. Lets a chat run reuse already-spawned MCP servers
+    /// (stdio/npx cold-start is the dominant per-run latency) instead of
+    /// re-connecting every message; the cache is invalidated (old connections
+    /// closed) whenever the enabled config changes.
+    cache: Arc<AsyncMutex<Option<CachedRegistry>>>,
+}
+
+/// A cached, live [`McpRegistry`] plus the config fingerprint it was built for.
+struct CachedRegistry {
+    fingerprint: String,
+    registry: Arc<McpRegistry>,
+    failures: Vec<(String, String)>,
 }
 
 impl McpService {
     /// Build over the shared database.
     pub fn new(db: Arc<Database>) -> Self {
-        Self { db }
+        Self {
+            db,
+            cache: Arc::new(AsyncMutex::new(None)),
+        }
     }
 
     fn load_state(&self) -> Result<McpState> {
@@ -259,22 +276,66 @@ impl McpService {
         // Expand ${VAR} from the environment (headers/urls/args/env).
         config.expand_with(&|var| std::env::var(var).ok());
 
+        // Connect (spawn + initialize) every server concurrently: the process
+        // cold-start (npx/node) dominates, so fanning out turns a "sum of
+        // servers" wait into "slowest server". tools/list then runs per server.
+        let connects = config.servers.iter().map(|(name, cfg)| {
+            let name = name.clone();
+            let cfg = cfg.clone();
+            async move {
+                let result = Self::connect_one(&name, &cfg).await;
+                (name, result)
+            }
+        });
+        let connected = futures::future::join_all(connects).await;
+
         let mut registry = McpRegistry::new();
         let mut failures = Vec::new();
-
-        for (name, cfg) in &config.servers {
-            match Self::connect_one(name, cfg).await {
+        for (name, result) in connected {
+            match result {
                 Ok(client) => {
-                    if let Err(e) = registry.register(name, client).await {
-                        failures.push((name.clone(), e.to_string()));
+                    if let Err(e) = registry.register(&name, client).await {
+                        failures.push((name, e.to_string()));
                     }
                 }
                 Err(e) => {
                     tracing::warn!(server = name.as_str(), error = %e, "MCP connect failed; skipping");
-                    failures.push((name.clone(), e.to_string()));
+                    failures.push((name, e.to_string()));
                 }
             }
         }
+        Ok((registry, failures))
+    }
+
+    /// Return a **shared, cached** connected registry for the current enabled
+    /// config, connecting only when the config changed since the last call.
+    ///
+    /// This is the per-run entry point: the first run pays the connect cost
+    /// (now parallel), and subsequent runs reuse the already-spawned servers
+    /// with near-zero latency. When the enabled config changes (add / edit /
+    /// toggle / remove a server) the fingerprint no longer matches, so the old
+    /// connections are closed and fresh ones are established.
+    pub async fn connected_registry(&self) -> Result<(Arc<McpRegistry>, Vec<(String, String)>)> {
+        // Fingerprint = the serialized enabled config. Any change to which
+        // servers are enabled or how they're configured busts the cache.
+        let fingerprint = serde_json::to_string(&self.enabled_config()?).unwrap_or_default();
+
+        let mut guard = self.cache.lock().await;
+        if let Some(cached) = guard.as_ref() {
+            if cached.fingerprint == fingerprint {
+                return Ok((cached.registry.clone(), cached.failures.clone()));
+            }
+            // Config changed: tear down the stale connections before reconnecting.
+            let _ = cached.registry.close_all().await;
+        }
+
+        let (registry, failures) = self.connect_enabled().await?;
+        let registry = Arc::new(registry);
+        *guard = Some(CachedRegistry {
+            fingerprint,
+            registry: registry.clone(),
+            failures: failures.clone(),
+        });
         Ok((registry, failures))
     }
 
@@ -558,6 +619,35 @@ mod tests {
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0].status, "failed");
         assert!(statuses[0].error.is_some());
+    }
+
+    #[tokio::test]
+    async fn connected_registry_reuses_until_config_changes() {
+        let svc = service();
+        let mut dto = stdio_dto("ghost");
+        dto.command = Some("definitely-not-a-real-binary-xyz".into());
+        dto.args = vec![];
+        svc.upsert(dto).unwrap();
+
+        let (reg1, failures1) = svc.connected_registry().await.unwrap();
+        assert_eq!(failures1.len(), 1);
+        // Same config → the exact same Arc is reused (no reconnect).
+        let (reg2, _) = svc.connected_registry().await.unwrap();
+        assert!(
+            Arc::ptr_eq(&reg1, &reg2),
+            "registry should be reused when config is unchanged"
+        );
+
+        // Config change (add a server) busts the cache → a fresh Arc.
+        let mut other = stdio_dto("ghost2");
+        other.command = Some("definitely-not-a-real-binary-xyz".into());
+        other.args = vec![];
+        svc.upsert(other).unwrap();
+        let (reg3, _) = svc.connected_registry().await.unwrap();
+        assert!(
+            !Arc::ptr_eq(&reg1, &reg3),
+            "registry should be rebuilt after a config change"
+        );
     }
 
     #[tokio::test]
