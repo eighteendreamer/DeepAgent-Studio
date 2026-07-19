@@ -47,6 +47,7 @@ use crate::dto::{ApprovalRequestDto, PreflightToolCallDto};
 use crate::office_service::OfficeService;
 use crate::project_map_service::ProjectMapService;
 use crate::settings::SettingsService;
+use crate::slash_panel::{kv, SlashPanel, SlashPanelItem, SlashSection};
 
 /// The base system prompt seeded into every chat run, modeled on Claude Code's
 /// layered prompt (System / Doing tasks / Using your tools / Tone & style /
@@ -1075,12 +1076,16 @@ impl ChatService {
             SlashAction::Cost => match &self.cost {
                 Some(cost) => {
                     let s = cost.summary(session_id)?;
-                    format!(
-                        "Cost summary: session ${:.4}, today ${:.4}, month ${:.4}, total ${:.4}.",
-                        s.session_cost, s.today_cost, s.month_cost, s.total_cost
-                    )
+                    SlashPanel::new("费用")
+                        .items(vec![
+                            kv("本会话", format!("{} {:.4}", s.currency, s.session_cost)),
+                            kv("今日", format!("{} {:.4}", s.currency, s.today_cost)),
+                            kv("本月", format!("{} {:.4}", s.currency, s.month_cost)),
+                            kv("累计", format!("{} {:.4}", s.currency, s.total_cost)),
+                        ])
+                        .to_fenced()
                 }
-                None => "Cost tracking is not enabled for this runtime.".to_string(),
+                None => "费用跟踪未启用。".to_string(),
             },
             SlashAction::Doctor => {
                 let root = self.effective_root();
@@ -1091,24 +1096,56 @@ impl ChatService {
                     &self.tool_results_dir,
                 )
                 .await;
-                crate::doctor::format_diagnostics(&results)
+                let ok = results
+                    .iter()
+                    .filter(|r| r.status == crate::doctor::DiagStatus::Ok)
+                    .count();
+                let items: Vec<SlashPanelItem> = results
+                    .iter()
+                    .map(|r| {
+                        let accent = match r.status {
+                            crate::doctor::DiagStatus::Ok => "ok",
+                            crate::doctor::DiagStatus::Warning => "warn",
+                            crate::doctor::DiagStatus::Error => "error",
+                        };
+                        let value = match &r.fix_hint {
+                            Some(h) if r.status != crate::doctor::DiagStatus::Ok => {
+                                format!("{} · {h}", r.detail)
+                            }
+                            _ => r.detail.clone(),
+                        };
+                        SlashPanelItem::new(&r.name).status(accent).value(value)
+                    })
+                    .collect();
+                SlashPanel::new("环境诊断")
+                    .subtitle(format!("{}/{} 项通过", ok, results.len()))
+                    .items(items)
+                    .to_fenced()
             }
             SlashAction::Help => {
                 let registry = SlashRegistry::with_builtins();
-                let mut lines = vec!["Available slash commands:".to_string()];
-                for name in registry.names() {
-                    if let Some(command) = registry.get(&name) {
-                        lines.push(format!("- /{}: {}", command.name, command.description));
-                    }
-                }
-                lines.join("\n")
+                let items: Vec<SlashPanelItem> = registry
+                    .names()
+                    .iter()
+                    .filter_map(|name| {
+                        registry.get(name).map(|command| {
+                            SlashPanelItem::new(format!("/{}", command.name))
+                                .monospace()
+                                .value(command.description.clone())
+                        })
+                    })
+                    .collect();
+                SlashPanel::new("斜杠命令")
+                    .subtitle(format!("{} 个可用命令", items.len()))
+                    .items(items)
+                    .to_fenced()
             }
             SlashAction::Status => {
                 let root = self.effective_root();
                 let plan = if self.is_plan_mode(session_id) {
-                    "on"
+                    "开启"
                 } else {
-                    "off"
+                    "关闭"
                 };
                 let settings = self.settings.view()?;
                 let (configured, chat_model, thinking_depth, web_search) = settings
@@ -1121,123 +1158,218 @@ impl ChatService {
                             web_search_summary(&s.web_search),
                         )
                     })
-                    .unwrap_or((false, "(not initialized)", "medium", "default".to_string()));
+                    .unwrap_or((false, "(未初始化)", "medium", "default".to_string()));
                 let approval = self.settings.approval_policy()?.label();
-                format!(
-                    "Status:\n- project: {}\n- configured: {}\n- chat model: {}\n- thinking: {}\n- approvals: {}\n- web search: {}\n- plan mode: {}",
-                    root.display(),
-                    configured,
-                    chat_model,
-                    thinking_depth,
-                    approval,
-                    web_search,
-                    plan
-                )
+                SlashPanel::new("状态")
+                    .section(SlashSection::new(
+                        "项目",
+                        vec![
+                            kv("目录", root.display().to_string()).monospace(),
+                            SlashPanelItem::new("已配置")
+                                .status(if configured { "ok" } else { "warn" })
+                                .value(if configured { "是" } else { "否" }),
+                            kv("计划模式", plan),
+                        ],
+                    ))
+                    .section(SlashSection::new(
+                        "模型与运行时",
+                        vec![
+                            kv("聊天模型", chat_model).monospace(),
+                            kv("思考档位", thinking_depth),
+                            kv("审批策略", approval),
+                            kv("网页搜索", web_search),
+                        ],
+                    ))
+                    .to_fenced()
             }
             SlashAction::Settings => match self.settings.view()? {
-                Some(s) => format!(
-                    "Settings:\n- configured: {}\n- api key: {}\n- base URL: {}\n- chat model: {}\n- reasoner model: {}\n- thinking: {}\n- approvals: {}\n- web search: {}\n- available models: {}",
-                    s.configured,
-                    s.api_key_masked,
-                    s.base_url,
-                    s.chat_model,
-                    s.reasoner_model,
-                    s.thinking_depth,
-                    s.approval_policy,
-                    web_search_summary(&s.web_search),
+                Some(s) => {
+                    let mut items = vec![
+                        SlashPanelItem::new("已配置")
+                            .status(if s.configured { "ok" } else { "warn" })
+                            .value(if s.configured { "是" } else { "否" }),
+                        kv("API Key", s.api_key_masked.clone()).monospace(),
+                        kv("Base URL", s.base_url.clone()).monospace(),
+                        kv("聊天模型", s.chat_model.clone()).monospace(),
+                        kv("推理模型", s.reasoner_model.clone()).monospace(),
+                        kv("思考档位", s.thinking_depth.clone()),
+                        kv("审批策略", s.approval_policy.clone()),
+                        kv("网页搜索", web_search_summary(&s.web_search)),
+                    ];
+                    let mut models = SlashPanelItem::new("可用模型");
                     if s.available_models.is_empty() {
-                        "(none)".to_string()
+                        models = models.value("(无)").status("muted");
                     } else {
-                        s.available_models.join(", ")
+                        for m in &s.available_models {
+                            models = models.badge(m.clone());
+                        }
                     }
-                ),
-                None => "Settings are not initialized. Add a DeepSeek API key first.".to_string(),
+                    items.push(models);
+                    SlashPanel::new("设置").items(items).to_fenced()
+                }
+                None => "设置尚未初始化。请先添加 DeepSeek API Key。".to_string(),
             },
             SlashAction::Permissions => {
                 let policy = self.settings.approval_policy()?;
                 let rules = self.settings.permission_rules()?;
-                format!(
-                    "Permissions:\n- policy: {}\n- allow rules: {}\n- ask rules: {}\n- deny rules: {}",
-                    policy.label(),
-                    format_rule_count(&rules.allow),
-                    format_rule_count(&rules.ask),
-                    format_rule_count(&rules.deny)
-                )
+                let rule_items = |list: &[String]| -> Vec<SlashPanelItem> {
+                    if list.is_empty() {
+                        vec![SlashPanelItem::new("(无)").status("muted")]
+                    } else {
+                        list.iter()
+                            .map(|r| SlashPanelItem::new(r).monospace())
+                            .collect()
+                    }
+                };
+                SlashPanel::new("权限")
+                    .items(vec![kv("策略", policy.label())])
+                    .section(SlashSection::new(
+                        format!("允许 ({})", rules.allow.len()),
+                        rule_items(&rules.allow),
+                    ))
+                    .section(SlashSection::new(
+                        format!("询问 ({})", rules.ask.len()),
+                        rule_items(&rules.ask),
+                    ))
+                    .section(SlashSection::new(
+                        format!("拒绝 ({})", rules.deny.len()),
+                        rule_items(&rules.deny),
+                    ))
+                    .to_fenced()
             }
             SlashAction::Knowledge => match &self.knowledge {
-                Some(knowledge) => format!(
-                    "Knowledge:\n- project entries: {}\n- pending drafts: {}\n- passive injection: {}\n- auto capture: {}",
-                    knowledge.list().len(),
-                    knowledge.list_drafts().len(),
-                    on_off(knowledge.passive_enabled()),
-                    on_off(knowledge.auto_capture_enabled())
-                ),
-                None => "Knowledge is not enabled for this runtime.".to_string(),
+                Some(knowledge) => SlashPanel::new("知识库")
+                    .items(vec![
+                        kv("项目条目", knowledge.list().len().to_string()),
+                        kv("待处理草稿", knowledge.list_drafts().len().to_string()),
+                        SlashPanelItem::new("被动注入")
+                            .status(if knowledge.passive_enabled() { "ok" } else { "muted" })
+                            .value(on_off(knowledge.passive_enabled())),
+                        SlashPanelItem::new("自动采集")
+                            .status(if knowledge.auto_capture_enabled() { "ok" } else { "muted" })
+                            .value(on_off(knowledge.auto_capture_enabled())),
+                    ])
+                    .to_fenced(),
+                None => "当前运行时未启用知识库。".to_string(),
             },
             SlashAction::Mcp => match &self.mcp {
                 Some(mcp) => {
                     let servers = mcp.list()?;
-                    let enabled = servers.iter().filter(|s| s.enabled).count();
-                    let names = servers
-                        .iter()
-                        .take(8)
-                        .map(|s| {
-                            format!(
-                                "{}:{}:{}",
-                                s.name,
-                                s.transport,
-                                if s.enabled { "enabled" } else { "disabled" }
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    format!(
-                        "MCP servers: {enabled}/{} enabled{}",
-                        servers.len(),
-                        if names.is_empty() {
-                            ".".to_string()
-                        } else {
-                            format!(".\n- {}", names.join("\n- "))
-                        }
-                    )
+                    if servers.is_empty() {
+                        SlashPanel::new("MCP 服务器")
+                            .subtitle("还没有 MCP 服务器")
+                            .items(vec![])
+                            .to_fenced()
+                    } else {
+                        // Live status + tools (connects enabled servers), merged
+                        // with the persisted config for transport labels.
+                        let statuses = mcp.connection_status().await?;
+                        let enabled = servers.iter().filter(|s| s.enabled).count();
+                        let items: Vec<SlashPanelItem> = servers
+                            .iter()
+                            .map(|s| {
+                                let st = statuses.iter().find(|x| x.name == s.name);
+                                let accent = match st.map(|x| x.status.as_str()) {
+                                    Some("connected") => "ok",
+                                    Some("failed") => "error",
+                                    Some("disabled") => "muted",
+                                    _ if s.enabled => "info",
+                                    _ => "muted",
+                                };
+                                let mut item =
+                                    SlashPanelItem::new(&s.name).status(accent).monospace();
+                                match st {
+                                    Some(st) if st.status == "connected" => {
+                                        item = item
+                                            .value(&s.transport)
+                                            .badge(format!("{} 工具", st.tools.len()))
+                                            .children(
+                                                st.tools
+                                                    .iter()
+                                                    .map(|t| {
+                                                        let c = SlashPanelItem::new(&t.name)
+                                                            .monospace();
+                                                        if t.description.is_empty() {
+                                                            c
+                                                        } else {
+                                                            c.value(&t.description)
+                                                        }
+                                                    })
+                                                    .collect(),
+                                            );
+                                    }
+                                    Some(st) if st.status == "failed" => {
+                                        item = item.value(match &st.error {
+                                            Some(e) => format!("{} · {e}", s.transport),
+                                            None => s.transport.clone(),
+                                        });
+                                    }
+                                    _ => {
+                                        item = item.value(&s.transport);
+                                    }
+                                }
+                                item
+                            })
+                            .collect();
+                        SlashPanel::new("MCP 服务器")
+                            .subtitle(format!("{enabled}/{} 已启用", servers.len()))
+                            .items(items)
+                            .to_fenced()
+                    }
                 }
-                None => "MCP is not configured for this runtime.".to_string(),
+                None => "当前运行时未配置 MCP。".to_string(),
             },
             SlashAction::Projects => match &self.projects {
                 Some(projects) => {
-                    let active = projects.active()?.unwrap_or_else(|| "(none)".to_string());
+                    let active = projects.active()?;
                     let list = projects.list()?;
-                    let mut lines = vec![format!("Projects: {} open.", list.len())];
-                    lines.push(format!("- active: {active}"));
-                    for project in list.iter().take(8) {
-                        lines.push(format!(
-                            "- {} ({}) - {} session(s)",
-                            project.name, project.path, project.session_count
-                        ));
-                    }
-                    lines.join("\n")
+                    let items: Vec<SlashPanelItem> = list
+                        .iter()
+                        .map(|p| {
+                            let is_active = active.as_deref() == Some(p.path.as_str());
+                            let mut item = SlashPanelItem::new(&p.name)
+                                .value(&p.path)
+                                .status(if is_active { "ok" } else { "muted" })
+                                .badge(format!("{} 会话", p.session_count));
+                            if is_active {
+                                item = item.badge("当前");
+                            }
+                            item
+                        })
+                        .collect();
+                    SlashPanel::new("项目")
+                        .subtitle(format!("{} 个已打开", list.len()))
+                        .items(items)
+                        .to_fenced()
                 }
-                None => format!("Active project: {}", self.effective_root().display()),
+                None => SlashPanel::new("项目")
+                    .items(vec![
+                        kv("当前", self.effective_root().display().to_string()).monospace()
+                    ])
+                    .to_fenced(),
             },
             SlashAction::Sessions => {
                 let store = deepagent_persistence::event_store::EventStore::new(&self.db);
                 let sessions = store.list_sessions()?;
-                let mut lines = vec![format!("Recent sessions: {}", sessions.len())];
-                for record in sessions.iter().take(8) {
-                    let title = record.title.as_deref().unwrap_or("(untitled)");
-                    let project = record
-                        .project
-                        .as_deref()
-                        .map(crate::project_service::folder_name)
-                        .unwrap_or_else(|| "(no project)".to_string());
-                    lines.push(format!(
-                        "- {} - {} - {} - updated {}",
-                        record.id,
-                        title,
-                        project,
-                        record.updated_at.as_millis()
-                    ));
-                }
-                lines.join("\n")
+                let items: Vec<SlashPanelItem> = sessions
+                    .iter()
+                    .take(12)
+                    .map(|record| {
+                        let title = record.title.as_deref().unwrap_or("(未命名)");
+                        let project = record
+                            .project
+                            .as_deref()
+                            .map(crate::project_service::folder_name)
+                            .unwrap_or_else(|| "(无项目)".to_string());
+                        SlashPanelItem::new(title)
+                            .value(record.id.to_string())
+                            .badge(project)
+                    })
+                    .collect();
+                SlashPanel::new("近期会话")
+                    .subtitle(format!("{} 个会话", sessions.len()))
+                    .items(items)
+                    .to_fenced()
             }
             SlashAction::Thinking { depth } => match depth {
                 Some(depth) => {
@@ -1373,16 +1505,20 @@ impl ChatService {
                     if list.is_empty() {
                         "尚未安装任何技能。打开「技能」页可浏览技能市场。".to_string()
                     } else {
-                        let mut lines = vec![format!("**已安装技能：{}**\n", list.len())];
-                        for s in list.iter().take(30) {
-                            lines.push(format!(
-                                "- **{}** ({}) — {}",
-                                s.name,
-                                s.origin,
-                                truncate_desc(&s.description, 90)
-                            ));
+                        let mut by_origin: std::collections::BTreeMap<String, Vec<SlashPanelItem>> =
+                            std::collections::BTreeMap::new();
+                        for s in &list {
+                            by_origin.entry(s.origin.clone()).or_default().push(
+                                SlashPanelItem::new(&s.name)
+                                    .value(truncate_desc(&s.description, 90)),
+                            );
                         }
-                        lines.join("\n")
+                        let mut panel = SlashPanel::new("已安装技能")
+                            .subtitle(format!("{} 个技能", list.len()));
+                        for (origin, items) in by_origin {
+                            panel = panel.section(SlashSection::new(origin, items));
+                        }
+                        panel.to_fenced()
                     }
                 }
                 None => "当前运行时未启用技能系统。".to_string(),
@@ -1393,22 +1529,55 @@ impl ChatService {
             SlashAction::Hooks => {
                 let defs = self.settings.hook_definitions()?;
                 let rules = self.settings.permission_rules()?;
-                let event_count = defs.hooks.len();
-                let matcher_count: usize = defs.hooks.values().map(|v| v.len()).sum();
-                let events: Vec<String> = defs.hooks.keys().take(8).cloned().collect();
-                format!(
-                    "**Hooks**\n\n- 事件类型: {}\n- matcher 组: {}\n- 已配置事件: {}\n\n**权限规则**\n\n- allow: {}\n- ask: {}\n- deny: {}",
-                    event_count,
-                    matcher_count,
-                    if events.is_empty() {
-                        "(none)".to_string()
+                let event_items: Vec<SlashPanelItem> = defs
+                    .hooks
+                    .iter()
+                    .map(|(event, groups)| {
+                        let children: Vec<SlashPanelItem> = groups
+                            .iter()
+                            .map(|g| {
+                                SlashPanelItem::new(
+                                    g.matcher.clone().unwrap_or_else(|| "*".to_string()),
+                                )
+                                .monospace()
+                                .badge(format!("{} hook", g.hooks.len()))
+                            })
+                            .collect();
+                        SlashPanelItem::new(event)
+                            .badge(format!("{} matcher", groups.len()))
+                            .children(children)
+                    })
+                    .collect();
+                let rule_items = |list: &[String]| -> Vec<SlashPanelItem> {
+                    if list.is_empty() {
+                        vec![SlashPanelItem::new("(无)").status("muted")]
                     } else {
-                        events.join(", ")
-                    },
-                    format_rule_count(&rules.allow),
-                    format_rule_count(&rules.ask),
-                    format_rule_count(&rules.deny)
-                )
+                        list.iter()
+                            .map(|r| SlashPanelItem::new(r).monospace())
+                            .collect()
+                    }
+                };
+                let mut panel = SlashPanel::new("Hooks")
+                    .subtitle(format!("{} 个事件类型", defs.hooks.len()));
+                if event_items.is_empty() {
+                    panel = panel.items(vec![SlashPanelItem::new("(未配置钩子)").status("muted")]);
+                } else {
+                    panel = panel.section(SlashSection::new("事件", event_items));
+                }
+                panel
+                    .section(SlashSection::new(
+                        format!("允许 ({})", rules.allow.len()),
+                        rule_items(&rules.allow),
+                    ))
+                    .section(SlashSection::new(
+                        format!("询问 ({})", rules.ask.len()),
+                        rule_items(&rules.ask),
+                    ))
+                    .section(SlashSection::new(
+                        format!("拒绝 ({})", rules.deny.len()),
+                        rule_items(&rules.deny),
+                    ))
+                    .to_fenced()
             }
             SlashAction::Theme => {
                 "主题与外观在「设置 → 外观」中调整（暗色/亮色、界面选项）。".to_string()
@@ -1416,7 +1585,7 @@ impl ChatService {
             SlashAction::Agents => {
                 let mut roots = vec![self.effective_root(), self.workspace.clone()];
                 roots.dedup();
-                let mut lines: Vec<String> = Vec::new();
+                let mut items: Vec<SlashPanelItem> = Vec::new();
                 let mut count = 0usize;
                 for root in roots {
                     let dir = root.join(".deepagent").join("agents");
@@ -1433,12 +1602,11 @@ impl ChatService {
                         };
                         if let Some(def) = deepagent_prompts::AgentDef::parse(&content) {
                             count += 1;
-                            if lines.len() < 20 {
-                                lines.push(format!(
-                                    "- **{}** — {}",
-                                    def.name,
-                                    truncate_desc(&def.description, 90)
-                                ));
+                            if items.len() < 30 {
+                                items.push(
+                                    SlashPanelItem::new(def.name)
+                                        .value(truncate_desc(&def.description, 90)),
+                                );
                             }
                         }
                     }
@@ -1446,9 +1614,10 @@ impl ChatService {
                 if count == 0 {
                     "未发现子代理定义。可在 .deepagent/agents/ 下添加 <name>.md（YAML frontmatter + 系统提示）。".to_string()
                 } else {
-                    let mut out = vec![format!("**可用子代理：{count}**\n")];
-                    out.extend(lines);
-                    out.join("\n")
+                    SlashPanel::new("子代理")
+                        .subtitle(format!("{count} 个可用"))
+                        .items(items)
+                        .to_fenced()
                 }
             }
             SlashAction::Context => {
@@ -1460,11 +1629,16 @@ impl ChatService {
                     .iter()
                     .map(|m| counter.count(&format!("{:?}: {}", m.role, m.content)))
                     .sum();
-                format!(
-                    "**上下文使用**\n\n- 消息条数: {}\n- 事件条数: {}\n- 估算 token: {tokens}\n\n提示：可用 `/compact` 压缩上下文以降低后续请求体积。",
-                    history.len(),
-                    events.len()
-                )
+                SlashPanel::new("上下文使用")
+                    .subtitle("可用 /compact 压缩上下文以降低后续请求体积")
+                    .items(vec![
+                        kv("消息条数", history.len().to_string()),
+                        kv("事件条数", events.len().to_string()),
+                        SlashPanelItem::new("估算 token")
+                            .value(tokens.to_string())
+                            .status(if tokens > 100_000 { "warn" } else { "ok" }),
+                    ])
+                    .to_fenced()
             }
             SlashAction::Init => {
                 let root = self.effective_root();
@@ -1491,21 +1665,22 @@ impl ChatService {
             SlashAction::Usage => {
                 let store = deepagent_persistence::event_store::EventStore::new(&self.db);
                 let sessions = store.list_sessions()?;
-                let cost_line = match &self.cost {
+                let mut items = vec![kv("会话总数", sessions.len().to_string())];
+                match &self.cost {
                     Some(cost) => {
                         let s = cost.summary(session_id)?;
-                        format!(
-                            "费用（{}）：本会话 {:.4}，今日 {:.4}，本月 {:.4}，累计 {:.4}",
-                            s.currency, s.session_cost, s.today_cost, s.month_cost, s.total_cost
-                        )
+                        items.push(kv("本会话", format!("{} {:.4}", s.currency, s.session_cost)));
+                        items.push(kv("今日", format!("{} {:.4}", s.currency, s.today_cost)));
+                        items.push(kv("本月", format!("{} {:.4}", s.currency, s.month_cost)));
+                        items.push(kv("累计", format!("{} {:.4}", s.currency, s.total_cost)));
                     }
-                    None => "费用跟踪未启用。".to_string(),
-                };
-                format!(
-                    "**用量统计**\n\n- 会话总数: {}\n- {}",
-                    sessions.len(),
-                    cost_line
-                )
+                    None => {
+                        items.push(
+                            SlashPanelItem::new("费用跟踪").status("muted").value("未启用"),
+                        );
+                    }
+                }
+                SlashPanel::new("用量统计").items(items).to_fenced()
             }
             SlashAction::AddDir { path } => match path {
                 Some(path) => match &self.projects {
@@ -3120,6 +3295,7 @@ fn parse_thinking_depth(depth: &str) -> Result<ThinkingDepth> {
     }
 }
 
+#[allow(dead_code)]
 fn format_rule_count(rules: &[String]) -> String {
     if rules.is_empty() {
         "0".to_string()

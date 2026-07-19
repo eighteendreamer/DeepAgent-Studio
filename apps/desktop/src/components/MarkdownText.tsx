@@ -19,6 +19,7 @@ if (typeof window !== "undefined") {
 import "katex/contrib/mhchem/mhchem.js";
 import { EChartsBlock } from "./EChartsBlock";
 import { SiteCardBlock } from "./SiteCardBlock";
+import { SlashPanelBlock } from "./SlashPanelBlock";
 
 interface MarkdownTextProps {
   text: string;
@@ -62,6 +63,9 @@ export const MarkdownText = memo(function MarkdownText({
             }
             if (!isInlineCode && language === "site-card") {
               return <SiteCardBlock content={content} />;
+            }
+            if (!isInlineCode && language === "slash-panel") {
+              return <SlashPanelBlock content={content} />;
             }
 
             return !isInlineCode ? (

@@ -38,6 +38,7 @@ pub mod session_state_service;
 pub mod settings;
 pub mod skill_catalog_reminder;
 pub mod skills_service;
+pub mod slash_panel;
 pub mod speech_service;
 pub mod system_prompt;
 pub mod system_reminder;
@@ -105,6 +106,7 @@ pub use skills_service::{
     ai_security_review, parse_verdict, AiReviewResult, ReviewDepth, SkillActivationDto, SkillDto,
     SkillsService, AI_SECURITY_REVIEW_SYSTEM_PROMPT,
 };
+pub use slash_panel::{kv, SlashPanel, SlashPanelItem, SlashSection};
 pub use speech_service::{SpeechService, TranscriptionEngine, UnavailableEngine};
 
 // Re-export marketplace types from `deepagent-skills` so the desktop Tauri

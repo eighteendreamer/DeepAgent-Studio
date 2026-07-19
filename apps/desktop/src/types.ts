@@ -322,6 +322,29 @@ export interface McpConnectionStatus {
   tools: McpToolInfo[];
 }
 
+/** One row in a structured slash-command panel (mirrors SlashPanelItem). */
+export interface SlashPanelItem {
+  label: string;
+  value?: string | null;
+  status?: "ok" | "warn" | "error" | "muted" | "info" | null;
+  badges?: string[];
+  mono?: boolean;
+  children?: SlashPanelItem[];
+}
+
+/** A group of rows under an optional heading (mirrors SlashSection). */
+export interface SlashSection {
+  heading?: string | null;
+  items: SlashPanelItem[];
+}
+
+/** Structured info panel for slash commands (mirrors SlashPanel). */
+export interface SlashPanel {
+  title: string;
+  subtitle?: string | null;
+  sections: SlashSection[];
+}
+
 /** Declarative permission rules (mirrors deepagent-hooks::PermissionRules). */
 export interface PermissionRules {
   allow: string[];
