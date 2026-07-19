@@ -261,12 +261,202 @@ button:focus {
   background: var(--theme-bg, #ffffff);
 }
 
-.studio-infinite-canvas .react-flow__pane {
+.studio-infinite-canvas.is-tool-pan .react-flow__pane {
   cursor: grab;
 }
 
-.studio-infinite-canvas .react-flow__pane.dragging {
+.studio-infinite-canvas.is-tool-pan .react-flow__pane.dragging {
   cursor: grabbing;
+}
+
+.studio-infinite-canvas.is-tool-select .react-flow__pane {
+  cursor: default;
+}
+
+.studio-canvas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 12px 0 0 12px !important;
+  padding: 4px;
+  border: 1px solid var(--theme-border, #e5e7eb);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--theme-bg, #ffffff) 94%, transparent);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.09);
+  backdrop-filter: blur(12px);
+}
+
+.studio-canvas-toolbar button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--theme-text-secondary, #6b7280);
+  font-size: 12px;
+  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.studio-canvas-toolbar button:hover:not(:disabled) {
+  background: var(--theme-sidebar, #f8f7f5);
+  color: var(--theme-fg, #1f2937);
+}
+
+.studio-canvas-toolbar button:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.studio-canvas-toolbar button.is-active {
+  background: color-mix(in srgb, var(--theme-primary, #3b82f6) 12%, transparent);
+  color: var(--theme-primary, #2563eb);
+}
+
+.studio-canvas-toolbar button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.studio-toolbar-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--theme-border, #e5e7eb);
+}
+
+.studio-note-node {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 192px;
+  min-height: 120px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--theme-border, #e5e7eb) 88%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--theme-bg, #ffffff) 97%, #fef3c7 3%);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.studio-note-node:hover {
+  border-color: color-mix(in srgb, var(--theme-text-secondary, #6b7280) 40%, transparent);
+}
+
+.studio-note-node.is-selected {
+  border-color: var(--theme-primary, #3b82f6);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-primary, #3b82f6) 22%, transparent),
+    0 12px 32px rgba(15, 23, 42, 0.1);
+}
+
+.studio-note-header {
+  display: flex;
+  width: 100%;
+  flex: 0 0 auto;
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--theme-border, #e5e7eb) 70%, transparent);
+}
+
+.studio-note-drag-handle {
+  display: grid;
+  width: 30px;
+  height: 40px;
+  flex: 0 0 30px;
+  place-items: center;
+  color: var(--theme-text-secondary, #6b7280);
+  cursor: grab;
+  font-size: 12px;
+  opacity: 0.42;
+  transition: color 140ms ease, opacity 140ms ease;
+}
+
+.studio-note-node:hover .studio-note-drag-handle,
+.studio-note-node.is-selected .studio-note-drag-handle {
+  color: var(--theme-primary, #3b82f6);
+  opacity: 0.85;
+}
+
+.studio-note-drag-handle:active {
+  cursor: grabbing;
+}
+
+.studio-note-title {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 12px 14px 10px 2px;
+  color: var(--theme-fg, #1f2937);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.studio-note-body {
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  border: 0;
+  background: transparent;
+  padding: 10px 14px 14px;
+  color: var(--theme-fg, #1f2937);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.studio-note-title::placeholder,
+.studio-note-body::placeholder {
+  color: var(--theme-text-secondary, #6b7280);
+  opacity: 0.68;
+}
+
+.studio-note-handle {
+  width: 8px !important;
+  height: 8px !important;
+  border: 2px solid var(--theme-bg, #ffffff) !important;
+  background: var(--theme-primary, #3b82f6) !important;
+  opacity: 0;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.studio-note-node:hover .studio-note-handle,
+.studio-note-node.is-selected .studio-note-handle {
+  opacity: 1;
+}
+
+.studio-note-handle:hover {
+  transform: scale(1.28);
+}
+
+.studio-note-resize-line {
+  border-color: transparent !important;
+}
+
+.studio-note-resize-handle {
+  width: 7px !important;
+  height: 7px !important;
+  border: 1px solid var(--theme-bg, #ffffff) !important;
+  border-radius: 2px !important;
+  background: var(--theme-primary, #3b82f6) !important;
+}
+
+.studio-infinite-canvas .react-flow__selection,
+.studio-infinite-canvas .react-flow__nodesselection-rect {
+  border: 1px solid color-mix(in srgb, var(--theme-primary, #3b82f6) 70%, transparent);
+  background: color-mix(in srgb, var(--theme-primary, #3b82f6) 7%, transparent);
+}
+
+.studio-infinite-canvas .react-flow__edge-path {
+  stroke: color-mix(in srgb, var(--theme-text-secondary, #6b7280) 70%, transparent);
+  stroke-width: 1.5;
+}
+
+.studio-infinite-canvas .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--theme-primary, #3b82f6);
+  stroke-width: 2;
 }
 
 .studio-infinite-canvas .react-flow__controls {
