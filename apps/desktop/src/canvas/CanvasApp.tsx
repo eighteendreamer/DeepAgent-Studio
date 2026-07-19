@@ -2,10 +2,14 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faArrowPointer,
   faCircle,
+  faChevronLeft,
+  faChevronRight,
+  faCompress,
   faDownload,
   faDrawPolygon,
   faEllipsis,
   faEraser,
+  faExpand,
   faFont,
   faGripVertical,
   faHand,
@@ -33,6 +37,7 @@ import {
   applyNodeChanges,
   Background,
   BackgroundVariant,
+  ControlButton,
   Controls,
   Handle,
   MiniMap,
@@ -61,6 +66,7 @@ import { CanvasTitleBar } from "./CanvasTitleBar";
 const LEGACY_CANVAS_LAYOUT_KEY = "deepagent:studio-canvas-layout:v1";
 const CANVAS_VIEWPORT_KEY = "deepagent:studio-canvas-viewport:v1";
 const CANVAS_DOCUMENT_KEY = "deepagent:studio-canvas-document:v1";
+const CANVAS_TOOLBAR_COLLAPSED_KEY = "deepagent:studio-canvas-toolbar-collapsed:v1";
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 const SNAP_GRID: [number, number] = [24, 24];
 const HISTORY_LIMIT = 100;
@@ -199,8 +205,12 @@ function InfiniteCanvas() {
   const [tool, setTool] = useState<CanvasTool>("select");
   const [canvasLocked, setCanvasLocked] = useState(false);
   const [zoom, setZoom] = useState(initialViewport.zoom);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains("dark"));
   const [showMiniMap, setShowMiniMap] = useState(false);
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(
+    () => window.localStorage.getItem(CANVAS_TOOLBAR_COLLAPSED_KEY) === "true",
+  );
   const [moreOpen, setMoreOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -216,6 +226,53 @@ function InfiniteCanvas() {
       noticeTimerRef.current = null;
     }, 1800);
   }, []);
+
+  const toggleToolbarCollapsed = useCallback(() => {
+    setToolbarCollapsed((collapsed) => {
+      const next = !collapsed;
+      window.localStorage.setItem(CANVAS_TOOLBAR_COLLAPSED_KEY, String(next));
+      if (next) {
+        setMoreOpen(false);
+        setSearchOpen(false);
+      }
+      return next;
+    });
+  }, []);
+
+  const setCanvasFullscreen = useCallback(
+    async (fullscreen: boolean) => {
+      try {
+        if (isTauri()) {
+          const { getCurrentWindow } = await import("@tauri-apps/api/window");
+          await getCurrentWindow().setFullscreen(fullscreen);
+        } else if (fullscreen) {
+          await document.documentElement.requestFullscreen();
+        } else if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        }
+        setIsFullscreen(fullscreen);
+      } catch (error) {
+        console.error("Failed to change canvas fullscreen state", error);
+        notifyCommand("无法切换全屏");
+      }
+    },
+    [notifyCommand],
+  );
+
+  const toggleCanvasFullscreen = useCallback(async () => {
+    let fullscreen = isFullscreen;
+    if (isTauri()) {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        fullscreen = await getCurrentWindow().isFullscreen();
+      } catch {
+        // Fall back to the last synchronized state.
+      }
+    } else {
+      fullscreen = Boolean(document.fullscreenElement);
+    }
+    await setCanvasFullscreen(!fullscreen);
+  }, [isFullscreen, setCanvasFullscreen]);
 
   const currentSnapshot = useCallback(
     (): CanvasSnapshot => ({ nodes: nodesRef.current, edges: edgesRef.current }),
@@ -906,6 +963,31 @@ function InfiniteCanvas() {
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    const syncFullscreenState = () => {
+      if (isTauri()) {
+        void import("@tauri-apps/api/window")
+          .then(({ getCurrentWindow }) => getCurrentWindow().isFullscreen())
+          .then((fullscreen) => {
+            if (!disposed) setIsFullscreen(fullscreen);
+          })
+          .catch(() => {});
+      } else if (!disposed) {
+        setIsFullscreen(Boolean(document.fullscreenElement));
+      }
+    };
+
+    syncFullscreenState();
+    window.addEventListener("resize", syncFullscreenState);
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    return () => {
+      disposed = true;
+      window.removeEventListener("resize", syncFullscreenState);
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+    };
+  }, []);
+
   useEffect(
     () => () => {
       if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
@@ -924,6 +1006,11 @@ function InfiniteCanvas() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && isFullscreen) {
+        event.preventDefault();
+        void setCanvasFullscreen(false);
+        return;
+      }
       if (isEditableTarget(event.target)) return;
       const commandKey = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
@@ -970,7 +1057,7 @@ function InfiniteCanvas() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [copySelection, createNode, cutSelection, deleteSelection, duplicateSelection, pasteClipboard, redo, selectAll, undo]);
+  }, [copySelection, createNode, cutSelection, deleteSelection, duplicateSelection, isFullscreen, pasteClipboard, redo, selectAll, setCanvasFullscreen, undo]);
 
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
     const nextNodes = applyNodeChanges(changes, nodesRef.current);
@@ -1153,7 +1240,8 @@ function InfiniteCanvas() {
       >
         <Background id="studio-canvas-grid" variant={BackgroundVariant.Lines} gap={24} size={1} color={isDark ? "rgba(148, 163, 184, 0.12)" : "rgba(100, 116, 139, 0.16)"} />
 
-        <Panel position="top-left" className="studio-canvas-toolbar" aria-label="画布工具栏">
+        <Panel position="top-left" className={`studio-canvas-toolbar${toolbarCollapsed ? " is-collapsed" : ""}`} aria-label="画布工具栏">
+          {!toolbarCollapsed && <>
           <button type="button" className={tool === "select" ? "is-active" : ""} aria-label="选择工具" aria-pressed={tool === "select"} title="选择与框选 (V)" onClick={() => setTool("select")}><FontAwesomeIcon icon={faArrowPointer} /></button>
           <button type="button" className={tool === "pan" ? "is-active" : ""} aria-label="拖动画布" aria-pressed={tool === "pan"} title="拖动画布 (H)" onClick={() => setTool("pan")}><FontAwesomeIcon icon={faHand} /></button>
           <span className="studio-toolbar-divider" />
@@ -1170,6 +1258,18 @@ function InfiniteCanvas() {
           <span className="studio-toolbar-divider" />
           <button type="button" aria-label="搜索节点" title="搜索节点" className={searchOpen ? "is-active" : ""} onClick={() => { setSearchOpen((open) => !open); setMoreOpen(false); }}><FontAwesomeIcon icon={faMagnifyingGlass} /></button>
           <button type="button" aria-label="更多操作" title="更多操作" className={moreOpen ? "is-active" : ""} onClick={() => { setMoreOpen((open) => !open); setSearchOpen(false); }}><FontAwesomeIcon icon={faEllipsis} /></button>
+          <span className="studio-toolbar-divider" />
+          </>}
+          <button
+            type="button"
+            className="studio-toolbar-collapse"
+            aria-label={toolbarCollapsed ? "展开工具栏" : "收起工具栏"}
+            title={toolbarCollapsed ? "展开工具栏" : "收起工具栏"}
+            aria-expanded={!toolbarCollapsed}
+            onClick={toggleToolbarCollapsed}
+          >
+            <FontAwesomeIcon icon={toolbarCollapsed ? faChevronRight : faChevronLeft} />
+          </button>
         </Panel>
 
         {searchOpen && (
@@ -1193,7 +1293,16 @@ function InfiniteCanvas() {
         )}
 
         {showMiniMap && <MiniMap className="studio-canvas-minimap" pannable zoomable nodeColor={(node) => node.type === "group" ? "#cbd5e1" : node.type === "shape" ? "#93c5fd" : "#e2e8f0"} />}
-        <Controls position="bottom-right" showInteractive={false} />
+        <Controls position="bottom-right" showFitView={false} showInteractive={false} aria-label="画布缩放与全屏控制">
+          <ControlButton
+            type="button"
+            onClick={() => void toggleCanvasFullscreen()}
+            aria-label={isFullscreen ? "退出全屏" : "进入全屏"}
+            title={isFullscreen ? "退出全屏 (Esc)" : "进入全屏"}
+          >
+            <FontAwesomeIcon icon={isFullscreen ? faCompress : faExpand} />
+          </ControlButton>
+        </Controls>
         <Panel position="bottom-left" className="studio-canvas-hint"><span>{canvasLocked ? "画布已锁定" : tool === "pan" ? "左键拖动画布" : tool === "select" ? "左键框选或拖动节点" : tool === "rectangle" ? "拖动绘制矩形" : tool === "draw" ? "拖动自由绘制" : tool === "lasso" ? "圈选节点" : "拖动擦除对象"}</span><span className="studio-canvas-hint-separator" /><span>{selectedNodes.length || selectedEdges.length ? `已选 ${selectedNodes.length + selectedEdges.length} 项` : "双击新建便签"}</span><span className="studio-canvas-hint-separator" /><span>{Math.round(zoom * 100)}%</span></Panel>
       </ReactFlow>
 
