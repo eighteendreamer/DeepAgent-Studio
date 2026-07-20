@@ -229,12 +229,16 @@ pub fn tool_ui_metadata(
                 Some(format!("web_search: {provider} returned {count} result(s)"))
             }
             (_, Some(count)) => Some(format!("web_search returned {count} result(s)")),
-            _ => query.as_deref().map(|q| format!("web_search {}", compact(q, 96))),
+            _ => query
+                .as_deref()
+                .map(|q| format!("web_search {}", compact(q, 96))),
         }
     } else if matches!(lower.as_str(), "glob" | "grep") {
         match matches_count {
             Some(count) => Some(format!("{name} {count} match(es)")),
-            None => primary.as_deref().map(|p| format!("{name} {}", compact(p, 96))),
+            None => primary
+                .as_deref()
+                .map(|p| format!("{name} {}", compact(p, 96))),
         }
     } else if lower == "bash" || lower == "shell" {
         primary.as_deref().map(|p| compact(p, 140))
@@ -249,7 +253,10 @@ pub fn tool_ui_metadata(
         meta.insert("path".into(), serde_json::Value::String(path.to_string()));
     }
     if let Some(pattern) = pattern.as_deref() {
-        meta.insert("pattern".into(), serde_json::Value::String(pattern.to_string()));
+        meta.insert(
+            "pattern".into(),
+            serde_json::Value::String(pattern.to_string()),
+        );
     }
     if let Some(query) = query.as_deref() {
         meta.insert("query".into(), serde_json::Value::String(query.to_string()));
@@ -287,8 +294,8 @@ fn classify_tool(name: &str) -> &'static str {
         "read_file" | "list_dir" | "web_fetch" | "office_read" => "file_read",
         "write_file" | "edit_file" | "multi_edit" | "git_commit" | "remote_push_file"
         | "remote_push_bundle" | "office_docx_create" | "office_xlsx_create" => "file_change",
-        "glob" | "grep" | "web_search" | "knowledge_search" | "tool_search"
-        | "code_map_search" | "codegraph_locate" | "codegraph_search" => "search",
+        "glob" | "grep" | "web_search" | "knowledge_search" | "tool_search" | "code_map_search"
+        | "codegraph_locate" | "codegraph_search" => "search",
         "bash" | "shell" | "remote_install" | "remote_require" | "remote_probe" => {
             "command_execution"
         }
@@ -326,7 +333,10 @@ fn compact(value: &str, max: usize) -> String {
     if one_line.chars().count() <= max {
         return one_line;
     }
-    let mut truncated = one_line.chars().take(max.saturating_sub(1)).collect::<String>();
+    let mut truncated = one_line
+        .chars()
+        .take(max.saturating_sub(1))
+        .collect::<String>();
     truncated.push('…');
     truncated
 }

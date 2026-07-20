@@ -908,7 +908,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 if !out.ok {
                     self.metrics.incr(names::TOOL_FAILURES, 1);
                 }
-                let metadata = tool_ui_metadata(&tool_name, &invocation.arguments, Some(&out.value));
+                let metadata =
+                    tool_ui_metadata(&tool_name, &invocation.arguments, Some(&out.value));
                 self.emit(RuntimeEvent::ToolCompleted {
                     name: tool_name.clone(),
                     call_id: call_id.clone(),
@@ -939,7 +940,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 // can reflect / choose an alternative.
                 self.metrics.incr(names::TOOL_FAILURES, 1);
                 let err_value = serde_json::json!({ "error": e.to_string() });
-                let metadata = tool_ui_metadata(&tool_name, &invocation.arguments, Some(&err_value));
+                let metadata =
+                    tool_ui_metadata(&tool_name, &invocation.arguments, Some(&err_value));
                 self.emit(RuntimeEvent::ToolCompleted {
                     name: tool_name.clone(),
                     call_id: call_id.clone(),

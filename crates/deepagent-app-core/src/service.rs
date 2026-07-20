@@ -327,7 +327,8 @@ impl AppService {
                             *dm = Some(*duration_ms);
                             *detail = Some(summarize_output_for_tool(name, output));
                             *tool_output = Some(output.clone());
-                            let arguments = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+                            let arguments =
+                                serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
                             let metadata = tool_ui_metadata(name, &arguments, Some(output));
                             *tool_kind = metadata.tool_kind;
                             *file_path = metadata.file_path;

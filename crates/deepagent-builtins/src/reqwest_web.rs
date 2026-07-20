@@ -61,7 +61,10 @@ impl AnySearchConfig {
 
 fn normalize_anysearch_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
-    if matches!(trimmed, "https://www.anysearch.com" | "https://anysearch.com") {
+    if matches!(
+        trimmed,
+        "https://www.anysearch.com" | "https://anysearch.com"
+    ) {
         ANYSEARCH_DEFAULT_BASE_URL.to_string()
     } else {
         trimmed.to_string()
@@ -284,7 +287,11 @@ impl ReqwestWebClient {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header(reqwest::header::ACCEPT, "application/json")
             .body(body.to_string());
-        if let Some(api_key) = config.api_key.as_deref().filter(|key| !key.trim().is_empty()) {
+        if let Some(api_key) = config
+            .api_key
+            .as_deref()
+            .filter(|key| !key.trim().is_empty())
+        {
             request = request.bearer_auth(api_key.trim());
         }
         let resp = request
@@ -1051,12 +1058,16 @@ mod tests {
             Some("https://search.example.com".to_string()),
         );
         let names: Vec<&str> = providers.iter().map(SearchProvider::name).collect();
-        assert_eq!(names, vec!["anysearch", "deepseek", "searxng", "duckduckgo"]);
+        assert_eq!(
+            names,
+            vec!["anysearch", "deepseek", "searxng", "duckduckgo"]
+        );
     }
 
     #[test]
     fn anysearch_config_maps_website_origin_to_api_origin() {
-        let config = AnySearchConfig::new(Some("as-test".to_string()), "https://www.anysearch.com/");
+        let config =
+            AnySearchConfig::new(Some("as-test".to_string()), "https://www.anysearch.com/");
         assert_eq!(config.base_url, "https://api.anysearch.com");
     }
 

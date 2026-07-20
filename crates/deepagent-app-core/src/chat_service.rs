@@ -2745,8 +2745,7 @@ impl ChatService {
                 output: tool.output.clone(),
                 duration_ms: tool.duration_ms,
             })?;
-            let completed_meta =
-                tool_ui_metadata(&tool.name, &tool.arguments, Some(&tool.output));
+            let completed_meta = tool_ui_metadata(&tool.name, &tool.arguments, Some(&tool.output));
             sink.emit(RuntimeEvent::ToolCompleted {
                 name: tool.name.clone(),
                 call_id: tool.call_id.clone(),

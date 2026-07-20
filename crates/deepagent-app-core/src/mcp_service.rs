@@ -696,7 +696,11 @@ mod tests {
             headers: BTreeMap::new(),
         };
         let status = svc.test_server(dto).await.unwrap();
-        assert_eq!(status.status, "connected", "connect error: {:?}", status.error);
+        assert_eq!(
+            status.status, "connected",
+            "connect error: {:?}",
+            status.error
+        );
         assert!(
             status.tools.iter().any(|t| t.name == "echo"),
             "expected an 'echo' tool, got: {:?}",

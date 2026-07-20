@@ -387,7 +387,10 @@ fn normalize_web_search_settings(mut settings: WebSearchSettings) -> WebSearchSe
 
 fn normalize_anysearch_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
-    if matches!(trimmed, "https://www.anysearch.com" | "https://anysearch.com") {
+    if matches!(
+        trimmed,
+        "https://www.anysearch.com" | "https://anysearch.com"
+    ) {
         ANYSEARCH_DEFAULT_BASE_URL.to_string()
     } else {
         trimmed.to_string()
@@ -850,7 +853,9 @@ impl SettingsService {
     pub fn set_welcome_name(&self, name: &str) -> Result<String> {
         let name = name.trim();
         if name.chars().count() > 32 {
-            return Err(CoreError::invalid("welcome name must be at most 32 characters"));
+            return Err(CoreError::invalid(
+                "welcome name must be at most 32 characters",
+            ));
         }
 
         let mut settings = self
@@ -942,9 +947,8 @@ impl SettingsService {
 
     /// Current web-search settings (default DeepSeek-first when uninitialized).
     pub fn web_search_settings(&self) -> Result<WebSearchSettings> {
-        let settings = normalize_web_search_settings(
-            self.load()?.map(|s| s.web_search).unwrap_or_default(),
-        );
+        let settings =
+            normalize_web_search_settings(self.load()?.map(|s| s.web_search).unwrap_or_default());
         self.web_search_settings_view(settings)
     }
 
@@ -978,7 +982,10 @@ impl SettingsService {
         Ok(())
     }
 
-    fn web_search_settings_view(&self, mut settings: WebSearchSettings) -> Result<WebSearchSettings> {
+    fn web_search_settings_view(
+        &self,
+        mut settings: WebSearchSettings,
+    ) -> Result<WebSearchSettings> {
         settings.anysearch_api_key_configured = self
             .secrets
             .get(ANYSEARCH_API_KEY_NAME)?

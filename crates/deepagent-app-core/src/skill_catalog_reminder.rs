@@ -148,8 +148,8 @@ impl SkillCatalogSendState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deepagent_skills::{frontmatter, Skill, SkillOrigin, SkillRegistry};
     use crate::{PermissionPreset, PermissionPresetVisibility};
+    use deepagent_skills::{frontmatter, Skill, SkillOrigin, SkillRegistry};
 
     /// Build an [`AppSettings`] preconfigured for catalog-on with the default
     /// budget. Tests that want a different budget / disabled state mutate
