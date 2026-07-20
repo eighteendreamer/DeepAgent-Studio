@@ -42,6 +42,7 @@ import type {
   ComposerAttachment,
   ComposerMention,
   ComposerSkillSelection,
+  ContextUsageSnapshot,
   ConversationMessage,
   MessagePart,
   PersistedAttachment,
@@ -393,6 +394,9 @@ export function App() {
   // a not-yet-registered new run uses the "__pending__" key until its id is
   // known, then it is migrated.
   const liveTranscripts = useRef<Map<string, ChatMessage[]>>(new Map());
+  const [contextUsageByKey, setContextUsageByKey] = useState<Map<string, ContextUsageSnapshot>>(
+    () => new Map()
+  );
   // Always-current activeId, readable from inside the long-lived run handler.
   const activeIdRef = useRef<string | null>(null);
   const activePendingRunKeyRef = useRef<string | null>(null);
@@ -1175,6 +1179,14 @@ export function App() {
                   liveTranscripts.current.delete(runKey);
                   liveTranscripts.current.set(sid, buf);
                 }
+                setContextUsageByKey((prev) => {
+                  const snapshot = prev.get(runKey);
+                  if (!snapshot) return prev;
+                  const next = new Map(prev);
+                  next.delete(runKey);
+                  next.set(sid, snapshot);
+                  return next;
+                });
                 runKey = sid;
               }
               setActivePendingRunKey((current) => (current === pendingKey ? null : current));
@@ -1243,7 +1255,33 @@ export function App() {
               });
             }
             break;
+          case "context_usage": {
+            const snapshot = event.snapshot as ContextUsageSnapshot | undefined;
+            if (snapshot) {
+              setContextUsageByKey((prev) => {
+                const next = new Map(prev);
+                next.set(runKey, snapshot);
+                return next;
+              });
+            }
+            break;
+          }
           case "usage":
+            setContextUsageByKey((prev) => {
+              const current = prev.get(runKey);
+              if (!current) return prev;
+              const cacheHit = Number(event.prompt_cache_hit_tokens ?? 0);
+              const cacheMiss = Number(event.prompt_cache_miss_tokens ?? 0);
+              const cacheTotal = cacheHit + cacheMiss;
+              const next = new Map(prev);
+              next.set(runKey, {
+                ...current,
+                cache_hit_tokens: cacheHit,
+                cache_miss_tokens: cacheMiss,
+                cache_hit_ratio: cacheTotal > 0 ? cacheHit / cacheTotal : current.cache_hit_ratio,
+              });
+              return next;
+            });
             addUsage({
               prompt: Number(event.prompt_tokens ?? 0),
               completion: Number(event.completion_tokens ?? 0),
@@ -1471,6 +1509,10 @@ export function App() {
   );
 
   const chatMessages = messages;
+  const activeContextUsage =
+    contextUsageByKey.get(activeId ?? "") ??
+    contextUsageByKey.get(activePendingRunKey ?? "") ??
+    null;
 
   // Manually stop the in-flight run (the run ends cleanly at the next step).
   const onStopRun = useCallback(() => {
@@ -1750,6 +1792,7 @@ export function App() {
                   planMode={planMode}
                   activeProjectPath={activeProjectPath}
                   projectMapOpenSignal={projectMapOpenSignal}
+                  contextUsage={activeContextUsage}
                 />
               </motion.div>
             )}

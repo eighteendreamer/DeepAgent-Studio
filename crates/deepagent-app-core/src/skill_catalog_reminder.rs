@@ -79,9 +79,9 @@ impl SkillCatalogSendState {
     /// any outer system-reminder wrapping and for splicing it into the
     /// system prompt.
     ///
-    /// Mutates `self` to remember which ids have been seen for diagnostics,
-    /// but renders the current visible catalog on every call so skill
-    /// discovery behaves like tool-schema visibility.
+    /// Mutates `self` to remember which ids have been seen. A fresh session
+    /// gets the full visible catalog once; later calls emit only newly visible
+    /// skills, or `None` when nothing changed.
     pub fn next_delta(
         &mut self,
         registry: &SkillRegistry,
@@ -125,7 +125,23 @@ impl SkillCatalogSendState {
         // 2. The BuiltIn-never-truncated invariant from `formatted_catalog`
         //    still applies: if an entry's origin is BuiltIn it keeps
         //    its full description even under tight budgets.
-        let rendered = registry.formatted_catalog(settings.skill_catalog_char_budget);
+        let new_visible_ids: HashSet<String> = visible_ids
+            .iter()
+            .filter(|id| !self.sent_ids.contains(id.as_str()))
+            .cloned()
+            .collect();
+        if new_visible_ids.is_empty() {
+            return None;
+        }
+
+        let mut delta_registry = registry.clone();
+        for meta in registry.catalog() {
+            if !new_visible_ids.contains(&meta.id) {
+                delta_registry.unregister(&meta.id);
+            }
+        }
+
+        let rendered = delta_registry.formatted_catalog(settings.skill_catalog_char_budget);
         if rendered.is_empty() {
             // Degenerate: budget was non-zero but the renderer returned the
             // empty string anyway (e.g. every entry's `disable_model_
@@ -137,7 +153,7 @@ impl SkillCatalogSendState {
         }
 
         // Track visible ids for diagnostics and reset-related tests.
-        for id in visible_ids {
+        for id in new_visible_ids {
             self.sent_ids.insert(id);
         }
 
@@ -166,11 +182,15 @@ mod tests {
                         id: "deepseek-v4-flash".into(),
                         object: "model".into(),
                         owned_by: "deepseek".into(),
+                        context_window: None,
+                        max_output_tokens: None,
                     },
                     deepagent_models::ModelInfo {
                         id: "deepseek-v4-pro".into(),
                         object: "model".into(),
                         owned_by: "deepseek".into(),
+                        context_window: None,
+                        max_output_tokens: None,
                     },
                 ],
             )
@@ -185,7 +205,7 @@ mod tests {
             verification_policy: crate::settings::VerificationPolicy::default(),
             web_search: crate::settings::WebSearchSettings::default(),
             vision: crate::settings::VisionSettings::default(),
-            tool_search_mode: deepagent_builtins::ToolSearchMode::default(),
+            tool_search_mode: crate::settings::SettingsService::DEFAULT_TOOL_SEARCH_MODE,
             tool_search_auto_threshold_chars: None,
             skill_catalog_enabled: true,
             skill_catalog_char_budget: 8000,
@@ -232,25 +252,24 @@ mod tests {
     }
 
     #[test]
-    fn second_call_re_emits_current_catalog_when_registry_unchanged() {
-        // The model gets the current skill list on every chat turn, matching
-        // tool-schema visibility.
+    fn second_call_emits_nothing_when_registry_unchanged() {
+        // Performance invariant: the model gets the current skill list once,
+        // then only receives deltas when the registry changes.
         let mut reg = SkillRegistry::new();
         reg.register(skill("a", "A", "alpha skill", SkillOrigin::User));
         reg.register(skill("b", "B", "bravo skill", SkillOrigin::User));
 
         let mut state = SkillCatalogSendState::new();
         let _first = state.next_delta(&reg, &settings_default()).unwrap();
-        let second = state.next_delta(&reg, &settings_default()).unwrap();
-        assert!(second.contains("- a:"));
-        assert!(second.contains("- b:"));
+        let second = state.next_delta(&reg, &settings_default());
+        assert!(second.is_none());
         assert_eq!(state.sent_count(), 2);
     }
 
     #[test]
-    fn after_install_announces_current_catalog() {
-        // The current catalog is re-rendered each turn; newly installed skills
-        // simply appear alongside previously visible skills.
+    fn after_install_announces_only_new_skill() {
+        // Newly installed skills appear as a delta; previously announced skills
+        // are not repeated into the prompt.
         let mut reg = SkillRegistry::new();
         reg.register(skill("a", "A", "alpha skill", SkillOrigin::User));
 
@@ -263,18 +282,14 @@ mod tests {
 
         let delta = state.next_delta(&reg, &settings_default()).unwrap();
         assert!(
-            delta.contains("- a:"),
-            "current catalog should still include id 'a'"
+            !delta.contains("- a:"),
+            "previously announced id 'a' should not be repeated"
         );
-        assert!(
-            delta.contains("- b:"),
-            "current catalog should include new id 'b'"
-        );
+        assert!(delta.contains("- b:"), "delta should include new id 'b'");
         assert_eq!(state.sent_count(), 2);
 
-        let third = state.next_delta(&reg, &settings_default()).unwrap();
-        assert!(third.contains("- a:"));
-        assert!(third.contains("- b:"));
+        let third = state.next_delta(&reg, &settings_default());
+        assert!(third.is_none());
     }
 
     #[test]

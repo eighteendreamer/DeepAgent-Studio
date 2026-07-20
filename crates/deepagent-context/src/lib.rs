@@ -20,7 +20,9 @@
 pub mod budget;
 pub mod compaction;
 pub mod model_compactor;
+pub mod pack;
 pub mod pipeline;
+pub mod policy;
 pub mod prompt;
 pub mod tokenizer;
 
@@ -29,6 +31,11 @@ pub use compaction::{
     CompactionPolicy, CompactionResult, Compactor, HeuristicSummarizer, Summarizer, TaskSummary,
 };
 pub use model_compactor::ModelCompactor;
+pub use pack::{
+    CacheScope, ContextBlock, ContextBlockKind, ContextBlockUsage, ContextPack,
+    ContextUsageSnapshot,
+};
 pub use pipeline::ContextPipeline;
+pub use policy::ContextPolicy;
 pub use prompt::{CompiledPrompt, PromptFragment, PromptSource};
 pub use tokenizer::{HeuristicTokenizer, TokenCounter};

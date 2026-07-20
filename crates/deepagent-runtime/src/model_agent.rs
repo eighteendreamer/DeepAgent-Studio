@@ -137,15 +137,20 @@ impl ModelAgent {
 /// [`RuntimeEvent`]s, so a UI sees tokens/reasoning live.
 struct SinkObserver {
     sink: Arc<dyn RuntimeEventSink>,
+    step: usize,
+    request_started_at: std::time::Instant,
+    first_token_seen: bool,
 }
 
 impl DeltaObserver for SinkObserver {
     fn on_content(&mut self, delta: &str) {
+        self.emit_first_token_once("content");
         self.sink.emit(RuntimeEvent::ContentDelta {
             text: delta.to_string(),
         });
     }
     fn on_reasoning(&mut self, delta: &str) {
+        self.emit_first_token_once("reasoning");
         self.sink.emit(RuntimeEvent::ReasoningDelta {
             text: delta.to_string(),
         });
@@ -154,9 +159,23 @@ impl DeltaObserver for SinkObserver {
     // BeforeToolUse gate, so we don't duplicate it here.
 }
 
+impl SinkObserver {
+    fn emit_first_token_once(&mut self, kind: &str) {
+        if self.first_token_seen {
+            return;
+        }
+        self.first_token_seen = true;
+        self.sink.emit(RuntimeEvent::ModelFirstToken {
+            step: self.step,
+            kind: kind.to_string(),
+            elapsed_ms: self.request_started_at.elapsed().as_millis() as u64,
+        });
+    }
+}
+
 #[async_trait]
 impl Agent for ModelAgent {
-    async fn think(&mut self, _step: usize, last: &[Observation]) -> Result<AgentDecision> {
+    async fn think(&mut self, step: usize, last: &[Observation]) -> Result<AgentDecision> {
         // Feed back every tool result from the previous step (more than one when
         // the previous turn ran tools in parallel). Order matters: tool results
         // must follow the assistant turn that requested them.
@@ -167,18 +186,41 @@ impl Agent for ModelAgent {
         let request = ChatRequest::new(self.model.clone(), self.messages.clone())
             .with_thinking_depth(self.thinking_depth)
             .with_tools(self.tools.clone());
+        let message_count = request.messages.len();
+        let tool_count = request.tools.len();
+        let request_started_at = std::time::Instant::now();
+        if let Some(sink) = &self.events {
+            sink.emit(RuntimeEvent::ModelRequestStarted {
+                step,
+                model: self.model.clone(),
+                thinking_depth: self.thinking_depth.label().to_string(),
+                message_count,
+                tool_count,
+            });
+        }
 
         // Stream the turn, forwarding token/reasoning deltas to the event sink
         // (if any) as they arrive.
         let response = match &self.events {
             Some(sink) => {
-                let mut observer = SinkObserver { sink: sink.clone() };
+                let mut observer = SinkObserver {
+                    sink: sink.clone(),
+                    step,
+                    request_started_at,
+                    first_token_seen: false,
+                };
                 self.client
                     .stream_chat_observed(request, &mut observer)
                     .await?
             }
             None => self.client.stream_chat(request).await?,
         };
+        if let Some(sink) = &self.events {
+            sink.emit(RuntimeEvent::ModelRequestCompleted {
+                step,
+                elapsed_ms: request_started_at.elapsed().as_millis() as u64,
+            });
+        }
 
         // Forward token usage to the event sink so the UI can show input/output
         // and DeepSeek cache hit/miss totals for the run. Also accumulate it so

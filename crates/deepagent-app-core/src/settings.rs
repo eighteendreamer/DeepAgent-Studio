@@ -551,8 +551,8 @@ pub struct AppSettings {
     /// Tool-search / lazy-tool-loading mode (tool-search spec).
     /// Decides whether deferrable tools (MCP + `should_defer == true`) are
     /// hidden from each request's `tools` array until discovered through the
-    /// `tool_search` built-in. Default `Disabled` is byte-equivalent to the
-    /// pre-feature behavior.
+    /// `tool_search` built-in. New settings default to `Auto` so large
+    /// deferred toolsets do not bloat every model request.
     #[serde(default)]
     pub tool_search_mode: deepagent_builtins::ToolSearchMode,
     /// Auto-mode threshold in characters: total deferred-tool schema size at
@@ -760,7 +760,7 @@ impl SettingsService {
             tool_search_mode: prior
                 .as_ref()
                 .map(|s| s.tool_search_mode)
-                .unwrap_or_default(),
+                .unwrap_or(Self::DEFAULT_TOOL_SEARCH_MODE),
             tool_search_auto_threshold_chars: prior
                 .as_ref()
                 .and_then(|s| s.tool_search_auto_threshold_chars),
@@ -1034,9 +1034,18 @@ impl SettingsService {
         Ok(settings)
     }
 
-    /// The current tool-search mode (default `Disabled`).
+    /// Performance-oriented default for new settings documents: use Auto so
+    /// large MCP/deferred tool schema sets are discovered lazily, while small
+    /// toolsets remain byte-equivalent to fully loaded requests.
+    pub const DEFAULT_TOOL_SEARCH_MODE: deepagent_builtins::ToolSearchMode =
+        deepagent_builtins::ToolSearchMode::Auto;
+
+    /// The current tool-search mode (default `Auto` for missing/new settings).
     pub fn tool_search_mode(&self) -> Result<deepagent_builtins::ToolSearchMode> {
-        Ok(self.load()?.map(|s| s.tool_search_mode).unwrap_or_default())
+        Ok(self
+            .load()?
+            .map(|s| s.tool_search_mode)
+            .unwrap_or(Self::DEFAULT_TOOL_SEARCH_MODE))
     }
 
     /// Set the tool-search mode, persisting it.
@@ -1516,15 +1525,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_search_mode_default_is_disabled_and_round_trips() {
-        // Default after initialize is Disabled (preserve byte-equivalent
-        // pre-feature behavior). Setting / getting roundtrips through the
+    async fn tool_search_mode_default_is_auto_and_round_trips() {
+        // Default after initialize is Auto so large deferred toolsets do not
+        // bloat every prompt. Setting / getting roundtrips through the
         // SQLite-backed settings doc, and survives a discovery refresh.
         let (svc, _) = service();
         svc.initialize("sk-abcd1234").await.unwrap();
         assert_eq!(
             svc.tool_search_mode().unwrap(),
-            deepagent_builtins::ToolSearchMode::Disabled
+            deepagent_builtins::ToolSearchMode::Auto
         );
 
         svc.set_tool_search_mode(deepagent_builtins::ToolSearchMode::Enabled)
@@ -1812,11 +1821,15 @@ mod tests {
                         id: "deepseek-v4-flash".into(),
                         object: "model".into(),
                         owned_by: "deepseek".into(),
+                        context_window: None,
+                        max_output_tokens: None,
                     },
                     deepagent_models::ModelInfo {
                         id: "deepseek-v4-pro".into(),
                         object: "model".into(),
                         owned_by: "deepseek".into(),
+                        context_window: None,
+                        max_output_tokens: None,
                     },
                 ],
             )

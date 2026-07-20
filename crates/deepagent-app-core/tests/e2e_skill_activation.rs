@@ -36,7 +36,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use deepagent_app_core::settings::AppSettings;
+use deepagent_app_core::settings::{
+    AppSettings, PermissionPreset, PermissionPresetVisibility, SettingsService,
+};
 use deepagent_app_core::skill_catalog_reminder::SkillCatalogSendState;
 use deepagent_app_core::skills_service::SkillsService;
 use deepagent_builtins::{SkillTool, SKILL_TOOL_NAME};
@@ -161,11 +163,15 @@ fn settings_default() -> AppSettings {
                     id: "deepseek-v4-flash".into(),
                     object: "model".into(),
                     owned_by: "deepseek".into(),
+                    context_window: None,
+                    max_output_tokens: None,
                 },
                 ModelInfo {
                     id: "deepseek-v4-pro".into(),
                     object: "model".into(),
                     owned_by: "deepseek".into(),
+                    context_window: None,
+                    max_output_tokens: None,
                 },
             ],
         )
@@ -180,12 +186,15 @@ fn settings_default() -> AppSettings {
         verification_policy: Default::default(),
         web_search: Default::default(),
         vision: Default::default(),
-        tool_search_mode: Default::default(),
+        tool_search_mode: SettingsService::DEFAULT_TOOL_SEARCH_MODE,
         tool_search_auto_threshold_chars: None,
         skill_catalog_enabled: true,
         skill_catalog_char_budget: 8000,
         skill_install_ai_review_enabled: true,
         skill_install_ai_review_model: None,
+        active_permission_preset: PermissionPreset::default(),
+        permission_preset_visibility: PermissionPresetVisibility::default(),
+        welcome_name: String::new(),
     }
 }
 
@@ -451,12 +460,8 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
     // subsequent turns).
     let prompt1 = render_turn_system_prompt(&mut state, svc.manager().registry(), &settings);
     assert!(
-        prompt1.contains("<available-skills>"),
-        "turn-1 prompt MUST keep carrying the catalog reminder; got:\n{prompt1}"
-    );
-    assert!(
-        prompt1.contains("- built-in-alpha:"),
-        "turn-1 prompt MUST keep listing built-in-alpha; got:\n{prompt1}"
+        !prompt1.contains("<available-skills>"),
+        "turn-1 prompt MUST NOT repeat the unchanged catalog reminder; got:\n{prompt1}"
     );
     let CannedAssistant::Content = llm.take_turn(&prompt1) else {
         panic!("script[1] must be Content (turn-1 finalizes)");
@@ -541,12 +546,12 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
         "turn-3 reminder MUST announce the newly-installed marketplace-charlie; got:\n{prompt3}"
     );
     assert!(
-        prompt3.contains("- built-in-alpha:"),
-        "turn-3 reminder MUST still include built-in-alpha; got:\n{prompt3}"
+        !prompt3.contains("- built-in-alpha:"),
+        "turn-3 delta reminder MUST NOT repeat built-in-alpha; got:\n{prompt3}"
     );
     assert!(
-        prompt3.contains("- user-bravo:"),
-        "turn-3 reminder MUST still include user-bravo; got:\n{prompt3}"
+        !prompt3.contains("- user-bravo:"),
+        "turn-3 delta reminder MUST NOT repeat user-bravo; got:\n{prompt3}"
     );
     assert!(
         !prompt3.contains("- user-secret:"),

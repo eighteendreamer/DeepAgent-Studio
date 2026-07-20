@@ -7,6 +7,7 @@ import type {
   ComposerAttachment,
   ComposerMention,
   ComposerSkillSelection,
+  ContextUsageSnapshot,
   ToolCall,
   TimelineEntry,
   ApprovalRequest,
@@ -95,6 +96,8 @@ interface Props {
   activeProjectPath?: string | null;
   /** Incremented by parent when another UI surface asks to open the project map. */
   projectMapOpenSignal?: number;
+  /** Latest context usage snapshot for the active session/run. */
+  contextUsage?: ContextUsageSnapshot | null;
 }
 
 type OfficeContextView = {
@@ -987,9 +990,17 @@ export function ChatView({
   planMode = false,
   activeProjectPath = null,
   projectMapOpenSignal = 0,
+  contextUsage = null,
 }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
+  const contextUsageFallbackTokens = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const usage = messages[i]?.usage;
+      if (usage?.promptTokens) return usage.promptTokens;
+    }
+    return 0;
+  }, [messages]);
   const [isGitWorkbenchOpen, setIsGitWorkbenchOpen] = useState(false);
   const {
     loading: gitLoading,
@@ -1578,6 +1589,8 @@ export function ChatView({
               onStop={onStop}
               planMode={planMode}
               activeProjectPath={activeProjectPath}
+              contextUsage={contextUsage}
+              contextUsageFallbackTokens={contextUsageFallbackTokens}
               textareaMaxHeight={300}
             />
           </div>

@@ -19,8 +19,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use deepagent_builtins::WorkspaceRoot;
 use deepagent_context::{
-    CompactionPolicy, HeuristicSummarizer, HeuristicTokenizer, ModelCompactor, Summarizer,
-    TaskSummary, TokenCounter,
+    CacheScope, CompactionPolicy, ContextBlock, ContextBlockKind, ContextPack, ContextPolicy,
+    HeuristicSummarizer, HeuristicTokenizer, ModelCompactor, Summarizer, TaskSummary, TokenCounter,
 };
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
@@ -32,7 +32,9 @@ use deepagent_hooks::{
 };
 use deepagent_intent::{CommandContext, CommandDef, SlashAction, SlashRegistry};
 use deepagent_models::transport::HttpTransport;
-use deepagent_models::{ModelClient, ModelConfig, ModelRole, ThinkingDepth, ToolSchema};
+use deepagent_models::{
+    ModelCapabilityResolver, ModelClient, ModelConfig, ModelRole, ThinkingDepth, ToolSchema,
+};
 use deepagent_persistence::Database;
 use deepagent_runtime::{
     tool_ui_metadata, Agent, ChannelSink, ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent,
@@ -107,6 +109,111 @@ fn current_date_string() -> String {
     let fmt = time::macros::format_description!("[year]-[month]-[day]");
     now.format(&fmt)
         .unwrap_or_else(|_| format!("{}", now.year()))
+}
+
+fn build_context_pack_snapshot(
+    policy: &ContextPolicy,
+    system_prompt: &str,
+    history: &[Message],
+    final_user_prompt: &str,
+    tools: &[ToolSchema],
+    compacted: bool,
+    counter: &dyn TokenCounter,
+) -> deepagent_context::ContextUsageSnapshot {
+    let mut blocks = Vec::new();
+    let (stable_prefix, dynamic_runtime) = split_system_prompt_for_context(system_prompt);
+    push_context_block(
+        &mut blocks,
+        ContextBlockKind::StablePrefix,
+        "system_prompt_base",
+        u8::MAX,
+        CacheScope::StablePrefix,
+        stable_prefix,
+        counter,
+    );
+    push_context_block(
+        &mut blocks,
+        ContextBlockKind::DynamicRuntime,
+        "runtime_environment",
+        200,
+        CacheScope::Dynamic,
+        dynamic_runtime,
+        counter,
+    );
+
+    let rendered_history = render_history_for_context_usage(history);
+    push_context_block(
+        &mut blocks,
+        ContextBlockKind::RecentConversation,
+        "session_history",
+        130,
+        CacheScope::Dynamic,
+        &rendered_history,
+        counter,
+    );
+
+    let tool_schema_json = serde_json::to_string(tools).unwrap_or_default();
+    push_context_block(
+        &mut blocks,
+        ContextBlockKind::ToolSchemas,
+        "visible_tool_schemas",
+        180,
+        CacheScope::StablePrefix,
+        &tool_schema_json,
+        counter,
+    );
+
+    push_context_block(
+        &mut blocks,
+        ContextBlockKind::UserGoal,
+        "current_user_prompt",
+        u8::MAX,
+        CacheScope::Dynamic,
+        final_user_prompt,
+        counter,
+    );
+
+    let pack = ContextPack::new(blocks);
+    deepagent_context::ContextUsageSnapshot::from_pack(policy, &pack, compacted)
+}
+
+fn split_system_prompt_for_context(system_prompt: &str) -> (&str, &str) {
+    if let Some(idx) = system_prompt.find(SYSTEM_PROMPT_DYNAMIC_BOUNDARY) {
+        let dynamic_start = idx + SYSTEM_PROMPT_DYNAMIC_BOUNDARY.len();
+        (&system_prompt[..idx], &system_prompt[dynamic_start..])
+    } else {
+        (system_prompt, "")
+    }
+}
+
+fn render_history_for_context_usage(history: &[Message]) -> String {
+    history
+        .iter()
+        .map(|m| format!("{:?}: {}", m.role, m.content))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn push_context_block(
+    blocks: &mut Vec<ContextBlock>,
+    kind: ContextBlockKind,
+    source: &str,
+    priority: u8,
+    cache_scope: CacheScope,
+    content: &str,
+    counter: &dyn TokenCounter,
+) {
+    if content.trim().is_empty() {
+        return;
+    }
+    blocks.push(ContextBlock {
+        kind,
+        source: source.to_string(),
+        priority,
+        cache_scope,
+        estimated_tokens: counter.count(content),
+        content: content.to_string(),
+    });
 }
 
 #[cfg(feature = "web")]
@@ -1777,8 +1884,12 @@ impl ChatService {
         history: Vec<Message>,
         client: &Arc<ModelClient>,
         model: &str,
-    ) -> Vec<Message> {
-        let policy = CompactionPolicy::default();
+        context_policy: &ContextPolicy,
+    ) -> (Vec<Message>, bool) {
+        let policy = CompactionPolicy {
+            trigger_tokens: context_policy.compaction_trigger_tokens(),
+            ..CompactionPolicy::default()
+        };
         // Render each turn to a rough "role: content" string for counting +
         // summarization input.
         let rendered: Vec<String> = history
@@ -1789,7 +1900,7 @@ impl ChatService {
         let total: usize = rendered.iter().map(|t| counter.count(t)).sum();
 
         if !policy.should_compact(total) || history.len() <= policy.keep_recent_turns {
-            return history;
+            return (history, false);
         }
 
         let split = history.len() - policy.keep_recent_turns;
@@ -1827,7 +1938,7 @@ impl ChatService {
             "[Earlier conversation compacted to summary]\n{summary_block}"
         )));
         compacted.extend(history.into_iter().skip(split));
-        compacted
+        (compacted, true)
     }
 
     /// Map the sandbox mode to the filesystem access mode used by the built-in
@@ -2559,6 +2670,16 @@ impl ChatService {
             .tool_search_auto_threshold()
             .unwrap_or(SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS);
         let tool_search_discovered = self.discovered_tools_for_session(&session_id_str);
+        let effective_thinking_depth = effective_thinking_depth_for_prompt(
+            thinking_depth,
+            prompt_for_model,
+            continue_session.is_none() && history.is_empty(),
+            preflight_tools.is_empty(),
+            initial_plan_mode,
+        );
+        let model_capability = ModelCapabilityResolver::new().resolve_model_id(&model);
+        let context_policy =
+            ContextPolicy::for_capability(&model_capability, effective_thinking_depth);
 
         // Sub-agent orchestration (Claude-Code parity): register the `task`
         // tool into the MAIN run's registry only. Its runner executes a nested
@@ -2587,7 +2708,7 @@ impl ChatService {
             let runner = ChatSubagentRunner {
                 client: client.clone(),
                 model: model.clone(),
-                thinking_depth,
+                thinking_depth: effective_thinking_depth,
                 registry: sub_registry,
                 root: root.clone(),
                 tool_search_mode,
@@ -2708,8 +2829,8 @@ impl ChatService {
         // [summary + recent turns] instead of the full transcript. Falls back to
         // the heuristic summarizer if the model call fails, and records a
         // `ContextCompacted` event. No-op for new sessions / short history.
-        let history = self
-            .maybe_compact_history(&mut session, history, &client, &model)
+        let (history, context_compacted) = self
+            .maybe_compact_history(&mut session, history, &client, &model, &context_policy)
             .await;
         let session_id = session.id().to_string();
         {
@@ -2912,6 +3033,18 @@ impl ChatService {
         } else {
             format!("{}\n\n{}", prompt_prefixes.join("\n\n"), prompt_for_model)
         };
+        let context_usage = build_context_pack_snapshot(
+            &context_policy,
+            &system_prompt,
+            &history,
+            &final_user_prompt,
+            &tools,
+            context_compacted,
+            &HeuristicTokenizer::new(),
+        );
+        sink.emit(RuntimeEvent::ContextUsage {
+            snapshot: context_usage,
+        });
 
         // Clone the model handle for the post-run auto-capture (the originals
         // are moved into the agent below).
@@ -2922,7 +3055,7 @@ impl ChatService {
         let model_name_for_cost = model.clone();
 
         let mut agent = ModelAgent::new(client, model, system_prompt, final_user_prompt, tools)
-            .with_thinking_depth(thinking_depth)
+            .with_thinking_depth(effective_thinking_depth)
             .with_history(history)
             .with_events(sink.clone());
 
@@ -3291,6 +3424,65 @@ fn parse_thinking_depth(depth: &str) -> Result<ThinkingDepth> {
         "deep" => Ok(ThinkingDepth::Deep),
         _ => Err(CoreError::invalid("usage: /thinking <simple|medium|deep>")),
     }
+}
+
+/// A tiny performance guard for the most common "empty first turn" case.
+///
+/// Deep/medium Thinking Mode is useful for real work, but it is wasteful for a
+/// brand-new session whose first prompt is just a greeting or acknowledgement:
+/// it increases first-token latency while adding no reasoning value. Keep this
+/// intentionally narrow so explicit work requests still honor the user's
+/// selected thinking depth.
+fn effective_thinking_depth_for_prompt(
+    requested: ThinkingDepth,
+    prompt: &str,
+    fresh_empty_session: bool,
+    preflight_tools_empty: bool,
+    initial_plan_mode: bool,
+) -> ThinkingDepth {
+    if requested == ThinkingDepth::Simple
+        || !fresh_empty_session
+        || !preflight_tools_empty
+        || initial_plan_mode
+    {
+        return requested;
+    }
+
+    if is_lightweight_opening_prompt(prompt) {
+        ThinkingDepth::Simple
+    } else {
+        requested
+    }
+}
+
+fn is_lightweight_opening_prompt(prompt: &str) -> bool {
+    let normalized = prompt
+        .trim()
+        .trim_matches(|c: char| c.is_ascii_punctuation() || "。！？!？，,～~ ".contains(c))
+        .to_ascii_lowercase();
+    if normalized.is_empty() || normalized.chars().count() > 24 {
+        return false;
+    }
+
+    matches!(
+        normalized.as_str(),
+        "hi" | "hello"
+            | "hey"
+            | "ok"
+            | "okay"
+            | "thanks"
+            | "thank you"
+            | "你好"
+            | "您好"
+            | "嗨"
+            | "哈喽"
+            | "在吗"
+            | "好的"
+            | "好"
+            | "嗯"
+            | "谢谢"
+            | "辛苦了"
+    )
 }
 
 #[allow(dead_code)]
@@ -3807,9 +3999,47 @@ mod tests {
 
         assert!(session_id.starts_with("ses_"));
         let labels = collected.lock().unwrap().clone();
-        assert_eq!(labels.first().map(String::as_str), Some("run_started"));
+        assert!(labels.iter().any(|l| l == "run_started"));
+        assert!(labels.iter().any(|l| l == "context_usage"));
+        assert!(labels.iter().any(|l| l == "model_request_started"));
+        assert!(labels.iter().any(|l| l == "model_first_token"));
+        assert!(labels.iter().any(|l| l == "model_request_completed"));
         assert!(labels.iter().any(|l| l == "content_delta"));
         assert_eq!(labels.last().map(String::as_str), Some("run_completed"));
+    }
+
+    #[test]
+    fn lightweight_opening_prompt_uses_simple_thinking_only_for_fresh_empty_sessions() {
+        assert_eq!(
+            effective_thinking_depth_for_prompt(ThinkingDepth::Deep, "你好", true, true, false),
+            ThinkingDepth::Simple
+        );
+        assert_eq!(
+            effective_thinking_depth_for_prompt(ThinkingDepth::Medium, "hello!", true, true, false),
+            ThinkingDepth::Simple
+        );
+        assert_eq!(
+            effective_thinking_depth_for_prompt(
+                ThinkingDepth::Deep,
+                "你好，帮我分析这个项目",
+                true,
+                true,
+                false
+            ),
+            ThinkingDepth::Deep
+        );
+        assert_eq!(
+            effective_thinking_depth_for_prompt(ThinkingDepth::Deep, "你好", false, true, false),
+            ThinkingDepth::Deep
+        );
+        assert_eq!(
+            effective_thinking_depth_for_prompt(ThinkingDepth::Deep, "你好", true, false, false),
+            ThinkingDepth::Deep
+        );
+        assert_eq!(
+            effective_thinking_depth_for_prompt(ThinkingDepth::Deep, "你好", true, true, true),
+            ThinkingDepth::Deep
+        );
     }
 
     #[tokio::test]

@@ -61,6 +61,38 @@ pub enum RuntimeEvent {
         /// 0-based step index.
         step: usize,
     },
+    /// A provider request is about to be sent. This is intentionally emitted
+    /// immediately before the streaming call so UI/debug logs can separate
+    /// local prompt assembly from provider first-token latency.
+    ModelRequestStarted {
+        /// 0-based turn/step index.
+        step: usize,
+        /// Target model id.
+        model: String,
+        /// User-facing thinking depth label (`simple` / `medium` / `deep`).
+        thinking_depth: String,
+        /// Number of messages in the request payload.
+        message_count: usize,
+        /// Number of tool schemas advertised in this request.
+        tool_count: usize,
+    },
+    /// The first streamed model fragment arrived. `kind` is either
+    /// `reasoning` or `content`, matching the first visible stream channel.
+    ModelFirstToken {
+        /// 0-based turn/step index.
+        step: usize,
+        /// `reasoning` or `content`.
+        kind: String,
+        /// Milliseconds from `ModelRequestStarted` to this first fragment.
+        elapsed_ms: u64,
+    },
+    /// The provider stream finished for this model turn.
+    ModelRequestCompleted {
+        /// 0-based turn/step index.
+        step: usize,
+        /// Total milliseconds spent inside the provider streaming request.
+        elapsed_ms: u64,
+    },
     /// A Thinking Mode reasoning fragment (DeepSeek `reasoning_content`).
     ReasoningDelta {
         /// Incremental reasoning text.
@@ -132,6 +164,11 @@ pub enum RuntimeEvent {
         passed: bool,
         /// Short diagnosis / detail.
         detail: String,
+    },
+    /// Estimated context usage for the next model call. Emitted before the
+    /// request so the UI can show capacity even before provider usage arrives.
+    ContextUsage {
+        snapshot: deepagent_context::ContextUsageSnapshot,
     },
     /// Token accounting for one model call (accumulates across a multi-turn run
     /// on the UI side). Carries DeepSeek's cache hit/miss breakdown when present.
@@ -348,12 +385,16 @@ impl RuntimeEvent {
             RuntimeEvent::RunStarted { .. } => "run_started",
             RuntimeEvent::SessionRegistered { .. } => "session_registered",
             RuntimeEvent::TurnStarted { .. } => "turn_started",
+            RuntimeEvent::ModelRequestStarted { .. } => "model_request_started",
+            RuntimeEvent::ModelFirstToken { .. } => "model_first_token",
+            RuntimeEvent::ModelRequestCompleted { .. } => "model_request_completed",
             RuntimeEvent::ReasoningDelta { .. } => "reasoning_delta",
             RuntimeEvent::ContentDelta { .. } => "content_delta",
             RuntimeEvent::ToolStarted { .. } => "tool_started",
             RuntimeEvent::ToolCompleted { .. } => "tool_completed",
             RuntimeEvent::ToolBlocked { .. } => "tool_blocked",
             RuntimeEvent::Verification { .. } => "verification",
+            RuntimeEvent::ContextUsage { .. } => "context_usage",
             RuntimeEvent::Usage { .. } => "usage",
             RuntimeEvent::RunCompleted { .. } => "run_completed",
             RuntimeEvent::RunAwaitingApproval { .. } => "run_awaiting_approval",

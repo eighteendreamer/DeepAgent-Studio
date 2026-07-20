@@ -161,6 +161,43 @@ export interface TokenUsage {
   costYuan?: number;
 }
 
+export type ContextBlockKind =
+  | "stable_prefix"
+  | "dynamic_runtime"
+  | "task_summary"
+  | "recent_conversation"
+  | "retrieved_knowledge"
+  | "retrieved_code"
+  | "tool_schemas"
+  | "tool_result_refs"
+  | "user_goal"
+  | "other";
+
+export type ContextCacheScope = "stable_prefix" | "dynamic";
+
+export interface ContextBlockUsage {
+  name: string;
+  kind: ContextBlockKind;
+  tokens: number;
+  cache_scope: ContextCacheScope;
+  source: string;
+}
+
+export interface ContextUsageSnapshot {
+  model_id: string;
+  context_window: number;
+  prompt_budget: number;
+  estimated_prompt_tokens: number;
+  used_ratio: number;
+  reserved_output_tokens: number;
+  reserved_tool_tokens: number;
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
+  cache_hit_ratio?: number;
+  compacted: boolean;
+  blocks: ContextBlockUsage[];
+}
+
 /** Budget configuration (mirrors deepagent-app-core::BudgetConfig). */
 export interface BudgetConfig {
   daily_limit: number | null;

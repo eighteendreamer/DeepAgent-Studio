@@ -35,6 +35,14 @@ pub struct ModelInfo {
     /// Owner (e.g. `"deepseek"`).
     #[serde(default)]
     pub owned_by: String,
+    /// Optional future provider metadata. DeepSeek's current `/models` response
+    /// does not include this, but keeping the field here lets live metadata win
+    /// automatically if the endpoint is expanded later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// Optional future provider metadata for max completion/output tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
 }
 
 /// The raw `GET /models` response envelope.
@@ -193,6 +201,8 @@ mod tests {
                 id: (*id).to_string(),
                 object: "model".into(),
                 owned_by: "deepseek".into(),
+                context_window: None,
+                max_output_tokens: None,
             })
             .collect()
     }

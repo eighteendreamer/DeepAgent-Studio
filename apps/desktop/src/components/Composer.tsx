@@ -1,6 +1,7 @@
 ﻿import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
+import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import {
   SETTINGS_CHANGED_EVENT,
@@ -22,6 +23,7 @@ import type {
   ComposerAttachment,
   ComposerMention,
   ComposerSkillSelection,
+  ContextUsageSnapshot,
   ProjectFileEntry,
   Skill,
 } from "../types";
@@ -196,6 +198,10 @@ interface Props {
   activeProjectPath?: string | null;
   /** Optional footer content rendered seamlessly at the bottom of the composer. */
   footer?: React.ReactNode;
+  /** Latest backend context-usage snapshot for the current run/session. */
+  contextUsage?: ContextUsageSnapshot | null;
+  /** Fallback prompt tokens from persisted/live usage when context_usage was missed. */
+  contextUsageFallbackTokens?: number;
   /** Maximum auto-expanded textarea height in pixels. */
   textareaMaxHeight?: number;
 }
@@ -210,6 +216,8 @@ export function Composer({
   planMode = false,
   activeProjectPath = null,
   footer,
+  contextUsage = null,
+  contextUsageFallbackTokens = 0,
   textareaMaxHeight = COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT,
 }: Props) {
   const { t } = useTranslation();
@@ -1621,6 +1629,11 @@ export function Composer({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <ContextCapacityIndicator
+            snapshot={contextUsage}
+            modelId={selectedModel}
+            fallbackPromptTokens={contextUsageFallbackTokens}
+          />
           <div className="relative" ref={thinkingDropdownRef}>
             <div
               className="flex items-center flex-shrink-0 whitespace-nowrap bg-gray-50 border border-border-theme rounded-full px-2.5 py-1 cursor-pointer hover:bg-gray-100 transition-colors text-xs text-text-base"
