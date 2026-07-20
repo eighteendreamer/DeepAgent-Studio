@@ -92,6 +92,27 @@ export const OPEN_AUTOMATION_EVENT = "deepagent:open-automation";
 /** Fired by office-agent panels to inject a message into the active chat. */
 export const SEND_TO_CHAT_EVENT = "deepagent:send-to-chat";
 
+export type SettingsChangedReason =
+  | "api_key"
+  | "models"
+  | "chat_model"
+  | "thinking_depth"
+  | "terminal_shell"
+  | "skill_catalog"
+  | "skill_ai_review"
+  | "slash_settings"
+  | "sandbox"
+  | "tool_search"
+  | "web_search"
+  | "vision"
+  | "other";
+
+export type SettingsChangedDetail = {
+  reason?: SettingsChangedReason;
+  /** True only when DeepSeek account balance may have changed or become readable/unreadable. */
+  affectsBalance?: boolean;
+};
+
 /** Dispatch text to be sent as a chat message (handled by ChatView). */
 export function sendToChat(text: string): void {
   if (typeof window === "undefined") return;
@@ -100,9 +121,9 @@ export function sendToChat(text: string): void {
 
 export type SandboxMode = "read_only" | "workspace_write" | "full_access";
 
-function emitSettingsChanged(): void {
+function emitSettingsChanged(detail: SettingsChangedDetail = {}): void {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent(SETTINGS_CHANGED_EVENT));
+  window.dispatchEvent(new CustomEvent<SettingsChangedDetail>(SETTINGS_CHANGED_EVENT, { detail }));
 }
 
 function emitArchiveChanged(): void {
@@ -214,7 +235,7 @@ export async function initializeProject(apiKey: string): Promise<SettingsView> {
   const invoke = getInvoke();
   if (invoke) {
     const view = await invoke<SettingsView>("initialize_project", { apiKey });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "api_key", affectsBalance: true });
     return view;
   }
   throw new Error("connecting an API key requires the desktop app");
@@ -248,7 +269,7 @@ export async function refreshModels(): Promise<SettingsView> {
   const invoke = getInvoke();
   if (invoke) {
     const view = await invoke<SettingsView>("refresh_models");
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "models" });
     return view;
   }
   throw new Error("refresh requires the desktop app");
@@ -271,7 +292,7 @@ export async function clearApiKey(): Promise<void> {
   const invoke = getInvoke();
   if (invoke) {
     await invoke("clear_api_key");
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "api_key", affectsBalance: true });
   }
 }
 
@@ -283,7 +304,7 @@ export async function setChatModel(modelId: string): Promise<SettingsView> {
   const invoke = getInvoke();
   if (invoke) {
     const view = await invoke<SettingsView>("set_chat_model", { modelId });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "chat_model" });
     return view;
   }
   throw new Error("switching models requires the desktop app");
@@ -296,7 +317,7 @@ export async function setThinkingDepth(
   const invoke = getInvoke();
   if (invoke) {
     const view = await invoke<SettingsView>("set_thinking_depth", { depth });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "thinking_depth" });
     return view;
   }
   throw new Error("changing thinking depth requires the desktop app");
@@ -309,7 +330,7 @@ export async function setTerminalShell(
   const invoke = getInvoke();
   if (invoke) {
     const view = await invoke<SettingsView>("set_terminal_shell", { shell });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "terminal_shell" });
     return view;
   }
   throw new Error("changing terminal shell requires the desktop app");
@@ -590,7 +611,7 @@ export async function setSkillCatalogEnabled(enabled: boolean): Promise<boolean>
   const invoke = getInvoke();
   if (invoke) {
     const value = await invoke<boolean>("set_skill_catalog_enabled", { enabled });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "skill_catalog" });
     return value;
   }
   return enabled;
@@ -607,7 +628,7 @@ export async function setSkillCatalogCharBudget(budget: number): Promise<number>
   const invoke = getInvoke();
   if (invoke) {
     const value = await invoke<number>("set_skill_catalog_char_budget", { budget });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "skill_catalog" });
     return value;
   }
   return budget;
@@ -628,7 +649,7 @@ export async function setSkillInstallAiReviewEnabled(
     const value = await invoke<boolean>("set_skill_install_ai_review_enabled", {
       enabled,
     });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "skill_ai_review" });
     return value;
   }
   return enabled;
@@ -649,7 +670,7 @@ export async function setSkillInstallAiReviewModel(
     const value = await invoke<string | null>("set_skill_install_ai_review_model", {
       model,
     });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "skill_ai_review" });
     return value;
   }
   return model;
@@ -973,7 +994,7 @@ export async function runChat(
         preflightAbortMessage: preflightAbortMessage ?? null,
         initialPlanMode,
       });
-      if (promptMayChangeSettings(prompt)) emitSettingsChanged();
+      if (promptMayChangeSettings(prompt)) emitSettingsChanged({ reason: "slash_settings" });
       return nextSessionId;
     } finally {
       unlistenEvent();
@@ -1039,7 +1060,7 @@ export async function setSandboxMode(mode: SandboxMode): Promise<SettingsView> {
   const invoke = getInvoke();
   if (invoke) {
     const view = await invoke<SettingsView>("set_sandbox_mode", { mode });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "sandbox" });
     return view;
   }
   throw new Error("changing sandbox mode requires the desktop app");
@@ -1063,7 +1084,7 @@ export async function setToolSearchMode(
   const invoke = getInvoke();
   if (invoke) {
     const label = await invoke<ToolSearchMode>("set_tool_search_mode", { mode });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "tool_search" });
     return label;
   }
   throw new Error("changing tool-search mode requires the desktop app");
@@ -1086,7 +1107,7 @@ export async function setToolSearchThreshold(
     const v = await invoke<number>("set_tool_search_threshold", {
       value: value === null || value === undefined ? null : Math.max(1, Math.floor(value)),
     });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "tool_search" });
     return v;
   }
   throw new Error("changing tool-search threshold requires the desktop app");
@@ -1113,7 +1134,7 @@ export async function setWebSearchSettings(
   const invoke = getInvoke();
   if (invoke) {
     const value = await invoke<WebSearchSettings>("set_web_search_settings", { settings });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "web_search" });
     return value;
   }
   return settings;
@@ -1167,7 +1188,7 @@ export async function setVisionSettings(settings: VisionSettings): Promise<Visio
   const invoke = getInvoke();
   if (invoke) {
     const value = await invoke<VisionSettings>("set_vision_settings", { settings });
-    emitSettingsChanged();
+    emitSettingsChanged({ reason: "vision" });
     return value;
   }
   return settings;

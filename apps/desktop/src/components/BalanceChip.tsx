@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 
-import { getBalance, SETTINGS_CHANGED_EVENT } from "../api";
+import { getBalance, SETTINGS_CHANGED_EVENT, type SettingsChangedDetail } from "../api";
 import type { Balance, BalanceInfo } from "../types";
 
 /**
@@ -34,12 +34,16 @@ export function BalanceChip() {
     }
   }, []);
 
-  // Load once on mount, and whenever settings change (e.g. the user just
-  // initialized their API key, or refreshed/cleared it).
+  // Load once on mount. After that, only refresh for auth/balance-relevant
+  // settings changes; model / thinking-depth changes should not hit
+  // DeepSeek's `/user/balance`.
   useEffect(() => {
     aborted.current = false;
     refresh();
-    const onChanged = () => refresh();
+    const onChanged = (event: Event) => {
+      const detail = (event as CustomEvent<SettingsChangedDetail>).detail;
+      if (!detail || detail.affectsBalance || detail.reason === "api_key") refresh();
+    };
     window.addEventListener(SETTINGS_CHANGED_EVENT, onChanged);
     return () => {
       aborted.current = true;

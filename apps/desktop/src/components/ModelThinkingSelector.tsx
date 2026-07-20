@@ -106,7 +106,6 @@ export function ModelThinkingSelector({
           <div className="px-1.5 pt-0.5 pb-0.5">
             <div className="mb-1 flex items-center justify-between px-1 text-[12px]">
               <span className="font-medium text-text-base">推理强度</span>
-              <span className="text-text-secondary">{selectedThinkingOption.label}</span>
             </div>
             <div className="grid grid-cols-3 gap-0.5 rounded-full bg-gray-100 p-0.5">
               {thinkingOptions.map((option) => {
