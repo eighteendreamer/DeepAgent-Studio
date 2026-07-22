@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { Composer } from "./Composer";
@@ -223,6 +222,8 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   }, [envMode, selectedConnectionId, loadSshConnections]);
 
   useEffect(() => {
+    if (envMode !== "remote" && !selectedConnectionId && !isEnvDropdownOpen) return;
+
     const refreshConnections = () => {
       if (document.visibilityState === "visible") {
         loadSshConnections();
@@ -237,7 +238,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
       window.clearInterval(intervalId);
       document.removeEventListener("visibilitychange", refreshConnections);
     };
-  }, [loadSshConnections]);
+  }, [envMode, isEnvDropdownOpen, loadSshConnections, selectedConnectionId]);
 
   const selectedConnection =
     sshConnections.find((conn) => conn.id === selectedConnectionId) ?? null;
@@ -334,14 +335,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                   <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
                 </div>
                 
-                <AnimatePresence>
-                  {isEnvDropdownOpen && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                      transition={{ duration: 0.15, ease: "easeOut" }}
-                      className="absolute bottom-full left-0 mb-2 w-[180px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[60] py-1 origin-bottom-left"
+                {isEnvDropdownOpen && (
+                    <div
+                      className="popover-menu absolute bottom-full left-0 mb-2 w-[180px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[60] py-1 origin-bottom-left"
                     >
                       <div 
                         className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between group"
@@ -380,14 +376,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                           </div>
                         </div>
 
-                        <AnimatePresence>
-                          {isRemoteSubmenuOpen && (
-                            <motion.div
-                              initial={{ opacity: 0, x: 8, scale: 0.98 }}
-                              animate={{ opacity: 1, x: 0, scale: 1 }}
-                              exit={{ opacity: 0, x: 8, scale: 0.98 }}
-                              transition={{ duration: 0.15, ease: "easeOut" }}
-                              className="absolute left-full top-0 ml-2 w-[280px] overflow-hidden rounded-xl border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)]"
+                        {isRemoteSubmenuOpen && (
+                            <div
+                              className="popover-menu absolute left-full top-0 ml-2 w-[280px] overflow-hidden rounded-xl border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)]"
                             >
                               <div className="px-3 py-2 text-[11px] font-medium text-text-secondary">
                                 {"\u5df2\u6709 SSH \u8fde\u63a5"}
@@ -459,13 +450,11 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                                   );
                                 })
                               )}
-                            </motion.div>
+                            </div>
                           )}
-                        </AnimatePresence>
                       </div>
-                    </motion.div>
+                    </div>
                   )}
-                </AnimatePresence>
               </div>
 
               <GitBranchChip projectPath={activeProjectPath} />
@@ -477,14 +466,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
               </div>
 
               {/* Dropdown Menu */}
-              <AnimatePresence>
-                {isDropdownOpen && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                    transition={{ duration: 0.15, ease: "easeOut" }}
-                    className="absolute bottom-full left-0 mb-2 w-[300px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1 origin-bottom-left"
+              {isDropdownOpen && (
+                  <div
+                    className="popover-menu absolute bottom-full left-0 mb-2 w-[300px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1 origin-bottom-left"
                   >
                     <div className="px-3 py-2 border-b border-transparent text-[13px] flex items-center text-text-secondary">
                       <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="mr-2" />
@@ -529,9 +513,8 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                       <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
                       {t("startView.noProject")}
                     </div>
-                  </motion.div>
+                  </div>
                 )}
-              </AnimatePresence>
             </div>
           }
         />

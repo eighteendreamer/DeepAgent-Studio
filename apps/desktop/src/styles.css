@@ -248,6 +248,125 @@ button:focus {
   box-shadow: none;
 }
 
+.view-frame {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  flex-direction: column;
+  animation: view-frame-in 140ms ease-out;
+}
+
+.popover-menu {
+  animation: popover-menu-in 120ms ease-out;
+  will-change: opacity, transform;
+}
+
+.message-notice {
+  animation: message-notice-in 160ms ease-out;
+  will-change: opacity, transform;
+}
+
+.right-sidebar-workbench {
+  animation: right-sidebar-workbench-in 140ms ease-out;
+}
+
+.project-map-view {
+  animation: view-frame-in 120ms ease-out;
+}
+
+.settings-section {
+  animation: view-frame-in 120ms ease-out;
+}
+
+.approval-card {
+  animation: approval-card-in 140ms ease-out;
+}
+
+.modal-layer {
+  animation: modal-layer-in 120ms ease-out;
+}
+
+.modal-panel {
+  animation: modal-panel-in 140ms ease-out;
+  will-change: opacity, transform;
+}
+
+@keyframes view-frame-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes popover-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes message-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes right-sidebar-workbench-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes approval-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes modal-layer-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 /* Window control buttons */
 .win-btn:hover {
   background-color: rgba(0, 0, 0, 0.05);

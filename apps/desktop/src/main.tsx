@@ -1,6 +1,5 @@
 import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
-import "./icons";
 import "./i18n";
 import "./styles.css";
 

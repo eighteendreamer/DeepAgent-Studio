@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import type { Project, SessionSummary } from "../types";
 
@@ -58,16 +57,10 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
     onClose();
   };
 
+  if (!isOpen) return null;
+
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div 
-          className="fixed inset-0 z-[100] flex items-start justify-center pt-[10vh] bg-transparent"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.15 }}
-        >
+        <div className="modal-layer fixed inset-0 z-[100] flex items-start justify-center pt-[10vh] bg-transparent">
           {/* Backdrop overlay for closing */}
           <div 
             className="absolute inset-0 bg-black/5" 
@@ -75,13 +68,7 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
           />
       
           {/* Modal */}
-          <motion.div 
-            className="relative w-[750px] h-[620px] max-w-[calc(100vw-48px)] max-h-[calc(100vh-96px)] bg-white rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme flex flex-col overflow-hidden"
-            initial={{ scale: 0.95, y: -10 }}
-            animate={{ scale: 1, y: 0 }}
-            exit={{ scale: 0.95, y: -10 }}
-            transition={{ type: "spring", bounce: 0, duration: 0.25 }}
-          >
+          <div className="modal-panel relative w-[750px] h-[620px] max-w-[calc(100vw-48px)] max-h-[calc(100vh-96px)] bg-white rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme flex flex-col overflow-hidden">
         {/* Header / Input area */}
         <div className="px-5 py-4 border-b border-transparent">
           <input 
@@ -126,9 +113,7 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
             )}
           </div>
         </div>
-      </motion.div>
-    </motion.div>
-      )}
-    </AnimatePresence>
+      </div>
+    </div>
   );
 }

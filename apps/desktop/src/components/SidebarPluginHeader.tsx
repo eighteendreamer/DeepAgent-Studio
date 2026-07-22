@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, type ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
-import { AnimatePresence, motion } from "framer-motion";
 
 export type SidebarHeaderTab = {
   id: string;
@@ -132,14 +131,9 @@ export function SidebarPluginHeader({
               <FontAwesomeIcon icon={["fas", "plus"]} className="text-[12px]" />
             </button>
 
-            <AnimatePresence>
-              {isMenuOpen && availablePlugins && (
-                <motion.div
-                  initial={{ opacity: 0, y: -10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                  transition={{ duration: 0.15, ease: "easeOut" }}
-                  className="absolute right-0 top-full mt-1 flex w-56 origin-top-right flex-col rounded-xl border border-border-theme bg-white py-1.5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-[100]"
+            {isMenuOpen && availablePlugins && (
+                <div
+                  className="popover-menu absolute right-0 top-full mt-1 flex w-56 origin-top-right flex-col rounded-xl border border-border-theme bg-white py-1.5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-[100]"
                 >
                   {availablePlugins.map((plugin) => (
                     <button
@@ -162,9 +156,8 @@ export function SidebarPluginHeader({
                       </span>
                     </button>
                   ))}
-                </motion.div>
+                </div>
               )}
-            </AnimatePresence>
           </div>
 
           {extraActions && (

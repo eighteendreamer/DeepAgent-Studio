@@ -1,6 +1,5 @@
 import { createRoot, type Root } from "react-dom/client";
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 
@@ -58,24 +57,18 @@ function MessageHost() {
 
   return (
     <div className="fixed top-4 inset-x-0 z-[9999] flex flex-col items-center gap-2 pointer-events-none">
-      <AnimatePresence>
-        {notices.map((n) => {
-          const meta = TYPE_META[n.type];
-          return (
-            <motion.div
-              key={n.id}
-              initial={{ opacity: 0, y: -16, scale: 0.96 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -10, scale: 0.96 }}
-              transition={{ type: "spring", bounce: 0, duration: 0.25 }}
-              className="pointer-events-auto flex items-center gap-2.5 bg-white border border-border-theme rounded-lg shadow-[0_6px_24px_rgb(0,0,0,0.12)] px-4 py-2.5 max-w-[480px]"
-            >
-              <FontAwesomeIcon icon={meta.icon} className={`${meta.color} text-sm`} />
-              <span className="text-[13px] text-text-base">{n.text}</span>
-            </motion.div>
-          );
-        })}
-      </AnimatePresence>
+      {notices.map((n) => {
+        const meta = TYPE_META[n.type];
+        return (
+          <div
+            key={n.id}
+            className="message-notice pointer-events-auto flex items-center gap-2.5 bg-white border border-border-theme rounded-lg shadow-[0_6px_24px_rgb(0,0,0,0.12)] px-4 py-2.5 max-w-[480px]"
+          >
+            <FontAwesomeIcon icon={meta.icon} className={`${meta.color} text-sm`} />
+            <span className="text-[13px] text-text-base">{n.text}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

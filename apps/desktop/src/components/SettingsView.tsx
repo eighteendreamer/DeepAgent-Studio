@@ -1,19 +1,20 @@
-import { AnimatePresence, motion } from "framer-motion";
-import { GeneralSettings } from "./settings/GeneralSettings";
-import { AppearanceSettings } from "./settings/AppearanceSettings";
-import { ConfigSettings } from "./settings/ConfigSettings";
-import { PersonalizeSettings } from "./settings/PersonalizeSettings";
-import { ShortcutsSettings } from "./settings/ShortcutsSettings";
-import { MCPSettings } from "./settings/MCPSettings";
-import { HooksSettings } from "./settings/HooksSettings";
-import { ConnectionsSettings } from "./settings/ConnectionsSettings";
-import { GitSettings } from "./settings/GitSettings";
-import { EnvSettings } from "./settings/EnvSettings";
-import { WorktreeSettings } from "./settings/WorktreeSettings";
-import { BrowserSettings } from "./settings/BrowserSettings";
-import { ComputerSettings } from "./settings/ComputerSettings";
-import { ArchiveSettings } from "./settings/ArchiveSettings";
-import { ProjectMapDebugSettings } from "./settings/ProjectMapDebugSettings";
+import { lazy, Suspense } from "react";
+
+const GeneralSettings = lazy(() => import("./settings/GeneralSettings").then((m) => ({ default: m.GeneralSettings })));
+const AppearanceSettings = lazy(() => import("./settings/AppearanceSettings").then((m) => ({ default: m.AppearanceSettings })));
+const ConfigSettings = lazy(() => import("./settings/ConfigSettings").then((m) => ({ default: m.ConfigSettings })));
+const PersonalizeSettings = lazy(() => import("./settings/PersonalizeSettings").then((m) => ({ default: m.PersonalizeSettings })));
+const ShortcutsSettings = lazy(() => import("./settings/ShortcutsSettings").then((m) => ({ default: m.ShortcutsSettings })));
+const MCPSettings = lazy(() => import("./settings/MCPSettings").then((m) => ({ default: m.MCPSettings })));
+const HooksSettings = lazy(() => import("./settings/HooksSettings").then((m) => ({ default: m.HooksSettings })));
+const ConnectionsSettings = lazy(() => import("./settings/ConnectionsSettings").then((m) => ({ default: m.ConnectionsSettings })));
+const GitSettings = lazy(() => import("./settings/GitSettings").then((m) => ({ default: m.GitSettings })));
+const EnvSettings = lazy(() => import("./settings/EnvSettings").then((m) => ({ default: m.EnvSettings })));
+const WorktreeSettings = lazy(() => import("./settings/WorktreeSettings").then((m) => ({ default: m.WorktreeSettings })));
+const BrowserSettings = lazy(() => import("./settings/BrowserSettings").then((m) => ({ default: m.BrowserSettings })));
+const ComputerSettings = lazy(() => import("./settings/ComputerSettings").then((m) => ({ default: m.ComputerSettings })));
+const ArchiveSettings = lazy(() => import("./settings/ArchiveSettings").then((m) => ({ default: m.ArchiveSettings })));
+const ProjectMapDebugSettings = lazy(() => import("./settings/ProjectMapDebugSettings").then((m) => ({ default: m.ProjectMapDebugSettings })));
 
 interface Props {
   activeCategoryId: string;
@@ -44,18 +45,20 @@ export function SettingsView({ activeCategoryId }: Props) {
   return (
     <div className="w-full h-full bg-white overflow-y-auto px-16 pt-16 pb-20 flex justify-center relative">
       <div className="w-full max-w-[700px]">
-        <AnimatePresence mode="wait">
-          <motion.div
+          <div
             key={activeCategoryId}
-            initial={{ opacity: 0, y: 15 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -15 }}
-            transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-            className="w-full"
+            className="settings-section w-full"
           >
-            {renderPlugin()}
-          </motion.div>
-        </AnimatePresence>
+            <Suspense
+              fallback={
+                <div className="flex min-h-40 items-center justify-center" aria-busy="true">
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-primary" />
+                </div>
+              }
+            >
+              {renderPlugin()}
+            </Suspense>
+          </div>
       </div>
     </div>
   );

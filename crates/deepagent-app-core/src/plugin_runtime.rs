@@ -267,6 +267,7 @@ fn project_mcp(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn merge_mcp_config(
     plugin_id: &str,
     plugin_name: &str,

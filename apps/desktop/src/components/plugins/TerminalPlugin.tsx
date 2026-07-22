@@ -15,10 +15,8 @@ import {
   type SshConnection,
   type SshPtyHandle,
 } from "../../api";
-import { Terminal as XTerm } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import type { ITerminalDimensions } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
+import type { Terminal as XTerm } from "@xterm/xterm";
+import type { FitAddon, ITerminalDimensions } from "@xterm/addon-fit";
 import type { PluginDefinition } from "./pluginTypes";
 
 interface TerminalPluginProps {
@@ -37,6 +35,29 @@ type TerminalLayout = {
   rows: number;
 };
 
+const PTY_ACTIVE_POLL_MS = 30;
+const PTY_IDLE_POLL_MS = 180;
+const PTY_HIDDEN_POLL_MS = 750;
+
+type TerminalRuntime = {
+  Terminal: typeof import("@xterm/xterm").Terminal;
+  FitAddon: typeof import("@xterm/addon-fit").FitAddon;
+};
+
+let terminalRuntimePromise: Promise<TerminalRuntime> | null = null;
+
+function loadTerminalRuntime() {
+  terminalRuntimePromise ??= Promise.all([
+    import("@xterm/xterm"),
+    import("@xterm/addon-fit"),
+    import("@xterm/xterm/css/xterm.css"),
+  ]).then(([xterm, fit]) => ({
+    Terminal: xterm.Terminal,
+    FitAddon: fit.FitAddon,
+  }));
+  return terminalRuntimePromise;
+}
+
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -44,6 +65,7 @@ function formatError(error: unknown): string {
 export function TerminalPlugin({ mode = "local", connectionId = null }: TerminalPluginProps) {
   const [remoteConn, setRemoteConn] = useState<SshConnection | null>(null);
   const [booting, setBooting] = useState(false);
+  const [terminalReady, setTerminalReady] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -56,6 +78,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
   const lastSentPtySizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const decoderRef = useRef(new TextDecoder());
   const readingRef = useRef(false);
+  const idlePollDelayRef = useRef(PTY_ACTIVE_POLL_MS);
 
   const isRemote = mode === "remote";
 
@@ -69,11 +92,54 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
-      window.clearInterval(pollRef.current);
+      window.clearTimeout(pollRef.current);
       pollRef.current = null;
     }
     readingRef.current = false;
+    idlePollDelayRef.current = PTY_ACTIVE_POLL_MS;
   }, []);
+
+  const scheduleReadPoll = useCallback(
+    (delayMs: number) => {
+      if (pollRef.current !== null) {
+        window.clearTimeout(pollRef.current);
+      }
+
+      pollRef.current = window.setTimeout(async () => {
+        pollRef.current = null;
+        if (readingRef.current || !sessionRef.current || !termRef.current) {
+          if (sessionRef.current) scheduleReadPoll(PTY_IDLE_POLL_MS);
+          return;
+        }
+
+        readingRef.current = true;
+        try {
+          const current = sessionRef.current;
+          const payload =
+            current.kind === "local"
+              ? await localPtyRead(current.handle.pty_id)
+              : await sshPtyRead(current.handle.connection_id);
+          if (payload.length > 0) {
+            idlePollDelayRef.current = PTY_ACTIVE_POLL_MS;
+            termRef.current.write(decoderRef.current.decode(new Uint8Array(payload)));
+          } else {
+            idlePollDelayRef.current = Math.min(
+              document.hidden ? PTY_HIDDEN_POLL_MS : PTY_IDLE_POLL_MS,
+              Math.max(PTY_ACTIVE_POLL_MS, idlePollDelayRef.current + 30)
+            );
+          }
+        } catch {
+          idlePollDelayRef.current = PTY_IDLE_POLL_MS;
+        } finally {
+          readingRef.current = false;
+          if (sessionRef.current) {
+            scheduleReadPoll(document.hidden ? PTY_HIDDEN_POLL_MS : idlePollDelayRef.current);
+          }
+        }
+      }, delayMs);
+    },
+    []
+  );
 
   const clearScheduledResize = useCallback(() => {
     if (resizeFrameRef.current !== null) {
@@ -196,82 +262,96 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
   useEffect(() => {
     if (!containerRef.current || termRef.current) return;
 
-    const term = new XTerm({
-      cursorBlink: true,
-      cursorStyle: "bar",
-      cursorWidth: 1,
-      fontFamily: '"Cascadia Mono", "Consolas", "Courier New", monospace',
-      fontSize: 13,
-      lineHeight: 1.35,
-      theme: {
-        background: "#ffffff",
-        foreground: "#111827",
-        cursor: "#111827",
-        selectionBackground: "rgba(59, 130, 246, 0.16)",
-        black: "#111827",
-        red: "#dc2626",
-        green: "#059669",
-        yellow: "#b45309",
-        blue: "#2563eb",
-        magenta: "#7c3aed",
-        cyan: "#0891b2",
-        white: "#e5e7eb",
-        brightBlack: "#6b7280",
-        brightRed: "#ef4444",
-        brightGreen: "#10b981",
-        brightYellow: "#f59e0b",
-        brightBlue: "#3b82f6",
-        brightMagenta: "#8b5cf6",
-        brightCyan: "#06b6d4",
-        brightWhite: "#f9fafb",
-      },
-      scrollback: 3000,
-      convertEol: false,
-    });
+    let cancelled = false;
+    let cleanup: (() => void) | null = null;
 
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(containerRef.current);
+    void loadTerminalRuntime().then(({ Terminal, FitAddon }) => {
+      if (cancelled || !containerRef.current || termRef.current) return;
 
-    termRef.current = term;
-    fitRef.current = fit;
-    scheduleTerminalLayout(false);
-    term.focus();
-
-    const disposable = term.onData((data) => {
-      const current = sessionRef.current;
-      if (!current) return;
-      if (current.kind === "local") {
-        void localPtyWrite(current.handle.pty_id, data);
-      } else {
-        void sshPtyWrite(current.handle.connection_id, data);
-      }
-    });
-
-    if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(() => {
-        scheduleTerminalLayout(true);
+      const term = new Terminal({
+        cursorBlink: true,
+        cursorStyle: "bar",
+        cursorWidth: 1,
+        fontFamily: '"Cascadia Mono", "Consolas", "Courier New", monospace',
+        fontSize: 13,
+        lineHeight: 1.35,
+        theme: {
+          background: "#ffffff",
+          foreground: "#111827",
+          cursor: "#111827",
+          selectionBackground: "rgba(59, 130, 246, 0.16)",
+          black: "#111827",
+          red: "#dc2626",
+          green: "#059669",
+          yellow: "#b45309",
+          blue: "#2563eb",
+          magenta: "#7c3aed",
+          cyan: "#0891b2",
+          white: "#e5e7eb",
+          brightBlack: "#6b7280",
+          brightRed: "#ef4444",
+          brightGreen: "#10b981",
+          brightYellow: "#f59e0b",
+          brightBlue: "#3b82f6",
+          brightMagenta: "#8b5cf6",
+          brightCyan: "#06b6d4",
+          brightWhite: "#f9fafb",
+        },
+        scrollback: 3000,
+        convertEol: false,
       });
-      observer.observe(containerRef.current);
-      resizeObserverRef.current = observer;
-    }
+
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(containerRef.current);
+
+      termRef.current = term;
+      fitRef.current = fit;
+      scheduleTerminalLayout(false);
+      term.focus();
+      setTerminalReady(true);
+
+      const disposable = term.onData((data) => {
+        const current = sessionRef.current;
+        if (!current) return;
+        if (current.kind === "local") {
+          void localPtyWrite(current.handle.pty_id, data);
+        } else {
+          void sshPtyWrite(current.handle.connection_id, data);
+        }
+      });
+
+      if (typeof ResizeObserver !== "undefined") {
+        const observer = new ResizeObserver(() => {
+          scheduleTerminalLayout(true);
+        });
+        observer.observe(containerRef.current);
+        resizeObserverRef.current = observer;
+      }
+
+      cleanup = () => {
+        disposable.dispose();
+        resizeObserverRef.current?.disconnect();
+        resizeObserverRef.current = null;
+        clearScheduledResize();
+        stopPolling();
+        void closeSession();
+        term.dispose();
+        termRef.current = null;
+        fitRef.current = null;
+        lastLayoutRef.current = null;
+        setTerminalReady(false);
+      };
+    });
 
     return () => {
-      disposable.dispose();
-      resizeObserverRef.current?.disconnect();
-      resizeObserverRef.current = null;
-      clearScheduledResize();
-      stopPolling();
-      void closeSession();
-      term.dispose();
-      termRef.current = null;
-      fitRef.current = null;
-      lastLayoutRef.current = null;
+      cancelled = true;
+      cleanup?.();
     };
   }, [clearScheduledResize, closeSession, scheduleTerminalLayout, stopPolling]);
 
   useEffect(() => {
-    if (!termRef.current || !fitRef.current) return;
+    if (!terminalReady || !termRef.current || !fitRef.current) return;
     if (isRemote && !connectionId) return;
 
     let cancelled = false;
@@ -311,24 +391,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
         scheduleTerminalLayout(false);
 
         stopPolling();
-        pollRef.current = window.setInterval(async () => {
-          if (readingRef.current || !sessionRef.current || !termRef.current) return;
-          readingRef.current = true;
-          try {
-            const current = sessionRef.current;
-            const payload =
-              current.kind === "local"
-                ? await localPtyRead(current.handle.pty_id)
-                : await sshPtyRead(current.handle.connection_id);
-            if (payload.length > 0) {
-              termRef.current.write(decoderRef.current.decode(new Uint8Array(payload)));
-            }
-          } catch {
-            // ignore transient poll/read errors
-          } finally {
-            readingRef.current = false;
-          }
-        }, 30);
+        scheduleReadPoll(PTY_ACTIVE_POLL_MS);
       } catch (error) {
         term.writeln("");
         term.writeln(`Terminal failed: ${formatError(error)}`);
@@ -345,7 +408,16 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
     return () => {
       cancelled = true;
     };
-  }, [closeSession, connectionId, isRemote, scheduleTerminalLayout, stopPolling, syncTerminalLayout]);
+  }, [
+    closeSession,
+    connectionId,
+    isRemote,
+    scheduleReadPoll,
+    scheduleTerminalLayout,
+    stopPolling,
+    terminalReady,
+    syncTerminalLayout,
+  ]);
 
   if (isRemote && !connectionId) {
     return (

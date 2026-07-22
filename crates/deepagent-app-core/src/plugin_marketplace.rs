@@ -228,18 +228,15 @@ pub fn find_marketplace_manifest_path(root_or_file: &Path) -> Option<PathBuf> {
             .map(|_| root_or_file.to_path_buf());
     }
 
-    for candidate in [
+    [
         root_or_file.join(CODEX_MARKETPLACE),
         root_or_file.join(CODEX_AGENTS_MARKETPLACE),
         root_or_file.join(CODEX_AGENTS_API_MARKETPLACE),
         root_or_file.join(CLAUDE_MARKETPLACE),
         root_or_file.join(ROOT_MARKETPLACE),
-    ] {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
 }
 
 pub fn marketplace_root_from_manifest(manifest_path: &Path) -> PathBuf {

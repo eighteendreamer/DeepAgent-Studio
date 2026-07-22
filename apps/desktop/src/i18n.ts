@@ -1,47 +1,64 @@
-import i18n from 'i18next';
-import { initReactI18next } from 'react-i18next';
+import i18n from "i18next";
+import type { Resource } from "i18next";
+import { initReactI18next } from "react-i18next";
 
-import en from './locales/en.json';
-import zh from './locales/zh.json';
-import sq from './locales/sq.json';
-import is from './locales/is.json';
-import ka from './locales/ka.json';
-import mk from './locales/mk.json';
-import mn from './locales/mn.json';
-import my from './locales/my.json';
-import ja from './locales/ja.json';
-import so from './locales/so.json';
-import hy from './locales/hy.json';
-import zhTW from './locales/zh-TW.json';
-import zhHK from './locales/zh-HK.json';
+import zh from "./locales/zh.json";
 
-const resources = {
-  en: { translation: en },
-  zh: { translation: zh },
-  sq: { translation: sq },
-  is: { translation: is },
-  ka: { translation: ka },
-  mk: { translation: mk },
-  mn: { translation: mn },
-  my: { translation: my },
-  ja: { translation: ja },
-  so: { translation: so },
-  hy: { translation: hy },
-  'zh-TW': { translation: zhTW },
-  'zh-HK': { translation: zhHK }
+const FALLBACK_LANGUAGE = "zh";
+
+const localeLoaders = {
+  en: () => import("./locales/en.json"),
+  sq: () => import("./locales/sq.json"),
+  is: () => import("./locales/is.json"),
+  ka: () => import("./locales/ka.json"),
+  mk: () => import("./locales/mk.json"),
+  mn: () => import("./locales/mn.json"),
+  my: () => import("./locales/my.json"),
+  ja: () => import("./locales/ja.json"),
+  so: () => import("./locales/so.json"),
+  hy: () => import("./locales/hy.json"),
+  "zh-TW": () => import("./locales/zh-TW.json"),
+  "zh-HK": () => import("./locales/zh-HK.json"),
+} as const;
+
+type DynamicLanguage = keyof typeof localeLoaders;
+type SupportedLanguage = typeof FALLBACK_LANGUAGE | DynamicLanguage;
+
+function normalizeLanguage(value: string | null): SupportedLanguage {
+  if (value === FALLBACK_LANGUAGE) return FALLBACK_LANGUAGE;
+  return value && value in localeLoaders ? (value as DynamicLanguage) : FALLBACK_LANGUAGE;
+}
+
+async function loadLanguage(language: SupportedLanguage) {
+  if (language === FALLBACK_LANGUAGE) return;
+  if (i18n.hasResourceBundle(language, "translation")) return;
+  const module = await localeLoaders[language]();
+  i18n.addResourceBundle(language, "translation", module.default, true, true);
+}
+
+const savedLanguage = normalizeLanguage(localStorage.getItem("appLanguage"));
+const resources: Resource = {
+  [FALLBACK_LANGUAGE]: { translation: zh },
 };
 
-const savedLanguage = localStorage.getItem('appLanguage') || 'zh';
+i18n.use(initReactI18next).init({
+  resources,
+  lng: FALLBACK_LANGUAGE,
+  fallbackLng: FALLBACK_LANGUAGE,
+  interpolation: {
+    escapeValue: false,
+  },
+});
 
-i18n
-  .use(initReactI18next)
-  .init({
-    resources,
-    lng: savedLanguage,
-    fallbackLng: 'zh',
-    interpolation: {
-      escapeValue: false // React already does escaping
-    }
-  });
+const originalChangeLanguage = i18n.changeLanguage.bind(i18n);
+i18n.changeLanguage = async (lng?: string, callback?: Parameters<typeof i18n.changeLanguage>[1]) => {
+  const normalized = normalizeLanguage(lng ?? savedLanguage);
+  await loadLanguage(normalized);
+  return originalChangeLanguage(normalized, callback);
+};
+
+if (savedLanguage !== FALLBACK_LANGUAGE) {
+  void i18n.changeLanguage(savedLanguage);
+}
 
 export default i18n;

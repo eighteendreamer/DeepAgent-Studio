@@ -21,8 +21,6 @@ import {
   faRotateRight,
   faSquare,
 } from "@fortawesome/free-solid-svg-icons";
-import dagre from "@dagrejs/dagre";
-import { toPng } from "html-to-image";
 import {
   useCallback,
   useEffect,
@@ -675,7 +673,7 @@ function InfiniteCanvas() {
   }, [commitCanvas, notifyCommand]);
 
   const autoLayout = useCallback(
-    (direction: "LR" | "TB" = "LR") => {
+    async (direction: "LR" | "TB" = "LR") => {
       const selectedTopLevelNodes = nodesRef.current.filter(
         (node) => node.selected && !node.parentId && node.type !== "group" && !node.data.locked,
       );
@@ -723,6 +721,7 @@ function InfiniteCanvas() {
           });
         }
       } else {
+        const dagre = (await import("@dagrejs/dagre")).default;
         const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
         graph.setGraph({ rankdir: direction, nodesep: 48, ranksep: 72, marginx: 24, marginy: 24 });
         layoutNodes.forEach((node) => graph.setNode(node.id, nodeSize(node)));
@@ -853,6 +852,7 @@ function InfiniteCanvas() {
     const previousViewport = instanceRef.current?.getViewport();
     await instanceRef.current?.fitView({ duration: 0, padding: 0.12, minZoom: 0.1, maxZoom: 1.5 });
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const { toPng } = await import("html-to-image");
     const dataUrl = await toPng(canvas, {
       backgroundColor: isDark ? "#111827" : "#ffffff",
       pixelRatio: 2,
@@ -1328,7 +1328,7 @@ function InfiniteCanvas() {
             <div className="studio-menu-section"><span>编辑</span><button onClick={() => void copySelection()}>复制 <kbd>Ctrl+C</kbd></button><button onClick={() => void pasteClipboard()}>粘贴 <kbd>Ctrl+V</kbd></button><button onClick={() => void duplicateSelection()}>创建副本 <kbd>Ctrl+D</kbd></button><button onClick={selectAll}>全选 <kbd>Ctrl+A</kbd></button></div>
             <div className="studio-menu-section"><span>对象</span><button disabled={!selectionCapabilities.canObjectAction} title={selectionCapabilities.canObjectAction ? "切换选中节点锁定状态" : "请先选择节点"} onClick={toggleSelectedLock}>{selectedNodes.some((node) => node.data.locked) ? "解锁选中" : "锁定选中"}</button><button disabled={!selectionCapabilities.canObjectAction} title={selectionCapabilities.canObjectAction ? "将选中节点置于所有节点上方" : "请先选择节点"} onClick={() => moveSelectionLayer("front")}>置于顶层</button><button disabled={!selectionCapabilities.canObjectAction} title={selectionCapabilities.canObjectAction ? "将选中节点置于所有节点下方" : "请先选择节点"} onClick={() => moveSelectionLayer("back")}>置于底层</button><button disabled={!selectionCapabilities.canGroup} title={selectionCapabilities.canGroup ? "将选中的顶层节点组合" : "至少选择两个未分组节点"} onClick={groupSelection}>组合</button><button disabled={!selectionCapabilities.canUngroup} title={selectionCapabilities.canUngroup ? "解除选中的分组" : "请先选择分组"} onClick={ungroupSelection}>取消组合</button></div>
             <div className="studio-menu-section"><span>对齐</span><button disabled={!selectionCapabilities.canAlign} title={selectionCapabilities.canAlign ? "对齐选中节点左边缘" : "至少选择两个同层级未锁定节点"} onClick={() => alignSelection("left")}>左对齐</button><button disabled={!selectionCapabilities.canAlign} title={selectionCapabilities.canAlign ? "对齐选中节点水平中心" : "至少选择两个同层级未锁定节点"} onClick={() => alignSelection("center")}>水平居中</button><button disabled={!selectionCapabilities.canAlign} title={selectionCapabilities.canAlign ? "对齐选中节点顶部" : "至少选择两个同层级未锁定节点"} onClick={() => alignSelection("top")}>顶部对齐</button><button disabled={!selectionCapabilities.canAlign} title={selectionCapabilities.canAlign ? "对齐选中节点垂直中心" : "至少选择两个同层级未锁定节点"} onClick={() => alignSelection("middle")}>垂直居中</button><button disabled={!selectionCapabilities.canDistribute} title={selectionCapabilities.canDistribute ? "在最左和最右节点间等距分布" : "至少选择三个同层级未锁定节点"} onClick={() => distributeSelection("horizontal")}>水平等距</button><button disabled={!selectionCapabilities.canDistribute} title={selectionCapabilities.canDistribute ? "在最上和最下节点间等距分布" : "至少选择三个同层级未锁定节点"} onClick={() => distributeSelection("vertical")}>垂直等距</button></div>
-            <div className="studio-menu-section"><span>画布</span><button onClick={() => autoLayout("LR")}>横向自动布局</button><button onClick={() => autoLayout("TB")}>纵向自动布局</button><button onClick={() => setShowMiniMap((show) => !show)}>{showMiniMap ? "隐藏小地图" : "显示小地图"}</button><button onClick={() => setCanvasLocked((locked) => !locked)}>{canvasLocked ? "解锁画布" : "锁定画布"}</button></div>
+            <div className="studio-menu-section"><span>画布</span><button onClick={() => void autoLayout("LR")}>横向自动布局</button><button onClick={() => void autoLayout("TB")}>纵向自动布局</button><button onClick={() => setShowMiniMap((show) => !show)}>{showMiniMap ? "隐藏小地图" : "显示小地图"}</button><button onClick={() => setCanvasLocked((locked) => !locked)}>{canvasLocked ? "解锁画布" : "锁定画布"}</button></div>
             <div className="studio-menu-section"><span>文件</span><button onClick={() => importInputRef.current?.click()}>导入 JSON</button><button onClick={exportJson}>导出 JSON</button><button onClick={() => void exportImage()}><FontAwesomeIcon icon={faDownload} /> 导出 PNG</button><button className="is-danger" onClick={clearCanvas}>清空画布</button></div>
           </Panel>
         )}

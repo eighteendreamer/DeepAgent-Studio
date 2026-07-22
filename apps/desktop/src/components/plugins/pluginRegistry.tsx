@@ -1,11 +1,4 @@
-import { browserPluginDefinition } from "./BrowserPlugin";
-import { computerUsePluginDefinition } from "./ComputerUsePlugin";
-import { filePreviewPluginDefinition } from "./FilePreviewPlugin";
-import { filesPluginDefinition } from "./FilesPlugin";
-import { projectMapPluginDefinition } from "./ProjectMapPlugin";
-import { recordingPluginDefinition } from "./RecordingPlugin";
-import { sideChatPluginDefinition } from "./SideChatPlugin";
-import { terminalPluginDefinition } from "./TerminalPlugin";
+import { lazy, Suspense, type ReactNode } from "react";
 import type {
   CreatePluginTabOptions,
   PluginDefinition,
@@ -16,6 +9,41 @@ import type {
   PluginType,
 } from "./pluginTypes";
 import type { PluginApp } from "../../types";
+
+const FilesPlugin = lazy(() => import("./FilesPlugin").then((m) => ({ default: m.FilesPlugin })));
+const SideChatPlugin = lazy(() => import("./SideChatPlugin").then((m) => ({ default: m.SideChatPlugin })));
+const BrowserPlugin = lazy(() => import("./BrowserPlugin").then((m) => ({ default: m.BrowserPlugin })));
+const ComputerUsePlugin = lazy(() => import("./ComputerUsePlugin").then((m) => ({ default: m.ComputerUsePlugin })));
+const TerminalPlugin = lazy(() => import("./TerminalPlugin").then((m) => ({ default: m.TerminalPlugin })));
+const ProjectMapPlugin = lazy(() => import("./ProjectMapPlugin").then((m) => ({ default: m.ProjectMapPlugin })));
+const RecordingPlugin = lazy(() => import("./RecordingPlugin").then((m) => ({ default: m.RecordingPlugin })));
+const FilePreviewPlugin = lazy(() => import("./FilePreviewPlugin").then((m) => ({ default: m.FilePreviewPlugin })));
+
+function PluginLoading() {
+  return (
+    <div className="flex h-full w-full items-center justify-center bg-white" aria-busy="true">
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-primary" />
+    </div>
+  );
+}
+
+function renderLazyPlugin(node: ReactNode) {
+  return <Suspense fallback={<PluginLoading />}>{node}</Suspense>;
+}
+
+function pathLabel(path: string | null | undefined): string {
+  return path?.split(/[\\/]/).filter(Boolean).pop() ?? "";
+}
+
+function browserTitle(url: string | undefined): string {
+  if (!url) return "";
+  try {
+    const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    return new URL(normalized).host;
+  } catch {
+    return url;
+  }
+}
 
 export type {
   PluginConnectionSummary,
@@ -28,14 +56,99 @@ export type {
 } from "./pluginTypes";
 
 export const PLUGIN_DEFINITIONS: PluginDefinition[] = [
-  filesPluginDefinition,
-  sideChatPluginDefinition,
-  browserPluginDefinition,
-  computerUsePluginDefinition,
-  terminalPluginDefinition,
-  projectMapPluginDefinition,
-  recordingPluginDefinition,
-  filePreviewPluginDefinition,
+  {
+    type: "files",
+    icon: ["far", "folder-open"],
+    titleKey: "files",
+    descKey: "filesDesc",
+    fallbackTitle: "Files",
+    fallbackDesc: "Browse project files",
+    getTabTitle: ({ activeProjectPath, t }) =>
+      pathLabel(activeProjectPath) || t?.("chatView.tools.files", { defaultValue: "Files" }) || "Files",
+    render: ({ activeProjectPath }) => renderLazyPlugin(<FilesPlugin projectPath={activeProjectPath} />),
+  },
+  {
+    type: "chat",
+    icon: ["far", "comment-dots"],
+    titleKey: "chat",
+    descKey: "chatDesc",
+    fallbackTitle: "Side Chat",
+    fallbackDesc: "Start a side chat",
+    getTabTitle: ({ t }) => t?.("chatView.tools.chat", { defaultValue: "Side Chat" }) || "Side Chat",
+    render: () => renderLazyPlugin(<SideChatPlugin />),
+  },
+  {
+    type: "browser",
+    icon: ["fas", "globe"],
+    titleKey: "browser",
+    descKey: "browserDesc",
+    fallbackTitle: "Browser",
+    fallbackDesc: "Open website",
+    getTabTitle: ({ t }, options) =>
+      browserTitle(options?.url) || t?.("chatView.tools.browser", { defaultValue: "Browser" }) || "Browser",
+    render: ({ tab }) => renderLazyPlugin(<BrowserPlugin initialUrl={tab.url} />),
+  },
+  {
+    type: "computer_use",
+    icon: ["fas", "desktop"],
+    titleKey: "Computer Use",
+    descKey: "Control desktop apps",
+    fallbackTitle: "Computer Use",
+    fallbackDesc: "Control desktop apps",
+    getTabTitle: ({ t }) => t?.("settings.computer.title", { defaultValue: "Computer Use" }) || "Computer Use",
+    render: () => renderLazyPlugin(<ComputerUsePlugin />),
+  },
+  {
+    type: "terminal",
+    icon: ["fas", "terminal"],
+    titleKey: "terminal",
+    descKey: "terminalDesc",
+    fallbackTitle: "Terminal",
+    fallbackDesc: "Launch interactive shell",
+    getTabTitle: ({ activeProjectPath, envMode = "local", selectedConnection }) => {
+      if (envMode === "remote") {
+        if (selectedConnection?.name) return selectedConnection.name;
+        if (selectedConnection?.username && selectedConnection?.host) {
+          return `${selectedConnection.username}@${selectedConnection.host}`;
+        }
+        return "SSH Terminal";
+      }
+      return activeProjectPath?.trim() || "Terminal";
+    },
+    render: ({ envMode = "local", selectedConnectionId }) =>
+      renderLazyPlugin(<TerminalPlugin mode={envMode} connectionId={selectedConnectionId} />),
+  },
+  {
+    type: "project_map",
+    icon: ["fas", "share-nodes"],
+    titleKey: "project_map",
+    descKey: "projectMapDesc",
+    fallbackTitle: "Project Map",
+    fallbackDesc: "Inspect module relationships",
+    getTabTitle: ({ t }) => t?.("chatView.tools.project_map", { defaultValue: "Project Map" }) || "Project Map",
+    render: ({ activeProjectPath, onProjectMapStatusChange }) =>
+      renderLazyPlugin(<ProjectMapPlugin projectPath={activeProjectPath} onStatusChange={onProjectMapStatusChange} />),
+  },
+  {
+    type: "recording",
+    icon: ["fas", "microphone"],
+    titleKey: "recording",
+    descKey: "recordingDesc",
+    fallbackTitle: "Recording",
+    fallbackDesc: "Meeting recording and transcription",
+    getTabTitle: ({ t }) => t?.("chatView.tools.recording", { defaultValue: "Recording" }) || "Recording",
+    render: () => renderLazyPlugin(<RecordingPlugin />),
+  },
+  {
+    type: "file_preview",
+    icon: ["far", "file-lines"],
+    titleKey: "filePreview",
+    descKey: "filePreviewDesc",
+    fallbackTitle: "File Preview",
+    fallbackDesc: "Preview office and project files",
+    getTabTitle: ({ t }) => t?.("chatView.tools.file_preview", { defaultValue: "File Preview" }) || "File Preview",
+    render: () => renderLazyPlugin(<FilePreviewPlugin />),
+  },
 ];
 
 const PLUGIN_DEFINITION_MAP = new Map(

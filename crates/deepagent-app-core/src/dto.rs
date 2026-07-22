@@ -417,6 +417,7 @@ pub struct SessionDetailDto {
 /// styled tool cards / reasoning / text (not flattened timeline lines).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum ConversationPartDto {
     /// Visible assistant/user text.
     Text {

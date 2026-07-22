@@ -57,13 +57,13 @@ pub(crate) fn marketplace_source_kind_policy_error_with_rules(
         return Some("marketplace source kind is empty".to_string());
     }
 
-    if source_kind_set_contains(&blocked, &normalized) {
+    if source_kind_set_contains(blocked, &normalized) {
         return Some(format!(
             "marketplace source kind '{kind}' is blocked by {MARKETPLACE_BLOCKED_SOURCE_KINDS_ENV}"
         ));
     }
 
-    if !allowed.is_empty() && !source_kind_set_contains(&allowed, &normalized) {
+    if !allowed.is_empty() && !source_kind_set_contains(allowed, &normalized) {
         return Some(format!(
             "marketplace source kind '{kind}' is not allowed by {MARKETPLACE_ALLOWED_SOURCE_KINDS_ENV}"
         ));
@@ -686,7 +686,7 @@ fn is_markdown_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn relative_display(root: &Path, path: &PathBuf) -> String {
+fn relative_display(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()

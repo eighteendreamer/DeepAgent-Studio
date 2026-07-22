@@ -1,4 +1,5 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faBorderAll, faMinus, faSquare, faXmark } from "@fortawesome/free-solid-svg-icons";
 import { useTranslation } from "react-i18next";
 
 function inTauri(): boolean {
@@ -32,7 +33,7 @@ export function CanvasTitleBar() {
     >
       <div data-tauri-drag-region className="flex min-w-0 items-center gap-2.5">
         <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
-          <FontAwesomeIcon icon={["fas", "border-all"]} className="text-[12px]" />
+          <FontAwesomeIcon icon={faBorderAll} className="text-[12px]" />
         </div>
         <span data-tauri-drag-region className="truncate text-[13px] font-semibold text-text-base">
           {t("canvas.title", { defaultValue: "工作画布" })}
@@ -49,7 +50,7 @@ export function CanvasTitleBar() {
           className="win-btn flex h-10 w-10 items-center justify-center text-text-secondary transition-colors"
           aria-label={t("canvas.minimize", { defaultValue: "最小化" })}
         >
-          <FontAwesomeIcon icon={["fas", "minus"]} className="text-[11px]" />
+          <FontAwesomeIcon icon={faMinus} className="text-[11px]" />
         </button>
         <button
           type="button"
@@ -57,7 +58,7 @@ export function CanvasTitleBar() {
           className="win-btn flex h-10 w-10 items-center justify-center text-text-secondary transition-colors"
           aria-label={t("canvas.maximize", { defaultValue: "最大化" })}
         >
-          <FontAwesomeIcon icon={["far", "square"]} className="text-[11px]" />
+          <FontAwesomeIcon icon={faSquare} className="text-[11px]" />
         </button>
         <button
           type="button"
@@ -65,7 +66,7 @@ export function CanvasTitleBar() {
           className="win-btn-close flex h-10 w-10 items-center justify-center text-text-secondary transition-colors"
           aria-label={t("canvas.close", { defaultValue: "关闭" })}
         >
-          <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[13px]" />
+          <FontAwesomeIcon icon={faXmark} className="text-[13px]" />
         </button>
       </div>
     </div>

@@ -11,7 +11,7 @@
 //! secrets off disk — mirroring Claude Code. Only the public [`ModelCatalog`]
 //! is persisted in the `documents` table (collection `"settings"`, id `"app"`).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -696,6 +696,7 @@ pub struct SettingsService {
     db: Arc<Database>,
     transport: Arc<dyn HttpTransport>,
     secrets: Arc<dyn SecretStore>,
+    settings_cache: Mutex<Option<Option<AppSettings>>>,
 }
 
 impl SettingsService {
@@ -710,6 +711,7 @@ impl SettingsService {
             db,
             transport,
             secrets,
+            settings_cache: Mutex::new(None),
         }
     }
 
@@ -833,11 +835,25 @@ impl SettingsService {
 
     /// Load the public settings (catalog) from the database.
     pub fn load(&self) -> Result<Option<AppSettings>> {
-        let store = DocumentStore::new(&self.db);
-        match store.get(SETTINGS_COLLECTION, SETTINGS_ID)? {
-            Some(doc) => Ok(Some(serde_json::from_str(&doc.body)?)),
-            None => Ok(None),
+        if let Some(cached) = self
+            .settings_cache
+            .lock()
+            .map_err(|_| CoreError::other("settings cache lock poisoned"))?
+            .clone()
+        {
+            return Ok(cached);
         }
+
+        let store = DocumentStore::new(&self.db);
+        let loaded = match store.get(SETTINGS_COLLECTION, SETTINGS_ID)? {
+            Some(doc) => Some(serde_json::from_str::<AppSettings>(&doc.body)?),
+            None => None,
+        };
+        *self
+            .settings_cache
+            .lock()
+            .map_err(|_| CoreError::other("settings cache lock poisoned"))? = Some(loaded.clone());
+        Ok(loaded)
     }
 
     /// Read the persisted welcome name. An empty value means the UI should use
@@ -1400,7 +1416,13 @@ impl SettingsService {
             &body,
             None,
             Timestamp::from_millis(settings.discovered_at),
-        )
+        )?;
+        *self
+            .settings_cache
+            .lock()
+            .map_err(|_| CoreError::other("settings cache lock poisoned"))? =
+            Some(Some(settings.clone()));
+        Ok(())
     }
 }
 

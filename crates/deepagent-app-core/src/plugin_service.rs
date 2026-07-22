@@ -5,6 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use deepagent_core::error::{CoreError, Result};
@@ -184,6 +185,27 @@ pub struct PluginService {
     roots: PluginRoots,
     state_path: PathBuf,
     data_root: PathBuf,
+    runtime_cache: Mutex<Option<PluginRuntimeCache>>,
+    list_cache: Mutex<Option<PluginListCache>>,
+}
+
+struct PluginRuntimeCache {
+    projection: PluginRuntimeProjection,
+    snapshots: Vec<PathSnapshot>,
+}
+
+struct PluginListCache {
+    plugins: Vec<PluginDto>,
+    snapshots: Vec<PathSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PathSnapshot {
+    path: PathBuf,
+    exists: bool,
+    is_dir: bool,
+    len: Option<u64>,
+    modified_millis: Option<u128>,
 }
 
 impl PluginService {
@@ -193,6 +215,8 @@ impl PluginService {
             roots,
             state_path: plugin_data.join("state.json"),
             data_root: plugin_data.join("data"),
+            runtime_cache: Mutex::new(None),
+            list_cache: Mutex::new(None),
         }
     }
 
@@ -201,16 +225,23 @@ impl PluginService {
     }
 
     pub fn list(&self) -> Result<Vec<PluginDto>> {
+        if let Some(plugins) = self.cached_plugin_list() {
+            return Ok(plugins);
+        }
+
         if let Err(error) = self.cleanup_orphaned_cache() {
             tracing::warn!(error = %error, "failed to clean orphaned plugin cache");
         }
         let state = self.load_state()?;
         let loaded = load_plugins(&self.roots);
         let dependencies = self.dependency_outcome(&loaded, &state);
-        Ok(loaded
+        let plugins = loaded
             .iter()
             .map(|plugin| self.dto_from_loaded(plugin, &loaded, &state, &dependencies))
-            .collect())
+            .collect::<Vec<_>>();
+        let snapshots = self.plugin_list_cache_snapshots(&loaded, &state);
+        self.store_plugin_list_cache(plugins.clone(), snapshots);
+        Ok(plugins)
     }
 
     pub fn reload(&self) -> Result<Vec<PluginDto>> {
@@ -749,7 +780,7 @@ impl PluginService {
         authentication_confirmed: bool,
         stack: &mut Vec<String>,
     ) -> Result<PluginDto> {
-        let (_, entry) = self.marketplace_entry(&marketplace_key, plugin)?;
+        let (_, entry) = self.marketplace_entry(marketplace_key, plugin)?;
         ensure_marketplace_entry_installable(marketplace_key, &entry)?;
         ensure_marketplace_authentication_confirmed(
             marketplace_key,
@@ -767,7 +798,7 @@ impl PluginService {
         }
         stack.push(id.clone());
 
-        let materialized = self.materialize_marketplace_plugin_source(&marketplace_key, &entry)?;
+        let materialized = self.materialize_marketplace_plugin_source(marketplace_key, &entry)?;
         let source = materialized.plugin_root();
         let report = scan_plugin_dir(source)?;
         if !report.errors.is_empty() {
@@ -816,7 +847,7 @@ impl PluginService {
         let marketplace_dir = self
             .roots
             .marketplace_cache
-            .join(sanitize_file_name(&marketplace_key));
+            .join(sanitize_file_name(marketplace_key));
         let plugin_dir = marketplace_dir.join(sanitize_file_name(&manifest.name));
         if plugin_dir.exists() {
             mark_stale_marketplace_plugin_versions(
@@ -828,7 +859,7 @@ impl PluginService {
         let destination = plugin_dir.join(sanitize_file_name(&version));
         copy_dir(source, &destination)?;
 
-        let id = plugin_id(&manifest.name, &marketplace_key);
+        let id = plugin_id(&manifest.name, marketplace_key);
         let mut state = self.load_state()?;
         state.enabled.insert(id.clone(), true);
         state.installed.insert(
@@ -877,6 +908,10 @@ impl PluginService {
     }
 
     pub fn runtime_projection(&self) -> Result<PluginRuntimeProjection> {
+        if let Some(projection) = self.cached_runtime_projection() {
+            return Ok(projection);
+        }
+
         let state = self.load_state()?;
         let loaded = load_plugins(&self.roots);
         let dependencies = self.dependency_outcome(&loaded, &state);
@@ -903,7 +938,10 @@ impl PluginService {
                 manifest,
             })
         });
-        Ok(PluginRuntimeProjection::from_enabled_plugins(inputs))
+        let projection = PluginRuntimeProjection::from_enabled_plugins(inputs);
+        let snapshots = self.runtime_cache_snapshots(&loaded);
+        self.store_runtime_projection_cache(projection.clone(), snapshots);
+        Ok(projection)
     }
 
     pub fn list_apps(&self) -> Result<Vec<crate::plugin_runtime::PluginAppEntry>> {
@@ -1042,10 +1080,10 @@ impl PluginService {
             output_style_count,
             icon_path: manifest
                 .and_then(|m| m.interface.composer_icon.as_ref())
-                .map(path_string),
+                .map(|path| path_string(path)),
             logo_path: manifest
                 .and_then(|m| m.interface.logo.as_ref())
-                .map(path_string),
+                .map(|path| path_string(path)),
             brand_color: manifest.and_then(|m| m.interface.brand_color.clone()),
             required_by,
             errors,
@@ -1103,12 +1141,86 @@ impl PluginService {
         }
         let mut state = state.clone();
         state.version = PLUGIN_STATE_SCHEMA_VERSION;
-        write_file_atomically(
+        let result = write_file_atomically(
             &self.state_path,
             serde_json::to_string_pretty(&state)
                 .map_err(CoreError::from)?
                 .as_bytes(),
-        )
+        );
+        if result.is_ok() {
+            self.invalidate_plugin_caches();
+        }
+        result
+    }
+
+    fn cached_plugin_list(&self) -> Option<Vec<PluginDto>> {
+        let cache = self.list_cache.lock().ok()?;
+        let cache = cache.as_ref()?;
+        if cache.snapshots.iter().all(PathSnapshot::still_matches) {
+            Some(cache.plugins.clone())
+        } else {
+            None
+        }
+    }
+
+    fn store_plugin_list_cache(&self, plugins: Vec<PluginDto>, snapshots: Vec<PathSnapshot>) {
+        if let Ok(mut cache) = self.list_cache.lock() {
+            *cache = Some(PluginListCache { plugins, snapshots });
+        }
+    }
+
+    fn cached_runtime_projection(&self) -> Option<PluginRuntimeProjection> {
+        let cache = self.runtime_cache.lock().ok()?;
+        let cache = cache.as_ref()?;
+        if cache.snapshots.iter().all(PathSnapshot::still_matches) {
+            Some(cache.projection.clone())
+        } else {
+            None
+        }
+    }
+
+    fn store_runtime_projection_cache(
+        &self,
+        projection: PluginRuntimeProjection,
+        snapshots: Vec<PathSnapshot>,
+    ) {
+        if let Ok(mut cache) = self.runtime_cache.lock() {
+            *cache = Some(PluginRuntimeCache {
+                projection,
+                snapshots,
+            });
+        }
+    }
+
+    fn invalidate_runtime_cache(&self) {
+        if let Ok(mut cache) = self.runtime_cache.lock() {
+            *cache = None;
+        }
+    }
+
+    fn invalidate_plugin_caches(&self) {
+        self.invalidate_runtime_cache();
+        if let Ok(mut cache) = self.list_cache.lock() {
+            *cache = None;
+        }
+    }
+
+    fn runtime_cache_snapshots(&self, loaded: &[LoadedPlugin]) -> Vec<PathSnapshot> {
+        runtime_watch_paths(&self.roots, &self.state_path, loaded)
+            .into_iter()
+            .map(PathSnapshot::capture)
+            .collect()
+    }
+
+    fn plugin_list_cache_snapshots(
+        &self,
+        loaded: &[LoadedPlugin],
+        state: &PluginState,
+    ) -> Vec<PathSnapshot> {
+        plugin_list_watch_paths(&self.roots, &self.state_path, loaded, state)
+            .into_iter()
+            .map(PathSnapshot::capture)
+            .collect()
     }
 
     fn personal_target_dir(&self, requested: Option<&str>, fallback_slug: &str) -> Result<PathBuf> {
@@ -2636,8 +2748,157 @@ fn now_string() -> String {
     now_millis().to_string()
 }
 
-fn path_string(path: &PathBuf) -> String {
+fn path_string(path: &Path) -> String {
     path.display().to_string()
+}
+
+impl PathSnapshot {
+    fn capture(path: PathBuf) -> Self {
+        match std::fs::metadata(&path) {
+            Ok(metadata) => Self {
+                path,
+                exists: true,
+                is_dir: metadata.is_dir(),
+                len: Some(metadata.len()),
+                modified_millis: metadata.modified().ok().and_then(system_time_millis),
+            },
+            Err(_) => Self {
+                path,
+                exists: false,
+                is_dir: false,
+                len: None,
+                modified_millis: None,
+            },
+        }
+    }
+
+    fn still_matches(&self) -> bool {
+        Self::capture(self.path.clone()) == *self
+    }
+}
+
+fn system_time_millis(time: SystemTime) -> Option<u128> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis())
+}
+
+fn runtime_watch_paths(
+    roots: &PluginRoots,
+    state_path: &Path,
+    loaded: &[LoadedPlugin],
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    push_unique_watch_path(&mut paths, state_path.to_path_buf());
+    push_unique_watch_path(&mut paths, roots.builtin.clone());
+    push_unique_watch_path(&mut paths, roots.personal.clone());
+    push_unique_watch_path(&mut paths, roots.marketplace_cache.clone());
+    push_unique_watch_path(&mut paths, roots.marketplaces.clone());
+    if let Some(workspace) = &roots.workspace {
+        push_unique_watch_path(&mut paths, workspace.clone());
+    }
+    for session_root in &roots.session {
+        push_unique_watch_path(&mut paths, session_root.clone());
+    }
+
+    for plugin in loaded {
+        push_unique_watch_path(&mut paths, plugin.root.clone());
+        if let Some(manifest) = plugin.manifest.as_ref() {
+            push_unique_watch_path(&mut paths, manifest.manifest_path.clone());
+            for path in &manifest.paths.skills {
+                push_unique_watch_path(&mut paths, path.clone());
+            }
+            for path in &manifest.paths.commands {
+                push_unique_watch_path(&mut paths, path.clone());
+            }
+            for path in &manifest.paths.agents {
+                push_unique_watch_path(&mut paths, path.clone());
+            }
+            for path in &manifest.paths.app_paths {
+                push_unique_watch_path(&mut paths, path.clone());
+            }
+            for path in &manifest.paths.mcp_server_paths {
+                push_unique_watch_path(&mut paths, path.clone());
+            }
+            for path in &manifest.paths.hook_paths {
+                push_unique_watch_path(&mut paths, path.clone());
+            }
+            for path in &manifest.paths.output_styles {
+                push_runtime_tree_watch_paths(&mut paths, path);
+            }
+        }
+    }
+
+    paths
+}
+
+fn plugin_list_watch_paths(
+    roots: &PluginRoots,
+    state_path: &Path,
+    loaded: &[LoadedPlugin],
+    state: &PluginState,
+) -> Vec<PathBuf> {
+    let mut paths = runtime_watch_paths(roots, state_path, loaded);
+    for (name, marketplace) in &state.marketplaces {
+        let snapshot = marketplace
+            .manifest_path
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| roots.marketplaces.join(name).join("marketplace.json"));
+        push_unique_watch_path(&mut paths, snapshot);
+        if let Some(source_root) = marketplace.source_root.as_ref().map(PathBuf::from) {
+            push_unique_watch_path(&mut paths, source_root);
+        }
+        if let Some(install_location) = marketplace.install_location.as_ref().map(PathBuf::from) {
+            push_unique_watch_path(&mut paths, install_location);
+        }
+    }
+
+    for plugin in loaded {
+        if let Some(manifest) = plugin.manifest.as_ref() {
+            for path in &manifest.paths.skills {
+                push_runtime_tree_watch_paths(&mut paths, path);
+            }
+            for path in &manifest.paths.commands {
+                push_runtime_tree_watch_paths(&mut paths, path);
+            }
+            for path in &manifest.paths.output_styles {
+                push_runtime_tree_watch_paths(&mut paths, path);
+            }
+        }
+    }
+
+    paths
+}
+
+fn push_runtime_tree_watch_paths(paths: &mut Vec<PathBuf>, path: &Path) {
+    push_unique_watch_path(paths, path.to_path_buf());
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+    if !metadata.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let child = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            push_runtime_tree_watch_paths(paths, &child);
+        } else if file_type.is_file() {
+            push_unique_watch_path(paths, child);
+        }
+    }
+}
+
+fn push_unique_watch_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
 }
 
 #[cfg(test)]
@@ -2883,6 +3144,24 @@ mod tests {
     }
 
     #[test]
+    fn plugin_list_cache_refreshes_when_manifest_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let plugin_root = roots.builtin.join("demo");
+        write_plugin_with_version(&plugin_root, "demo", "0.1.0");
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let initial = svc.read("demo@builtin").unwrap().unwrap();
+        assert_eq!(initial.version.as_deref(), Some("0.1.0"));
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write_plugin_with_version(&plugin_root, "demo", "0.2.0");
+
+        let refreshed = svc.read("demo@builtin").unwrap().unwrap();
+        assert_eq!(refreshed.version.as_deref(), Some("0.2.0"));
+    }
+
+    #[test]
     fn runtime_projection_respects_enable_disable_state() {
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
@@ -2939,6 +3218,32 @@ mod tests {
         assert_eq!(styles.len(), 1);
         assert_eq!(styles[0].plugin_id, "demo@builtin");
         assert_eq!(styles[0].name, "demo:concise");
+    }
+
+    #[test]
+    fn runtime_projection_cache_refreshes_when_watched_runtime_file_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin_with_app_and_output_style(&roots.builtin.join("demo"), "demo");
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        let style_path = roots
+            .builtin
+            .join("demo")
+            .join("output-styles")
+            .join("concise.md");
+
+        let initial = svc.list_output_styles().unwrap();
+        assert!(initial[0].prompt.contains("Keep replies short"));
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            &style_path,
+            "# Concise demo\n\nUse the edited runtime style.",
+        )
+        .unwrap();
+
+        let refreshed = svc.list_output_styles().unwrap();
+        assert!(refreshed[0].prompt.contains("edited runtime style"));
     }
 
     #[test]

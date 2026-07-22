@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   projectMapGraph,
@@ -363,31 +362,17 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
           </div>
         </div>
       ) : (
-        <AnimatePresence mode="wait">
+        <>
           {mode === "graph" ? (
-            <motion.div
-              key="graph"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.15 }}
-              className="flex-1 min-h-0 flex flex-col"
-            >
+            <div className="project-map-view flex-1 min-h-0 flex flex-col">
               <ProjectMapGraphView
                 graph={graph}
                 selected={selected}
                 onSelect={setSelected}
               />
-            </motion.div>
+            </div>
           ) : (
-            <motion.div
-              key="list"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.15 }}
-              className="flex-1 min-h-0 grid grid-cols-[260px_1fr]"
-            >
+            <div className="project-map-view flex-1 min-h-0 grid grid-cols-[260px_1fr]">
               <div className="border-r border-border-theme min-h-0 flex flex-col">
                 <div className="p-3 flex-shrink-0">
                   <div className="relative">
@@ -485,9 +470,9 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
                   </div>
                 )}
               </div>
-            </motion.div>
+            </div>
           )}
-        </AnimatePresence>
+        </>
       )}
     </div>
   );
@@ -632,15 +617,8 @@ function ProjectMapGraphView({
         })}
       </svg>
 
-      <AnimatePresence>
-        {selected && (
-          <motion.div
-            initial={{ opacity: 0, y: -10, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -10, scale: 0.95 }}
-            transition={{ duration: 0.15, ease: "easeOut" }}
-            className="absolute right-4 top-4 w-[280px] rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme bg-white/95 backdrop-blur-md p-4 flex flex-col max-h-[calc(100%-32px)] overflow-y-auto custom-scrollbar z-10"
-          >
+      {selected && (
+          <div className="popover-menu absolute right-4 top-4 w-[280px] rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme bg-white/95 backdrop-blur-md p-4 flex flex-col max-h-[calc(100%-32px)] overflow-y-auto custom-scrollbar z-10">
             <div className="text-[12px] font-medium text-text-secondary mb-3">当前节点信息</div>
             <div className="text-[14px] font-medium text-text-base break-words">{selected.name}</div>
             <div className="mt-1 text-[11px] text-text-secondary break-all">
@@ -659,9 +637,8 @@ function ProjectMapGraphView({
                 {selected.summary}
               </div>
             )}
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
     </div>
   );
 }

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const VISION_PROMPT_VERSION: &str = "vision-v1";
+#[cfg(feature = "runtimes")]
 const VISION_MAX_IMAGE_SIDE: u32 = 2048;
 
 #[derive(Debug, Clone)]
@@ -150,9 +151,9 @@ impl VisionProviderService {
         #[cfg(not(feature = "runtimes"))]
         {
             let _ = (base_url, api_key, model, timeout_ms, prompt, image_url);
-            return Err(CoreError::Other(
+            Err(CoreError::Other(
                 "system vision HTTP client is not enabled in this build".to_string(),
-            ));
+            ))
         }
 
         #[cfg(feature = "runtimes")]
@@ -221,6 +222,12 @@ impl VisionProviderService {
                 raw_json: raw,
             })
         }
+    }
+}
+
+impl Default for VisionProviderService {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

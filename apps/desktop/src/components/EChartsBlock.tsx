@@ -1,13 +1,95 @@
 import { useEffect, useRef, useState } from "react";
-import * as echarts from "echarts";
+import type { EChartsType } from "echarts/core";
 
 interface EChartsBlockProps {
   content: string;
 }
 
+type EChartsCore = typeof import("echarts/core");
+
+type EChartsInstallModule = {
+  install: unknown;
+};
+
+const baseChartLoaders: Array<() => Promise<EChartsInstallModule>> = [
+  () => import("echarts/lib/chart/bar/install.js"),
+  () => import("echarts/lib/chart/line/install.js"),
+  () => import("echarts/lib/chart/pie/install.js"),
+  () => import("echarts/lib/chart/scatter/install.js"),
+  () => import("echarts/lib/component/dataZoom/install.js"),
+  () => import("echarts/lib/component/dataset/install.js"),
+  () => import("echarts/lib/component/grid/install.js"),
+  () => import("echarts/lib/component/legend/install.js"),
+  () => import("echarts/lib/component/title/install.js"),
+  () => import("echarts/lib/component/toolbox/install.js"),
+  () => import("echarts/lib/component/tooltip/install.js"),
+  () => import("echarts/lib/component/transform/install.js"),
+  () => import("echarts/lib/component/visualMap/install.js"),
+  () => import("echarts/lib/renderer/installCanvasRenderer.js"),
+];
+
+const advancedChartLoaders: Record<string, () => Promise<EChartsInstallModule[]>> = {
+  gauge: async () => [await import("echarts/lib/chart/gauge/install.js")],
+  graph: async () => [await import("echarts/lib/chart/graph/install.js")],
+  heatmap: async () => [await import("echarts/lib/chart/heatmap/install.js")],
+  radar: async () => [
+    await import("echarts/lib/chart/radar/install.js"),
+    await import("echarts/lib/component/radar/install.js"),
+  ],
+};
+
+const registeredAdvancedCharts = new Set<string>();
+let echartsCorePromise: Promise<EChartsCore> | null = null;
+let baseChartsPromise: Promise<void> | null = null;
+
+async function loadEChartsRuntime() {
+  const core = await loadEChartsCore();
+  await ensureBaseChartModules(core);
+  return core;
+}
+
+function loadEChartsCore() {
+  echartsCorePromise ??= import("echarts/core");
+  return echartsCorePromise;
+}
+
+function ensureBaseChartModules(core: EChartsCore) {
+  baseChartsPromise ??= Promise.all(baseChartLoaders.map((loader) => loader())).then((modules) => {
+    core.use(modules.map((module) => module.install as any));
+  });
+  return baseChartsPromise;
+}
+
+function collectSeriesTypes(value: unknown, types = new Set<string>()): Set<string> {
+  if (!value || typeof value !== "object") return types;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectSeriesTypes(item, types));
+    return types;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.type === "string") {
+    types.add(record.type);
+  }
+
+  collectSeriesTypes(record.series, types);
+  return types;
+}
+
+async function ensureAdvancedChartModules(core: EChartsCore, options: unknown) {
+  const missingTypes = [...collectSeriesTypes((options as any)?.series)]
+    .filter((type) => advancedChartLoaders[type])
+    .filter((type) => !registeredAdvancedCharts.has(type));
+  if (missingTypes.length === 0) return;
+
+  const modules = (await Promise.all(missingTypes.map((type) => advancedChartLoaders[type]()))).flat();
+  core.use(modules.map((module) => module.install as any));
+  missingTypes.forEach((type) => registeredAdvancedCharts.add(type));
+}
+
 export function EChartsBlock({ content }: EChartsBlockProps) {
   const chartRef = useRef<HTMLDivElement>(null);
-  const chartInstance = useRef<echarts.EChartsType | null>(null);
+  const chartInstance = useRef<EChartsType | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [parsedOptions, setParsedOptions] = useState<any>(null);
 
@@ -28,24 +110,37 @@ export function EChartsBlock({ content }: EChartsBlockProps) {
   useEffect(() => {
     if (!parsedOptions || !chartRef.current) return;
 
-    if (!chartInstance.current) {
-      chartInstance.current = echarts.init(chartRef.current);
-    }
+    let cancelled = false;
+    let removeResizeHandler: (() => void) | null = null;
 
-    try {
-      chartInstance.current.setOption(parsedOptions, true);
-    } catch (err: any) {
-      setError(`ECharts error: ${err.message}`);
-    }
+    const renderChart = async () => {
+      try {
+        const echarts = await loadEChartsRuntime();
+        await ensureAdvancedChartModules(echarts, parsedOptions);
+        if (cancelled || !chartRef.current) return;
 
-    const resizeHandler = () => {
-      chartInstance.current?.resize();
+        if (!chartInstance.current) {
+          chartInstance.current = echarts.init(chartRef.current);
+        }
+
+        chartInstance.current.setOption(parsedOptions, true);
+        const resizeHandler = () => {
+          chartInstance.current?.resize();
+        };
+        window.addEventListener("resize", resizeHandler);
+        removeResizeHandler = () => window.removeEventListener("resize", resizeHandler);
+      } catch (err: any) {
+        if (!cancelled) {
+          setError(`ECharts error: ${err.message}`);
+        }
+      }
     };
 
-    window.addEventListener("resize", resizeHandler);
+    renderChart();
 
     return () => {
-      window.removeEventListener("resize", resizeHandler);
+      cancelled = true;
+      removeResizeHandler?.();
     };
   }, [parsedOptions]);
 

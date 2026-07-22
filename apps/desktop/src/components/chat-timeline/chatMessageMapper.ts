@@ -9,6 +9,10 @@ import type { ChatBlock } from "./timelineTypes";
 
 const USER_SKILL_MARKER = "\uE000";
 const USER_MENTION_MARKER = "\uE001";
+const messageBlockCache = new WeakMap<
+  ChatMessage,
+  { messageIndex: number; blocks: ChatBlock[] }
+>();
 
 function parseAttachmentAttrs(raw: string): Record<string, string> {
   const attrs: Record<string, string> = {};
@@ -136,48 +140,61 @@ function mapAssistantPart(part: MessagePart, messageIndex: number, partIndex: nu
   };
 }
 
-export function chatMessagesToBlocks(messages: ChatMessage[]): ChatBlock[] {
-  return messages.flatMap((message, messageIndex): ChatBlock[] => {
-    if (message.role === "user") {
-      const text = stripUserContext(message.content);
-      return [
-        {
-          kind: "user",
-          id: `m${messageIndex}-user`,
-          text,
-          attachments: message.attachments?.length ? message.attachments : parseAttachmentContext(message.content),
-          selectedSkills: message.selectedSkills?.length ? message.selectedSkills : parseSkillContexts(message.content),
-          mentions: message.mentions?.length ? message.mentions : parseMentionContexts(message.content),
-          source: message,
-        },
-      ];
-    }
-
-    if (message.parts?.length) {
-      const mapped = message.parts
-        .map((part, partIndex) => mapAssistantPart(part, messageIndex, partIndex, message))
-        .filter((block): block is ChatBlock => block !== null);
-      if (mapped.length > 0) return mapped;
-    }
-
-    const blocks: ChatBlock[] = [];
-    if (message.reasoning?.trim()) {
-      blocks.push({ kind: "reasoning", id: `m${messageIndex}-reasoning`, text: message.reasoning });
-    }
-    for (const tool of message.tools ?? []) {
-      blocks.push({ kind: "tool", id: `tool-${tool.call_id}`, tool });
-    }
-    if (message.content?.trim()) {
-      blocks.push({
-        kind: "assistant",
-        id: `m${messageIndex}-assistant`,
-        text: message.content,
-        tone: message.tone,
-        usage: message.usage,
-        runMs: message.runMs,
+function mapMessageToBlocks(message: ChatMessage, messageIndex: number): ChatBlock[] {
+  if (message.role === "user") {
+    const text = stripUserContext(message.content);
+    return [
+      {
+        kind: "user",
+        id: `m${messageIndex}-user`,
+        text,
+        attachments: message.attachments?.length ? message.attachments : parseAttachmentContext(message.content),
+        selectedSkills: message.selectedSkills?.length ? message.selectedSkills : parseSkillContexts(message.content),
+        mentions: message.mentions?.length ? message.mentions : parseMentionContexts(message.content),
         source: message,
-      });
+      },
+    ];
+  }
+
+  if (message.parts?.length) {
+    const mapped = message.parts
+      .map((part, partIndex) => mapAssistantPart(part, messageIndex, partIndex, message))
+      .filter((block): block is ChatBlock => block !== null);
+    if (mapped.length > 0) return mapped;
+  }
+
+  const blocks: ChatBlock[] = [];
+  if (message.reasoning?.trim()) {
+    blocks.push({ kind: "reasoning", id: `m${messageIndex}-reasoning`, text: message.reasoning });
+  }
+  for (const tool of message.tools ?? []) {
+    blocks.push({ kind: "tool", id: `tool-${tool.call_id}`, tool });
+  }
+  if (message.content?.trim()) {
+    blocks.push({
+      kind: "assistant",
+      id: `m${messageIndex}-assistant`,
+      text: message.content,
+      tone: message.tone,
+      usage: message.usage,
+      runMs: message.runMs,
+      source: message,
+    });
+  }
+  return blocks;
+}
+
+export function chatMessagesToBlocks(messages: ChatMessage[]): ChatBlock[] {
+  const blocks: ChatBlock[] = [];
+  messages.forEach((message, messageIndex) => {
+    const cached = messageBlockCache.get(message);
+    if (cached?.messageIndex === messageIndex) {
+      blocks.push(...cached.blocks);
+      return;
     }
-    return blocks;
+    const mapped = mapMessageToBlocks(message, messageIndex);
+    messageBlockCache.set(message, { messageIndex, blocks: mapped });
+    blocks.push(...mapped);
   });
+  return blocks;
 }

@@ -384,20 +384,22 @@ fn raw_manifest_to_manifest(
     } = raw;
     let raw_paths = raw_paths.unwrap_or_default();
 
-    let mut paths = PluginManifestPaths::default();
-    paths.skills = component_paths(root, prefer_path_list(raw_paths.skills, skills), "skills")?;
-    paths.commands = component_paths(
-        root,
-        prefer_path_list(raw_paths.commands, commands),
-        "commands",
-    )?;
-    paths.agents = component_paths(root, prefer_path_list(raw_paths.agents, agents), "agents")?;
-    paths.output_styles = component_paths(
-        root,
-        prefer_path_list(raw_paths.output_styles, output_styles),
-        "output-styles",
-    )?;
-    paths.app_paths = component_paths(root, prefer_path_list(raw_paths.apps, apps), ".app.json")?;
+    let mut paths = PluginManifestPaths {
+        skills: component_paths(root, prefer_path_list(raw_paths.skills, skills), "skills")?,
+        commands: component_paths(
+            root,
+            prefer_path_list(raw_paths.commands, commands),
+            "commands",
+        )?,
+        agents: component_paths(root, prefer_path_list(raw_paths.agents, agents), "agents")?,
+        output_styles: component_paths(
+            root,
+            prefer_path_list(raw_paths.output_styles, output_styles),
+            "output-styles",
+        )?,
+        app_paths: component_paths(root, prefer_path_list(raw_paths.apps, apps), ".app.json")?,
+        ..Default::default()
+    };
 
     match raw_paths.mcp_servers.or(mcp_servers) {
         Some(spec) => apply_mcp_spec(root, spec, &mut paths)?,

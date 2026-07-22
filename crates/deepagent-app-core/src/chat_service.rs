@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepagent_builtins::WorkspaceRoot;
@@ -429,6 +429,7 @@ fn parse_office_sheets(value: &serde_json::Value) -> Result<Vec<(String, Vec<Vec
 #[derive(Clone)]
 struct CodeGraphToolBackend {
     root: PathBuf,
+    graph: Arc<Mutex<Option<deepagent_codegraph::CodeGraph>>>,
 }
 
 #[async_trait]
@@ -533,15 +534,30 @@ impl deepagent_builtins::CodeGraphBackend for CodeGraphToolBackend {
 }
 
 impl CodeGraphToolBackend {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            graph: Arc::new(Mutex::new(None)),
+        }
+    }
+
     fn with_graph<F>(&self, f: F) -> Result<serde_json::Value>
     where
         F: FnOnce(&deepagent_codegraph::CodeGraph) -> Result<serde_json::Value>,
     {
-        let graph = deepagent_codegraph::CodeGraph::open(&self.root)?;
+        let mut cached = self.graph.lock().map_err(|_| {
+            CoreError::Persistence("code graph connection cache lock poisoned".to_string())
+        })?;
+        if cached.is_none() {
+            *cached = Some(deepagent_codegraph::CodeGraph::open(&self.root)?);
+        }
+        let graph = cached
+            .as_ref()
+            .ok_or_else(|| CoreError::other("code graph connection cache was not initialized"))?;
         if !graph.has_existing_index() {
             return Ok(codegraph_not_indexed());
         }
-        f(&graph)
+        f(graph)
     }
 }
 
@@ -2200,10 +2216,10 @@ impl ChatService {
         {
             config = config.with_command_executor(factory(conn_id.to_string()));
         } else if env_mode != Some("remote") {
-            let use_sandbox = match local_exec_mode {
-                Some(crate::settings::LocalExecutionMode::Direct) => false,
-                _ => true,
-            };
+            let use_sandbox = !matches!(
+                local_exec_mode,
+                Some(crate::settings::LocalExecutionMode::Direct)
+            );
             if use_sandbox {
                 if let Some(executor) = &self.local_command_executor {
                     config = config.with_command_executor(executor.clone());
@@ -2247,9 +2263,7 @@ impl ChatService {
                 CodeGraphCalleesTool, CodeGraphCallersTool, CodeGraphExploreTool,
                 CodeGraphImpactTool, CodeGraphLocateTool, CodeGraphNodeTool, CodeGraphSearchTool,
             };
-            let backend = CodeGraphToolBackend {
-                root: root.to_path_buf(),
-            };
+            let backend = CodeGraphToolBackend::new(root.to_path_buf());
             registry.register(Arc::new(CodeGraphSearchTool::new(backend.clone())))?;
             registry.register(Arc::new(CodeGraphExploreTool::new(backend.clone())))?;
             registry.register(Arc::new(CodeGraphCallersTool::new(backend.clone())))?;
@@ -2652,6 +2666,7 @@ impl ChatService {
     /// recovered from the event log and replayed to the model) instead of
     /// starting a fresh session. Returns the session id used (the continued one,
     /// or a newly created one when `continue_session` is `None`).
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_in_session<F, A>(
         &self,
         prompt: &str,

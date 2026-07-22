@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { SidebarPluginHeader } from "./SidebarPluginHeader";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
@@ -128,17 +127,13 @@ export function RightSidebarWorkbench({
   const maximizedClasses = "fixed top-10 left-0 right-0 bottom-0 z-[60] border-l-0 shadow-none";
   const normalClasses = "relative z-10 flex-shrink-0";
 
+  if (!open) return null;
+
   return (
-    <AnimatePresence>
-      {open && (
-    <motion.aside
+    <aside
       ref={sidebarRef}
-      key="right-sidebar-workbench"
-      initial={{ width: 0, opacity: 0, x: 20 }}
-      animate={{ width: isMaximized ? "100%" : width, opacity: 1, x: 0 }}
-      exit={{ width: 0, opacity: 0, x: 20 }}
-      transition={isResizing ? { duration: 0 } : { type: "spring", bounce: 0, duration: 0.3 }}
-      className={`h-full overflow-hidden ${isMaximized ? maximizedClasses : normalClasses}`}
+      className={`right-sidebar-workbench h-full overflow-hidden ${isMaximized ? maximizedClasses : normalClasses}`}
+      style={isMaximized ? { width: "100%" } : { width }}
     >
       <div
         className="flex h-full flex-col overflow-hidden border-l border-border-theme bg-white shadow-[-12px_0_30px_rgba(15,23,42,0.06)]"
@@ -198,9 +193,7 @@ export function RightSidebarWorkbench({
         )}
       </div>
       </div>
-    </motion.aside>
-      )}
-    </AnimatePresence>
+    </aside>
   );
 }
 

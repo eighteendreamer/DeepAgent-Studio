@@ -1225,11 +1225,19 @@ export function ChatView({
     };
   }, [activeProjectPath]);
 
-  const openUrlInSidebarBrowser = (rawUrl: string) => {
+  const openUrlInSidebarBrowser = useCallback((rawUrl: string) => {
     const url = normalizeBrowserUrl(rawUrl);
     if (!url) return;
     window.open(url, "_blank", "noopener,noreferrer");
-  };
+  }, []);
+
+  const handleResend = useCallback(
+    (text: string, skills?: ComposerSkillSelection[], mentions?: ComposerMention[]) => {
+      if (busy) return;
+      onSend(text, [], skills, mentions);
+    },
+    [busy, onSend],
+  );
 
   const submit = (
     attachments: ComposerAttachment[] = [],
@@ -1566,10 +1574,8 @@ export function ChatView({
             messages={messages}
             busy={busy}
             onOpenUrl={openUrlInSidebarBrowser}
-            onResend={(text, skills, mentions) => {
-              if (busy) return;
-              onSend(text, [], skills, mentions);
-            }}
+            onResend={handleResend}
+            scrollContainerRef={scrollRef}
           />
         </div>
 

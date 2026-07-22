@@ -4,8 +4,12 @@
 //! through the Understand-Anything core engine.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::Metadata;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use deepagent_codegraph::CodeGraph;
 use deepagent_core::error::{CoreError, Result};
@@ -13,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 const UA_GRAPH: &str = ".understand-anything/knowledge-graph.json";
 const MAX_STALE_CHECK_FILES: usize = 2500;
+const STALE_CHECK_TTL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectMapStatusDto {
@@ -174,15 +179,55 @@ struct LoadedGraph {
     project_root: PathBuf,
     graph_path: PathBuf,
     updated_at: Option<i64>,
-    graph: RawGraph,
+    fingerprint: GraphFingerprint,
+    graph: Arc<RawGraph>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GraphFingerprint {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+impl GraphFingerprint {
+    fn from_metadata(metadata: &Metadata) -> Self {
+        Self {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        }
+    }
+
+    fn updated_at_ms(self) -> Option<i64> {
+        self.modified
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as i64)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GraphCacheEntry {
+    fingerprint: GraphFingerprint,
+    loaded: LoadedGraph,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StaleCacheEntry {
+    fingerprint: GraphFingerprint,
+    checked_at: Instant,
+    stale: bool,
 }
 
 #[derive(Debug, Default)]
-pub struct ProjectMapService;
+pub struct ProjectMapService {
+    graph_cache: Mutex<HashMap<PathBuf, GraphCacheEntry>>,
+    stale_cache: Mutex<HashMap<PathBuf, StaleCacheEntry>>,
+    #[cfg(test)]
+    stale_scan_count: AtomicUsize,
+}
 
 impl ProjectMapService {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
     pub fn status(&self, project_root: &Path) -> ProjectMapStatusDto {
@@ -376,6 +421,7 @@ impl ProjectMapService {
         let graph_path = root.join(UA_GRAPH);
         let projection = graph.project_ua_json(&graph_path)?;
 
+        self.invalidate_project(&root);
         let status = self.status(&root);
         let message = if index.is_incremental {
             format!(
@@ -404,13 +450,115 @@ impl ProjectMapService {
 
     fn load(&self, project_root: &Path) -> Result<LoadedGraph> {
         let ua = project_root.join(UA_GRAPH);
-        if ua.is_file() {
-            return load_graph_file(project_root, "understand-anything", ua);
+        match std::fs::metadata(&ua) {
+            Ok(metadata) if metadata.is_file() => {
+                return self.load_graph_file(project_root, "understand-anything", ua, metadata);
+            }
+            _ => {
+                self.graph_cache
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&ua);
+                self.stale_cache
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(project_root);
+            }
         }
         Err(CoreError::invalid(format!(
             "project map not found under {}",
             project_root.join(UA_GRAPH).display()
         )))
+    }
+
+    fn load_graph_file(
+        &self,
+        project_root: &Path,
+        source: &str,
+        graph_path: PathBuf,
+        metadata: Metadata,
+    ) -> Result<LoadedGraph> {
+        let fingerprint = GraphFingerprint::from_metadata(&metadata);
+        if let Some(cached) = self
+            .graph_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&graph_path)
+            .filter(|entry| entry.fingerprint == fingerprint)
+            .map(|entry| entry.loaded.clone())
+        {
+            return Ok(cached);
+        }
+
+        let raw = std::fs::read_to_string(&graph_path)
+            .map_err(|e| CoreError::Persistence(format!("read project map: {e}")))?;
+        let graph: RawGraph = serde_json::from_str(&raw)
+            .map_err(|e| CoreError::Persistence(format!("parse project map: {e}")))?;
+        let loaded = LoadedGraph {
+            source: source.to_string(),
+            project_root: project_root.to_path_buf(),
+            graph_path: graph_path.clone(),
+            updated_at: fingerprint.updated_at_ms(),
+            fingerprint,
+            graph: Arc::new(graph),
+        };
+        self.graph_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                graph_path,
+                GraphCacheEntry {
+                    fingerprint,
+                    loaded: loaded.clone(),
+                },
+            );
+        Ok(loaded)
+    }
+
+    fn invalidate_project(&self, project_root: &Path) {
+        self.graph_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&project_root.join(UA_GRAPH));
+        self.stale_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(project_root);
+    }
+
+    fn is_stale(&self, loaded: &LoadedGraph) -> bool {
+        let Some(graph_ms) = loaded.updated_at else {
+            return false;
+        };
+        if let Some(stale) = self
+            .stale_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&loaded.project_root)
+            .filter(|entry| {
+                entry.fingerprint == loaded.fingerprint
+                    && entry.checked_at.elapsed() < STALE_CHECK_TTL
+            })
+            .map(|entry| entry.stale)
+        {
+            return stale;
+        }
+
+        #[cfg(test)]
+        self.stale_scan_count.fetch_add(1, Ordering::Relaxed);
+        let stale = has_newer_project_file(&loaded.project_root, graph_ms);
+        self.stale_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                loaded.project_root.clone(),
+                StaleCacheEntry {
+                    fingerprint: loaded.fingerprint,
+                    checked_at: Instant::now(),
+                    stale,
+                },
+            );
+        stale
     }
 
     fn ready_status(&self, loaded: &LoadedGraph) -> ProjectMapStatusDto {
@@ -432,10 +580,7 @@ impl ProjectMapService {
             .iter()
             .filter(|n| n.node_type == "class")
             .count();
-        let stale = loaded
-            .updated_at
-            .map(|graph_ms| has_newer_project_file(&loaded.project_root, graph_ms))
-            .unwrap_or(false);
+        let stale = self.is_stale(loaded);
         ProjectMapStatusDto {
             status: if stale { "stale" } else { "ready" }.to_string(),
             source: Some(loaded.source.clone()),
@@ -449,25 +594,6 @@ impl ProjectMapService {
             last_error: None,
         }
     }
-}
-
-fn load_graph_file(project_root: &Path, source: &str, graph_path: PathBuf) -> Result<LoadedGraph> {
-    let updated_at = std::fs::metadata(&graph_path)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64);
-    let raw = std::fs::read_to_string(&graph_path)
-        .map_err(|e| CoreError::Persistence(format!("read project map: {e}")))?;
-    let graph: RawGraph = serde_json::from_str(&raw)
-        .map_err(|e| CoreError::Persistence(format!("parse project map: {e}")))?;
-    Ok(LoadedGraph {
-        source: source.to_string(),
-        project_root: project_root.to_path_buf(),
-        graph_path,
-        updated_at,
-        graph,
-    })
 }
 
 fn has_newer_project_file(project_root: &Path, graph_ms: i64) -> bool {
@@ -822,6 +948,63 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    fn graph_json(extra_summary: &str) -> String {
+        format!(
+            r#"{{
+  "project": {{ "name": "cache-test", "languages": ["Rust"], "frameworks": [] }},
+  "nodes": [
+    {{
+      "id": "file:src/main.rs",
+      "type": "file",
+      "name": "main.rs",
+      "filePath": "src/main.rs",
+      "summary": "main module{extra_summary}",
+      "tags": [],
+      "complexity": "simple"
+    }}
+  ],
+  "edges": []
+}}"#
+        )
+    }
+
+    #[test]
+    fn parsed_graph_cache_reuses_and_invalidates_by_fingerprint() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        write_file(root, UA_GRAPH, &graph_json(""));
+        let service = ProjectMapService::new();
+
+        let first = service.load(root).unwrap();
+        let second = service.load(root).unwrap();
+        assert!(Arc::ptr_eq(&first.graph, &second.graph));
+
+        write_file(root, UA_GRAPH, &graph_json(" with a changed length"));
+        let changed = service.load(root).unwrap();
+        assert!(!Arc::ptr_eq(&first.graph, &changed.graph));
+        assert_eq!(
+            changed.graph.nodes[0].summary,
+            "main module with a changed length"
+        );
+    }
+
+    #[test]
+    fn stale_scan_cache_reuses_result_and_invalidates_with_graph() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        write_file(root, "src/main.rs", "fn main() {}\n");
+        write_file(root, UA_GRAPH, &graph_json(""));
+        let service = ProjectMapService::new();
+
+        service.status(root);
+        service.status(root);
+        assert_eq!(service.stale_scan_count.load(Ordering::Relaxed), 1);
+
+        write_file(root, UA_GRAPH, &graph_json(" changed"));
+        service.status(root);
+        assert_eq!(service.stale_scan_count.load(Ordering::Relaxed), 2);
     }
 
     #[test]

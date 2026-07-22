@@ -1,4 +1,3 @@
-import { AnimatePresence, motion } from "framer-motion";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import type { ApprovalRequest } from "../types";
@@ -74,16 +73,12 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
   const remaining = Math.max(0, queueCount - 1);
   const content = request ? approvalContent(request.arguments) : [];
 
+  if (!request) return null;
+
   return (
-    <AnimatePresence>
-      {request && (
-        <motion.div
+        <div
           key={request.call_id}
-          initial={{ opacity: 0, y: 12, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 12, scale: 0.98 }}
-          transition={{ type: "spring", bounce: 0, duration: 0.25 }}
-          className="w-full bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme overflow-hidden"
+          className="approval-card w-full bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme overflow-hidden"
         >
           <div className="px-4 pt-3 pb-2 flex items-center gap-2">
             <FontAwesomeIcon
@@ -137,8 +132,6 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
               {t("approvalDialog.approve")}
             </button>
           </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        </div>
   );
 }

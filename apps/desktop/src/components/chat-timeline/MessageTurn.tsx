@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { ComposerMention, ComposerSkillSelection } from "../../types";
 import { deriveTurnSections, groupProcessSections } from "./deriveTurnSections";
 import { AssistantMessageBubble, UserMessageBubble } from "./MessageBubble";
@@ -21,19 +21,21 @@ function hasProcessError(turn: Turn): boolean {
   return turn.blocks.some((block) => block.kind === "tool" && (block.tool.status === "error" || block.tool.status === "blocked"));
 }
 
-export function MessageTurn({
-  turn,
-  processing,
-  busy,
-  onResend,
-  onOpenUrl,
-}: {
+interface MessageTurnProps {
   turn: Turn;
   processing: boolean;
   busy: boolean;
   onResend: (text: string, skills?: ComposerSkillSelection[], mentions?: ComposerMention[]) => void;
   onOpenUrl?: (url: string) => void;
-}) {
+}
+
+function MessageTurnComponent({
+  turn,
+  processing,
+  busy,
+  onResend,
+  onOpenUrl,
+}: MessageTurnProps) {
   const { processBlocks, assistantContentBlocks } = useMemo(
     () => deriveTurnSections(turn, processing),
     [turn, processing],
@@ -80,3 +82,19 @@ export function MessageTurn({
     </div>
   );
 }
+
+function sameTurnBlocks(previous: Turn, next: Turn): boolean {
+  return previous.user === next.user &&
+    previous.blocks.length === next.blocks.length &&
+    previous.blocks.every((block, index) => block === next.blocks[index]);
+}
+
+export const MessageTurn = memo(
+  MessageTurnComponent,
+  (previous, next) =>
+    previous.processing === next.processing &&
+    previous.busy === next.busy &&
+    previous.onResend === next.onResend &&
+    previous.onOpenUrl === next.onOpenUrl &&
+    sameTurnBlocks(previous.turn, next.turn),
+);

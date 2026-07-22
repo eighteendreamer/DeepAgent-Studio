@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import "./icons";
 import {
   ARCHIVE_CHANGED_EVENT,
   OPEN_AUTOMATION_EVENT,
@@ -53,21 +53,51 @@ import type {
 } from "./types";
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
-import { StartView } from "./components/StartView";
-import { ChatView } from "./components/ChatView";
-import { SearchModal } from "./components/SearchModal";
-import { SkillsView } from "./components/SkillsView";
-import { KnowledgeView } from "./components/KnowledgeView";
-import { PluginsView } from "./components/PluginsView";
-import { AutomationView } from "./components/AutomationView";
-import { OnboardingWizard } from "./components/OnboardingWizard";
-import { SettingsSidebar } from "./components/SettingsSidebar";
-import { SettingsView } from "./components/SettingsView";
 import { message } from "./components/message";
+
+const StartView = lazy(() =>
+  import("./components/StartView").then((module) => ({ default: module.StartView })),
+);
+const ChatView = lazy(() =>
+  import("./components/ChatView").then((module) => ({ default: module.ChatView })),
+);
+const SkillsView = lazy(() =>
+  import("./components/SkillsView").then((module) => ({ default: module.SkillsView })),
+);
+const KnowledgeView = lazy(() =>
+  import("./components/KnowledgeView").then((module) => ({ default: module.KnowledgeView })),
+);
+const PluginsView = lazy(() =>
+  import("./components/PluginsView").then((module) => ({ default: module.PluginsView })),
+);
+const AutomationView = lazy(() =>
+  import("./components/AutomationView").then((module) => ({ default: module.AutomationView })),
+);
+const SettingsView = lazy(() =>
+  import("./components/SettingsView").then((module) => ({ default: module.SettingsView })),
+);
+const SearchModal = lazy(() =>
+  import("./components/SearchModal").then((module) => ({ default: module.SearchModal })),
+);
+const OnboardingWizard = lazy(() =>
+  import("./components/OnboardingWizard").then((module) => ({ default: module.OnboardingWizard })),
+);
+const SettingsSidebar = lazy(() =>
+  import("./components/SettingsSidebar").then((module) => ({ default: module.SettingsSidebar })),
+);
 
 type View = "start" | "chat" | "skills" | "knowledge" | "plugins" | "automation" | "settings";
 
 const LEFT_SIDEBAR_OPEN_KEY = "deepagent:left-sidebar-open";
+const STREAM_RENDER_INTERVAL_MS = 33;
+
+function ViewLoading() {
+  return (
+    <div className="flex h-full w-full items-center justify-center bg-white" aria-busy="true">
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-primary" />
+    </div>
+  );
+}
 
 function readLeftSidebarOpen(): boolean {
   if (typeof window === "undefined") return true;
@@ -532,9 +562,11 @@ export function App() {
       return;
     }
 
+    activeIdRef.current = newActiveId;
     setActiveId(newActiveId);
     setView(newView);
     setMessages([]);
+    activePendingRunKeyRef.current = null;
     setActivePendingRunKey(null);
     setNavState((prev) => {
       const newHistory = prev.history.slice(0, prev.index + 1);
@@ -544,9 +576,12 @@ export function App() {
   }, [activeId, view]);
 
   const goBack = useCallback(() => {
+    activePendingRunKeyRef.current = null;
+    setActivePendingRunKey(null);
     setNavState((prev) => {
       if (prev.index > 0) {
         const item = prev.history[prev.index - 1];
+        activeIdRef.current = item.activeId;
         setActiveId(item.activeId);
         setView(item.view);
         setMessages([]);
@@ -554,6 +589,7 @@ export function App() {
       }
       
       // Fallback: if there's no history to go back to, just return to the start view
+      activeIdRef.current = null;
       setActiveId(null);
       setView("start");
       setMessages([]);
@@ -562,9 +598,12 @@ export function App() {
   }, []);
 
   const goForward = useCallback(() => {
+    activePendingRunKeyRef.current = null;
+    setActivePendingRunKey(null);
     setNavState((prev) => {
       if (prev.index < prev.history.length - 1) {
         const item = prev.history[prev.index + 1];
+        activeIdRef.current = item.activeId;
         setActiveId(item.activeId);
         setView(item.view);
         setMessages([]);
@@ -907,6 +946,7 @@ export function App() {
           return next;
         });
       } else {
+        activePendingRunKeyRef.current = pendingKey;
         setActivePendingRunKey(pendingKey);
       }
 
@@ -945,13 +985,44 @@ export function App() {
       // session is the one currently on screen, mirror it to `messages`. This
       // is what lets a run keep streaming into its buffer while the user is on
       // a different page — and show up intact when they return.
-      const updateTranscript = (fn: (prev: ChatMessage[]) => ChatMessage[]) => {
-        const current = liveTranscripts.current.get(runKey) ?? [];
-        const updated = fn(current);
-        liveTranscripts.current.set(runKey, updated);
-        if (activeIdRef.current === runKey || activePendingRunKeyRef.current === runKey || runKey === pendingKey) {
-          setMessages(updated);
+      let renderTimer: number | null = null;
+      let pendingRenderKey: string | null = null;
+      const isTranscriptVisible = (key: string) =>
+        activeIdRef.current === key ||
+        activePendingRunKeyRef.current === key;
+      const flushTranscriptRender = () => {
+        if (renderTimer !== null) {
+          window.clearTimeout(renderTimer);
+          renderTimer = null;
         }
+        const key = pendingRenderKey;
+        pendingRenderKey = null;
+        if (!key || !isTranscriptVisible(key)) return;
+        const latest = liveTranscripts.current.get(key);
+        if (latest) {
+          messagesRef.current = latest;
+          setMessages(latest);
+        }
+      };
+      const scheduleTranscriptRender = (key: string, immediate: boolean) => {
+        pendingRenderKey = key;
+        if (!isTranscriptVisible(key)) return;
+        if (immediate) {
+          flushTranscriptRender();
+        } else if (renderTimer === null) {
+          renderTimer = window.setTimeout(flushTranscriptRender, STREAM_RENDER_INTERVAL_MS);
+        }
+      };
+      const updateTranscript = (
+        fn: (prev: ChatMessage[]) => ChatMessage[],
+        immediate = false,
+      ) => {
+        const key = runKey;
+        const current = liveTranscripts.current.get(key) ?? [];
+        const updated = fn(current);
+        if (updated === current) return;
+        liveTranscripts.current.set(key, updated);
+        scheduleTranscriptRender(key, immediate);
       };
 
       const replaceLastUserAttachments = (nextAttachments: ComposerAttachment[]) => {
@@ -1118,7 +1189,7 @@ export function App() {
             ...(tone ? { tone } : {}),
           };
           return next;
-        });
+        }, true);
       };
 
       // Summarize a tool's JSON output into a short one-line detail string.
@@ -1174,6 +1245,7 @@ export function App() {
             const sid = String(event.session_id ?? "");
             if (sid) {
               if (runKey !== sid) {
+                flushTranscriptRender();
                 const buf = liveTranscripts.current.get(runKey);
                 if (buf) {
                   liveTranscripts.current.delete(runKey);
@@ -1188,6 +1260,10 @@ export function App() {
                   return next;
                 });
                 runKey = sid;
+              }
+              activeIdRef.current = sid;
+              if (activePendingRunKeyRef.current === pendingKey) {
+                activePendingRunKeyRef.current = null;
               }
               setActivePendingRunKey((current) => (current === pendingKey ? null : current));
               setRunningSessionIds((prev) => {
@@ -1307,12 +1383,16 @@ export function App() {
       };
 
       const finishRun = () => {
+        scheduleTranscriptRender(runKey, true);
         setRunningSessionIds((prev) => {
           const next = new Set(prev);
           next.delete(runKey);
           if (continueId) next.delete(continueId);
           return next;
         });
+        if (activePendingRunKeyRef.current === pendingKey) {
+          activePendingRunKeyRef.current = null;
+        }
         setActivePendingRunKey((current) => (current === pendingKey ? null : current));
         setApprovals((prev) => prev.filter((a) => a.run_id !== runId));
         // Keep the finished session's live transcript in memory so returning
@@ -1501,11 +1581,31 @@ export function App() {
               };
             }
             return next;
-          });
+          }, true);
         })
         .finally(finishRun);
     },
     [activeId, view, refreshSessions, runningSessionIds, activePendingRunKey]
+  );
+
+  const onChatSend = useCallback(
+    (
+      text: string,
+      attachments?: ComposerAttachment[],
+      selectedSkills?: ComposerSkillSelection[],
+      mentions?: ComposerMention[],
+      displayText?: string,
+    ) =>
+      onSubmit(
+        text,
+        attachments,
+        undefined,
+        undefined,
+        selectedSkills,
+        mentions,
+        displayText,
+      ),
+    [onSubmit],
   );
 
   const chatMessages = messages;
@@ -1669,16 +1769,9 @@ export function App() {
       />
 
       <div className="flex-1 flex overflow-hidden">
-        <AnimatePresence mode="wait">
+        <>
           {isSidebarOpen && view !== "settings" && (
-            <motion.div
-              key="main-sidebar"
-              initial={{ width: 0, opacity: 0, x: -20 }}
-              animate={{ width: 240, opacity: 1, x: 0 }}
-              exit={{ width: 0, opacity: 0, x: -20 }}
-              transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-              className="flex-shrink-0 h-full flex overflow-hidden"
-            >
+            <div className="flex h-full w-[240px] flex-shrink-0 overflow-hidden">
               <Sidebar
                 sessions={sessions}
                 projects={projects}
@@ -1711,37 +1804,25 @@ export function App() {
                 onLogout={onLogout}
                 runningSessionIds={runningSessionIds}
               />
-            </motion.div>
+            </div>
           )}
           {isSidebarOpen && view === "settings" && (
-            <motion.div
-              key="settings-sidebar"
-              initial={{ width: 0, opacity: 0, x: -20 }}
-              animate={{ width: 240, opacity: 1, x: 0 }}
-              exit={{ width: 0, opacity: 0, x: -20 }}
-              transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-              className="flex-shrink-0 h-full flex overflow-hidden"
-            >
-              <SettingsSidebar 
-                onBack={goBack} 
-                activeCategoryId={activeSettingsCategory} 
-                onSelectCategory={setActiveSettingsCategory} 
-              />
-            </motion.div>
+            <div className="flex h-full w-[240px] flex-shrink-0 overflow-hidden">
+              <Suspense fallback={<div className="h-full w-[240px] bg-sidebar-bg" />}>
+                <SettingsSidebar
+                  onBack={goBack}
+                  activeCategoryId={activeSettingsCategory}
+                  onSelectCategory={setActiveSettingsCategory}
+                />
+              </Suspense>
+            </div>
           )}
-        </AnimatePresence>
+        </>
 
         <main className="flex-1 bg-white rounded-tl-2xl border-l border-t border-border-theme flex overflow-hidden shadow-sm relative">
-          <AnimatePresence mode="wait">
+          <Suspense fallback={<ViewLoading />}>
             {view === "start" && (
-              <motion.div 
-                key="start" 
-                initial={{ opacity: 0, y: 15 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                exit={{ opacity: 0, y: -15 }} 
-                transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-                className="w-full h-full flex flex-col"
-              >
+              <div className="view-frame">
                 <StartView 
                   projectName={activeProjectName} 
                   activeProjectPath={activeProjectPath}
@@ -1751,24 +1832,15 @@ export function App() {
                   onAddProject={onAddProject}
                   onSubmit={onSubmit} 
                 />
-              </motion.div>
+              </div>
             )}
             {view === "chat" && (
-              <motion.div 
-                key="chat" 
-                initial={{ opacity: 0, y: 15 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                exit={{ opacity: 0, y: -15 }} 
-                transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-                className="w-full h-full flex flex-col"
-              >
+              <div className="view-frame">
                 <ChatView
                   sessionId={activeId}
                   sessionKey={activeId ?? activePendingRunKey ?? null}
                   messages={chatMessages}
-                  onSend={(text, attachments, selectedSkills, mentions, displayText) =>
-                    onSubmit(text, attachments, undefined, undefined, selectedSkills, mentions, displayText)
-                  }
+                  onSend={onChatSend}
                   onFork={onForkSession}
                   onRewind={onRewindSession}
                   onExport={onExportSession}
@@ -1794,88 +1866,59 @@ export function App() {
                   projectMapOpenSignal={projectMapOpenSignal}
                   contextUsage={activeContextUsage}
                 />
-              </motion.div>
+              </div>
             )}
             {view === "skills" && (
-              <motion.div 
-                key="skills" 
-                initial={{ opacity: 0, y: 15 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                exit={{ opacity: 0, y: -15 }} 
-                transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-                className="w-full h-full flex flex-col"
-              >
+              <div className="view-frame">
                 <SkillsView />
-              </motion.div>
+              </div>
             )}
             {view === "knowledge" && (
-              <motion.div 
-                key="knowledge" 
-                initial={{ opacity: 0, y: 15 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                exit={{ opacity: 0, y: -15 }} 
-                transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-                className="w-full h-full flex flex-col"
-              >
+              <div className="view-frame">
                 <KnowledgeView />
-              </motion.div>
+              </div>
             )}
             {view === "plugins" && (
-              <motion.div
-                key="plugins"
-                initial={{ opacity: 0, y: 15 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -15 }}
-                transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-                className="w-full h-full flex flex-col"
-              >
+              <div className="view-frame">
                 <PluginsView />
-              </motion.div>
+              </div>
             )}
             {view === "automation" && (
-              <motion.div 
-                key="automation" 
-                initial={{ opacity: 0, y: 15 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                exit={{ opacity: 0, y: -15 }} 
-                transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-                className="w-full h-full flex flex-col"
-              >
+              <div className="view-frame">
                 <AutomationView />
-              </motion.div>
+              </div>
             )}
             {view === "settings" && (
-              <motion.div 
-                key="settings" 
-                initial={{ opacity: 0, y: 15 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                exit={{ opacity: 0, y: -15 }} 
-                transition={{ type: "spring", bounce: 0, duration: 0.3 }}
-                className="w-full h-full flex flex-col"
-              >
+              <div className="view-frame">
                 <SettingsView activeCategoryId={activeSettingsCategory} />
-              </motion.div>
+              </div>
             )}
-          </AnimatePresence>
+          </Suspense>
         </main>
       </div>
 
       {/* Overlays */}
-      <SearchModal
-        isOpen={isSearchOpen}
-        onClose={() => setIsSearchOpen(false)}
-        sessions={sessions}
-        projects={projects}
-        onSelectSession={onSelect}
-      />
+      {isSearchOpen && (
+        <Suspense fallback={null}>
+          <SearchModal
+            isOpen={isSearchOpen}
+            onClose={() => setIsSearchOpen(false)}
+            sessions={sessions}
+            projects={projects}
+            onSelectSession={onSelect}
+          />
+        </Suspense>
+      )}
 
       {showOnboarding && (
-        <OnboardingWizard
-          onComplete={() => {
-            setShowOnboarding(false);
-            refreshSessions();
-          }}
-        />
+        <Suspense fallback={null}>
+          <OnboardingWizard
+            onComplete={() => {
+              setShowOnboarding(false);
+              refreshSessions();
+            }}
+          />
+        </Suspense>
       )}
 </div>
   );

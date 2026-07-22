@@ -1,5 +1,4 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { motion } from "framer-motion";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
@@ -45,9 +44,7 @@ function SegmentedControl({
             className={`relative flex items-center justify-center px-3 py-1 text-[12px] font-medium transition-colors rounded-md ${selected ? `text-text-base ${indicatorLayoutId ? '' : 'bg-white shadow-[0_1px_2px_rgb(0,0,0,0.1)]'}` : 'text-text-secondary hover:text-text-base'}`}
           >
             {selected && indicatorLayoutId && (
-              <motion.span
-                layoutId={indicatorLayoutId}
-                transition={{ type: "spring", bounce: 0, duration: 0.18 }}
+              <span
                 className="absolute inset-0 z-0 rounded-md bg-white shadow-[0_1px_2px_rgb(0,0,0,0.1)]"
               />
             )}
