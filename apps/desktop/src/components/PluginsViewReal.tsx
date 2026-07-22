@@ -31,6 +31,18 @@ import type {
   PluginOutputStyle,
   PluginScanReport,
 } from "../types";
+import { Button } from "./shadcn/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./shadcn/dialog";
+import { Input } from "./shadcn/input";
+import { Label } from "./shadcn/label";
+import { Textarea } from "./shadcn/textarea";
 
 type OriginFilter = "all" | "builtin" | "workspace" | "personal" | "marketplace";
 
@@ -473,22 +485,22 @@ export function PluginsView() {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <button className="toolbar-button" onClick={() => void load()} type="button">
+                <Button variant="outline" onClick={() => void load()}>
                   <FontAwesomeIcon icon={["fas", "rotate"]} />
                   <span>刷新</span>
-                </button>
-                <button className="toolbar-button" onClick={installFromDirectory} type="button">
+                </Button>
+                <Button variant="outline" onClick={installFromDirectory}>
                   <FontAwesomeIcon icon={["fas", "folder-open"]} />
                   <span>目录安装</span>
-                </button>
-                <button className="toolbar-button" onClick={installFromArchive} type="button">
+                </Button>
+                <Button variant="outline" onClick={installFromArchive}>
                   <FontAwesomeIcon icon={["fas", "file-zipper"]} />
                   <span>Zip 安装</span>
-                </button>
-                <button className="primary-button" onClick={() => setCreateOpen(true)} type="button">
+                </Button>
+                <Button onClick={() => setCreateOpen(true)}>
                   <FontAwesomeIcon icon={["fas", "plus"]} />
                   <span>创建</span>
-                </button>
+                </Button>
               </div>
             </div>
 
@@ -504,27 +516,23 @@ export function PluginsView() {
                   icon={["fas", "magnifying-glass"]}
                   className="absolute left-3 top-1/2 -translate-y-1/2 text-[12px] text-text-secondary"
                 />
-                <input
+                <Input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="搜索插件、能力或来源"
-                  className="h-10 w-full rounded-lg border border-border-theme bg-white pl-9 pr-3 text-[13px] outline-none focus:border-primary"
+                  className="pl-9"
                 />
               </div>
               <div className="flex flex-wrap gap-2">
                 {originTabs.map((tab) => (
-                  <button
+                  <Button
                     key={tab.id}
-                    type="button"
                     onClick={() => setOrigin(tab.id)}
-                    className={`rounded-lg px-3 py-2 text-[13px] ${
-                      origin === tab.id
-                        ? "bg-gray-100 text-text-base"
-                        : "text-text-secondary hover:bg-gray-50 hover:text-text-base"
-                    }`}
+                    variant={origin === tab.id ? "secondary" : "ghost"}
+                    size="sm"
                   >
                     {tab.label}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
@@ -650,10 +658,11 @@ function PluginRow({
 }) {
   return (
     <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border-theme px-3 py-3">
-      <button
+      <Button
         type="button"
         onClick={onOpen}
-        className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        variant="ghost"
+        className="h-auto min-w-0 flex-1 justify-start gap-3 px-0 py-0 text-left hover:bg-transparent"
       >
         <PluginIcon plugin={plugin} />
         <div className="min-w-0 flex-1">
@@ -671,19 +680,20 @@ function PluginRow({
             ))}
           </div>
         </div>
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
         disabled={busy || !plugin.available}
         onClick={() => onToggle(!plugin.enabled)}
-        className={`h-7 rounded-full px-3 text-[12px] ${
+        variant="secondary"
+        size="sm"
+        className={
           plugin.enabled
-            ? "bg-emerald-50 text-emerald-700"
-            : "bg-gray-100 text-text-secondary"
-        } disabled:opacity-40`}
+            ? "rounded-full bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+            : "rounded-full"
+        }
       >
         {busy ? "处理中" : plugin.enabled ? "已启用" : "已禁用"}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -708,14 +718,15 @@ function PluginDetail({
   return (
     <div className="h-full overflow-y-auto custom-scrollbar">
       <div className="mx-auto w-full max-w-[940px] px-8 py-8">
-        <button
-          type="button"
+        <Button
           onClick={onBack}
-          className="mb-8 flex items-center gap-2 text-[13px] text-text-secondary hover:text-text-base"
+          variant="ghost"
+          size="sm"
+          className="mb-8 px-0 hover:bg-transparent"
         >
           <FontAwesomeIcon icon={["fas", "chevron-left"]} className="text-[11px]" />
           插件列表
-        </button>
+        </Button>
 
         <div className="mb-8 flex flex-wrap items-start justify-between gap-5">
           <div className="flex min-w-0 items-center gap-4">
@@ -732,35 +743,31 @@ function PluginDetail({
           </div>
           <div className="flex flex-wrap gap-2">
             {plugin.update_available && (
-              <button
-                type="button"
+              <Button
                 disabled={busy}
                 onClick={onUpdate}
-                className="primary-button disabled:opacity-40"
               >
                 <FontAwesomeIcon icon={["fas", "cloud-arrow-down"]} />
                 <span>更新</span>
-              </button>
+              </Button>
             )}
-            <button
-              type="button"
+            <Button
               disabled={busy || !plugin.available}
               onClick={() => onToggle(!plugin.enabled)}
-              className="primary-button disabled:opacity-40"
             >
               <FontAwesomeIcon icon={plugin.enabled ? ["fas", "pause"] : ["fas", "play"]} />
               <span>{plugin.enabled ? "禁用" : "启用"}</span>
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
               onClick={onRemove}
-              className="toolbar-button text-red-600 hover:border-red-200 hover:bg-red-50"
+              variant="outline"
+              className="text-red-600 hover:border-red-200 hover:bg-red-50"
             >
               <FontAwesomeIcon icon={["fas", plugin.origin === "builtin" ? "pause" : "trash"]} />
               <span>
                 {plugin.origin === "builtin" || plugin.origin === "workspace" ? "禁用" : "卸载"}
               </span>
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -915,17 +922,22 @@ function ConfirmDialog({
       : "border-amber-200 bg-amber-50 text-amber-800";
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 px-5">
-      <div className="flex max-h-[88vh] w-full max-w-[640px] flex-col rounded-lg bg-white shadow-[0_24px_80px_rgba(15,23,42,0.24)]">
-        <div className="flex items-start justify-between gap-4 border-b border-border-theme px-6 py-5">
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose();
+      }}
+    >
+      <DialogContent className="max-w-[640px]">
+        <DialogHeader>
           <div>
-            <h2 className="text-xl font-semibold text-text-base">{action.title}</h2>
-            <p className="mt-1 text-[13px] text-text-secondary">{action.message}</p>
+            <DialogTitle>{action.title}</DialogTitle>
+            <DialogDescription>{action.message}</DialogDescription>
           </div>
-          <button type="button" className="icon-button" disabled={busy} onClick={onClose}>
+          <Button variant="ghost" size="icon" disabled={busy} onClick={onClose}>
             <FontAwesomeIcon icon={["fas", "xmark"]} />
-          </button>
-        </div>
+          </Button>
+        </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar px-6 py-5">
           <div className={`mb-5 rounded-lg border px-4 py-3 ${toneClass}`}>
@@ -956,23 +968,20 @@ function ConfirmDialog({
           )}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-border-theme px-6 py-4">
-          <button type="button" className="toolbar-button" disabled={busy} onClick={onClose}>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
             取消
-          </button>
-          <button
-            type="button"
-            className={`primary-button disabled:opacity-40 ${
-              action.tone === "danger" ? "bg-red-600 hover:bg-red-700" : ""
-            }`}
+          </Button>
+          <Button
+            variant={action.tone === "danger" ? "destructive" : "default"}
             disabled={busy}
             onClick={onConfirm}
           >
             {busy ? "处理中..." : action.submitLabel}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -997,10 +1006,10 @@ function MarketplacePanel({
     <section className="border-t border-border-theme pt-5">
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-[15px] font-semibold text-text-base">插件市场</h2>
-        <button type="button" className="toolbar-button" onClick={onAdd}>
+        <Button variant="outline" size="sm" onClick={onAdd}>
           <FontAwesomeIcon icon={["fas", "plus"]} />
           <span>添加市场</span>
-        </button>
+        </Button>
       </div>
       {marketplaces.length === 0 ? (
         <EmptyState text="暂无市场来源" />
@@ -1018,22 +1027,22 @@ function MarketplacePanel({
                 </div>
               </div>
               <div className="flex gap-2">
-                <button
-                  type="button"
-                  className="icon-button"
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={() => void onRefresh(marketplace.name)}
                   title="刷新"
                 >
                   <FontAwesomeIcon icon={["fas", "rotate"]} />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={() => void onRemove(marketplace.name)}
                   title="删除"
                 >
                   <FontAwesomeIcon icon={["fas", "trash"]} />
-                </button>
+                </Button>
               </div>
             </div>
           ))}
@@ -1079,13 +1088,8 @@ function MarketplacePanel({
                       </div>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    className={
-                      entry.installed && !entry.update_available
-                        ? "toolbar-button"
-                        : "primary-button"
-                    }
+                  <Button
+                    variant={entry.installed && !entry.update_available ? "outline" : "default"}
                     disabled={busy || !entry.installable}
                     onClick={() => void onInstall(entry)}
                     title={installHint || (entry.installable ? "安装插件" : "该来源不可安装")}
@@ -1097,7 +1101,7 @@ function MarketplacePanel({
                         : entry.installed
                           ? "重新安装"
                           : "安装"}
-                  </button>
+                  </Button>
                 </div>
               );
             })}
@@ -1128,34 +1132,30 @@ function CreateDialog({
       disabled={!draft.name?.trim()}
     >
       <Field label="名称">
-        <input
+        <Input
           value={draft.name || ""}
           onChange={(event) => onChange({ ...draft, name: event.target.value })}
-          className="form-input"
           placeholder="office-helper"
         />
       </Field>
       <Field label="说明">
-        <textarea
+        <Textarea
           value={draft.description || ""}
           onChange={(event) => onChange({ ...draft, description: event.target.value })}
-          className="form-textarea"
           placeholder="这个插件提供哪些技能、命令、MCP 或 hooks"
         />
       </Field>
       <Field label="目录">
-        <input
+        <Input
           value={draft.directory || ""}
           onChange={(event) => onChange({ ...draft, directory: event.target.value })}
-          className="form-input"
           placeholder="office-helper"
         />
       </Field>
       <Field label="分类">
-        <input
+        <Input
           value={draft.category || ""}
           onChange={(event) => onChange({ ...draft, category: event.target.value })}
-          className="form-input"
           placeholder="Developer Tools"
         />
       </Field>
@@ -1183,34 +1183,30 @@ function MarketplaceDialog({
       disabled={!draft.source.trim()}
     >
       <Field label="名称">
-        <input
+        <Input
           value={draft.name || ""}
           onChange={(event) => onChange({ ...draft, name: event.target.value })}
-          className="form-input"
           placeholder="openai-curated"
         />
       </Field>
       <Field label="来源">
-        <input
+        <Input
           value={draft.source}
           onChange={(event) => onChange({ ...draft, source: event.target.value })}
-          className="form-input"
           placeholder="G:/plugins 或 https://github.com/org/plugins.git"
         />
       </Field>
       <Field label="Git 引用">
-        <input
+        <Input
           value={draft.git_ref || ""}
           onChange={(event) => onChange({ ...draft, git_ref: event.target.value })}
-          className="form-input"
           placeholder="main"
         />
       </Field>
       <Field label="子路径">
-        <input
+        <Input
           value={draft.sparse_path || ""}
           onChange={(event) => onChange({ ...draft, sparse_path: event.target.value })}
-          className="form-input"
           placeholder="plugins/browser"
         />
       </Field>
@@ -1234,19 +1230,24 @@ function PluginScanDialog({
   const highCount = highRiskCount(report);
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 px-5">
-      <div className="flex max-h-[88vh] w-full max-w-[760px] flex-col rounded-lg bg-white shadow-[0_24px_80px_rgba(15,23,42,0.24)]">
-        <div className="flex items-start justify-between gap-4 border-b border-border-theme px-6 py-5">
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose();
+      }}
+    >
+      <DialogContent className="max-w-[760px]">
+        <DialogHeader>
           <div>
-            <h2 className="text-xl font-semibold text-text-base">{action.title}</h2>
-            <p className="mt-1 text-[13px] text-text-secondary">
+            <DialogTitle>{action.title}</DialogTitle>
+            <DialogDescription>
               安装前扫描会检查 manifest、权限声明、MCP、hooks 和文件风险。
-            </p>
+            </DialogDescription>
           </div>
-          <button type="button" className="icon-button" disabled={busy} onClick={onClose}>
+          <Button variant="ghost" size="icon" disabled={busy} onClick={onClose}>
             <FontAwesomeIcon icon={["fas", "xmark"]} />
-          </button>
-        </div>
+          </Button>
+        </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar px-6 py-5">
           <div
@@ -1384,23 +1385,18 @@ function PluginScanDialog({
           )}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-border-theme px-6 py-4">
-          <button type="button" className="toolbar-button" disabled={busy} onClick={onClose}>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
             {blocked ? "关闭" : "取消"}
-          </button>
+          </Button>
           {!blocked && (
-            <button
-              type="button"
-              className="primary-button disabled:opacity-40"
-              disabled={busy}
-              onClick={onConfirm}
-            >
+            <Button disabled={busy} onClick={onConfirm}>
               {busy ? "安装中..." : action.submitLabel}
-            </button>
+            </Button>
           )}
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1420,30 +1416,30 @@ function Modal({
   disabled?: boolean;
 }) {
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/25 px-5">
-      <div className="w-full max-w-[620px] rounded-lg bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.22)]">
-        <div className="mb-5 flex items-center justify-between">
-          <h2 className="text-xl font-semibold text-text-base">{title}</h2>
-          <button type="button" className="icon-button" onClick={onClose}>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <Button variant="ghost" size="icon" onClick={onClose}>
             <FontAwesomeIcon icon={["fas", "xmark"]} />
-          </button>
-        </div>
-        <div className="space-y-4">{children}</div>
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" className="toolbar-button" onClick={onClose}>
+          </Button>
+        </DialogHeader>
+        <div className="space-y-4 px-6 py-5">{children}</div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
             取消
-          </button>
-          <button
-            type="button"
-            className="primary-button disabled:opacity-40"
-            disabled={disabled}
-            onClick={onSubmit}
-          >
+          </Button>
+          <Button disabled={disabled} onClick={onSubmit}>
             {submitLabel}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1527,10 +1523,10 @@ function Info({ label, value, mono }: { label: string; value: string; mono?: boo
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <label className="block">
-      <div className="mb-1.5 text-[12px] font-medium text-text-secondary">{label}</div>
+    <Label className="block">
+      <div className="mb-1.5">{label}</div>
       {children}
-    </label>
+    </Label>
   );
 }
 
