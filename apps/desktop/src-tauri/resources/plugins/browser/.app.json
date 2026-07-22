@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "id": "browser-panel",
+      "title": "Browser",
+      "description": "Open the built-in browser panel",
+      "placement": "right-sidebar",
+      "component": "builtin:browser",
+      "icon": "browser",
+      "category": "Developer Tools"
+    }
+  ]
+}

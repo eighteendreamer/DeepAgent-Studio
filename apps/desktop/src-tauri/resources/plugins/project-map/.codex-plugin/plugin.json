@@ -1,0 +1,21 @@
+{
+  "name": "project-map",
+  "version": "0.1.0",
+  "description": "Inspect project structure, impact, and code relationships.",
+  "author": {
+    "name": "DeepAgent Studio"
+  },
+  "keywords": ["project-map", "code-map", "impact", "graph"],
+  "commands": "commands",
+  "apps": ".app.json",
+  "interface": {
+    "displayName": "Project Map",
+    "shortDescription": "Explore project structure and impact",
+    "longDescription": "Project Map declares the built-in code graph, file relationship, and impact-analysis workspace panel.",
+    "developerName": "DeepAgent Studio",
+    "category": "Developer Tools",
+    "capabilities": ["App", "Read", "Analysis"],
+    "permissions": ["file.read", "project.index"],
+    "brandColor": "#ca8a04"
+  }
+}

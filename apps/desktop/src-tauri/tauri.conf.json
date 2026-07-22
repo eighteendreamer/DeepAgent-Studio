@@ -30,6 +30,7 @@
     "createUpdaterArtifacts": true,
     "icon": ["icons/icon.ico", "icons/icon.icns", "icons/icon.png"],
     "resources": [
+      "resources/plugins/**/*",
       "resources/skills/**/*",
       "resources/sandbox/**/*"
     ],

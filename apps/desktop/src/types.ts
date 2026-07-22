@@ -343,6 +343,13 @@ export interface McpServer {
   env: Record<string, string>;
   url: string | null;
   headers: Record<string, string>;
+  source: "user" | "plugin" | string;
+  source_plugin_id?: string | null;
+  source_plugin_name?: string | null;
+  declared_name?: string | null;
+  source_path?: string | null;
+  read_only: boolean;
+  conflict?: string | null;
 }
 
 /** A tool exposed by a connected MCP server (mirrors McpToolInfoDto). */
@@ -357,6 +364,156 @@ export interface McpConnectionStatus {
   status: "connected" | "failed" | "disabled";
   error: string | null;
   tools: McpToolInfo[];
+}
+
+export interface PluginLoadError {
+  kind: string;
+  plugin?: string | null;
+  source: string;
+  path?: string | null;
+  component?: string | null;
+  message: string;
+}
+
+export interface PluginSourceInfo {
+  kind: string;
+  name: string;
+  marketplace?: string | null;
+  path?: string | null;
+}
+
+export interface PluginDependent {
+  id: string;
+  name: string;
+  display_name: string;
+}
+
+export interface Plugin {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  long_description?: string | null;
+  version?: string | null;
+  local_version?: string | null;
+  developer?: string | null;
+  source: PluginSourceInfo;
+  origin: string;
+  path?: string | null;
+  manifest_path?: string | null;
+  installed: boolean;
+  enabled: boolean;
+  available: boolean;
+  update_available: boolean;
+  overridden_by?: string | null;
+  category?: string | null;
+  keywords: string[];
+  capabilities: string[];
+  permissions: string[];
+  skill_count: number;
+  mcp_server_count: number;
+  hook_count: number;
+  command_count: number;
+  app_count: number;
+  output_style_count: number;
+  icon_path?: string | null;
+  logo_path?: string | null;
+  brand_color?: string | null;
+  required_by: PluginDependent[];
+  errors: PluginLoadError[];
+}
+
+export interface PluginApp {
+  plugin_id: string;
+  plugin_name: string;
+  id: string;
+  title: string;
+  description?: string | null;
+  placement: string;
+  component: string;
+  icon?: string | null;
+  category?: string | null;
+  source_path?: string | null;
+}
+
+export interface PluginOutputStyle {
+  plugin_id: string;
+  plugin_name: string;
+  name: string;
+  description: string;
+  prompt: string;
+  force_for_plugin?: boolean | null;
+  source_path?: string | null;
+}
+
+export interface CreatePluginDraft {
+  name: string;
+  description?: string | null;
+  directory?: string | null;
+  category?: string | null;
+}
+
+export interface PluginMarketplace {
+  name: string;
+  source: string;
+  git_ref?: string | null;
+  sparse_path?: string | null;
+  install_location?: string | null;
+  last_updated?: string | null;
+}
+
+export interface PluginMarketplaceEntry {
+  marketplace: string;
+  name: string;
+  display_name: string;
+  description: string;
+  version?: string | null;
+  category?: string | null;
+  source_kind: string;
+  source: string;
+  installable: boolean;
+  install_block_reason?: string | null;
+  installed: boolean;
+  enabled: boolean;
+  update_available: boolean;
+  policy_installation?: string | null;
+  policy_authentication?: string | null;
+  authentication_required: boolean;
+  authentication_hint?: string | null;
+}
+
+export interface AddPluginMarketplaceInput {
+  name?: string | null;
+  source: string;
+  git_ref?: string | null;
+  sparse_path?: string | null;
+}
+
+export interface PluginRiskItem {
+  severity: string;
+  category: string;
+  title: string;
+  detail: string;
+  path?: string | null;
+}
+
+export interface PluginComponentSummary {
+  kind: string;
+  name: string;
+  description: string;
+  path?: string | null;
+  details: string[];
+}
+
+export interface PluginScanReport {
+  source_dir: string;
+  manifest_ok: boolean;
+  plugin_name?: string | null;
+  file_count: number;
+  total_bytes: number;
+  component_summaries: PluginComponentSummary[];
+  risks: PluginRiskItem[];
+  errors: string[];
 }
 
 /** One row in a structured slash-command panel (mirrors SlashPanelItem). */

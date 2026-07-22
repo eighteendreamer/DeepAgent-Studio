@@ -1092,12 +1092,16 @@ export function ChatView({
   }, []);
 
   const handleOpenBottomPlugin = (c: PluginToolCard) => {
+    const tabOptions =
+      c.pluginAppId || c.pluginId
+        ? { id: c.id ? `${c.id}-${Date.now()}` : undefined, title: c.title }
+        : undefined;
     const newTab = createPluginTab(c.type, {
       activeProjectPath,
       envMode,
       selectedConnection,
       t,
-    });
+    }, tabOptions);
     setBottomTabs([...bottomTabs, newTab]);
     setActiveBottomTabId(newTab.id);
   };
@@ -1118,12 +1122,16 @@ export function ChatView({
   };
 
   const handleOpenSidebarPlugin = (c: PluginToolCard) => {
+    const tabOptions =
+      c.pluginAppId || c.pluginId
+        ? { id: c.id ? `${c.id}-${Date.now()}` : undefined, title: c.title }
+        : undefined;
     const newTab = createPluginTab(c.type, {
       activeProjectPath,
       envMode,
       selectedConnection,
       t,
-    });
+    }, tabOptions);
     setSidebarTabs((tabs) => [...tabs, newTab]);
     setActiveSidebarTabId(newTab.id);
   };

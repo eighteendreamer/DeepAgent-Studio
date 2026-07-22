@@ -7,6 +7,7 @@ export type PluginType =
   | "files"
   | "chat"
   | "browser"
+  | "computer_use"
   | "terminal"
   | "project_map"
   | "recording"
@@ -25,6 +26,10 @@ export type PluginToolCard = {
   title: string;
   desc: string;
   type: PluginType;
+  id?: string;
+  pluginId?: string;
+  pluginAppId?: string;
+  component?: string;
 };
 
 export type PluginConnectionSummary = {

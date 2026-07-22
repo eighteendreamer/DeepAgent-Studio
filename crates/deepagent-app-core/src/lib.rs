@@ -27,6 +27,13 @@ pub mod mcp_service;
 pub mod office_service;
 pub mod permissions_prompt;
 pub mod plan_mode_reminder;
+pub mod plugin_dependency;
+pub mod plugin_loader;
+pub mod plugin_manifest;
+pub mod plugin_marketplace;
+pub mod plugin_runtime;
+pub mod plugin_security;
+pub mod plugin_service;
 pub mod project_map_service;
 pub mod project_service;
 pub mod recording_service;
@@ -55,7 +62,9 @@ pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
 pub use archive_service::ArchiveService;
 pub use attachment_service::AttachmentService;
 pub use chat_service::ChatService;
-pub use commands::{builtin_commands, commands_from_roots, filter_commands};
+pub use commands::{
+    builtin_commands, commands_from_roots, commands_from_roots_and_plugins, filter_commands,
+};
 pub use cost_service::{BudgetConfig, CostRecord, CostService, CostSummary, ModelPricing};
 pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
 pub use doctor::{format_diagnostics, run_diagnostics, DiagStatus, DiagnosticResult};
@@ -80,6 +89,16 @@ pub use knowledge_service::{
 };
 pub use mcp_service::{McpConnectionStatusDto, McpServerDto, McpService, McpToolInfoDto};
 pub use office_service::{markdown_to_docspec, DocBlock, DocSpec, OfficeService};
+pub use plugin_loader::{PluginLoadError, PluginOrigin, PluginRoots};
+pub use plugin_marketplace::{
+    AddPluginMarketplaceDto, PluginMarketplaceDto, PluginMarketplaceEntryDto,
+};
+pub use plugin_runtime::{
+    PluginAgentRoot, PluginAppEntry, PluginCommandRoot, PluginMcpServerSource,
+    PluginOutputStyleEntry, PluginRuntimeError, PluginRuntimeProjection,
+};
+pub use plugin_security::{PluginComponentSummaryDto, PluginRiskItemDto, PluginScanReportDto};
+pub use plugin_service::{CreatePluginDraftDto, PluginDto, PluginService, PluginSourceDto};
 pub use project_map_service::{
     ProjectMapEdgeDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto,
     ProjectMapNeighborDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,

@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "id": "side-chat",
+      "title": "Side Chat",
+      "description": "Open the side chat panel",
+      "placement": "right-sidebar",
+      "component": "builtin:side-chat",
+      "icon": "chat",
+      "category": "Productivity"
+    }
+  ]
+}

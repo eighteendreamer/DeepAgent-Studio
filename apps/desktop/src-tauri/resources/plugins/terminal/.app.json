@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "id": "terminal",
+      "title": "Terminal",
+      "description": "Open the integrated terminal",
+      "placement": "right-sidebar",
+      "component": "builtin:terminal",
+      "icon": "terminal",
+      "category": "Developer Tools"
+    }
+  ]
+}

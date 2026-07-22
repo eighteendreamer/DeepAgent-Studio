@@ -67,7 +67,19 @@ function emptyDraft(): McpServer {
     env: {},
     url: "",
     headers: {},
+    source: "user",
+    source_plugin_id: null,
+    source_plugin_name: null,
+    declared_name: null,
+    source_path: null,
+    read_only: false,
+    conflict: null,
   };
+}
+
+function sourceLabel(server: McpServer): string {
+  if (server.source !== "plugin") return "用户配置";
+  return `插件：${server.source_plugin_name || server.source_plugin_id || "unknown"}`;
 }
 
 export function MCPSettings() {
@@ -121,6 +133,7 @@ export function MCPSettings() {
   }
 
   function openAdd(existing?: McpServer) {
+    if (existing?.read_only) return;
     const d = existing ? { ...existing } : emptyDraft();
     setDraft(d);
     setEnvPairs(Object.entries(d.env).map(([key, value]) => ({ key, value })));
@@ -130,12 +143,15 @@ export function MCPSettings() {
   }
 
   async function onToggle(s: McpServer) {
+    if (s.read_only) return;
     await setMcpServerEnabled(s.name, !s.enabled).catch(() => {});
     await refresh();
     refreshStatuses();
   }
 
-  async function onRemove(name: string) {
+  async function onRemove(server: McpServer) {
+    if (server.read_only) return;
+    const name = server.name;
     await removeMcpServer(name).catch(() => {});
     await refresh();
     refreshStatuses();
@@ -148,6 +164,13 @@ export function MCPSettings() {
     }
     return {
       ...draft,
+      source: "user",
+      source_plugin_id: null,
+      source_plugin_name: null,
+      declared_name: null,
+      source_path: null,
+      read_only: false,
+      conflict: null,
       env,
       args: draft.args.filter((a) => a.trim() !== ""),
       command: draft.transport === "stdio" ? draft.command : null,
@@ -465,9 +488,22 @@ export function MCPSettings() {
                           {s.name}
                         </span>
                         {st && <StatusBadge status={st.status} />}
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            s.source === "plugin"
+                              ? "bg-blue-50 text-blue-600"
+                              : "bg-gray-100 text-gray-500"
+                          }`}
+                          title={s.source_path ?? undefined}
+                        >
+                          {sourceLabel(s)}
+                        </span>
                       </div>
                       <div className="text-[11px] text-text-secondary truncate mt-0.5">
                         {s.transport} · {s.transport === "stdio" ? s.command : s.url}
+                        {s.source === "plugin" && s.declared_name && s.declared_name !== s.name && (
+                          <span className="ml-2">declared: {s.declared_name}</span>
+                        )}
                         {canExpand && (
                           <button
                             className="ml-2 text-blue-500 hover:underline"
@@ -486,23 +522,35 @@ export function MCPSettings() {
                           {st.error}
                         </div>
                       )}
+                      {s.conflict && (
+                        <div className="text-[11px] text-amber-600 truncate mt-0.5" title={s.conflict}>
+                          {s.conflict}
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center space-x-4 flex-shrink-0">
-                      <button
-                        className="text-gray-400 hover:text-text-base transition-colors"
-                        title={t("settings.mcp.edit")}
-                        onClick={() => openAdd(s)}
-                      >
-                        <FontAwesomeIcon icon={["fas", "gear"]} className="text-[14px]" />
-                      </button>
-                      <button
-                        className="text-gray-400 hover:text-red-500 transition-colors"
-                        title={t("settings.mcp.delete")}
-                        onClick={() => onRemove(s.name)}
-                      >
-                        <FontAwesomeIcon icon={["fas", "minus"]} className="text-[14px]" />
-                      </button>
-                      <ToggleSwitch checked={s.enabled} onChange={() => onToggle(s)} />
+                      {!s.read_only && (
+                        <>
+                          <button
+                            className="text-gray-400 hover:text-text-base transition-colors"
+                            title={t("settings.mcp.edit")}
+                            onClick={() => openAdd(s)}
+                          >
+                            <FontAwesomeIcon icon={["fas", "gear"]} className="text-[14px]" />
+                          </button>
+                          <button
+                            className="text-gray-400 hover:text-red-500 transition-colors"
+                            title={t("settings.mcp.delete")}
+                            onClick={() => onRemove(s)}
+                          >
+                            <FontAwesomeIcon icon={["fas", "minus"]} className="text-[14px]" />
+                          </button>
+                          <ToggleSwitch checked={s.enabled} onChange={() => onToggle(s)} />
+                        </>
+                      )}
+                      {s.read_only && (
+                        <span className="text-[11px] text-text-secondary">在插件页管理</span>
+                      )}
                     </div>
                   </div>
                   {isOpen && canExpand && (

@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "id": "meeting-recorder",
+      "title": "Meeting Recorder",
+      "description": "Record and summarize meetings",
+      "placement": "right-sidebar",
+      "component": "builtin:recording",
+      "icon": "microphone",
+      "category": "Productivity"
+    }
+  ]
+}

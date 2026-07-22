@@ -1,0 +1,21 @@
+{
+  "name": "browser",
+  "version": "0.1.0",
+  "description": "Control the in-app browser with DeepAgent.",
+  "author": {
+    "name": "DeepAgent Studio"
+  },
+  "keywords": ["browser", "web", "testing"],
+  "commands": "commands",
+  "apps": ".app.json",
+  "interface": {
+    "displayName": "Browser",
+    "shortDescription": "Control the in-app browser",
+    "longDescription": "Browser groups the built-in web preview and browser-control workflows for navigation, inspection, screenshots, and local UI testing.",
+    "developerName": "DeepAgent Studio",
+    "category": "Developer Tools",
+    "capabilities": ["App", "Read", "Interactive"],
+    "permissions": ["browser.control", "page.read", "screenshot"],
+    "brandColor": "#2563eb"
+  }
+}

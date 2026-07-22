@@ -60,6 +60,7 @@ pub struct SkillActivationDto {
 pub struct SkillsService {
     manager: SkillManager,
     roots: Option<SkillsRoots>,
+    plugin_roots: Vec<PathBuf>,
 }
 
 impl SkillsService {
@@ -71,6 +72,7 @@ impl SkillsService {
         Ok(Self {
             manager,
             roots: None,
+            plugin_roots: Vec::new(),
         })
     }
 
@@ -86,12 +88,13 @@ impl SkillsService {
     /// error.
     pub fn open_v2(roots: SkillsRoots) -> Result<Self> {
         Ok(Self {
-            manager: Self::build_v2_manager(&roots)?,
+            manager: Self::build_v2_manager(&roots, &[])?,
             roots: Some(roots),
+            plugin_roots: Vec::new(),
         })
     }
 
-    fn build_v2_manager(roots: &SkillsRoots) -> Result<SkillManager> {
+    fn build_v2_manager(roots: &SkillsRoots, plugin_roots: &[PathBuf]) -> Result<SkillManager> {
         // The legacy install/uninstall path needs an install_dir; the
         // marketplace path is the natural place to land newly-installed skills.
         let mut manager = SkillManager::new(None, &roots.marketplace);
@@ -130,6 +133,11 @@ impl SkillsService {
                 manager.register(skill);
             }
         }
+        for root in plugin_roots {
+            for skill in loader::discover_recursive(root, SkillOrigin::Plugin, MAX_DEPTH)? {
+                manager.register(skill);
+            }
+        }
         Ok(manager)
     }
 
@@ -138,6 +146,7 @@ impl SkillsService {
         Self {
             manager,
             roots: None,
+            plugin_roots: Vec::new(),
         }
     }
 
@@ -152,14 +161,29 @@ impl SkillsService {
         &self.manager
     }
 
+    pub fn plugin_roots(&self) -> &[PathBuf] {
+        &self.plugin_roots
+    }
+
     /// Reload all skills from disk.
     pub fn reload(&mut self) -> Result<usize> {
         if let Some(roots) = &self.roots {
-            self.manager = Self::build_v2_manager(roots)?;
+            self.manager = Self::build_v2_manager(roots, &self.plugin_roots)?;
             Ok(self.manager.registry().len())
         } else {
             self.manager.load_all()
         }
+    }
+
+    /// Replace the runtime plugin skill roots and reload the registry when
+    /// they changed. Plugin skills are registered after workspace skills, so an
+    /// enabled plugin can intentionally override a lower-priority same-id skill.
+    pub fn set_plugin_roots(&mut self, roots: Vec<PathBuf>) -> Result<usize> {
+        if self.plugin_roots == roots {
+            return Ok(self.manager.registry().len());
+        }
+        self.plugin_roots = roots;
+        self.reload()
     }
 
     /// List all known skills as DTOs (sorted by id).

@@ -17,8 +17,8 @@ interface Props {
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onShowLauncher?: () => void;
-  availablePlugins?: { type: string; icon: IconProp; title: string; desc: string }[];
-  onSelectPlugin?: (plugin: { type: string; icon: IconProp; title: string; desc: string }) => void;
+  availablePlugins?: { id?: string; type: string; icon: IconProp; title: string; desc: string }[];
+  onSelectPlugin?: (plugin: { id?: string; type: string; icon: IconProp; title: string; desc: string }) => void;
   extraActions?: ReactNode;
   reserveRightActionsSpace?: boolean;
   className?: string;
@@ -36,6 +36,10 @@ const FALLBACK_TOOL_NAMES: Record<string, string> = {
 
 function toolLabel(type: string) {
   return FALLBACK_TOOL_NAMES[type] ?? type;
+}
+
+function explicitLabel(value: string | undefined) {
+  return value && !value.startsWith("chatView.") ? value : "";
 }
 
 export function SidebarPluginHeader({
@@ -139,7 +143,7 @@ export function SidebarPluginHeader({
                 >
                   {availablePlugins.map((plugin) => (
                     <button
-                      key={plugin.type}
+                      key={plugin.id ?? `${plugin.type}:${plugin.title}`}
                       type="button"
                       onClick={() => {
                         setIsMenuOpen(false);
@@ -151,7 +155,10 @@ export function SidebarPluginHeader({
                         <FontAwesomeIcon icon={plugin.icon} className="text-[12px]" />
                       </div>
                       <span className="text-[13px] font-medium text-text-base">
-                        {t(`chatView.tools.${plugin.type}`, { defaultValue: toolLabel(plugin.type) })}
+                        {explicitLabel(plugin.title) ||
+                          t(`chatView.tools.${plugin.type}`, {
+                            defaultValue: toolLabel(plugin.type),
+                          })}
                       </span>
                     </button>
                   ))}

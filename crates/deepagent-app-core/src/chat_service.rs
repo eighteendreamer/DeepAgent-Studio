@@ -102,6 +102,76 @@ fn build_system_prompt(root: &std::path::Path) -> String {
     )
 }
 
+fn plugin_output_styles_prompt(
+    styles: &[crate::plugin_runtime::PluginOutputStyleEntry],
+) -> Option<String> {
+    let styles = styles
+        .iter()
+        .filter(|style| !style.prompt.trim().is_empty())
+        .collect::<Vec<_>>();
+    if styles.is_empty() {
+        return None;
+    }
+
+    if let Some(style) = styles
+        .iter()
+        .find(|style| style.force_for_plugin.unwrap_or(false))
+    {
+        let mut out = format!(
+            "# Plugin output style\nThe enabled plugin output style `{}` from plugin `{}` is forced for this run. Follow it for user-visible responses unless it conflicts with safety, tool-use rules, or the user's explicit request.\n\n<output-style name=\"{}\">\n{}\n</output-style>",
+            style.name,
+            style.plugin_name,
+            style.name,
+            truncate_prompt_block(&style.prompt, 6000),
+        );
+        let forced_count = styles
+            .iter()
+            .filter(|style| style.force_for_plugin.unwrap_or(false))
+            .count();
+        if forced_count > 1 {
+            out.push_str(&format!(
+                "\n\nNote: {forced_count} plugin output styles are forced; using the first loaded style."
+            ));
+        }
+        return Some(out);
+    }
+
+    let mut out = String::from(
+        "# Plugin output styles\nEnabled plugins provide these optional output styles. Use one only when the user explicitly asks for it by exact name or the active plugin workflow clearly calls for it. These style prompts do not override safety, tool-use rules, or the user's explicit request.",
+    );
+    for style in styles.iter().take(8) {
+        out.push_str(&format!(
+            "\n\n## `{}`\nPlugin: `{}`\nDescription: {}\n\n<output-style name=\"{}\">\n{}\n</output-style>",
+            style.name,
+            style.plugin_name,
+            single_line(&style.description),
+            style.name,
+            truncate_prompt_block(&style.prompt, 2500),
+        ));
+    }
+    if styles.len() > 8 {
+        out.push_str(&format!(
+            "\n\n{} additional plugin output style(s) are available through the plugin runtime but omitted from this prompt block.",
+            styles.len() - 8
+        ));
+    }
+    Some(out)
+}
+
+fn truncate_prompt_block(input: &str, cap: usize) -> String {
+    if input.chars().count() <= cap {
+        return input.trim().to_string();
+    }
+    let keep = cap.saturating_sub(32);
+    let mut out = input.trim().chars().take(keep).collect::<String>();
+    out.push_str("\n\n[truncated]");
+    out
+}
+
+fn single_line(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Today's date as `YYYY-MM-DD` (local time, falling back to UTC if the local
 /// offset can't be determined). Kept dependency-light via the `time` crate.
 fn current_date_string() -> String {
@@ -513,6 +583,9 @@ pub struct ChatService {
     /// Optional MCP server manager: when set, enabled MCP servers are connected
     /// at run time and their tools registered into the runtime tool registry.
     mcp: Option<Arc<crate::mcp_service::McpService>>,
+    /// Optional plugin manager: when set, enabled plugins contribute runtime
+    /// overlays for skills, MCP servers, hooks, slash commands, and agents.
+    plugins: Option<Arc<crate::plugin_service::PluginService>>,
     /// Optional project registry: when set, each run is rooted at (and the new
     /// session attached to) the **active** project's folder.
     projects: Option<Arc<crate::project_service::ProjectService>>,
@@ -769,6 +842,7 @@ impl ChatService {
             bash_allow: default_bash_allow(),
             pending: PendingApprovals::new(),
             mcp: None,
+            plugins: None,
             projects: None,
             knowledge: None,
             project_map: None,
@@ -806,6 +880,14 @@ impl ChatService {
     /// servers are connected and their tools live-registered on each run.
     pub fn with_mcp(mut self, mcp: Arc<crate::mcp_service::McpService>) -> Self {
         self.mcp = Some(mcp);
+        self
+    }
+
+    /// Attach a [`PluginService`](crate::plugin_service::PluginService) so
+    /// enabled plugins can contribute runtime overlays without mutating the
+    /// user's persisted MCP/hooks/skills settings.
+    pub fn with_plugins(mut self, plugins: Arc<crate::plugin_service::PluginService>) -> Self {
+        self.plugins = Some(plugins);
         self
     }
 
@@ -894,6 +976,34 @@ impl ChatService {
     pub fn reset_all_sent_skills(&self) {
         if let Ok(mut map) = self.skill_catalog_state.lock() {
             map.clear();
+        }
+    }
+
+    /// Re-read enabled plugins and update the shared skill registry's plugin
+    /// roots. Returns the projection so the same run can also use its MCP,
+    /// hooks, command, and agent overlays.
+    fn sync_plugin_runtime(
+        &self,
+    ) -> Result<Option<crate::plugin_runtime::PluginRuntimeProjection>> {
+        let Some(plugins) = &self.plugins else {
+            return Ok(None);
+        };
+        let projection = plugins.runtime_projection()?;
+        if let Some(skills) = &self.skills {
+            let mut svc = skills
+                .lock()
+                .map_err(|_| CoreError::other("skills lock poisoned"))?;
+            svc.set_plugin_roots(projection.skill_roots.clone())?;
+        }
+        Ok(Some(projection))
+    }
+
+    fn plugin_runtime_projection(
+        &self,
+    ) -> Result<Option<crate::plugin_runtime::PluginRuntimeProjection>> {
+        match &self.plugins {
+            Some(plugins) => plugins.runtime_projection().map(Some),
+            None => Ok(None),
         }
     }
 
@@ -1133,6 +1243,23 @@ impl ChatService {
     }
 
     fn find_dynamic_command(&self, name: &str) -> Result<Option<CommandDef>> {
+        if let Some((plugin_name, command_name)) = name.split_once(':') {
+            if let Some(projection) = self.plugin_runtime_projection()? {
+                for root in projection.command_roots {
+                    if root.plugin_name != plugin_name {
+                        continue;
+                    }
+                    let path = root.path.join(format!("{command_name}.md"));
+                    if !path.exists() {
+                        continue;
+                    }
+                    let mut def = deepagent_prompts::load_command_file(path)?;
+                    def.name = name.to_string();
+                    return Ok(Some(def));
+                }
+            }
+        }
+
         let mut roots = vec![self.effective_root(), self.workspace.clone()];
         roots.dedup();
         for dir in crate::commands::command_dirs(roots) {
@@ -1361,7 +1488,15 @@ impl ChatService {
             },
             SlashAction::Mcp => match &self.mcp {
                 Some(mcp) => {
-                    let servers = mcp.list()?;
+                    let plugin_projection = self.plugin_runtime_projection()?;
+                    let servers = match plugin_projection.as_ref() {
+                        Some(projection) if !projection.mcp_config.servers.is_empty() => mcp
+                            .list_with_plugin_overlay(
+                                projection.mcp_config.clone(),
+                                &projection.mcp_server_sources,
+                            )?,
+                        _ => mcp.list()?,
+                    };
                     if servers.is_empty() {
                         SlashPanel::new("MCP 服务器")
                             .subtitle("还没有 MCP 服务器")
@@ -1370,7 +1505,15 @@ impl ChatService {
                     } else {
                         // Live status + tools (connects enabled servers), merged
                         // with the persisted config for transport labels.
-                        let statuses = mcp.connection_status().await?;
+                        let statuses = match plugin_projection.as_ref() {
+                            Some(projection) if !projection.mcp_config.servers.is_empty() => mcp
+                                .connection_status_with_plugin_overlay(
+                                    projection.mcp_config.clone(),
+                                    &projection.mcp_server_sources,
+                                )
+                                .await?,
+                            _ => mcp.connection_status().await?,
+                        };
                         let enabled = servers.iter().filter(|s| s.enabled).count();
                         let items: Vec<SlashPanelItem> = servers
                             .iter()
@@ -1414,6 +1557,12 @@ impl ChatService {
                                     _ => {
                                         item = item.value(&s.transport);
                                     }
+                                }
+                                if s.read_only {
+                                    item = item.badge("插件");
+                                }
+                                if let Some(conflict) = &s.conflict {
+                                    item = item.value(conflict).status("warn");
                                 }
                                 item
                             })
@@ -1692,30 +1841,21 @@ impl ChatService {
             SlashAction::Agents => {
                 let mut roots = vec![self.effective_root(), self.workspace.clone()];
                 roots.dedup();
+                let plugin_projection = self.plugin_runtime_projection()?;
                 let mut items: Vec<SlashPanelItem> = Vec::new();
                 let mut count = 0usize;
                 for root in roots {
                     let dir = root.join(".deepagent").join("agents");
-                    let Ok(entries) = std::fs::read_dir(&dir) else {
-                        continue;
-                    };
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                            continue;
-                        }
-                        let Ok(content) = std::fs::read_to_string(&path) else {
-                            continue;
-                        };
-                        if let Some(def) = deepagent_prompts::AgentDef::parse(&content) {
-                            count += 1;
-                            if items.len() < 30 {
-                                items.push(
-                                    SlashPanelItem::new(def.name)
-                                        .value(truncate_desc(&def.description, 90)),
-                                );
-                            }
-                        }
+                    collect_agent_items(&dir, None, &mut items, &mut count);
+                }
+                if let Some(projection) = plugin_projection {
+                    for root in projection.agent_roots {
+                        collect_agent_items(
+                            &root.path,
+                            Some(root.plugin_name.as_str()),
+                            &mut items,
+                            &mut count,
+                        );
                     }
                 }
                 if count == 0 {
@@ -2535,6 +2675,8 @@ impl ChatService {
             return Ok(session_id);
         }
 
+        let plugin_projection = self.sync_plugin_runtime()?;
+
         let model_prompt = self
             .dynamic_command_prompt(prompt)?
             .unwrap_or_else(|| prompt.to_string());
@@ -2641,7 +2783,17 @@ impl ChatService {
         // non-fatal (logged + skipped) so one bad server never blocks a run.
         let mut registry = registry;
         if let Some(mcp) = &self.mcp {
-            match mcp.connected_registry().await {
+            let connect_result = match plugin_projection.as_ref() {
+                Some(projection) if !projection.mcp_config.servers.is_empty() => {
+                    mcp.connected_registry_with_plugin_overlay(
+                        projection.mcp_config.clone(),
+                        &projection.mcp_server_sources,
+                    )
+                    .await
+                }
+                _ => mcp.connected_registry().await,
+            };
+            match connect_result {
                 Ok((mcp_registry, failures)) => {
                     if !failures.is_empty() {
                         tracing::warn!(
@@ -2700,6 +2852,19 @@ impl ChatService {
                 self.build_registry(&root, access, None, None, Some(local_execution_mode))?
                     .0,
             );
+            let runtime_agents = collect_runtime_agent_definitions(
+                [root.clone(), self.workspace.clone()],
+                plugin_projection.as_ref(),
+            );
+            let task_agent_types: Vec<deepagent_builtins::TaskAgentType> = runtime_agents
+                .iter()
+                .map(RuntimeAgentDefinition::task_agent_type)
+                .collect();
+            let agent_definitions: std::collections::BTreeMap<String, RuntimeAgentDefinition> =
+                runtime_agents
+                    .into_iter()
+                    .map(|agent| (agent.type_name.clone(), agent))
+                    .collect();
             let parent_discovered_snapshot: std::collections::HashSet<String> =
                 tool_search_discovered
                     .lock()
@@ -2714,8 +2879,12 @@ impl ChatService {
                 tool_search_mode,
                 tool_search_auto_threshold: tool_search_threshold,
                 parent_discovered_snapshot,
+                agent_definitions,
             };
-            registry.register(Arc::new(TaskTool::new(runner, Vec::<String>::new())))?;
+            registry.register(Arc::new(TaskTool::new_with_agent_types(
+                runner,
+                task_agent_types,
+            )))?;
         }
 
         // Knowledge capture: the `knowledge_write` tool is added to the MAIN
@@ -2815,6 +2984,24 @@ impl ChatService {
             Ok(_) => {}
             Err(e) => {
                 tracing::warn!(error = %e, "ignoring malformed hooks.json");
+            }
+        }
+        if let Some(projection) = plugin_projection.as_ref() {
+            if !projection.hook_definitions.is_empty() {
+                let runner: Arc<dyn HookCommandRunner> = Arc::new(SystemHookRunner);
+                let n = projection
+                    .hook_definitions
+                    .register_into(&mut hooks, runner);
+                tracing::info!(count = n, "registered external hooks from enabled plugins");
+            }
+            for error in &projection.errors {
+                tracing::warn!(
+                    plugin = error.plugin_id.as_str(),
+                    component = error.component.as_str(),
+                    path = error.path.as_deref().unwrap_or(""),
+                    message = error.message.as_str(),
+                    "plugin runtime projection error"
+                );
             }
         }
         deepagent_builtins::register_guard_hooks(
@@ -2917,6 +3104,12 @@ impl ChatService {
         // meta-channel (Phase 3C), so the model treats it as system metadata
         // rather than authentic user wording.
         let mut system_prompt = build_system_prompt(&root);
+        if let Some(projection) = plugin_projection.as_ref() {
+            if let Some(block) = plugin_output_styles_prompt(&projection.output_styles) {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&block);
+            }
+        }
         // Git context injection (Phase 2A): append a compact VCS snapshot after
         // the DYNAMIC boundary so the cacheable static prefix stays intact.
         // Best-effort: no git / non-repo yields nothing (backward compatible).
@@ -3253,12 +3446,19 @@ struct ChatSubagentRunner {
     /// Each `run()` call seeds a fresh `Arc<Mutex<HashSet>>` from this
     /// snapshot — sub-agent discoveries DON'T propagate back to the parent.
     parent_discovered_snapshot: std::collections::HashSet<String>,
+    /// Local and plugin-provided sub-agent definitions keyed by `subagent_type`.
+    agent_definitions: std::collections::BTreeMap<String, RuntimeAgentDefinition>,
 }
 
 #[async_trait::async_trait]
 impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
     async fn run(&self, request: deepagent_builtins::SubagentRequest) -> Result<String> {
         use deepagent_runtime::{ModelAgent, RunOutcome, RuntimeConfig, RuntimeEngine};
+
+        let agent_profile = request
+            .subagent_type
+            .as_deref()
+            .and_then(|agent_type| self.agent_definitions.get(agent_type));
 
         // Sub-agent gets a CLONE of the parent's discovered set so it starts
         // with the same active toolset, but writes here don't affect the
@@ -3284,22 +3484,15 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
         // it, with deferred-but-not-yet-discovered tools filtered out exactly
         // like the main run.
         let granted = PermissionSet::developer();
-        let tools: Vec<ToolSchema> = build_visible_tool_schemas(
+        let mut tools: Vec<ToolSchema> = build_visible_tool_schemas(
             &sub_registry,
             &granted,
             self.tool_search_mode,
             &sub_discovered,
         );
+        apply_runtime_agent_tool_filter(&mut tools, agent_profile);
 
-        let system = format!(
-            "{base}{boundary}# Sub-agent task\nYou are a focused sub-agent. Do exactly the \
-             delegated task and return a complete, self-contained final answer — the calling \
-             agent sees only your final message, not your intermediate steps.\n- Working \
-             directory: {cwd}",
-            base = crate::system_prompt::system_prompt_base(),
-            boundary = SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
-            cwd = self.root.display(),
-        );
+        let system = subagent_system_prompt(&self.root, agent_profile);
 
         // Ephemeral in-memory session: sub-agent runs are not persisted to the
         // main project DB (only the final result re-enters the main transcript
@@ -3334,6 +3527,220 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
             RunOutcome::Cancelled => Ok("sub-agent was cancelled.".to_string()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeAgentDefinition {
+    type_name: String,
+    source_label: String,
+    def: deepagent_prompts::AgentDef,
+}
+
+impl RuntimeAgentDefinition {
+    fn task_agent_type(&self) -> deepagent_builtins::TaskAgentType {
+        deepagent_builtins::TaskAgentType::new(self.type_name.clone(), self.def.description.clone())
+    }
+}
+
+fn collect_runtime_agent_definitions(
+    local_roots: impl IntoIterator<Item = PathBuf>,
+    plugin_projection: Option<&crate::plugin_runtime::PluginRuntimeProjection>,
+) -> Vec<RuntimeAgentDefinition> {
+    let mut definitions = Vec::new();
+    let mut seen_types = std::collections::HashSet::new();
+    let mut seen_local_roots = std::collections::HashSet::new();
+
+    for root in local_roots {
+        if seen_local_roots.insert(root.clone()) {
+            let dir = root.join(".deepagent").join("agents");
+            collect_runtime_agent_dir(&dir, None, &mut definitions, &mut seen_types);
+        }
+    }
+
+    if let Some(projection) = plugin_projection {
+        for root in &projection.agent_roots {
+            collect_runtime_agent_dir(
+                &root.path,
+                Some(root.plugin_name.as_str()),
+                &mut definitions,
+                &mut seen_types,
+            );
+        }
+    }
+
+    definitions
+}
+
+fn collect_runtime_agent_dir(
+    dir: &std::path::Path,
+    plugin_name: Option<&str>,
+    definitions: &mut Vec<RuntimeAgentDefinition>,
+    seen_types: &mut std::collections::HashSet<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("md"))
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(def) = deepagent_prompts::AgentDef::parse(&content) else {
+            continue;
+        };
+        let type_name = runtime_agent_type_name(plugin_name, &def.name);
+        if !seen_types.insert(type_name.clone()) {
+            continue;
+        }
+        let source_label = plugin_name
+            .map(|name| format!("plugin:{name}"))
+            .unwrap_or_else(|| "project".to_string());
+        definitions.push(RuntimeAgentDefinition {
+            type_name,
+            source_label,
+            def,
+        });
+    }
+}
+
+fn runtime_agent_type_name(plugin_name: Option<&str>, agent_name: &str) -> String {
+    match plugin_name {
+        Some(plugin) => format!("{plugin}:{agent_name}"),
+        None => agent_name.to_string(),
+    }
+}
+
+fn subagent_system_prompt(
+    root: &std::path::Path,
+    agent_profile: Option<&RuntimeAgentDefinition>,
+) -> String {
+    let mut system = format!(
+        "{base}{boundary}",
+        base = crate::system_prompt::system_prompt_base(),
+        boundary = SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    );
+
+    if let Some(agent) = agent_profile {
+        system.push_str("# Sub-agent identity\n");
+        system.push_str("- Agent type: ");
+        system.push_str(&agent.type_name);
+        system.push('\n');
+        system.push_str("- Source: ");
+        system.push_str(&agent.source_label);
+        system.push('\n');
+        system.push_str("- Description: ");
+        system.push_str(&agent.def.description);
+        system.push('\n');
+        if !agent.def.tools.is_empty() {
+            system.push_str("- Declared tools: ");
+            system.push_str(&agent.def.tools.join(", "));
+            system.push('\n');
+        }
+        if let Some(model) = agent.def.model.name() {
+            system.push_str("- Preferred model: ");
+            system.push_str(model);
+            system.push_str(" (host may still use the session model)\n");
+        }
+        let body = agent.def.body.trim();
+        if !body.is_empty() {
+            system.push('\n');
+            system.push_str(body);
+            system.push_str("\n\n");
+        }
+    }
+
+    system.push_str("# Sub-agent task\n");
+    system.push_str(
+        "You are a focused sub-agent. Do exactly the delegated task and return a complete, \
+         self-contained final answer - the calling agent sees only your final message, not \
+         your intermediate steps.\n- Working directory: ",
+    );
+    system.push_str(&root.display().to_string());
+    system
+}
+
+fn apply_runtime_agent_tool_filter(
+    tools: &mut Vec<ToolSchema>,
+    agent_profile: Option<&RuntimeAgentDefinition>,
+) {
+    let Some(agent) = agent_profile else {
+        return;
+    };
+    let Some(allowlist) = runtime_agent_tool_allowlist(&agent.def.tools) else {
+        return;
+    };
+    tools.retain(|tool| allowlist.contains(&tool.function.name));
+}
+
+fn runtime_agent_tool_allowlist(
+    declared_tools: &[String],
+) -> Option<std::collections::HashSet<String>> {
+    if declared_tools.is_empty() {
+        return None;
+    }
+    let mut allowlist = std::collections::HashSet::new();
+    for raw in declared_tools {
+        for name in normalize_runtime_agent_tool_name(raw) {
+            allowlist.insert(name);
+        }
+    }
+    Some(allowlist)
+}
+
+fn normalize_runtime_agent_tool_name(raw: &str) -> Vec<String> {
+    let name = raw
+        .trim()
+        .split_once('(')
+        .map(|(name, _)| name)
+        .unwrap_or(raw)
+        .trim();
+    if name.is_empty() {
+        return Vec::new();
+    }
+
+    let compact = name
+        .chars()
+        .filter(|c| *c != '_' && *c != '-' && !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let mapped = match compact.as_str() {
+        "bash" => Some("bash"),
+        "glob" => Some("glob"),
+        "grep" => Some("grep"),
+        "read" => Some("read_file"),
+        "write" => Some("write_file"),
+        "edit" => Some("edit_file"),
+        "multiedit" => Some("multi_edit"),
+        "ls" | "list" | "listdir" => Some("list_dir"),
+        "todowrite" => Some("todo_write"),
+        "tasklist" => Some("task_list"),
+        "webfetch" => Some("web_fetch"),
+        "websearch" => Some("web_search"),
+        "skill" => Some("skill"),
+        "askuserquestion" => Some("ask_user_question"),
+        "task" => None,
+        _ => None,
+    };
+
+    let mut names = Vec::new();
+    if let Some(mapped) = mapped {
+        names.push(mapped.to_string());
+    } else {
+        names.push(name.to_string());
+        let snake = deepagent_builtins::parse_tool_name(name).join("_");
+        if !snake.is_empty() && snake != name {
+            names.push(snake);
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Rebuild a plain conversation (user/assistant text turns) from a session's
@@ -3380,6 +3787,36 @@ fn parse_slash_invocation(line: &str) -> Option<(&str, &str)> {
         None
     } else {
         Some((name, args))
+    }
+}
+
+fn collect_agent_items(
+    dir: &std::path::Path,
+    plugin_name: Option<&str>,
+    items: &mut Vec<SlashPanelItem>,
+    count: &mut usize,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(def) = deepagent_prompts::AgentDef::parse(&content) {
+            *count += 1;
+            if items.len() < 30 {
+                let label = match plugin_name {
+                    Some(plugin) => format!("{plugin}:{}", def.name),
+                    None => def.name,
+                };
+                items.push(SlashPanelItem::new(label).value(truncate_desc(&def.description, 90)));
+            }
+        }
     }
 }
 
@@ -3977,6 +4414,63 @@ mod tests {
         settings.initialize("sk-test-1234").await.unwrap();
         let dir = tempfile::tempdir().unwrap();
         (db, settings, dir)
+    }
+
+    fn style_entry(
+        name: &str,
+        description: &str,
+        prompt: &str,
+        force_for_plugin: Option<bool>,
+    ) -> crate::plugin_runtime::PluginOutputStyleEntry {
+        crate::plugin_runtime::PluginOutputStyleEntry {
+            plugin_id: "writer@personal".to_string(),
+            plugin_name: "writer".to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            prompt: prompt.to_string(),
+            force_for_plugin,
+            source_path: None,
+        }
+    }
+
+    #[test]
+    fn plugin_output_styles_prompt_uses_forced_style() {
+        let block = plugin_output_styles_prompt(&[
+            style_entry(
+                "writer:plain",
+                "Plain style",
+                "Use plain language.",
+                Some(false),
+            ),
+            style_entry(
+                "writer:release",
+                "Release style",
+                "Write crisp release notes.",
+                Some(true),
+            ),
+        ])
+        .unwrap();
+
+        assert!(block.contains("writer:release"));
+        assert!(block.contains("forced for this run"));
+        assert!(block.contains("Write crisp release notes."));
+        assert!(!block.contains("Use plain language."));
+    }
+
+    #[test]
+    fn plugin_output_styles_prompt_lists_optional_styles() {
+        let block = plugin_output_styles_prompt(&[style_entry(
+            "writer:plain",
+            "Plain style\nwith whitespace",
+            "Use plain language.",
+            None,
+        )])
+        .unwrap();
+
+        assert!(block.contains("# Plugin output styles"));
+        assert!(block.contains("`writer:plain`"));
+        assert!(block.contains("Plain style with whitespace"));
+        assert!(block.contains("Use plain language."));
     }
 
     #[tokio::test]
@@ -4685,6 +5179,102 @@ mod tests {
             .unwrap();
         }
         reg
+    }
+
+    #[test]
+    fn runtime_agent_definitions_include_local_and_plugin_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let local_agents = project.join(".deepagent").join("agents");
+        std::fs::create_dir_all(&local_agents).unwrap();
+        std::fs::write(
+            local_agents.join("review.md"),
+            "---\nname: review\ndescription: Review project code\ntools: Read, Grep\n---\nReview carefully.",
+        )
+        .unwrap();
+
+        let plugin_agents = tmp.path().join("plugin-agents");
+        std::fs::create_dir_all(&plugin_agents).unwrap();
+        std::fs::write(
+            plugin_agents.join("inspect.md"),
+            "---\nname: inspect\ndescription: Inspect plugin-specific surfaces\n---\nInspect broadly.",
+        )
+        .unwrap();
+
+        let mut projection = crate::plugin_runtime::PluginRuntimeProjection::default();
+        projection
+            .agent_roots
+            .push(crate::plugin_runtime::PluginAgentRoot {
+                plugin_id: "audit-pack@workspace".to_string(),
+                plugin_name: "audit-pack".to_string(),
+                path: plugin_agents,
+            });
+
+        let definitions = collect_runtime_agent_definitions([project], Some(&projection));
+        let names: Vec<&str> = definitions
+            .iter()
+            .map(|agent| agent.type_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["review", "audit-pack:inspect"]);
+        let advertised: Vec<deepagent_builtins::TaskAgentType> = definitions
+            .iter()
+            .map(RuntimeAgentDefinition::task_agent_type)
+            .collect();
+        assert_eq!(advertised[0].name, "review");
+        assert_eq!(advertised[1].name, "audit-pack:inspect");
+        assert_eq!(
+            advertised[1].description,
+            "Inspect plugin-specific surfaces"
+        );
+    }
+
+    #[test]
+    fn subagent_system_prompt_includes_selected_agent_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let def = deepagent_prompts::AgentDef::parse(
+            "---\nname: inspect\ndescription: Inspect plugin-specific surfaces\ntools: Read, Grep\nmodel: inherit\n---\nUse the plugin inspection checklist.",
+        )
+        .unwrap();
+        let agent = RuntimeAgentDefinition {
+            type_name: "audit-pack:inspect".to_string(),
+            source_label: "plugin:audit-pack".to_string(),
+            def,
+        };
+
+        let prompt = subagent_system_prompt(tmp.path(), Some(&agent));
+        assert!(prompt.contains("Agent type: audit-pack:inspect"));
+        assert!(prompt.contains("plugin:audit-pack"));
+        assert!(prompt.contains("Declared tools: Read, Grep"));
+        assert!(prompt.contains("Use the plugin inspection checklist."));
+        assert!(prompt.contains(&tmp.path().display().to_string()));
+
+        let general = subagent_system_prompt(tmp.path(), None);
+        assert!(!general.contains("# Sub-agent identity"));
+        assert!(general.contains("# Sub-agent task"));
+    }
+
+    #[test]
+    fn runtime_agent_tool_filter_maps_claude_tool_names() {
+        let def = deepagent_prompts::AgentDef::parse(
+            "---\nname: focused\ndescription: Focus on code reading\ntools: Read, Grep, TodoWrite\n---\nRead only.",
+        )
+        .unwrap();
+        let agent = RuntimeAgentDefinition {
+            type_name: "focused".to_string(),
+            source_label: "project".to_string(),
+            def,
+        };
+        let mut tools = ["read_file", "grep", "todo_write", "bash", "write_file"]
+            .into_iter()
+            .map(|name| ToolSchema::function(name, "", serde_json::json!({"type": "object"})))
+            .collect::<Vec<_>>();
+
+        apply_runtime_agent_tool_filter(&mut tools, Some(&agent));
+        let names: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool.function.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["read_file", "grep", "todo_write"]);
     }
 
     #[test]

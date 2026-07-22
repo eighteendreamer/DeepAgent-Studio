@@ -104,13 +104,17 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   }, [isResizingBottom]);
 
   const handleOpenBottomPlugin = (c: PluginToolCard) => {
+    const tabOptions =
+      c.pluginAppId || c.pluginId
+        ? { id: c.id ? `${c.id}-${Date.now()}` : undefined, title: c.title }
+        : undefined;
     const newTab = createPluginTab(c.type, {
       activeProjectPath,
       envMode,
       selectedConnection:
         sshConnections.find((connection) => connection.id === selectedConnectionId) ?? null,
       t,
-    });
+    }, tabOptions);
     setBottomTabs([...bottomTabs, newTab]);
     setActiveBottomTabId(newTab.id);
   };
@@ -133,13 +137,17 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   };
 
   const handleOpenSidebarPlugin = (c: PluginToolCard) => {
+    const tabOptions =
+      c.pluginAppId || c.pluginId
+        ? { id: c.id ? `${c.id}-${Date.now()}` : undefined, title: c.title }
+        : undefined;
     const newTab = createPluginTab(c.type, {
       activeProjectPath,
       envMode,
       selectedConnection:
         sshConnections.find((connection) => connection.id === selectedConnectionId) ?? null,
       t,
-    });
+    }, tabOptions);
     setSidebarTabs((tabs) => [...tabs, newTab]);
     setActiveSidebarTabId(newTab.id);
   };

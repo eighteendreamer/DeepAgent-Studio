@@ -1,0 +1,21 @@
+{
+  "name": "files",
+  "version": "0.1.0",
+  "description": "Browse, inspect, and preview workspace files.",
+  "author": {
+    "name": "DeepAgent Studio"
+  },
+  "keywords": ["files", "workspace", "preview"],
+  "commands": "commands",
+  "apps": ".app.json",
+  "interface": {
+    "displayName": "Files",
+    "shortDescription": "Browse workspace files",
+    "longDescription": "Files declares the built-in workspace file browser, lightweight previews, and file selection workflows.",
+    "developerName": "DeepAgent Studio",
+    "category": "Productivity",
+    "capabilities": ["App", "Read", "Preview"],
+    "permissions": ["file.read"],
+    "brandColor": "#0f766e"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "terminal",
+  "version": "0.1.0",
+  "description": "Use the integrated project terminal.",
+  "author": {
+    "name": "DeepAgent Studio"
+  },
+  "keywords": ["terminal", "shell", "developer-tools"],
+  "commands": "commands",
+  "apps": ".app.json",
+  "interface": {
+    "displayName": "Terminal",
+    "shortDescription": "Open the integrated terminal",
+    "longDescription": "Terminal declares the built-in shell surface for running project commands in the active workspace.",
+    "developerName": "DeepAgent Studio",
+    "category": "Developer Tools",
+    "capabilities": ["App", "Interactive", "Execute"],
+    "permissions": ["terminal.use", "process.execute"],
+    "brandColor": "#334155"
+  }
+}

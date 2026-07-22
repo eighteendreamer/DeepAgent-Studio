@@ -9,7 +9,7 @@
 //! [`McpServiceConnect`] behind feature flags so the kernel workspace stays
 //! offline; the persisted config is always available.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use deepagent_core::clock::{Clock, SystemClock};
@@ -20,6 +20,8 @@ use deepagent_persistence::document_store::DocumentStore;
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
+
+use crate::plugin_runtime::PluginMcpServerSource;
 
 /// Document-store location for the MCP config.
 const MCP_COLLECTION: &str = "mcp";
@@ -72,6 +74,27 @@ pub struct McpServerDto {
     /// Request headers (sse/http/ws).
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    /// Runtime provenance: "user" for persisted config, "plugin" for overlays.
+    #[serde(default = "default_mcp_server_source")]
+    pub source: String,
+    /// Plugin id when this is contributed by an enabled plugin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_plugin_id: Option<String>,
+    /// Plugin display/name when this is contributed by an enabled plugin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_plugin_name: Option<String>,
+    /// Original server key inside the plugin's `.mcp.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_name: Option<String>,
+    /// Source manifest/config path when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    /// True for plugin-provided overlay entries. Manage the plugin instead.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Reason this overlay entry is present in the UI but skipped at runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<String>,
 }
 
 impl McpServerDto {
@@ -108,7 +131,32 @@ impl McpServerDto {
             env: cfg.env.clone(),
             url: cfg.url.clone(),
             headers: cfg.headers.clone(),
+            source: default_mcp_server_source(),
+            source_plugin_id: None,
+            source_plugin_name: None,
+            declared_name: None,
+            source_path: None,
+            read_only: false,
+            conflict: None,
         }
+    }
+
+    fn from_plugin_config(
+        name: &str,
+        cfg: &McpServerConfig,
+        source: Option<&PluginMcpServerSource>,
+        enabled: bool,
+        conflict: Option<String>,
+    ) -> Self {
+        let mut dto = Self::from_config(name, cfg, enabled);
+        dto.source = "plugin".to_string();
+        dto.source_plugin_id = source.map(|source| source.plugin_id.clone());
+        dto.source_plugin_name = source.map(|source| source.plugin_name.clone());
+        dto.declared_name = source.map(|source| source.declared_name.clone());
+        dto.source_path = source.and_then(|source| source.source_path.clone());
+        dto.read_only = true;
+        dto.conflict = conflict;
+        dto
     }
 
     fn to_config(&self) -> Result<McpServerConfig> {
@@ -123,6 +171,39 @@ impl McpServerDto {
         cfg.validate()?;
         Ok(cfg)
     }
+}
+
+fn default_mcp_server_source() -> String {
+    "user".to_string()
+}
+
+fn normalized_mcp_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+fn plugin_mcp_conflict_reason(
+    runtime_name: &str,
+    declared_name: &str,
+    user_names: &BTreeSet<String>,
+) -> Option<String> {
+    let runtime_key = normalized_mcp_name(runtime_name);
+    if user_names.contains(&runtime_key) {
+        return Some(format!(
+            "skipped because user MCP server '{runtime_name}' has priority"
+        ));
+    }
+    let declared_key = normalized_mcp_name(declared_name);
+    if user_names.contains(&declared_key) {
+        return Some(format!(
+            "skipped because user MCP server '{declared_name}' has priority"
+        ));
+    }
+    None
+}
+
+struct EffectiveMcpServer {
+    dto: McpServerDto,
+    config: McpServerConfig,
 }
 
 /// A tool exposed by a connected MCP server (name + description), surfaced in
@@ -194,17 +275,93 @@ impl McpService {
         store.put(MCP_COLLECTION, MCP_ID, &body, None, SystemClock.now())
     }
 
-    /// List all configured servers as DTOs (sorted by name).
-    pub fn list(&self) -> Result<Vec<McpServerDto>> {
-        let state = self.load_state()?;
-        Ok(state
+    fn user_entries(state: &McpState) -> Vec<EffectiveMcpServer> {
+        state
             .config
             .servers
             .iter()
             .map(|(name, cfg)| {
                 let enabled = state.enabled.get(name).copied().unwrap_or(true);
-                McpServerDto::from_config(name, cfg, enabled)
+                EffectiveMcpServer {
+                    dto: McpServerDto::from_config(name, cfg, enabled),
+                    config: cfg.clone(),
+                }
             })
+            .collect()
+    }
+
+    fn effective_entries_with_plugin_overlay(
+        &self,
+        overlay: McpConfig,
+        sources: &BTreeMap<String, PluginMcpServerSource>,
+    ) -> Result<Vec<EffectiveMcpServer>> {
+        let state = self.load_state()?;
+        let user_names = state
+            .config
+            .servers
+            .keys()
+            .map(|name| normalized_mcp_name(name))
+            .collect::<BTreeSet<_>>();
+        let mut entries = Self::user_entries(&state);
+        let mut active_names = entries
+            .iter()
+            .map(|entry| normalized_mcp_name(&entry.dto.name))
+            .collect::<BTreeSet<_>>();
+
+        for (runtime_name, server) in overlay.servers {
+            let source = sources.get(&runtime_name);
+            let declared_name = source
+                .map(|source| source.declared_name.as_str())
+                .unwrap_or(runtime_name.as_str());
+            let conflict = plugin_mcp_conflict_reason(&runtime_name, declared_name, &user_names)
+                .or_else(|| {
+                    let runtime_key = normalized_mcp_name(&runtime_name);
+                    if active_names.contains(&runtime_key) {
+                        Some(format!(
+                            "skipped because another MCP server already uses runtime name '{runtime_name}'"
+                        ))
+                    } else {
+                        None
+                    }
+                });
+            let enabled = conflict.is_none();
+            if enabled {
+                active_names.insert(normalized_mcp_name(&runtime_name));
+            }
+            entries.push(EffectiveMcpServer {
+                dto: McpServerDto::from_plugin_config(
+                    &runtime_name,
+                    &server,
+                    source,
+                    enabled,
+                    conflict,
+                ),
+                config: server,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// List all configured servers as DTOs (sorted by name).
+    pub fn list(&self) -> Result<Vec<McpServerDto>> {
+        let state = self.load_state()?;
+        Ok(Self::user_entries(&state)
+            .into_iter()
+            .map(|entry| entry.dto)
+            .collect())
+    }
+
+    /// List persisted user MCP servers plus enabled plugin overlay servers.
+    /// Plugin entries are read-only and include their plugin provenance.
+    pub fn list_with_plugin_overlay(
+        &self,
+        overlay: McpConfig,
+        sources: &BTreeMap<String, PluginMcpServerSource>,
+    ) -> Result<Vec<McpServerDto>> {
+        Ok(self
+            .effective_entries_with_plugin_overlay(overlay, sources)?
+            .into_iter()
+            .map(|entry| entry.dto)
             .collect())
     }
 
@@ -215,6 +372,11 @@ impl McpService {
 
     /// Add or update a server (upsert by name). Validates the config.
     pub fn upsert(&self, dto: McpServerDto) -> Result<McpServerDto> {
+        if dto.read_only || dto.source != "user" {
+            return Err(CoreError::invalid(
+                "plugin MCP servers are read-only; manage the owning plugin instead",
+            ));
+        }
         if dto.name.trim().is_empty() {
             return Err(CoreError::invalid("MCP server name must not be empty"));
         }
@@ -262,6 +424,41 @@ impl McpService {
         Ok(McpConfig { servers })
     }
 
+    /// Enabled user MCP config plus a runtime-only overlay, used by plugins.
+    /// Persisted user config wins on name collision; plugin callers should
+    /// namespace server names before passing the overlay.
+    pub fn enabled_config_with_overlay(&self, overlay: McpConfig) -> Result<McpConfig> {
+        let mut config = self.enabled_config()?;
+        for (name, server) in overlay.servers {
+            if config.servers.contains_key(&name) {
+                tracing::warn!(
+                    server = name.as_str(),
+                    "skipping plugin MCP overlay because a user MCP server has the same name"
+                );
+                continue;
+            }
+            config.servers.insert(name, server);
+        }
+        Ok(config)
+    }
+
+    /// Enabled user MCP config plus plugin overlay servers. User MCP entries
+    /// win both on the runtime key and on the plugin's declared server name,
+    /// even when the user entry is disabled.
+    pub fn enabled_config_with_plugin_overlay(
+        &self,
+        overlay: McpConfig,
+        sources: &BTreeMap<String, PluginMcpServerSource>,
+    ) -> Result<McpConfig> {
+        let servers = self
+            .effective_entries_with_plugin_overlay(overlay, sources)?
+            .into_iter()
+            .filter(|entry| entry.dto.enabled && entry.dto.conflict.is_none())
+            .map(|entry| (entry.dto.name, entry.config))
+            .collect();
+        Ok(McpConfig { servers })
+    }
+
     /// Connect every **enabled** server, run the `initialize` + `tools/list`
     /// handshake, and return a populated [`McpRegistry`] whose namespaced tools
     /// can be adapted into the runtime tool system (live tool registration).
@@ -272,7 +469,33 @@ impl McpService {
     /// one bad entry never blocks a chat run. Returns the registry plus the list
     /// of `(server, error)` pairs that failed, for surfacing in the UI.
     pub async fn connect_enabled(&self) -> Result<(McpRegistry, Vec<(String, String)>)> {
-        let mut config = self.enabled_config()?;
+        self.connect_config(self.enabled_config()?).await
+    }
+
+    /// Connect enabled user MCP servers plus a runtime-only overlay. This path
+    /// is intentionally not persisted and is used by enabled plugins.
+    pub async fn connect_enabled_with_overlay(
+        &self,
+        overlay: McpConfig,
+    ) -> Result<(McpRegistry, Vec<(String, String)>)> {
+        self.connect_config(self.enabled_config_with_overlay(overlay)?)
+            .await
+    }
+
+    /// Connect enabled user MCP servers plus plugin overlay servers.
+    pub async fn connect_enabled_with_plugin_overlay(
+        &self,
+        overlay: McpConfig,
+        sources: &BTreeMap<String, PluginMcpServerSource>,
+    ) -> Result<(McpRegistry, Vec<(String, String)>)> {
+        self.connect_config(self.enabled_config_with_plugin_overlay(overlay, sources)?)
+            .await
+    }
+
+    async fn connect_config(
+        &self,
+        mut config: McpConfig,
+    ) -> Result<(McpRegistry, Vec<(String, String)>)> {
         // Expand ${VAR} from the environment (headers/urls/args/env).
         config.expand_with(&|var| std::env::var(var).ok());
 
@@ -316,9 +539,51 @@ impl McpService {
     /// toggle / remove a server) the fingerprint no longer matches, so the old
     /// connections are closed and fresh ones are established.
     pub async fn connected_registry(&self) -> Result<(Arc<McpRegistry>, Vec<(String, String)>)> {
-        // Fingerprint = the serialized enabled config. Any change to which
+        self.connected_registry_for_config(self.enabled_config()?)
+            .await
+    }
+
+    /// Close and drop the cached connected registry, if any.
+    ///
+    /// Plugin runtime changes can remove overlay MCP servers without touching
+    /// the user's persisted MCP config, so callers need an explicit invalidation
+    /// hook instead of waiting for the next effective-config fingerprint check.
+    pub async fn invalidate_connected_registry(&self) -> Result<()> {
+        let mut guard = self.cache.lock().await;
+        if let Some(cached) = guard.take() {
+            cached.registry.close_all().await?;
+        }
+        Ok(())
+    }
+
+    /// Cached connected registry for enabled user config plus plugin overlay.
+    pub async fn connected_registry_with_overlay(
+        &self,
+        overlay: McpConfig,
+    ) -> Result<(Arc<McpRegistry>, Vec<(String, String)>)> {
+        self.connected_registry_for_config(self.enabled_config_with_overlay(overlay)?)
+            .await
+    }
+
+    /// Cached connected registry for enabled user config plus plugin overlay.
+    pub async fn connected_registry_with_plugin_overlay(
+        &self,
+        overlay: McpConfig,
+        sources: &BTreeMap<String, PluginMcpServerSource>,
+    ) -> Result<(Arc<McpRegistry>, Vec<(String, String)>)> {
+        self.connected_registry_for_config(
+            self.enabled_config_with_plugin_overlay(overlay, sources)?,
+        )
+        .await
+    }
+
+    async fn connected_registry_for_config(
+        &self,
+        config: McpConfig,
+    ) -> Result<(Arc<McpRegistry>, Vec<(String, String)>)> {
+        // Fingerprint = the serialized effective config. Any change to which
         // servers are enabled or how they're configured busts the cache.
-        let fingerprint = serde_json::to_string(&self.enabled_config()?).unwrap_or_default();
+        let fingerprint = serde_json::to_string(&config).unwrap_or_default();
 
         let mut guard = self.cache.lock().await;
         if let Some(cached) = guard.as_ref() {
@@ -329,7 +594,7 @@ impl McpService {
             let _ = cached.registry.close_all().await;
         }
 
-        let (registry, failures) = self.connect_enabled().await?;
+        let (registry, failures) = self.connect_config(config).await?;
         let registry = Arc::new(registry);
         *guard = Some(CachedRegistry {
             fingerprint,
@@ -368,16 +633,37 @@ impl McpService {
     /// than the sum. Result order still matches the (name-sorted) server map.
     pub async fn connection_status(&self) -> Result<Vec<McpConnectionStatusDto>> {
         let state = self.load_state()?;
-        let probes = state.config.servers.iter().map(|(name, cfg)| {
-            let name = name.clone();
-            let enabled = state.enabled.get(&name).copied().unwrap_or(true);
-            let mut cfg = cfg.clone();
+        self.connection_status_for_entries(Self::user_entries(&state))
+            .await
+    }
+
+    /// Live status of persisted user servers plus plugin overlay servers.
+    pub async fn connection_status_with_plugin_overlay(
+        &self,
+        overlay: McpConfig,
+        sources: &BTreeMap<String, PluginMcpServerSource>,
+    ) -> Result<Vec<McpConnectionStatusDto>> {
+        self.connection_status_for_entries(
+            self.effective_entries_with_plugin_overlay(overlay, sources)?,
+        )
+        .await
+    }
+
+    async fn connection_status_for_entries(
+        &self,
+        entries: Vec<EffectiveMcpServer>,
+    ) -> Result<Vec<McpConnectionStatusDto>> {
+        let probes = entries.into_iter().map(|entry| {
+            let name = entry.dto.name.clone();
+            let enabled = entry.dto.enabled && entry.dto.conflict.is_none();
+            let conflict = entry.dto.conflict.clone();
+            let mut cfg = entry.config;
             async move {
                 if !enabled {
                     return McpConnectionStatusDto {
                         name,
                         status: "disabled".into(),
-                        error: None,
+                        error: conflict,
                         tools: Vec::new(),
                     };
                 }
@@ -439,6 +725,42 @@ mod tests {
             env: BTreeMap::new(),
             url: None,
             headers: BTreeMap::new(),
+            source: "user".into(),
+            source_plugin_id: None,
+            source_plugin_name: None,
+            declared_name: None,
+            source_path: None,
+            read_only: false,
+            conflict: None,
+        }
+    }
+
+    fn stdio_config(command: &str) -> McpServerConfig {
+        McpServerConfig {
+            transport: None,
+            command: Some(command.into()),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            url: None,
+            headers: BTreeMap::new(),
+        }
+    }
+
+    fn plugin_source(
+        runtime_name: &str,
+        declared_name: &str,
+        plugin_id: &str,
+    ) -> PluginMcpServerSource {
+        PluginMcpServerSource {
+            plugin_id: plugin_id.to_string(),
+            plugin_name: plugin_id
+                .split_once('@')
+                .map(|(name, _)| name)
+                .unwrap_or(plugin_id)
+                .to_string(),
+            declared_name: declared_name.to_string(),
+            runtime_name: runtime_name.to_string(),
+            source_path: Some("plugin/.mcp.json".to_string()),
         }
     }
 
@@ -651,6 +973,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalidate_connected_registry_drops_cached_registry() {
+        let svc = service();
+        let (reg1, failures) = svc.connected_registry().await.unwrap();
+        assert!(failures.is_empty());
+        assert!(svc.cache.lock().await.is_some());
+
+        svc.invalidate_connected_registry().await.unwrap();
+        assert!(svc.cache.lock().await.is_none());
+
+        let (reg2, _) = svc.connected_registry().await.unwrap();
+        assert!(
+            !Arc::ptr_eq(&reg1, &reg2),
+            "registry should be rebuilt after explicit invalidation"
+        );
+    }
+
+    #[test]
+    fn plugin_overlay_entries_are_listed_as_read_only() {
+        let svc = service();
+        let mut overlay = McpConfig {
+            servers: BTreeMap::new(),
+        };
+        overlay.servers.insert(
+            "plugin__docs_plugin__docs".to_string(),
+            stdio_config("node"),
+        );
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "plugin__docs_plugin__docs".to_string(),
+            plugin_source("plugin__docs_plugin__docs", "docs", "docs-plugin@workspace"),
+        );
+
+        let list = svc
+            .list_with_plugin_overlay(overlay.clone(), &sources)
+            .unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].source, "plugin");
+        assert!(list[0].read_only);
+        assert!(list[0].enabled);
+        assert_eq!(
+            list[0].source_plugin_id.as_deref(),
+            Some("docs-plugin@workspace")
+        );
+        assert_eq!(list[0].declared_name.as_deref(), Some("docs"));
+
+        let effective = svc
+            .enabled_config_with_plugin_overlay(overlay, &sources)
+            .unwrap();
+        assert!(effective.servers.contains_key("plugin__docs_plugin__docs"));
+    }
+
+    #[test]
+    fn user_mcp_server_name_has_priority_over_plugin_declared_name() {
+        let svc = service();
+        svc.upsert(stdio_dto("docs")).unwrap();
+        svc.set_enabled("docs", false).unwrap();
+
+        let mut overlay = McpConfig {
+            servers: BTreeMap::new(),
+        };
+        overlay.servers.insert(
+            "plugin__docs_plugin__docs".to_string(),
+            stdio_config("node"),
+        );
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "plugin__docs_plugin__docs".to_string(),
+            plugin_source("plugin__docs_plugin__docs", "docs", "docs-plugin@workspace"),
+        );
+
+        let list = svc
+            .list_with_plugin_overlay(overlay.clone(), &sources)
+            .unwrap();
+        let plugin = list
+            .iter()
+            .find(|server| server.name == "plugin__docs_plugin__docs")
+            .unwrap();
+        assert!(plugin.read_only);
+        assert!(!plugin.enabled);
+        assert!(plugin
+            .conflict
+            .as_deref()
+            .unwrap()
+            .contains("user MCP server 'docs' has priority"));
+
+        let effective = svc
+            .enabled_config_with_plugin_overlay(overlay, &sources)
+            .unwrap();
+        assert!(effective.servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn plugin_overlay_conflict_reports_disabled_status() {
+        let svc = service();
+        svc.upsert(stdio_dto("docs")).unwrap();
+
+        let mut overlay = McpConfig {
+            servers: BTreeMap::new(),
+        };
+        overlay.servers.insert(
+            "plugin__docs_plugin__docs".to_string(),
+            stdio_config("definitely-not-a-real-binary-xyz"),
+        );
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "plugin__docs_plugin__docs".to_string(),
+            plugin_source("plugin__docs_plugin__docs", "docs", "docs-plugin@workspace"),
+        );
+
+        let statuses = svc
+            .connection_status_with_plugin_overlay(overlay, &sources)
+            .await
+            .unwrap();
+        let plugin = statuses
+            .iter()
+            .find(|status| status.name == "plugin__docs_plugin__docs")
+            .unwrap();
+        assert_eq!(plugin.status, "disabled");
+        assert!(plugin
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("user MCP server 'docs' has priority"));
+    }
+
+    #[tokio::test]
     async fn connection_status_mixes_states_in_name_order() {
         // Concurrent probing must preserve the (name-sorted) order and each
         // server's own status: enabled+bad → failed, disabled → disabled.
@@ -694,6 +1142,13 @@ mod tests {
             env: BTreeMap::new(),
             url: None,
             headers: BTreeMap::new(),
+            source: "user".into(),
+            source_plugin_id: None,
+            source_plugin_name: None,
+            declared_name: None,
+            source_path: None,
+            read_only: false,
+            conflict: None,
         };
         let status = svc.test_server(dto).await.unwrap();
         assert_eq!(

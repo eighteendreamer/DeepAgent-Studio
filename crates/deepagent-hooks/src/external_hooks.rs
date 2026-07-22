@@ -156,6 +156,9 @@ pub struct HookAction {
     /// Per-hook timeout in seconds (defaults to [`DEFAULT_HOOK_TIMEOUT_SECS`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
+    /// Environment variables injected when this command runs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 impl HookAction {
@@ -272,6 +275,7 @@ pub trait HookCommandRunner: Send + Sync {
         &self,
         command: &str,
         stdin_json: &str,
+        env: &BTreeMap<String, String>,
         timeout: Duration,
     ) -> Result<HookCommandResult>;
 }
@@ -286,6 +290,7 @@ impl HookCommandRunner for SystemHookRunner {
         &self,
         command: &str,
         stdin_json: &str,
+        env: &BTreeMap<String, String>,
         timeout: Duration,
     ) -> Result<HookCommandResult> {
         use tokio::io::AsyncWriteExt;
@@ -302,6 +307,7 @@ impl HookCommandRunner for SystemHookRunner {
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        cmd.envs(env);
         #[cfg(windows)]
         {
             cmd.creation_flags(CREATE_NO_WINDOW);
@@ -417,6 +423,7 @@ impl Hook for ExternalCommandHook {
             .run(
                 &self.action.command,
                 &stdin_json,
+                &self.action.env,
                 self.action.timeout_duration(),
             )
             .await?;
@@ -560,6 +567,7 @@ mod tests {
     struct MockRunner {
         result: HookCommandResult,
         last_stdin: Mutex<Option<String>>,
+        last_env: Mutex<Option<BTreeMap<String, String>>>,
     }
 
     impl MockRunner {
@@ -571,6 +579,7 @@ mod tests {
                     stderr: stderr.to_string(),
                 },
                 last_stdin: Mutex::new(None),
+                last_env: Mutex::new(None),
             }
         }
     }
@@ -581,9 +590,11 @@ mod tests {
             &self,
             _command: &str,
             stdin_json: &str,
+            env: &BTreeMap<String, String>,
             _timeout: Duration,
         ) -> Result<HookCommandResult> {
             *self.last_stdin.lock().unwrap() = Some(stdin_json.to_string());
+            *self.last_env.lock().unwrap() = Some(env.clone());
             Ok(self.result.clone())
         }
     }
@@ -644,6 +655,7 @@ mod tests {
             action_type: HookActionType::Command,
             command: "x".into(),
             timeout: None,
+            env: BTreeMap::new(),
         };
         assert_eq!(
             action.timeout_duration(),
@@ -713,6 +725,7 @@ mod tests {
                 action_type: HookActionType::Command,
                 command: "validate".into(),
                 timeout: None,
+                env: BTreeMap::new(),
             },
             runner: runner.clone(),
         };
@@ -734,6 +747,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hook_forwards_action_env_to_runner() {
+        let runner = Arc::new(MockRunner::new(0, "", ""));
+        let mut env = BTreeMap::new();
+        env.insert(
+            "DEEPAGENT_PLUGIN_ID".to_string(),
+            "demo@personal".to_string(),
+        );
+        env.insert("CUSTOM".to_string(), "value".to_string());
+        let hook = ExternalCommandHook {
+            event: HookEvent::UserPromptSubmit,
+            matcher: None,
+            action: HookAction {
+                action_type: HookActionType::Command,
+                command: "validate".into(),
+                timeout: None,
+                env: env.clone(),
+            },
+            runner: runner.clone(),
+        };
+        let ctx = HookContext::new(
+            SessionId::nil(),
+            HookPoint::UserPromptSubmit,
+            HookData::Prompt {
+                text: "hello".to_string(),
+            },
+        );
+
+        assert_eq!(hook.run(&ctx).await.unwrap(), HookOutcome::Continue);
+        assert_eq!(*runner.last_env.lock().unwrap(), Some(env));
+    }
+
+    #[tokio::test]
     async fn hook_skips_when_matcher_excludes_tool() {
         let runner = Arc::new(MockRunner::new(2, "", "would block"));
         let hook = ExternalCommandHook {
@@ -743,6 +788,7 @@ mod tests {
                 action_type: HookActionType::Command,
                 command: "validate".into(),
                 timeout: None,
+                env: BTreeMap::new(),
             },
             runner,
         };

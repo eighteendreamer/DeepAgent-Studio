@@ -45,6 +45,10 @@ function toolDescription(type: string) {
   return FALLBACK_TOOL_DESCRIPTIONS[type] ?? "";
 }
 
+function explicitLabel(value: string | undefined) {
+  return value && !value.startsWith("chatView.") ? value : "";
+}
+
 const TOOL_SHORTCUTS: Record<string, string> = {
   files: "Ctrl+P",
   chat: "Ctrl+Alt+S",
@@ -75,12 +79,18 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
           }
         >
           {cards.map((card) => {
-            const translatedTitle = t(`chatView.tools.${card.type}`, {
-              defaultValue: toolLabel(card.type),
-            });
-            const translatedDesc = t(`chatView.tools.${card.type}Desc`, {
-              defaultValue: toolDescription(card.type),
-            });
+            const ownTitle = explicitLabel(card.title);
+            const ownDesc = explicitLabel(card.desc);
+            const translatedTitle =
+              ownTitle ||
+              t(`chatView.tools.${card.type}`, {
+                defaultValue: toolLabel(card.type),
+              });
+            const translatedDesc =
+              ownDesc ||
+              t(`chatView.tools.${card.type}Desc`, {
+                defaultValue: toolDescription(card.type),
+              });
             const shortcut = TOOL_SHORTCUTS[card.type] || "";
 
             if (isSidebar) {

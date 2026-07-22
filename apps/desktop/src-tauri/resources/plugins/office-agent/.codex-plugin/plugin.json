@@ -1,0 +1,22 @@
+{
+  "name": "office-agent",
+  "version": "0.1.0",
+  "description": "Create, read, preview, and transform Office files.",
+  "author": {
+    "name": "DeepAgent Studio"
+  },
+  "keywords": ["office", "docx", "xlsx", "pdf", "pptx"],
+  "apps": ".app.json",
+  "commands": "commands",
+  "outputStyles": "./output-styles",
+  "interface": {
+    "displayName": "Office Agent",
+    "shortDescription": "Work with Office and document files",
+    "longDescription": "Office Agent groups the built-in document, spreadsheet, PDF, preview, and managed-runtime workflows.",
+    "developerName": "DeepAgent Studio",
+    "category": "Productivity",
+    "capabilities": ["Skill", "App", "Read", "Write", "Managed runtime"],
+    "permissions": ["file.read", "file.write", "runtime.use"],
+    "brandColor": "#16a34a"
+  }
+}

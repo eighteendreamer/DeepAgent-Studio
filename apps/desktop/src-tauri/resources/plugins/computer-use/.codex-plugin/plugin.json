@@ -1,0 +1,21 @@
+{
+  "name": "computer-use",
+  "version": "0.1.0",
+  "description": "Control desktop applications through supervised computer-use tools.",
+  "author": {
+    "name": "DeepAgent Studio"
+  },
+  "keywords": ["desktop", "automation", "computer-use"],
+  "commands": "commands",
+  "apps": ".app.json",
+  "interface": {
+    "displayName": "Computer Use",
+    "shortDescription": "Control Windows apps from DeepAgent",
+    "longDescription": "Computer Use declares the desktop interaction surface for supervised screen reading, mouse and keyboard actions, and permission-aware app workflows.",
+    "developerName": "DeepAgent Studio",
+    "category": "Developer Tools",
+    "capabilities": ["App", "Read", "Interactive"],
+    "permissions": ["screen.read", "mouse.keyboard", "app.control"],
+    "brandColor": "#0891b2"
+  }
+}

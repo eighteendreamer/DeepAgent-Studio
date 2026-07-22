@@ -124,7 +124,8 @@ pub use remote_tools::{
 };
 pub use skill_tool::{SkillTool, SKILL_TOOL_NAME};
 pub use task_tool::{
-    SubagentRequest, SubagentRunner, TaskTool, UnavailableSubagentRunner, TASK_TOOL_NAME,
+    SubagentRequest, SubagentRunner, TaskAgentType, TaskTool, UnavailableSubagentRunner,
+    TASK_TOOL_NAME,
 };
 pub use todo_tool::{TaskListTool, TodoItem, TodoStatus, TodoStore, TodoWriteTool};
 pub use tool_search::{

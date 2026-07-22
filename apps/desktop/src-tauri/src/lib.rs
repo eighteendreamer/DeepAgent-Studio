@@ -16,15 +16,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
-    AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, AttachmentDto,
-    AttachmentIngestDto, AttachmentService, BalanceDto, BudgetConfig, ChatService, CommandDto,
-    ConversationMessageDto, CostService, CostSummary, DiagnosticResult, DiffResult,
-    FilePreviewService, ForkResultDto, GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto,
-    GitBatchProjectResultDto, GitBranchDto, GitChangesDto, GitCommitMessageDraftDto, GitDiffDto,
-    GitLogEntryDto, GitOperationResultDto, GitProjectStatusDto, GitPushPreviewDto,
-    GitPushRiskScanDto, GitRefCompareDto, GitService, GitWorktreeDto, KeychainStore,
-    KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, LocalPtyHandle,
-    McpServerDto, McpService, OfficeService, PdfRenderResultDto, PreflightToolCallDto,
+    AddPluginMarketplaceDto, AppService, ArchiveProjectResultDto, ArchiveService,
+    ArchivedConversationDto, AttachmentDto, AttachmentIngestDto, AttachmentService, BalanceDto,
+    BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary,
+    CreatePluginDraftDto, DiagnosticResult, DiffResult, FilePreviewService, ForkResultDto,
+    GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto, GitBranchDto,
+    GitChangesDto, GitCommitMessageDraftDto, GitDiffDto, GitLogEntryDto, GitOperationResultDto,
+    GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto, GitRefCompareDto, GitService,
+    GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
+    KnowledgeService, LocalPtyHandle, McpServerDto, McpService, OfficeService, PdfRenderResultDto,
+    PluginAppEntry, PluginDto, PluginMarketplaceDto, PluginMarketplaceEntryDto,
+    PluginOutputStyleEntry, PluginRoots, PluginScanReportDto, PluginService, PreflightToolCallDto,
     PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
     ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
     ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, RecordingService,
@@ -304,6 +306,7 @@ struct AppState {
     /// every command that touches the map.
     pending_scans: Arc<Mutex<HashMap<String, PendingScan>>>,
     chat: Arc<ChatService>,
+    plugins: Arc<PluginService>,
     mcp: Arc<McpService>,
     knowledge: Arc<KnowledgeService>,
     cost: Arc<CostService>,
@@ -439,6 +442,32 @@ fn dir_has_skill_md(dir: &Path) -> bool {
         }
     }
     false
+}
+
+fn locate_builtin_plugins_dir(resource_dir: &Path) -> PathBuf {
+    let candidates: [PathBuf; 3] = [
+        resource_dir.join("resources").join("plugins"),
+        resource_dir.join("plugins"),
+        resource_dir.join("_up_").join("resources").join("plugins"),
+    ];
+    for c in &candidates {
+        if c.is_dir() {
+            return c.clone();
+        }
+    }
+    candidates
+        .into_iter()
+        .next()
+        .expect("non-empty plugin resource candidate list")
+}
+
+fn session_plugin_roots_from_env() -> Vec<PathBuf> {
+    let Some(raw) = std::env::var_os("DEEPAGENT_SESSION_PLUGIN_ROOTS") else {
+        return Vec::new();
+    };
+    std::env::split_paths(&raw)
+        .filter(|path| path.is_dir())
+        .collect()
 }
 
 fn locate_bundled_sandboxie_installer(resource_dir: &Path) -> Option<PathBuf> {
@@ -645,8 +674,15 @@ fn commands(state: State<'_, AppState>, query: String) -> Result<Vec<CommandDto>
         roots.push(std::path::PathBuf::from(active));
     }
     roots.push(std::path::PathBuf::from(state.workspace.root_display()));
-    let svc = state.service.lock().map_err(|e| e.to_string())?;
-    Ok(svc.commands_with_roots(&query, roots))
+    let projection = state
+        .plugins
+        .runtime_projection()
+        .map_err(|e| e.to_string())?;
+    Ok(deepagent_app_core::commands_from_roots_and_plugins(
+        &query,
+        roots,
+        &projection.command_roots,
+    ))
 }
 
 #[tauri::command]
@@ -892,8 +928,36 @@ fn set_chat_model(state: State<'_, AppState>, model_id: String) -> Result<Settin
 
 // ---- skill commands -------------------------------------------------------
 
+fn sync_plugin_skill_roots(state: &AppState) -> Result<(), String> {
+    let projection = state
+        .plugins
+        .runtime_projection()
+        .map_err(|e| e.to_string())?;
+    let mut skills = state.skills.lock().map_err(|e| e.to_string())?;
+    if skills.plugin_roots() != projection.skill_roots.as_slice() {
+        skills
+            .set_plugin_roots(projection.skill_roots)
+            .map_err(|e| e.to_string())?;
+        drop(skills);
+        state.chat.reset_all_sent_skills();
+    }
+    Ok(())
+}
+
+async fn sync_plugin_runtime_after_change(state: &AppState) -> Result<(), String> {
+    sync_plugin_skill_roots(state)?;
+    state.chat.reset_all_sent_skills();
+    state
+        .mcp
+        .invalidate_connected_registry()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillDto>, String> {
+    sync_plugin_skill_roots(state.inner())?;
     let svc = state.skills.lock().map_err(|e| e.to_string())?;
     Ok(svc.list())
 }
@@ -964,6 +1028,277 @@ fn activate_skill(
 ) -> Result<Option<SkillActivationDto>, String> {
     let svc = state.skills.lock().map_err(|e| e.to_string())?;
     Ok(svc.activate(&id))
+}
+
+// ---- plugin commands ------------------------------------------------------
+
+#[tauri::command]
+fn list_plugins(state: State<'_, AppState>) -> Result<Vec<PluginDto>, String> {
+    let plugins = state.plugins.list().map_err(|e| e.to_string())?;
+    sync_plugin_skill_roots(state.inner())?;
+    Ok(plugins)
+}
+
+#[tauri::command]
+async fn reload_plugins(state: State<'_, AppState>) -> Result<Vec<PluginDto>, String> {
+    let plugins = state.plugins.reload().map_err(|e| e.to_string())?;
+    sync_plugin_runtime_after_change(state.inner()).await?;
+    Ok(plugins)
+}
+
+#[tauri::command]
+fn read_plugin(state: State<'_, AppState>, id: String) -> Result<Option<PluginDto>, String> {
+    state.plugins.read(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_plugin_apps(state: State<'_, AppState>) -> Result<Vec<PluginAppEntry>, String> {
+    let apps = state.plugins.list_apps().map_err(|e| e.to_string())?;
+    sync_plugin_skill_roots(state.inner())?;
+    Ok(apps)
+}
+
+#[tauri::command]
+fn list_plugin_output_styles(
+    state: State<'_, AppState>,
+) -> Result<Vec<PluginOutputStyleEntry>, String> {
+    state
+        .plugins
+        .list_output_styles()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_plugin_enabled(
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<PluginDto, String> {
+    let plugin = state
+        .plugins
+        .set_enabled(&id, enabled)
+        .map_err(|e| e.to_string())?;
+    sync_plugin_runtime_after_change(state.inner()).await?;
+    Ok(plugin)
+}
+
+#[tauri::command]
+async fn create_plugin(
+    state: State<'_, AppState>,
+    draft: CreatePluginDraftDto,
+) -> Result<PluginDto, String> {
+    let plugin = state
+        .plugins
+        .create_plugin(draft)
+        .map_err(|e| e.to_string())?;
+    sync_plugin_runtime_after_change(state.inner()).await?;
+    Ok(plugin)
+}
+
+#[tauri::command]
+async fn install_plugin_from_dir(
+    state: State<'_, AppState>,
+    source_dir: String,
+    scan_confirmed: Option<bool>,
+) -> Result<PluginDto, String> {
+    let report = state
+        .plugins
+        .scan_plugin(PathBuf::from(&source_dir))
+        .map_err(|e| e.to_string())?;
+    ensure_plugin_scan_allowed(&report, scan_confirmed.unwrap_or(false))?;
+    let plugin = state
+        .plugins
+        .install_from_dir(PathBuf::from(source_dir))
+        .map_err(|e| e.to_string())?;
+    sync_plugin_runtime_after_change(state.inner()).await?;
+    Ok(plugin)
+}
+
+#[tauri::command]
+async fn install_plugin_from_zip(
+    state: State<'_, AppState>,
+    zip_path: String,
+    scan_confirmed: Option<bool>,
+) -> Result<PluginDto, String> {
+    let tmp = tempfile::tempdir().map_err(|e| format!("temp dir failed: {e}"))?;
+    let source = extract_zip(&zip_path, tmp.path()).map_err(|e| e.to_string())?;
+    let report = state
+        .plugins
+        .scan_plugin(&source)
+        .map_err(|e| e.to_string())?;
+    ensure_plugin_scan_allowed(&report, scan_confirmed.unwrap_or(false))?;
+    let plugin = state
+        .plugins
+        .install_from_dir(source)
+        .map_err(|e| e.to_string())?;
+    sync_plugin_runtime_after_change(state.inner()).await?;
+    Ok(plugin)
+}
+
+#[tauri::command]
+fn scan_plugin_zip(
+    state: State<'_, AppState>,
+    zip_path: String,
+) -> Result<PluginScanReportDto, String> {
+    let tmp = tempfile::tempdir().map_err(|e| format!("temp dir failed: {e}"))?;
+    let source = extract_zip(&zip_path, tmp.path()).map_err(|e| e.to_string())?;
+    state.plugins.scan_plugin(source).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn uninstall_plugin(
+    state: State<'_, AppState>,
+    id: String,
+    remove_data: bool,
+) -> Result<bool, String> {
+    let removed = state
+        .plugins
+        .uninstall(&id, remove_data)
+        .map_err(|e| e.to_string())?;
+    sync_plugin_runtime_after_change(state.inner()).await?;
+    Ok(removed)
+}
+
+#[tauri::command]
+fn scan_plugin(
+    state: State<'_, AppState>,
+    source_dir: String,
+) -> Result<PluginScanReportDto, String> {
+    state
+        .plugins
+        .scan_plugin(PathBuf::from(source_dir))
+        .map_err(|e| e.to_string())
+}
+
+fn ensure_plugin_scan_allowed(
+    report: &PluginScanReportDto,
+    scan_confirmed: bool,
+) -> Result<(), String> {
+    if !report.errors.is_empty() {
+        return Err(format!("plugin scan failed: {}", report.errors.join("; ")));
+    }
+    let high_risks = report
+        .risks
+        .iter()
+        .filter(|risk| matches!(risk.severity.as_str(), "high" | "critical"))
+        .collect::<Vec<_>>();
+    if !high_risks.is_empty() && !scan_confirmed {
+        let summary = high_risks
+            .iter()
+            .take(5)
+            .map(|risk| format!("{}: {}", risk.severity, risk.title))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!(
+            "plugin scan requires confirmation before install ({summary})"
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_plugin_marketplaces(
+    state: State<'_, AppState>,
+) -> Result<Vec<PluginMarketplaceDto>, String> {
+    state.plugins.list_marketplaces().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_plugin_marketplace(
+    state: State<'_, AppState>,
+    input: AddPluginMarketplaceDto,
+) -> Result<PluginMarketplaceDto, String> {
+    state
+        .plugins
+        .add_marketplace(input)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn remove_plugin_marketplace(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<bool, String> {
+    let removed = state
+        .plugins
+        .remove_marketplace(&name)
+        .map_err(|e| e.to_string())?;
+    sync_plugin_runtime_after_change(state.inner()).await?;
+    Ok(removed)
+}
+
+#[tauri::command]
+fn refresh_plugin_marketplace(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<PluginMarketplaceDto, String> {
+    state
+        .plugins
+        .refresh_marketplace(&name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_plugin_marketplace_entries(
+    state: State<'_, AppState>,
+) -> Result<Vec<PluginMarketplaceEntryDto>, String> {
+    state
+        .plugins
+        .list_marketplace_entries()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn scan_plugin_marketplace(
+    state: State<'_, AppState>,
+    marketplace: String,
+    plugin: String,
+) -> Result<PluginScanReportDto, String> {
+    state
+        .plugins
+        .scan_marketplace_plugin(&marketplace, &plugin)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn install_plugin_from_marketplace(
+    state: State<'_, AppState>,
+    marketplace: String,
+    plugin: String,
+    scan_confirmed: Option<bool>,
+    auth_confirmed: Option<bool>,
+) -> Result<PluginDto, String> {
+    let report = state
+        .plugins
+        .scan_marketplace_plugin(&marketplace, &plugin)
+        .map_err(|e| e.to_string())?;
+    ensure_plugin_scan_allowed(&report, scan_confirmed.unwrap_or(false))?;
+    let plugin = state
+        .plugins
+        .install_from_marketplace_with_auth(&marketplace, &plugin, auth_confirmed.unwrap_or(false))
+        .map_err(|e| e.to_string())?;
+    sync_plugin_runtime_after_change(state.inner()).await?;
+    Ok(plugin)
+}
+
+#[tauri::command]
+async fn update_plugin(
+    state: State<'_, AppState>,
+    id: String,
+    scan_confirmed: Option<bool>,
+    auth_confirmed: Option<bool>,
+) -> Result<PluginDto, String> {
+    let report = state
+        .plugins
+        .scan_plugin_update(&id)
+        .map_err(|e| e.to_string())?;
+    ensure_plugin_scan_allowed(&report, scan_confirmed.unwrap_or(false))?;
+    let plugin = state
+        .plugins
+        .update_plugin_with_auth(&id, auth_confirmed.unwrap_or(false))
+        .map_err(|e| e.to_string())?;
+    sync_plugin_runtime_after_change(state.inner()).await?;
+    Ok(plugin)
 }
 
 // ---- skill marketplace (skillsmp.com + GitHub) ----------------------------
@@ -1889,7 +2224,16 @@ fn set_skill_install_ai_review_model(
 
 #[tauri::command]
 fn list_mcp_servers(state: State<'_, AppState>) -> Result<Vec<McpServerDto>, String> {
-    state.mcp.list().map_err(|e| e.to_string())
+    let projection = state
+        .plugins
+        .runtime_projection()
+        .map_err(|e| e.to_string())?;
+    let mcp_config = projection.mcp_config;
+    let mcp_server_sources = projection.mcp_server_sources;
+    state
+        .mcp
+        .list_with_plugin_overlay(mcp_config, &mcp_server_sources)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1924,7 +2268,11 @@ async fn test_mcp_server(
     state: State<'_, AppState>,
     server: McpServerDto,
 ) -> Result<deepagent_app_core::McpConnectionStatusDto, String> {
-    state.mcp.test_server(server).await.map_err(|e| e.to_string())
+    state
+        .mcp
+        .test_server(server)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Live connection status of every saved server (disabled ones reported
@@ -1933,7 +2281,17 @@ async fn test_mcp_server(
 async fn mcp_connection_status(
     state: State<'_, AppState>,
 ) -> Result<Vec<deepagent_app_core::McpConnectionStatusDto>, String> {
-    state.mcp.connection_status().await.map_err(|e| e.to_string())
+    let projection = state
+        .plugins
+        .runtime_projection()
+        .map_err(|e| e.to_string())?;
+    let mcp_config = projection.mcp_config;
+    let mcp_server_sources = projection.mcp_server_sources;
+    state
+        .mcp
+        .connection_status_with_plugin_overlay(mcp_config, &mcp_server_sources)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ---- permission rules + hooks.json ----------------------------------------
@@ -3813,6 +4171,40 @@ pub fn run() {
             let _ = projects.ensure_default(&workspace_root.to_string_lossy());
             let project_map = Arc::new(ProjectMapService::new());
 
+            let resource_plugins_dir = match app.path().resource_dir() {
+                Ok(resource_dir) => locate_builtin_plugins_dir(&resource_dir),
+                Err(e) => {
+                    eprintln!(
+                        "[builtin-plugins] resource_dir() failed ({e}); built-in \
+                         plugins will be unavailable for this run."
+                    );
+                    std::env::temp_dir().join("deepagent-builtin-plugins-missing")
+                }
+            };
+            let plugin_home = app
+                .path()
+                .home_dir()
+                .unwrap_or_else(|_| std::env::temp_dir())
+                .join(".deepagent")
+                .join("plugins");
+            let plugin_cache = plugin_home.join("cache");
+            let plugin_marketplaces = plugin_home.join("marketplaces");
+            let _ = std::fs::create_dir_all(&plugin_home);
+            let _ = std::fs::create_dir_all(&plugin_cache);
+            let _ = std::fs::create_dir_all(&plugin_marketplaces);
+            let session_plugins = session_plugin_roots_from_env();
+            let plugins = Arc::new(PluginService::new(
+                PluginRoots {
+                    session: session_plugins,
+                    builtin: resource_plugins_dir,
+                    workspace: Some(workspace_root.join(".deepagent").join("plugins")),
+                    personal: plugin_home,
+                    marketplace_cache: plugin_cache,
+                    marketplaces: plugin_marketplaces,
+                },
+                &dir,
+            ));
+
             // Knowledge base: a project-local vault (`<project>/.deepagent/knowledge`)
             // plus a user-global vault (under the app data dir), loaded into one
             // index. Drives passive injection + the knowledge_search/write tools.
@@ -3944,6 +4336,7 @@ pub fn run() {
                         })
                     })
                     .with_mcp(mcp.clone())
+                    .with_plugins(plugins.clone())
                     .with_projects(projects.clone())
                     .with_knowledge(knowledge.clone())
                     .with_project_map(project_map.clone())
@@ -3970,6 +4363,7 @@ pub fn run() {
                 skillsmp,
                 pending_scans: Arc::new(Mutex::new(HashMap::new())),
                 chat,
+                plugins,
                 mcp,
                 knowledge,
                 cost,
@@ -4030,6 +4424,26 @@ pub fn run() {
             uninstall_skill,
             preview_skill_activation,
             activate_skill,
+            list_plugins,
+            reload_plugins,
+            read_plugin,
+            list_plugin_apps,
+            list_plugin_output_styles,
+            set_plugin_enabled,
+            create_plugin,
+            install_plugin_from_dir,
+            install_plugin_from_zip,
+            uninstall_plugin,
+            scan_plugin,
+            scan_plugin_zip,
+            list_plugin_marketplaces,
+            add_plugin_marketplace,
+            remove_plugin_marketplace,
+            refresh_plugin_marketplace,
+            list_plugin_marketplace_entries,
+            scan_plugin_marketplace,
+            install_plugin_from_marketplace,
+            update_plugin,
             skill_market_search,
             skill_market_test_key,
             skill_market_get_api_key,

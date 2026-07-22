@@ -1,3 +1,4 @@
+/*
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
@@ -1076,3 +1077,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </label>
   );
 }
+*/
+
+export { PluginsView } from "./PluginsViewReal";

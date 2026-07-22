@@ -1,0 +1,21 @@
+{
+  "name": "meeting-recorder",
+  "version": "0.1.0",
+  "description": "Record, transcribe, and generate meeting minutes.",
+  "author": {
+    "name": "DeepAgent Studio"
+  },
+  "keywords": ["audio", "recording", "transcription", "minutes"],
+  "commands": "commands",
+  "apps": ".app.json",
+  "interface": {
+    "displayName": "Meeting Recorder",
+    "shortDescription": "Record and summarize meetings",
+    "longDescription": "Meeting Recorder declares the built-in audio capture, local transcription, meeting-minutes generation, and Word export workflows.",
+    "developerName": "DeepAgent Studio",
+    "category": "Productivity",
+    "capabilities": ["App", "Audio", "Read", "Write"],
+    "permissions": ["microphone", "file.write", "runtime.use"],
+    "brandColor": "#e11d48"
+  }
+}

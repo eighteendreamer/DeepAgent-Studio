@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::dto::CommandDto;
+use crate::plugin_runtime::PluginCommandRoot;
 
 /// The built-in command set.
 pub fn builtin_commands() -> Vec<CommandDto> {
@@ -113,6 +114,17 @@ pub fn commands_from_roots(
     query: &str,
     roots: impl IntoIterator<Item = PathBuf>,
 ) -> Vec<CommandDto> {
+    commands_from_roots_and_plugins(query, roots, &[])
+}
+
+/// Merge built-ins, project/workspace commands, and enabled plugin command
+/// definitions. Plugin commands are always namespaced as
+/// `/plugin-name:command` so they cannot shadow built-in slash commands.
+pub fn commands_from_roots_and_plugins(
+    query: &str,
+    roots: impl IntoIterator<Item = PathBuf>,
+    plugin_roots: &[PluginCommandRoot],
+) -> Vec<CommandDto> {
     let mut commands = builtin_commands();
     let mut seen: BTreeSet<String> = commands.iter().map(|c| c.id.clone()).collect();
 
@@ -140,6 +152,40 @@ pub fn commands_from_roots(
             }
             Err(e) => {
                 tracing::warn!(path = %dir.display(), error = %e, "failed to discover commands")
+            }
+        }
+    }
+
+    for plugin in plugin_roots {
+        match deepagent_prompts::discover_commands(&plugin.path) {
+            Ok(defs) => {
+                for def in defs {
+                    let namespaced = format!("{}:{}", plugin.plugin_name, def.name);
+                    let id = format!("slash.{namespaced}");
+                    if !seen.insert(id.clone()) {
+                        continue;
+                    }
+                    let description = if def.description.trim().is_empty() {
+                        "Plugin prompt command.".to_string()
+                    } else {
+                        def.description
+                    };
+                    commands.push(CommandDto {
+                        id,
+                        title: format!("/{namespaced}"),
+                        description,
+                        category: "Plugin Commands".to_string(),
+                        shortcut: None,
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    plugin = plugin.plugin_id.as_str(),
+                    path = %plugin.path.display(),
+                    error = %e,
+                    "failed to discover plugin commands"
+                )
             }
         }
     }
@@ -290,5 +336,41 @@ mod tests {
     fn no_match_returns_empty() {
         let cmds = builtin_commands();
         assert!(filter_commands("zzzzzz", &cmds).is_empty());
+    }
+
+    #[test]
+    fn plugin_commands_are_namespaced_and_cannot_shadow_builtins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugin-commands");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("ship.md"),
+            "---\ndescription: Ship the plugin\n---\nShip $ARGUMENTS",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("plan.md"),
+            "---\ndescription: Plugin plan\n---\nPlugin plan",
+        )
+        .unwrap();
+
+        let plugin_roots = vec![PluginCommandRoot {
+            plugin_id: "demo-plugin@personal".to_string(),
+            plugin_name: "demo-plugin".to_string(),
+            path: dir,
+        }];
+        let hits = commands_from_roots_and_plugins("demo", Vec::<PathBuf>::new(), &plugin_roots);
+
+        assert!(hits.iter().any(|c| {
+            c.id == "slash.demo-plugin:ship"
+                && c.title == "/demo-plugin:ship"
+                && c.category == "Plugin Commands"
+        }));
+        assert!(hits
+            .iter()
+            .any(|c| { c.id == "slash.demo-plugin:plan" && c.title == "/demo-plugin:plan" }));
+        assert!(!hits
+            .iter()
+            .any(|c| c.id == "slash.plan" && c.description == "Plugin plan"));
     }
 }

@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "id": "files",
+      "title": "Files",
+      "description": "Open the workspace file browser",
+      "placement": "right-sidebar",
+      "component": "builtin:files",
+      "icon": "folder",
+      "category": "Productivity"
+    }
+  ]
+}

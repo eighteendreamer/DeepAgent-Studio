@@ -18,6 +18,29 @@ use deepagent_tools::{Tool, ToolDescriptor, ToolOutput};
 /// The tool name advertised to the model.
 pub const TASK_TOOL_NAME: &str = "task";
 
+/// A specialized sub-agent type advertised by the `task` tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskAgentType {
+    /// The exact `subagent_type` value the model may pass.
+    pub name: String,
+    /// Natural-language guidance for when to choose this agent type.
+    pub description: String,
+}
+
+impl TaskAgentType {
+    /// Create an advertised sub-agent type.
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+        }
+    }
+
+    fn name_only(name: impl Into<String>) -> Self {
+        Self::new(name, "")
+    }
+}
+
 /// A request to run a sub-agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentRequest {
@@ -59,16 +82,34 @@ pub struct TaskTool<R: SubagentRunner> {
     runner: R,
     /// Allowed `subagent_type` values, surfaced in the description so the model
     /// picks a real one. Empty means only the default general agent.
-    agent_types: Vec<String>,
+    agent_types: Vec<TaskAgentType>,
 }
 
 impl<R: SubagentRunner> TaskTool<R> {
     /// Build the tool with a runner and the list of available agent types.
     pub fn new(runner: R, agent_types: impl IntoIterator<Item = String>) -> Self {
+        Self::new_with_agent_types(
+            runner,
+            agent_types.into_iter().map(TaskAgentType::name_only),
+        )
+    }
+
+    /// Build the tool with named agent types and their descriptions.
+    pub fn new_with_agent_types(
+        runner: R,
+        agent_types: impl IntoIterator<Item = TaskAgentType>,
+    ) -> Self {
         Self {
             runner,
             agent_types: agent_types.into_iter().collect(),
         }
+    }
+
+    fn agent_type_names(&self) -> Vec<String> {
+        self.agent_types
+            .iter()
+            .map(|agent| agent.name.clone())
+            .collect()
     }
 }
 
@@ -78,9 +119,18 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
         let types_note = if self.agent_types.is_empty() {
             "Only the default general-purpose agent is available; omit subagent_type.".to_string()
         } else {
+            let mut lines = Vec::with_capacity(self.agent_types.len());
+            for agent in &self.agent_types {
+                let description = agent.description.trim();
+                if description.is_empty() {
+                    lines.push(format!("- `{}`", agent.name));
+                } else {
+                    lines.push(format!("- `{}`: {description}", agent.name));
+                }
+            }
             format!(
-                "Available subagent_type values: {}. Pick the one whose specialty matches the task.",
-                self.agent_types.join(", ")
+                "Available subagent_type values:\n{}\nPick the one whose specialty matches the task.",
+                lines.join("\n")
             )
         };
         ToolDescriptor {
@@ -159,10 +209,11 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
 
         // Validate the requested type against the available set (if any).
         if let Some(t) = &subagent_type {
-            if !self.agent_types.is_empty() && !self.agent_types.iter().any(|a| a == t) {
+            if !self.agent_types.is_empty() && !self.agent_types.iter().any(|a| a.name == *t) {
+                let available = self.agent_type_names();
                 return Ok(ToolOutput::failure(format!(
                     "unknown subagent_type '{t}'; available: {}",
-                    self.agent_types.join(", ")
+                    available.join(", ")
                 )));
             }
         }
@@ -248,10 +299,17 @@ mod tests {
 
     #[tokio::test]
     async fn descriptor_lists_agent_types() {
-        let tool = TaskTool::new(EchoRunner, ["explore".to_string(), "review".to_string()]);
+        let tool = TaskTool::new_with_agent_types(
+            EchoRunner,
+            [
+                TaskAgentType::new("explore", "Survey unfamiliar areas"),
+                TaskAgentType::new("review", "Review code paths"),
+            ],
+        );
         let d = tool.descriptor();
         assert_eq!(d.name, TASK_TOOL_NAME);
         assert!(d.description.contains("explore"));
+        assert!(d.description.contains("Survey unfamiliar areas"));
         assert!(d.description.contains("review"));
     }
 

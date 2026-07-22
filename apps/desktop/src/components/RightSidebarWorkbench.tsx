@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { SidebarPluginHeader } from "./SidebarPluginHeader";
@@ -6,6 +6,7 @@ import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import type { ToolLauncherCard } from "./ToolLauncherPanel";
 import {
   createPluginTab,
+  pluginAppToToolCard,
   PLUGIN_TOOL_CARDS,
   renderPluginTab,
   type PluginRenderContext,
@@ -15,7 +16,7 @@ import {
   type PluginType,
 } from "./plugins/pluginRegistry";
 import { useResizableSidebar } from "../hooks/useResizableSidebar";
-import { openStudioCanvasWindow } from "../api";
+import { listPluginApps, openStudioCanvasWindow, PLUGINS_CHANGED_EVENT } from "../api";
 import { message } from "./message";
 
 const STUDIO_CANVAS_CARD: ToolLauncherCard = {
@@ -24,6 +25,8 @@ const STUDIO_CANVAS_CARD: ToolLauncherCard = {
   title: "Studio Canvas",
   desc: "Open extensible workspace",
 };
+
+const STATIC_PLUGIN_TYPES = new Set(PLUGIN_TOOL_CARDS.map((card) => card.type));
 
 interface RightSidebarWorkbenchProps {
   open: boolean;
@@ -60,9 +63,22 @@ export function RightSidebarWorkbench({
 }: RightSidebarWorkbenchProps) {
   const { width, sidebarRef, isResizing, startResizing, isMaximized, toggleMaximize, resetMaximize } =
     useResizableSidebar();
+  const [pluginAppCards, setPluginAppCards] = useState<PluginToolCard[]>([]);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
-  const launcherCards: ToolLauncherCard[] = [...PLUGIN_TOOL_CARDS, STUDIO_CANVAS_CARD];
+  const visiblePluginAppCards = useMemo(
+    () =>
+      pluginAppCards.filter(
+        (card) =>
+          !(card.pluginId?.endsWith("@builtin") && STATIC_PLUGIN_TYPES.has(card.type)),
+      ),
+    [pluginAppCards],
+  );
+  const availablePluginCards = useMemo(
+    () => [...PLUGIN_TOOL_CARDS, ...visiblePluginAppCards],
+    [visiblePluginAppCards],
+  );
+  const launcherCards: ToolLauncherCard[] = [...availablePluginCards, STUDIO_CANVAS_CARD];
 
   const handleLauncherSelect = (card: ToolLauncherCard) => {
     if (card.type === STUDIO_CANVAS_CARD.type) {
@@ -79,6 +95,35 @@ export function RightSidebarWorkbench({
   useEffect(() => {
     if (tabs.length === 0) resetMaximize();
   }, [resetMaximize, tabs.length]);
+
+  const refreshPluginApps = useCallback(async () => {
+    if (!open) return;
+    try {
+      const apps = await listPluginApps();
+      const cards = apps
+        .map(pluginAppToToolCard)
+        .filter((card): card is PluginToolCard => Boolean(card));
+      setPluginAppCards(cards);
+    } catch (error) {
+      console.warn("failed to load plugin apps", error);
+      setPluginAppCards([]);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    void refreshPluginApps();
+  }, [refreshPluginApps]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = () => {
+      void refreshPluginApps();
+    };
+    window.addEventListener(PLUGINS_CHANGED_EVENT, handler);
+    return () => {
+      window.removeEventListener(PLUGINS_CHANGED_EVENT, handler);
+    };
+  }, [refreshPluginApps]);
 
   const maximizedClasses = "fixed top-10 left-0 right-0 bottom-0 z-[60] border-l-0 shadow-none";
   const normalClasses = "relative z-10 flex-shrink-0";
@@ -116,7 +161,7 @@ export function RightSidebarWorkbench({
         onSelectTab={onSelectTab}
         onCloseTab={onCloseTab}
         onShowLauncher={onShowLauncher}
-        availablePlugins={PLUGIN_TOOL_CARDS}
+        availablePlugins={availablePluginCards}
         onSelectPlugin={(plugin) =>
           onSelectPlugin(plugin as PluginToolCard & { type: PluginType })
         }

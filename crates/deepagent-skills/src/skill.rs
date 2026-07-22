@@ -24,6 +24,8 @@ pub enum SkillOrigin {
     User,
     /// Installed from a package/marketplace.
     Installed,
+    /// Contributed by an enabled DeepAgent plugin.
+    Plugin,
     /// Registered programmatically (built-in / test).
     BuiltIn,
 }
@@ -35,6 +37,7 @@ impl SkillOrigin {
             SkillOrigin::Workspace => "workspace",
             SkillOrigin::User => "user",
             SkillOrigin::Installed => "installed",
+            SkillOrigin::Plugin => "plugin",
             SkillOrigin::BuiltIn => "built_in",
         }
     }

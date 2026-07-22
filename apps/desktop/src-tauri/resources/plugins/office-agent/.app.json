@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "id": "office-preview",
+      "title": "Office Preview",
+      "description": "Preview office files from the built-in plugin",
+      "placement": "right-sidebar",
+      "component": "builtin:file-preview",
+      "icon": "file-preview",
+      "category": "Productivity"
+    }
+  ]
+}

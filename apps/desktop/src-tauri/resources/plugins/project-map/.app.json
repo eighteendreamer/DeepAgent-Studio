@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "id": "project-map",
+      "title": "Project Map",
+      "description": "Open project structure and impact analysis",
+      "placement": "right-sidebar",
+      "component": "builtin:project-map",
+      "icon": "project-map",
+      "category": "Developer Tools"
+    }
+  ]
+}

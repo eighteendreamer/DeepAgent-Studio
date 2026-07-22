@@ -1,0 +1,21 @@
+{
+  "name": "side-chat",
+  "version": "0.1.0",
+  "description": "Keep a secondary chat surface beside the active workspace.",
+  "author": {
+    "name": "DeepAgent Studio"
+  },
+  "keywords": ["chat", "sidebar", "assistant"],
+  "commands": "commands",
+  "apps": ".app.json",
+  "interface": {
+    "displayName": "Side Chat",
+    "shortDescription": "Open a side chat panel",
+    "longDescription": "Side Chat declares the built-in companion conversation surface for quick notes, follow-up prompts, and parallel context.",
+    "developerName": "DeepAgent Studio",
+    "category": "Productivity",
+    "capabilities": ["App", "Interactive"],
+    "permissions": ["chat.use"],
+    "brandColor": "#7c3aed"
+  }
+}
