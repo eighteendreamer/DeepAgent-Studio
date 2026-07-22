@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { motion, AnimatePresence } from "framer-motion";
 import { getWelcomeName, initializeProject, isTauri, setSandboxMode, setWelcomeName as persistWelcomeName, type SandboxMode } from "../api";
 import { message } from "./message";
 import { useTranslation } from "react-i18next";
@@ -174,108 +173,81 @@ export function OnboardingWizard({ onComplete }: Props) {
   const doorSurface = activeIsDark
     ? "rgba(255, 255, 255, 0.06)"
     : "rgba(17, 24, 39, 0.055)";
+  const doorsOpen = animStage === "doorsOpen";
+  const lineVisible = animStage === "lineAppear" || doorsOpen;
+  const bridgeDotVisible = animStage === "welcomeOut" || lineVisible;
+  const cardExiting = animStage !== "idle";
 
   return (
     <div className="absolute top-10 inset-x-0 bottom-0 z-50 flex items-center justify-center overflow-hidden">
       {/* Keep a solid transition surface behind the animation. It fades only when
           the doors open, so the blurred card never exposes the app underneath. */}
-      <motion.div
+      <div
         aria-hidden="true"
-        initial={{ opacity: 1 }}
-        animate={{ opacity: animStage === 'doorsOpen' ? 0 : 1 }}
-        transition={{ duration: 1.5, ease: [0.76, 0, 0.24, 1] }}
-        className="absolute inset-0 z-0 bg-bg-base"
+        className={`onboarding-transition-surface absolute inset-0 z-0 bg-bg-base ${
+          doorsOpen ? "is-open" : ""
+        }`}
       />
 
       {/* Sliding Doors Backdrop */}
       <div className="absolute inset-0 z-10 pointer-events-none">
-        <motion.div
-            initial={{ width: '50%' }}
-            animate={{ width: animStage === 'doorsOpen' ? '0%' : '50%' }}
-            transition={{ duration: 1.5, ease: [0.76, 0, 0.24, 1] }}
+        <div
             className="absolute top-0 bottom-0 left-0 backdrop-blur-md overflow-visible"
             style={{
               backgroundColor: doorSurface,
+              width: doorsOpen ? "0%" : "50%",
             }}
           >
             <div className="absolute right-0 top-0 bottom-0 flex items-center">
-              <motion.div 
-                initial={{ height: '0%', opacity: 0 }} 
-                animate={{ 
-                  height: (animStage === 'lineAppear' || animStage === 'doorsOpen') ? '100%' : '0%',
-                  opacity: (animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0 
-                }}
-                transition={{ duration: 1.2, ease: "easeInOut" }}
-                className="w-[1px]"
+              <div
+                className={`onboarding-door-line w-[1px] ${lineVisible ? "is-visible" : ""}`}
                 style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }}
               />
             </div>
-          </motion.div>
-          <motion.div
-            initial={{ width: '50%' }}
-            animate={{ width: animStage === 'doorsOpen' ? '0%' : '50%' }}
-            transition={{ duration: 1.5, ease: [0.76, 0, 0.24, 1] }}
+          </div>
+          <div
             className="absolute top-0 bottom-0 right-0 backdrop-blur-md overflow-visible"
             style={{
               backgroundColor: doorSurface,
+              width: doorsOpen ? "0%" : "50%",
             }}
           >
             <div className="absolute left-0 top-0 bottom-0 flex items-center">
-              <motion.div 
-                initial={{ height: '0%', opacity: 0 }} 
-                animate={{ 
-                  height: (animStage === 'lineAppear' || animStage === 'doorsOpen') ? '100%' : '0%',
-                  opacity: (animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0 
-                }}
-                transition={{ duration: 1.2, ease: "easeInOut" }}
-                className="w-[1px]"
+              <div
+                className={`onboarding-door-line w-[1px] ${lineVisible ? "is-visible" : ""}`}
                 style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }}
               />
             </div>
-          </motion.div>
+          </div>
         </div>
 
         {/* The dot bridges the text exit and the vertical line without a blank frame. */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.4 }}
-          animate={{
-            opacity: (animStage === 'welcomeOut' || animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0,
-            scale: (animStage === 'welcomeOut' || animStage === 'lineAppear' || animStage === 'doorsOpen') ? 1 : 0.4,
-          }}
-          transition={{ duration: 0.35, ease: "easeOut" }}
-          className="absolute left-1/2 top-1/2 z-20 h-[1px] w-[1px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+        <div
+          className={`onboarding-transition-dot absolute left-1/2 top-1/2 z-20 h-[1px] w-[1px] -translate-x-1/2 -translate-y-1/2 rounded-full ${
+            bridgeDotVisible ? "is-visible" : ""
+          }`}
           style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }}
         />
 
       {/* Welcome Text */}
-      <AnimatePresence>
         {animStage === 'welcomeText' && (
-          <motion.div
-            initial={{ filter: 'blur(10px)', opacity: 0, scale: 0.95 }}
-            animate={{ filter: 'blur(0px)', opacity: 1, scale: 1 }}
-            exit={{ filter: 'blur(10px)', opacity: 0, scale: 1.05 }}
-            transition={{ duration: 1.2 }}
-            className={`absolute z-50 text-3xl font-bold tracking-wider ${themeStyles.textBase} pointer-events-none drop-shadow-lg`}
+          <div
+            className={`onboarding-welcome-text absolute z-50 text-3xl font-bold tracking-wider ${themeStyles.textBase} pointer-events-none drop-shadow-lg`}
           >
             {t("settings.personalize.greetingPrefix")}{welcomeName || t("settings.personalize.greetingDefaultName")}
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
 
-      <motion.div 
-        animate={animStage !== 'idle' ? { filter: 'blur(15px)', opacity: 0, scale: 0.9 } : { opacity: 1, scale: 1 }}
-        transition={{ duration: 0.6 }}
-        className={`w-full max-w-lg bg-bg-base rounded-3xl shadow-2xl border ${themeStyles.borderTheme} relative min-h-[400px] z-30`}
+      <div
+        className={`onboarding-card w-full max-w-lg bg-bg-base rounded-3xl shadow-2xl border ${themeStyles.borderTheme} relative min-h-[400px] z-30 ${
+          cardExiting ? "is-exiting" : ""
+        }`}
       >
-        <AnimatePresence mode="wait">
           {/* STEP 0: API Key */}
           {step === 0 && (
-            <motion.div
+            <div
               key="step0"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="p-10 flex flex-col h-full justify-center"
+              className="onboarding-step p-10 flex flex-col h-full justify-center"
             >
               <div className="text-center mb-8">
                 <img src="/logo.png" alt="Logo" className="w-20 h-20 mx-auto mb-6 object-contain" />
@@ -318,17 +290,14 @@ export function OnboardingWizard({ onComplete }: Props) {
                   )}
                 </button>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {/* STEP 1: Theme */}
           {step === 1 && (
-            <motion.div
+            <div
               key="step1"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="p-10 flex flex-col h-full"
+              className="onboarding-step p-10 flex flex-col h-full"
             >
               <div className="text-center mb-8">
                 <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
@@ -345,11 +314,9 @@ export function OnboardingWizard({ onComplete }: Props) {
                     { id: "dark", icon: ["fas", "moon"], label: "深色" },
                     { id: "system", icon: ["fas", "desktop"], label: "系统" },
                   ].map((tItem) => (
-                    <motion.button
+                    <button
                       key={tItem.id}
                       type="button"
-                      whileTap={{ scale: 0.98 }}
-                      transition={{ type: "spring", bounce: 0, duration: 0.18 }}
                       onClick={(event) => {
                         const mode = tItem.id as ThemeMode;
                         const rect = event.currentTarget.getBoundingClientRect();
@@ -367,7 +334,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                     >
                       <FontAwesomeIcon icon={tItem.icon as any} className="mb-2 text-lg" />
                       <span className="font-medium">{tItem.label}</span>
-                    </motion.button>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -380,17 +347,14 @@ export function OnboardingWizard({ onComplete }: Props) {
                   下一步
                 </button>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {/* STEP 2: Language */}
           {step === 2 && (
-            <motion.div
+            <div
               key="step2"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="p-10 flex flex-col h-full"
+              className="onboarding-step p-10 flex flex-col h-full"
             >
               <div className="text-center mb-8">
                 <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
@@ -415,19 +379,14 @@ export function OnboardingWizard({ onComplete }: Props) {
                     </span>
                   </button>
 
-                  <AnimatePresence>
                     {isLangDropdownOpen && (
                       <>
                         <div 
                           className="fixed inset-0 z-40" 
                           onClick={() => setIsLangDropdownOpen(false)}
                         ></div>
-                        <motion.div
-                          initial={{ opacity: 0, y: -10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          transition={{ duration: 0.15 }}
-                          className={`absolute z-50 mt-2 w-full bg-bg-base rounded-xl shadow-lg border ${themeStyles.borderTheme} overflow-hidden max-h-60 overflow-y-auto`}
+                        <div
+                          className={`popover-menu absolute z-50 mt-2 w-full bg-bg-base rounded-xl shadow-lg border ${themeStyles.borderTheme} overflow-hidden max-h-60 overflow-y-auto`}
                         >
                           <ul className="py-1">
                             {SUPPORTED_LANGUAGES.map((l) => (
@@ -451,10 +410,9 @@ export function OnboardingWizard({ onComplete }: Props) {
                               </li>
                             ))}
                           </ul>
-                        </motion.div>
+                        </div>
                       </>
                     )}
-                  </AnimatePresence>
                 </div>
               </div>
 
@@ -472,17 +430,14 @@ export function OnboardingWizard({ onComplete }: Props) {
                   下一步
                 </button>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {/* STEP 3: Sandbox */}
           {step === 3 && (
-            <motion.div
+            <div
               key="step3"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="p-10 flex flex-col h-full"
+              className="onboarding-step p-10 flex flex-col h-full"
             >
               <div className="text-center mb-8">
                 <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
@@ -539,17 +494,14 @@ export function OnboardingWizard({ onComplete }: Props) {
                   下一步
                 </button>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {/* STEP 4: Work Mode */}
           {step === 4 && (
-            <motion.div
+            <div
               key="step4"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="p-10 flex flex-col h-full"
+              className="onboarding-step p-10 flex flex-col h-full"
             >
               <div className="text-center mb-8">
                 <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
@@ -605,10 +557,9 @@ export function OnboardingWizard({ onComplete }: Props) {
                   {isFinishing ? "保存中..." : "进入系统"}
                 </button>
               </div>
-            </motion.div>
+            </div>
           )}
-        </AnimatePresence>
-      </motion.div>
+      </div>
     </div>
   );
 }

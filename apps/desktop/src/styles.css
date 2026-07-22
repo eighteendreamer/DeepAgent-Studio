@@ -292,6 +292,65 @@ button:focus {
   will-change: opacity, transform;
 }
 
+.onboarding-transition-surface {
+  opacity: 1;
+  transition: opacity 1.5s cubic-bezier(0.76, 0, 0.24, 1);
+}
+
+.onboarding-transition-surface.is-open {
+  opacity: 0;
+}
+
+.onboarding-door-line {
+  height: 0%;
+  opacity: 0;
+  transition:
+    height 1.2s ease-in-out,
+    opacity 1.2s ease-in-out;
+}
+
+.onboarding-door-line.is-visible {
+  height: 100%;
+  opacity: 1;
+}
+
+.onboarding-transition-dot {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.4);
+  transition:
+    opacity 350ms ease-out,
+    transform 350ms ease-out;
+}
+
+.onboarding-transition-dot.is-visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.onboarding-welcome-text {
+  animation: onboarding-welcome-text-in 1.2s ease-out;
+}
+
+.onboarding-card {
+  opacity: 1;
+  transform: scale(1);
+  filter: blur(0);
+  transition:
+    opacity 600ms ease,
+    transform 600ms ease,
+    filter 600ms ease;
+}
+
+.onboarding-card.is-exiting {
+  opacity: 0;
+  transform: scale(0.9);
+  filter: blur(15px);
+}
+
+.onboarding-step {
+  animation: onboarding-step-in 160ms ease-out;
+}
+
 @keyframes view-frame-in {
   from {
     opacity: 0;
@@ -364,6 +423,30 @@ button:focus {
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes onboarding-welcome-text-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+    filter: blur(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes onboarding-step-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 
