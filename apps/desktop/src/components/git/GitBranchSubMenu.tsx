@@ -45,7 +45,7 @@ export function GitBranchSubMenu({ projectPath, onOpenWorkbench }: GitBranchSubM
         return false;
       }
       if (result) {
-        setOperationResult(result.stdout.trim() || t("git.operationCompleted", { action: t(`git.actions.${action}`) }));
+        setOperationResult(t("git.operationCompleted", { action: t(`git.actions.${action}`) }));
       }
       await refresh();
       return true;
@@ -67,7 +67,7 @@ export function GitBranchSubMenu({ projectPath, onOpenWorkbench }: GitBranchSubM
       const ok = window.confirm(t("git.switchBranchConfirm", { branch: branch.name }));
       if (!ok) return;
     }
-    await runOperation("checkout", async () => gitCheckoutBranch(projectPath, branch.name));
+    await runOperation("checkout", async () => gitCheckoutBranch(projectPath, branch.full_name));
   };
 
   const openCreateBranchDialog = () => {

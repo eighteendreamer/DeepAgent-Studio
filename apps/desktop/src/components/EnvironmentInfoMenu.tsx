@@ -124,9 +124,9 @@ export function EnvironmentInfoMenu({
         alignOffset={-128}
         sideOffset={8}
         collisionPadding={8}
-        className="w-[300px] p-0"
+        className="w-[270px] p-0"
       >
-        <div className="flex max-h-[min(440px,calc(100vh-88px))] flex-col overflow-visible px-5 py-5">
+        <div className="flex max-h-[min(440px,calc(100vh-88px))] flex-col overflow-visible px-4 py-5">
           <div className="mb-3 flex h-6 items-center justify-between">
             <div className="text-[13px] font-normal text-text-secondary">{t("chatView.environmentInfo")}</div>
             <button

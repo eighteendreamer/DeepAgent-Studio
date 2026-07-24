@@ -85,7 +85,11 @@ impl GitService {
             let mut parts = line.split('\x1f');
             let full_name = parts.next().unwrap_or("").trim().to_string();
             let short = parts.next().unwrap_or("").trim().to_string();
-            if full_name.is_empty() || short.is_empty() || short.ends_with("/HEAD") {
+            if full_name.is_empty()
+                || short.is_empty()
+                || is_remote_head_ref(&full_name)
+                || short.ends_with("/HEAD")
+            {
                 continue;
             }
             let kind = if full_name.starts_with("refs/remotes/") {
@@ -371,9 +375,27 @@ impl GitService {
             } else {
                 normalized.to_string()
             };
+            let Some(local_branch) = local_branch_for_remote_ref(&remote_ref) else {
+                return Ok(operation_failure(
+                    "git switch --track",
+                    "remote branch name is invalid",
+                ));
+            };
+            if ref_exists(&repo_root, &format!("refs/heads/{local_branch}")) {
+                return Ok(run_git_operation(
+                    &repo_root,
+                    vec!["switch".to_string(), local_branch.to_string()],
+                ));
+            }
             return Ok(run_git_operation(
                 &repo_root,
-                vec!["switch".to_string(), "--track".to_string(), remote_ref],
+                vec![
+                    "switch".to_string(),
+                    "--track".to_string(),
+                    "-c".to_string(),
+                    local_branch.to_string(),
+                    remote_ref,
+                ],
             ));
         }
         Ok(run_git_operation(
@@ -1382,6 +1404,19 @@ fn normalize_branch_ref(name: &str) -> String {
     name.strip_prefix("refs/heads/").unwrap_or(name).to_string()
 }
 
+fn is_remote_head_ref(full_name: &str) -> bool {
+    full_name.starts_with("refs/remotes/") && full_name.ends_with("/HEAD")
+}
+
+fn local_branch_for_remote_ref(remote_ref: &str) -> Option<&str> {
+    let short = remote_ref
+        .trim()
+        .strip_prefix("refs/remotes/")
+        .unwrap_or(remote_ref.trim());
+    let (_, branch) = short.split_once('/')?;
+    (!branch.is_empty()).then_some(branch)
+}
+
 fn is_untracked_file(repo_root: &Path, file_path: &str) -> bool {
     let Some(path) = safe_repo_file_path(repo_root, file_path) else {
         return false;
@@ -2379,6 +2414,23 @@ mod tests {
         );
         assert_eq!(normalize_branch_ref("origin/main"), "origin/main");
         assert_eq!(normalize_branch_ref("  main  "), "main");
+    }
+
+    #[test]
+    fn identifies_remote_head_aliases_by_full_ref() {
+        assert!(is_remote_head_ref("refs/remotes/origin/HEAD"));
+        assert!(!is_remote_head_ref("refs/remotes/origin/main"));
+        assert!(!is_remote_head_ref("refs/heads/HEAD"));
+    }
+
+    #[test]
+    fn derives_local_branch_name_from_remote_ref() {
+        assert_eq!(local_branch_for_remote_ref("origin/main"), Some("main"));
+        assert_eq!(
+            local_branch_for_remote_ref("refs/remotes/upstream/feature/git"),
+            Some("feature/git")
+        );
+        assert_eq!(local_branch_for_remote_ref("origin"), None);
     }
 
     #[test]
