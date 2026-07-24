@@ -1,5 +1,4 @@
-import { useState, useEffect } from "react";
-import { flushSync } from "react-dom";
+import { useState, useEffect, useRef } from "react";
 import deepmerge from "deepmerge";
 
 export type ThemeMode = "light" | "dark" | "system";
@@ -26,22 +25,12 @@ export interface ThemeConfig {
   dark: ThemeConfigDetails;
 }
 
-const THEME_TRANSITION_DURATION_MS = 2400;
-
-interface ThemeRippleLayer {
-  element: HTMLDivElement;
-  animationFrame: number | null;
-  id: number;
-}
-
-interface ActiveThemeRippleStack {
-  container: HTMLDivElement;
-  latestLayerId: number;
-  layers: ThemeRippleLayer[];
-}
-
-let activeThemeRippleStack: ActiveThemeRippleStack | null = null;
-let nextThemeRippleId = 1;
+const THEME_TRANSITION_DURATION_MS = 600;
+const THEME_COLOR_FADE_DURATION_MS = 240;
+let activeThemeRipple: Animation | null = null;
+let activeThemeRippleElement: HTMLDivElement | null = null;
+let activeThemeCommitTimer: number | null = null;
+let activeThemeColorFadeTimer: number | null = null;
 
 export const DEFAULT_THEME_CONFIG: ThemeConfig = {
   mode: "system",
@@ -99,12 +88,6 @@ function applyCssVariables(theme: ThemeConfigDetails, isDark: boolean) {
   }
 }
 
-function applyCssVariablesToElement(element: HTMLElement, theme: ThemeConfigDetails) {
-  for (const [key, value] of Object.entries(theme.cssVariables)) {
-    element.style.setProperty(key, value);
-  }
-}
-
 function resolveIsDark(mode: ThemeMode): boolean {
   return mode === "dark" || (
     mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -143,118 +126,72 @@ function computeCssVariables(details: Omit<ThemeConfigDetails, 'cssVariables'>, 
   };
 }
 
-function removeActiveThemeRippleStack() {
-  if (!activeThemeRippleStack) return;
-  for (const layer of activeThemeRippleStack.layers) {
-    if (layer.animationFrame !== null) {
-      cancelAnimationFrame(layer.animationFrame);
-    }
+function playThemeRipple(origin: ThemeSwitchOrigin, color: string, onCovered: () => void) {
+  activeThemeRipple?.cancel();
+  activeThemeRippleElement?.remove();
+  if (activeThemeCommitTimer !== null) {
+    window.clearTimeout(activeThemeCommitTimer);
   }
-  activeThemeRippleStack.container.remove();
-  activeThemeRippleStack = null;
-}
 
-function easeThemeReveal(t: number) {
-  return t < 0.5
-    ? 4 * t * t * t
-    : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-function createThemeSnapshot(
-  className: string,
-  theme: ThemeConfigDetails,
-  isDark: boolean,
-) {
-  const appRoot = document.getElementById("root");
-  if (!appRoot) return null;
-
-  const wrapper = document.createElement("div");
-  wrapper.className = className;
-  if (isDark) wrapper.classList.add("dark");
-  applyCssVariablesToElement(wrapper, theme);
-
-  const snapshot = appRoot.cloneNode(true) as HTMLElement;
-  snapshot.setAttribute("aria-hidden", "true");
-  snapshot.classList.add("theme-switch-ripple-snapshot");
-  wrapper.appendChild(snapshot);
-
-  return wrapper;
-}
-
-function ensureThemeRippleStack(currentTheme: ThemeConfigDetails, currentIsDark: boolean) {
-  if (activeThemeRippleStack) return activeThemeRippleStack;
-  if (!document.body) return null;
-
-  const container = document.createElement("div");
-  container.className = "theme-switch-ripple-stack";
-
-  const base = createThemeSnapshot("theme-switch-ripple-base", currentTheme, currentIsDark);
-  if (!base) return null;
-
-  container.appendChild(base);
-  document.body.appendChild(container);
-
-  activeThemeRippleStack = {
-    container,
-    latestLayerId: 0,
-    layers: [],
-  };
-  return activeThemeRippleStack;
-}
-
-function appendThemeRippleLayer(
-  origin: ThemeSwitchOrigin,
-  targetTheme: ThemeConfigDetails,
-  targetIsDark: boolean,
-) {
-  const stack = activeThemeRippleStack;
-  if (!stack) return;
-
-  const x = Number.isFinite(origin.x) ? origin.x : window.innerWidth / 2;
-  const y = Number.isFinite(origin.y) ? origin.y : window.innerHeight / 2;
-  const maxRadius = Math.max(
-    Math.hypot(x, y),
-    Math.hypot(window.innerWidth - x, y),
-    Math.hypot(x, window.innerHeight - y),
-    Math.hypot(window.innerWidth - x, window.innerHeight - y),
+  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  const x = Number.isFinite(origin.x) ? origin.x : viewportWidth / 2;
+  const y = Number.isFinite(origin.y) ? origin.y : viewportHeight / 2;
+  const radius = Math.hypot(
+    Math.max(x, viewportWidth - x),
+    Math.max(y, viewportHeight - y),
   ) + 2;
 
-  const layer = createThemeSnapshot("theme-switch-ripple-layer", targetTheme, targetIsDark);
-  if (!layer) return;
+  const ripple = document.createElement("div");
+  ripple.className = "theme-switch-ripple";
+  ripple.style.width = `${radius * 2}px`;
+  ripple.style.height = `${radius * 2}px`;
+  ripple.style.left = `${x - radius}px`;
+  ripple.style.top = `${y - radius}px`;
+  ripple.style.backgroundColor = color;
+  document.body.appendChild(ripple);
 
-  const layerId = nextThemeRippleId++;
-  stack.latestLayerId = layerId;
-  stack.container.appendChild(layer);
+  const animation = ripple.animate(
+    [
+      { transform: "scale(0)", opacity: 0.08, offset: 0 },
+      { transform: "scale(1)", opacity: 0.18, offset: 0.82 },
+      { transform: "scale(1)", opacity: 0, offset: 1 },
+    ],
+    {
+      duration: THEME_TRANSITION_DURATION_MS,
+      easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+      fill: "forwards",
+    },
+  );
 
-  const startedAt = performance.now();
-  const setMask = (radius: number) => {
-    const mask = `radial-gradient(circle at ${x}px ${y}px, black 0px, black ${radius}px, transparent ${radius + 1}px)`;
-    layer.style.setProperty("-webkit-mask-image", mask);
-    layer.style.maskImage = mask;
-  };
+  activeThemeRipple = animation;
+  activeThemeRippleElement = ripple;
+  activeThemeCommitTimer = window.setTimeout(() => {
+    activeThemeCommitTimer = null;
+    onCovered();
+  }, THEME_TRANSITION_DURATION_MS * 0.82);
 
-  const tick = (now: number) => {
-    const progress = Math.min((now - startedAt) / THEME_TRANSITION_DURATION_MS, 1);
-    setMask(easeThemeReveal(progress) * maxRadius);
-    const activeLayer = activeThemeRippleStack?.layers.find((item) => item.id === layerId);
-    if (progress < 1 && activeLayer) {
-      activeLayer.animationFrame = requestAnimationFrame(tick);
-      return;
-    }
-    if (activeLayer) {
-      activeLayer.animationFrame = null;
-    }
-    if (activeThemeRippleStack?.latestLayerId === layerId) {
-      removeActiveThemeRippleStack();
-    }
-  };
+  animation.finished
+    .catch(() => undefined)
+    .finally(() => {
+      if (activeThemeRipple === animation) {
+        activeThemeRipple = null;
+        activeThemeRippleElement = null;
+      }
+      ripple.remove();
+    });
+}
 
-  setMask(0);
-  stack.layers.push({
-    element: layer,
-    animationFrame: requestAnimationFrame(tick),
-    id: layerId,
-  });
+function beginThemeColorFade() {
+  const root = document.documentElement;
+  if (activeThemeColorFadeTimer !== null) {
+    window.clearTimeout(activeThemeColorFadeTimer);
+  }
+  root.classList.add("theme-color-transition");
+  activeThemeColorFadeTimer = window.setTimeout(() => {
+    root.classList.remove("theme-color-transition");
+    activeThemeColorFadeTimer = null;
+  }, THEME_COLOR_FADE_DURATION_MS);
 }
 
 export function useTheme() {
@@ -271,6 +208,8 @@ export function useTheme() {
   });
 
   const [activeIsDark, setActiveIsDark] = useState<boolean>(false);
+  const configRef = useRef(config);
+  const displayedIsDarkRef = useRef(resolveIsDark(config.mode));
 
   useEffect(() => {
     const handleSystemChange = (e: MediaQueryListEvent) => {
@@ -309,6 +248,8 @@ export function useTheme() {
   const commitConfig = (next: ThemeConfig) => {
     const updated = normalizeConfig(next);
     const isDark = resolveIsDark(updated.mode);
+    configRef.current = updated;
+    displayedIsDarkRef.current = isDark;
     applyCssVariables(isDark ? updated.dark : updated.light, isDark);
     setActiveIsDark(isDark);
     setConfigState(updated);
@@ -318,37 +259,35 @@ export function useTheme() {
 
   const updateConfig = (newConfig: Partial<ThemeConfig> | ((prev: ThemeConfig) => ThemeConfig)) => {
     const next = typeof newConfig === "function"
-      ? newConfig(config)
-      : { ...config, ...newConfig };
+      ? newConfig(configRef.current)
+      : { ...configRef.current, ...newConfig };
     commitConfig(next);
   };
 
   const switchTheme = (mode: ThemeMode, origin: ThemeSwitchOrigin) => {
-    if (mode === config.mode) return;
+    const currentConfig = configRef.current;
+    if (mode === currentConfig.mode) return;
 
-    const nextConfig = { ...config, mode };
-    const currentIsDark = resolveIsDark(config.mode);
+    const nextConfig = normalizeConfig({ ...currentConfig, mode });
     const nextIsDark = resolveIsDark(mode);
-    const root = document.documentElement;
-    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const commit = () => commitConfig(nextConfig);
-    const currentTheme = currentIsDark ? config.dark : config.light;
+    configRef.current = nextConfig;
 
-    // Switching to "system" can change only the selected control while keeping
-    // the same effective palette. Avoid a full-screen reveal in that case.
-    if (prefersReducedMotion || currentIsDark === nextIsDark) {
-      removeActiveThemeRippleStack();
-      commit();
+    if (displayedIsDarkRef.current === nextIsDark) {
+      activeThemeRipple?.cancel();
+      activeThemeRippleElement?.remove();
+      if (activeThemeCommitTimer !== null) {
+        window.clearTimeout(activeThemeCommitTimer);
+        activeThemeCommitTimer = null;
+      }
+      commitConfig(nextConfig);
       return;
     }
 
-    const normalizedNextConfig = normalizeConfig(nextConfig);
-    const targetTheme = nextIsDark ? normalizedNextConfig.dark : normalizedNextConfig.light;
-
-    root.style.setProperty("--theme-switch-duration", `${THEME_TRANSITION_DURATION_MS}ms`);
-    ensureThemeRippleStack(currentTheme, currentIsDark);
-    flushSync(commit);
-    appendThemeRippleLayer(origin, targetTheme, nextIsDark);
+    const nextTheme = nextIsDark ? nextConfig.dark : nextConfig.light;
+    playThemeRipple(origin, nextTheme.bg, () => {
+      beginThemeColorFade();
+      commitConfig(nextConfig);
+    });
   };
 
   const updateThemeDetails = (isDarkTheme: boolean, updates: Partial<Omit<ThemeConfigDetails, 'cssVariables'>>) => {

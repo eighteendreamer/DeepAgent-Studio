@@ -22,32 +22,30 @@
   }
 }
 
-.theme-switch-ripple-stack {
+.theme-switch-ripple {
   position: fixed;
-  inset: 0;
   z-index: 2147483000;
+  border-radius: 50%;
   pointer-events: none;
-  overflow: hidden;
+  contain: strict;
+  transform: scale(0);
+  transform-origin: center;
+  will-change: transform, opacity;
 }
 
-.theme-switch-ripple-base,
-.theme-switch-ripple-layer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  overflow: hidden;
-  background: var(--theme-bg, #ffffff);
-}
-
-.theme-switch-ripple-layer {
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-}
-
-.theme-switch-ripple-snapshot {
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
+html.theme-color-transition body,
+html.theme-color-transition #root,
+html.theme-color-transition .app-main-surface,
+html.theme-color-transition .bg-white,
+html.theme-color-transition .bg-gray-50,
+html.theme-color-transition .bg-gray-100,
+html.theme-color-transition .bg-sidebar-bg,
+html.theme-color-transition .border-border-theme,
+html.theme-color-transition .text-text-base,
+html.theme-color-transition .text-text-secondary {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-duration: 240ms;
+  transition-timing-function: ease-out;
 }
 
 .dark .bg-white { background-color: var(--theme-bg) !important; }
