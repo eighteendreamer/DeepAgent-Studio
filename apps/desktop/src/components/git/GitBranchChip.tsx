@@ -11,6 +11,7 @@ import { GitBranchMenuContent, formatAheadBehind } from "./GitBranchMenuContent"
 interface Props {
   projectPath?: string | null;
   compact?: boolean;
+  compactMenu?: boolean;
   className?: string;
   variant?: "chip" | "row" | "env";
   dropdownPlacement?: "top" | "bottom";
@@ -22,6 +23,7 @@ interface Props {
 export function GitBranchChip({
   projectPath,
   compact = false,
+  compactMenu = false,
   className = "",
   variant = "chip",
   dropdownPlacement = "top",
@@ -184,6 +186,7 @@ export function GitBranchChip({
           } ${dropdownAlign === "right" ? "right-0" : "left-0"}`}
         >
           <GitBranchMenuContent
+            small={compactMenu}
             branches={branches}
             loading={loading}
             busy={busy}

@@ -459,7 +459,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                   )}
               </div>
 
-              <GitBranchChip projectPath={activeProjectPath} />
+              <GitBranchChip projectPath={activeProjectPath} compactMenu />
               </div>
 
               {/* Right-aligned: live DeepSeek balance chip. */}
