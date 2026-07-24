@@ -647,11 +647,6 @@ export function App() {
             });
           }
           refreshSessions();
-          if (payload.status === "failed") {
-            message.error(`会话运行失败：${payload.error ?? "unknown error"}`);
-          } else {
-            message.success("会话已完成");
-          }
         })
       )
       .then((fn) => {

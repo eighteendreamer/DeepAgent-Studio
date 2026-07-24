@@ -250,10 +250,10 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
     return { x: (sx - tr.x) / tr.k, y: (sy - tr.y) / tr.k };
   };
 
-  const localPoint = (e: React.PointerEvent | React.WheelEvent) => {
+  const localPoint = useCallback((e: React.PointerEvent | WheelEvent) => {
     const rect = containerRef.current?.getBoundingClientRect();
     return { x: e.clientX - (rect?.left ?? 0), y: e.clientY - (rect?.top ?? 0) };
-  };
+  }, []);
 
   // --- pointer interaction --------------------------------------------------
   const onPointerDownNode = (e: React.PointerEvent, node: SimNode) => {
@@ -312,18 +312,26 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
     panRef.current = null;
   };
 
-  const onWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const p = localPoint(e);
-    const tr = transformRef.current;
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const k = Math.max(0.25, Math.min(3, tr.k * factor));
-    // Zoom around the cursor.
-    const wx = (p.x - tr.x) / tr.k;
-    const wy = (p.y - tr.y) / tr.k;
-    transformRef.current = { k, x: p.x - wx * k, y: p.y - wy * k };
-    setTick((n) => n + 1);
-  };
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const p = localPoint(e);
+      const tr = transformRef.current;
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const k = Math.max(0.25, Math.min(3, tr.k * factor));
+      // Zoom around the cursor.
+      const wx = (p.x - tr.x) / tr.k;
+      const wy = (p.y - tr.y) / tr.k;
+      transformRef.current = { k, x: p.x - wx * k, y: p.y - wy * k };
+      setTick((n) => n + 1);
+    };
+
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [localPoint]);
 
   const resetView = () => {
     transformRef.current = { x: 0, y: 0, k: 1 };
@@ -399,7 +407,6 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerLeave={onPointerUp}
-        onWheel={onWheel}
       >
         <g transform={`translate(${tr.x},${tr.y}) scale(${tr.k})`}>
           {/* Links */}
