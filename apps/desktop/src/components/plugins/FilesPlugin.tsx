@@ -671,24 +671,26 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
 
   return (
     <div className="flex h-full w-full flex-col bg-white">
-      <div className="flex h-8 items-center justify-between border-b border-border-theme px-3">
-        <div className="flex min-w-0 items-center text-[12px] text-text-secondary">
-          {breadcrumbSegments.map((segment, index) => (
-            <div key={`${segment}-${index}`} className="flex min-w-0 items-center">
-              {index > 0 ? (
-                <FontAwesomeIcon icon={["fas", "chevron-right"]} className="mx-1.5 text-[9px] text-[#a0a7b4]" />
-              ) : null}
-              <span
-                className={`truncate ${index === breadcrumbSegments.length - 1 ? "font-semibold text-text-base" : ""}`}
-                title={segment}
-              >
-                {segment}
-              </span>
-            </div>
-          ))}
+      <div className="grid h-8 grid-cols-[minmax(0,1fr)_auto] items-center border-b border-border-theme px-3">
+        <div className="min-w-0 overflow-hidden pr-3">
+          <div className="flex min-w-0 items-center overflow-hidden text-[12px] text-text-secondary">
+            {breadcrumbSegments.map((segment, index) => (
+              <div key={`${segment}-${index}`} className="flex min-w-0 items-center">
+                {index > 0 ? (
+                  <FontAwesomeIcon icon={["fas", "chevron-right"]} className="mx-1.5 text-[9px] text-[#a0a7b4]" />
+                ) : null}
+                <span
+                  className={`truncate ${index === breadcrumbSegments.length - 1 ? "font-semibold text-text-base" : ""}`}
+                  title={segment}
+                >
+                  {segment}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
 
-        <div className="ml-3 flex flex-shrink-0 items-center gap-1.5">
+        <div className="flex h-8 flex-none items-center justify-end gap-1.5 whitespace-nowrap">
           <div ref={moreMenuRef} className="relative">
             <button
               type="button"

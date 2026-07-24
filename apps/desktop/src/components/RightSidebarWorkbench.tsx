@@ -131,78 +131,82 @@ export function RightSidebarWorkbench({
     };
   }, [refreshPluginApps]);
 
-  const maximizedClasses = "fixed top-10 left-0 right-0 bottom-0 z-[60] border-l-0 shadow-none";
+  const maximizedClasses = "absolute inset-0 z-40 border-l-0 shadow-none";
   const normalClasses = "relative z-10 flex-shrink-0";
 
   if (!presence.shouldRender) return null;
 
   const visibleWidth = presence.isVisible || isMaximized ? width : 0;
+  const headerExtraActions =
+    activeTab?.type === "files" || extraActions ? (
+      <>
+        {activeTab?.type === "files" ? (
+          <button
+            type="button"
+            onClick={toggleMaximize}
+            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+            title={isMaximized ? "退出全屏文件视图" : "全屏文件视图"}
+          >
+            <FontAwesomeIcon
+              icon={["fas", isMaximized ? "compress" : "expand"]}
+              className="text-[12px]"
+            />
+          </button>
+        ) : null}
+        {extraActions}
+      </>
+    ) : null;
 
   return (
     <aside
       ref={sidebarRef}
       className={`right-sidebar-workbench h-full overflow-hidden ${
         presence.isClosing ? "is-closing" : ""
-      } ${isMaximized ? maximizedClasses : normalClasses}`}
+      } ${isResizing ? "is-resizing" : ""} ${
+        isMaximized ? `${maximizedClasses} is-maximized` : normalClasses
+      }`}
       style={isMaximized ? { width: "100%" } : { width: visibleWidth }}
     >
       <div
-        className="flex h-full flex-col overflow-hidden border-l border-border-theme bg-white shadow-[-12px_0_30px_rgba(15,23,42,0.06)]"
+        className="relative flex h-full flex-col overflow-hidden border-l border-border-theme bg-white"
         style={isMaximized ? { width: "100%" } : { width, minWidth: 360 }}
       >
-      {/* Drag handle on the left edge (hidden in maximize mode). */}
-      {!isMaximized && (
-      <div
-        className={`panel-resize-handle-col ${isResizing ? "is-active" : ""}`}
-        onMouseDown={(e) => {
-          e.preventDefault();
-          startResizing();
-        }}
-      />
-      )}
-
-      <SidebarPluginHeader
-        tabs={visibleTabs}
-        activeTabId={activeTabId}
-        onSelectTab={onSelectTab}
-        onCloseTab={onCloseTab}
-        onShowLauncher={onShowLauncher}
-        availablePlugins={availablePluginCards}
-        onSelectPlugin={(plugin) =>
-          onSelectPlugin(plugin as PluginToolCard & { type: PluginType })
-        }
-        reserveRightActionsSpace
-        extraActions={
-          <>
-            {activeTab?.type === "files" ? (
-              <button
-                type="button"
-                onClick={toggleMaximize}
-                className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
-                title={isMaximized ? "退出全屏文件视图" : "全屏文件视图"}
-              >
-                <FontAwesomeIcon
-                  icon={["fas", isMaximized ? "compress" : "expand"]}
-                  className="text-[12px]"
-                />
-              </button>
-            ) : null}
-            {extraActions}
-          </>
-        }
-      />
-
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {activeTabId === "new" || !activeTab ? (
-          <ToolLauncherPanel
-            cards={launcherCards}
-            onSelect={handleLauncherSelect}
-            variant="sidebar"
+        {/* Drag handle on the left edge (hidden in maximize mode). */}
+        {!isMaximized && (
+          <div
+            className={`panel-resize-handle-col ${isResizing ? "is-active" : ""}`}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              startResizing();
+            }}
           />
-        ) : (
-          renderPluginTab(activeTab, renderContext)
         )}
-      </div>
+
+        <SidebarPluginHeader
+          tabs={visibleTabs}
+          activeTabId={activeTabId}
+          onSelectTab={onSelectTab}
+          onCloseTab={onCloseTab}
+          onShowLauncher={onShowLauncher}
+          availablePlugins={availablePluginCards}
+          onSelectPlugin={(plugin) =>
+            onSelectPlugin(plugin as PluginToolCard & { type: PluginType })
+          }
+          reserveRightActionsSpace
+          extraActions={headerExtraActions}
+        />
+
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {activeTabId === "new" || !activeTab ? (
+            <ToolLauncherPanel
+              cards={launcherCards}
+              onSelect={handleLauncherSelect}
+              variant="sidebar"
+            />
+          ) : (
+            renderPluginTab(activeTab, renderContext)
+          )}
+        </div>
       </div>
     </aside>
   );

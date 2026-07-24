@@ -122,7 +122,11 @@ export function SidebarPluginHeader({
           </div>
         </div>
 
-        <div className="flex flex-none items-center gap-2">
+        <div
+          className={`flex flex-none items-center justify-end gap-2 ${
+            extraActions ? "w-[78px]" : "w-7"
+          }`}
+        >
           <div className="relative flex-shrink-0" ref={menuRef}>
             <button
               type="button"
@@ -144,32 +148,30 @@ export function SidebarPluginHeader({
             </button>
 
             {isMenuOpen && availablePlugins && (
-                <div
-                  className="popover-menu absolute right-0 top-full mt-1 flex w-56 origin-top-right flex-col rounded-xl border border-border-theme bg-white py-1.5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-[100]"
-                >
-                  {availablePlugins.map((plugin) => (
-                    <button
-                      key={plugin.id ?? `${plugin.type}:${plugin.title}`}
-                      type="button"
-                      onClick={() => {
-                        setIsMenuOpen(false);
-                        onSelectPlugin?.(plugin);
-                      }}
-                      className="flex w-full items-center px-4 py-2 text-left transition-colors hover:bg-gray-50"
-                    >
-                      <div className="mr-3 flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
-                        <FontAwesomeIcon icon={plugin.icon} className="text-[12px]" />
-                      </div>
-                      <span className="text-[13px] font-medium text-text-base">
-                        {explicitLabel(plugin.title, plugin.type) ||
-                          t(`chatView.tools.${plugin.type}`, {
-                            defaultValue: toolLabel(plugin.type),
-                          })}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div className="popover-menu absolute right-0 top-full mt-1 flex w-56 origin-top-right flex-col rounded-xl border border-border-theme bg-white py-1.5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-[100]">
+                {availablePlugins.map((plugin) => (
+                  <button
+                    key={plugin.id ?? `${plugin.type}:${plugin.title}`}
+                    type="button"
+                    onClick={() => {
+                      setIsMenuOpen(false);
+                      onSelectPlugin?.(plugin);
+                    }}
+                    className="flex w-full items-center px-4 py-2 text-left transition-colors hover:bg-gray-50"
+                  >
+                    <div className="mr-3 flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
+                      <FontAwesomeIcon icon={plugin.icon} className="text-[12px]" />
+                    </div>
+                    <span className="text-[13px] font-medium text-text-base">
+                      {explicitLabel(plugin.title, plugin.type) ||
+                        t(`chatView.tools.${plugin.type}`, {
+                          defaultValue: toolLabel(plugin.type),
+                        })}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {extraActions && (

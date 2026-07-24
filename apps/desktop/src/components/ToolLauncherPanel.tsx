@@ -83,11 +83,11 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
 
   return (
     <div className={`w-full h-full overflow-y-auto ${isSidebar ? "bg-white" : ""}`}>
-      <div className={isSidebar ? "px-5 py-5" : "px-6 py-5"}>
+      <div className={isSidebar ? "px-4 py-3" : "px-6 py-5"}>
         <div
           className={
             isSidebar
-              ? "flex flex-col gap-3"
+              ? "flex flex-col divide-y divide-border-theme/70"
               : "grid gap-3 grid-cols-[repeat(auto-fit,minmax(190px,1fr))] max-w-5xl mx-auto"
           }
         >
@@ -112,16 +112,16 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
                   key={`${card.type}:${card.title}`}
                   type="button"
                   onClick={() => onSelect(card)}
-                  className="group grid min-h-[72px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl border border-border-theme bg-white px-4 py-3 text-left transition-all duration-200 hover:border-primary/45 hover:bg-[#fbfdff] hover:shadow-[0_10px_26px_rgba(15,23,42,0.08)]"
+                  className="group grid min-h-[58px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 px-2.5 py-2.5 text-left transition-colors duration-150 hover:bg-gray-50"
                 >
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105">
-                    <FontAwesomeIcon icon={card.icon} className="text-[17px]" />
+                  <div className="flex h-8 w-8 items-center justify-center text-primary">
+                    <FontAwesomeIcon icon={card.icon} className="text-[16px]" />
                   </div>
                   <div className="min-w-0">
-                    <div className="truncate text-[14px] font-semibold text-text-base transition-colors group-hover:text-primary">
+                    <div className="truncate text-[13px] font-medium text-text-base transition-colors group-hover:text-primary">
                       {translatedTitle}
                     </div>
-                    <div className="mt-0.5 truncate text-[12px] leading-5 text-text-secondary">
+                    <div className="mt-0.5 truncate text-[12px] leading-4 text-text-secondary">
                       {translatedDesc}
                     </div>
                   </div>
@@ -131,7 +131,7 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
                         {shortcut}
                       </span>
                     )}
-                    <div className="flex h-7 w-7 items-center justify-center rounded-full text-text-secondary transition-all duration-200 group-hover:bg-primary/10 group-hover:text-primary">
+                    <div className="flex h-6 w-6 items-center justify-center text-text-secondary transition-colors duration-150 group-hover:text-primary">
                       <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[11px]" />
                     </div>
                   </div>

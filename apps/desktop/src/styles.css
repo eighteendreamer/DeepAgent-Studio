@@ -274,18 +274,34 @@ button:focus {
 }
 
 .right-sidebar-workbench {
-  animation: right-sidebar-workbench-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  justify-content: flex-end;
   transition:
     width 240ms cubic-bezier(0.16, 1, 0.3, 1),
     opacity 180ms ease;
-  will-change: width, opacity, transform;
+  will-change: width, opacity;
 }
 
 .right-sidebar-workbench > div {
-  transition:
-    opacity 180ms ease,
-    transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
-  will-change: opacity, transform;
+  transition: opacity 180ms ease;
+  will-change: opacity;
+}
+
+.right-sidebar-workbench.is-maximized {
+  animation: none;
+  transition: opacity 180ms ease;
+  will-change: opacity;
+}
+
+.right-sidebar-workbench.is-maximized > div {
+  transform: none;
+  transition: opacity 180ms ease;
+  will-change: opacity;
+}
+
+.right-sidebar-workbench.is-resizing,
+.right-sidebar-workbench.is-resizing > div {
+  transition: none;
 }
 
 .right-sidebar-workbench.is-closing {
@@ -294,7 +310,6 @@ button:focus {
 
 .right-sidebar-workbench.is-closing > div {
   opacity: 0;
-  transform: translateX(18px);
 }
 
 .bottom-panel-workbench {
