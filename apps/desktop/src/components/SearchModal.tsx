@@ -60,7 +60,7 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
   if (!isOpen) return null;
 
   return (
-        <div className="modal-layer fixed inset-0 z-[100] flex items-start justify-center pt-[10vh] bg-transparent">
+        <div className="modal-layer fixed inset-0 z-[100] flex items-center justify-center bg-transparent">
           {/* Backdrop overlay for closing */}
           <div 
             className="absolute inset-0 bg-black/5" 
@@ -68,38 +68,38 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
           />
       
           {/* Modal */}
-          <div className="modal-panel relative w-[750px] h-[620px] max-w-[calc(100vw-48px)] max-h-[calc(100vh-96px)] bg-white rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme flex flex-col overflow-hidden">
+          <div className="modal-panel relative w-[380px] h-[340px] max-w-[calc(100vw-32px)] max-h-[calc(100vh-96px)] bg-white rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme flex flex-col overflow-hidden">
         {/* Header / Input area */}
-        <div className="px-5 py-4 border-b border-transparent">
+        <div className="px-4 py-3 border-b border-transparent">
           <input 
             type="text" 
             placeholder={t("searchModal.searchChats")}
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="w-full text-base bg-transparent outline-none text-text-base placeholder:text-text-secondary placeholder:font-normal"
+            className="w-full text-[14px] bg-transparent outline-none text-text-base placeholder:text-text-secondary placeholder:font-normal"
           />
         </div>
 
         {/* List Content */}
         <div className="flex-1 overflow-y-auto px-2 pb-2">
-          <div className="px-3 py-2 text-xs text-text-secondary font-medium">{t("searchModal.recentChats")}</div>
+          <div className="px-2 py-1.5 text-[11px] text-text-secondary font-medium">{t("searchModal.recentChats")}</div>
           <div className="flex flex-col space-y-0.5">
             {results.map((item, i) => (
               <div 
                 key={item.id}
-                className="flex items-center justify-between px-3 py-2.5 rounded-lg cursor-pointer hover:bg-gray-100 group transition-colors"
+                className="flex items-center justify-between px-2 py-2 rounded-lg cursor-pointer hover:bg-gray-100 group transition-colors"
                 onClick={() => handleSelect(item.id)}
               >
-                <div className="text-[14px] text-text-base truncate pr-4 flex-1">
+                <div className="text-[13px] text-text-base truncate pr-3 flex-1">
                   {item.title}
                 </div>
-                <div className="flex items-center space-x-3 flex-shrink-0">
-                  <span className="text-[12px] text-text-secondary truncate max-w-[120px]">
+                <div className="flex items-center space-x-2 flex-shrink-0">
+                  <span className="text-[11px] text-text-secondary truncate max-w-[88px]">
                     {item.project}
                   </span>
                   {i < 9 && (
-                    <span className="text-[11px] text-gray-400 bg-gray-50 border border-gray-200 rounded px-1.5 py-0.5 font-sans min-w-[42px] text-center group-hover:bg-white transition-colors">
+                    <span className="text-[10px] text-gray-400 bg-gray-50 border border-gray-200 rounded px-1.5 py-0.5 font-sans min-w-[38px] text-center group-hover:bg-white transition-colors">
                       Ctrl+{i + 1}
                     </span>
                   )}
