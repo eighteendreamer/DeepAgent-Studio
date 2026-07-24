@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import "./icons";
 import {
   ARCHIVE_CHANGED_EVENT,
@@ -90,6 +91,28 @@ type View = "start" | "chat" | "skills" | "knowledge" | "plugins" | "automation"
 
 const LEFT_SIDEBAR_OPEN_KEY = "deepagent:left-sidebar-open";
 const STREAM_RENDER_INTERVAL_MS = 33;
+
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (callback: () => void) => void;
+};
+
+function runUiTransition(update: () => void) {
+  if (typeof document === "undefined" || typeof window === "undefined") {
+    update();
+    return;
+  }
+
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const startViewTransition = (document as ViewTransitionDocument).startViewTransition;
+  if (!startViewTransition || reduceMotion) {
+    update();
+    return;
+  }
+
+  startViewTransition.call(document, () => {
+    flushSync(update);
+  });
+}
 
 function ViewLoading() {
   return (
@@ -562,54 +585,60 @@ export function App() {
       return;
     }
 
-    activeIdRef.current = newActiveId;
-    setActiveId(newActiveId);
-    setView(newView);
-    setMessages([]);
-    activePendingRunKeyRef.current = null;
-    setActivePendingRunKey(null);
-    setNavState((prev) => {
-      const newHistory = prev.history.slice(0, prev.index + 1);
-      newHistory.push({ activeId: newActiveId, view: newView });
-      return { history: newHistory, index: newHistory.length - 1 };
+    runUiTransition(() => {
+      activeIdRef.current = newActiveId;
+      setActiveId(newActiveId);
+      setView(newView);
+      setMessages([]);
+      activePendingRunKeyRef.current = null;
+      setActivePendingRunKey(null);
+      setNavState((prev) => {
+        const newHistory = prev.history.slice(0, prev.index + 1);
+        newHistory.push({ activeId: newActiveId, view: newView });
+        return { history: newHistory, index: newHistory.length - 1 };
+      });
     });
   }, [activeId, view]);
 
   const goBack = useCallback(() => {
-    activePendingRunKeyRef.current = null;
-    setActivePendingRunKey(null);
-    setNavState((prev) => {
-      if (prev.index > 0) {
-        const item = prev.history[prev.index - 1];
-        activeIdRef.current = item.activeId;
-        setActiveId(item.activeId);
-        setView(item.view);
+    runUiTransition(() => {
+      activePendingRunKeyRef.current = null;
+      setActivePendingRunKey(null);
+      setNavState((prev) => {
+        if (prev.index > 0) {
+          const item = prev.history[prev.index - 1];
+          activeIdRef.current = item.activeId;
+          setActiveId(item.activeId);
+          setView(item.view);
+          setMessages([]);
+          return { ...prev, index: prev.index - 1 };
+        }
+        
+        // Fallback: if there's no history to go back to, just return to the start view
+        activeIdRef.current = null;
+        setActiveId(null);
+        setView("start");
         setMessages([]);
-        return { ...prev, index: prev.index - 1 };
-      }
-      
-      // Fallback: if there's no history to go back to, just return to the start view
-      activeIdRef.current = null;
-      setActiveId(null);
-      setView("start");
-      setMessages([]);
-      return prev;
+        return prev;
+      });
     });
   }, []);
 
   const goForward = useCallback(() => {
-    activePendingRunKeyRef.current = null;
-    setActivePendingRunKey(null);
-    setNavState((prev) => {
-      if (prev.index < prev.history.length - 1) {
-        const item = prev.history[prev.index + 1];
-        activeIdRef.current = item.activeId;
-        setActiveId(item.activeId);
-        setView(item.view);
-        setMessages([]);
-        return { ...prev, index: prev.index + 1 };
-      }
-      return prev;
+    runUiTransition(() => {
+      activePendingRunKeyRef.current = null;
+      setActivePendingRunKey(null);
+      setNavState((prev) => {
+        if (prev.index < prev.history.length - 1) {
+          const item = prev.history[prev.index + 1];
+          activeIdRef.current = item.activeId;
+          setActiveId(item.activeId);
+          setView(item.view);
+          setMessages([]);
+          return { ...prev, index: prev.index + 1 };
+        }
+        return prev;
+      });
     });
   }, []);
 
@@ -968,11 +997,13 @@ export function App() {
       setMessages(seeded);
 
       if (view !== "chat") {
-        setView("chat");
-        setNavState((prev) => {
-          const newHistory = prev.history.slice(0, prev.index + 1);
-          newHistory.push({ activeId, view: "chat" });
-          return { history: newHistory, index: newHistory.length - 1 };
+        runUiTransition(() => {
+          setView("chat");
+          setNavState((prev) => {
+            const newHistory = prev.history.slice(0, prev.index + 1);
+            newHistory.push({ activeId, view: "chat" });
+            return { history: newHistory, index: newHistory.length - 1 };
+          });
         });
       }
 
@@ -1742,6 +1773,18 @@ export function App() {
   // Settings State
   const [activeSettingsCategory, setActiveSettingsCategory] = useState("general");
 
+  const toggleLeftSidebar = useCallback(() => {
+    runUiTransition(() => {
+      setIsSidebarOpen((open) => !open);
+    });
+  }, []);
+
+  const onSelectSettingsCategory = useCallback((categoryId: string) => {
+    runUiTransition(() => {
+      setActiveSettingsCategory(categoryId);
+    });
+  }, []);
+
   useEffect(() => {
     window.localStorage.setItem(LEFT_SIDEBAR_OPEN_KEY, String(isSidebarOpen));
   }, [isSidebarOpen]);
@@ -1751,11 +1794,17 @@ export function App() {
   const activeChatBusy = Boolean(
     activePendingRunKey || (activeId && runningSessionIds.has(activeId))
   );
+  const viewFrameKey =
+    view === "chat"
+      ? `chat:${activeId ?? activePendingRunKey ?? "pending"}`
+      : view === "settings"
+        ? `settings:${activeSettingsCategory}`
+        : view;
 
   return (
     <div className="bg-sidebar-bg text-text-base font-sans h-screen w-full overflow-hidden flex flex-col relative">
       <TitleBar 
-        onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
+        onToggleSidebar={toggleLeftSidebar}
         isSidebarOpen={isSidebarOpen} 
         canGoBack={canGoBack}
         canGoForward={canGoForward}
@@ -1807,17 +1856,17 @@ export function App() {
                 <SettingsSidebar
                   onBack={goBack}
                   activeCategoryId={activeSettingsCategory}
-                  onSelectCategory={setActiveSettingsCategory}
+                  onSelectCategory={onSelectSettingsCategory}
                 />
               </Suspense>
             </div>
           )}
         </>
 
-        <main className="flex-1 bg-white rounded-tl-2xl border-l border-t border-border-theme flex overflow-hidden shadow-sm relative">
+        <main className="app-main-surface flex-1 bg-white rounded-tl-2xl border-l border-t border-border-theme flex overflow-hidden shadow-sm relative">
           <Suspense fallback={<ViewLoading />}>
             {view === "start" && (
-              <div className="view-frame">
+              <div key={viewFrameKey} className="view-frame">
                 <StartView 
                   projectName={activeProjectName} 
                   activeProjectPath={activeProjectPath}
@@ -1830,7 +1879,7 @@ export function App() {
               </div>
             )}
             {view === "chat" && (
-              <div className="view-frame">
+              <div key={viewFrameKey} className="view-frame">
                 <ChatView
                   sessionId={activeId}
                   sessionKey={activeId ?? activePendingRunKey ?? null}
@@ -1864,27 +1913,27 @@ export function App() {
               </div>
             )}
             {view === "skills" && (
-              <div className="view-frame">
+              <div key={viewFrameKey} className="view-frame">
                 <SkillsView />
               </div>
             )}
             {view === "knowledge" && (
-              <div className="view-frame">
+              <div key={viewFrameKey} className="view-frame">
                 <KnowledgeView />
               </div>
             )}
             {view === "plugins" && (
-              <div className="view-frame">
+              <div key={viewFrameKey} className="view-frame">
                 <PluginsView />
               </div>
             )}
             {view === "automation" && (
-              <div className="view-frame">
+              <div key={viewFrameKey} className="view-frame">
                 <AutomationView />
               </div>
             )}
             {view === "settings" && (
-              <div className="view-frame">
+              <div key={viewFrameKey} className="view-frame">
                 <SettingsView activeCategoryId={activeSettingsCategory} />
               </div>
             )}

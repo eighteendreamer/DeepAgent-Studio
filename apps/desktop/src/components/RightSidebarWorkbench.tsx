@@ -16,6 +16,7 @@ import {
   type PluginType,
 } from "./plugins/pluginRegistry";
 import { useResizableSidebar } from "../hooks/useResizableSidebar";
+import { usePanelPresence } from "../hooks/usePanelPresence";
 import { listPluginApps, openStudioCanvasWindow, PLUGINS_CHANGED_EVENT } from "../api";
 import { message } from "./message";
 
@@ -64,6 +65,7 @@ export function RightSidebarWorkbench({
   const { width, sidebarRef, isResizing, startResizing, isMaximized, toggleMaximize, resetMaximize } =
     useResizableSidebar();
   const [pluginAppCards, setPluginAppCards] = useState<PluginToolCard[]>([]);
+  const presence = usePanelPresence(open, 240);
 
   const visibleTabs = useMemo(
     () => tabs.filter((tab) => getPluginDefinition(tab.type) != null),
@@ -132,13 +134,17 @@ export function RightSidebarWorkbench({
   const maximizedClasses = "fixed top-10 left-0 right-0 bottom-0 z-[60] border-l-0 shadow-none";
   const normalClasses = "relative z-10 flex-shrink-0";
 
-  if (!open) return null;
+  if (!presence.shouldRender) return null;
+
+  const visibleWidth = presence.isVisible || isMaximized ? width : 0;
 
   return (
     <aside
       ref={sidebarRef}
-      className={`right-sidebar-workbench h-full overflow-hidden ${isMaximized ? maximizedClasses : normalClasses}`}
-      style={isMaximized ? { width: "100%" } : { width }}
+      className={`right-sidebar-workbench h-full overflow-hidden ${
+        presence.isClosing ? "is-closing" : ""
+      } ${isMaximized ? maximizedClasses : normalClasses}`}
+      style={isMaximized ? { width: "100%" } : { width: visibleWidth }}
     >
       <div
         className="flex h-full flex-col overflow-hidden border-l border-border-theme bg-white shadow-[-12px_0_30px_rgba(15,23,42,0.06)]"

@@ -41,6 +41,7 @@ import {
 } from "./plugins/pluginRegistry";
 import { RightSidebarWorkbench } from "./RightSidebarWorkbench";
 import { ChatTimeline } from "./chat-timeline/ChatTimeline";
+import { usePanelPresence } from "../hooks/usePanelPresence";
 
 const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
 const PROJECT_MAP_TAB_ID = "project-map";
@@ -1029,6 +1030,7 @@ export function ChatView({
 
   const [bottomPanelHeight, setBottomPanelHeight] = useState(280);
   const [isResizingBottom, setIsResizingBottom] = useState(false);
+  const bottomPanelPresence = usePanelPresence(isBottomPanelOpen, 260);
 
   useEffect(() => {
     if (!isResizingBottom) return;
@@ -1626,10 +1628,17 @@ export function ChatView({
             />
       </div>
 
-      {isBottomPanelOpen && (
+      {bottomPanelPresence.shouldRender && (
             <div
-              className={`relative z-0 flex w-full min-w-0 flex-shrink-0 flex-col overflow-hidden border-t border-border-theme bg-white shadow-[0_-12px_30px_rgba(0,0,0,0.06)] ${isResizingBottom ? "" : "transition-[height] duration-300"}`}
-              style={{ height: `${bottomPanelHeight}px`, minHeight: '200px', maxHeight: '80vh', width: '100%' }}
+              className={`bottom-panel-workbench relative z-0 flex w-full min-w-0 flex-shrink-0 flex-col overflow-hidden border-t border-border-theme bg-white ${
+                bottomPanelPresence.isClosing ? "is-closing" : ""
+              } ${isResizingBottom ? "is-resizing" : ""}`}
+              style={{
+                height: bottomPanelPresence.isVisible ? `${bottomPanelHeight}px` : "0px",
+                minHeight: bottomPanelPresence.isVisible ? "200px" : "0px",
+                maxHeight: '80vh',
+                width: '100%',
+              }}
             >
               <div
                 className={`panel-resize-handle-row ${isResizingBottom ? "is-active" : ""}`}

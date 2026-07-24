@@ -254,7 +254,13 @@ button:focus {
   height: 100%;
   min-width: 0;
   flex-direction: column;
-  animation: view-frame-in 140ms ease-out;
+  animation: view-frame-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+
+.app-main-surface {
+  contain: layout paint;
+  view-transition-name: app-main-surface;
 }
 
 .popover-menu {
@@ -268,7 +274,59 @@ button:focus {
 }
 
 .right-sidebar-workbench {
-  animation: right-sidebar-workbench-in 140ms ease-out;
+  animation: right-sidebar-workbench-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition:
+    width 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 180ms ease;
+  will-change: width, opacity, transform;
+}
+
+.right-sidebar-workbench > div {
+  transition:
+    opacity 180ms ease,
+    transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+
+.right-sidebar-workbench.is-closing {
+  opacity: 0.95;
+}
+
+.right-sidebar-workbench.is-closing > div {
+  opacity: 0;
+  transform: translateX(18px);
+}
+
+.bottom-panel-workbench {
+  transition:
+    height 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    min-height 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 180ms ease;
+  will-change: height, opacity;
+}
+
+.bottom-panel-workbench.is-resizing {
+  transition: none;
+}
+
+.bottom-panel-workbench > div:not(.panel-resize-handle-row) {
+  transition:
+    opacity 180ms ease,
+    transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+
+.bottom-panel-workbench:not(.is-closing) > div:not(.panel-resize-handle-row) {
+  animation: bottom-panel-content-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.bottom-panel-workbench.is-closing {
+  opacity: 0.98;
+}
+
+.bottom-panel-workbench.is-closing > div:not(.panel-resize-handle-row) {
+  opacity: 0;
+  transform: translateY(18px);
 }
 
 .project-map-view {
@@ -276,7 +334,8 @@ button:focus {
 }
 
 .settings-section {
-  animation: view-frame-in 120ms ease-out;
+  animation: view-frame-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
 }
 
 .approval-card {
@@ -354,11 +413,77 @@ button:focus {
 @keyframes view-frame-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(8px) scale(0.995);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+::view-transition-old(app-main-surface),
+::view-transition-new(app-main-surface) {
+  height: 100%;
+  overflow: hidden;
+  animation-duration: 240ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(app-main-surface) {
+  animation-name: app-main-surface-out;
+}
+
+::view-transition-new(app-main-surface) {
+  animation-name: app-main-surface-in;
+}
+
+@keyframes app-main-surface-out {
+  from {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0.42;
+    transform: translateX(-10px) scale(0.996);
+    filter: blur(0.35px);
+  }
+}
+
+@keyframes app-main-surface-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px) scale(0.996);
+    filter: blur(0.35px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-frame,
+  .settings-section,
+  .project-map-view,
+  .right-sidebar-workbench,
+  .right-sidebar-workbench > div,
+  .bottom-panel-workbench,
+  .bottom-panel-workbench > div,
+  .modal-layer,
+  .modal-panel,
+  .popover-menu,
+  .message-notice,
+  .approval-card {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  ::view-transition-old(app-main-surface),
+  ::view-transition-new(app-main-surface) {
+    animation: none !important;
   }
 }
 
@@ -387,11 +512,22 @@ button:focus {
 @keyframes right-sidebar-workbench-in {
   from {
     opacity: 0;
-    transform: translateX(10px);
+    transform: translateX(18px);
   }
   to {
     opacity: 1;
     transform: translateX(0);
+  }
+}
+
+@keyframes bottom-panel-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
