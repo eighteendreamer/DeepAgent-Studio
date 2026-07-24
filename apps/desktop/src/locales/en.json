@@ -743,8 +743,6 @@
       "chatDesc": "Start a side chat",
       "browser": "Browser",
       "browserDesc": "Open website",
-      "computer_use": "Computer Use",
-      "computer_useDesc": "Control desktop apps",
       "terminal": "Terminal",
       "terminalDesc": "Launch interactive shell",
       "project_map": "Project Map",

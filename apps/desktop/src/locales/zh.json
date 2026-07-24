@@ -743,8 +743,6 @@
       "chatDesc": "发起侧边对话",
       "browser": "浏览器",
       "browserDesc": "打开网站",
-      "computer_use": "电脑控制",
-      "computer_useDesc": "控制桌面应用",
       "terminal": "终端",
       "terminalDesc": "启动交互式 shell",
       "project_map": "项目地图",

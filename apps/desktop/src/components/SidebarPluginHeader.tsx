@@ -27,7 +27,6 @@ const FALLBACK_TOOL_NAMES: Record<string, string> = {
   files: "Files",
   chat: "Side Chat",
   browser: "Browser",
-  computer_use: "Computer Use",
   terminal: "Terminal",
   project_map: "Project Map",
   recording: "Recording",

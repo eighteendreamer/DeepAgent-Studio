@@ -7,7 +7,6 @@ export type PluginType =
   | "files"
   | "chat"
   | "browser"
-  | "computer_use"
   | "terminal"
   | "project_map"
   | "recording"

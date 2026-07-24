@@ -13,7 +13,6 @@ import type { PluginApp } from "../../types";
 const FilesPlugin = lazy(() => import("./FilesPlugin").then((m) => ({ default: m.FilesPlugin })));
 const SideChatPlugin = lazy(() => import("./SideChatPlugin").then((m) => ({ default: m.SideChatPlugin })));
 const BrowserPlugin = lazy(() => import("./BrowserPlugin").then((m) => ({ default: m.BrowserPlugin })));
-const ComputerUsePlugin = lazy(() => import("./ComputerUsePlugin").then((m) => ({ default: m.ComputerUsePlugin })));
 const TerminalPlugin = lazy(() => import("./TerminalPlugin").then((m) => ({ default: m.TerminalPlugin })));
 const ProjectMapPlugin = lazy(() => import("./ProjectMapPlugin").then((m) => ({ default: m.ProjectMapPlugin })));
 const RecordingPlugin = lazy(() => import("./RecordingPlugin").then((m) => ({ default: m.RecordingPlugin })));
@@ -89,16 +88,6 @@ export const PLUGIN_DEFINITIONS: PluginDefinition[] = [
     render: ({ tab }) => renderLazyPlugin(<BrowserPlugin initialUrl={tab.url} />),
   },
   {
-    type: "computer_use",
-    icon: ["fas", "desktop"],
-    titleKey: "Computer Use",
-    descKey: "Control desktop apps",
-    fallbackTitle: "Computer Use",
-    fallbackDesc: "Control desktop apps",
-    getTabTitle: ({ t }) => t?.("settings.computer.title", { defaultValue: "Computer Use" }) || "Computer Use",
-    render: () => renderLazyPlugin(<ComputerUsePlugin />),
-  },
-  {
     type: "terminal",
     icon: ["fas", "terminal"],
     titleKey: "terminal",
@@ -170,8 +159,6 @@ const BUILTIN_COMPONENT_TYPES: Record<string, PluginType> = {
   side_chat: "chat",
   chat: "chat",
   browser: "browser",
-  "computer-use": "computer_use",
-  computer_use: "computer_use",
   terminal: "terminal",
   "project-map": "project_map",
   project_map: "project_map",
@@ -185,8 +172,6 @@ const PLUGIN_APP_ICON_MAP: Record<string, PluginToolCard["icon"]> = {
   folder: ["far", "folder"],
   chat: ["far", "comments"],
   browser: ["fas", "arrow-pointer"],
-  "computer-use": ["fas", "desktop"],
-  computer_use: ["fas", "desktop"],
   desktop: ["fas", "desktop"],
   terminal: ["fas", "terminal"],
   project_map: ["fas", "diagram-project"],

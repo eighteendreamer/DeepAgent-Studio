@@ -5,6 +5,7 @@ import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import type { ToolLauncherCard } from "./ToolLauncherPanel";
 import {
   createPluginTab,
+  getPluginDefinition,
   pluginAppToToolCard,
   PLUGIN_TOOL_CARDS,
   renderPluginTab,
@@ -64,7 +65,11 @@ export function RightSidebarWorkbench({
     useResizableSidebar();
   const [pluginAppCards, setPluginAppCards] = useState<PluginToolCard[]>([]);
 
-  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const visibleTabs = useMemo(
+    () => tabs.filter((tab) => getPluginDefinition(tab.type) != null),
+    [tabs],
+  );
+  const activeTab = visibleTabs.find((tab) => tab.id === activeTabId) ?? null;
   const visiblePluginAppCards = useMemo(
     () =>
       pluginAppCards.filter(
@@ -151,7 +156,7 @@ export function RightSidebarWorkbench({
       )}
 
       <SidebarPluginHeader
-        tabs={tabs}
+        tabs={visibleTabs}
         activeTabId={activeTabId}
         onSelectTab={onSelectTab}
         onCloseTab={onCloseTab}
