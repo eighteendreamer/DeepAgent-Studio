@@ -215,10 +215,10 @@ export function AppearanceSettings() {
             </div>
           </div>
 
-          <div className="p-4 bg-gray-50/50 border-t border-border-theme space-y-6">
+          <div className={`p-4 border-t border-border-theme space-y-6 ${isEditingDark ? 'bg-sidebar-bg' : 'bg-gray-50/50'}`}>
             {/* 浅色/深色主题 Config Nested Card */}
             <div className="border border-border-theme rounded-xl bg-white shadow-sm overflow-hidden">
-              <div className="flex items-center justify-between p-3 border-b border-border-theme bg-gray-50/80">
+              <div className={`flex items-center justify-between p-3 border-b border-border-theme ${isEditingDark ? 'bg-sidebar-bg' : 'bg-gray-50/80'}`}>
             <div className="text-[14px] font-medium text-text-base">{isEditingDark ? t("settings.appearance.darkTheme") : t("settings.appearance.lightTheme")}</div>
             <div className="flex items-center space-x-3">
               <button className="text-[12px] text-text-secondary hover:text-text-base">{t("settings.appearance.import")}</button>
