@@ -27,6 +27,7 @@ const FALLBACK_TOOL_NAMES: Record<string, string> = {
   files: "Files",
   chat: "Side Chat",
   browser: "Browser",
+  computer_use: "Computer Use",
   terminal: "Terminal",
   project_map: "Project Map",
   recording: "Recording",
@@ -37,8 +38,20 @@ function toolLabel(type: string) {
   return FALLBACK_TOOL_NAMES[type] ?? type;
 }
 
-function explicitLabel(value: string | undefined) {
-  return value && !value.startsWith("chatView.") ? value : "";
+function normalizeToolText(value: string) {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s-]+/g, "_")
+    .toLowerCase();
+}
+
+function explicitLabel(value: string | undefined, type: string) {
+  if (!value || value.startsWith("chatView.")) return "";
+  const normalized = normalizeToolText(value);
+  const fallback = normalizeToolText(toolLabel(type));
+  if (normalized === type || normalized === fallback) return "";
+  if (type === "chat" && normalized === "side_chat") return "";
+  return value;
 }
 
 export function SidebarPluginHeader({
@@ -149,7 +162,7 @@ export function SidebarPluginHeader({
                         <FontAwesomeIcon icon={plugin.icon} className="text-[12px]" />
                       </div>
                       <span className="text-[13px] font-medium text-text-base">
-                        {explicitLabel(plugin.title) ||
+                        {explicitLabel(plugin.title, plugin.type) ||
                           t(`chatView.tools.${plugin.type}`, {
                             defaultValue: toolLabel(plugin.type),
                           })}

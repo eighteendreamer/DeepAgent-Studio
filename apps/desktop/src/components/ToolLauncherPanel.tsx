@@ -19,6 +19,7 @@ const FALLBACK_TOOL_NAMES: Record<string, string> = {
   files: "Files",
   chat: "Side Chat",
   browser: "Browser",
+  computer_use: "Computer Use",
   terminal: "Terminal",
   project_map: "Project Map",
   recording: "Recording",
@@ -30,6 +31,7 @@ const FALLBACK_TOOL_DESCRIPTIONS: Record<string, string> = {
   files: "Browse project files",
   chat: "Start a side chat",
   browser: "Open website",
+  computer_use: "Control desktop apps",
   terminal: "Launch interactive shell",
   project_map: "Inspect module relationships",
   recording: "Meeting recording and transcription",
@@ -45,14 +47,28 @@ function toolDescription(type: string) {
   return FALLBACK_TOOL_DESCRIPTIONS[type] ?? "";
 }
 
-function explicitLabel(value: string | undefined) {
-  return value && !value.startsWith("chatView.") ? value : "";
+function normalizeToolText(value: string) {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s-]+/g, "_")
+    .toLowerCase();
+}
+
+function explicitLabel(value: string | undefined, type: string, suffix = "") {
+  if (!value || value.startsWith("chatView.")) return "";
+  const normalized = normalizeToolText(value);
+  const fallback = normalizeToolText(suffix ? toolDescription(type) : toolLabel(type));
+  const key = suffix ? `${type}${suffix}` : type;
+  if (normalized === normalizeToolText(key) || normalized === fallback) return "";
+  if (!suffix && type === "chat" && normalized === "side_chat") return "";
+  return value;
 }
 
 const TOOL_SHORTCUTS: Record<string, string> = {
   files: "Ctrl+P",
   chat: "Ctrl+Alt+S",
   browser: "Ctrl+T",
+  computer_use: "",
   project_map: "",
   terminal: "",
   recording: "",
@@ -79,8 +95,8 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
           }
         >
           {cards.map((card) => {
-            const ownTitle = explicitLabel(card.title);
-            const ownDesc = explicitLabel(card.desc);
+            const ownTitle = explicitLabel(card.title, card.type);
+            const ownDesc = explicitLabel(card.desc, card.type, "Desc");
             const translatedTitle =
               ownTitle ||
               t(`chatView.tools.${card.type}`, {
