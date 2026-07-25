@@ -2,6 +2,10 @@ import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import "./i18n";
 import "./styles.css";
+import { bootstrapTheme } from "./theme/themeBootstrap";
+import { ThemeProvider } from "./theme/ThemeProvider";
+
+bootstrapTheme();
 
 const MainApp = lazy(() => import("./App").then((module) => ({ default: module.App })));
 const StudioCanvasApp = lazy(() =>
@@ -18,8 +22,10 @@ function resolveRootView() {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Suspense fallback={<div className="h-screen w-full bg-sidebar-bg" />}>
-      {resolveRootView()}
-    </Suspense>
+    <ThemeProvider>
+      <Suspense fallback={<div className="h-screen w-full bg-sidebar-bg" />}>
+        {resolveRootView()}
+      </Suspense>
+    </ThemeProvider>
   </React.StrictMode>
 );

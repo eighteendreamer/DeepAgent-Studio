@@ -11,6 +11,9 @@ export default {
         "text-secondary": "var(--theme-text-secondary, #6B7280)",
         "border-theme": "var(--theme-border, #E5E7EB)",
         "sidebar-bg": "var(--theme-sidebar, #F9F8F6)",
+        "elevated-bg": "var(--theme-elevated, #FFFFFF)",
+        "hover-bg": "var(--theme-hover, #F3F4F6)",
+        "selection-bg": "var(--theme-selection, #DBEAFE)",
       },
       fontFamily: {
         sans: [

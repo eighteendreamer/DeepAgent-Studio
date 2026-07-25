@@ -2856,6 +2856,17 @@ export function isTauri(): boolean {
   return getInvoke() !== null;
 }
 
+export async function setWindowTranslucent(enable: boolean): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) return;
+  try {
+    await invoke<void>("set_window_translucent", { enable });
+  } catch (e) {
+    // Non-fatal — Mica is only available on Windows 11; fall through silently.
+    console.warn("set_window_translucent failed:", e);
+  }
+}
+
 // ---- Mock data (browser/dev fallback) ------------------------------------
 
 const MOCK_COMMANDS: Command[] = [

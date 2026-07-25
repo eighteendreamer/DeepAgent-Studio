@@ -81,6 +81,28 @@ button:focus {
 }
 
 /*
+ * Translucent sidebar: when enabled on <html>, the window uses Tauri's Mica
+ * effect and sidebar surfaces render at reduced opacity so the OS material
+ * shows through. Body/root are transparent only in that mode; the main
+ * content column keeps its own opaque background (bg-white / bg-bg-base),
+ * so only the sidebar band actually reveals Mica.
+ */
+html.theme-translucent-sidebar,
+html.theme-translucent-sidebar body,
+html.theme-translucent-sidebar #root {
+  background-color: transparent !important;
+}
+
+html.theme-translucent-sidebar .bg-sidebar-bg {
+  background-color: color-mix(in srgb, var(--theme-sidebar) 55%, transparent) !important;
+  backdrop-filter: saturate(180%) blur(18px);
+  -webkit-backdrop-filter: saturate(180%) blur(18px);
+}
+html.theme-translucent-sidebar.dark .bg-sidebar-bg {
+  background-color: color-mix(in srgb, var(--theme-sidebar) 65%, transparent) !important;
+}
+
+/*
  * The composer renders rich inline context chips in a mirror layer above a
  * transparent textarea. Hide the textarea's native selection so it cannot leak
  * private marker characters; Composer.tsx paints the visible selection itself.

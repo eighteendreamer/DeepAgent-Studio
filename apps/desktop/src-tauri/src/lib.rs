@@ -43,6 +43,7 @@ use deepagent_ssh::SshService;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
+use tauri::window::{Effect as WindowEffect, EffectsBuilder};
 
 /// Service name used for keychain entries.
 const KEYCHAIN_SERVICE: &str = "deepagent-studio";
@@ -769,6 +770,19 @@ fn initialize_project(state: State<'_, AppState>, api_key: String) -> Result<Set
     }
 
     Ok(view)
+}
+
+#[tauri::command]
+fn set_window_translucent(window: tauri::Window, enable: bool) -> Result<(), String> {
+    if enable {
+        let effects = EffectsBuilder::new().effect(WindowEffect::Mica).build();
+        window.set_effects(effects).map_err(|e| e.to_string())?;
+    } else {
+        window
+            .set_effects(None::<tauri::utils::config::WindowEffectsConfig>)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -4404,6 +4418,7 @@ pub fn run() {
             save_binary_file,
             initialize_project,
             get_settings,
+            set_window_translucent,
             get_welcome_name,
             set_welcome_name,
             sandboxie_status,

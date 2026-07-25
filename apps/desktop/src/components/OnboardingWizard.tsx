@@ -116,15 +116,8 @@ export function OnboardingWizard({ onComplete }: Props) {
 
     // Save settings locally with the correct keys used by the rest of the app
     
-    // Theme uses codex-theme-config object
-    try {
-      const stored = localStorage.getItem("codex-theme-config");
-      const config = stored ? JSON.parse(stored) : { mode: "system" };
-      config.mode = theme;
-      localStorage.setItem("codex-theme-config", JSON.stringify(config));
-    } catch (e) {
-      localStorage.setItem("codex-theme-config", JSON.stringify({ mode: theme }));
-    }
+    // Theme is already persisted via ThemeProvider when switchTheme was called.
+    // Nothing to write to legacy storage here.
     
     // Language uses appLanguage
     localStorage.setItem("appLanguage", language);

@@ -3,6 +3,9 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTheme, type ThemeMode, type ThemeSwitchOrigin } from "../../hooks/useTheme";
+import { useThemeContext } from "../../theme/ThemeProvider";
+import { contrastRatio } from "../../theme/colorUtils";
+import { ThemePresetMenu } from "./ThemePresetMenu";
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
@@ -84,79 +87,59 @@ function PetItem({ name, desc, icon, iconColor, selected }: { name: string, desc
   );
 }
 
-function ThemeDropdown({ 
-  selectedTheme, 
-  onChange, 
-  isDark 
-}: { 
-  selectedTheme: string, 
-  onChange: (t: string) => void,
-  isDark?: boolean
-}) {
-  const [isOpen, setIsOpen] = useState(false);
-  const themes = [
-    "Absolutely", "Ayu", "Catppuccin", "Codex", "Dracula", 
-    "Everforest", "GitHub", "Gruvbox", "Linear", "Notion", "One"
-  ];
-
-  return (
-    <div className="relative">
-      <div 
-        className="flex items-center bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg px-2 py-1 cursor-pointer transition-colors min-w-[120px] justify-between"
-        onClick={() => setIsOpen(!isOpen)}
-        onBlur={() => setTimeout(() => setIsOpen(false), 200)}
-        tabIndex={0}
-      >
-        <div className="flex items-center">
-          <div className={`w-5 h-5 rounded-md ${isDark ? 'bg-gray-800 text-white' : 'bg-blue-100 text-blue-600'} font-serif text-[10px] flex items-center justify-center mr-2 font-bold`}>Aa</div>
-          <span className="text-[12px] font-medium text-text-base mr-3">{selectedTheme}</span>
-        </div>
-        <FontAwesomeIcon icon={["fas", "chevron-down"]} className="text-[10px] text-text-secondary" />
-      </div>
-
-      {isOpen && (
-        <div className="absolute top-full right-0 mt-1 bg-white border border-border-theme rounded-xl shadow-lg z-20 py-1 w-[200px] max-h-[260px] overflow-y-auto">
-          {themes.map((theme) => (
-            <div 
-              key={theme}
-              className="px-3 py-1.5 hover:bg-gray-50 cursor-pointer flex items-center justify-between"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onChange(theme);
-                setIsOpen(false);
-              }}
-            >
-              <div className="flex items-center">
-                <div className={`w-5 h-5 rounded-full ${isDark ? 'bg-gray-800 text-white' : 'bg-blue-100 text-blue-600'} font-serif text-[10px] flex items-center justify-center mr-3 font-bold`}>Aa</div>
-                <span className="text-[13px] text-text-base">{theme}</span>
-              </div>
-              <div className="w-4 flex justify-end">
-                {selectedTheme === theme && (
-                  <FontAwesomeIcon icon={["fas", "check"]} className="text-[12px] text-text-base" />
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 export function AppearanceSettings() {
   const { t } = useTranslation();
   const { config, activeIsDark, updateThemeDetails, switchTheme } = useTheme();
+  const { isCustom, saveWorkingPalette, activeVariant, exportTheme, importTheme, activePalette } =
+    useThemeContext();
 
   const [reduceMotion, setReduceMotion] = useState("system");
   const [diffMarker, setDiffMarker] = useState("color");
   const [pointerCursor, setPointerCursor] = useState(false);
-  const [lightThemeName, setLightThemeName] = useState("Codex");
-  const [darkThemeName, setDarkThemeName] = useState("Codex");
+  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
 
   // Determine which config to show in the editor below (always show the one matching the active toggle, or based on system if system is selected)
   const isEditingDark = activeIsDark;
   const activeDetails = isEditingDark ? config.dark : config.light;
-  const activeThemeName = isEditingDark ? darkThemeName : lightThemeName;
-  const setActiveThemeName = isEditingDark ? setDarkThemeName : setLightThemeName;
+
+  const fgBgRatio = contrastRatio(activePalette.foreground, activePalette.background);
+  const contrastLow = fgBgRatio < 4.5;
+
+  const handleSavePreset = () => {
+    const name = window.prompt(t("settings.appearance.savePresetPrompt", "输入方案名称"));
+    if (name && name.trim()) {
+      saveWorkingPalette(activeVariant, name.trim());
+    }
+  };
+
+  const handleCopyTheme = async () => {
+    const share = exportTheme(activeVariant);
+    try {
+      await navigator.clipboard.writeText(share);
+      setCopyFeedback(t("settings.appearance.copied", "已复制"));
+    } catch {
+      window.prompt(t("settings.appearance.copyManual", "复制以下文本："), share);
+    }
+    window.setTimeout(() => setCopyFeedback(null), 1500);
+  };
+
+  const handleImportTheme = () => {
+    const value = window.prompt(t("settings.appearance.importPrompt", "粘贴主题分享字符串"));
+    if (!value) return;
+    const result = importTheme(value);
+    if (!result.ok) {
+      window.alert(t("settings.appearance.importFailed", "导入失败：") + (result.error ?? ""));
+      return;
+    }
+    if (result.variant && result.variant !== activeVariant) {
+      window.alert(
+        t(
+          "settings.appearance.importVariantMismatch",
+          "该主题属于另一种明暗模式，已保存到自定义方案列表。",
+        ),
+      );
+    }
+  };
 
   const [isPetExpanded, setIsPetExpanded] = useState(true);
 
@@ -219,13 +202,49 @@ export function AppearanceSettings() {
             {/* 浅色/深色主题 Config Nested Card */}
             <div className="border border-border-theme rounded-xl bg-white shadow-sm overflow-hidden">
               <div className={`flex items-center justify-between p-3 border-b border-border-theme ${isEditingDark ? 'bg-sidebar-bg' : 'bg-gray-50/80'}`}>
-            <div className="text-[14px] font-medium text-text-base">{isEditingDark ? t("settings.appearance.darkTheme") : t("settings.appearance.lightTheme")}</div>
+            <div className="text-[14px] font-medium text-text-base flex items-center">
+              {isEditingDark ? t("settings.appearance.darkTheme") : t("settings.appearance.lightTheme")}
+              {isCustom && (
+                <span className="ml-2 text-[11px] font-normal text-text-secondary">
+                  · {t("settings.appearance.customTheme", "自定义")}
+                </span>
+              )}
+            </div>
             <div className="flex items-center space-x-3">
-              <button className="text-[12px] text-text-secondary hover:text-text-base">{t("settings.appearance.import")}</button>
-              <button className="text-[12px] text-text-secondary hover:text-text-base">{t("settings.appearance.copyTheme")}</button>
-              <ThemeDropdown selectedTheme={activeThemeName} onChange={setActiveThemeName} isDark={isEditingDark} />
+              {isCustom && (
+                <button
+                  onClick={handleSavePreset}
+                  className="text-[12px] text-text-secondary hover:text-text-base"
+                >
+                  {t("settings.appearance.saveAsPreset", "保存为方案")}
+                </button>
+              )}
+              <button
+                onClick={handleImportTheme}
+                className="text-[12px] text-text-secondary hover:text-text-base"
+              >
+                {t("settings.appearance.import")}
+              </button>
+              <button
+                onClick={handleCopyTheme}
+                className="text-[12px] text-text-secondary hover:text-text-base"
+              >
+                {copyFeedback ?? t("settings.appearance.copyTheme")}
+              </button>
+              <ThemePresetMenu variant={activeVariant} />
             </div>
           </div>
+
+          {contrastLow && (
+            <div className="px-4 py-2 border-b border-border-theme bg-yellow-50 text-yellow-800 text-[12px] flex items-center">
+              <FontAwesomeIcon icon={["fas", "triangle-exclamation"]} className="mr-2" />
+              {t(
+                "settings.appearance.lowContrastWarning",
+                "前景与背景对比度过低（{{ratio}}:1，建议至少 4.5:1），可能导致文字不可读。",
+                { ratio: fgBgRatio.toFixed(2) },
+              )}
+            </div>
+          )}
 
           <div className="flex items-center justify-between px-4 py-3 border-b border-border-theme">
             <div className="text-[13px] text-text-base">{t("settings.appearance.accentColor")}</div>
