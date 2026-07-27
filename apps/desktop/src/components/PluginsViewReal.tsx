@@ -194,9 +194,8 @@ export function PluginsView() {
     setBusyId(plugin.id);
     setError(null);
     try {
-      const updated = await setPluginEnabled(plugin.id, enabled);
+      await setPluginEnabled(plugin.id, enabled);
       await load();
-      setSelectedId(updated.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -486,19 +485,19 @@ export function PluginsView() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button variant="outline" onClick={() => void load()}>
-                  <FontAwesomeIcon icon={["fas", "rotate"]} />
+                  <FontAwesomeIcon icon={["fas", "rotate"]} className="text-[12px]" />
                   <span>刷新</span>
                 </Button>
                 <Button variant="outline" onClick={installFromDirectory}>
-                  <FontAwesomeIcon icon={["fas", "folder-open"]} />
+                  <FontAwesomeIcon icon={["fas", "folder-open"]} className="text-[12px]" />
                   <span>目录安装</span>
                 </Button>
                 <Button variant="outline" onClick={installFromArchive}>
-                  <FontAwesomeIcon icon={["fas", "file-zipper"]} />
+                  <FontAwesomeIcon icon={["fas", "file-zipper"]} className="text-[12px]" />
                   <span>Zip 安装</span>
                 </Button>
-                <Button onClick={() => setCreateOpen(true)}>
-                  <FontAwesomeIcon icon={["fas", "plus"]} />
+                <Button variant="outline" onClick={() => setCreateOpen(true)}>
+                  <FontAwesomeIcon icon={["fas", "plus"]} className="text-[11px]" />
                   <span>创建</span>
                 </Button>
               </div>
@@ -746,16 +745,23 @@ function PluginDetail({
               <Button
                 disabled={busy}
                 onClick={onUpdate}
+                variant="outline"
+                className="!bg-elevated-bg !text-text-base hover:!bg-hover-bg"
               >
-                <FontAwesomeIcon icon={["fas", "cloud-arrow-down"]} />
+                <FontAwesomeIcon icon={["fas", "cloud-arrow-down"]} className="text-[12px]" />
                 <span>更新</span>
               </Button>
             )}
             <Button
               disabled={busy || !plugin.available}
               onClick={() => onToggle(!plugin.enabled)}
+              variant="outline"
+              className="!bg-elevated-bg !text-text-base hover:!bg-hover-bg"
             >
-              <FontAwesomeIcon icon={plugin.enabled ? ["fas", "pause"] : ["fas", "play"]} />
+              <FontAwesomeIcon
+                icon={plugin.enabled ? ["fas", "pause"] : ["fas", "play"]}
+                className="text-[12px]"
+              />
               <span>{plugin.enabled ? "禁用" : "启用"}</span>
             </Button>
             <Button
@@ -763,7 +769,10 @@ function PluginDetail({
               variant="outline"
               className="text-red-600 hover:border-red-200 hover:bg-red-50"
             >
-              <FontAwesomeIcon icon={["fas", plugin.origin === "builtin" ? "pause" : "trash"]} />
+              <FontAwesomeIcon
+                icon={["fas", plugin.origin === "builtin" ? "pause" : "trash"]}
+                className="text-[12px]"
+              />
               <span>
                 {plugin.origin === "builtin" || plugin.origin === "workspace" ? "禁用" : "卸载"}
               </span>
@@ -1434,7 +1443,12 @@ function Modal({
           <Button variant="outline" onClick={onClose}>
             取消
           </Button>
-          <Button disabled={disabled} onClick={onSubmit}>
+          <Button
+            disabled={disabled}
+            onClick={onSubmit}
+            variant="outline"
+            className="!bg-elevated-bg !text-text-base hover:!bg-hover-bg"
+          >
             {submitLabel}
           </Button>
         </DialogFooter>
@@ -1458,7 +1472,7 @@ function PluginIcon({ plugin, size = "md" }: { plugin: Plugin; size?: "md" | "lg
   const color = plugin.brand_color || "#334155";
   return (
     <div
-      className={`${large ? "h-14 w-14 text-xl" : "h-10 w-10 text-[15px]"} flex shrink-0 items-center justify-center rounded-lg text-white`}
+      className={`${large ? "h-[30px] w-[30px] text-[13px]" : "h-[22px] w-[22px] text-[10px]"} flex shrink-0 items-center justify-center rounded-md text-white`}
       style={{ backgroundColor: color }}
     >
       <FontAwesomeIcon icon={icon} />
