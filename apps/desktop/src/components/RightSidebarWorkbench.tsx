@@ -144,7 +144,7 @@ export function RightSidebarWorkbench({
           <button
             type="button"
             onClick={toggleMaximize}
-            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f3f4f6] hover:text-text-base"
+            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover-bg hover:text-text-base"
             title={isMaximized ? "退出全屏文件视图" : "全屏文件视图"}
           >
             <FontAwesomeIcon
@@ -168,7 +168,7 @@ export function RightSidebarWorkbench({
       style={isMaximized ? { width: "100%" } : { width: visibleWidth }}
     >
       <div
-        className="relative flex h-full flex-col overflow-hidden border-l border-border-theme bg-white"
+        className="relative flex h-full flex-col overflow-hidden border-l border-border-theme bg-bg-base"
         style={isMaximized ? { width: "100%" } : { width, minWidth: 360 }}
       >
         {/* Drag handle on the left edge (hidden in maximize mode). */}

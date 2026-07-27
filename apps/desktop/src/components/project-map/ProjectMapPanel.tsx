@@ -49,7 +49,7 @@ function statusClass(status: string): string {
 function complexityClass(complexity: string): string {
   if (complexity === "complex") return "text-red-500 bg-red-50 border-red-100";
   if (complexity === "moderate") return "text-amber-600 bg-amber-50 border-amber-100";
-  return "text-text-secondary bg-gray-50 border-border-theme";
+  return "text-text-secondary bg-sidebar-bg border-border-theme";
 }
 
 type PanelMode = "graph" | "list";
@@ -114,7 +114,7 @@ export function ProjectMapStatusBadge({
   return (
     <button
       type="button"
-      className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-gray-100 transition-colors"
+      className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-hover-bg transition-colors"
       title={label}
       onClick={onClick}
     >
@@ -280,7 +280,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
   };
 
   return (
-    <div className="h-full min-h-0 flex flex-col bg-white">
+    <div className="h-full min-h-0 flex flex-col bg-bg-base">
       <div className="px-4 py-2 border-b border-border-theme flex-shrink-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center min-w-0">
@@ -288,17 +288,17 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
             <div className="text-[14px] font-medium text-text-base">项目地图</div>
             
             {status !== "missing" && status !== "failed" && !showDebugPanel && (
-              <div className="ml-4 inline-flex h-7 rounded-lg border border-border-theme bg-gray-50 p-0.5 text-[12px]">
+              <div className="ml-4 inline-flex h-7 rounded-lg border border-border-theme bg-sidebar-bg p-0.5 text-[12px]">
                 <button
                   type="button"
-                  className={`px-3 rounded-md transition-colors ${mode === "graph" ? "bg-white text-text-base shadow-sm" : "text-text-secondary hover:text-text-base"}`}
+                  className={`px-3 rounded-md transition-colors ${mode === "graph" ? "bg-elevated-bg text-text-base shadow-sm" : "text-text-secondary hover:text-text-base"}`}
                   onClick={() => setMode("graph")}
                 >
                   图谱
                 </button>
                 <button
                   type="button"
-                  className={`px-3 rounded-md transition-colors ${mode === "list" ? "bg-white text-text-base shadow-sm" : "text-text-secondary hover:text-text-base"}`}
+                  className={`px-3 rounded-md transition-colors ${mode === "list" ? "bg-elevated-bg text-text-base shadow-sm" : "text-text-secondary hover:text-text-base"}`}
                   onClick={() => setMode("list")}
                 >
                   列表
@@ -316,7 +316,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
             </div>
             <button
               type="button"
-              className="h-7 px-2.5 rounded-md border border-border-theme bg-white hover:bg-gray-50 text-text-base transition-colors disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
+              className="h-7 px-2.5 rounded-md border border-border-theme bg-elevated-bg hover:bg-hover-bg text-text-base transition-colors disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
               onClick={handleRefresh}
               disabled={refreshing}
               title="使用 Understand-Anything 刷新地图"
@@ -343,7 +343,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
         </div>
 
         {notice && (
-          <div className="mt-2 rounded-md border border-border-theme bg-gray-50 px-2 py-1.5 text-[11px] text-text-secondary">
+          <div className="mt-2 rounded-md border border-border-theme bg-sidebar-bg px-2 py-1.5 text-[11px] text-text-secondary">
             {notice}
           </div>
         )}
@@ -355,7 +355,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
         </div>
       ) : status === "missing" || status === "failed" ? (
         <div className="flex-1 min-h-0 overflow-y-auto p-5 text-[13px] text-text-secondary leading-6">
-          <div className="rounded-xl border border-border-theme bg-gray-50 p-4">
+          <div className="rounded-xl border border-border-theme bg-sidebar-bg p-4">
             {status === "missing"
               ? "当前项目还没有项目地图。点击右上角刷新按钮可生成 Understand-Anything 完整项目地图。"
               : stats?.last_error ?? "项目地图加载失败。"}
@@ -397,8 +397,8 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
                       key={hit.node_id}
                       className={`w-full text-left rounded-lg px-3 py-2 mb-1 transition-colors ${
                         selected?.node_id === hit.node_id
-                          ? "bg-gray-100 text-text-base"
-                          : "hover:bg-gray-50 text-text-secondary"
+                          ? "bg-hover-bg text-text-base"
+                          : "hover:bg-hover-bg text-text-secondary"
                       }`}
                       onClick={() => setSelected(hit)}
                     >
@@ -449,7 +449,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
                     </div>
 
                     {selected.summary && (
-                      <div className="mt-4 text-[13px] leading-6 text-text-base rounded-xl border border-border-theme bg-gray-50 px-3 py-2">
+                      <div className="mt-4 text-[13px] leading-6 text-text-base rounded-xl border border-border-theme bg-sidebar-bg px-3 py-2">
                         {selected.summary}
                       </div>
                     )}
@@ -618,14 +618,14 @@ function ProjectMapGraphView({
       </svg>
 
       {selected && (
-          <div className="popover-menu absolute right-4 top-4 w-[280px] rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme bg-white/95 backdrop-blur-md p-4 flex flex-col max-h-[calc(100%-32px)] overflow-y-auto custom-scrollbar z-10">
+          <div className="popover-menu absolute right-4 top-4 w-[280px] rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme bg-elevated-bg/95 backdrop-blur-md p-4 flex flex-col max-h-[calc(100%-32px)] overflow-y-auto custom-scrollbar z-10">
             <div className="text-[12px] font-medium text-text-secondary mb-3">当前节点信息</div>
             <div className="text-[14px] font-medium text-text-base break-words">{selected.name}</div>
             <div className="mt-1 text-[11px] text-text-secondary break-all">
               {selected.file_path ?? selected.node_id}
             </div>
             <div className="mt-3 flex items-center gap-2">
-              <span className="text-[10px] border rounded px-1.5 py-0.5 text-text-secondary bg-gray-50">
+              <span className="text-[10px] border rounded px-1.5 py-0.5 text-text-secondary bg-sidebar-bg">
                 {translateNodeType(selected.node_type)}
               </span>
               <span className={`text-[10px] border rounded px-1.5 py-0.5 whitespace-nowrap flex-shrink-0 ${complexityClass(selected.complexity)}`}>
@@ -633,7 +633,7 @@ function ProjectMapGraphView({
               </span>
             </div>
             {selected.summary && (
-              <div className="mt-3 text-[12px] leading-5 text-text-secondary bg-gray-50/50 p-2 rounded-lg border border-border-theme/50">
+              <div className="mt-3 text-[12px] leading-5 text-text-secondary bg-sidebar-bg/50 p-2 rounded-lg border border-border-theme/50">
                 {selected.summary}
               </div>
             )}
@@ -705,7 +705,7 @@ function RelationBlock({
         {items.map((item) => (
           <button
             key={`${title}:${item.node.node_id}`}
-            className="w-full flex items-center justify-between gap-3 rounded-lg border border-border-theme px-3 py-2 text-left hover:bg-gray-50 transition-colors"
+            className="w-full flex items-center justify-between gap-3 rounded-lg border border-border-theme px-3 py-2 text-left hover:bg-hover-bg transition-colors"
             onClick={() => onSelect(item.node)}
           >
             <div className="min-w-0">

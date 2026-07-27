@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   localPtyClose,
@@ -18,6 +18,9 @@ import {
 import type { Terminal as XTerm } from "@xterm/xterm";
 import type { FitAddon, ITerminalDimensions } from "@xterm/addon-fit";
 import type { PluginDefinition } from "./pluginTypes";
+import { useThemeContext } from "../../theme/ThemeProvider";
+import { mixHex } from "../../theme/colorUtils";
+import type { ThemePalette } from "../../theme/themeTypes";
 
 interface TerminalPluginProps {
   mode?: "local" | "remote";
@@ -62,7 +65,49 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function buildTerminalTheme(palette: ThemePalette, isDark: boolean) {
+  const bg = palette.background;
+  const fg = palette.foreground;
+  const muted = palette.foregroundMuted;
+  const border = palette.border;
+  const accent = palette.accent;
+  const accentHover = palette.accentHover;
+  const makeShade = (lightT: number, darkT: number) =>
+    mixHex(bg, fg, isDark ? darkT : lightT);
+
+  return {
+    background: bg,
+    foreground: fg,
+    cursor: fg,
+    cursorAccent: bg,
+    selectionBackground: palette.selection,
+    selectionForeground: fg,
+    selectionInactiveBackground: palette.selection,
+    scrollbarSliderBackground: mixHex(bg, muted, isDark ? 0.55 : 0.38),
+    scrollbarSliderHoverBackground: mixHex(bg, muted, isDark ? 0.68 : 0.52),
+    scrollbarSliderActiveBackground: mixHex(bg, muted, isDark ? 0.8 : 0.64),
+    overviewRulerBorder: border,
+    black: makeShade(0.88, 0.22),
+    red: isDark ? "#F87171" : "#DC2626",
+    green: isDark ? "#34D399" : "#059669",
+    yellow: isDark ? "#FBBF24" : "#B45309",
+    blue: isDark ? accentHover : "#2563EB",
+    magenta: isDark ? "#C084FC" : "#7C3AED",
+    cyan: isDark ? "#22D3EE" : "#0891B2",
+    white: makeShade(0.18, 0.84),
+    brightBlack: makeShade(0.7, 0.4),
+    brightRed: isDark ? "#FCA5A5" : "#EF4444",
+    brightGreen: isDark ? "#6EE7B7" : "#10B981",
+    brightYellow: isDark ? "#FCD34D" : "#F59E0B",
+    brightBlue: isDark ? accent : "#3B82F6",
+    brightMagenta: isDark ? "#D8B4FE" : "#8B5CF6",
+    brightCyan: isDark ? "#67E8F9" : "#06B6D4",
+    brightWhite: makeShade(0.06, 0.96),
+  };
+}
+
 export function TerminalPlugin({ mode = "local", connectionId = null }: TerminalPluginProps) {
+  const { activePalette, activeIsDark } = useThemeContext();
   const [remoteConn, setRemoteConn] = useState<SshConnection | null>(null);
   const [booting, setBooting] = useState(false);
   const [terminalReady, setTerminalReady] = useState(false);
@@ -79,6 +124,10 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
   const decoderRef = useRef(new TextDecoder());
   const readingRef = useRef(false);
   const idlePollDelayRef = useRef(PTY_ACTIVE_POLL_MS);
+  const terminalTheme = useMemo(
+    () => buildTerminalTheme(activePalette, activeIsDark),
+    [activePalette, activeIsDark]
+  );
 
   const isRemote = mode === "remote";
 
@@ -275,28 +324,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
         fontFamily: '"Cascadia Mono", "Consolas", "Courier New", monospace',
         fontSize: 13,
         lineHeight: 1.35,
-        theme: {
-          background: "#ffffff",
-          foreground: "#111827",
-          cursor: "#111827",
-          selectionBackground: "rgba(59, 130, 246, 0.16)",
-          black: "#111827",
-          red: "#dc2626",
-          green: "#059669",
-          yellow: "#b45309",
-          blue: "#2563eb",
-          magenta: "#7c3aed",
-          cyan: "#0891b2",
-          white: "#e5e7eb",
-          brightBlack: "#6b7280",
-          brightRed: "#ef4444",
-          brightGreen: "#10b981",
-          brightYellow: "#f59e0b",
-          brightBlue: "#3b82f6",
-          brightMagenta: "#8b5cf6",
-          brightCyan: "#06b6d4",
-          brightWhite: "#f9fafb",
-        },
+        theme: terminalTheme,
         scrollback: 3000,
         convertEol: false,
       });
@@ -349,6 +377,11 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
       cleanup?.();
     };
   }, [clearScheduledResize, closeSession, scheduleTerminalLayout, stopPolling]);
+
+  useEffect(() => {
+    if (!termRef.current) return;
+    termRef.current.options.theme = terminalTheme;
+  }, [terminalTheme]);
 
   useEffect(() => {
     if (!terminalReady || !termRef.current || !fitRef.current) return;
@@ -421,7 +454,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
 
   if (isRemote && !connectionId) {
     return (
-      <div className="flex h-full w-full flex-col items-center justify-center bg-white text-text-secondary">
+      <div className="flex h-full w-full flex-col items-center justify-center bg-bg-base text-text-secondary">
         <FontAwesomeIcon icon={["fas", "server"]} className="mb-4 text-4xl text-gray-300" />
         <div className="mb-2 text-[13px]">请先选择一个 SSH 连接</div>
         <div className="text-[12px] text-gray-400">切换到远程模式后，需要先绑定一条可用的远程连接。</div>
@@ -430,15 +463,15 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
   }
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-white">
+    <div className="relative h-full w-full overflow-hidden bg-bg-base">
       {booting && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80 text-[12px] text-text-secondary">
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-bg-base/80 text-[12px] text-text-secondary">
           正在启动终端...
         </div>
       )}
       <div ref={containerRef} className="terminal-surface h-full w-full px-3 py-2" />
       {isRemote && remoteConn && (
-        <div className="absolute right-3 top-2 rounded-full bg-white/90 px-2 py-0.5 text-[11px] text-text-secondary shadow-sm">
+        <div className="absolute right-3 top-2 rounded-full bg-elevated-bg/90 px-2 py-0.5 text-[11px] text-text-secondary shadow-sm">
           {remoteConn.username}@{remoteConn.host}
         </div>
       )}

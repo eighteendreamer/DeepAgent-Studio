@@ -271,7 +271,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           type="button"
           onClick={() => setIsRightSidebarOpen((v) => !v)}
           className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-            isRightSidebarOpen ? "text-text-base" : "text-text-secondary hover:bg-gray-100 hover:text-text-base"
+            isRightSidebarOpen ? "text-text-base" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
           }`}
           title={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
           aria-label={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
@@ -282,7 +282,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           type="button"
           onClick={handleToggleBottomTerminalPanel}
           className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-            isBottomPanelOpen ? "text-text-base" : "text-text-secondary hover:bg-gray-100 hover:text-text-base"
+            isBottomPanelOpen ? "text-text-base" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
           }`}
           title="打开底部终端"
           aria-label="打开底部终端"
@@ -339,10 +339,10 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                 
                 {isEnvDropdownOpen && (
                     <div
-                      className="popover-menu absolute bottom-full left-0 mb-2 w-[180px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[60] py-1 origin-bottom-left"
+                      className="popover-menu absolute bottom-full left-0 mb-2 w-[180px] bg-elevated-bg border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[60] py-1 origin-bottom-left"
                     >
                       <div 
-                        className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between group"
+                        className="px-3 py-2 hover:bg-hover-bg cursor-pointer flex items-center justify-between group"
                         onClick={() => {
                           handleEnvModeChange("local");
                           setIsEnvDropdownOpen(false);
@@ -362,7 +362,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                         onMouseLeave={() => setIsRemoteSubmenuOpen(false)}
                       >
                         <div 
-                          className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between group"
+                          className="px-3 py-2 hover:bg-hover-bg cursor-pointer flex items-center justify-between group"
                           onClick={() => {
                             handleEnvModeChange("remote");
                             setIsRemoteSubmenuOpen((prev) => !prev);
@@ -380,7 +380,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
 
                         {isRemoteSubmenuOpen && (
                             <div
-                              className="popover-menu absolute left-full top-0 ml-2 w-[280px] overflow-hidden rounded-xl border border-border-theme bg-white py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)]"
+                              className="popover-menu absolute left-full top-0 ml-2 w-[280px] overflow-hidden rounded-xl border border-border-theme bg-elevated-bg py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)]"
                             >
                               <div className="px-3 py-2 text-[11px] font-medium text-text-secondary">
                                 {"\u5df2\u6709 SSH \u8fde\u63a5"}
@@ -399,7 +399,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                                   return (
                                     <div
                                       key={conn.id}
-                                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-start justify-between gap-3"
+                                      className="px-3 py-2 hover:bg-hover-bg cursor-pointer flex items-start justify-between gap-3"
                                       onClick={() => handleRemoteConnectionSelect(conn.id)}
                                     >
                                       <div className="min-w-0">
@@ -419,7 +419,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                                               ? "bg-yellow-100 text-yellow-700"
                                               : conn.status === "error"
                                               ? "bg-red-100 text-red-700"
-                                              : "bg-gray-100 text-text-secondary"
+                                              : "bg-sidebar-bg text-text-secondary"
                                           }`}
                                         >
                                           <span
@@ -470,7 +470,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
               {/* Dropdown Menu */}
               {isDropdownOpen && (
                   <div
-                    className="popover-menu absolute bottom-full left-0 mb-2 w-[300px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1 origin-bottom-left"
+                    className="popover-menu absolute bottom-full left-0 mb-2 w-[300px] bg-elevated-bg border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1 origin-bottom-left"
                   >
                     <div className="px-3 py-2 border-b border-transparent text-[13px] flex items-center text-text-secondary">
                       <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="mr-2" />
@@ -485,7 +485,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                       {projects.map(p => (
                         <div
                           key={p.path}
-                          className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base group"
+                          className="flex items-center justify-between px-4 py-2 hover:bg-hover-bg cursor-pointer text-[13px] text-text-base group"
                           onClick={() => {
                             onSelectProject(p.path);
                             setIsDropdownOpen(false);
@@ -504,14 +504,14 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
 
                     <div className="w-full h-px bg-border-theme my-1"></div>
 
-                    <div className="flex items-center justify-between px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base" onClick={() => { onAddProject(); setIsDropdownOpen(false); }}>
+                    <div className="flex items-center justify-between px-4 py-2 hover:bg-hover-bg cursor-pointer text-[13px] text-text-base" onClick={() => { onAddProject(); setIsDropdownOpen(false); }}>
                       <div className="flex items-center">
                         <FontAwesomeIcon icon={["fas", "plus"]} className="mr-2 text-text-secondary w-4" />
                         {t("startView.addNewProject")}
                       </div>
                       <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
                     </div>
-                    <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer text-[13px] text-text-base">
+                    <div className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer text-[13px] text-text-base">
                       <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
                       {t("startView.noProject")}
                     </div>
@@ -523,7 +523,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
 
         {/* Suggestions removed as they are no longer in Props */}
         <div className="w-full mt-6 space-y-1">
-          <div className="flex items-center px-3 py-2.5 text-[13px] text-text-secondary hover:bg-gray-50 rounded-lg cursor-pointer transition-colors group">
+          <div className="flex items-center px-3 py-2.5 text-[13px] text-text-secondary hover:bg-hover-bg rounded-lg cursor-pointer transition-colors group">
             <FontAwesomeIcon
               icon={["fas", "border-all"]}
               className="w-6 text-gray-400 group-hover:text-text-base transition-colors"
@@ -550,7 +550,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
 
         {bottomPanelPresence.shouldRender && (
             <div 
-              className={`bottom-panel-workbench relative z-0 flex w-full min-w-0 flex-shrink-0 flex-col overflow-hidden border-t border-border-theme bg-white ${
+              className={`bottom-panel-workbench relative z-0 flex w-full min-w-0 flex-shrink-0 flex-col overflow-hidden border-t border-border-theme bg-bg-base ${
                 bottomPanelPresence.isClosing ? "is-closing" : ""
               } ${isResizingBottom ? "is-resizing" : ""}`}
               style={{
@@ -567,7 +567,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                   setIsResizingBottom(true);
                 }}
               />
-              <div className="flex items-center justify-between border-b border-border-theme h-10 px-4 flex-shrink-0 bg-white">
+              <div className="flex items-center justify-between border-b border-border-theme h-10 px-4 flex-shrink-0 bg-bg-base">
                 <div className="flex h-full min-w-0 flex-1 items-center overflow-x-auto text-[13px] text-text-secondary no-scrollbar">
                   {bottomTabs.map(tab => (
                     <div 

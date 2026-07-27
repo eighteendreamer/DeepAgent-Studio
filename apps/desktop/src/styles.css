@@ -161,7 +161,7 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
 
 .terminal-surface .xterm-viewport {
   overflow-y: auto !important;
-  background: #ffffff !important;
+  background: var(--theme-bg, #ffffff) !important;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.7) transparent;
 }
@@ -189,7 +189,7 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
 }
 
 .terminal-surface .xterm-screen canvas {
-  background: #ffffff !important;
+  background: var(--theme-bg, #ffffff) !important;
 }
 
 .panel-resize-handle-col {

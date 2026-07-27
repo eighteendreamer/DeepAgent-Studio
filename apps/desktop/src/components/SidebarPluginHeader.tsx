@@ -80,7 +80,7 @@ export function SidebarPluginHeader({
   }, []);
 
   return (
-    <div className={`min-w-0 max-w-full border-b border-border-theme bg-white ${className}`.trim()}>
+    <div className={`min-w-0 max-w-full border-b border-border-theme bg-bg-base ${className}`.trim()}>
       <div
         className={`grid h-8 min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 pl-4 ${
           reserveRightActionsSpace ? "pr-24" : "pr-2"
@@ -97,8 +97,8 @@ export function SidebarPluginHeader({
                   onClick={() => onSelectTab(tab.id)}
                   className={`group relative flex h-6 min-w-[74px] max-w-[180px] flex-shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] transition-colors ${
                     active
-                      ? "bg-[#f3f4f6] text-text-base shadow-[inset_0_0_0_1px_rgba(15,23,42,0.04)]"
-                      : "text-text-secondary hover:bg-[#f7f8fa] hover:text-text-base"
+                      ? "bg-hover-bg text-text-base shadow-[inset_0_0_0_1px_rgba(15,23,42,0.04)]"
+                      : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
                   }`}
                 >
                   <FontAwesomeIcon icon={tab.icon} className="flex-shrink-0 text-[11px]" />
@@ -110,8 +110,8 @@ export function SidebarPluginHeader({
                     }}
                     className={`flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded text-[9px] transition-colors ${
                       active
-                        ? "text-text-secondary hover:bg-white hover:text-text-base"
-                        : "text-transparent group-hover:text-text-secondary hover:bg-white hover:text-text-base"
+                        ? "text-text-secondary hover:bg-hover-bg hover:text-text-base"
+                        : "text-transparent group-hover:text-text-secondary hover:bg-hover-bg hover:text-text-base"
                     }`}
                   >
                     <FontAwesomeIcon icon={["fas", "xmark"]} />
@@ -140,15 +140,15 @@ export function SidebarPluginHeader({
               title={t("chatView.recommended", { defaultValue: "Open plugin" })}
               className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md transition-colors ${
                 isMenuOpen
-                  ? "bg-[#f3f4f6] text-text-base"
-                  : "text-text-secondary hover:bg-[#f3f4f6] hover:text-text-base"
+                  ? "bg-hover-bg text-text-base"
+                  : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
               }`}
             >
               <FontAwesomeIcon icon={["fas", "plus"]} className="text-[12px]" />
             </button>
 
             {isMenuOpen && availablePlugins && (
-              <div className="popover-menu absolute right-0 top-full mt-1 flex w-56 origin-top-right flex-col rounded-xl border border-border-theme bg-white py-1.5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-[100]">
+              <div className="popover-menu absolute right-0 top-full mt-1 flex w-56 origin-top-right flex-col rounded-xl border border-border-theme bg-elevated-bg py-1.5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-[100]">
                 {availablePlugins.map((plugin) => (
                   <button
                     key={plugin.id ?? `${plugin.type}:${plugin.title}`}
@@ -157,7 +157,7 @@ export function SidebarPluginHeader({
                       setIsMenuOpen(false);
                       onSelectPlugin?.(plugin);
                     }}
-                    className="flex w-full items-center px-4 py-2 text-left transition-colors hover:bg-gray-50"
+                    className="flex w-full items-center px-4 py-2 text-left transition-colors hover:bg-hover-bg"
                   >
                     <div className="mr-3 flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
                       <FontAwesomeIcon icon={plugin.icon} className="text-[12px]" />
