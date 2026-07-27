@@ -146,7 +146,10 @@ pub use workspace_service::WorkspaceService;
 
 // Re-export the live runtime event + approval types so the Tauri/web layer can
 // forward them.
-pub use deepagent_hooks::{HookDefinitions, PermissionRules};
+pub use deepagent_hooks::{
+    HookActionType, HookCommandResult, HookCommandRunner, HookDefinitions, PermissionRules,
+    SystemHookRunner,
+};
 pub use deepagent_runtime::{ApprovalDecision, RuntimeEvent};
 
 #[cfg(feature = "keychain")]

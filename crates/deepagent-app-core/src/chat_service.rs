@@ -9,12 +9,14 @@
 //! The model client is built from the persisted [`ModelCatalog`] + the API key
 //! from the secret store, so the UI only needs to call [`ChatService::run`].
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use deepagent_builtins::WorkspaceRoot;
@@ -27,8 +29,8 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
 use deepagent_core::message::{Message, ToolCall};
 use deepagent_hooks::{
-    DecisionSource, Hook, HookCommandRunner, HookContext, HookData, HookOutcome, HookPoint,
-    HookRegistry, PermissionRulesHook, SystemHookRunner,
+    DecisionSource, Hook, HookCommandResult, HookCommandRunner, HookContext, HookData, HookOutcome,
+    HookPoint, HookRegistry, PermissionRulesHook, SystemHookRunner,
 };
 use deepagent_intent::{CommandContext, CommandDef, SlashAction, SlashRegistry};
 use deepagent_models::transport::HttpTransport;
@@ -37,8 +39,8 @@ use deepagent_models::{
 };
 use deepagent_persistence::Database;
 use deepagent_runtime::{
-    tool_ui_metadata, Agent, ChannelSink, ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent,
-    RuntimeEventSink,
+    tool_ui_metadata, Agent, ChannelSink, ModelAgent, PromptDecision, RuntimeConfig, RuntimeEngine,
+    RuntimeEvent, RuntimeEventSink,
 };
 use deepagent_session::Session;
 use deepagent_tools::{PermissionSet, ToolRegistry};
@@ -85,6 +87,86 @@ const SESSION_TITLE_SYSTEM_PROMPT: &str = concat!(
     "Focus on the user's concrete task or goal, not greetings or assistant boilerplate.\n",
     "Keep it short and specific."
 );
+
+static HOOK_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+struct ObservableHookRunner {
+    inner: SystemHookRunner,
+    events: Arc<dyn RuntimeEventSink>,
+}
+
+impl ObservableHookRunner {
+    fn new(events: Arc<dyn RuntimeEventSink>) -> Self {
+        Self {
+            inner: SystemHookRunner,
+            events,
+        }
+    }
+}
+
+#[async_trait]
+impl HookCommandRunner for ObservableHookRunner {
+    async fn run(
+        &self,
+        command: &str,
+        stdin_json: &str,
+        env: &BTreeMap<String, String>,
+        timeout: Duration,
+    ) -> Result<HookCommandResult> {
+        let id = format!("hook-{}", HOOK_EVENT_SEQ.fetch_add(1, Ordering::Relaxed));
+        let event = hook_event_name(stdin_json);
+        self.events.emit(RuntimeEvent::HookStarted {
+            id: id.clone(),
+            event: event.clone(),
+            command: command.to_string(),
+        });
+        let started = Instant::now();
+        let result = self.inner.run(command, stdin_json, env, timeout).await;
+        let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        if let Ok(result) = &result {
+            self.events.emit(RuntimeEvent::HookCompleted {
+                id,
+                event,
+                command: command.to_string(),
+                exit_code: result.exit_code,
+                stdout: result.stdout.clone(),
+                stderr: result.stderr.clone(),
+                outcome: hook_command_outcome(result),
+                duration_ms,
+            });
+        }
+        result
+    }
+}
+
+fn hook_event_name(stdin_json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(stdin_json)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("hook_event_name")
+                .and_then(|event| event.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| "Hook".to_string())
+}
+
+fn hook_command_outcome(result: &HookCommandResult) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(result.stdout.trim()) {
+        if value
+            .get("decision")
+            .and_then(|decision| decision.as_str())
+            .is_some_and(|decision| decision.eq_ignore_ascii_case("block"))
+        {
+            return "blocked".to_string();
+        }
+    }
+    match result.exit_code {
+        0 => "continued".to_string(),
+        2 => "blocked".to_string(),
+        _ => "error".to_string(),
+    }
+}
 
 /// Build the effective system prompt for a run: the stable, prefix-cacheable
 /// base, then the [`SYSTEM_PROMPT_DYNAMIC_BOUNDARY`], then a dynamic environment
@@ -2692,10 +2774,10 @@ impl ChatService {
 
         let plugin_projection = self.sync_plugin_runtime()?;
 
-        let model_prompt = self
+        let mut model_prompt = self
             .dynamic_command_prompt(prompt)?
             .unwrap_or_else(|| prompt.to_string());
-        let prompt_for_model = model_prompt.as_str();
+        let mut prompt_to_record = prompt.to_string();
 
         // Budget gate: refuse a new run when a configured daily/monthly limit is
         // already exhausted. No-op when no cost tracker is attached or no budget
@@ -2837,16 +2919,13 @@ impl ChatService {
             .tool_search_auto_threshold()
             .unwrap_or(SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS);
         let tool_search_discovered = self.discovered_tools_for_session(&session_id_str);
-        let effective_thinking_depth = effective_thinking_depth_for_prompt(
+        let subagent_thinking_depth = effective_thinking_depth_for_prompt(
             thinking_depth,
-            prompt_for_model,
+            model_prompt.as_str(),
             continue_session.is_none() && history.is_empty(),
             preflight_tools.is_empty(),
             initial_plan_mode,
         );
-        let model_capability = ModelCapabilityResolver::new().resolve_model_id(&model);
-        let context_policy =
-            ContextPolicy::for_capability(&model_capability, effective_thinking_depth);
 
         // Sub-agent orchestration (Claude-Code parity): register the `task`
         // tool into the MAIN run's registry only. Its runner executes a nested
@@ -2888,7 +2967,7 @@ impl ChatService {
             let runner = ChatSubagentRunner {
                 client: client.clone(),
                 model: model.clone(),
-                thinking_depth: effective_thinking_depth,
+                thinking_depth: subagent_thinking_depth,
                 registry: sub_registry,
                 root: root.clone(),
                 tool_search_mode,
@@ -2992,7 +3071,8 @@ impl ChatService {
         // JSON is logged and skipped rather than failing the run).
         match self.settings.hook_definitions() {
             Ok(defs) if !defs.is_empty() => {
-                let runner: Arc<dyn HookCommandRunner> = Arc::new(SystemHookRunner);
+                let runner: Arc<dyn HookCommandRunner> =
+                    Arc::new(ObservableHookRunner::new(sink.clone()));
                 let n = defs.register_into(&mut hooks, runner);
                 tracing::info!(count = n, "registered external hooks from hooks.json");
             }
@@ -3003,7 +3083,8 @@ impl ChatService {
         }
         if let Some(projection) = plugin_projection.as_ref() {
             if !projection.hook_definitions.is_empty() {
-                let runner: Arc<dyn HookCommandRunner> = Arc::new(SystemHookRunner);
+                let runner: Arc<dyn HookCommandRunner> =
+                    Arc::new(ObservableHookRunner::new(sink.clone()));
                 let n = projection
                     .hook_definitions
                     .register_into(&mut hooks, runner);
@@ -3025,6 +3106,90 @@ impl ChatService {
             self.bash_allow.clone(),
         );
 
+        let prompt_gate: RuntimeEngine<'_, SystemClock> =
+            RuntimeEngine::new(&registry, Default::default(), RuntimeConfig::default())
+                .with_hooks(&hooks);
+        match prompt_gate
+            .submit_prompt(session.id(), model_prompt.clone())
+            .await?
+        {
+            PromptDecision::Accept(effective_prompt) => {
+                if effective_prompt != model_prompt {
+                    prompt_to_record = effective_prompt.clone();
+                }
+                model_prompt = effective_prompt;
+            }
+            PromptDecision::Rejected { reason } => {
+                let message = format!("UserPromptSubmit hook blocked the prompt: {reason}");
+                let session_id = session.id().to_string();
+                session.append(EventPayload::MessageAppended {
+                    message: Message::user(prompt),
+                })?;
+                let task = session.create_task(prompt)?;
+                session.transition_task(task, deepagent_core::task::TaskState::Running)?;
+                sink.emit(RuntimeEvent::RunStarted {
+                    task_id: task.to_string(),
+                });
+                sink.emit(RuntimeEvent::SessionRegistered {
+                    session_id: session_id.clone(),
+                    title: session.state().title.clone(),
+                });
+                sink.emit(RuntimeEvent::TurnStarted { step: 0 });
+                sink.emit(RuntimeEvent::ContentDelta {
+                    text: message.clone(),
+                });
+                session.append(EventPayload::MessageAppended {
+                    message: Message::assistant(&message),
+                })?;
+                session.transition_task(task, deepagent_core::task::TaskState::Completed)?;
+                sink.emit(RuntimeEvent::RunCompleted { message });
+                drop(sink);
+                let _ = pump.await;
+                return Ok(session_id);
+            }
+            PromptDecision::NeedsApproval { reason, .. } => {
+                let message = format!(
+                    "UserPromptSubmit hook requires approval before this prompt can run: {reason}"
+                );
+                let session_id = session.id().to_string();
+                session.append(EventPayload::MessageAppended {
+                    message: Message::user(prompt),
+                })?;
+                let task = session.create_task(prompt)?;
+                session.transition_task(task, deepagent_core::task::TaskState::Running)?;
+                sink.emit(RuntimeEvent::RunStarted {
+                    task_id: task.to_string(),
+                });
+                sink.emit(RuntimeEvent::SessionRegistered {
+                    session_id: session_id.clone(),
+                    title: session.state().title.clone(),
+                });
+                sink.emit(RuntimeEvent::TurnStarted { step: 0 });
+                sink.emit(RuntimeEvent::ContentDelta {
+                    text: message.clone(),
+                });
+                session.append(EventPayload::MessageAppended {
+                    message: Message::assistant(&message),
+                })?;
+                session.transition_task(task, deepagent_core::task::TaskState::Completed)?;
+                sink.emit(RuntimeEvent::RunCompleted { message });
+                drop(sink);
+                let _ = pump.await;
+                return Ok(session_id);
+            }
+        }
+        let prompt_for_model = model_prompt.as_str();
+        let effective_thinking_depth = effective_thinking_depth_for_prompt(
+            thinking_depth,
+            prompt_for_model,
+            continue_session.is_none() && history.is_empty(),
+            preflight_tools.is_empty(),
+            initial_plan_mode,
+        );
+        let model_capability = ModelCapabilityResolver::new().resolve_model_id(&model);
+        let context_policy =
+            ContextPolicy::for_capability(&model_capability, effective_thinking_depth);
+
         // Model-driven context compaction (Phase 2B): when the recovered history
         // is large (token pressure over the policy threshold), compress the
         // older turns into a structured summary and seed the agent with
@@ -3042,9 +3207,9 @@ impl ChatService {
         }
         // Record the incoming user turn so the thread's history is complete.
         session.append(EventPayload::MessageAppended {
-            message: Message::user(prompt),
+            message: Message::user(&prompt_to_record),
         })?;
-        let task = session.create_task(prompt)?;
+        let task = session.create_task(&prompt_to_record)?;
         for tool in &preflight_tools {
             let call = ToolCall {
                 id: tool.call_id.clone(),

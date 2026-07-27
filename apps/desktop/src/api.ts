@@ -1119,6 +1119,8 @@ export interface RuntimeEvent {
     | "tool_started"
     | "tool_completed"
     | "tool_blocked"
+    | "hook_started"
+    | "hook_completed"
     | "verification"
     | "context_usage"
     | "usage"
@@ -1546,6 +1548,104 @@ export async function getHooksJson(): Promise<string> {
 export async function setHooksJson(hooksJson: string): Promise<void> {
   const invoke = getInvoke();
   if (invoke) await invoke("set_hooks_json", { hooksJson });
+}
+
+export type HooksValidation = {
+  valid: boolean;
+  action_count: number;
+  warnings: string[];
+  errors: string[];
+};
+
+export type EffectiveHookAction = {
+  action_type: string;
+  command: string;
+  timeout?: number | null;
+  env_count: number;
+};
+
+export type EffectiveHookGroup = {
+  source: "user" | "plugin" | "builtin" | string;
+  event: string;
+  matcher?: string | null;
+  actions: EffectiveHookAction[];
+};
+
+export type EffectiveHooks = {
+  user_hooks: EffectiveHookGroup[];
+  plugin_hooks: EffectiveHookGroup[];
+  builtin_hooks: EffectiveHookGroup[];
+  errors: string[];
+};
+
+export type TestHookActionInput = {
+  type?: string;
+  command: string;
+  timeout?: number | null;
+  env?: Record<string, string>;
+};
+
+export type TestHookCommandRequest = {
+  event: string;
+  matcher?: string | null;
+  action: TestHookActionInput;
+  sample_payload?: Record<string, unknown> | null;
+};
+
+export type TestHookCommandResult = {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  outcome: "continued" | "blocked" | "error" | string;
+  duration_ms: number;
+  stdin_json: string;
+};
+
+export async function validateHooksJson(hooksJson: string): Promise<HooksValidation> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<HooksValidation>("validate_hooks_json", { hooksJson });
+  try {
+    const parsed = hooksJson.trim() ? JSON.parse(hooksJson) : { hooks: {} };
+    const hooks: Record<string, unknown> =
+      parsed?.hooks && typeof parsed.hooks === "object" ? parsed.hooks : {};
+    const action_count = Object.values(hooks).reduce<number>((total, groups) => {
+      if (!Array.isArray(groups)) return total;
+      return (
+        total +
+        groups.reduce<number>((sum, group) => {
+          const hooks = group && typeof group === "object" && "hooks" in group ? group.hooks : undefined;
+          return sum + (Array.isArray(hooks) ? hooks.length : 0);
+        }, 0)
+      );
+    }, 0);
+    return { valid: true, action_count, warnings: [], errors: [] };
+  } catch (error) {
+    return { valid: false, action_count: 0, warnings: [], errors: [String(error)] };
+  }
+}
+
+export async function listEffectiveHooks(): Promise<EffectiveHooks> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<EffectiveHooks>("list_effective_hooks");
+  return { user_hooks: [], plugin_hooks: [], builtin_hooks: [], errors: [] };
+}
+
+export async function testHookCommand(
+  request: TestHookCommandRequest,
+): Promise<TestHookCommandResult> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<TestHookCommandResult>("test_hook_command", { request });
+  return {
+    exit_code: 0,
+    stdout: "",
+    stderr: "",
+    outcome: "continued",
+    duration_ms: 0,
+    stdin_json: JSON.stringify({
+      session_id: "test",
+      hook_event_name: request.event,
+    }),
+  };
 }
 
 // ---- workspace (active project) -------------------------------------------

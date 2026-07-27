@@ -1357,6 +1357,42 @@ export function App() {
               });
             }
             break;
+          case "hook_started":
+            upsertTool(String(event.id ?? "hook"), {
+              name: `hook:${String(event.event ?? "Hook")}`,
+              args: String(event.command ?? ""),
+              status: "running",
+              toolKind: "command_execution",
+              summary: `Hook ${String(event.event ?? "Hook")}`,
+              meta: { command: String(event.command ?? "") },
+            });
+            break;
+          case "hook_completed": {
+            const outcome = String(event.outcome ?? "");
+            const stderr = String(event.stderr ?? "").trim();
+            const stdout = String(event.stdout ?? "").trim();
+            upsertTool(String(event.id ?? "hook"), {
+              name: `hook:${String(event.event ?? "Hook")}`,
+              status: outcome === "blocked" || outcome === "error" ? "error" : "ok",
+              durationMs:
+                typeof event.duration_ms === "number" ? event.duration_ms : undefined,
+              detail: stderr || stdout || outcome,
+              output: {
+                exit_code: event.exit_code,
+                outcome,
+                stdout,
+                stderr,
+              },
+              toolKind: "command_execution",
+              summary: `Hook ${String(event.event ?? "Hook")}: ${outcome || "completed"}`,
+              meta: {
+                command: String(event.command ?? ""),
+                exit_code: event.exit_code,
+                outcome,
+              },
+            });
+            break;
+          }
           case "context_usage": {
             const snapshot = event.snapshot as ContextUsageSnapshot | undefined;
             if (snapshot) {

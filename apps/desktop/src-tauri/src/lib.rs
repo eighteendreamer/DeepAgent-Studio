@@ -11,7 +11,7 @@
 //! - [`WorkspaceService`] — active-project identity (folder name/path).
 //! - [`TerminalService`] — interactive terminal in the active project dir.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -42,8 +42,8 @@ use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager, State};
 use tauri::window::{Effect as WindowEffect, EffectsBuilder};
+use tauri::{Emitter, Manager, State};
 
 /// Service name used for keychain entries.
 const KEYCHAIN_SERVICE: &str = "deepagent-studio";
@@ -2341,6 +2341,358 @@ fn set_hooks_json(state: State<'_, AppState>, hooks_json: String) -> Result<(), 
         .map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct HooksValidationDto {
+    valid: bool,
+    action_count: usize,
+    warnings: Vec<String>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EffectiveHookActionDto {
+    action_type: String,
+    command: String,
+    timeout: Option<u64>,
+    env_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EffectiveHookGroupDto {
+    source: String,
+    event: String,
+    matcher: Option<String>,
+    actions: Vec<EffectiveHookActionDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EffectiveHooksDto {
+    user_hooks: Vec<EffectiveHookGroupDto>,
+    plugin_hooks: Vec<EffectiveHookGroupDto>,
+    builtin_hooks: Vec<EffectiveHookGroupDto>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TestHookActionDto {
+    #[serde(rename = "type", default = "default_hook_action_type")]
+    action_type: String,
+    command: String,
+    timeout: Option<u64>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TestHookCommandRequestDto {
+    event: String,
+    matcher: Option<String>,
+    action: TestHookActionDto,
+    sample_payload: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TestHookCommandResultDto {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+    outcome: String,
+    duration_ms: u64,
+    stdin_json: String,
+}
+
+const KNOWN_HOOK_EVENTS: &[&str] = &[
+    "PreToolUse",
+    "PostToolUse",
+    "UserPromptSubmit",
+    "Stop",
+    "SubagentStop",
+];
+
+fn default_hook_action_type() -> String {
+    "command".to_string()
+}
+
+fn hook_action_type_label(action_type: &deepagent_app_core::HookActionType) -> String {
+    match action_type {
+        deepagent_app_core::HookActionType::Command => "command".to_string(),
+        deepagent_app_core::HookActionType::McpTool => "mcp_tool".to_string(),
+    }
+}
+
+fn hook_groups_from_defs(
+    source: &str,
+    defs: &deepagent_app_core::HookDefinitions,
+) -> Vec<EffectiveHookGroupDto> {
+    defs.hooks
+        .iter()
+        .flat_map(|(event, groups)| {
+            groups.iter().map(move |group| EffectiveHookGroupDto {
+                source: source.to_string(),
+                event: event.clone(),
+                matcher: group.matcher.clone(),
+                actions: group
+                    .hooks
+                    .iter()
+                    .map(|action| EffectiveHookActionDto {
+                        action_type: hook_action_type_label(&action.action_type),
+                        command: action.command.clone(),
+                        timeout: action.timeout,
+                        env_count: action.env.len(),
+                    })
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+fn hooks_validation_for_defs(defs: &deepagent_app_core::HookDefinitions) -> HooksValidationDto {
+    let mut warnings = Vec::new();
+    for (event, groups) in &defs.hooks {
+        if !KNOWN_HOOK_EVENTS.contains(&event.as_str()) {
+            warnings.push(format!("unknown hook event `{event}` will be skipped"));
+        }
+        for group in groups {
+            for action in &group.hooks {
+                if action.action_type != deepagent_app_core::HookActionType::Command {
+                    warnings.push(format!(
+                        "{event}: `{}` actions are not executable yet",
+                        hook_action_type_label(&action.action_type)
+                    ));
+                }
+                if action.command.trim().is_empty() {
+                    warnings.push(format!("{event}: empty command will be skipped"));
+                }
+            }
+        }
+    }
+    HooksValidationDto {
+        valid: true,
+        action_count: defs.action_count(),
+        warnings,
+        errors: Vec::new(),
+    }
+}
+
+#[tauri::command]
+fn validate_hooks_json(hooks_json: String) -> HooksValidationDto {
+    if hooks_json.trim().is_empty() {
+        return HooksValidationDto {
+            valid: true,
+            action_count: 0,
+            warnings: Vec::new(),
+            errors: Vec::new(),
+        };
+    }
+    match deepagent_app_core::HookDefinitions::parse(&hooks_json) {
+        Ok(defs) => hooks_validation_for_defs(&defs),
+        Err(e) => HooksValidationDto {
+            valid: false,
+            action_count: 0,
+            warnings: Vec::new(),
+            errors: vec![e.to_string()],
+        },
+    }
+}
+
+#[tauri::command]
+fn list_effective_hooks(state: State<'_, AppState>) -> EffectiveHooksDto {
+    let mut errors = Vec::new();
+    let user_hooks = match state.settings.hook_definitions() {
+        Ok(defs) => hook_groups_from_defs("user", &defs),
+        Err(e) => {
+            errors.push(format!("user hooks: {e}"));
+            Vec::new()
+        }
+    };
+    let plugin_hooks = match state.plugins.runtime_projection() {
+        Ok(projection) => {
+            for error in projection.errors {
+                errors.push(format!(
+                    "{} {}: {}",
+                    error.plugin_id,
+                    error.path.unwrap_or(error.component),
+                    error.message
+                ));
+            }
+            hook_groups_from_defs("plugin", &projection.hook_definitions)
+        }
+        Err(e) => {
+            errors.push(format!("plugin hooks: {e}"));
+            Vec::new()
+        }
+    };
+    let builtin_hooks = vec![
+        EffectiveHookGroupDto {
+            source: "builtin".to_string(),
+            event: "PreToolUse".to_string(),
+            matcher: None,
+            actions: vec![EffectiveHookActionDto {
+                action_type: "builtin".to_string(),
+                command: "plan mode guard".to_string(),
+                timeout: None,
+                env_count: 0,
+            }],
+        },
+        EffectiveHookGroupDto {
+            source: "builtin".to_string(),
+            event: "PreToolUse".to_string(),
+            matcher: None,
+            actions: vec![EffectiveHookActionDto {
+                action_type: "builtin".to_string(),
+                command: "permission rules / workspace guard / bash guard".to_string(),
+                timeout: None,
+                env_count: 0,
+            }],
+        },
+    ];
+    EffectiveHooksDto {
+        user_hooks,
+        plugin_hooks,
+        builtin_hooks,
+        errors,
+    }
+}
+
+fn test_tool_name_for_matcher(matcher: Option<&str>) -> String {
+    matcher
+        .and_then(|raw| {
+            raw.split('|')
+                .map(str::trim)
+                .find(|part| !part.is_empty() && *part != "*" && *part != ".*")
+        })
+        .unwrap_or("Bash")
+        .to_string()
+}
+
+fn default_hook_test_payload(event: &str, matcher: Option<&str>) -> serde_json::Map<String, serde_json::Value> {
+    let mut payload = serde_json::Map::new();
+    payload.insert("session_id".into(), serde_json::Value::String("test".into()));
+    payload.insert(
+        "hook_event_name".into(),
+        serde_json::Value::String(event.to_string()),
+    );
+
+    match event {
+        "PreToolUse" | "PostToolUse" => {
+            let tool_name = test_tool_name_for_matcher(matcher);
+            payload.insert("tool_name".into(), serde_json::Value::String(tool_name.clone()));
+            let tool_input = if tool_name.eq_ignore_ascii_case("bash")
+                || tool_name.eq_ignore_ascii_case("shell")
+            {
+                serde_json::json!({ "command": "echo hook-test" })
+            } else {
+                serde_json::json!({})
+            };
+            payload.insert("tool_input".into(), tool_input);
+            if event == "PostToolUse" {
+                payload.insert("tool_response".into(), serde_json::json!({ "ok": true }));
+            }
+        }
+        "UserPromptSubmit" => {
+            payload.insert(
+                "prompt".into(),
+                serde_json::Value::String("Test prompt from hooks settings".into()),
+            );
+        }
+        "Stop" => {
+            payload.insert(
+                "content".into(),
+                serde_json::Value::String("Test session completed".into()),
+            );
+        }
+        "SubagentStop" => {
+            payload.insert(
+                "content".into(),
+                serde_json::Value::String("Test subagent completed".into()),
+            );
+        }
+        _ => {}
+    }
+
+    payload
+}
+
+fn hook_test_payload(req: &TestHookCommandRequestDto) -> Result<String, String> {
+    let mut payload = default_hook_test_payload(&req.event, req.matcher.as_deref());
+    if let Some(sample) = &req.sample_payload {
+        let Some(sample_object) = sample.as_object() else {
+            return Err("sample_payload must be a JSON object".to_string());
+        };
+        for (key, value) in sample_object {
+            payload.insert(key.clone(), value.clone());
+        }
+    }
+    serde_json::to_string(&serde_json::Value::Object(payload)).map_err(|e| e.to_string())
+}
+
+fn hook_test_outcome(result: &deepagent_app_core::HookCommandResult) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(result.stdout.trim()) {
+        if value
+            .get("decision")
+            .and_then(|v| v.as_str())
+            .is_some_and(|decision| decision.eq_ignore_ascii_case("block"))
+        {
+            return "blocked".to_string();
+        }
+        if value
+            .get("permissionDecision")
+            .and_then(|v| v.as_str())
+            .is_some_and(|decision| {
+                decision.eq_ignore_ascii_case("deny") || decision.eq_ignore_ascii_case("ask")
+            })
+        {
+            return "blocked".to_string();
+        }
+        if value.get("continue").and_then(|v| v.as_bool()) == Some(false) {
+            return "blocked".to_string();
+        }
+    }
+
+    match result.exit_code {
+        0 => "continued".to_string(),
+        2 => "blocked".to_string(),
+        _ => "error".to_string(),
+    }
+}
+
+#[tauri::command]
+async fn test_hook_command(
+    request: TestHookCommandRequestDto,
+) -> Result<TestHookCommandResultDto, String> {
+    if request.action.action_type != "command" {
+        return Err("only command hook actions can be tested".to_string());
+    }
+    if request.action.command.trim().is_empty() {
+        return Err("hook command is empty".to_string());
+    }
+
+    let stdin_json = hook_test_payload(&request)?;
+    let timeout = std::time::Duration::from_secs(request.action.timeout.unwrap_or(60).clamp(1, 300));
+    let runner = deepagent_app_core::SystemHookRunner;
+    let started = std::time::Instant::now();
+    let result = <deepagent_app_core::SystemHookRunner as deepagent_app_core::HookCommandRunner>::run(
+        &runner,
+        &request.action.command,
+        &stdin_json,
+        &request.action.env,
+        timeout,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let outcome = hook_test_outcome(&result);
+
+    Ok(TestHookCommandResultDto {
+        exit_code: result.exit_code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        outcome,
+        duration_ms,
+        stdin_json,
+    })
+}
+
 // ---- workspace (active project) -------------------------------------------
 
 #[tauri::command]
@@ -4529,6 +4881,9 @@ pub fn run() {
             set_permission_rules,
             get_hooks_json,
             set_hooks_json,
+            validate_hooks_json,
+            list_effective_hooks,
+            test_hook_command,
             workspace_info,
             list_project_files,
             search_project_files,

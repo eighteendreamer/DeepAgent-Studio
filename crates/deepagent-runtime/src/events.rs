@@ -158,6 +158,34 @@ pub enum RuntimeEvent {
         /// Whether this is an approval request (`true`) vs a hard deny.
         needs_approval: bool,
     },
+    /// An external hook command is about to run.
+    HookStarted {
+        /// Correlation id for matching the completion.
+        id: String,
+        /// Claude-Code-style hook event name.
+        event: String,
+        /// Command line being executed.
+        command: String,
+    },
+    /// An external hook command finished.
+    HookCompleted {
+        /// Correlation id.
+        id: String,
+        /// Claude-Code-style hook event name.
+        event: String,
+        /// Command line that ran.
+        command: String,
+        /// Process exit code.
+        exit_code: i32,
+        /// Captured stdout.
+        stdout: String,
+        /// Captured stderr.
+        stderr: String,
+        /// Lightweight interpreted outcome (`continued`, `blocked`, or `error`).
+        outcome: String,
+        /// Wall-clock duration in milliseconds.
+        duration_ms: u64,
+    },
     /// A post-completion verification step result.
     Verification {
         /// Whether verification passed.
@@ -393,6 +421,8 @@ impl RuntimeEvent {
             RuntimeEvent::ToolStarted { .. } => "tool_started",
             RuntimeEvent::ToolCompleted { .. } => "tool_completed",
             RuntimeEvent::ToolBlocked { .. } => "tool_blocked",
+            RuntimeEvent::HookStarted { .. } => "hook_started",
+            RuntimeEvent::HookCompleted { .. } => "hook_completed",
             RuntimeEvent::Verification { .. } => "verification",
             RuntimeEvent::ContextUsage { .. } => "context_usage",
             RuntimeEvent::Usage { .. } => "usage",
