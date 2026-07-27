@@ -2368,9 +2368,21 @@ struct EffectiveHookGroupDto {
 #[derive(Debug, Clone, Serialize)]
 struct EffectiveHooksDto {
     user_hooks: Vec<EffectiveHookGroupDto>,
+    project_hooks: Vec<EffectiveHookGroupDto>,
     plugin_hooks: Vec<EffectiveHookGroupDto>,
     builtin_hooks: Vec<EffectiveHookGroupDto>,
+    project_hooks_path: Option<String>,
+    project_hooks_trusted: bool,
+    project_hooks_exists: bool,
     errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProjectHooksStateDto {
+    hooks_json: String,
+    path: String,
+    trusted: bool,
+    exists: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2505,6 +2517,19 @@ fn list_effective_hooks(state: State<'_, AppState>) -> EffectiveHooksDto {
             Vec::new()
         }
     };
+    let project_state = active_project_hooks_state(&state).ok();
+    let project_hooks = match &project_state {
+        Some(project) if project.exists && project.trusted => {
+            match deepagent_app_core::HookDefinitions::parse(&project.hooks_json) {
+                Ok(defs) => hook_groups_from_defs("project", &defs),
+                Err(e) => {
+                    errors.push(format!("project hooks: {e}"));
+                    Vec::new()
+                }
+            }
+        }
+        _ => Vec::new(),
+    };
     let plugin_hooks = match state.plugins.runtime_projection() {
         Ok(projection) => {
             for error in projection.errors {
@@ -2548,10 +2573,99 @@ fn list_effective_hooks(state: State<'_, AppState>) -> EffectiveHooksDto {
     ];
     EffectiveHooksDto {
         user_hooks,
+        project_hooks,
         plugin_hooks,
         builtin_hooks,
+        project_hooks_path: project_state.as_ref().map(|s| s.path.clone()),
+        project_hooks_trusted: project_state.as_ref().map(|s| s.trusted).unwrap_or(false),
+        project_hooks_exists: project_state.as_ref().map(|s| s.exists).unwrap_or(false),
         errors,
     }
+}
+
+fn project_hooks_file(root: &Path) -> PathBuf {
+    root.join(".deepagent").join("hooks.json")
+}
+
+fn project_hooks_state_for_root(
+    state: &State<'_, AppState>,
+    root: &Path,
+) -> Result<ProjectHooksStateDto, String> {
+    let path = project_hooks_file(root);
+    let exists = path.is_file();
+    let hooks_json = if exists {
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read '{}': {e}", path.display()))?
+    } else {
+        String::new()
+    };
+    let project_path = root.to_string_lossy().into_owned();
+    let trusted = state
+        .projects
+        .hooks_trusted(&project_path)
+        .map_err(|e| e.to_string())?;
+    Ok(ProjectHooksStateDto {
+        hooks_json,
+        path: path.to_string_lossy().into_owned(),
+        trusted,
+        exists,
+    })
+}
+
+fn active_project_hooks_state(state: &State<'_, AppState>) -> Result<ProjectHooksStateDto, String> {
+    let root = resolve_project_root(state, None)?;
+    project_hooks_state_for_root(state, &root)
+}
+
+#[tauri::command]
+fn get_project_hooks_state(
+    state: State<'_, AppState>,
+    project_path: Option<String>,
+) -> Result<ProjectHooksStateDto, String> {
+    let root = resolve_project_root(&state, project_path)?;
+    project_hooks_state_for_root(&state, &root)
+}
+
+#[tauri::command]
+fn set_project_hooks_json(
+    state: State<'_, AppState>,
+    hooks_json: String,
+    project_path: Option<String>,
+) -> Result<ProjectHooksStateDto, String> {
+    if !hooks_json.trim().is_empty() {
+        deepagent_app_core::HookDefinitions::parse(&hooks_json).map_err(|e| e.to_string())?;
+    }
+    let root = resolve_project_root(&state, project_path)?;
+    let path = project_hooks_file(&root);
+    if hooks_json.trim().is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("cannot remove '{}': {e}", path.display()))?;
+        }
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create '{}': {e}", parent.display()))?;
+        }
+        std::fs::write(&path, hooks_json)
+            .map_err(|e| format!("cannot write '{}': {e}", path.display()))?;
+    }
+    project_hooks_state_for_root(&state, &root)
+}
+
+#[tauri::command]
+fn set_project_hooks_trusted(
+    state: State<'_, AppState>,
+    trusted: bool,
+    project_path: Option<String>,
+) -> Result<ProjectHooksStateDto, String> {
+    let root = resolve_project_root(&state, project_path)?;
+    let project_path = root.to_string_lossy().into_owned();
+    state
+        .projects
+        .set_hooks_trusted(&project_path, trusted)
+        .map_err(|e| e.to_string())?;
+    project_hooks_state_for_root(&state, &root)
 }
 
 fn test_tool_name_for_matcher(matcher: Option<&str>) -> String {
@@ -4883,6 +4997,9 @@ pub fn run() {
             set_hooks_json,
             validate_hooks_json,
             list_effective_hooks,
+            get_project_hooks_state,
+            set_project_hooks_json,
+            set_project_hooks_trusted,
             test_hook_command,
             workspace_info,
             list_project_files,

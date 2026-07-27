@@ -1573,9 +1573,20 @@ export type EffectiveHookGroup = {
 
 export type EffectiveHooks = {
   user_hooks: EffectiveHookGroup[];
+  project_hooks: EffectiveHookGroup[];
   plugin_hooks: EffectiveHookGroup[];
   builtin_hooks: EffectiveHookGroup[];
+  project_hooks_path?: string | null;
+  project_hooks_trusted: boolean;
+  project_hooks_exists: boolean;
   errors: string[];
+};
+
+export type ProjectHooksState = {
+  hooks_json: string;
+  path: string;
+  trusted: boolean;
+  exists: boolean;
 };
 
 export type TestHookActionInput = {
@@ -1627,7 +1638,51 @@ export async function validateHooksJson(hooksJson: string): Promise<HooksValidat
 export async function listEffectiveHooks(): Promise<EffectiveHooks> {
   const invoke = getInvoke();
   if (invoke) return invoke<EffectiveHooks>("list_effective_hooks");
-  return { user_hooks: [], plugin_hooks: [], builtin_hooks: [], errors: [] };
+  return {
+    user_hooks: [],
+    project_hooks: [],
+    plugin_hooks: [],
+    builtin_hooks: [],
+    project_hooks_path: null,
+    project_hooks_trusted: false,
+    project_hooks_exists: false,
+    errors: [],
+  };
+}
+
+export async function getProjectHooksState(
+  projectPath?: string | null,
+): Promise<ProjectHooksState> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ProjectHooksState>("get_project_hooks_state", { projectPath });
+  return { hooks_json: "", path: ".deepagent/hooks.json", trusted: false, exists: false };
+}
+
+export async function setProjectHooksJson(
+  hooksJson: string,
+  projectPath?: string | null,
+): Promise<ProjectHooksState> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<ProjectHooksState>("set_project_hooks_json", { hooksJson, projectPath });
+  }
+  return {
+    hooks_json: hooksJson,
+    path: ".deepagent/hooks.json",
+    trusted: false,
+    exists: hooksJson.trim().length > 0,
+  };
+}
+
+export async function setProjectHooksTrusted(
+  trusted: boolean,
+  projectPath?: string | null,
+): Promise<ProjectHooksState> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<ProjectHooksState>("set_project_hooks_trusted", { trusted, projectPath });
+  }
+  return { hooks_json: "", path: ".deepagent/hooks.json", trusted, exists: false };
 }
 
 export async function testHookCommand(

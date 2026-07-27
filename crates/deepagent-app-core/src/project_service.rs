@@ -42,6 +42,9 @@ struct ProjectRegistry {
     /// User-facing project names keyed by project path.
     #[serde(default)]
     names: HashMap<String, String>,
+    /// Project paths whose local `.deepagent/hooks.json` may execute.
+    #[serde(default)]
+    trusted_hook_projects: HashSet<String>,
 }
 
 /// Derive the display name (last path component) from a folder path.
@@ -107,6 +110,7 @@ impl ProjectService {
         reg.paths.retain(|p| p != path);
         reg.pinned.remove(path);
         reg.names.remove(path);
+        reg.trusted_hook_projects.remove(path);
         let existed = reg.paths.len() != before;
         if reg.active.as_deref() == Some(path) {
             reg.active = reg.paths.first().cloned();
@@ -135,6 +139,25 @@ impl ProjectService {
     /// Registered project paths currently visible in the sidebar.
     pub fn registered_paths(&self) -> Result<HashSet<String>> {
         Ok(self.load()?.paths.into_iter().collect())
+    }
+
+    /// Whether project-local hooks are trusted for `path`.
+    pub fn hooks_trusted(&self, path: &str) -> Result<bool> {
+        Ok(self.load()?.trusted_hook_projects.contains(path))
+    }
+
+    /// Set whether project-local `.deepagent/hooks.json` is allowed to run.
+    pub fn set_hooks_trusted(&self, path: &str, trusted: bool) -> Result<()> {
+        let mut reg = self.load()?;
+        if !reg.paths.iter().any(|p| p == path) {
+            return Err(CoreError::not_found(format!("project '{path}' not opened")));
+        }
+        if trusted {
+            reg.trusted_hook_projects.insert(path.to_string());
+        } else {
+            reg.trusted_hook_projects.remove(path);
+        }
+        self.save(&reg)
     }
 
     /// Set whether a project is pinned to the top of the sidebar.
@@ -317,6 +340,23 @@ mod tests {
         // Active falls back to the remaining project.
         assert_eq!(svc.active().unwrap().as_deref(), Some("/work/a"));
         assert!(!svc.remove_project("/work/b").unwrap());
+    }
+
+    #[test]
+    fn project_hook_trust_roundtrips_and_is_removed_with_project() {
+        let (svc, _db) = service();
+        svc.add_project("/work/a").unwrap();
+        assert!(!svc.hooks_trusted("/work/a").unwrap());
+
+        svc.set_hooks_trusted("/work/a", true).unwrap();
+        assert!(svc.hooks_trusted("/work/a").unwrap());
+
+        svc.set_hooks_trusted("/work/a", false).unwrap();
+        assert!(!svc.hooks_trusted("/work/a").unwrap());
+
+        svc.set_hooks_trusted("/work/a", true).unwrap();
+        assert!(svc.remove_project("/work/a").unwrap());
+        assert!(!svc.hooks_trusted("/work/a").unwrap());
     }
 
     #[test]

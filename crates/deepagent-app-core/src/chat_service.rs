@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,8 +29,8 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
 use deepagent_core::message::{Message, ToolCall};
 use deepagent_hooks::{
-    DecisionSource, Hook, HookCommandResult, HookCommandRunner, HookContext, HookData, HookOutcome,
-    HookPoint, HookRegistry, PermissionRulesHook, SystemHookRunner,
+    DecisionSource, Hook, HookCommandResult, HookCommandRunner, HookContext, HookData,
+    HookDefinitions, HookOutcome, HookPoint, HookRegistry, PermissionRulesHook, SystemHookRunner,
 };
 use deepagent_intent::{CommandContext, CommandDef, SlashAction, SlashRegistry};
 use deepagent_models::transport::HttpTransport;
@@ -93,6 +93,7 @@ static HOOK_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
 struct ObservableHookRunner {
     inner: SystemHookRunner,
     events: Arc<dyn RuntimeEventSink>,
+    cwd: Option<PathBuf>,
 }
 
 impl ObservableHookRunner {
@@ -100,6 +101,15 @@ impl ObservableHookRunner {
         Self {
             inner: SystemHookRunner,
             events,
+            cwd: None,
+        }
+    }
+
+    fn new_in_dir(events: Arc<dyn RuntimeEventSink>, cwd: PathBuf) -> Self {
+        Self {
+            inner: SystemHookRunner,
+            events,
+            cwd: Some(cwd),
         }
     }
 }
@@ -121,7 +131,11 @@ impl HookCommandRunner for ObservableHookRunner {
             command: command.to_string(),
         });
         let started = Instant::now();
-        let result = self.inner.run(command, stdin_json, env, timeout).await;
+        let result = if let Some(cwd) = &self.cwd {
+            run_hook_command_in_dir(command, stdin_json, env, timeout, cwd).await
+        } else {
+            self.inner.run(command, stdin_json, env, timeout).await
+        };
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         if let Ok(result) = &result {
             self.events.emit(RuntimeEvent::HookCompleted {
@@ -137,6 +151,61 @@ impl HookCommandRunner for ObservableHookRunner {
         }
         result
     }
+}
+
+async fn run_hook_command_in_dir(
+    command: &str,
+    stdin_json: &str,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+    cwd: &Path,
+) -> Result<HookCommandResult> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut cmd = if cfg!(windows) {
+        let mut c = tokio::process::Command::new("cmd");
+        c.args(["/C", command]);
+        c
+    } else {
+        let mut c = tokio::process::Command::new("sh");
+        c.args(["-c", command]);
+        c
+    };
+    cmd.current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    cmd.envs(env);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000);
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| CoreError::other(format!("hook spawn failed: {e}")))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let payload = stdin_json.as_bytes().to_vec();
+        let _ = stdin.write_all(&payload).await;
+        let _ = stdin.shutdown().await;
+    }
+
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(res) => res.map_err(|e| CoreError::other(format!("hook wait failed: {e}")))?,
+        Err(_) => {
+            return Ok(HookCommandResult {
+                exit_code: 124,
+                stdout: String::new(),
+                stderr: format!("hook timed out after {:?}", timeout),
+            });
+        }
+    };
+
+    Ok(HookCommandResult {
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 fn hook_event_name(stdin_json: &str) -> String {
@@ -1183,6 +1252,47 @@ impl ChatService {
             }
         }
         self.workspace.clone()
+    }
+
+    fn project_hook_definitions(&self, root: &Path) -> Result<Option<HookDefinitions>> {
+        let path = project_hooks_path(root);
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let Some(projects) = &self.projects else {
+            tracing::info!(
+                path = path.display().to_string(),
+                "skipping project hooks because no project registry is attached"
+            );
+            return Ok(None);
+        };
+        let project_path = root.to_string_lossy().into_owned();
+        if !projects.hooks_trusted(&project_path)? {
+            tracing::info!(
+                project = project_path.as_str(),
+                path = path.display().to_string(),
+                "skipping untrusted project hooks"
+            );
+            return Ok(None);
+        }
+
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| CoreError::other(format!("read project hooks: {e}")))?;
+        if raw.trim().is_empty() {
+            return Ok(None);
+        }
+        let mut defs = HookDefinitions::parse(&raw)?;
+        for groups in defs.hooks.values_mut() {
+            for group in groups {
+                for action in &mut group.hooks {
+                    action
+                        .env
+                        .insert("DEEPAGENT_PROJECT_ROOT".to_string(), project_path.clone());
+                }
+            }
+        }
+        Ok(Some(defs))
     }
 
     /// The shared pending-approvals registry. The UI calls
@@ -3081,6 +3191,26 @@ impl ChatService {
                 tracing::warn!(error = %e, "ignoring malformed hooks.json");
             }
         }
+        match self.project_hook_definitions(&root) {
+            Ok(Some(defs)) if !defs.is_empty() => {
+                let runner: Arc<dyn HookCommandRunner> =
+                    Arc::new(ObservableHookRunner::new_in_dir(sink.clone(), root.clone()));
+                let n = defs.register_into(&mut hooks, runner);
+                tracing::info!(
+                    count = n,
+                    project = root.display().to_string(),
+                    "registered external hooks from project .deepagent/hooks.json"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    project = root.display().to_string(),
+                    error = %e,
+                    "ignoring malformed project hooks.json"
+                );
+            }
+        }
         if let Some(projection) = plugin_projection.as_ref() {
             if !projection.hook_definitions.is_empty() {
                 let runner: Arc<dyn HookCommandRunner> =
@@ -4513,6 +4643,10 @@ fn collect_verifiable_files(root: &std::path::Path, out: &mut Vec<PathBuf>, cap:
 }
 
 /// A conservative default bash allow-list (read-ish / build commands).
+fn project_hooks_path(root: &Path) -> PathBuf {
+    root.join(".deepagent").join("hooks.json")
+}
+
 fn default_bash_allow() -> Vec<String> {
     [
         "git status",
