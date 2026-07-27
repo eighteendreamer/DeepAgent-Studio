@@ -132,7 +132,7 @@ export function RightSidebarWorkbench({
   }, [refreshPluginApps]);
 
   const maximizedClasses = "absolute inset-0 z-40 border-l-0 shadow-none";
-  const normalClasses = "relative z-10 flex-shrink-0";
+  const normalClasses = "absolute inset-y-0 right-0 z-30";
 
   if (!presence.shouldRender) return null;
 

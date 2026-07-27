@@ -292,7 +292,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
       </div>
 
       {/* Top half: main content & right sidebar */}
-      <div className="flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
+      <div className="relative flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
             <div className="flex flex-1 flex-col items-center justify-center min-w-0 px-8">

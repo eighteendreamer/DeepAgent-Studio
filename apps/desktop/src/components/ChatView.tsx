@@ -639,7 +639,7 @@ function UserAttachmentCard({ item }: { item: ComposerAttachment }) {
 
   return (
     <div
-      className="group/attachment flex min-h-14 max-w-[220px] items-center gap-2 overflow-hidden rounded-xl border border-border-theme bg-white px-2 py-2 shadow-sm"
+      className="group/attachment flex min-h-14 max-w-[220px] items-center gap-2 overflow-hidden rounded-xl border border-border-theme bg-elevated-bg px-2 py-2 shadow-sm"
       title={item.originalPath ?? item.localPath ?? item.name}
     >
       {imageSrc ? (
@@ -650,7 +650,7 @@ function UserAttachmentCard({ item }: { item: ComposerAttachment }) {
           onError={() => setImageFailed(true)}
         />
       ) : (
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border-theme bg-gray-50 text-text-secondary">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border-theme bg-sidebar-bg text-text-secondary">
           <FontAwesomeIcon
             icon={["fas", item.kind === "image" ? "image" : item.kind === "text" ? "file-lines" : "file"]}
             className="text-[15px]"
@@ -719,7 +719,7 @@ export function UserContextChips({
       {mentions.map((mention, index) => (
         <span
           key={`mention-${index}-${mentionLabel(mention)}`}
-          className="inline-flex max-w-[260px] items-center rounded-md border border-gray-300 bg-gray-50 px-2 py-1 text-[13px] font-medium text-text-base"
+          className="inline-flex max-w-[260px] items-center rounded-md border border-border-theme bg-sidebar-bg px-2 py-1 text-[13px] font-medium text-text-base"
           title={mentionTitle(mention)}
         >
           <FontAwesomeIcon icon={["fas", mentionIcon(mention) as any]} className="mr-1.5 text-[11px] text-text-secondary" />
@@ -771,7 +771,7 @@ function UserInlineContent({
   const renderMentionChip = (mention: ComposerMention, key: string) => (
     <span
       key={key}
-      className="mx-0.5 inline-flex max-w-[260px] translate-y-[2px] items-center rounded-md border border-gray-300 bg-gray-50 px-1.5 py-0.5 text-[13px] font-medium leading-none text-text-base"
+      className="mx-0.5 inline-flex max-w-[260px] translate-y-[2px] items-center rounded-md border border-border-theme bg-sidebar-bg px-1.5 py-0.5 text-[13px] font-medium leading-none text-text-base"
       title={mentionTitle(mention)}
     >
       <FontAwesomeIcon icon={["fas", mentionIcon(mention) as any]} className="mr-1 text-[11px] text-text-secondary" />
@@ -847,11 +847,11 @@ export function UserTurn({
   return (
     <div className="flex flex-col items-end mb-8 w-full max-w-4xl mx-auto group">
       {editing ? (
-        <div className="w-full max-w-[80%] rounded-2xl rounded-tr-sm bg-gray-100 p-3">
+        <div className="w-full max-w-[80%] rounded-2xl rounded-tr-sm bg-sidebar-bg p-3">
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            className="min-h-[120px] w-full resize-y rounded-xl border border-border-theme bg-white px-3 py-2 text-[14px] leading-relaxed text-text-base outline-none focus:border-primary/60"
+            className="min-h-[120px] w-full resize-y rounded-xl border border-border-theme bg-elevated-bg px-3 py-2 text-[14px] leading-relaxed text-text-base outline-none focus:border-primary/60"
             autoFocus
           />
           <div className="mt-2 flex justify-end gap-2">
@@ -861,7 +861,7 @@ export function UserTurn({
                 setDraft(visibleContent);
                 setEditing(false);
               }}
-              className="rounded-lg px-3 py-1.5 text-[12px] text-text-secondary hover:bg-white"
+              className="rounded-lg px-3 py-1.5 text-[12px] text-text-secondary hover:bg-hover-bg"
             >
               取消
             </button>
@@ -879,7 +879,7 @@ export function UserTurn({
         <>
           <UserAttachments attachments={attachments} />
           {hasVisibleMessage && (
-            <div className="bg-gray-100 text-text-base px-4 py-3 rounded-2xl rounded-tr-sm text-[15px] max-w-[80%]">
+            <div className="bg-sidebar-bg text-text-base px-4 py-3 rounded-2xl rounded-tr-sm text-[15px] max-w-[80%]">
               {office && !message.selectedSkills?.length && !message.mentions?.length ? (
                 <OfficeContextBubble office={office} />
               ) : (
@@ -919,9 +919,9 @@ export function UserTurn({
 function OfficeContextBubble({ office }: { office: OfficeContextView }) {
   return (
     <div className="min-w-0">
-      <div className="mb-2 rounded-xl bg-white/55 px-3 py-2">
+      <div className="mb-2 rounded-xl bg-sidebar-bg/55 px-3 py-2">
         <div className="flex flex-wrap items-center gap-2 text-[14px] leading-relaxed">
-          <span className="inline-flex shrink-0 items-center rounded-md bg-blue-50 px-2 py-1 text-[13px] font-semibold text-primary">
+          <span className="inline-flex shrink-0 items-center rounded-md bg-primary/10 px-2 py-1 text-[13px] font-semibold text-primary">
             <FontAwesomeIcon icon={["far", "file-lines"]} className="mr-1.5 text-[12px]" />
             {office.type}
           </span>
@@ -942,7 +942,7 @@ function OfficeContextBubble({ office }: { office: OfficeContextView }) {
             {office.meta.map((item) => (
               <span
                 key={`${item.label}-${item.value}`}
-                className="inline-flex max-w-full items-center rounded-md bg-white/80 px-2 py-0.5 text-[12px] text-text-secondary"
+                className="inline-flex max-w-full items-center rounded-md bg-sidebar-bg/80 px-2 py-0.5 text-[12px] text-text-secondary"
               >
                 <span className="mr-1 shrink-0">{item.label}</span>
                 <span className="truncate text-text-base">{item.value}</span>
@@ -953,7 +953,7 @@ function OfficeContextBubble({ office }: { office: OfficeContextView }) {
       </div>
 
       {office.prompt && (
-        <div className="border-t border-white/70 pt-2 text-[14px] leading-relaxed text-text-base">
+        <div className="border-t border-border-theme/70 pt-2 text-[14px] leading-relaxed text-text-base">
           {office.prompt}
         </div>
       )}
@@ -1327,7 +1327,7 @@ export function ChatView({
           type="button"
           onClick={() => setIsRightSidebarOpen((v) => !v)}
           className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-            isRightSidebarOpen ? "text-text-base" : "text-text-secondary hover:bg-gray-100 hover:text-text-base"
+            isRightSidebarOpen ? "text-text-base" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
           }`}
           title={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
           aria-label={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
@@ -1338,7 +1338,7 @@ export function ChatView({
           type="button"
           onClick={handleToggleBottomTerminalPanel}
           className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-            isBottomPanelOpen ? "text-text-base" : "text-text-secondary hover:bg-gray-100 hover:text-text-base"
+            isBottomPanelOpen ? "text-text-base" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
           }`}
           title="打开底部终端"
           aria-label="打开底部终端"
@@ -1348,12 +1348,12 @@ export function ChatView({
       </div>
 
       {/* Top half: conversation flow & overlay */}
-      <div className="flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
+      <div className="relative flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="relative h-8 flex items-center pl-6 pr-6 justify-between flex-shrink-0 w-full">
           <div className="relative" ref={chatMenuRef}>
             <div
-              className="flex items-center text-sm font-medium text-text-base cursor-pointer px-2 py-1 -ml-2 rounded hover:bg-gray-100 transition-colors"
+              className="flex items-center text-sm font-medium text-text-base cursor-pointer px-2 py-1 -ml-2 rounded hover:bg-hover-bg transition-colors"
               onClick={() => setIsMenuOpen(!isMenuOpen)}
             >
               {title?.trim() || t("chatView.chat")}
@@ -1365,9 +1365,9 @@ export function ChatView({
             
             {/* Dropdown Menu */}
             {isMenuOpen && (
-              <div className="absolute top-10 left-0 w-60 bg-white border border-border-theme rounded-xl shadow-lg py-1.5 z-50 text-[13px] text-text-base font-normal">
+              <div className="absolute top-10 left-0 w-60 bg-elevated-bg border border-border-theme rounded-xl shadow-lg py-1.5 z-50 text-[13px] text-text-base font-normal">
                 <div
-                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
                   onClick={() => {
                     onPin?.();
                     setIsMenuOpen(false);
@@ -1380,7 +1380,7 @@ export function ChatView({
                   <span className="text-gray-400 text-[11px] font-sans">Ctrl+Alt+P</span>
                 </div>
                 <div
-                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
                   onClick={handleRename}
                 >
                   <div className="flex items-center">
@@ -1390,7 +1390,7 @@ export function ChatView({
                   <span className="text-gray-400 text-[11px] font-sans">Ctrl+Alt+R</span>
                 </div>
                 <div
-                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
                   onClick={() => {
                     onArchive?.();
                     setIsMenuOpen(false);
@@ -1405,7 +1405,7 @@ export function ChatView({
                 
                 <div className="w-full h-px bg-border-theme my-1.5"></div>
                 
-                <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                <div className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
                   onClick={() => {
                     onCopy?.();
                     setIsMenuOpen(false);
@@ -1416,7 +1416,7 @@ export function ChatView({
                     <span>{t("chatView.copy")}</span>
                   </div>
                 </div>
-                <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                <div className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
                   onClick={() => {
                     onExport?.("json");
                     setIsMenuOpen(false);
@@ -1427,7 +1427,7 @@ export function ChatView({
                     <span>{t("chatView.exportJson")}</span>
                   </div>
                 </div>
-                <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                <div className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
                   onClick={() => {
                     onFork?.();
                     setIsMenuOpen(false);
@@ -1443,7 +1443,7 @@ export function ChatView({
                   onMouseEnter={openRewindMenu}
                   onMouseLeave={scheduleCloseRewindMenu}
                 >
-                  <div className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  <div className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
                     onMouseEnter={openRewindMenu}
                     onClick={() => setIsRewindOpen((v) => !v)}
                   >
@@ -1455,7 +1455,7 @@ export function ChatView({
                   </div>
                   {isRewindOpen && (
                     <div
-                      className="absolute left-full top-0 ml-1 w-72 max-h-72 overflow-y-auto bg-white border border-border-theme rounded-xl shadow-lg py-1.5 z-50 custom-scrollbar"
+                      className="absolute left-full top-0 ml-1 w-72 max-h-72 overflow-y-auto bg-elevated-bg border border-border-theme rounded-xl shadow-lg py-1.5 z-50 custom-scrollbar"
                       onMouseEnter={openRewindMenu}
                       onMouseLeave={scheduleCloseRewindMenu}
                     >
@@ -1465,7 +1465,7 @@ export function ChatView({
                       {rewindEntries.map((entry) => (
                         <div
                           key={entry.sequence}
-                          className="px-4 py-2.5 hover:bg-gray-100 cursor-pointer text-[12px] text-text-base"
+                          className="px-4 py-2.5 hover:bg-hover-bg cursor-pointer text-[12px] text-text-base"
                           onClick={() => {
                             onRewind?.(entry.sequence);
                             setIsRewindOpen(false);
@@ -1493,7 +1493,7 @@ export function ChatView({
                 <div className="w-full h-px bg-border-theme my-1.5"></div>
 
                 <div
-                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
                   onClick={handleOpenAutomation}
                 >
                   <div className="flex items-center">
@@ -1505,7 +1505,7 @@ export function ChatView({
                 <div className="w-full h-px bg-border-theme my-1.5"></div>
 
                 <div
-                  className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer justify-between group"
+                  className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
                   onClick={() => {
                     onOpenInNewWindow?.();
                     setIsMenuOpen(false);
@@ -1547,7 +1547,7 @@ export function ChatView({
                 >
                 <button
                   type="button"
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-gray-100 hover:text-text-base data-[state=open]:text-text-base"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover-bg hover:text-text-base data-[state=open]:text-text-base"
                   title={t("chatView.environmentInfo")}
                   aria-label={t("chatView.environmentInfo")}
                 >
@@ -1630,7 +1630,7 @@ export function ChatView({
 
       {bottomPanelPresence.shouldRender && (
             <div
-              className={`bottom-panel-workbench relative z-0 flex w-full min-w-0 flex-shrink-0 flex-col overflow-hidden border-t border-border-theme bg-white ${
+            className={`bottom-panel-workbench relative z-0 flex w-full min-w-0 flex-shrink-0 flex-col overflow-hidden border-t border-border-theme bg-bg-base ${
                 bottomPanelPresence.isClosing ? "is-closing" : ""
               } ${isResizingBottom ? "is-resizing" : ""}`}
               style={{
@@ -1647,7 +1647,7 @@ export function ChatView({
                   setIsResizingBottom(true);
                 }}
               />
-              <div className="flex items-center justify-between border-b border-border-theme h-10 px-4 flex-shrink-0 bg-white">
+              <div className="flex items-center justify-between border-b border-border-theme h-10 px-4 flex-shrink-0 bg-bg-base">
                 <div className="flex h-full min-w-0 flex-1 items-center overflow-x-auto text-[13px] text-text-secondary no-scrollbar">
                   {bottomTabs.map(tab => (
                     <div
@@ -1712,7 +1712,7 @@ export function ChatView({
       )}
         {isGitWorkbenchOpen && activeProjectPath && (
           <div
-            className="absolute left-1/2 top-1/2 z-20 h-[min(620px,calc(100vh-96px))] w-[min(1040px,calc(100vw-48px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border-theme bg-white shadow-[0_18px_46px_rgb(0,0,0,0.14)]"
+            className="absolute left-1/2 top-1/2 z-20 h-[min(620px,calc(100vh-96px))] w-[min(1040px,calc(100vw-48px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border-theme bg-bg-base shadow-[0_18px_46px_rgb(0,0,0,0.14)]"
           >
             <GitWorkbench
               projectPath={activeProjectPath}
