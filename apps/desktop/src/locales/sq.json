@@ -519,8 +519,7 @@
     "placeholder": "Pyesni çfarëdo...",
     "searchProject": "Kërko projekte",
     "addNewProject": "Shto projekt të ri",
-    "noProject": "Asnjë projekt",
-    "connectApps": "Lidhni aplikacionet tuaja të preferuara me Codex"
+    "noProject": "Asnjë projekt"
   },
   "composer": {
     "placeholder": "Pyesni çfarëdo...",

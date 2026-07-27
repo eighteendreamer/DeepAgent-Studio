@@ -519,8 +519,7 @@
     "placeholder": "တစ်ခုခုမေးပါ...",
     "searchProject": "ပရောဂျက်များကို ရှာဖွေရန်",
     "addNewProject": "ပရောဂျက်အသစ်ထည့်ရန်",
-    "noProject": "ပရောဂျက်မရှိပါ",
-    "connectApps": "သင်နှစ်သက်သော အက်ပ်များကို Codex သို့ ချိတ်ဆက်ပါ"
+    "noProject": "ပရောဂျက်မရှိပါ"
   },
   "composer": {
     "placeholder": "တစ်ခုခုမေးပါ...",

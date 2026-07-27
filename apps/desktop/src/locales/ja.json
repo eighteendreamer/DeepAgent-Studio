@@ -519,8 +519,7 @@
     "placeholder": "何でも聞いてください...",
     "searchProject": "プロジェクトを検索",
     "addNewProject": "新しいプロジェクトを追加",
-    "noProject": "プロジェクトなし",
-    "connectApps": "お気に入りのアプリをCodexに接続"
+    "noProject": "プロジェクトなし"
   },
   "composer": {
     "placeholder": "何でも聞いてください...",

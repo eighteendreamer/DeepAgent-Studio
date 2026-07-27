@@ -519,8 +519,7 @@
     "placeholder": "Прашајте што било...",
     "searchProject": "Пребарајте проекти",
     "addNewProject": "Додади нов проект",
-    "noProject": "Нема проект",
-    "connectApps": "Поврзете ги вашите омилени апликации со Codex"
+    "noProject": "Нема проект"
   },
   "composer": {
     "placeholder": "Прашајте што било...",

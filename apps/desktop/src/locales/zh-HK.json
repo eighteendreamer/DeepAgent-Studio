@@ -519,8 +519,7 @@
     "placeholder": "詢問任何問題...",
     "searchProject": "搜尋專案",
     "addNewProject": "新增專案",
-    "noProject": "沒有專案",
-    "connectApps": "將您最愛的應用程式連接到 Codex"
+    "noProject": "沒有專案"
   },
   "composer": {
     "placeholder": "詢問任何問題...",

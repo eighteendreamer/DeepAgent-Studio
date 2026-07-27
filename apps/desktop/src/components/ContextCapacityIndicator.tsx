@@ -66,21 +66,21 @@ export function ContextCapacityIndicator({ snapshot, modelId, fallbackPromptToke
         aria-label={`Context ${percent}%`}
         onClick={() => setOpen((v) => !v)}
       >
-        <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
-          <circle cx="10" cy="10" r="8.5" fill="none" stroke="#e5e7eb" strokeWidth="2.4" />
+        <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true">
+          <circle cx="10" cy="10" r="8.5" fill="none" stroke="#e5e7eb" strokeWidth="2.2" />
           <circle
             cx="10"
             cy="10"
             r="8.5"
             fill="none"
             stroke={stroke}
-            strokeWidth="2.4"
+            strokeWidth="2.2"
             strokeLinecap="round"
             strokeDasharray={circumference}
             strokeDashoffset={dashOffset}
             transform="rotate(-90 10 10)"
           />
-          <circle cx="10" cy="10" r="2.4" fill={stroke} opacity="0.85" />
+          <circle cx="10" cy="10" r="2.2" fill={stroke} opacity="0.85" />
         </svg>
       </button>
 

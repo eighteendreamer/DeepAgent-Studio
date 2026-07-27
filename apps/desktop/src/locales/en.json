@@ -672,8 +672,7 @@
     "placeholder": "Ask anything...",
     "searchProject": "Search projects",
     "addNewProject": "Add new project",
-    "noProject": "No project",
-    "connectApps": "Connect your favorite apps to Codex"
+    "noProject": "No project"
   },
   "composer": {
     "placeholder": "Ask anything...",

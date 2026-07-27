@@ -519,8 +519,7 @@
     "placeholder": "Юу ч хамаагүй асуу...",
     "searchProject": "Төсөл хайх",
     "addNewProject": "Шинэ төсөл нэмэх",
-    "noProject": "Төсөл алга",
-    "connectApps": "Дуртай аппуудаа Codex-тэй холбох"
+    "noProject": "Төсөл алга"
   },
   "composer": {
     "placeholder": "Юу ч хамаагүй асуу...",

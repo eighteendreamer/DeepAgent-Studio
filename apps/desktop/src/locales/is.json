@@ -519,8 +519,7 @@
     "placeholder": "Spyrðu að hverju sem er...",
     "searchProject": "Leita í verkefnum",
     "addNewProject": "Bæta við nýju verkefni",
-    "noProject": "Ekkert verkefni",
-    "connectApps": "Tengdu uppáhalds forritin þín við Codex"
+    "noProject": "Ekkert verkefni"
   },
   "composer": {
     "placeholder": "Spyrðu að hverju sem er...",

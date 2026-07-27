@@ -520,17 +520,6 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
             </div>
           }
         />
-
-        {/* Suggestions removed as they are no longer in Props */}
-        <div className="w-full mt-6 space-y-1">
-          <div className="flex items-center px-3 py-2.5 text-[13px] text-text-secondary hover:bg-hover-bg rounded-lg cursor-pointer transition-colors group">
-            <FontAwesomeIcon
-              icon={["fas", "border-all"]}
-              className="w-6 text-gray-400 group-hover:text-text-base transition-colors"
-            />
-            {t("startView.connectApps")}
-          </div>
-        </div>
       </div>
             </div>
 

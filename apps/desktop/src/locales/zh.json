@@ -672,8 +672,7 @@
     "placeholder": "尽管问...",
     "searchProject": "搜索项目",
     "addNewProject": "添加新项目",
-    "noProject": "不使用项目",
-    "connectApps": "将你常用的应用连接到 Codex"
+    "noProject": "不使用项目"
   },
   "composer": {
     "placeholder": "尽管问...",

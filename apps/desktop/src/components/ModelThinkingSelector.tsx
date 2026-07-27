@@ -62,10 +62,10 @@ export function ModelThinkingSelector({
         className="flex h-8 max-w-[160px] flex-shrink-0 items-center rounded-full border border-border-theme bg-gray-50 px-2.5 text-xs text-text-base transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
         title={`${selectModelLabel} / ${selectedThinkingOption.label}`}
       >
-        <FontAwesomeIcon icon={selectedThinkingOption.icon as any} className="mr-1.5 text-text-secondary" />
+        <FontAwesomeIcon icon={selectedThinkingOption.icon as any} className="mr-1.5 text-[11px] text-text-secondary" />
         <span className="truncate font-medium">{pillModel}</span>
         <span className="ml-1.5 shrink-0 text-text-secondary">{selectedThinkingOption.label}</span>
-        <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[10px] text-text-secondary" />
+        <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[9px] text-text-secondary" />
       </button>
 
       {open && (
@@ -93,7 +93,7 @@ export function ModelThinkingSelector({
                       }`}
                     >
                       <span className="truncate font-medium">{modelLabel(id)}</span>
-                      {selected && <FontAwesomeIcon icon={["fas", "check"]} className="ml-3 text-[11px] text-text-base" />}
+                      {selected && <FontAwesomeIcon icon={["fas", "check"]} className="ml-3 text-[10px] text-text-base" />}
                     </button>
                   );
                 })

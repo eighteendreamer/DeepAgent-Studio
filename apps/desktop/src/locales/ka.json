@@ -575,8 +575,7 @@
     "placeholder": "იკითხე რამე...",
     "searchProject": "მოძებნეთ პროექტები",
     "addNewProject": "დაამატეთ ახალი პროექტი",
-    "noProject": "არანაირი პროექტი",
-    "connectApps": "შეაერთეთ თქვენი საყვარელი აპლიკაციები Codex-თან"
+    "noProject": "არანაირი პროექტი"
   },
   "composer": {
     "placeholder": "იკითხე რამე...",

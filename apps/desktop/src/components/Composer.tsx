@@ -888,6 +888,10 @@ export function Composer({
     pendingDraftValueRef.current = "";
   };
 
+  const hasComposerContent = Boolean(
+    stripSkillMarkers(draftValue).trim() || attachments.length > 0 || selectedSkills.length > 0 || selectedMentions.length > 0,
+  );
+
   const addAttachment = (attachment: ComposerAttachment) => {
     setAttachments((prev) => [...prev, attachment]);
   };
@@ -1561,7 +1565,7 @@ export function Composer({
             }
             className="w-7 h-7 flex-shrink-0 rounded flex items-center justify-center text-text-secondary hover:bg-gray-100 transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            <FontAwesomeIcon icon={["fas", "plus"]} />
+            <FontAwesomeIcon icon={["fas", "plus"]} className="text-[12px]" />
           </button>
           
           {visibleOptions.length > 0 && (
@@ -1574,7 +1578,7 @@ export function Composer({
                   <>
                     <FontAwesomeIcon
                       icon={selectedApproval.icon as any}
-                      className="mr-1.5"
+                      className="mr-1.5 text-[11px]"
                     />
                     {t(selectedApproval.label)}
                   </>
@@ -1593,7 +1597,7 @@ export function Composer({
                     >
                       <div className="flex items-center">
                         <div className="w-5 flex justify-center mr-1">
-                          <FontAwesomeIcon icon={opt.icon as any} className="text-text-secondary" />
+                          <FontAwesomeIcon icon={opt.icon as any} className="text-[11px] text-text-secondary" />
                         </div>
                         <span className="font-medium text-text-secondary group-hover:text-text-base transition-colors">{t(opt.label)}</span>
                       </div>
@@ -1641,19 +1645,23 @@ export function Composer({
                 submitWithAttachments();
               }
             }}
-            disabled={busy && !onStop}
+            disabled={busy ? !onStop : !hasComposerContent}
             title={busy ? t("composer.stop") : undefined}
-            className={`w-8 h-8 flex-shrink-0 rounded-full text-white flex items-center justify-center transition-colors ${
+            className={`w-8 h-8 flex-shrink-0 rounded-full flex items-center justify-center transition-colors ${
               busy
                 ? onStop
-                  ? "bg-text-base hover:bg-red-500 cursor-pointer"
-                  : "bg-gray-300 cursor-not-allowed"
+                  ? "bg-text-base text-white cursor-pointer"
+                  : "bg-gray-300 text-text-secondary cursor-not-allowed"
                 : planMode
-                ? "bg-amber-500 hover:bg-amber-600 cursor-pointer"
-                : "bg-gray-400 hover:bg-primary cursor-pointer"
+                ? hasComposerContent
+                  ? "bg-amber-500 text-white cursor-pointer"
+                  : "bg-gray-300 text-text-secondary cursor-not-allowed"
+                : hasComposerContent
+                ? "bg-primary text-white cursor-pointer"
+                : "bg-gray-300 text-text-secondary cursor-not-allowed"
             }`}
           >
-            <FontAwesomeIcon icon={busy ? ["fas", "stop"] : ["fas", "arrow-up"]} />
+            <FontAwesomeIcon icon={busy ? ["fas", "stop"] : ["fas", "arrow-up"]} className="text-[12px]" />
           </button>
         </div>
       </div>
