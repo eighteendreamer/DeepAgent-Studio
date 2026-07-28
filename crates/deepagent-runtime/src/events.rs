@@ -93,6 +93,17 @@ pub enum RuntimeEvent {
         /// Total milliseconds spent inside the provider streaming request.
         elapsed_ms: u64,
     },
+    /// A streaming attempt failed after publishing visible deltas. Consumers
+    /// must discard those deltas before rendering the retry, otherwise users
+    /// see duplicated/contradictory partial answers.
+    ModelAttemptReset {
+        /// 0-based turn/step index.
+        step: usize,
+        /// Failed provider attempt, starting at 1.
+        attempt: usize,
+        /// Sanitized provider error used to explain the retry in logs.
+        reason: String,
+    },
     /// A Thinking Mode reasoning fragment (DeepSeek `reasoning_content`).
     ReasoningDelta {
         /// Incremental reasoning text.
@@ -164,6 +175,9 @@ pub enum RuntimeEvent {
         id: String,
         /// Claude-Code-style hook event name.
         event: String,
+        /// Shell used to execute this hook command.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell: Option<String>,
         /// Command line being executed.
         command: String,
     },
@@ -173,6 +187,9 @@ pub enum RuntimeEvent {
         id: String,
         /// Claude-Code-style hook event name.
         event: String,
+        /// Shell used to execute this hook command.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell: Option<String>,
         /// Command line that ran.
         command: String,
         /// Process exit code.
@@ -186,6 +203,64 @@ pub enum RuntimeEvent {
         /// Wall-clock duration in milliseconds.
         duration_ms: u64,
     },
+    /// A child agent was accepted and began running.
+    SubagentStarted {
+        /// Durable child run id.
+        id: String,
+        /// Parent kernel run id.
+        parent_run_id: String,
+        /// Selected agent profile, or `general`.
+        agent_type: String,
+        /// Short task description supplied by the parent.
+        description: String,
+        /// Whether the parent returned immediately after launching the child.
+        background: bool,
+    },
+    /// A child agent reached a non-cancelled terminal state.
+    SubagentCompleted {
+        /// Durable child run id.
+        id: String,
+        /// Parent kernel run id.
+        parent_run_id: String,
+        /// `succeeded` or `failed`.
+        state: String,
+        /// Bounded final summary persisted for the parent.
+        summary: String,
+        /// Child wall-clock duration.
+        duration_ms: u64,
+        /// Whether this was a detached background child.
+        background: bool,
+    },
+    /// A child agent stopped because its cancellation flag was raised.
+    SubagentCancelled {
+        /// Durable child run id.
+        id: String,
+        /// Parent kernel run id.
+        parent_run_id: String,
+        /// Child wall-clock duration.
+        duration_ms: u64,
+        /// Whether this was a detached background child.
+        background: bool,
+    },
+    /// Durable notification that a background result is ready for its parent.
+    SubagentNotification {
+        /// Durable child run id.
+        id: String,
+        /// Parent kernel run id.
+        parent_run_id: String,
+        /// Child terminal state.
+        state: String,
+        /// Bounded result or failure summary.
+        summary: String,
+    },
+    WorktreeCreated {
+        subagent_id: String,
+        path: String,
+    },
+    WorktreeRemoved {
+        subagent_id: String,
+        path: String,
+    },
     /// A post-completion verification step result.
     Verification {
         /// Whether verification passed.
@@ -193,10 +268,24 @@ pub enum RuntimeEvent {
         /// Short diagnosis / detail.
         detail: String,
     },
+    /// Final on-disk comparison for every path captured by the run checkpoint.
+    /// This is emitted before completion is accepted.
+    CompletionEvidence {
+        mutations: Vec<crate::checkpoint::MutationEvidence>,
+    },
     /// Estimated context usage for the next model call. Emitted before the
     /// request so the UI can show capacity even before provider usage arrives.
     ContextUsage {
         snapshot: deepagent_context::ContextUsageSnapshot,
+    },
+    /// A proactive or reactive compaction replaced older conversation turns
+    /// with a bounded structured summary.
+    ContextCompacted {
+        tokens_before: u64,
+        tokens_after: u64,
+        strategy: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
     },
     /// Token accounting for one model call (accumulates across a multi-turn run
     /// on the UI side). Carries DeepSeek's cache hit/miss breakdown when present.
@@ -252,6 +341,8 @@ pub fn tool_ui_metadata(
             "file",
             "target_path",
             "source_path",
+            "source",
+            "destination",
             "remote_path",
             "local_path",
             "url",
@@ -357,8 +448,9 @@ pub fn tool_ui_metadata(
 fn classify_tool(name: &str) -> &'static str {
     match name {
         "read_file" | "list_dir" | "web_fetch" | "office_read" => "file_read",
-        "write_file" | "edit_file" | "multi_edit" | "git_commit" | "remote_push_file"
-        | "remote_push_bundle" | "office_docx_create" | "office_xlsx_create" => "file_change",
+        "write_file" | "edit_file" | "multi_edit" | "delete_path" | "move_path" | "git_commit"
+        | "remote_push_file" | "remote_push_bundle" | "office_docx_create"
+        | "office_xlsx_create" => "file_change",
         "glob" | "grep" | "web_search" | "knowledge_search" | "tool_search" | "code_map_search"
         | "codegraph_locate" | "codegraph_search" => "search",
         "bash" | "shell" | "remote_install" | "remote_require" | "remote_probe" => {
@@ -416,6 +508,7 @@ impl RuntimeEvent {
             RuntimeEvent::ModelRequestStarted { .. } => "model_request_started",
             RuntimeEvent::ModelFirstToken { .. } => "model_first_token",
             RuntimeEvent::ModelRequestCompleted { .. } => "model_request_completed",
+            RuntimeEvent::ModelAttemptReset { .. } => "model_attempt_reset",
             RuntimeEvent::ReasoningDelta { .. } => "reasoning_delta",
             RuntimeEvent::ContentDelta { .. } => "content_delta",
             RuntimeEvent::ToolStarted { .. } => "tool_started",
@@ -423,8 +516,16 @@ impl RuntimeEvent {
             RuntimeEvent::ToolBlocked { .. } => "tool_blocked",
             RuntimeEvent::HookStarted { .. } => "hook_started",
             RuntimeEvent::HookCompleted { .. } => "hook_completed",
+            RuntimeEvent::SubagentStarted { .. } => "subagent_started",
+            RuntimeEvent::SubagentCompleted { .. } => "subagent_completed",
+            RuntimeEvent::SubagentCancelled { .. } => "subagent_cancelled",
+            RuntimeEvent::SubagentNotification { .. } => "subagent_notification",
+            RuntimeEvent::WorktreeCreated { .. } => "worktree_created",
+            RuntimeEvent::WorktreeRemoved { .. } => "worktree_removed",
             RuntimeEvent::Verification { .. } => "verification",
+            RuntimeEvent::CompletionEvidence { .. } => "completion_evidence",
             RuntimeEvent::ContextUsage { .. } => "context_usage",
+            RuntimeEvent::ContextCompacted { .. } => "context_compacted",
             RuntimeEvent::Usage { .. } => "usage",
             RuntimeEvent::RunCompleted { .. } => "run_completed",
             RuntimeEvent::RunAwaitingApproval { .. } => "run_awaiting_approval",

@@ -28,7 +28,8 @@ function findFinalAssistantContentIndex(blocks: ChatBlock[]): number {
   // A tool call after the last assistant text means the model is still working
   // (or the turn ended on a tool) — there is no final answer to surface yet.
   for (let index = lastContent + 1; index < blocks.length; index += 1) {
-    if (blocks[index].kind === "tool") return -1;
+    const block = blocks[index];
+    if (block.kind === "tool" && block.tool.meta?.isHook !== true) return -1;
   }
   return lastContent;
 }

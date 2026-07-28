@@ -17,8 +17,10 @@
 //! - [`compaction`] — structured-summary compaction (开发提示词.md §4 Layer 2)
 //!   that compresses older turns when the window grows too large.
 
+pub mod assembler;
 pub mod budget;
 pub mod compaction;
+pub mod config_overlay;
 pub mod model_compactor;
 pub mod pack;
 pub mod pipeline;
@@ -26,9 +28,13 @@ pub mod policy;
 pub mod prompt;
 pub mod tokenizer;
 
+pub use assembler::{ContextAssembler, ContextEntry, ContextManifest, ContextSourceKind};
 pub use budget::{BudgetOutcome, PromptBudget};
 pub use compaction::{
     CompactionPolicy, CompactionResult, Compactor, HeuristicSummarizer, Summarizer, TaskSummary,
+};
+pub use config_overlay::{
+    ConfigLayer, ConfigOverlay, ConfigSource, DualConfigLoader, MANAGED_PRECEDENCE,
 };
 pub use model_compactor::ModelCompactor;
 pub use pack::{

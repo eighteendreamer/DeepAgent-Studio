@@ -76,6 +76,7 @@ import type {
   VisionRecognizeResult,
   VisionSettings,
   RewindResult,
+  RuntimeLogEntry,
   ScanResult,
   SandboxieStatus,
   SessionDetail,
@@ -181,6 +182,21 @@ export async function getSessionDetail(id: string): Promise<SessionDetail> {
 export async function getSessionConversation(id: string): Promise<ConversationMessage[]> {
   const invoke = getInvoke();
   if (invoke) return invoke<ConversationMessage[]>("session_conversation", { sessionId: id });
+  return [];
+}
+
+export async function getRuntimeLogsRecent(limit = 200): Promise<RuntimeLogEntry[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RuntimeLogEntry[]>("runtime_logs_recent", { limit });
+  return [];
+}
+
+export async function getRuntimeLogsForSession(
+  sessionId: string,
+  limit = 200,
+): Promise<RuntimeLogEntry[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<RuntimeLogEntry[]>("runtime_logs_for_session", { sessionId, limit });
   return [];
 }
 
@@ -352,12 +368,17 @@ export async function setTerminalShell(
 
 /**
  * Fork a session at a timeline sequence: create a new branch copying events
- * `0..=atSeq`. The source session is left untouched. Returns the branch id.
+ * `0..=atSeq` and restore checkpointed workspace files to the branch point.
  */
 export async function forkSession(id: string, atSeq: number): Promise<ForkResult> {
   const invoke = getInvoke();
   if (invoke) return invoke<ForkResult>("fork_session", { sessionId: id, atSeq });
-  return { new_session_id: `${id}-fork`, source_session_id: id, forked_at: atSeq };
+  return {
+    new_session_id: `${id}-fork`,
+    source_session_id: id,
+    forked_at: atSeq,
+    restored_paths: [],
+  };
 }
 
 /**
@@ -367,7 +388,7 @@ export async function forkSession(id: string, atSeq: number): Promise<ForkResult
 export async function rewindSession(id: string, toSeq: number): Promise<RewindResult> {
   const invoke = getInvoke();
   if (invoke) return invoke<RewindResult>("rewind_session", { sessionId: id, toSeq });
-  return { session_id: id, kept_through: toSeq, events_removed: 0 };
+  return { session_id: id, kept_through: toSeq, events_removed: 0, restored_paths: [] };
 }
 
 /** Export a session transcript as "markdown" or "json". */
@@ -1114,6 +1135,7 @@ export interface RuntimeEvent {
     | "model_request_started"
     | "model_first_token"
     | "model_request_completed"
+    | "model_attempt_reset"
     | "reasoning_delta"
     | "content_delta"
     | "tool_started"
@@ -1121,7 +1143,14 @@ export interface RuntimeEvent {
     | "tool_blocked"
     | "hook_started"
     | "hook_completed"
+    | "subagent_started"
+    | "subagent_completed"
+    | "subagent_cancelled"
+    | "subagent_notification"
+    | "worktree_created"
+    | "worktree_removed"
     | "verification"
+    | "completion_evidence"
     | "context_usage"
     | "usage"
     | "run_completed"
@@ -1251,8 +1280,34 @@ export async function runChat(
         if (payload) onApproval?.({ ...payload, run_id: actualRunId });
       }
     );
+    // Old-chain retirement (kernel refactor Phase F): the long-held
+    // `run_chat` IPC is gone. This wrapper keeps the legacy promise shape —
+    // resolve with the session id on completion — by starting a v2 run and
+    // awaiting its `session://completed` signal.
+    type CompletedPayload = {
+      run_id: string;
+      session_id?: string | null;
+      status: string;
+      error?: string | null;
+    };
+    const completedCleanup: { fn: (() => void) | null } = { fn: null };
     try {
-      const nextSessionId = await invoke<string>("run_chat", {
+      const completion = new Promise<string>((resolve, reject) => {
+        mod
+          .listen<CompletedPayload>("session://completed", (e) => {
+            if (e.payload.run_id !== actualRunId) return;
+            if (e.payload.status === "completed" && e.payload.session_id) {
+              resolve(e.payload.session_id);
+            } else {
+              reject(new Error(e.payload.error ?? "chat run failed"));
+            }
+          })
+          .then((unlisten) => {
+            completedCleanup.fn = unlisten;
+          })
+          .catch(reject);
+      });
+      await invoke<StartChatV2Ack>("start_chat_v2", {
         prompt,
         sessionId: sessionId ?? null,
         envMode: envMode ?? null,
@@ -1262,11 +1317,13 @@ export async function runChat(
         preflightAbortMessage: preflightAbortMessage ?? null,
         initialPlanMode,
       });
+      const nextSessionId = await completion;
       if (promptMayChangeSettings(prompt)) emitSettingsChanged({ reason: "slash_settings" });
       return nextSessionId;
     } finally {
       unlistenEvent();
       unlistenApproval();
+      completedCleanup.fn?.();
     }
   }
   return mockChatStream(prompt, onEvent);
@@ -1550,6 +1607,75 @@ export async function setHooksJson(hooksJson: string): Promise<void> {
   if (invoke) await invoke("set_hooks_json", { hooksJson });
 }
 
+export type StartChatV2Ack = {
+  run_id: string;
+  session_id?: string | null;
+};
+
+/** Start a streamed v2 run and return as soon as the backend accepts it. */
+export async function startChatV2(
+  prompt: string,
+  options: {
+    sessionId?: string | null;
+    runId?: string;
+    envMode?: string | null;
+    connectionId?: string | null;
+    preflightTools?: PreflightToolCall[];
+    preflightAbortMessage?: string | null;
+    initialPlanMode?: boolean;
+  } = {},
+): Promise<StartChatV2Ack> {
+  const invoke = getInvoke();
+  const runId = options.runId ?? randomRunId();
+  if (!invoke) return { run_id: runId, session_id: options.sessionId ?? null };
+  return invoke<StartChatV2Ack>("start_chat_v2", {
+    prompt,
+    sessionId: options.sessionId ?? null,
+    envMode: options.envMode ?? null,
+    connectionId: options.connectionId ?? null,
+    runId,
+    preflightTools: options.preflightTools ?? [],
+    preflightAbortMessage: options.preflightAbortMessage ?? null,
+    initialPlanMode: options.initialPlanMode ?? false,
+  });
+}
+
+export type CancelRunAck = { accepted: boolean; state: string };
+
+/** Cancel by run id, including the pre-session-registration window. */
+export async function cancelRun(runId: string): Promise<CancelRunAck> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<CancelRunAck>("cancel_run", { runId });
+  return { accepted: false, state: "not_found" };
+}
+
+export type SubagentRunRecord = {
+  id: string;
+  parent_run_id: string;
+  origin_parent_run_id: string;
+  state: "running" | "succeeded" | "failed" | "cancelled" | string;
+  agent_type: string;
+  transcript_path?: string | null;
+  worktree_path?: string | null;
+  summary?: string | null;
+  created_at: number;
+  updated_at: number;
+  finished_at?: number | null;
+  resume_count: number;
+};
+
+export async function listSubagentRuns(parentRunId: string): Promise<SubagentRunRecord[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SubagentRunRecord[]>("subagent_runs", { parentRunId });
+  return [];
+}
+
+export async function cancelSubagent(subagentId: string): Promise<CancelRunAck> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<CancelRunAck>("cancel_subagent", { subagentId });
+  return { accepted: false, state: "not_found" };
+}
+
 export type HooksValidation = {
   valid: boolean;
   action_count: number;
@@ -1560,7 +1686,13 @@ export type HooksValidation = {
 export type EffectiveHookAction = {
   action_type: string;
   command: string;
+  prompt: string;
+  model?: string | null;
+  agent?: string | null;
+  arguments: Record<string, unknown> | null;
+  url: string;
   timeout?: number | null;
+  shell: string;
   env_count: number;
 };
 
@@ -1593,6 +1725,7 @@ export type TestHookActionInput = {
   type?: string;
   command: string;
   timeout?: number | null;
+  shell?: string | null;
   env?: Record<string, string>;
 };
 

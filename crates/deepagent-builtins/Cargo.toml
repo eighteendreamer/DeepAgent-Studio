@@ -28,13 +28,23 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tokio = { workspace = true }
-
+tempfile.workspace = true
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ], optional = true }
 # URL query encoding for web_search (only used by the http-backed client).
-# `url` is already in the dependency tree via reqwest, so this adds nothing new.
 url = { version = "2", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
-tempfile.workspace = true

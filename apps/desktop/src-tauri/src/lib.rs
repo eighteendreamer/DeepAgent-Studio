@@ -24,19 +24,20 @@ use deepagent_app_core::{
     GitChangesDto, GitCommitMessageDraftDto, GitDiffDto, GitLogEntryDto, GitOperationResultDto,
     GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto, GitRefCompareDto, GitService,
     GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
-    KnowledgeService, LocalPtyHandle, McpServerDto, McpService, OfficeService, PdfRenderResultDto,
-    PluginAppEntry, PluginDto, PluginMarketplaceDto, PluginMarketplaceEntryDto,
+    KnowledgeService, LocalPtyHandle, McpServerDto, McpService, NewRuntimeLogEntry, OfficeService,
+    PdfRenderResultDto, PluginAppEntry, PluginDto, PluginMarketplaceDto, PluginMarketplaceEntryDto,
     PluginOutputStyleEntry, PluginRoots, PluginScanReportDto, PluginService, PreflightToolCallDto,
     PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
     ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
     ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, RecordingService,
-    RecordingSessionDto, RewindResultDto, RuntimeProgressDto, RuntimeRootsDto, RuntimeService,
-    RuntimeStatusDto, SandboxieExecutor, SandboxieService, SandboxieStatusDto, SecretStore,
-    SessionDetailDto, SessionStateService, SessionSummaryDto, SessionUiPrefsDto, SettingsService,
-    SettingsView, SkillActivationDto, SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService,
-    SpeechService, TerminalResultDto, TerminalService, TerminalShell, TranscriptDto,
-    TranscriptSegmentDto, VisionRecognizeRequestDto, VisionRecognizeResultDto, VisionService,
-    VisionSettings, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
+    RecordingSessionDto, RewindResultDto, RuntimeLogEntry, RuntimeLogStore, RuntimeProgressDto,
+    RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxieExecutor, SandboxieService,
+    SandboxieStatusDto, SecretStore, SessionDetailDto, SessionStateService, SessionSummaryDto,
+    SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
+    SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, StoredRunEvent,
+    TerminalResultDto, TerminalService, TerminalShell, TranscriptDto, TranscriptSegmentDto,
+    VisionRecognizeRequestDto, VisionRecognizeResultDto, VisionService, VisionSettings,
+    WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
@@ -311,6 +312,7 @@ struct AppState {
     mcp: Arc<McpService>,
     knowledge: Arc<KnowledgeService>,
     cost: Arc<CostService>,
+    runtime_logs: Arc<RuntimeLogStore>,
     archive: Arc<ArchiveService>,
     session_state: Arc<SessionStateService>,
     projects: Arc<ProjectService>,
@@ -517,6 +519,13 @@ fn preferred_runtime_resource_dir(app: &tauri::AppHandle) -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("deepagent-runtimes"))
 }
 
+fn preferred_runtime_log_path() -> Result<PathBuf, String> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("runtime-logs.db")))
+        .ok_or_else(|| "failed to resolve install directory for runtime logs".to_string())
+}
+
 fn same_path(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
@@ -613,6 +622,29 @@ fn session_conversation(
 ) -> Result<Vec<ConversationMessageDto>, String> {
     let svc = state.service.lock().map_err(|e| e.to_string())?;
     svc.session_conversation(&session_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn runtime_logs_recent(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<RuntimeLogEntry>, String> {
+    state
+        .runtime_logs
+        .recent(limit.unwrap_or(200))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn runtime_logs_for_session(
+    state: State<'_, AppState>,
+    session_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<RuntimeLogEntry>, String> {
+    state
+        .runtime_logs
+        .recent_for_session(&session_id, limit.unwrap_or(200))
         .map_err(|e| e.to_string())
 }
 
@@ -1749,8 +1781,16 @@ async fn run_doctor(
 
 // ---- chat (streamed) ------------------------------------------------------
 
+#[derive(Debug, Clone, Serialize)]
+struct StartChatV2Ack {
+    run_id: String,
+    session_id: Option<String>,
+}
+
+/// Start a v2 run without holding the IPC request open for the entire model
+/// loop. Consumers follow `chat://event`, `session://completed`, or `run_events`.
 #[tauri::command]
-async fn run_chat(
+fn start_chat_v2(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     prompt: String,
@@ -1761,30 +1801,19 @@ async fn run_chat(
     preflight_tools: Option<Vec<PreflightToolCallDto>>,
     preflight_abort_message: Option<String>,
     initial_plan_mode: Option<bool>,
-) -> Result<String, String> {
-    // IMPORTANT: this command is `async` so Tauri runs it on a worker thread,
-    // never the main (UI) thread. A streamed run can pause mid-flight to await
-    // a tool-approval decision; that decision arrives via the separate
-    // `resolve_approval` command. If `run_chat` blocked the main thread (as a
-    // sync command + `block_on` would), `resolve_approval` could never be
-    // dispatched and the whole UI would deadlock. We offload the run onto the
-    // dedicated async runtime and await its result through a oneshot, keeping
-    // every other command responsive while the agent streams.
+) -> Result<StartChatV2Ack, String> {
+    let run_id = run_id.unwrap_or_else(|| format!("run_{}", deepagent_core::id::EventId::new()));
+    let acknowledgement = StartChatV2Ack {
+        run_id: run_id.clone(),
+        session_id: session_id.clone(),
+    };
     let chat = state.chat.clone();
-    let run_id = run_id.unwrap_or_else(|| {
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or_default();
-        format!("run-{millis}")
-    });
     let requested_session_id = session_id.clone();
     let event_emitter = app.clone();
     let approval_emitter = app.clone();
     let completion_emitter = app.clone();
     let title_emitter = app;
     let preflight_tools = preflight_tools.unwrap_or_default();
-    let (tx, rx) = tokio::sync::oneshot::channel();
     state.rt.spawn(async move {
         let event_run_id = run_id.clone();
         let approval_run_id = run_id.clone();
@@ -1797,6 +1826,7 @@ async fn run_chat(
                 preflight_tools,
                 preflight_abort_message,
                 initial_plan_mode.unwrap_or(false),
+                Some(&run_id),
                 move |event| {
                     let _ = event_emitter.emit(
                         "chat://event",
@@ -1817,7 +1847,6 @@ async fn run_chat(
                 },
             )
             .await;
-        // Receiver gone (window closed mid-run) → drop the result silently.
         let completed = match &result {
             Ok(session_id) => SessionCompletedPayload {
                 run_id: run_id.clone(),
@@ -1827,35 +1856,22 @@ async fn run_chat(
             },
             Err(error) => SessionCompletedPayload {
                 run_id: run_id.clone(),
-                session_id: requested_session_id.clone(),
+                session_id: requested_session_id,
                 status: "failed".to_string(),
                 error: Some(error.to_string()),
             },
         };
         let _ = completion_emitter.emit("session://completed", completed);
-        if let Ok(session_id) = &result {
-            let chat = chat.clone();
-            let session_id = session_id.clone();
-            let title_emitter = title_emitter.clone();
-            tokio::spawn(async move {
-                match chat.maybe_generate_session_title(&session_id).await {
-                    Ok(Some(title)) => {
-                        let _ = title_emitter.emit(
-                            "session://title-updated",
-                            SessionTitleUpdatedPayload { session_id, title },
-                        );
-                    }
-                    Ok(None) => {}
-                    Err(error) => eprintln!("session title generation failed: {error}"),
-                }
-            });
+        if let Ok(session_id) = result {
+            if let Ok(Some(title)) = chat.maybe_generate_session_title(&session_id).await {
+                let _ = title_emitter.emit(
+                    "session://title-updated",
+                    SessionTitleUpdatedPayload { session_id, title },
+                );
+            }
         }
-        let _ = tx.send(result);
     });
-    match rx.await {
-        Ok(result) => result.map_err(|e| e.to_string()),
-        Err(_) => Err("chat run was cancelled".to_string()),
-    }
+    Ok(acknowledgement)
 }
 
 #[tauri::command]
@@ -1872,6 +1888,58 @@ fn resolve_approval(state: State<'_, AppState>, call_id: String, approved: bool)
 #[tauri::command]
 fn stop_chat(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
     Ok(state.chat.cancel_session(&session_id))
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CancelRunAck {
+    accepted: bool,
+    state: String,
+}
+
+/// Immediate run-id based cancellation. Unlike `stop_chat`, this works before
+/// a newly-created session has emitted `session_registered`.
+#[tauri::command]
+fn cancel_run(state: State<'_, AppState>, run_id: String) -> Result<CancelRunAck, String> {
+    let accepted = state.chat.cancel_session(&run_id);
+    Ok(CancelRunAck {
+        accepted,
+        state: if accepted { "cancelling" } else { "not_found" }.to_string(),
+    })
+}
+
+#[tauri::command]
+fn run_events(
+    state: State<'_, AppState>,
+    run_id: String,
+    after_sequence: Option<u64>,
+) -> Result<Vec<StoredRunEvent>, String> {
+    state
+        .chat
+        .run_events(&run_id, after_sequence)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn subagent_runs(
+    state: State<'_, AppState>,
+    parent_run_id: String,
+) -> Result<Vec<deepagent_app_core::SubagentRunRecord>, String> {
+    state
+        .chat
+        .subagent_runs(&parent_run_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn cancel_subagent(
+    state: State<'_, AppState>,
+    subagent_id: String,
+) -> Result<CancelRunAck, String> {
+    let accepted = state.chat.cancel_subagent(&subagent_id);
+    Ok(CancelRunAck {
+        accepted,
+        state: if accepted { "cancelling" } else { "not_found" }.to_string(),
+    })
 }
 
 #[tauri::command]
@@ -2353,7 +2421,13 @@ struct HooksValidationDto {
 struct EffectiveHookActionDto {
     action_type: String,
     command: String,
+    prompt: String,
+    model: Option<String>,
+    agent: Option<String>,
+    arguments: serde_json::Value,
+    url: String,
     timeout: Option<u64>,
+    shell: String,
     env_count: usize,
 }
 
@@ -2389,10 +2463,27 @@ struct ProjectHooksStateDto {
 struct TestHookActionDto {
     #[serde(rename = "type", default = "default_hook_action_type")]
     action_type: String,
+    #[serde(default)]
     command: String,
     timeout: Option<u64>,
     #[serde(default)]
+    shell: Option<String>,
+    #[serde(default)]
     env: BTreeMap<String, String>,
+    #[serde(default)]
+    prompt: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    arguments: serde_json::Value,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2414,11 +2505,29 @@ struct TestHookCommandResultDto {
 }
 
 const KNOWN_HOOK_EVENTS: &[&str] = &[
+    "SessionStart",
+    "InstructionsLoaded",
     "PreToolUse",
     "PostToolUse",
+    "PostToolUseFailure",
+    "PostToolBatch",
+    "PermissionRequest",
+    "PermissionDenied",
     "UserPromptSubmit",
     "Stop",
+    "StopFailure",
+    "PreCompact",
+    "PostCompact",
+    "SubagentStart",
     "SubagentStop",
+    "SessionEnd",
+    "TaskCreated",
+    "TaskCompleted",
+    "WorktreeCreate",
+    "WorktreeRemove",
+    "CwdChanged",
+    "FileChanged",
+    "Notification",
 ];
 
 fn default_hook_action_type() -> String {
@@ -2428,7 +2537,10 @@ fn default_hook_action_type() -> String {
 fn hook_action_type_label(action_type: &deepagent_app_core::HookActionType) -> String {
     match action_type {
         deepagent_app_core::HookActionType::Command => "command".to_string(),
+        deepagent_app_core::HookActionType::Http => "http".to_string(),
         deepagent_app_core::HookActionType::McpTool => "mcp_tool".to_string(),
+        deepagent_app_core::HookActionType::Prompt => "prompt".to_string(),
+        deepagent_app_core::HookActionType::Agent => "agent".to_string(),
     }
 }
 
@@ -2449,7 +2561,13 @@ fn hook_groups_from_defs(
                     .map(|action| EffectiveHookActionDto {
                         action_type: hook_action_type_label(&action.action_type),
                         command: action.command.clone(),
+                        prompt: action.prompt.clone(),
+                        model: action.model.clone(),
+                        agent: action.agent.clone(),
+                        arguments: action.arguments.clone(),
+                        url: action.url.clone(),
                         timeout: action.timeout,
+                        shell: action.shell.label().to_string(),
                         env_count: action.env.len(),
                     })
                     .collect(),
@@ -2466,13 +2584,9 @@ fn hooks_validation_for_defs(defs: &deepagent_app_core::HookDefinitions) -> Hook
         }
         for group in groups {
             for action in &group.hooks {
-                if action.action_type != deepagent_app_core::HookActionType::Command {
-                    warnings.push(format!(
-                        "{event}: `{}` actions are not executable yet",
-                        hook_action_type_label(&action.action_type)
-                    ));
-                }
-                if action.command.trim().is_empty() {
+                if action.action_type == deepagent_app_core::HookActionType::Command
+                    && action.command.trim().is_empty()
+                {
                     warnings.push(format!("{event}: empty command will be skipped"));
                 }
             }
@@ -2555,7 +2669,13 @@ fn list_effective_hooks(state: State<'_, AppState>) -> EffectiveHooksDto {
             actions: vec![EffectiveHookActionDto {
                 action_type: "builtin".to_string(),
                 command: "plan mode guard".to_string(),
+                prompt: String::new(),
+                model: None,
+                agent: None,
+                arguments: serde_json::Value::Null,
+                url: String::new(),
                 timeout: None,
+                shell: "internal".to_string(),
                 env_count: 0,
             }],
         },
@@ -2566,7 +2686,13 @@ fn list_effective_hooks(state: State<'_, AppState>) -> EffectiveHooksDto {
             actions: vec![EffectiveHookActionDto {
                 action_type: "builtin".to_string(),
                 command: "permission rules / workspace guard / bash guard".to_string(),
+                prompt: String::new(),
+                model: None,
+                agent: None,
+                arguments: serde_json::Value::Null,
+                url: String::new(),
                 timeout: None,
+                shell: "internal".to_string(),
                 env_count: 0,
             }],
         },
@@ -2679,9 +2805,15 @@ fn test_tool_name_for_matcher(matcher: Option<&str>) -> String {
         .to_string()
 }
 
-fn default_hook_test_payload(event: &str, matcher: Option<&str>) -> serde_json::Map<String, serde_json::Value> {
+fn default_hook_test_payload(
+    event: &str,
+    matcher: Option<&str>,
+) -> serde_json::Map<String, serde_json::Value> {
     let mut payload = serde_json::Map::new();
-    payload.insert("session_id".into(), serde_json::Value::String("test".into()));
+    payload.insert(
+        "session_id".into(),
+        serde_json::Value::String("test".into()),
+    );
     payload.insert(
         "hook_event_name".into(),
         serde_json::Value::String(event.to_string()),
@@ -2690,7 +2822,10 @@ fn default_hook_test_payload(event: &str, matcher: Option<&str>) -> serde_json::
     match event {
         "PreToolUse" | "PostToolUse" => {
             let tool_name = test_tool_name_for_matcher(matcher);
-            payload.insert("tool_name".into(), serde_json::Value::String(tool_name.clone()));
+            payload.insert(
+                "tool_name".into(),
+                serde_json::Value::String(tool_name.clone()),
+            );
             let tool_input = if tool_name.eq_ignore_ascii_case("bash")
                 || tool_name.eq_ignore_ascii_case("shell")
             {
@@ -2772,28 +2907,100 @@ fn hook_test_outcome(result: &deepagent_app_core::HookCommandResult) -> String {
 
 #[tauri::command]
 async fn test_hook_command(
+    state: State<'_, AppState>,
     request: TestHookCommandRequestDto,
 ) -> Result<TestHookCommandResultDto, String> {
+    // Non-command actions (http/mcp_tool/prompt/agent) run through the SAME
+    // registration + dispatch path as production hooks (Phase E). Command
+    // actions keep the legacy direct-runner path below because it returns
+    // full stdout/stderr for the settings page.
     if request.action.action_type != "command" {
-        return Err("only command hook actions can be tested".to_string());
+        let stdin_json = hook_test_payload(&request)?;
+        let action = deepagent_app_core::HookAction {
+            action_type: match request.action.action_type.as_str() {
+                "http" => deepagent_app_core::HookActionType::Http,
+                "mcp_tool" => deepagent_app_core::HookActionType::McpTool,
+                "prompt" => deepagent_app_core::HookActionType::Prompt,
+                "agent" => deepagent_app_core::HookActionType::Agent,
+                other => return Err(format!("unknown hook action type: {other}")),
+            },
+            command: request.action.command.clone(),
+            prompt: request.action.prompt.clone(),
+            model: request.action.model.clone(),
+            agent: request.action.agent.clone(),
+            arguments: request.action.arguments.clone(),
+            url: request.action.url.clone(),
+            method: request.action.method.clone(),
+            headers: request.action.headers.clone(),
+            timeout: request.action.timeout,
+            shell: deepagent_app_core::HookCommandShell::default(),
+            env: request.action.env.clone(),
+        };
+        // prompt/agent hooks need a model client; build it from settings the
+        // same way chat does. http/mcp don't need one.
+        let model = if matches!(
+            action.action_type,
+            deepagent_app_core::HookActionType::Prompt | deepagent_app_core::HookActionType::Agent
+        ) {
+            match deepagent_app_core::build_chat_model_client(
+                &state.settings,
+                Arc::new(ReqwestTransport::new()),
+            ) {
+                Ok((client, model, depth)) => Some((client, model, depth)),
+                Err(error) => return Err(format!("hook test needs a configured model: {error}")),
+            }
+        } else {
+            None
+        };
+        let result = deepagent_app_core::test_hook_action(
+            &request.event,
+            request.matcher.as_deref(),
+            action,
+            model,
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let exit_code = match result.outcome.as_str() {
+            "continued" | "modified" => 0,
+            "blocked" | "approval_required" => 2,
+            _ => -1,
+        };
+        return Ok(TestHookCommandResultDto {
+            exit_code,
+            stdout: String::new(),
+            stderr: result.detail,
+            outcome: result.outcome,
+            duration_ms: result.duration_ms,
+            stdin_json,
+        });
     }
     if request.action.command.trim().is_empty() {
         return Err("hook command is empty".to_string());
     }
 
     let stdin_json = hook_test_payload(&request)?;
-    let timeout = std::time::Duration::from_secs(request.action.timeout.unwrap_or(60).clamp(1, 300));
+    let timeout =
+        std::time::Duration::from_secs(request.action.timeout.unwrap_or(60).clamp(1, 300));
+    let shell = request
+        .action
+        .shell
+        .as_deref()
+        .and_then(deepagent_app_core::HookCommandShell::parse)
+        .unwrap_or_default();
     let runner = deepagent_app_core::SystemHookRunner;
     let started = std::time::Instant::now();
-    let result = <deepagent_app_core::SystemHookRunner as deepagent_app_core::HookCommandRunner>::run(
-        &runner,
-        &request.action.command,
-        &stdin_json,
-        &request.action.env,
-        timeout,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let result =
+        <deepagent_app_core::SystemHookRunner as deepagent_app_core::HookCommandRunner>::run(
+            &runner,
+            &request.action.command,
+            &stdin_json,
+            shell,
+            &request.action.env,
+            timeout,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let outcome = hook_test_outcome(&result);
 
@@ -4552,9 +4759,43 @@ pub fn run() {
                 .unwrap_or_else(|_| std::env::temp_dir());
             std::fs::create_dir_all(&dir).ok();
             let db_path = dir.join("deepagent.db");
+            let runtime_log_path = preferred_runtime_log_path()?;
 
             let service =
                 AppService::open(&db_path).map_err(|e| format!("failed to open database: {e}"))?;
+            let runtime_logs = RuntimeLogStore::open(&runtime_log_path).map_err(|error| {
+                format!(
+                    "failed to open runtime log database at install path '{}': {error}",
+                    runtime_log_path.display()
+                )
+            })?;
+            let runtime_logs = Arc::new(runtime_logs);
+            let _ = runtime_logs.append(
+                NewRuntimeLogEntry::info("diagnostic", "runtime_log_store_opened")
+                    .with_source("desktop-tauri")
+                    .with_message(format!("runtime logs opened at {}", runtime_log_path.display()))
+                    .with_data(serde_json::json!({
+                        "path": runtime_log_path,
+                        "fallback": false,
+                    })),
+            );
+            let recovered_runs = service
+                .recover_unfinished_runs()
+                .map_err(|error| format!("failed to recover unfinished runs: {error}"))?;
+            if !recovered_runs.is_empty() {
+                let _ = runtime_logs.append(
+                    NewRuntimeLogEntry::info("runtime", "unfinished_runs_recovered")
+                        .with_source("desktop-tauri")
+                        .with_message(format!(
+                            "recovered {} unfinished run(s) from previous process",
+                            recovered_runs.len()
+                        ))
+                        .with_data(serde_json::json!({
+                            "count": recovered_runs.len(),
+                            "runs": recovered_runs,
+                        })),
+                );
+            }
 
             // Settings: share the same DB; key goes to the OS keychain; discovery
             // uses the real reqwest transport against the hard-coded DeepSeek URL.
@@ -4821,6 +5062,7 @@ pub fn run() {
                     .with_knowledge(knowledge.clone())
                     .with_project_map(project_map.clone())
                     .with_cost(cost.clone())
+                    .with_runtime_logs(runtime_logs.clone())
                     .with_skills(skills.clone())
                     .with_office(office.clone())
                     .with_tool_results_dir(dir.join("tool_results")),
@@ -4847,6 +5089,7 @@ pub fn run() {
                 mcp,
                 knowledge,
                 cost,
+                runtime_logs,
                 archive,
                 session_state,
                 projects,
@@ -4871,6 +5114,8 @@ pub fn run() {
             list_sessions,
             session_detail,
             session_conversation,
+            runtime_logs_recent,
+            runtime_logs_for_session,
             rename_session,
             set_session_pinned,
             get_session_ui_prefs,
@@ -4950,9 +5195,13 @@ pub fn run() {
             get_cost_summary,
             set_budget,
             run_doctor,
-            run_chat,
+            start_chat_v2,
             resolve_approval,
             stop_chat,
+            cancel_run,
+            run_events,
+            subagent_runs,
+            cancel_subagent,
             get_plan_mode,
             set_plan_mode,
             get_approval_policy,

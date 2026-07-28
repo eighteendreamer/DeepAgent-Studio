@@ -33,10 +33,11 @@ pub mod registry;
 
 pub use builtin::{ArgumentGuardHook, ToolAllowlistHook};
 pub use external_hooks::{
-    ExternalCommandHook, HookAction, HookActionType, HookCommandResult, HookCommandRunner,
+    parse_structured_hook_output, ExternalCommandHook, ExternalHostHook, HookAction,
+    HookActionExecutor, HookActionType, HookCommandResult, HookCommandRunner, HookCommandShell,
     HookDefinitions, HookEvent, HookMatcherGroup, SystemHookRunner, DEFAULT_HOOK_TIMEOUT_SECS,
 };
 pub use hook::{DecisionSource, Hook, HookOutcome};
-pub use lifecycle::{HookContext, HookData, HookPoint};
+pub use lifecycle::{HookContext, HookData, HookPoint, ToolBatchItem};
 pub use permission_rules::{PermissionRules, PermissionRulesHook, RuleDecision};
 pub use registry::HookRegistry;

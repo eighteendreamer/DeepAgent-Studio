@@ -94,10 +94,12 @@ deepagent-vision = { path = "crates/deepagent-vision" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+jsonschema = { version = "0.18", default-features = false }
 
 # Errors
 thiserror = "1"

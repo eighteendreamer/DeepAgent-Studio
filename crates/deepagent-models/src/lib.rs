@@ -28,6 +28,7 @@ pub mod capability;
 pub mod chat;
 pub mod client;
 pub mod discovery;
+pub mod failure;
 pub mod sse;
 pub mod stream;
 pub mod transport;
@@ -44,8 +45,9 @@ pub use chat::{
 };
 pub use client::{ModelClient, ModelConfig};
 pub use discovery::{ModelCatalog, ModelDiscovery, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
-pub use stream::{DeltaAccumulator, DeltaObserver, NoopObserver};
+pub use failure::{classify_model_error, ModelFailureKind};
+pub use stream::{DeltaAccumulator, DeltaObserver, ModelStreamEvent, NoopObserver};
 pub use transport::{HttpTransport, MockTransport, TransportRequest};
 
 #[cfg(feature = "http")]
-pub use reqwest_transport::ReqwestTransport;
+pub use reqwest_transport::{ReqwestTransport, TransportTimeouts};

@@ -29,11 +29,14 @@ pub mod wasm;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use deepagent_core::error::Result;
 
 pub use permission::{Permission, PermissionSet, RiskLevel};
-pub use registry::{ToolRegistry, ToolSpec};
+pub use registry::{ToolRegistry, ToolSpec, ValidatedInvocation};
 pub use sandbox::{Capabilities, Sandbox, SandboxPolicy, SandboxStats};
 pub use sandboxed_tool::SandboxedTool;
 
@@ -118,6 +121,51 @@ pub struct ToolDescriptor {
     pub required_permissions: PermissionSet,
 }
 
+/// Per-invocation execution controls supplied by the agent kernel.
+///
+/// This lives in `deepagent-tools` so tools can observe cancellation without
+/// creating a dependency cycle back to the runtime crate.
+#[derive(Clone, Debug)]
+pub struct ToolExecutionContext {
+    cancel: Arc<AtomicBool>,
+    timeout: Duration,
+}
+
+impl Default for ToolExecutionContext {
+    fn default() -> Self {
+        Self {
+            cancel: Arc::new(AtomicBool::new(false)),
+            timeout: Duration::from_secs(120),
+        }
+    }
+}
+
+impl ToolExecutionContext {
+    pub fn new(cancel: Arc<AtomicBool>) -> Self {
+        Self {
+            cancel,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn cancel_flag(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+}
+
 /// The trait every tool implements.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -126,6 +174,30 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with the given JSON arguments.
     async fn invoke(&self, arguments: serde_json::Value) -> Result<ToolOutput>;
+
+    /// Execute with run-scoped cancellation and timeout controls. Existing
+    /// tools inherit this compatibility implementation; process-backed tools
+    /// override it so Stop can interrupt in-flight work immediately.
+    async fn invoke_with_context(
+        &self,
+        arguments: serde_json::Value,
+        _context: ToolExecutionContext,
+    ) -> Result<ToolOutput> {
+        self.invoke(arguments).await
+    }
+
+    /// Validate and optionally normalize schema-valid input before hooks and
+    /// permission rules observe it. Tools can override this for value-level
+    /// constraints such as path normalization or mutually-exclusive fields.
+    fn validate_input(&self, arguments: serde_json::Value) -> Result<serde_json::Value> {
+        Ok(arguments)
+    }
+
+    /// Whether this concrete invocation is safe to overlap with other safe
+    /// invocations. The conservative default only permits `Safe` tools.
+    fn is_concurrency_safe(&self, _arguments: &serde_json::Value) -> bool {
+        self.descriptor().risk == RiskLevel::Safe
+    }
 
     /// Whether this tool should be **deferred**: hidden from the per-request
     /// `tools` array until the model explicitly discovers it via `tool_search`.

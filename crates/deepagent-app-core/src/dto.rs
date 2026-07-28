@@ -541,6 +541,9 @@ pub struct ForkResultDto {
     pub source_session_id: String,
     /// The sequence number the fork was taken at (inclusive).
     pub forked_at: u64,
+    /// Workspace paths restored from run checkpoints while forking.
+    #[serde(default)]
+    pub restored_paths: Vec<String>,
 }
 
 /// Result of rewinding a session in place.
@@ -552,6 +555,21 @@ pub struct RewindResultDto {
     pub kept_through: u64,
     /// Number of events discarded by the rewind.
     pub events_removed: u64,
+    /// Workspace paths restored from run checkpoints while rewinding.
+    #[serde(default)]
+    pub restored_paths: Vec<String>,
+}
+
+/// One unfinished kernel run recovered during startup.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunRecoveryDto {
+    pub run_id: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub previous_state: String,
+    pub terminal_kind: String,
+    pub terminal_reason: String,
 }
 
 /// An exported session transcript ready for the UI to save.

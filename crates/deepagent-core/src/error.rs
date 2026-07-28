@@ -42,6 +42,20 @@ pub enum CoreError {
     #[error("event log corruption: {0}")]
     EventLog(String),
 
+    /// A model provider rejected or failed a request. Keeping the HTTP status
+    /// and provider code structured lets the query loop choose retry,
+    /// fallback, compaction or terminal failure without parsing display text.
+    #[error(
+        "provider error{status_label}{code_label}: {message}",
+        status_label = provider_status_label(*status),
+        code_label = provider_code_label(code.as_deref())
+    )]
+    Provider {
+        status: Option<u16>,
+        code: Option<String>,
+        message: String,
+    },
+
     /// A catch-all for errors that do not yet have a dedicated variant.
     #[error("{0}")]
     Other(String),
@@ -62,6 +76,25 @@ impl CoreError {
     pub fn other(msg: impl fmt::Display) -> Self {
         CoreError::Other(msg.to_string())
     }
+
+    /// Build a structured model-provider error.
+    pub fn provider(status: Option<u16>, code: Option<String>, message: impl Into<String>) -> Self {
+        Self::Provider {
+            status,
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+fn provider_status_label(status: Option<u16>) -> String {
+    status
+        .map(|status| format!(" (HTTP {status})"))
+        .unwrap_or_default()
+}
+
+fn provider_code_label(code: Option<&str>) -> String {
+    code.map(|code| format!(" [{code}]")).unwrap_or_default()
 }
 
 impl From<serde_json::Error> for CoreError {
@@ -90,5 +123,22 @@ mod tests {
     fn serde_error_converts() {
         let err: Result<i32> = serde_json::from_str::<i32>("not json").map_err(Into::into);
         assert!(matches!(err, Err(CoreError::Serialization(_))));
+    }
+
+    #[test]
+    fn provider_error_preserves_machine_readable_fields() {
+        let error = CoreError::provider(Some(429), Some("rate_limit_exceeded".into()), "slow down");
+        assert!(matches!(
+            error,
+            CoreError::Provider {
+                status: Some(429),
+                ref code,
+                ..
+            } if code.as_deref() == Some("rate_limit_exceeded")
+        ));
+        assert_eq!(
+            error.to_string(),
+            "provider error (HTTP 429) [rate_limit_exceeded]: slow down"
+        );
     }
 }

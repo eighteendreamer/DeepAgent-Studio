@@ -1,0 +1,57 @@
+use std::sync::Arc;
+
+use deepagent_core::error::Result;
+use deepagent_tools::ToolRegistry;
+
+use crate::mcp_service::McpService;
+use crate::plugin_runtime::PluginRuntimeProjection;
+
+#[derive(Default)]
+pub(crate) struct McpRuntimeTools {
+    pub(crate) hook_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
+}
+
+/// Connect enabled MCP servers and register their tool adapters into the run
+/// registry. Connection failures are intentionally non-fatal: one broken MCP
+/// server should not prevent the agent from using built-in tools.
+pub(crate) async fn attach_mcp_tools(
+    registry: &mut ToolRegistry,
+    service: Option<&McpService>,
+    plugin_projection: Option<&PluginRuntimeProjection>,
+) -> Result<McpRuntimeTools> {
+    let Some(mcp) = service else {
+        return Ok(McpRuntimeTools::default());
+    };
+
+    let connect_result = match plugin_projection {
+        Some(projection) if !projection.mcp_config.servers.is_empty() => {
+            mcp.connected_registry_with_plugin_overlay(
+                projection.mcp_config.clone(),
+                &projection.mcp_server_sources,
+            )
+            .await
+        }
+        _ => mcp.connected_registry().await,
+    };
+
+    let (mcp_registry, failures) = match connect_result {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::warn!(%error, "MCP connected_registry failed; continuing without MCP tools");
+            return Ok(McpRuntimeTools::default());
+        }
+    };
+
+    if !failures.is_empty() {
+        tracing::warn!(count = failures.len(), "some MCP servers failed to connect");
+    }
+    for adapter in deepagent_mcp::adapters_for(mcp_registry.clone()) {
+        if let Err(error) = registry.register(adapter) {
+            tracing::warn!(%error, "failed to register MCP tool adapter");
+        }
+    }
+
+    Ok(McpRuntimeTools {
+        hook_registry: Some(mcp_registry),
+    })
+}

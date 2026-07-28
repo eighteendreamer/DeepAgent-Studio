@@ -42,6 +42,21 @@ export interface SessionDetail {
   stats: SessionStats;
 }
 
+export interface RuntimeLogEntry {
+  id: number;
+  ts_ms: number;
+  level: string;
+  category: string;
+  event: string;
+  run_id: string | null;
+  session_id: string | null;
+  task_id: string | null;
+  correlation_id: string | null;
+  source: string | null;
+  message: string | null;
+  data: unknown;
+}
+
 export interface Command {
   id: string;
   title: string;
@@ -551,6 +566,7 @@ export interface ForkResult {
   new_session_id: string;
   source_session_id: string;
   forked_at: number;
+  restored_paths: string[];
 }
 
 /** Result of rewinding a session (mirrors deepagent-app-core::RewindResultDto). */
@@ -558,6 +574,7 @@ export interface RewindResult {
   session_id: string;
   kept_through: number;
   events_removed: number;
+  restored_paths: string[];
 }
 
 /** An exported session transcript (mirrors deepagent-app-core::TranscriptDto). */

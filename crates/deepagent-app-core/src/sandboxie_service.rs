@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use deepagent_builtins::bash_tool::{CommandExecutor, CommandOutcome, SystemExecutor};
+use deepagent_builtins::bash_tool::{
+    CommandExecutor, CommandOutcome, CommandShell, SystemExecutor,
+};
 use deepagent_core::error::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -263,6 +265,7 @@ impl SandboxieService {
         command: &str,
         cwd: &str,
         mode: SandboxMode,
+        shell: CommandShell,
     ) -> Result<CommandOutcome> {
         let Some(tools) = self.ensure_tools_available()? else {
             return Err(CoreError::not_found(
@@ -271,27 +274,60 @@ impl SandboxieService {
         };
         let _ = self.initialize_for_project_with_mode(cwd, mode);
 
+        // Sandboxie's Start.exe never relays the boxed program's stdout or
+        // stderr to its own handles, so capturing Start.exe output alone
+        // leaves the model blind to every command result ("exit 1, empty
+        // output" wall-banging, manual acceptance 2026-07-28). Wrap the
+        // command so the boxed shell writes both streams to capture files in
+        // the working directory (an OpenFilePath in WorkspaceWrite mode),
+        // then read them back host-side. In ReadOnly mode the write is
+        // denied and we degrade to the old behaviour.
+        let nonce = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        );
+        let out_name = format!(".da-shell-{nonce}.out");
+        let err_name = format!(".da-shell-{nonce}.err");
+        let wrapped = wrap_command_with_capture(command, shell, &out_name, &err_name);
+
         let box_arg = format!("/box:{}", self.box_name);
         let output = std::thread::scope(|_| {
             let mut cmd = Command::new(&tools.start_exe);
-            cmd.args([
-                box_arg.as_str(),
-                "/wait",
-                "/hide_window",
-                "cmd.exe",
-                "/C",
-                command,
-            ]);
+            cmd.args([box_arg.as_str(), "/wait", "/hide_window"]);
+            configure_sandboxed_shell_args(&mut cmd, shell, &wrapped);
             cmd.current_dir(cwd);
             configure_hidden_process(&mut cmd);
             cmd.output()
         })
         .map_err(|e| CoreError::other(format!("failed to run Sandboxie Start.exe: {e}")))?;
 
+        let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        if let Some(captured) = collect_capture_file(cwd, &out_name, &self.box_name) {
+            if !captured.is_empty() {
+                if !stdout.is_empty() && !stdout.ends_with('\n') {
+                    stdout.push('\n');
+                }
+                stdout.push_str(&captured);
+            }
+        }
+        if let Some(captured) = collect_capture_file(cwd, &err_name, &self.box_name) {
+            if !captured.is_empty() {
+                if !stderr.is_empty() && !stderr.ends_with('\n') {
+                    stderr.push('\n');
+                }
+                stderr.push_str(&captured);
+            }
+        }
+
         Ok(CommandOutcome {
             exit_code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            stdout,
+            stderr,
         })
     }
 
@@ -385,6 +421,16 @@ impl SandboxieExecutor {
 #[async_trait]
 impl CommandExecutor for SandboxieExecutor {
     async fn run(&self, command: &str, cwd: &str) -> Result<CommandOutcome> {
+        self.run_with_options(command, cwd, CommandShell::Auto)
+            .await
+    }
+
+    async fn run_with_options(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+    ) -> Result<CommandOutcome> {
         let command = command.to_string();
         let cwd = cwd.to_string();
         let service = self.service.clone();
@@ -392,14 +438,193 @@ impl CommandExecutor for SandboxieExecutor {
         let sandbox_cwd = cwd.clone();
         let mode = self.current_mode();
         match tokio::task::spawn_blocking(move || {
-            service.run_command_in_box(&sandbox_command, &sandbox_cwd, mode)
+            service.run_command_in_box(&sandbox_command, &sandbox_cwd, mode, shell)
         })
         .await
         {
             Ok(Ok(out)) => Ok(out),
-            Ok(Err(_)) | Err(_) => self.fallback.run(command.as_str(), cwd.as_str()).await,
+            Ok(Err(_)) | Err(_) => {
+                self.fallback
+                    .run_with_options(command.as_str(), cwd.as_str(), shell)
+                    .await
+            }
         }
     }
+}
+
+fn configure_sandboxed_shell_args(cmd: &mut Command, shell: CommandShell, command: &str) {
+    match shell {
+        CommandShell::Powershell => {
+            let exe = if command_available("pwsh.exe") {
+                "pwsh.exe"
+            } else {
+                "powershell.exe"
+            };
+            cmd.args([
+                exe,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                &encode_powershell_command(command),
+            ]);
+        }
+        CommandShell::Wsl => {
+            cmd.args(["wsl.exe", "--", "bash", "-lc", command]);
+        }
+        CommandShell::Bash => {
+            cmd.args(["bash.exe", "-lc", command]);
+        }
+        CommandShell::Zsh => {
+            cmd.args(["zsh.exe", "-lc", command]);
+        }
+        CommandShell::Sh => {
+            cmd.args(["sh.exe", "-c", command]);
+        }
+        CommandShell::Auto | CommandShell::Cmd => {
+            let command = format!("chcp 65001 >NUL && {command}");
+            cmd.args(["cmd.exe", "/D", "/S", "/C", command.as_str()]);
+        }
+    }
+}
+
+/// Wrap `command` so the boxed shell writes stdout/stderr into capture files
+/// (relative names, resolved against the working directory that Start.exe
+/// inherits). Relative paths sidestep quoting and WSL path-translation issues.
+fn wrap_command_with_capture(
+    command: &str,
+    shell: CommandShell,
+    out_name: &str,
+    err_name: &str,
+) -> String {
+    match shell {
+        CommandShell::Powershell => {
+            format!("& {{ {command} }} 1> './{out_name}' 2> './{err_name}'")
+        }
+        CommandShell::Auto | CommandShell::Cmd => {
+            format!("( {command} ) 1> \".\\{out_name}\" 2> \".\\{err_name}\"")
+        }
+        CommandShell::Wsl | CommandShell::Bash | CommandShell::Zsh | CommandShell::Sh => {
+            format!("{{ {command}\n}} 1> './{out_name}' 2> './{err_name}'")
+        }
+    }
+}
+
+/// Read a capture file back on the host and delete it. Looks in the real
+/// working directory first (direct write via OpenFilePath), then in the
+/// Sandboxie overlay copies for paths that were virtualized into the box.
+fn collect_capture_file(cwd: &str, name: &str, box_name: &str) -> Option<String> {
+    let host = Path::new(cwd).join(name);
+    let content = read_capture_text(&host);
+    let _ = std::fs::remove_file(&host);
+    if content.is_some() {
+        return content;
+    }
+    for overlay in box_overlay_dirs(cwd, box_name) {
+        let candidate = overlay.join(name);
+        let content = read_capture_text(&candidate);
+        let _ = std::fs::remove_file(&candidate);
+        if content.is_some() {
+            return content;
+        }
+    }
+    None
+}
+
+/// Decode capture-file bytes. Windows PowerShell 5 writes `>` redirection as
+/// UTF-16LE with a BOM; PowerShell 7 / cmd / POSIX shells write UTF-8.
+fn read_capture_text(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        Some(String::from_utf16_lossy(&units))
+    } else {
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+/// Host-side directories where Sandboxie may have virtualized writes to
+/// `cwd` (default box root `C:\Sandbox\<user>\<box>`): the user-profile
+/// mapping (`user\current\...`) and the generic drive mapping
+/// (`drive\<letter>\...`).
+fn box_overlay_dirs(cwd: &str, box_name: &str) -> Vec<PathBuf> {
+    let Ok(user) = std::env::var("USERNAME") else {
+        return Vec::new();
+    };
+    let root = PathBuf::from(r"C:\Sandbox").join(user).join(box_name);
+    let normalized = cwd.replace('/', "\\");
+    let bytes = normalized.as_bytes();
+    if bytes.len() < 2 || bytes[1] != b':' {
+        return Vec::new();
+    }
+    let mut dirs = Vec::new();
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let profile = profile.replace('/', "\\");
+        if !profile.is_empty()
+            && normalized
+                .to_ascii_lowercase()
+                .starts_with(&profile.to_ascii_lowercase())
+        {
+            let rest = normalized[profile.len()..].trim_start_matches('\\');
+            dirs.push(root.join("user").join("current").join(rest));
+        }
+    }
+    let drive = (bytes[0] as char).to_ascii_uppercase().to_string();
+    let rest = normalized[2..].trim_start_matches('\\');
+    dirs.push(root.join("drive").join(drive).join(rest));
+    dirs
+}
+
+fn command_available(bin: &str) -> bool {
+    let mut cmd = Command::new(bin);
+    cmd.arg("--version");
+    configure_hidden_process(&mut cmd);
+    cmd.output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+fn encode_powershell_command(command: &str) -> String {
+    let command = wrap_powershell_command(command);
+    let mut utf16le = Vec::with_capacity(command.len() * 2);
+    for unit in command.encode_utf16() {
+        utf16le.extend_from_slice(&unit.to_le_bytes());
+    }
+    base64_encode(&utf16le)
+}
+
+fn wrap_powershell_command(command: &str) -> String {
+    format!(
+        "{}; if ($null -ne $global:LASTEXITCODE) {{ exit $global:LASTEXITCODE }} elseif ($?) {{ exit 0 }} else {{ exit 1 }}",
+        command
+    )
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 fn sandboxie_candidate_dirs() -> Vec<PathBuf> {
@@ -431,5 +656,83 @@ fn configure_hidden_process(_cmd: &mut Command) {
     {
         use std::os::windows::process::CommandExt;
         _cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_wrapping_redirects_both_streams_per_shell() {
+        let ps = wrap_command_with_capture("node x.js", CommandShell::Powershell, "o.out", "e.err");
+        assert_eq!(ps, "& { node x.js } 1> './o.out' 2> './e.err'");
+        let cmd = wrap_command_with_capture("node x.js", CommandShell::Cmd, "o.out", "e.err");
+        assert_eq!(cmd, "( node x.js ) 1> \".\\o.out\" 2> \".\\e.err\"");
+        let auto = wrap_command_with_capture("a && b", CommandShell::Auto, "o.out", "e.err");
+        assert_eq!(auto, "( a && b ) 1> \".\\o.out\" 2> \".\\e.err\"");
+        // POSIX shells use a newline before `}` so trailing comments or `&`
+        // in the user command cannot swallow the closing brace.
+        let bash = wrap_command_with_capture("make # build", CommandShell::Bash, "o", "e");
+        assert_eq!(bash, "{ make # build\n} 1> './o' 2> './e'");
+    }
+
+    #[test]
+    fn capture_reader_decodes_utf16le_and_utf8() {
+        let dir = std::env::temp_dir().join(format!("da-capture-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // PS5-style UTF-16LE with BOM.
+        let utf16 = dir.join("u16.out");
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in "Cannot find module 'docx'".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        std::fs::write(&utf16, &bytes).unwrap();
+        assert_eq!(
+            read_capture_text(&utf16).unwrap(),
+            "Cannot find module 'docx'"
+        );
+        // Plain UTF-8.
+        let utf8 = dir.join("u8.out");
+        std::fs::write(&utf8, "错误: 模块缺失").unwrap();
+        assert_eq!(read_capture_text(&utf8).unwrap(), "错误: 模块缺失");
+        // Missing file → None (degrades to old behaviour).
+        assert!(read_capture_text(&dir.join("absent")).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn collect_reads_and_deletes_from_the_working_directory() {
+        let dir = std::env::temp_dir().join(format!("da-collect-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("c.out"), "exit status detail").unwrap();
+        let cwd = dir.to_string_lossy().to_string();
+        assert_eq!(
+            collect_capture_file(&cwd, "c.out", "DeepAgentBox").unwrap(),
+            "exit status detail"
+        );
+        // The capture file must not survive (no litter in the workspace).
+        assert!(!dir.join("c.out").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn overlay_candidates_map_drive_and_profile_paths() {
+        if std::env::var("USERNAME").is_err() {
+            return; // non-Windows CI
+        }
+        let dirs = box_overlay_dirs("G:\\managed-test", "DeepAgentBox");
+        assert!(dirs.iter().any(|p| {
+            let s = p.to_string_lossy().to_string();
+            s.contains("\\DeepAgentBox\\drive\\G\\managed-test")
+        }));
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            let cwd = format!("{profile}\\proj");
+            let dirs = box_overlay_dirs(&cwd, "DeepAgentBox");
+            assert!(dirs.iter().any(|p| {
+                let s = p.to_string_lossy().to_string();
+                s.contains("\\DeepAgentBox\\user\\current\\proj")
+            }));
+        }
     }
 }

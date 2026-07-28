@@ -26,7 +26,13 @@ const PLACEHOLDER = `{
 type HookAction = {
   type?: string;
   command?: string;
+  prompt?: string;
+  model?: string;
+  agent?: string;
+  arguments?: Record<string, unknown>;
+  url?: string;
   timeout?: number;
+  shell?: string;
   env?: Record<string, string>;
 };
 
@@ -93,7 +99,11 @@ function parseHookItems(json: string): ParsedHooks {
 function primaryCommand(actions: HookAction[]): string {
   const firstCommand = actions.find((action) => action.command?.trim())?.command?.trim();
   if (firstCommand) return firstCommand;
-  return actions.length > 0 ? "command action" : "无 action";
+  const firstUrl = actions.find((action) => action.url?.trim())?.url?.trim();
+  if (firstUrl) return firstUrl;
+  const firstPrompt = actions.find((action) => action.prompt?.trim())?.prompt?.trim();
+  if (firstPrompt) return firstPrompt;
+  return actions.length > 0 ? `${actions[0]?.type ?? "command"} action` : "无 action";
 }
 
 function findFirstCommandHook(items: HookListItem[]): TestHookTarget | null {
@@ -138,7 +148,13 @@ function effectiveToListItem(group: EffectiveHookGroup): HookListItem {
     actions: group.actions.map((action) => ({
       type: action.action_type,
       command: action.command,
+      prompt: action.prompt,
+      model: action.model ?? undefined,
+      agent: action.agent ?? undefined,
+      arguments: action.arguments ?? undefined,
+      url: action.url,
       timeout: action.timeout ?? undefined,
+      shell: action.shell,
     })),
   };
 }
@@ -168,6 +184,11 @@ function HookList({ items }: { items: HookListItem[] }) {
               {item.matcher && (
                 <span className="shrink-0 font-mono text-[11px] text-text-secondary">
                   {item.matcher}
+                </span>
+              )}
+              {item.actions[0]?.shell && item.actions[0]?.shell !== "auto" && (
+                <span className="shrink-0 font-mono text-[11px] text-text-secondary">
+                  {item.actions[0].shell}
                 </span>
               )}
             </div>
@@ -275,6 +296,7 @@ export function HooksSettings() {
           type: testTarget.action.type ?? "command",
           command: testTarget.action.command,
           timeout: testTarget.action.timeout ?? null,
+          shell: testTarget.action.shell ?? "auto",
           env: testTarget.action.env ?? {},
         },
       });
@@ -303,7 +325,7 @@ export function HooksSettings() {
         </div>
       </div>
 
-      <div className="max-w-[700px] rounded-xl border border-border-theme bg-white p-4 shadow-[0_1px_2px_rgb(0,0,0,0.02)]">
+      <div className="max-w-[700px] border-t border-border-theme pt-4">
         <div className="mb-2 flex items-center justify-between">
           <div className="font-mono text-[13px] font-medium text-text-base">
             {t("settings.hooks.editorTitle")}
@@ -312,14 +334,14 @@ export function HooksSettings() {
             <button
               onClick={testFirst}
               disabled={!valid || !testTarget || testStatus === "running"}
-              className="rounded-md border border-border-theme bg-transparent px-2.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-gray-50 hover:text-text-base disabled:opacity-40"
+              className="rounded-md border border-border-theme bg-transparent px-2.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-hover-bg hover:text-text-base disabled:opacity-40"
               title={testTarget ? primaryCommand([testTarget.action]) : "没有可测试的 command hook"}
             >
               {testStatus === "running" ? "测试中..." : "测试第一条"}
             </button>
             <button
               onClick={format}
-              className="rounded-md border border-border-theme px-2.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-gray-50"
+              className="rounded-md border border-border-theme px-2.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-hover-bg hover:text-text-base"
             >
               {t("settings.hooks.format")}
             </button>
@@ -349,7 +371,7 @@ export function HooksSettings() {
           spellCheck={false}
           rows={16}
           placeholder={PLACEHOLDER}
-          className={`w-full resize-y rounded-lg border px-3 py-2 font-mono text-[12px] leading-relaxed outline-none transition-colors ${
+          className={`w-full resize-y rounded-md border bg-bg-base px-3 py-2 font-mono text-[12px] leading-relaxed text-text-base outline-none transition-colors ${
             valid
               ? "border-border-theme focus:border-blue-400"
               : "border-red-400 focus:border-red-500"

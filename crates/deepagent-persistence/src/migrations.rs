@@ -104,6 +104,83 @@ const MIGRATIONS: &[&str] = &[
     DELETE FROM costs;
     ALTER TABLE costs ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0;
     "#,
+    // V8: Agent Kernel v2 run ledger. These tables are append-only diagnostics
+    // and recovery metadata; the existing session/event model remains intact.
+    r#"
+    CREATE TABLE runs (
+        id              TEXT PRIMARY KEY NOT NULL,
+        session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        task_id         TEXT,
+        state           TEXT NOT NULL,
+        terminal_kind   TEXT,
+        terminal_reason TEXT,
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL,
+        finished_at     INTEGER
+    );
+
+    CREATE INDEX idx_runs_session ON runs(session_id, created_at);
+    CREATE INDEX idx_runs_state ON runs(state);
+
+    CREATE TABLE run_events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        sequence    INTEGER NOT NULL,
+        timestamp   INTEGER NOT NULL,
+        phase       TEXT NOT NULL,
+        status      TEXT NOT NULL,
+        event_type  TEXT NOT NULL,
+        data        TEXT NOT NULL,
+        UNIQUE(run_id, sequence)
+    );
+
+    CREATE INDEX idx_run_events_run_seq ON run_events(run_id, sequence);
+
+    CREATE TABLE checkpoints (
+        id              TEXT PRIMARY KEY NOT NULL,
+        run_id          TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        session_sequence INTEGER NOT NULL,
+        workspace_root  TEXT NOT NULL,
+        manifest        TEXT NOT NULL,
+        created_at      INTEGER NOT NULL
+    );
+
+    CREATE TABLE tool_artifacts (
+        id          TEXT PRIMARY KEY NOT NULL,
+        run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        call_id     TEXT NOT NULL,
+        path        TEXT NOT NULL,
+        media_type  TEXT,
+        byte_size   INTEGER NOT NULL,
+        digest      TEXT,
+        created_at  INTEGER NOT NULL
+    );
+
+    CREATE INDEX idx_tool_artifacts_run ON tool_artifacts(run_id, call_id);
+
+    CREATE TABLE subagent_runs (
+        id              TEXT PRIMARY KEY NOT NULL,
+        parent_run_id   TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        state           TEXT NOT NULL,
+        agent_type      TEXT NOT NULL,
+        transcript_path TEXT,
+        worktree_path   TEXT,
+        summary         TEXT,
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL,
+        finished_at     INTEGER
+    );
+
+    CREATE INDEX idx_subagent_runs_parent ON subagent_runs(parent_run_id, created_at);
+    "#,
+    // V9: preserve child lineage when the same sub-agent is resumed from a
+    // later parent run in the same conversation.
+    r#"
+    ALTER TABLE subagent_runs ADD COLUMN origin_parent_run_id TEXT REFERENCES runs(id) ON DELETE CASCADE;
+    ALTER TABLE subagent_runs ADD COLUMN resume_count INTEGER NOT NULL DEFAULT 0;
+    UPDATE subagent_runs SET origin_parent_run_id=parent_run_id WHERE origin_parent_run_id IS NULL;
+    CREATE INDEX idx_subagent_runs_origin_parent ON subagent_runs(origin_parent_run_id, created_at);
+    "#,
 ];
 
 /// The highest schema version defined by this build.
@@ -178,7 +255,17 @@ mod tests {
     fn expected_tables_exist() {
         let conn = Connection::open_in_memory().unwrap();
         run(&conn).unwrap();
-        for table in ["sessions", "events", "tasks", "documents"] {
+        for table in [
+            "sessions",
+            "events",
+            "tasks",
+            "documents",
+            "runs",
+            "run_events",
+            "checkpoints",
+            "tool_artifacts",
+            "subagent_runs",
+        ] {
             let count: i64 = conn
                 .query_row(
                     "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",

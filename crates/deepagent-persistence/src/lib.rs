@@ -14,10 +14,15 @@
 //! invariants (gapless sequence numbers) simple and correct. A connection pool
 //! can be layered in later without changing the repository API.
 
+pub mod artifact_store;
+pub mod checkpoint_store;
 pub mod cost_store;
 pub mod document_store;
 pub mod event_store;
 pub mod migrations;
+pub mod run_store;
+pub mod runtime_log_store;
+pub mod subagent_store;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -43,7 +48,14 @@ impl Database {
     /// running all pending migrations.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path).map_err(map_sqlite)?;
-        Self::from_connection(conn)
+        let db = Self::from_connection(conn)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(i64::MAX as u128) as i64;
+        subagent_store::SubagentRunStore::new(&db).cancel_orphaned(now)?;
+        Ok(db)
     }
 
     /// Open an in-memory database (used in tests). Each call is isolated.
@@ -108,5 +120,52 @@ mod tests {
         drop(db);
         let db2 = Database::open(&path).unwrap();
         assert_eq!(db2.schema_version().unwrap(), migrations::LATEST_VERSION);
+    }
+
+    #[test]
+    fn reopening_disk_database_cancels_orphaned_subagents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("restart.db");
+        {
+            let db = Database::open(&path).unwrap();
+            db.with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO sessions (id, created_at, updated_at) VALUES ('s1', 1, 1)",
+                        [],
+                    )
+                    .map_err(map_sqlite)?;
+                Ok(())
+            })
+            .unwrap();
+            run_store::RunStore::new(&db)
+                .create("parent", "s1", None, 1)
+                .unwrap();
+            subagent_store::SubagentRunStore::new(&db)
+                .create(&subagent_store::SubagentRunRecord {
+                    id: "child".into(),
+                    parent_run_id: "parent".into(),
+                    origin_parent_run_id: "parent".into(),
+                    state: "running".into(),
+                    agent_type: "general".into(),
+                    transcript_path: None,
+                    worktree_path: None,
+                    summary: None,
+                    created_at: 2,
+                    updated_at: 2,
+                    finished_at: None,
+                    resume_count: 0,
+                })
+                .unwrap();
+        }
+
+        let reopened = Database::open(&path).unwrap();
+        let child = subagent_store::SubagentRunStore::new(&reopened)
+            .get("child")
+            .unwrap()
+            .unwrap();
+        assert_eq!(child.state, "cancelled");
+        assert!(child.finished_at.is_some());
+        assert!(child.summary.unwrap().contains("restarted"));
     }
 }

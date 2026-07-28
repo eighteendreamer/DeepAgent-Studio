@@ -58,17 +58,17 @@ impl ThinkingConfig {
             ThinkingDepth::Simple => Self {
                 enabled: false,
                 effort: None,
-                max_tokens: None,
+                max_tokens: Some(8_192),
             },
             ThinkingDepth::Medium => Self {
                 enabled: true,
                 effort: Some("high".to_string()),
-                max_tokens: None,
+                max_tokens: Some(16_384),
             },
             ThinkingDepth::Deep => Self {
                 enabled: true,
                 effort: Some("max".to_string()),
-                max_tokens: None,
+                max_tokens: Some(32_768),
             },
         }
     }
@@ -282,7 +282,7 @@ mod tests {
             ThinkingConfig {
                 enabled: false,
                 effort: None,
-                max_tokens: None
+                max_tokens: Some(8_192)
             }
         );
         assert_eq!(
@@ -299,11 +299,11 @@ mod tests {
         );
         assert_eq!(
             ThinkingConfig::for_depth(ThinkingDepth::Medium).max_tokens,
-            None
+            Some(16_384)
         );
         assert_eq!(
             ThinkingConfig::for_depth(ThinkingDepth::Deep).max_tokens,
-            None
+            Some(32_768)
         );
     }
 
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(json["stream"], true);
         assert_eq!(json["thinking"]["type"], "enabled");
         assert_eq!(json["reasoning_effort"], "high");
-        assert!(json.get("max_tokens").is_none());
+        assert_eq!(json["max_tokens"], 16_384);
         assert!((json["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
         assert_eq!(json["tools"][0]["function"]["name"], "reverse");
     }
@@ -335,7 +335,7 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["thinking"]["type"], "disabled");
         assert!(json.get("reasoning_effort").is_none());
-        assert!(json.get("max_tokens").is_none());
+        assert_eq!(json["max_tokens"], 8_192);
     }
 
     #[test]

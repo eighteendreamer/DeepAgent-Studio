@@ -16,14 +16,23 @@ pub mod archive_service;
 pub mod attachment_service;
 pub mod chat_service;
 pub mod commands;
+pub mod completion_plan;
+pub mod context_runtime;
 pub mod cost_service;
 pub mod diff;
 pub mod doctor;
 pub mod dto;
 pub mod file_preview_service;
 pub mod git_service;
+pub mod hook_assembly;
+pub mod hook_runtime;
+pub mod input_runtime;
+pub mod kernel_runtime;
 pub mod knowledge_service;
+pub mod mcp_runtime;
 pub mod mcp_service;
+pub mod model_runtime;
+pub mod nested_instructions;
 pub mod office_service;
 pub mod permissions_prompt;
 pub mod plan_mode_reminder;
@@ -36,7 +45,12 @@ pub mod plugin_security;
 pub mod plugin_service;
 pub mod project_map_service;
 pub mod project_service;
+pub mod prompt_gate;
 pub mod recording_service;
+pub mod run_config;
+pub mod run_environment;
+pub mod run_finalizer;
+pub mod runtime_event_log;
 pub mod runtime_service;
 pub mod sandboxie_service;
 pub mod secret_store;
@@ -47,10 +61,14 @@ pub mod skill_catalog_reminder;
 pub mod skills_service;
 pub mod slash_panel;
 pub mod speech_service;
+pub mod subagent_runner;
+pub mod system_context;
 pub mod system_prompt;
 pub mod system_reminder;
 pub mod terminal_service;
 pub mod todo_snapshot_reminder;
+pub mod tool_manifest;
+pub mod tool_runtime;
 pub mod verification_decorator;
 pub mod verification_dispatcher;
 pub mod vision_cache_service;
@@ -66,6 +84,7 @@ pub use commands::{
     builtin_commands, commands_from_roots, commands_from_roots_and_plugins, filter_commands,
 };
 pub use cost_service::{BudgetConfig, CostRecord, CostService, CostSummary, ModelPricing};
+pub use deepagent_persistence::subagent_store::SubagentRunRecord;
 pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
 pub use doctor::{format_diagnostics, run_diagnostics, DiagStatus, DiagnosticResult};
 pub use dto::{
@@ -77,10 +96,10 @@ pub use dto::{
     GitOperationResultDto, GitProjectStatusDto, GitPushCommitDto, GitPushPreviewDto,
     GitPushRiskItemDto, GitPushRiskScanDto, GitRefCompareDto, GitWorktreeDto, PdfRenderResultDto,
     PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, RecordingSessionDto,
-    RewindResultDto, RuntimeProgressDto, RuntimeRootsDto, RuntimeStatusDto, SessionDetailDto,
-    SessionStatsDto, SessionSummaryDto, SessionUiPrefsDto, SheetPreviewDto, TerminalResultDto,
-    TimelineEntryDto, TranscriptDto, TranscriptSegmentDto, VisionRecognizeRequestDto,
-    VisionRecognizeResultDto, WorkspaceInfoDto,
+    RewindResultDto, RunRecoveryDto, RuntimeProgressDto, RuntimeRootsDto, RuntimeStatusDto,
+    SessionDetailDto, SessionStatsDto, SessionSummaryDto, SessionUiPrefsDto, SheetPreviewDto,
+    TerminalResultDto, TimelineEntryDto, TranscriptDto, TranscriptSegmentDto,
+    VisionRecognizeRequestDto, VisionRecognizeResultDto, WorkspaceInfoDto,
 };
 pub use file_preview_service::FilePreviewService;
 pub use git_service::GitService;
@@ -147,10 +166,16 @@ pub use workspace_service::WorkspaceService;
 // Re-export the live runtime event + approval types so the Tauri/web layer can
 // forward them.
 pub use deepagent_hooks::{
-    HookActionType, HookCommandResult, HookCommandRunner, HookDefinitions, PermissionRules,
-    SystemHookRunner,
+    HookAction, HookActionType, HookCommandResult, HookCommandRunner, HookCommandShell,
+    HookDefinitions, PermissionRules, SystemHookRunner,
+};
+pub use deepagent_persistence::run_store::{RunRecord, StoredRunEvent};
+pub use deepagent_persistence::runtime_log_store::{
+    NewRuntimeLogEntry, RuntimeLogEntry, RuntimeLogStore,
 };
 pub use deepagent_runtime::{ApprovalDecision, RuntimeEvent};
+pub use hook_runtime::{test_hook_action, HookActionTestResult};
+pub use model_runtime::build_chat_model_client;
 
 #[cfg(feature = "keychain")]
 pub use secret_store::KeychainStore;

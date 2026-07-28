@@ -24,6 +24,7 @@ import {
   getVisionSettings,
   getSettings,
   runChat,
+  cancelRun,
   resolveApproval,
   stopChat,
   getPlanMode,
@@ -453,6 +454,7 @@ export function App() {
   // Always-current activeId, readable from inside the long-lived run handler.
   const activeIdRef = useRef<string | null>(null);
   const activePendingRunKeyRef = useRef<string | null>(null);
+  const activeRunIdsRef = useRef<Map<string, string>>(new Map());
   // Always-current `messages`, so a continuation can read the on-screen thread
   // without taking a stale closure (and without re-creating onSubmit).
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -954,6 +956,7 @@ export function App() {
 
       // Wall-clock start of this run, for the "total time" footer metric.
       const runStart = Date.now();
+      let modelAttemptBaseParts: MessagePart[] | null = null;
 
       // The run's session key for the live transcript. Until the backend
       // announces the real id (session_registered), a new run buffers under a
@@ -963,6 +966,7 @@ export function App() {
         `run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const pendingKey = `__pending__:${runId}`;
       let runKey = continueId ?? pendingKey;
+      activeRunIdsRef.current.set(runKey, runId);
       if (continueId) {
         setRunningSessionIds((prev) => {
           const next = new Set(prev);
@@ -1263,6 +1267,34 @@ export function App() {
 
       const onEvent = (event: RuntimeEvent) => {
         switch (event.type) {
+          case "model_request_started": {
+            const current = liveTranscripts.current.get(runKey) ?? [];
+            const last = current[current.length - 1];
+            modelAttemptBaseParts =
+              last?.role === "assistant"
+                ? (last.parts ?? []).map((part) =>
+                    part.kind === "tool"
+                      ? { ...part, tool: { ...part.tool } }
+                      : { ...part },
+                  )
+                : [];
+            break;
+          }
+          case "model_attempt_reset":
+            if (modelAttemptBaseParts) {
+              const snapshot = modelAttemptBaseParts;
+              mutateParts(() =>
+                snapshot.map((part) =>
+                  part.kind === "tool"
+                    ? { ...part, tool: { ...part.tool } }
+                    : { ...part },
+                ),
+              );
+            }
+            break;
+          case "model_request_completed":
+            modelAttemptBaseParts = null;
+            break;
           case "session_registered": {
             // The backing session now exists. Migrate the pending transcript to
             // its real id, register it for navigation, and point future updates
@@ -1286,6 +1318,8 @@ export function App() {
                   return next;
                 });
                 runKey = sid;
+                activeRunIdsRef.current.delete(pendingKey);
+                activeRunIdsRef.current.set(sid, runId);
               }
               activeIdRef.current = sid;
               if (activePendingRunKeyRef.current === pendingKey) {
@@ -1358,34 +1392,33 @@ export function App() {
             }
             break;
           case "hook_started":
-            upsertTool(String(event.id ?? "hook"), {
-              name: `hook:${String(event.event ?? "Hook")}`,
-              args: String(event.command ?? ""),
-              status: "running",
-              toolKind: "command_execution",
-              summary: `Hook ${String(event.event ?? "Hook")}`,
-              meta: { command: String(event.command ?? "") },
-            });
+            // Successful hooks are protocol plumbing, not assistant/tool output.
+            // Claude Code keeps exit-0 hook stdout/stderr out of the normal
+            // transcript; only completion errors are surfaced below.
             break;
           case "hook_completed": {
             const outcome = String(event.outcome ?? "");
             const stderr = String(event.stderr ?? "").trim();
             const stdout = String(event.stdout ?? "").trim();
+            const shouldSurface = outcome === "blocked" || outcome === "error" || stderr.length > 0;
+            if (!shouldSurface) break;
             upsertTool(String(event.id ?? "hook"), {
               name: `hook:${String(event.event ?? "Hook")}`,
               status: outcome === "blocked" || outcome === "error" ? "error" : "ok",
               durationMs:
                 typeof event.duration_ms === "number" ? event.duration_ms : undefined,
-              detail: stderr || stdout || outcome,
+              detail: stderr || outcome,
               output: {
                 exit_code: event.exit_code,
                 outcome,
-                stdout,
+                stdout: outcome === "blocked" || outcome === "error" ? stdout : "",
                 stderr,
               },
               toolKind: "command_execution",
               summary: `Hook ${String(event.event ?? "Hook")}: ${outcome || "completed"}`,
               meta: {
+                isHook: true,
+                hookEvent: String(event.event ?? "Hook"),
                 command: String(event.command ?? ""),
                 exit_code: event.exit_code,
                 outcome,
@@ -1457,6 +1490,8 @@ export function App() {
         }
         setActivePendingRunKey((current) => (current === pendingKey ? null : current));
         setApprovals((prev) => prev.filter((a) => a.run_id !== runId));
+        activeRunIdsRef.current.delete(runKey);
+        activeRunIdsRef.current.delete(pendingKey);
         // Keep the finished session's live transcript in memory so returning
         // to it preserves streamed reasoning deltas. The DB replay currently
         // reconstructs tool cards and final messages, but tool-call reasoning
@@ -1678,8 +1713,16 @@ export function App() {
 
   // Manually stop the in-flight run (the run ends cleanly at the next step).
   const onStopRun = useCallback(() => {
-    const sid = activeId && runningSessionIds.has(activeId) ? activeId : null;
-    if (sid) stopChat(sid).catch(() => {});
+    const key =
+      activeId && runningSessionIds.has(activeId)
+        ? activeId
+        : activePendingRunKeyRef.current;
+    const runId = key ? activeRunIdsRef.current.get(key) : null;
+    if (runId) {
+      cancelRun(runId).catch(() => {});
+    } else if (activeId && runningSessionIds.has(activeId)) {
+      stopChat(activeId).catch(() => {});
+    }
   }, [runningSessionIds, activeId]);
 
   // Resolve the head-of-queue approval (allow/deny), then dequeue it.

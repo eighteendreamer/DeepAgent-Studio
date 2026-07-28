@@ -425,6 +425,12 @@ fn default_allow_rules() -> Vec<ClassifierRule> {
         },
         ClassifierRule {
             tool: "bash".into(),
+            args_contains: Some("dir".into()),
+            verdict: VerdictKind::Allow,
+            reason: String::new(),
+        },
+        ClassifierRule {
+            tool: "bash".into(),
             args_contains: Some("cat".into()),
             verdict: VerdictKind::Allow,
             reason: String::new(),
@@ -527,6 +533,13 @@ mod tests {
         );
         assert_eq!(
             c.classify("bash", &serde_json::json!({"command": "ls -la"})),
+            SafetyVerdict::Allow
+        );
+        assert_eq!(
+            c.classify(
+                "bash",
+                &serde_json::json!({"command": "dir G:\\Code\\Kotlin_code"})
+            ),
             SafetyVerdict::Allow
         );
     }

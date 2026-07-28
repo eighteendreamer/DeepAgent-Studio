@@ -77,7 +77,8 @@ pub use ask_user_tool::{
     ASK_USER_QUESTION_TOOL_NAME,
 };
 pub use bash_tool::{
-    is_allowed, is_dangerous, BashTool, CommandExecutor, CommandOutcome, SystemExecutor,
+    is_allowed, is_dangerous, BashTool, CommandExecutor, CommandOutcome, CommandShell,
+    SystemExecutor,
 };
 pub use classifier::{
     ClassifierConfig, ClassifierRule, SafetyClassifier, SafetyVerdict, VerdictKind,
@@ -91,8 +92,8 @@ pub use codegraph_tools::{
 };
 pub use file_cache::{CachedFile, FileStateCache};
 pub use file_tools::{
-    file_tools, EditFileTool, GlobTool, GrepTool, ListDirTool, MultiEditTool, ReadFileTool,
-    WriteFileTool,
+    file_tools, DeletePathTool, EditFileTool, GlobTool, GrepTool, ListDirTool, MovePathTool,
+    MultiEditTool, ReadFileTool, WriteFileTool,
 };
 pub use fs_guard::{is_sensitive_path, FsAccess, WorkspaceRoot};
 pub use git_tools::{GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool};
@@ -124,8 +125,8 @@ pub use remote_tools::{
 };
 pub use skill_tool::{SkillTool, SKILL_TOOL_NAME};
 pub use task_tool::{
-    SubagentRequest, SubagentRunner, TaskAgentType, TaskTool, UnavailableSubagentRunner,
-    TASK_TOOL_NAME,
+    BackgroundSubagent, SubagentRequest, SubagentRunner, SubagentStatus, TaskAgentType, TaskTool,
+    UnavailableSubagentRunner, TASK_TOOL_NAME,
 };
 pub use todo_tool::{TaskListTool, TodoItem, TodoStatus, TodoStore, TodoWriteTool};
 pub use tool_search::{
@@ -157,6 +158,10 @@ pub struct BuiltinConfig {
     /// When set, this overrides the default SystemExecutor.
     /// Used for remote execution over SSH or local software sandboxes.
     pub command_executor: Option<std::sync::Arc<dyn bash_tool::CommandExecutor>>,
+    /// Whether the runtime has already installed a BeforeToolUse/approval gate
+    /// for bash safety. When true, BashTool executes approved commands instead
+    /// of applying a second internal allow-list/danger refusal.
+    pub bash_external_safety_gate: bool,
 }
 
 impl BuiltinConfig {
@@ -170,6 +175,7 @@ impl BuiltinConfig {
             bash_allow: bash_allow.into_iter().collect(),
             todo_store: TodoStore::new(),
             command_executor: None,
+            bash_external_safety_gate: false,
         }
     }
 
@@ -179,6 +185,12 @@ impl BuiltinConfig {
         executor: std::sync::Arc<dyn bash_tool::CommandExecutor>,
     ) -> Self {
         self.command_executor = Some(executor);
+        self
+    }
+
+    /// Tell the bash tool to trust an external runtime safety gate.
+    pub fn with_bash_external_safety_gate(mut self, enabled: bool) -> Self {
+        self.bash_external_safety_gate = enabled;
         self
     }
 }
@@ -196,25 +208,24 @@ pub fn builtin_tools(config: BuiltinConfig) -> (Vec<Arc<dyn Tool>>, TodoStore) {
         bash_allow,
         todo_store,
         command_executor,
+        bash_external_safety_gate,
     } = config;
 
     let mut tools = file_tools(root);
     if let Some(exec) = command_executor {
-        tools.push(Arc::new(BashTool::new(
-            exec.clone(),
-            bash_cwd.clone(),
-            bash_allow,
-        )));
+        tools.push(Arc::new(
+            BashTool::new(exec.clone(), bash_cwd.clone(), bash_allow)
+                .with_external_safety_gate(bash_external_safety_gate),
+        ));
         tools.push(Arc::new(GitStatusTool::new(exec.clone(), bash_cwd.clone())));
         tools.push(Arc::new(GitDiffTool::new(exec.clone(), bash_cwd.clone())));
         tools.push(Arc::new(GitLogTool::new(exec.clone(), bash_cwd.clone())));
         tools.push(Arc::new(GitCommitTool::new(exec, bash_cwd)));
     } else {
-        tools.push(Arc::new(BashTool::new(
-            SystemExecutor,
-            bash_cwd.clone(),
-            bash_allow,
-        )));
+        tools.push(Arc::new(
+            BashTool::new(SystemExecutor, bash_cwd.clone(), bash_allow)
+                .with_external_safety_gate(bash_external_safety_gate),
+        ));
         // Git tools (read-only status/diff/log + workspace-write commit). They run
         // through the same SystemExecutor as bash, rooted at the workspace dir.
         tools.push(Arc::new(GitStatusTool::new(
@@ -254,17 +265,27 @@ pub fn register_guard_hooks(
     root: WorkspaceRoot,
     bash_allow: impl IntoIterator<Item = String>,
 ) {
-    // Full access (the root's FsAccess::Full mode) lets the bash guard pass
-    // every command without prompting; otherwise the allow-list + danger
-    // classifier apply (dangerous/unlisted commands ask for approval).
+    let bash_full_access = root.access() == fs_guard::FsAccess::Full;
+    register_guard_hooks_with_bash_full_access(hooks, root, bash_allow, bash_full_access);
+}
+
+/// Register guard hooks while explicitly controlling whether bash is fully
+/// trusted. Filesystem access and shell approval are separate policies: Auto
+/// Review may allow broad filesystem reads/writes while still classifying shell
+/// commands, whereas Full Access lets bash pass without prompting.
+pub fn register_guard_hooks_with_bash_full_access(
+    hooks: &mut HookRegistry,
+    root: WorkspaceRoot,
+    bash_allow: impl IntoIterator<Item = String>,
+    bash_full_access: bool,
+) {
     let access = root.access();
-    let full_access = access == fs_guard::FsAccess::Full;
     hooks.register(HookPoint::BeforeToolUse, Arc::new(PathGuardHook::new(root)));
     hooks.register(
         HookPoint::BeforeToolUse,
         Arc::new(
             BashGuardHook::new(bash_allow)
-                .with_full_access(full_access)
+                .with_full_access(bash_full_access)
                 .with_sandbox_mode(access),
         ),
     );
@@ -283,12 +304,31 @@ pub fn register_web_tools(registry: &mut ToolRegistry) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use std::sync::{Arc as StdArc, Mutex};
 
     fn temp_config() -> (tempfile::TempDir, BuiltinConfig) {
         let dir = tempfile::tempdir().unwrap();
         let root = WorkspaceRoot::new(dir.path());
         let config = BuiltinConfig::new(root, ["git".to_string(), "cargo".to_string()]);
         (dir, config)
+    }
+
+    #[derive(Default)]
+    struct RecordingExecutor {
+        ran: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl CommandExecutor for RecordingExecutor {
+        async fn run(&self, command: &str, _cwd: &str) -> Result<CommandOutcome> {
+            self.ran.lock().unwrap().push(command.to_string());
+            Ok(CommandOutcome {
+                exit_code: Some(0),
+                stdout: format!("ran: {command}"),
+                stderr: String::new(),
+            })
+        }
     }
 
     #[test]
@@ -301,6 +341,8 @@ mod tests {
             "write_file",
             "edit_file",
             "multi_edit",
+            "delete_path",
+            "move_path",
             "list_dir",
             "glob",
             "grep",
@@ -314,7 +356,7 @@ mod tests {
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 16);
     }
 
     #[test]
@@ -334,5 +376,27 @@ mod tests {
         let mut hooks = HookRegistry::new();
         register_guard_hooks(&mut hooks, root, ["git".to_string()]);
         assert_eq!(hooks.count_at(HookPoint::BeforeToolUse), 2);
+    }
+
+    #[tokio::test]
+    async fn external_gate_registers_bash_without_internal_hard_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = WorkspaceRoot::new(dir.path()).with_access(FsAccess::Full);
+        let config = BuiltinConfig::new(root, ["git".to_string()])
+            .with_bash_external_safety_gate(true)
+            .with_command_executor(StdArc::new(RecordingExecutor::default()));
+        let (tools, _) = builtin_tools(config);
+        let bash = tools
+            .iter()
+            .find(|tool| tool.descriptor().name == "bash")
+            .expect("bash tool registered");
+
+        let out = bash
+            .invoke(serde_json::json!({"command": "dir G:\\Code\\Kotlin_code\\demo"}))
+            .await
+            .unwrap();
+
+        assert!(out.ok);
+        assert_eq!(out.value["stdout"], "ran: dir G:\\Code\\Kotlin_code\\demo");
     }
 }

@@ -156,4 +156,45 @@ mod tests {
         assert!(!out.ok);
         assert_eq!(out.value["error"], "bad input");
     }
+
+    #[tokio::test]
+    async fn adapter_fails_fast_when_server_dies_mid_run() {
+        // Fault-injection matrix (Phase G): the server connects and serves one
+        // call, then the connection dies. Later calls must return a prompt,
+        // structured error — never hang, never panic — so the pipeline pairs
+        // a failure result and the run keeps moving.
+        let transport = MockTransport::new()
+            .with_result(
+                "tools/list",
+                serde_json::json!({"tools":[{"name":"flaky","description":"","inputSchema":{"type":"object"}}]}),
+            )
+            .with_result(
+                "tools/call",
+                serde_json::json!({"content":[{"type":"text","text":"first call ok"}],"isError":false}),
+            )
+            // Send #1 = tools/list handshake, send #2 = first tools/call.
+            .with_failure_after(2, "mcp server connection lost: pipe closed");
+        let client = Arc::new(McpClient::new(Arc::new(transport)));
+        let mut reg = McpRegistry::new();
+        reg.register("svc", client).await.unwrap();
+        let adapters = adapters_for(Arc::new(reg));
+
+        // First call succeeds while the server is alive.
+        let first = adapters[0].invoke(serde_json::json!({})).await.unwrap();
+        assert!(first.ok);
+        assert_eq!(first.value["text"], "first call ok");
+
+        // Second call hits the dead connection: bounded, structured failure.
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            adapters[0].invoke(serde_json::json!({})),
+        )
+        .await
+        .expect("dead MCP connection must fail fast, not hang");
+        let error = second.expect_err("disconnected server must surface an error");
+        assert!(
+            error.to_string().contains("connection lost"),
+            "unexpected error: {error}"
+        );
+    }
 }

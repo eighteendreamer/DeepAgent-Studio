@@ -20,23 +20,42 @@
 
 pub mod agent;
 pub mod approval;
+pub mod cancellation;
+pub mod checkpoint;
+pub mod completion;
 pub mod empty_stub;
 pub mod events;
+pub mod input;
+pub mod kernel;
 pub mod loop_engine;
 pub mod model_agent;
 pub mod phase;
+pub mod redaction;
 pub mod tool_budget;
+pub mod tool_pipeline;
 pub mod tool_result_decorator;
 
-pub use agent::{Agent, AgentDecision, Observation};
+pub use agent::{Agent, AgentDecision, Observation, ToolAttemptController};
 pub use approval::{
     ApprovalDecision, ApprovalGate, ApprovalRequest, AutoApproveGate, AutoDenyGate,
 };
+pub use cancellation::CancellationTree;
+pub use checkpoint::CheckpointManager;
+pub use completion::{CompletionFailure, CompletionPolicy};
 pub use events::{
     tool_ui_metadata, ChannelSink, NullEventSink, RuntimeEvent, RuntimeEventSink, ToolUiMetadata,
 };
+pub use input::{
+    InputAttachment, InputEnvelope, InputIngress, InputKind, InputLeaseRegistry, InputMode,
+    LeaseDecision,
+};
+pub use kernel::{AgentKernel, KernelTerminal, RunHandle, RunPhase, RunRequest, TerminalKind};
 pub use loop_engine::{PromptDecision, RunOutcome, RuntimeConfig, RuntimeEngine, VerificationPlan};
-pub use model_agent::ModelAgent;
+pub use model_agent::{ModelAgent, ReactiveCompaction, ReactiveContextCompactor};
 pub use phase::LoopPhase;
 pub use tool_budget::ToolResultBudgetConfig;
+pub use tool_pipeline::{
+    PreparedToolInvocation, ToolArtifactPersistence, ToolExecutionPipeline, ToolPipelineResult,
+    ToolPipelineStage, ToolPreparation,
+};
 pub use tool_result_decorator::{ChainDecorator, ToolResultDecorator};

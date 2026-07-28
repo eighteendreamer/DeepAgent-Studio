@@ -37,6 +37,9 @@ pub struct MockTransport {
     results: HashMap<String, serde_json::Value>,
     /// Records of sent requests (for assertions).
     sent: Mutex<Vec<JsonRpcRequest>>,
+    /// When set, every send AFTER the first `n` returns a connection error —
+    /// simulates a server that dies mid-run (fault-injection matrix).
+    fail_after: Option<(usize, String)>,
 }
 
 impl MockTransport {
@@ -48,6 +51,13 @@ impl MockTransport {
     /// Register a canned result for a method (builder).
     pub fn with_result(mut self, method: impl Into<String>, result: serde_json::Value) -> Self {
         self.results.insert(method.into(), result);
+        self
+    }
+
+    /// Simulate a mid-run disconnect: the first `n` sends succeed normally,
+    /// every later send fails with `message` (builder).
+    pub fn with_failure_after(mut self, n: usize, message: impl Into<String>) -> Self {
+        self.fail_after = Some((n, message.into()));
         self
     }
 
@@ -65,10 +75,16 @@ impl MockTransport {
 #[async_trait]
 impl McpTransport for MockTransport {
     async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
-        self.sent
-            .lock()
-            .expect("mock poisoned")
-            .push(request.clone());
+        let sends_so_far = {
+            let mut sent = self.sent.lock().expect("mock poisoned");
+            sent.push(request.clone());
+            sent.len()
+        };
+        if let Some((allowed, message)) = &self.fail_after {
+            if sends_so_far > *allowed {
+                return Err(CoreError::other(message.clone()));
+            }
+        }
         let result = self.results.get(&request.method).cloned();
         match result {
             Some(value) => Ok(JsonRpcResponse {

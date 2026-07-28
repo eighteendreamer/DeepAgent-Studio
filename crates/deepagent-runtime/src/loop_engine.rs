@@ -14,15 +14,15 @@ use deepagent_core::event::EventPayload;
 use deepagent_core::id::TaskId;
 use deepagent_core::message::{Message, ToolCall};
 use deepagent_core::task::TaskState;
-use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry};
+use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry, ToolBatchItem};
 use deepagent_session::Session;
 use deepagent_tools::permission::PermissionSet;
-use deepagent_tools::ToolRegistry;
+use deepagent_tools::{ToolExecutionContext, ToolRegistry};
 use deepagent_tracing::metrics::{names, Metrics};
 use deepagent_verification::reflection::NextAction;
 use deepagent_verification::{CommandRunner, ReflectionEngine, VerificationStep, Verifier};
 
-use crate::agent::{Agent, AgentDecision, Observation};
+use crate::agent::{Agent, AgentDecision, Observation, ToolAttemptController};
 use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyGate};
 use crate::empty_stub::ensure_non_empty_output;
 use crate::events::{tool_ui_metadata, NullEventSink, RuntimeEvent, RuntimeEventSink};
@@ -81,6 +81,10 @@ pub enum RunOutcome {
     StepLimitReached,
     /// The run was cancelled by the user (manual stop).
     Cancelled,
+    /// A configured token/cost/task budget was exhausted.
+    BudgetExceeded(String),
+    /// Factual completion requirements repeatedly failed.
+    CompletionFailed(String),
 }
 
 /// The result of the `UserPromptSubmit` gate (复刻规范 P1).
@@ -123,10 +127,31 @@ impl PromptDecision {
 pub struct RuntimeConfig {
     /// Hard cap on loop iterations (safety against runaway loops).
     pub max_steps: usize,
+    /// Hard wall-clock deadline for the complete kernel run, including model,
+    /// hooks, approvals, tools and verification. `None` disables it.
+    pub task_timeout: Option<std::time::Duration>,
+    /// Maximum cumulative provider-reported tokens for this run. The boundary
+    /// is checked after every model response and before any requested tool is
+    /// allowed to execute.
+    pub max_total_tokens: Option<u64>,
+    /// Factual filesystem effects required before a final answer is accepted.
+    pub completion_policy: crate::completion::CompletionPolicy,
+    /// Number of times completion evidence may be fed back for self-repair.
+    pub max_completion_retries: usize,
+    /// SessionStart is emitted only for a newly-created session, not every
+    /// user turn appended to an existing session.
+    pub fire_session_start: bool,
     /// Permissions granted to the agent for this run.
     pub permissions: PermissionSet,
     /// Whether high-risk tools are pre-approved for this run.
     pub auto_approve: bool,
+    /// Deadline for one tool invocation. Process-backed tools enforce this
+    /// while killing the complete process tree on expiry.
+    pub tool_timeout: std::time::Duration,
+    /// Incremental file checkpoint for this user turn.
+    pub checkpoint: Option<std::sync::Arc<crate::checkpoint::CheckpointManager>>,
+    /// Durable index for large tool output artifact files.
+    pub artifact_persistence: Option<crate::tool_pipeline::ToolArtifactPersistence>,
     /// Tool result truncation and persistence budget.
     pub tool_result_budget: ToolResultBudgetConfig,
     /// Optional decorator that mutates each tool result after invocation.
@@ -141,8 +166,16 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             max_steps: 64,
+            task_timeout: Some(std::time::Duration::from_secs(30 * 60)),
+            max_total_tokens: Some(1_000_000),
+            completion_policy: crate::completion::CompletionPolicy::default(),
+            max_completion_retries: 2,
+            fire_session_start: true,
             permissions: PermissionSet::developer(),
             auto_approve: false,
+            tool_timeout: std::time::Duration::from_secs(120),
+            checkpoint: None,
+            artifact_persistence: None,
             tool_result_budget: ToolResultBudgetConfig::default(),
             tool_result_decorator: None,
         }
@@ -161,6 +194,218 @@ pub struct RuntimeEngine<'a, C: Clock> {
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     created_tool_result_paths: std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>,
     _clock: std::marker::PhantomData<&'a C>,
+}
+
+/// Attempt-local tool-call cache populated directly from semantic model stream
+/// events. Only validation and value normalization happen here. Hooks,
+/// permissions, approvals and execution remain in ToolExecutionPipeline after
+/// the provider attempt commits.
+struct StreamingToolAttempt<'a> {
+    registry: &'a ToolRegistry,
+    permissions: PermissionSet,
+    runtime_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    timeout: std::time::Duration,
+    speculation_enabled: bool,
+    active_attempt: Option<usize>,
+    committed_attempt: Option<usize>,
+    prepared: std::collections::HashMap<String, StreamPreparedCall>,
+}
+
+struct StreamPreparedCall {
+    invocation: deepagent_tools::ToolInvocation,
+    speculative: Option<SpeculativeToolExecution>,
+}
+
+struct SpeculativeToolExecution {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: tokio::task::JoinHandle<(Result<deepagent_tools::ToolOutput>, u64)>,
+}
+
+impl<'a> StreamingToolAttempt<'a> {
+    fn new(
+        registry: &'a ToolRegistry,
+        permissions: PermissionSet,
+        runtime_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        timeout: std::time::Duration,
+        speculation_enabled: bool,
+    ) -> Self {
+        Self {
+            registry,
+            permissions,
+            runtime_cancel,
+            timeout,
+            speculation_enabled,
+            active_attempt: None,
+            committed_attempt: None,
+            prepared: std::collections::HashMap::new(),
+        }
+    }
+
+    fn normalize_decision(&self, decision: AgentDecision) -> AgentDecision {
+        if self.committed_attempt != self.active_attempt {
+            return decision;
+        }
+        match decision {
+            AgentDecision::CallTool(invocation) => {
+                AgentDecision::CallTool(self.normalized(invocation))
+            }
+            AgentDecision::CallTools(invocations) => AgentDecision::CallTools(
+                invocations
+                    .into_iter()
+                    .map(|invocation| self.normalized(invocation))
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
+    fn normalized(
+        &self,
+        invocation: deepagent_tools::ToolInvocation,
+    ) -> deepagent_tools::ToolInvocation {
+        let Some(call_id) = invocation.id.as_deref() else {
+            return invocation;
+        };
+        self.prepared
+            .get(call_id)
+            .map(|prepared| &prepared.invocation)
+            .filter(|prepared| prepared.name == invocation.name)
+            .cloned()
+            .unwrap_or(invocation)
+    }
+
+    fn cancel_speculation(&mut self) {
+        for prepared in self.prepared.values_mut() {
+            if let Some(speculative) = prepared.speculative.take() {
+                speculative
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Release);
+                speculative.handle.abort();
+            }
+        }
+    }
+
+    fn take_speculative(
+        &mut self,
+        invocation: &deepagent_tools::ToolInvocation,
+    ) -> Option<SpeculativeToolExecution> {
+        if self.committed_attempt != self.active_attempt {
+            return None;
+        }
+        let call_id = invocation.id.as_deref()?;
+        let prepared = self.prepared.get_mut(call_id)?;
+        if prepared.invocation.name != invocation.name {
+            return None;
+        }
+        prepared.speculative.take()
+    }
+
+    fn take_speculative_batch(
+        &mut self,
+        invocations: &[deepagent_tools::ToolInvocation],
+    ) -> std::collections::HashMap<String, SpeculativeToolExecution> {
+        invocations
+            .iter()
+            .filter_map(|invocation| {
+                let call_id = invocation.id.clone()?;
+                self.take_speculative(invocation)
+                    .map(|speculative| (call_id, speculative))
+            })
+            .collect()
+    }
+}
+
+impl Drop for StreamingToolAttempt<'_> {
+    fn drop(&mut self) {
+        self.cancel_speculation();
+    }
+}
+
+impl ToolAttemptController for StreamingToolAttempt<'_> {
+    fn begin(&mut self, attempt: usize) {
+        self.cancel_speculation();
+        self.active_attempt = Some(attempt);
+        self.committed_attempt = None;
+        self.prepared.clear();
+    }
+
+    fn prepare(&mut self, invocation: deepagent_tools::ToolInvocation) {
+        let Some(call_id) = invocation.id.clone() else {
+            return;
+        };
+        // Invalid calls intentionally remain uncached. The canonical pipeline
+        // will turn them into a paired validation observation after commit.
+        let Ok(validated) = self
+            .registry
+            .validate_invocation(&invocation.name, invocation.arguments)
+        else {
+            return;
+        };
+        let normalized = deepagent_tools::ToolInvocation::new(validated.name, validated.arguments)
+            .with_id(call_id.clone());
+        let speculative = if self.speculation_enabled
+            && !self
+                .runtime_cancel
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            self.registry.get(&normalized.name).and_then(|spec| {
+                let safe = spec.descriptor.risk == deepagent_tools::permission::RiskLevel::Safe
+                    && spec.tool.is_concurrency_safe(&normalized.arguments)
+                    && self
+                        .registry
+                        .check(&normalized.name, &self.permissions, true)
+                        .is_ok();
+                if !safe {
+                    return None;
+                }
+                let registry = self.registry.clone();
+                let permissions = self.permissions.clone();
+                let name = normalized.name.clone();
+                let arguments = normalized.arguments.clone();
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let execution_cancel = cancel.clone();
+                let timeout = self.timeout;
+                let handle = tokio::spawn(async move {
+                    let started = std::time::Instant::now();
+                    let result = registry
+                        .invoke_with_context(
+                            &name,
+                            arguments,
+                            &permissions,
+                            true,
+                            deepagent_tools::ToolExecutionContext::new(execution_cancel)
+                                .with_timeout(timeout),
+                        )
+                        .await;
+                    (result, started.elapsed().as_millis() as u64)
+                });
+                Some(SpeculativeToolExecution { cancel, handle })
+            })
+        } else {
+            None
+        };
+        self.prepared.insert(
+            call_id,
+            StreamPreparedCall {
+                invocation: normalized,
+                speculative,
+            },
+        );
+    }
+
+    fn commit(&mut self, attempt: usize) {
+        if self.active_attempt == Some(attempt) {
+            self.committed_attempt = Some(attempt);
+        }
+    }
+
+    fn abort(&mut self, attempt: usize, _reason: &str) {
+        if self.active_attempt == Some(attempt) {
+            self.cancel_speculation();
+            self.prepared.clear();
+            self.committed_attempt = None;
+        }
+    }
 }
 
 impl<'a, C: Clock> RuntimeEngine<'a, C> {
@@ -242,7 +487,18 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         match self.hooks {
             Some(reg) => {
                 let ctx = HookContext::new(session_id, point, data);
-                reg.dispatch(&ctx).await
+                if let Some(cancel) = self.cancel.clone() {
+                    tokio::select! {
+                        result = reg.dispatch(&ctx) => result,
+                        _ = wait_for_runtime_cancel(cancel) => Err(
+                            deepagent_core::error::CoreError::other(
+                                format!("hook '{}' cancelled by user", point.label())
+                            )
+                        ),
+                    }
+                } else {
+                    reg.dispatch(&ctx).await
+                }
             }
             None => Ok(HookOutcome::Continue),
         }
@@ -262,8 +518,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let run_started_at = std::time::Instant::now();
 
         // SessionStart hook (observational).
-        self.fire_hook(session_id, HookPoint::SessionStart, HookData::None)
-            .await?;
+        if self.config.fire_session_start {
+            self.fire_hook(session_id, HookPoint::SessionStart, HookData::None)
+                .await?;
+        }
 
         self.emit(RuntimeEvent::RunStarted {
             task_id: task.to_string(),
@@ -276,6 +534,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             session_id: session_id.to_string(),
             title: session.state().title.clone(),
         });
+        self.fire_task_hook(session, session_id, task, HookPoint::TaskCreated)
+            .await?;
 
         // Move the task into Running (validated by the session).
         if session.state().task(task).map(|t| t.state) == Some(TaskState::Queued) {
@@ -285,6 +545,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let mut last_observations: Vec<Observation> = Vec::new();
         let mut outcome = RunOutcome::StepLimitReached;
         let mut finished = false;
+        let mut completion_failures = 0usize;
 
         // Verification state persists across attempts (tracks loop detection).
         let mut reflection_engine = self
@@ -302,13 +563,84 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 break;
             }
             self.emit(RuntimeEvent::TurnStarted { step });
-            let decision = agent.think(step, &last_observations).await?;
+            // BeforePlan hook (observational unless denied): fires before the
+            // model decides its next move for this step. A Deny ends the run
+            // cleanly instead of silently continuing — the hook is vetoable.
+            match self
+                .fire_hook(session_id, HookPoint::BeforePlan, HookData::None)
+                .await?
+            {
+                HookOutcome::Deny { reason, .. } => {
+                    session.transition_task(task, TaskState::Failed)?;
+                    let reason = format!("run blocked by BeforePlan hook: {reason}");
+                    self.emit(RuntimeEvent::RunFailed {
+                        reason: reason.clone(),
+                    });
+                    outcome = RunOutcome::CompletionFailed(reason);
+                    finished = true;
+                    break;
+                }
+                _ => {}
+            }
+            let runtime_cancel = self
+                .cancel
+                .clone()
+                .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+            let mut streaming_tools = StreamingToolAttempt::new(
+                self.registry,
+                self.config.permissions.clone(),
+                runtime_cancel,
+                self.config.tool_timeout,
+                self.hooks.is_none(),
+            );
+            let decision = match agent
+                .think_streaming_cancelled(
+                    step,
+                    &last_observations,
+                    self.cancel.clone(),
+                    Some(&mut streaming_tools),
+                )
+                .await
+            {
+                Ok(decision) => streaming_tools.normalize_decision(decision),
+                Err(_e) if self.is_cancelled() => {
+                    session.transition_task(task, TaskState::Failed)?;
+                    self.emit(RuntimeEvent::RunCancelled);
+                    outcome = RunOutcome::Cancelled;
+                    finished = true;
+                    break;
+                }
+                Err(e) => return Err(e),
+            };
+            if self.is_cancelled() {
+                session.transition_task(task, TaskState::Failed)?;
+                self.emit(RuntimeEvent::RunCancelled);
+                outcome = RunOutcome::Cancelled;
+                finished = true;
+                break;
+            }
+            if let (Some(limit), Some(usage)) =
+                (self.config.max_total_tokens, agent.cumulative_usage())
+            {
+                if usage.total_tokens as u64 > limit {
+                    let reason = format!(
+                        "run token budget exceeded: used {} tokens, limit {limit}",
+                        usage.total_tokens
+                    );
+                    session.transition_task(task, TaskState::Failed)?;
+                    self.emit(RuntimeEvent::RunFailed {
+                        reason: reason.clone(),
+                    });
+                    outcome = RunOutcome::BudgetExceeded(reason);
+                    finished = true;
+                    break;
+                }
+            }
             tracing::debug!(step, ?decision, "agent decision");
 
             match decision {
                 AgentDecision::Complete(msg) => {
-                    let message = Message::assistant(&msg);
-                    let content = msg;
+                    let mut content = msg;
                     // Post-completion verification / self-healing.
                     if let (Some(plan), Some(engine)) =
                         (self.verification, reflection_engine.as_mut())
@@ -328,6 +660,30 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         }
                     }
 
+                    if let Some(observation) = self.completion_evidence_feedback()? {
+                        completion_failures += 1;
+                        if completion_failures <= self.config.max_completion_retries {
+                            last_observations = vec![observation];
+                            continue;
+                        }
+                        let reason = completion_failure_reason(&observation);
+                        session.transition_task(task, TaskState::Failed)?;
+                        self.emit(RuntimeEvent::RunFailed {
+                            reason: reason.clone(),
+                        });
+                        outcome = RunOutcome::CompletionFailed(reason);
+                        finished = true;
+                        break;
+                    }
+                    match self.completion_gate(session_id, content).await? {
+                        CompletionDecision::Accept(updated) => content = updated,
+                        CompletionDecision::Retry(observation) => {
+                            last_observations = vec![observation];
+                            continue;
+                        }
+                    }
+
+                    let message = Message::assistant(&content);
                     session.append(EventPayload::MessageAppended { message })?;
                     session.transition_task(task, TaskState::Completed)?;
                     self.emit(RuntimeEvent::RunCompleted {
@@ -339,7 +695,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 }
 
                 AgentDecision::CompleteMessage(message) => {
-                    let content = message.content.clone();
+                    let mut message = message;
+                    let mut content = message.content.clone();
                     // Post-completion verification / self-healing.
                     if let (Some(plan), Some(engine)) =
                         (self.verification, reflection_engine.as_mut())
@@ -356,6 +713,32 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                                 last_observations = vec![obs];
                                 continue;
                             }
+                        }
+                    }
+
+                    if let Some(observation) = self.completion_evidence_feedback()? {
+                        completion_failures += 1;
+                        if completion_failures <= self.config.max_completion_retries {
+                            last_observations = vec![observation];
+                            continue;
+                        }
+                        let reason = completion_failure_reason(&observation);
+                        session.transition_task(task, TaskState::Failed)?;
+                        self.emit(RuntimeEvent::RunFailed {
+                            reason: reason.clone(),
+                        });
+                        outcome = RunOutcome::CompletionFailed(reason);
+                        finished = true;
+                        break;
+                    }
+                    match self.completion_gate(session_id, content).await? {
+                        CompletionDecision::Accept(updated) => {
+                            content = updated;
+                            message.content = content.clone();
+                        }
+                        CompletionDecision::Retry(observation) => {
+                            last_observations = vec![observation];
+                            continue;
                         }
                     }
 
@@ -383,13 +766,27 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 }
 
                 AgentDecision::CallTool(invocation) => {
-                    last_observations =
-                        vec![self.execute_tool(session, session_id, invocation).await?];
+                    let speculative = streaming_tools.take_speculative(&invocation);
+                    let observation = match speculative {
+                        Some(speculative) => {
+                            self.execute_tool_with_speculative(
+                                session,
+                                session_id,
+                                invocation,
+                                Some(speculative),
+                            )
+                            .await?
+                        }
+                        None => self.execute_tool(session, session_id, invocation).await?,
+                    };
+                    last_observations = vec![observation];
                 }
 
                 AgentDecision::CallTools(invocations) => {
-                    last_observations =
-                        self.execute_tools(session, session_id, invocations).await?;
+                    let speculative = streaming_tools.take_speculative_batch(&invocations);
+                    last_observations = self
+                        .execute_tools(session, session_id, invocations, speculative)
+                        .await?;
                 }
             }
         }
@@ -401,6 +798,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 reason: format!("step limit reached ({} steps)", self.config.max_steps),
             });
         }
+        self.fire_task_hook(session, session_id, task, HookPoint::TaskCompleted)
+            .await?;
 
         // Persist the run's cumulative token usage + wall-clock duration so the
         // UI can show per-turn metrics when the session is reopened later.
@@ -416,11 +815,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             })?;
         }
 
-        // SessionEnd hook (observational). The session stays open for resumption
-        // unless the caller ends it; this just notifies hooks the run finished.
-        self.fire_hook(session_id, HookPoint::SessionEnd, HookData::None)
-            .await?;
-
         if self.config.tool_result_budget.cleanup_on_run_end {
             let paths = {
                 let mut guard = self
@@ -431,8 +825,34 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             };
             cleanup_tool_result_paths(paths).await;
         }
+        self.fire_hook(session_id, HookPoint::SessionEnd, HookData::None)
+            .await?;
 
         Ok(outcome)
+    }
+
+    async fn fire_task_hook(
+        &self,
+        session: &Session<'a, C>,
+        session_id: deepagent_core::id::SessionId,
+        task: TaskId,
+        point: HookPoint,
+    ) -> Result<()> {
+        let subject = session
+            .state()
+            .task(task)
+            .map(|task| task.goal.clone())
+            .unwrap_or_else(|| task.to_string());
+        self.fire_hook(
+            session_id,
+            point,
+            HookData::Task {
+                task_id: task.to_string(),
+                subject,
+            },
+        )
+        .await?;
+        Ok(())
     }
 
     fn remember_tool_result_path(&self, output: &deepagent_tools::ToolOutput) {
@@ -441,6 +861,39 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .push(path);
+        }
+    }
+
+    fn completion_evidence_feedback(&self) -> Result<Option<Observation>> {
+        let mutations = match self.config.checkpoint.as_ref() {
+            Some(checkpoint) => checkpoint.mutation_evidence()?,
+            None => Vec::new(),
+        };
+        if self.config.checkpoint.is_some() || !self.config.completion_policy.is_empty() {
+            self.emit(RuntimeEvent::CompletionEvidence {
+                mutations: mutations.clone(),
+            });
+        }
+        match self.config.completion_policy.validate(&mutations) {
+            Ok(()) => Ok(None),
+            Err(failure) => {
+                self.emit(RuntimeEvent::Verification {
+                    passed: false,
+                    detail: failure.reason.clone(),
+                });
+                Ok(Some(Observation {
+                    tool: "completion_gate".to_string(),
+                    ok: false,
+                    output: serde_json::json!({
+                        "completion_blocked": true,
+                        "reason": failure.reason,
+                        "required_effects": failure.required_effects,
+                        "mutations": mutations,
+                        "recovery_hint": "Perform and verify the requested filesystem operation. Prefer write_file/edit_file/delete_path/move_path over shell commands, then provide the final response.",
+                    }),
+                    call_id: None,
+                }))
+            }
         }
     }
 
@@ -504,30 +957,107 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         &self,
         session: &mut Session<'a, C>,
         session_id: deepagent_core::id::SessionId,
-        invocations: Vec<deepagent_tools::ToolInvocation>,
+        mut invocations: Vec<deepagent_tools::ToolInvocation>,
+        mut speculative: std::collections::HashMap<String, SpeculativeToolExecution>,
     ) -> Result<Vec<Observation>> {
         if invocations.len() <= 1 {
             let mut out = Vec::with_capacity(invocations.len());
             for inv in invocations {
-                out.push(self.execute_tool(session, session_id, inv).await?);
+                let early = inv
+                    .id
+                    .as_ref()
+                    .and_then(|call_id| speculative.remove(call_id));
+                out.push(match early {
+                    Some(early) => {
+                        self.execute_tool_with_speculative(session, session_id, inv, Some(early))
+                            .await?
+                    }
+                    None => self.execute_tool(session, session_id, inv).await?,
+                });
             }
             return Ok(out);
         }
-
         // Partition: read-only/concurrency-safe tools can have their I/O run in
         // parallel; everything else runs sequentially for safety + ordering.
-        let parallel_idx: Vec<usize> = invocations
+        // Validate and run each candidate's PreToolUse gate before starting
+        // any parallel I/O. Outcomes are retained so blocked/ask calls do not
+        // execute the same hook twice when they fall back to serial handling.
+        let mut preflight: std::collections::HashMap<usize, HookOutcome> =
+            std::collections::HashMap::new();
+        let mut parallel_idx = Vec::new();
+        for (i, invocation) in invocations.iter_mut().enumerate() {
+            if !self.is_parallel_safe(&invocation.name, &invocation.arguments) {
+                continue;
+            }
+            let validated = match self
+                .registry
+                .validate_invocation(&invocation.name, invocation.arguments.clone())
+            {
+                Ok(validated) => validated,
+                Err(_) => continue,
+            };
+            invocation.arguments = validated.arguments;
+            let outcome = self
+                .fire_hook(
+                    session_id,
+                    HookPoint::BeforeToolUse,
+                    HookData::before_tool(invocation.name.clone(), invocation.arguments.clone()),
+                )
+                .await?;
+            if let HookOutcome::Modify { updated_input, .. } = &outcome {
+                match self
+                    .registry
+                    .validate_invocation(&invocation.name, updated_input.clone())
+                {
+                    Ok(validated) => invocation.arguments = validated.arguments,
+                    Err(_) => {
+                        preflight.insert(i, outcome);
+                        continue;
+                    }
+                }
+            }
+            if matches!(outcome, HookOutcome::Continue | HookOutcome::Modify { .. }) {
+                parallel_idx.push(i);
+            }
+            preflight.insert(i, outcome);
+        }
+        let mut batch_inputs = invocations
             .iter()
-            .enumerate()
-            .filter(|(_, inv)| self.is_parallel_safe(&inv.name))
-            .map(|(i, _)| i)
-            .collect();
+            .map(|invocation| {
+                (
+                    invocation.name.clone(),
+                    invocation.id.clone(),
+                    invocation.arguments.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
 
         // Fast path: nothing parallelizable → just run them in order.
         if parallel_idx.len() <= 1 {
             let mut out = Vec::with_capacity(invocations.len());
             for inv in invocations {
-                out.push(self.execute_tool(session, session_id, inv).await?);
+                let outcome = preflight.remove(&out.len());
+                let early = inv
+                    .id
+                    .as_ref()
+                    .and_then(|call_id| speculative.remove(call_id));
+                out.push(
+                    self.execute_tool_with_before_and_speculative(
+                        session, session_id, inv, outcome, early,
+                    )
+                    .await?,
+                );
+            }
+            for (index, observation) in out.iter().enumerate() {
+                if let Some(input) = batch_inputs.get_mut(index) {
+                    input.1 = observation.call_id.clone().or_else(|| input.1.clone());
+                }
+            }
+            if let Some(feedback) = self
+                .post_tool_batch_feedback(session_id, &batch_inputs, &out)
+                .await?
+            {
+                out.push(feedback);
             }
             return Ok(out);
         }
@@ -572,13 +1102,32 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             let registry = self.registry;
             let perms = self.config.permissions.clone();
             let auto = self.config.auto_approve;
+            let execution_context =
+                ToolExecutionContext::new(self.cancel.clone().unwrap_or_else(|| {
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+                }))
+                .with_timeout(self.config.tool_timeout);
             let budget = self.config.tool_result_budget.clone();
             let session_id_str = session_id.to_string();
             let created_paths = self.created_tool_result_paths.clone();
             let decorator = self.config.tool_result_decorator.clone();
+            let early = speculative.remove(&call_id);
             futs.push(async move {
-                let start = std::time::Instant::now();
-                let result = match registry.invoke(&name, args, &perms, auto).await {
+                let invoke = || async {
+                    let started = std::time::Instant::now();
+                    let result = registry
+                        .invoke_with_context(&name, args, &perms, auto, execution_context)
+                        .await;
+                    (result, started.elapsed().as_millis() as u64)
+                };
+                let (raw_result, duration_ms) = match early {
+                    Some(early) => match early.handle.await {
+                        Ok(completed) => completed,
+                        Err(_) => invoke().await,
+                    },
+                    None => invoke().await,
+                };
+                let result = match raw_result {
                     Ok(out) => {
                         let mut out = apply_tool_result_budget(
                             &budget,
@@ -602,7 +1151,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     }
                     Err(e) => Err(e),
                 };
-                let duration_ms = start.elapsed().as_millis() as u64;
                 (i, call_id, name, metadata_args, result, duration_ms)
             });
         }
@@ -658,10 +1206,89 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     .await?,
                 );
             } else {
-                observations.push(self.execute_tool(session, session_id, inv).await?);
+                observations.push(
+                    self.execute_tool_with_before(session, session_id, inv, preflight.remove(&i))
+                        .await?,
+                );
             }
         }
+        for (index, observation) in observations.iter().enumerate() {
+            if let Some(input) = batch_inputs.get_mut(index) {
+                input.1 = observation.call_id.clone().or_else(|| input.1.clone());
+            }
+        }
+        if let Some(feedback) = self
+            .post_tool_batch_feedback(session_id, &batch_inputs, &observations)
+            .await?
+        {
+            observations.push(feedback);
+        }
         Ok(observations)
+    }
+
+    async fn post_tool_batch_feedback(
+        &self,
+        session_id: deepagent_core::id::SessionId,
+        inputs: &[(String, Option<String>, serde_json::Value)],
+        observations: &[Observation],
+    ) -> Result<Option<Observation>> {
+        if observations.len() <= 1 {
+            return Ok(None);
+        }
+        let tools = observations
+            .iter()
+            .enumerate()
+            .map(|(index, observation)| {
+                let (name, call_id, arguments) = inputs.get(index).cloned().unwrap_or_else(|| {
+                    (
+                        observation.tool.clone(),
+                        observation.call_id.clone(),
+                        serde_json::Value::Null,
+                    )
+                });
+                ToolBatchItem {
+                    name,
+                    call_id: observation.call_id.clone().or(call_id),
+                    arguments,
+                    ok: observation.ok,
+                    output_preview: bounded_hook_output_preview(&observation.output, 4),
+                }
+            })
+            .collect::<Vec<_>>();
+        match self
+            .fire_hook(
+                session_id,
+                HookPoint::PostToolBatch,
+                HookData::tool_batch(tools.clone()),
+            )
+            .await?
+        {
+            HookOutcome::Continue | HookOutcome::Modify { .. } => Ok(None),
+            HookOutcome::Ask { reason, source } => Ok(Some(Observation {
+                tool: "post_tool_batch".to_string(),
+                ok: false,
+                output: serde_json::json!({
+                    "blocked": true,
+                    "needs_approval": true,
+                    "reason": reason,
+                    "source": source.label(),
+                    "tool_count": tools.len(),
+                }),
+                call_id: None,
+            })),
+            HookOutcome::Deny { reason, source } => Ok(Some(Observation {
+                tool: "post_tool_batch".to_string(),
+                ok: false,
+                output: serde_json::json!({
+                    "blocked": true,
+                    "needs_approval": false,
+                    "reason": reason,
+                    "source": source.label(),
+                    "tool_count": tools.len(),
+                }),
+                call_id: None,
+            })),
+        }
     }
 
     /// Whether a tool is safe to run concurrently with others. Two cases:
@@ -674,12 +1301,12 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
     ///
     /// An unknown tool is treated as not parallel-safe (it'll fail in the normal
     /// path with a clean error).
-    fn is_parallel_safe(&self, name: &str) -> bool {
+    fn is_parallel_safe(&self, name: &str, arguments: &serde_json::Value) -> bool {
         if name == "task" {
             return true;
         }
         match self.registry.get(name) {
-            Some(spec) => spec.descriptor.risk == deepagent_tools::RiskLevel::Safe,
+            Some(spec) => spec.tool.is_concurrency_safe(arguments),
             None => false,
         }
     }
@@ -728,7 +1355,11 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         })?;
         self.fire_hook(
             session_id,
-            HookPoint::AfterToolUse,
+            if ok {
+                HookPoint::AfterToolUse
+            } else {
+                HookPoint::PostToolUseFailure
+            },
             HookData::after_tool(tool_name.clone(), arguments, ok),
         )
         .await?;
@@ -746,7 +1377,163 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         &self,
         session: &mut Session<'a, C>,
         session_id: deepagent_core::id::SessionId,
+        invocation: deepagent_tools::ToolInvocation,
+    ) -> Result<Observation> {
+        self.execute_tool_with_before_and_speculative(session, session_id, invocation, None, None)
+            .await
+    }
+
+    async fn execute_tool_with_speculative(
+        &self,
+        session: &mut Session<'a, C>,
+        session_id: deepagent_core::id::SessionId,
+        invocation: deepagent_tools::ToolInvocation,
+        speculative: Option<SpeculativeToolExecution>,
+    ) -> Result<Observation> {
+        self.execute_tool_with_before_and_speculative(
+            session,
+            session_id,
+            invocation,
+            None,
+            speculative,
+        )
+        .await
+    }
+
+    async fn execute_tool_with_before(
+        &self,
+        session: &mut Session<'a, C>,
+        session_id: deepagent_core::id::SessionId,
+        invocation: deepagent_tools::ToolInvocation,
+        before_override: Option<HookOutcome>,
+    ) -> Result<Observation> {
+        self.execute_tool_with_before_and_speculative(
+            session,
+            session_id,
+            invocation,
+            before_override,
+            None,
+        )
+        .await
+    }
+
+    async fn execute_tool_with_before_and_speculative(
+        &self,
+        session: &mut Session<'a, C>,
+        session_id: deepagent_core::id::SessionId,
+        invocation: deepagent_tools::ToolInvocation,
+        before_override: Option<HookOutcome>,
+        speculative: Option<SpeculativeToolExecution>,
+    ) -> Result<Observation> {
+        let cancel = self
+            .cancel
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let pipeline = crate::tool_pipeline::ToolExecutionPipeline::new(
+            self.registry,
+            session_id,
+            self.config.permissions.clone(),
+        )
+        .with_hooks(self.hooks)
+        .with_approvals(self.approvals.clone())
+        .with_events(self.events.clone())
+        .with_auto_approve(self.config.auto_approve)
+        .with_execution_controls(cancel, self.config.tool_timeout)
+        .with_result_policy(
+            self.config.tool_result_budget.clone(),
+            self.config.tool_result_decorator.clone(),
+            self.created_tool_result_paths.clone(),
+        )
+        .with_checkpoint(self.config.checkpoint.clone());
+        let pipeline = pipeline.with_artifact_persistence(self.config.artifact_persistence.clone());
+
+        let prepared = pipeline.prepare(invocation, before_override).await?;
+        let result = match prepared {
+            crate::tool_pipeline::ToolPreparation::Ready(prepared) => {
+                session.append(EventPayload::ToolCallRequested {
+                    call: ToolCall {
+                        id: prepared.call_id.clone(),
+                        name: prepared.name.clone(),
+                        arguments: prepared.arguments.clone(),
+                    },
+                })?;
+                self.metrics.incr(names::TOOL_CALLS, 1);
+                match speculative {
+                    Some(speculative) => match speculative.handle.await {
+                        Ok((result, duration_ms)) => {
+                            pipeline
+                                .complete_prepared(prepared, result, duration_ms)
+                                .await?
+                        }
+                        Err(error) => {
+                            tracing::debug!(
+                                call_id = %prepared.call_id,
+                                error = %error,
+                                "speculative read was unavailable; executing after commit"
+                            );
+                            pipeline.execute_prepared(prepared).await?
+                        }
+                    },
+                    None => pipeline.execute_prepared(prepared).await?,
+                }
+            }
+            crate::tool_pipeline::ToolPreparation::Blocked(blocked) => {
+                if let Some(speculative) = speculative {
+                    speculative
+                        .cancel
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    speculative.handle.abort();
+                }
+                session.append(EventPayload::ToolCallRequested {
+                    call: ToolCall {
+                        id: blocked.call_id.clone(),
+                        name: blocked.name.clone(),
+                        arguments: blocked.arguments.clone(),
+                    },
+                })?;
+                blocked
+            }
+        };
+
+        if !result.output.ok {
+            self.metrics.incr(names::TOOL_FAILURES, 1);
+        }
+        session.append(EventPayload::ToolCallCompleted {
+            call_id: result.call_id.clone(),
+            ok: result.output.ok,
+            output: result.output.value.clone(),
+            duration_ms: result.duration_ms,
+        })?;
+        if !result.output.ok && result.stage != crate::tool_pipeline::ToolPipelineStage::Execution {
+            self.fire_hook(
+                session_id,
+                HookPoint::PermissionDenied,
+                HookData::Permission {
+                    tool: result.name.clone(),
+                    arguments: result.arguments.clone(),
+                    reason: result.output.value["error"]
+                        .as_str()
+                        .unwrap_or("tool blocked")
+                        .to_string(),
+                },
+            )
+            .await?;
+        }
+        Ok(Observation {
+            tool: result.name,
+            ok: result.output.ok,
+            output: result.output.value,
+            call_id: Some(result.call_id),
+        })
+    }
+
+    #[allow(dead_code)]
+    async fn execute_tool_with_before_legacy(
+        &self,
+        session: &mut Session<'a, C>,
+        session_id: deepagent_core::id::SessionId,
         mut invocation: deepagent_tools::ToolInvocation,
+        before_override: Option<HookOutcome>,
     ) -> Result<Observation> {
         // Reuse the model's tool-call id when present so the observation
         // correlates with the exact `tool_calls[].id`; else synthesize one.
@@ -756,17 +1543,62 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             .unwrap_or_else(|| format!("call_{}", deepagent_core::id::EventId::new()));
         let tool_name = invocation.name.clone();
 
+        // Claude-compatible boundary: descriptor schema and tool-specific
+        // value validation happen before hooks or permission evaluation.
+        match self
+            .registry
+            .validate_invocation(&tool_name, invocation.arguments.clone())
+        {
+            Ok(validated) => invocation.arguments = validated.arguments,
+            Err(error) => {
+                let reason = error.to_string();
+                self.metrics.incr(names::TOOL_FAILURES, 1);
+                self.emit(RuntimeEvent::ToolBlocked {
+                    name: tool_name.clone(),
+                    reason: reason.clone(),
+                    needs_approval: false,
+                });
+                let value = serde_json::json!({
+                    "error": reason,
+                    "error_type": "input_validation_error"
+                });
+                session.append(EventPayload::ToolCallRequested {
+                    call: ToolCall {
+                        id: call_id.clone(),
+                        name: tool_name.clone(),
+                        arguments: invocation.arguments,
+                    },
+                })?;
+                session.append(EventPayload::ToolCallCompleted {
+                    call_id: call_id.clone(),
+                    ok: false,
+                    output: value.clone(),
+                    duration_ms: 0,
+                })?;
+                return Ok(Observation {
+                    tool: tool_name,
+                    ok: false,
+                    output: value,
+                    call_id: Some(call_id),
+                });
+            }
+        }
+
         // BeforeToolUse gate: a hook may allow, rewrite the input (Modify),
         // request approval (Ask), or veto (Deny) the call. A blocked call
         // becomes a failed observation (recorded to the log) so the agent can
         // react, rather than aborting the whole run.
-        let before = self
-            .fire_hook(
-                session_id,
-                HookPoint::BeforeToolUse,
-                HookData::before_tool(tool_name.clone(), invocation.arguments.clone()),
-            )
-            .await?;
+        let before = match before_override {
+            Some(outcome) => outcome,
+            None => {
+                self.fire_hook(
+                    session_id,
+                    HookPoint::BeforeToolUse,
+                    HookData::before_tool(tool_name.clone(), invocation.arguments.clone()),
+                )
+                .await?
+            }
+        };
 
         let block_reason: Option<String> = match before {
             HookOutcome::Continue => None,
@@ -779,8 +1611,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     source = source.label(),
                     "BeforeToolUse hook rewrote tool arguments"
                 );
-                invocation.arguments = updated_input;
-                None
+                match self.registry.validate_invocation(&tool_name, updated_input) {
+                    Ok(validated) => {
+                        invocation.arguments = validated.arguments;
+                        None
+                    }
+                    Err(error) => Some(format!("hook produced invalid tool input: {error}")),
+                }
             }
             HookOutcome::Ask { reason, source } => {
                 // `ask` requires explicit approval. With auto-approval on, the
@@ -794,6 +1631,33 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     );
                     None
                 } else {
+                    let permission_hook = self
+                        .fire_hook(
+                            session_id,
+                            HookPoint::PermissionRequest,
+                            HookData::Permission {
+                                tool: tool_name.clone(),
+                                arguments: invocation.arguments.clone(),
+                                reason: reason.clone(),
+                            },
+                        )
+                        .await?;
+                    if let HookOutcome::Deny {
+                        reason: hook_reason,
+                        ..
+                    } = permission_hook
+                    {
+                        return self
+                            .record_permission_denied(
+                                session,
+                                session_id,
+                                call_id,
+                                tool_name,
+                                invocation.arguments,
+                                hook_reason,
+                            )
+                            .await;
+                    }
                     self.emit(RuntimeEvent::ToolBlocked {
                         name: tool_name.clone(),
                         reason: reason.clone(),
@@ -846,8 +1710,12 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             })?;
             self.fire_hook(
                 session_id,
-                HookPoint::AfterToolUse,
-                HookData::after_tool(tool_name.clone(), invocation.arguments.clone(), false),
+                HookPoint::PermissionDenied,
+                HookData::Permission {
+                    tool: tool_name.clone(),
+                    arguments: invocation.arguments.clone(),
+                    reason: reason.clone(),
+                },
             )
             .await?;
             return Ok(Observation {
@@ -879,13 +1747,20 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         });
 
         let start = std::time::Instant::now();
+        let execution_context = ToolExecutionContext::new(
+            self.cancel
+                .clone()
+                .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        )
+        .with_timeout(self.config.tool_timeout);
         let output = self
             .registry
-            .invoke(
+            .invoke_with_context(
                 &tool_name,
                 invocation.arguments.clone(),
                 &self.config.permissions,
                 self.config.auto_approve,
+                execution_context,
             )
             .await;
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -968,15 +1843,60 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             }
         };
 
-        // AfterToolUse hook (observational).
+        // Success and failure have distinct Claude-compatible hook events.
         self.fire_hook(
             session_id,
-            HookPoint::AfterToolUse,
+            if observation.ok {
+                HookPoint::AfterToolUse
+            } else {
+                HookPoint::PostToolUseFailure
+            },
             HookData::after_tool(tool_name, invocation.arguments, observation.ok),
         )
         .await?;
 
         Ok(observation)
+    }
+
+    async fn record_permission_denied(
+        &self,
+        session: &mut Session<'a, C>,
+        session_id: deepagent_core::id::SessionId,
+        call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+        reason: String,
+    ) -> Result<Observation> {
+        let value = serde_json::json!({ "error": reason, "error_type": "permission_denied" });
+        session.append(EventPayload::ToolCallRequested {
+            call: ToolCall {
+                id: call_id.clone(),
+                name: tool_name.clone(),
+                arguments: arguments.clone(),
+            },
+        })?;
+        session.append(EventPayload::ToolCallCompleted {
+            call_id: call_id.clone(),
+            ok: false,
+            output: value.clone(),
+            duration_ms: 0,
+        })?;
+        self.fire_hook(
+            session_id,
+            HookPoint::PermissionDenied,
+            HookData::Permission {
+                tool: tool_name.clone(),
+                arguments,
+                reason: value["error"].as_str().unwrap_or_default().to_string(),
+            },
+        )
+        .await?;
+        Ok(Observation {
+            tool: tool_name,
+            ok: false,
+            output: value,
+            call_id: Some(call_id),
+        })
     }
 
     /// Run the verification plan after the agent declared completion, applying
@@ -1045,6 +1965,161 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             NextAction::Proceed | NextAction::GiveUp => Ok(VerifyStep::GaveUp),
         }
     }
+
+    async fn completion_gate(
+        &self,
+        session_id: deepagent_core::id::SessionId,
+        candidate: String,
+    ) -> Result<CompletionDecision> {
+        let before_response = self
+            .fire_hook(
+                session_id,
+                HookPoint::BeforeResponse,
+                HookData::Response {
+                    content: candidate.clone(),
+                },
+            )
+            .await?;
+        let candidate = match before_response {
+            HookOutcome::Continue => candidate,
+            HookOutcome::Modify { updated_input, .. } => updated_input
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&candidate)
+                .to_string(),
+            HookOutcome::Ask { reason, .. } | HookOutcome::Deny { reason, .. } => {
+                self.fire_stop_failure(session_id, &candidate, &reason)
+                    .await?;
+                return Ok(CompletionDecision::Retry(completion_feedback(reason)));
+            }
+        };
+        match self
+            .fire_hook(
+                session_id,
+                HookPoint::Stop,
+                HookData::Response {
+                    content: candidate.clone(),
+                },
+            )
+            .await?
+        {
+            HookOutcome::Continue | HookOutcome::Modify { .. } => {
+                Ok(CompletionDecision::Accept(candidate))
+            }
+            HookOutcome::Ask { reason, .. } | HookOutcome::Deny { reason, .. } => {
+                self.fire_stop_failure(session_id, &candidate, &reason)
+                    .await?;
+                Ok(CompletionDecision::Retry(completion_feedback(reason)))
+            }
+        }
+    }
+
+    async fn fire_stop_failure(
+        &self,
+        session_id: deepagent_core::id::SessionId,
+        candidate: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let content = if reason.is_empty() {
+            candidate.to_string()
+        } else {
+            format!("{candidate}\n\nStop failure reason: {reason}")
+        };
+        self.fire_hook(
+            session_id,
+            HookPoint::StopFailure,
+            HookData::Response { content },
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+async fn wait_for_runtime_cancel(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    while !cancel.load(std::sync::atomic::Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+fn completion_feedback(reason: String) -> Observation {
+    Observation {
+        tool: "stop_hook".into(),
+        ok: false,
+        output: serde_json::json!({
+            "completion_blocked": true,
+            "reason": reason,
+            "recovery_hint": "Address the stop-hook feedback, then produce a corrected final response."
+        }),
+        call_id: None,
+    }
+}
+
+fn completion_failure_reason(observation: &Observation) -> String {
+    observation
+        .output
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("completion requirements were not satisfied")
+        .to_string()
+}
+
+fn bounded_hook_output_preview(value: &serde_json::Value, depth: usize) -> serde_json::Value {
+    const MAX_STRING_CHARS: usize = 512;
+    const MAX_ARRAY_ITEMS: usize = 20;
+    const MAX_OBJECT_KEYS: usize = 40;
+
+    if depth == 0 {
+        return serde_json::json!({"truncated": true, "reason": "max_depth"});
+    }
+    match value {
+        serde_json::Value::String(text) => {
+            let mut chars = text.chars();
+            let preview = chars.by_ref().take(MAX_STRING_CHARS).collect::<String>();
+            if chars.next().is_some() {
+                serde_json::json!({
+                    "preview": preview,
+                    "truncated": true,
+                    "original_chars_at_least": MAX_STRING_CHARS + 1,
+                })
+            } else {
+                serde_json::Value::String(text.clone())
+            }
+        }
+        serde_json::Value::Array(items) => {
+            let truncated = items.len() > MAX_ARRAY_ITEMS;
+            let values = items
+                .iter()
+                .take(MAX_ARRAY_ITEMS)
+                .map(|item| bounded_hook_output_preview(item, depth - 1))
+                .collect::<Vec<_>>();
+            if truncated {
+                serde_json::json!({
+                    "items": values,
+                    "truncated": true,
+                    "original_len": items.len(),
+                })
+            } else {
+                serde_json::Value::Array(values)
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, item) in map.iter().take(MAX_OBJECT_KEYS) {
+                out.insert(key.clone(), bounded_hook_output_preview(item, depth - 1));
+            }
+            if map.len() > MAX_OBJECT_KEYS {
+                out.insert("truncated".into(), serde_json::Value::Bool(true));
+                out.insert("original_key_count".into(), serde_json::json!(map.len()));
+            }
+            serde_json::Value::Object(out)
+        }
+        _ => value.clone(),
+    }
+}
+
+enum CompletionDecision {
+    Accept(String),
+    Retry(Observation),
 }
 
 /// Result of a post-completion verification pass.
@@ -1065,14 +2140,26 @@ mod tests {
     use crate::agent::AgentDecision;
     use async_trait::async_trait;
     use deepagent_core::clock::FixedClock;
-    use deepagent_hooks::{HookPoint, HookRegistry, ToolAllowlistHook};
+    use deepagent_hooks::{
+        Hook, HookContext, HookData, HookOutcome, HookPoint, HookRegistry, ToolAllowlistHook,
+    };
     use deepagent_persistence::Database;
     use deepagent_tools::permission::{PermissionSet, RiskLevel};
     use deepagent_tools::{Tool, ToolDescriptor, ToolInvocation, ToolOutput};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     struct AddTool;
     struct BigTool;
+
+    struct CountingReadTool {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct HangingReadTool {
+        started: Arc<AtomicBool>,
+        completed: Arc<AtomicBool>,
+    }
 
     #[async_trait]
     impl Tool for AddTool {
@@ -1107,6 +2194,148 @@ mod tests {
             Ok(ToolOutput::success(serde_json::json!({
                 "content": "x".repeat(200)
             })))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for CountingReadTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "counting_read".into(),
+                description: "counts read-only invocations".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"]
+                }),
+                risk: RiskLevel::Safe,
+                required_permissions: PermissionSet::read_only(),
+            }
+        }
+
+        async fn invoke(&self, arguments: serde_json::Value) -> Result<ToolOutput> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            Ok(ToolOutput::success(serde_json::json!({
+                "path": arguments["path"],
+                "content": "ready"
+            })))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for HangingReadTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "hanging_read".into(),
+                description: "read-only cancellation probe".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                risk: RiskLevel::Safe,
+                required_permissions: PermissionSet::read_only(),
+            }
+        }
+
+        async fn invoke(&self, _arguments: serde_json::Value) -> Result<ToolOutput> {
+            self.started.store(true, Ordering::Release);
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            self.completed.store(true, Ordering::Release);
+            Ok(ToolOutput::success(serde_json::json!({"done": true})))
+        }
+    }
+
+    struct StreamingReadAgent {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct StreamingBatchReadAgent {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Agent for StreamingReadAgent {
+        async fn think(&mut self, step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            if step == 0 {
+                Ok(AgentDecision::CallTool(
+                    ToolInvocation::new(
+                        "counting_read",
+                        serde_json::json!({"path": "fixture.txt"}),
+                    )
+                    .with_id("stream-call"),
+                ))
+            } else {
+                Ok(AgentDecision::Complete("done".into()))
+            }
+        }
+
+        async fn think_streaming_cancelled(
+            &mut self,
+            step: usize,
+            last: &[Observation],
+            _cancel: Option<Arc<AtomicBool>>,
+            tools: Option<&mut dyn ToolAttemptController>,
+        ) -> Result<AgentDecision> {
+            if step != 0 {
+                assert_eq!(last.len(), 1);
+                return Ok(AgentDecision::Complete("done".into()));
+            }
+            let invocation =
+                ToolInvocation::new("counting_read", serde_json::json!({"path": "fixture.txt"}))
+                    .with_id("stream-call");
+            let tools = tools.expect("runtime supplies streaming tool controller");
+            tools.begin(1);
+            tools.prepare(invocation.clone());
+            for _ in 0..100 {
+                if self.calls.load(Ordering::Acquire) == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                self.calls.load(Ordering::Acquire),
+                1,
+                "safe tool must begin before the model attempt commits"
+            );
+            tools.commit(1);
+            Ok(AgentDecision::CallTool(invocation))
+        }
+    }
+
+    #[async_trait]
+    impl Agent for StreamingBatchReadAgent {
+        async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            Ok(AgentDecision::Complete("unused".into()))
+        }
+
+        async fn think_streaming_cancelled(
+            &mut self,
+            step: usize,
+            last: &[Observation],
+            _cancel: Option<Arc<AtomicBool>>,
+            tools: Option<&mut dyn ToolAttemptController>,
+        ) -> Result<AgentDecision> {
+            if step != 0 {
+                assert_eq!(last.len(), 2);
+                return Ok(AgentDecision::Complete("batch done".into()));
+            }
+            let invocations = vec![
+                ToolInvocation::new("counting_read", serde_json::json!({"path": "one.txt"}))
+                    .with_id("stream-one"),
+                ToolInvocation::new("counting_read", serde_json::json!({"path": "two.txt"}))
+                    .with_id("stream-two"),
+            ];
+            let tools = tools.expect("runtime supplies streaming tool controller");
+            tools.begin(1);
+            for invocation in &invocations {
+                tools.prepare(invocation.clone());
+            }
+            for _ in 0..100 {
+                if self.calls.load(Ordering::Acquire) == 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(self.calls.load(Ordering::Acquire), 2);
+            tools.commit(1);
+            Ok(AgentDecision::CallTools(invocations))
         }
     }
 
@@ -1158,6 +2387,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn committed_streaming_read_executes_early_but_only_once() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("streaming read")).unwrap();
+        let task = session.create_task("read fixture").unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(CountingReadTool {
+                calls: calls.clone(),
+            }))
+            .unwrap();
+        let mut agent = StreamingReadAgent {
+            calls: calls.clone(),
+        };
+        let (sink, mut events) = crate::events::ChannelSink::new();
+        let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default())
+            .with_events(Arc::new(sink));
+
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+
+        assert_eq!(outcome, RunOutcome::Completed("done".into()));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        let completed = std::iter::from_fn(|| events.try_recv().ok())
+            .filter(|event| matches!(event, RuntimeEvent::ToolCompleted { .. }))
+            .count();
+        assert_eq!(
+            completed, 1,
+            "commit must publish exactly one paired result"
+        );
+    }
+
+    #[tokio::test]
+    async fn aborted_model_attempt_cancels_speculative_read() {
+        let started = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicBool::new(false));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(HangingReadTool {
+                started: started.clone(),
+                completed: completed.clone(),
+            }))
+            .unwrap();
+        let mut attempt = StreamingToolAttempt::new(
+            &registry,
+            PermissionSet::read_only(),
+            Arc::new(AtomicBool::new(false)),
+            std::time::Duration::from_secs(60),
+            true,
+        );
+
+        attempt.begin(1);
+        attempt.prepare(
+            ToolInvocation::new("hanging_read", serde_json::json!({})).with_id("stale-call"),
+        );
+        for _ in 0..100 {
+            if started.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(started.load(Ordering::Acquire));
+
+        attempt.abort(1, "provider stream failed");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!completed.load(Ordering::Acquire));
+        assert!(attempt.prepared.is_empty());
+        assert_eq!(attempt.committed_attempt, None);
+    }
+
+    #[tokio::test]
+    async fn committed_streaming_batch_reuses_all_early_read_results() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("streaming batch")).unwrap();
+        let task = session.create_task("read two fixtures").unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(CountingReadTool {
+                calls: calls.clone(),
+            }))
+            .unwrap();
+        let mut agent = StreamingBatchReadAgent {
+            calls: calls.clone(),
+        };
+        let (sink, mut events) = crate::events::ChannelSink::new();
+        let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default())
+            .with_events(Arc::new(sink));
+
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+
+        assert_eq!(outcome, RunOutcome::Completed("batch done".into()));
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+        let completed = std::iter::from_fn(|| events.try_recv().ok())
+            .filter(|event| matches!(event, RuntimeEvent::ToolCompleted { .. }))
+            .count();
+        assert_eq!(completed, 2);
+    }
+
+    #[tokio::test]
     async fn complete_message_persists_final_reasoning() {
         let db = Database::open_in_memory().unwrap();
         let clock = FixedClock::new(1);
@@ -1191,6 +2521,74 @@ mod tests {
             assistant.reasoning_content.as_deref(),
             Some("reasoning visible after refresh")
         );
+    }
+
+    struct WaitingAgent {
+        entered: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl Agent for WaitingAgent {
+        async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            std::future::pending().await
+        }
+
+        async fn think_cancelled(
+            &mut self,
+            _step: usize,
+            _last: &[Observation],
+            cancel: Option<Arc<AtomicBool>>,
+        ) -> Result<AgentDecision> {
+            self.entered.notify_waiters();
+            loop {
+                if cancel
+                    .as_ref()
+                    .map(|flag| flag.load(Ordering::Relaxed))
+                    .unwrap_or(false)
+                {
+                    return Err(deepagent_core::error::CoreError::other("request cancelled"));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_agent_think() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("run")).unwrap();
+        let task = session.create_task("wait").unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let mut agent = WaitingAgent {
+            entered: entered.clone(),
+        };
+        let reg = registry();
+        let engine = RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default())
+            .with_cancel(cancel.clone());
+
+        let outcome = {
+            let run = engine.run(&mut session, task, &mut agent);
+            tokio::pin!(run);
+            tokio::select! {
+                result = &mut run => {
+                    panic!("run completed before cancellation: {result:?}");
+                }
+                _ = entered.notified() => {}
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    panic!("agent did not enter think_cancelled");
+                }
+            }
+            cancel.store(true, Ordering::Relaxed);
+
+            tokio::time::timeout(std::time::Duration::from_secs(1), run)
+                .await
+                .expect("run should stop promptly")
+                .unwrap()
+        };
+        assert_eq!(outcome, RunOutcome::Cancelled);
+        assert_eq!(session.state().task(task).unwrap().state, TaskState::Failed);
     }
 
     #[tokio::test]
@@ -1332,6 +2730,120 @@ mod tests {
         assert_eq!(metrics.get(names::TOOL_CALLS), 3);
         // Three request + three completion events recorded for the session.
         assert_eq!(session.state().tool_calls_completed, 3);
+    }
+
+    struct PostToolBatchRecorder {
+        batches: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        deny: bool,
+    }
+
+    #[async_trait]
+    impl Hook for PostToolBatchRecorder {
+        fn name(&self) -> &str {
+            "post_tool_batch_recorder"
+        }
+
+        async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+            if ctx.point != HookPoint::PostToolBatch {
+                return Ok(HookOutcome::Continue);
+            }
+            let HookData::ToolBatch { tools } = &ctx.data else {
+                panic!("PostToolBatch must carry ToolBatch payload");
+            };
+            self.batches
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(tools.iter().map(|tool| tool.name.clone()).collect());
+            assert_eq!(tools[0].call_id.as_deref(), Some("c1"));
+            assert_eq!(tools[1].call_id.as_deref(), Some("c2"));
+            assert_eq!(tools[0].output_preview["sum"], 3);
+            if self.deny {
+                Ok(HookOutcome::deny("batch result requires model repair"))
+            } else {
+                Ok(HookOutcome::Continue)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn post_tool_batch_hook_receives_ordered_results() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        let task = session.create_task("parallel hook").unwrap();
+        let batches = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut hooks = HookRegistry::new();
+        hooks.register(
+            HookPoint::PostToolBatch,
+            Arc::new(PostToolBatchRecorder {
+                batches: batches.clone(),
+                deny: false,
+            }),
+        );
+
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CallTools(vec![
+                ToolInvocation::new("add", serde_json::json!({"a": 1, "b": 2})).with_id("c1"),
+                ToolInvocation::new("add", serde_json::json!({"a": 3, "b": 4})).with_id("c2"),
+            ]),
+            AgentDecision::Complete("done".into()),
+        ]);
+        let reg = registry();
+        let engine =
+            RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default()).with_hooks(&hooks);
+
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+
+        assert_eq!(outcome, RunOutcome::Completed("done".into()));
+        assert_eq!(
+            batches.lock().unwrap().as_slice(),
+            &[vec!["add".to_string(), "add".to_string()]]
+        );
+        assert_eq!(agent.observations.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn post_tool_batch_deny_is_returned_as_structured_feedback() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        let task = session.create_task("parallel hook deny").unwrap();
+        let batches = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut hooks = HookRegistry::new();
+        hooks.register(
+            HookPoint::PostToolBatch,
+            Arc::new(PostToolBatchRecorder {
+                batches,
+                deny: true,
+            }),
+        );
+
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CallTools(vec![
+                ToolInvocation::new("add", serde_json::json!({"a": 1, "b": 2})).with_id("c1"),
+                ToolInvocation::new("add", serde_json::json!({"a": 3, "b": 4})).with_id("c2"),
+            ]),
+            AgentDecision::Complete("handled batch feedback".into()),
+        ]);
+        let reg = registry();
+        let engine =
+            RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default()).with_hooks(&hooks);
+
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+
+        assert_eq!(
+            outcome,
+            RunOutcome::Completed("handled batch feedback".into())
+        );
+        assert_eq!(agent.observations.len(), 3);
+        let feedback = agent.observations.last().unwrap();
+        assert_eq!(feedback.tool, "post_tool_batch");
+        assert!(!feedback.ok);
+        assert_eq!(feedback.output["blocked"], true);
+        assert_eq!(
+            feedback.output["reason"],
+            "batch result requires model repair"
+        );
     }
 
     #[tokio::test]
@@ -1560,6 +3072,75 @@ mod tests {
             session.state().task(task).unwrap().state,
             TaskState::Completed
         );
+    }
+
+    struct StopFailureRecorder {
+        stop_calls: std::sync::atomic::AtomicUsize,
+        failures: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl deepagent_hooks::Hook for StopFailureRecorder {
+        fn name(&self) -> &str {
+            "stop_failure_recorder"
+        }
+
+        async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+            match ctx.point {
+                HookPoint::Stop => {
+                    if self
+                        .stop_calls
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        == 0
+                    {
+                        Ok(HookOutcome::deny("revise final answer"))
+                    } else {
+                        Ok(HookOutcome::Continue)
+                    }
+                }
+                HookPoint::StopFailure => {
+                    if let HookData::Response { content } = &ctx.data {
+                        self.failures
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .push(content.clone());
+                    }
+                    Ok(HookOutcome::Continue)
+                }
+                _ => Ok(HookOutcome::Continue),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_failure_hook_fires_when_stop_blocks_completion() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        let task = session.create_task("answer with stop feedback").unwrap();
+        let failures = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hook = Arc::new(StopFailureRecorder {
+            stop_calls: std::sync::atomic::AtomicUsize::new(0),
+            failures: failures.clone(),
+        });
+        let mut hooks = HookRegistry::new();
+        hooks.register(HookPoint::Stop, hook.clone());
+        hooks.register(HookPoint::StopFailure, hook);
+
+        let reg = registry();
+        let engine =
+            RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default()).with_hooks(&hooks);
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::Complete("draft".into()),
+            AgentDecision::Complete("revised".into()),
+        ]);
+
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+        assert_eq!(outcome, RunOutcome::Completed("revised".into()));
+        let recorded = failures.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].contains("draft"));
+        assert!(recorded[0].contains("revise final answer"));
     }
 
     // --- UserPromptSubmit gate (Prompt Submission layer) ---

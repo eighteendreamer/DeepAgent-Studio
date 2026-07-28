@@ -1,0 +1,682 @@
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use deepagent_core::error::{CoreError, Result};
+use deepagent_tools::ToolRegistry;
+
+use crate::knowledge_service::KnowledgeService;
+use crate::mcp_runtime::attach_mcp_tools;
+use crate::mcp_service::McpService;
+use crate::office_service::OfficeService;
+use crate::plugin_runtime::PluginRuntimeProjection;
+use crate::project_map_service::ProjectMapService;
+use crate::settings::{LocalExecutionMode, SettingsService};
+use crate::tool_manifest::{prepare_tool_manifest, DiscoveredToolSet, ToolManifest};
+
+pub(crate) type CommandExecutorFactory =
+    Arc<dyn Fn(String) -> Arc<dyn deepagent_builtins::bash_tool::CommandExecutor> + Send + Sync>;
+
+pub(crate) type RemoteOpsFactory =
+    Arc<dyn Fn(String) -> Arc<dyn deepagent_builtins::RemoteOpsBackend> + Send + Sync>;
+
+pub(crate) struct ToolRegistryBuildRequest<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) access: deepagent_builtins::FsAccess,
+    pub(crate) env_mode: Option<&'a str>,
+    pub(crate) connection_id: Option<&'a str>,
+    pub(crate) local_exec_mode: Option<LocalExecutionMode>,
+    pub(crate) bash_external_safety_gate: bool,
+    pub(crate) bash_allow: Vec<String>,
+    pub(crate) settings: Arc<SettingsService>,
+    pub(crate) executor_factory: Option<CommandExecutorFactory>,
+    pub(crate) local_command_executor:
+        Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>,
+    pub(crate) knowledge: Option<Arc<KnowledgeService>>,
+    pub(crate) project_map: Option<Arc<ProjectMapService>>,
+    pub(crate) office: Option<Arc<OfficeService>>,
+    pub(crate) remote_ops_factory: Option<RemoteOpsFactory>,
+}
+
+pub(crate) fn build_base_tool_registry(
+    request: ToolRegistryBuildRequest<'_>,
+) -> Result<(ToolRegistry, deepagent_builtins::TodoStore)> {
+    use deepagent_builtins::{
+        register_builtins, AskUserQuestionTool, BuiltinConfig, DeclineResponder, WorkspaceRoot,
+    };
+
+    let mut registry = ToolRegistry::new();
+    let mut config = BuiltinConfig::new(
+        WorkspaceRoot::new(request.root.to_path_buf()).with_access(request.access),
+        request.bash_allow,
+    )
+    .with_bash_external_safety_gate(request.bash_external_safety_gate);
+
+    if let (Some("remote"), Some(factory), Some(conn_id)) = (
+        request.env_mode,
+        request.executor_factory.as_ref(),
+        request.connection_id,
+    ) {
+        config = config.with_command_executor(factory(conn_id.to_string()));
+    } else if request.env_mode != Some("remote") {
+        let use_sandbox = !matches!(request.local_exec_mode, Some(LocalExecutionMode::Direct));
+        if use_sandbox {
+            if let Some(executor) = request.local_command_executor {
+                config = config.with_command_executor(executor);
+            }
+        }
+    }
+
+    let todo_store = register_builtins(&mut registry, config)?;
+    register_web_tools(&mut registry, &request.settings)?;
+
+    registry.register(Arc::new(AskUserQuestionTool::new(DeclineResponder)))?;
+    register_knowledge_search(&mut registry, request.knowledge);
+    register_project_map_tools(&mut registry, request.project_map, request.root)?;
+    register_codegraph_tools(&mut registry, request.root)?;
+    register_office_tools(&mut registry, request.office)?;
+    register_remote_ops_tools(
+        &mut registry,
+        request.env_mode,
+        request.connection_id,
+        request.remote_ops_factory,
+    )?;
+
+    Ok((registry, todo_store))
+}
+
+pub(crate) fn register_skill_tool(
+    registry: &mut ToolRegistry,
+    skills: Option<&Arc<Mutex<crate::skills_service::SkillsService>>>,
+) -> Result<()> {
+    let Some(skills) = skills else {
+        return Ok(());
+    };
+    let registry_snapshot = {
+        let svc = skills
+            .lock()
+            .map_err(|_| CoreError::invalid("skills service mutex poisoned"))?;
+        Arc::new(svc.manager().registry().clone())
+    };
+    registry.register(Arc::new(deepagent_builtins::SkillTool::new(
+        registry_snapshot,
+    )))?;
+    Ok(())
+}
+
+/// Register the `task` sub-agent tool into the MAIN run's registry only.
+///
+/// Kept out of the base/sub-agent registry so a sub-agent cannot spawn further
+/// sub-agents (Claude-Code parity, Req 4.6). The `runner` and `agent_types`
+/// are assembled by [`ChatService`] because they depend on live run state
+/// (session, event sink, checkpoints); this helper owns the registration so
+/// the main-run tool set is wired through `tool_runtime` like the base tools.
+pub(crate) fn register_task_tool<R>(
+    registry: &mut ToolRegistry,
+    runner: R,
+    agent_types: Vec<deepagent_builtins::TaskAgentType>,
+) -> Result<()>
+where
+    R: deepagent_builtins::SubagentRunner + 'static,
+{
+    registry.register(Arc::new(
+        deepagent_builtins::TaskTool::new_with_agent_types(runner, agent_types),
+    ))?;
+    Ok(())
+}
+
+/// Register the `knowledge_write` tool into the MAIN run's registry only
+/// (sub-agents get `knowledge_search` but not write). No-op when no
+/// [`KnowledgeService`] is attached.
+pub(crate) fn register_knowledge_write_tool(
+    registry: &mut ToolRegistry,
+    knowledge: Option<&Arc<KnowledgeService>>,
+) -> Result<()> {
+    let Some(knowledge) = knowledge else {
+        return Ok(());
+    };
+    use deepagent_builtins::KnowledgeWriteTool;
+    let backend = crate::knowledge_service::KnowledgeServiceBackend::new(knowledge.clone());
+    registry.register(Arc::new(KnowledgeWriteTool::new(backend)))?;
+    Ok(())
+}
+
+/// Register the `enter_plan_mode` / `exit_plan_mode` toggles over the shared
+/// [`PlanMode`](deepagent_builtins::PlanMode) flag for the current session.
+/// Main-run only — sub-agents inherit the parent's plan-mode decision.
+pub(crate) fn register_plan_mode_tools(
+    registry: &mut ToolRegistry,
+    plan: &deepagent_builtins::PlanMode,
+) -> Result<()> {
+    registry.register(Arc::new(deepagent_builtins::EnterPlanModeTool::new(
+        plan.clone(),
+    )))?;
+    registry.register(Arc::new(deepagent_builtins::ExitPlanModeTool::new(
+        plan.clone(),
+    )))?;
+    Ok(())
+}
+
+/// Everything the MAIN run needs on top of the base toolset (see
+/// [`MainRunToolsetRequest`]). Assembled by [`build_main_run_toolset`], the
+/// single entry point for main-run tool wiring.
+pub(crate) struct MainRunToolset {
+    pub(crate) registry: ToolRegistry,
+    pub(crate) todo_store: deepagent_builtins::TodoStore,
+    pub(crate) manifest: ToolManifest,
+    /// MCP registry handle for MCP-typed hooks (None when MCP is disabled or
+    /// no server connected).
+    pub(crate) hook_mcp_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
+}
+
+/// Inputs for [`build_main_run_toolset`]. `base` describes the shared
+/// built-in registry (same builder the sub-agent registries use); the rest
+/// are the MAIN-run-only additions.
+pub(crate) struct MainRunToolsetRequest<'a, R>
+where
+    R: deepagent_builtins::SubagentRunner + 'static,
+{
+    pub(crate) base: ToolRegistryBuildRequest<'a>,
+    pub(crate) mcp: Option<&'a McpService>,
+    pub(crate) plugin_projection: Option<&'a PluginRuntimeProjection>,
+    pub(crate) task_runner: R,
+    pub(crate) task_agent_types: Vec<deepagent_builtins::TaskAgentType>,
+    pub(crate) plan: deepagent_builtins::PlanMode,
+    pub(crate) skills: Option<&'a Arc<Mutex<crate::skills_service::SkillsService>>>,
+    pub(crate) tool_search_mode: deepagent_builtins::ToolSearchMode,
+    pub(crate) tool_search_discovered: DiscoveredToolSet,
+    pub(crate) tool_search_threshold: usize,
+}
+
+/// Single entry point for the MAIN run's tool wiring (kernel-refactor Phase
+/// A). Fixed order — base built-ins → MCP adapters → `task` →
+/// `knowledge_write` → plan-mode toggles → `skill` → tool-search manifest
+/// snapshot — matching the pre-consolidation `run_in_session` sequence
+/// byte-for-byte. The manifest MUST be prepared last so deferred-tool
+/// snapshots cover every registered tool.
+pub(crate) async fn build_main_run_toolset<R>(
+    request: MainRunToolsetRequest<'_, R>,
+) -> Result<MainRunToolset>
+where
+    R: deepagent_builtins::SubagentRunner + 'static,
+{
+    let knowledge = request.base.knowledge.clone();
+    let (mut registry, todo_store) = build_base_tool_registry(request.base)?;
+    let mcp_runtime =
+        attach_mcp_tools(&mut registry, request.mcp, request.plugin_projection).await?;
+    register_task_tool(&mut registry, request.task_runner, request.task_agent_types)?;
+    register_knowledge_write_tool(&mut registry, knowledge.as_ref())?;
+    register_plan_mode_tools(&mut registry, &request.plan)?;
+    register_skill_tool(&mut registry, request.skills)?;
+    let manifest = prepare_tool_manifest(
+        &mut registry,
+        request.tool_search_mode,
+        request.tool_search_discovered,
+        request.tool_search_threshold,
+    )?;
+    Ok(MainRunToolset {
+        registry,
+        todo_store,
+        manifest,
+        hook_mcp_registry: mcp_runtime.hook_registry,
+    })
+}
+
+fn register_knowledge_search(
+    registry: &mut ToolRegistry,
+    knowledge: Option<Arc<KnowledgeService>>,
+) {
+    if let Some(knowledge) = knowledge {
+        use deepagent_builtins::KnowledgeSearchTool;
+        let backend = crate::knowledge_service::KnowledgeServiceBackend::new(knowledge);
+        let _ = registry.register(Arc::new(KnowledgeSearchTool::new(backend)));
+    }
+}
+
+fn register_project_map_tools(
+    registry: &mut ToolRegistry,
+    project_map: Option<Arc<ProjectMapService>>,
+    root: &Path,
+) -> Result<()> {
+    let Some(project_map) = project_map else {
+        return Ok(());
+    };
+    use deepagent_builtins::{
+        CodeMapImpactTool, CodeMapNeighborsTool, CodeMapOverviewTool, CodeMapSearchTool,
+    };
+    let backend = ProjectMapToolBackend {
+        service: project_map,
+        root: root.to_path_buf(),
+    };
+    registry.register(Arc::new(CodeMapOverviewTool::new(backend.clone())))?;
+    registry.register(Arc::new(CodeMapSearchTool::new(backend.clone())))?;
+    registry.register(Arc::new(CodeMapNeighborsTool::new(backend.clone())))?;
+    registry.register(Arc::new(CodeMapImpactTool::new(backend)))?;
+    Ok(())
+}
+
+fn register_codegraph_tools(registry: &mut ToolRegistry, root: &Path) -> Result<()> {
+    use deepagent_builtins::{
+        CodeGraphCalleesTool, CodeGraphCallersTool, CodeGraphExploreTool, CodeGraphImpactTool,
+        CodeGraphLocateTool, CodeGraphNodeTool, CodeGraphSearchTool,
+    };
+    let backend = CodeGraphToolBackend::new(root.to_path_buf());
+    registry.register(Arc::new(CodeGraphSearchTool::new(backend.clone())))?;
+    registry.register(Arc::new(CodeGraphExploreTool::new(backend.clone())))?;
+    registry.register(Arc::new(CodeGraphCallersTool::new(backend.clone())))?;
+    registry.register(Arc::new(CodeGraphCalleesTool::new(backend.clone())))?;
+    registry.register(Arc::new(CodeGraphImpactTool::new(backend.clone())))?;
+    registry.register(Arc::new(CodeGraphNodeTool::new(backend.clone())))?;
+    registry.register(Arc::new(CodeGraphLocateTool::new(backend)))?;
+    Ok(())
+}
+
+#[cfg(feature = "runtimes")]
+fn register_office_tools(
+    registry: &mut ToolRegistry,
+    office: Option<Arc<OfficeService>>,
+) -> Result<()> {
+    let Some(office) = office else {
+        return Ok(());
+    };
+    use deepagent_builtins::{OfficeDocxCreateTool, OfficeReadTool, OfficeXlsxCreateTool};
+    let backend = OfficeToolBackend { service: office };
+    registry.register(Arc::new(OfficeReadTool::new(backend.clone())))?;
+    registry.register(Arc::new(OfficeDocxCreateTool::new(backend.clone())))?;
+    registry.register(Arc::new(OfficeXlsxCreateTool::new(backend)))?;
+    Ok(())
+}
+
+#[cfg(not(feature = "runtimes"))]
+fn register_office_tools(
+    _registry: &mut ToolRegistry,
+    _office: Option<Arc<OfficeService>>,
+) -> Result<()> {
+    Ok(())
+}
+
+fn register_remote_ops_tools(
+    registry: &mut ToolRegistry,
+    env_mode: Option<&str>,
+    connection_id: Option<&str>,
+    remote_ops_factory: Option<RemoteOpsFactory>,
+) -> Result<()> {
+    let (Some("remote"), Some(factory), Some(conn_id)) =
+        (env_mode, remote_ops_factory.as_ref(), connection_id)
+    else {
+        return Ok(());
+    };
+    use deepagent_builtins::{
+        RemoteInstallTool, RemoteProbeTool, RemotePushBundleTool, RemotePushFileTool,
+        RemoteRequireTool,
+    };
+    let backend = factory(conn_id.to_string());
+    registry.register(Arc::new(RemoteProbeTool::new(backend.clone())))?;
+    registry.register(Arc::new(RemotePushFileTool::new(backend.clone())))?;
+    registry.register(Arc::new(RemotePushBundleTool::new(backend.clone())))?;
+    registry.register(Arc::new(RemoteRequireTool::new(backend.clone())))?;
+    registry.register(Arc::new(RemoteInstallTool::new(backend)))?;
+    Ok(())
+}
+
+#[cfg(feature = "web")]
+fn register_web_tools(registry: &mut ToolRegistry, settings: &SettingsService) -> Result<()> {
+    use crate::settings::WebSearchProvider;
+    use deepagent_builtins::{ReqwestWebClient, WebFetchTool, WebSearchTool};
+
+    registry.register(Arc::new(WebFetchTool::new(ReqwestWebClient::new())))?;
+    let web_settings = settings.web_search_settings()?;
+    if !web_settings.enabled {
+        return Ok(());
+    }
+
+    let anysearch = if web_settings.anysearch_enabled {
+        anysearch_config(settings, web_settings.anysearch_base_url.clone())
+    } else {
+        None
+    };
+    let (deepseek, searxng_url) = match web_settings.provider {
+        WebSearchProvider::DeepSeekFirst => (
+            deepseek_web_search_config(settings),
+            configured_searxng_url(web_settings.searxng_url),
+        ),
+        WebSearchProvider::Searxng => (None, configured_searxng_url(web_settings.searxng_url)),
+        WebSearchProvider::DuckDuckGo => (None, None),
+    };
+    registry.register(Arc::new(WebSearchTool::new(
+        ReqwestWebClient::with_search_chain(anysearch, deepseek, searxng_url),
+    )))?;
+    Ok(())
+}
+
+#[cfg(not(feature = "web"))]
+fn register_web_tools(_registry: &mut ToolRegistry, _settings: &SettingsService) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "web")]
+fn configured_searxng_url(setting: Option<String>) -> Option<String> {
+    setting
+        .or_else(|| std::env::var("DEEPAGENT_SEARXNG_URL").ok())
+        .or_else(|| std::env::var("SEARXNG_URL").ok())
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(feature = "web")]
+fn anysearch_config(
+    settings: &SettingsService,
+    base_url: Option<String>,
+) -> Option<deepagent_builtins::AnySearchConfig> {
+    use deepagent_builtins::AnySearchConfig;
+
+    let api_key = settings.anysearch_api_key().ok().flatten()?;
+    if api_key.trim().is_empty() {
+        return None;
+    }
+    Some(AnySearchConfig::new(
+        Some(api_key),
+        base_url.unwrap_or_else(|| "https://api.anysearch.com".to_string()),
+    ))
+}
+
+#[cfg(feature = "web")]
+fn deepseek_web_search_config(
+    settings: &SettingsService,
+) -> Option<deepagent_builtins::DeepSeekWebSearchConfig> {
+    use deepagent_builtins::DeepSeekWebSearchConfig;
+
+    let api_key = settings.api_key().ok().flatten()?;
+    if api_key.trim().is_empty() {
+        return None;
+    }
+    let loaded = settings.load().ok().flatten();
+    let base_url = loaded
+        .as_ref()
+        .map(|s| s.catalog.base_url.clone())
+        .unwrap_or_else(|| "https://api.deepseek.com".to_string());
+    let model = std::env::var("DEEPAGENT_DEEPSEEK_WEB_SEARCH_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            loaded
+                .as_ref()
+                .map(|s| s.catalog.chat_model.clone())
+                .filter(|s| !s.trim().is_empty())
+        })?;
+    Some(DeepSeekWebSearchConfig::new(api_key, base_url, model))
+}
+
+#[derive(Clone)]
+struct ProjectMapToolBackend {
+    service: Arc<ProjectMapService>,
+    root: PathBuf,
+}
+
+#[async_trait]
+impl deepagent_builtins::ProjectMapBackend for ProjectMapToolBackend {
+    async fn overview(&self) -> Result<serde_json::Value> {
+        serde_json::to_value(self.service.overview(&self.root)).map_err(Into::into)
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<serde_json::Value> {
+        let hits = self.service.search(&self.root, query, limit)?;
+        Ok(serde_json::json!({
+            "count": hits.len(),
+            "hits": hits,
+        }))
+    }
+
+    async fn neighbors(&self, node_id: &str) -> Result<serde_json::Value> {
+        serde_json::to_value(self.service.neighbors(&self.root, node_id)?).map_err(Into::into)
+    }
+
+    async fn impact(&self, target: &str) -> Result<serde_json::Value> {
+        serde_json::to_value(self.service.impact(&self.root, target)?).map_err(Into::into)
+    }
+}
+
+#[cfg(feature = "runtimes")]
+#[derive(Clone)]
+struct OfficeToolBackend {
+    service: Arc<OfficeService>,
+}
+
+#[cfg(feature = "runtimes")]
+#[async_trait]
+impl deepagent_builtins::OfficeBackend for OfficeToolBackend {
+    async fn read_text(&self, path: &str) -> Result<serde_json::Value> {
+        let text = self.service.read_text(path)?;
+        Ok(serde_json::json!({ "path": path, "text": text }))
+    }
+
+    async fn create_docx_from_markdown(
+        &self,
+        markdown: &str,
+        title: Option<String>,
+        out_path: &str,
+        overwrite: bool,
+    ) -> Result<serde_json::Value> {
+        if !overwrite && Path::new(out_path).exists() {
+            return Err(CoreError::invalid(
+                "file already exists - pass overwrite=true to replace it",
+            ));
+        }
+        self.service
+            .create_docx_from_markdown(markdown, title.as_deref(), out_path)?;
+        Ok(serde_json::json!({ "path": out_path, "ok": true }))
+    }
+
+    async fn create_xlsx(
+        &self,
+        sheets: serde_json::Value,
+        out_path: &str,
+        overwrite: bool,
+    ) -> Result<serde_json::Value> {
+        if !overwrite && Path::new(out_path).exists() {
+            return Err(CoreError::invalid(
+                "file already exists - pass overwrite=true to replace it",
+            ));
+        }
+        let parsed = parse_office_sheets(&sheets)?;
+        self.service.create_xlsx(&parsed, out_path)?;
+        Ok(serde_json::json!({ "path": out_path, "ok": true }))
+    }
+}
+
+#[cfg(feature = "runtimes")]
+fn parse_office_sheets(value: &serde_json::Value) -> Result<Vec<(String, Vec<Vec<String>>)>> {
+    let arr = value
+        .as_array()
+        .ok_or_else(|| CoreError::invalid("'sheets' must be an array"))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, sheet) in arr.iter().enumerate() {
+        let name = sheet
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Sheet{}", i + 1));
+        let rows = sheet
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| {
+                        row.as_array()
+                            .map(|cells| {
+                                cells
+                                    .iter()
+                                    .map(|c| {
+                                        c.as_str()
+                                            .map(str::to_string)
+                                            .unwrap_or_else(|| c.to_string())
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push((name, rows));
+    }
+    Ok(out)
+}
+
+#[derive(Clone)]
+struct CodeGraphToolBackend {
+    root: PathBuf,
+    graph: Arc<Mutex<Option<deepagent_codegraph::CodeGraph>>>,
+}
+
+#[async_trait]
+impl deepagent_builtins::CodeGraphBackend for CodeGraphToolBackend {
+    async fn search(
+        &self,
+        query: &str,
+        kind: Option<String>,
+        limit: usize,
+    ) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            let kind = kind
+                .as_deref()
+                .and_then(deepagent_codegraph::types::NodeKind::try_parse);
+            serde_json::to_value(graph.search(query, kind, limit)?).map_err(Into::into)
+        })
+    }
+
+    async fn explore(
+        &self,
+        symbols: &[String],
+        budget: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            serde_json::to_value(graph.explore(symbols, parse_explore_budget(&budget))?)
+                .map_err(Into::into)
+        })
+    }
+
+    async fn callers(&self, symbol: &str, limit: usize) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            serde_json::to_value(graph.callers(symbol, limit)?).map_err(Into::into)
+        })
+    }
+
+    async fn callees(&self, symbol: &str, limit: usize) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            serde_json::to_value(graph.callees(symbol, limit)?).map_err(Into::into)
+        })
+    }
+
+    async fn impact(&self, symbol: &str, depth: usize) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            serde_json::to_value(graph.impact(symbol, depth)?).map_err(Into::into)
+        })
+    }
+
+    async fn node(&self, target: &str) -> Result<serde_json::Value> {
+        self.with_graph(|graph| serde_json::to_value(graph.node(target)?).map_err(Into::into))
+    }
+
+    async fn node_at_location(&self, file: &str, line: u32) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            serde_json::to_value(graph.store().node_at_location(file, line)?).map_err(Into::into)
+        })
+    }
+
+    async fn locate(&self, text: &str) -> Result<serde_json::Value> {
+        self.with_graph(|graph| {
+            let files = graph
+                .store()
+                .all_file_nodes()?
+                .into_iter()
+                .map(|node| node.file_path)
+                .collect();
+            let parser =
+                deepagent_codegraph::error_locator::ErrorParser::with_project(&self.root, files);
+            let frames = parser.parse(text);
+            let mut located = Vec::new();
+            let mut external = Vec::new();
+            for frame in frames {
+                let frame_json = serde_json::json!({
+                    "file": frame.file,
+                    "line": frame.line,
+                    "col": frame.col,
+                    "symbol": frame.symbol,
+                    "errorCode": frame.error_code,
+                    "isProject": frame.is_project,
+                });
+                if !frame.is_project {
+                    external.push(frame_json);
+                    continue;
+                }
+                let node = graph.store().node_at_location(&frame.file, frame.line)?;
+                let detail = match &node {
+                    Some(node) => graph.node(&node.id)?,
+                    None => None,
+                };
+                located.push(serde_json::json!({
+                    "frame": frame_json,
+                    "node": node,
+                    "detail": detail,
+                }));
+            }
+            Ok(serde_json::json!({
+                "indexed": true,
+                "located": located,
+                "externalFrames": external,
+            }))
+        })
+    }
+}
+
+impl CodeGraphToolBackend {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            graph: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn with_graph<F>(&self, f: F) -> Result<serde_json::Value>
+    where
+        F: FnOnce(&deepagent_codegraph::CodeGraph) -> Result<serde_json::Value>,
+    {
+        let mut cached = self.graph.lock().map_err(|_| {
+            CoreError::Persistence("code graph connection cache lock poisoned".to_string())
+        })?;
+        if cached.is_none() {
+            *cached = Some(deepagent_codegraph::CodeGraph::open(&self.root)?);
+        }
+        let graph = cached
+            .as_ref()
+            .ok_or_else(|| CoreError::other("code graph connection cache was not initialized"))?;
+        if !graph.has_existing_index() {
+            return Ok(codegraph_not_indexed());
+        }
+        f(graph)
+    }
+}
+
+fn codegraph_not_indexed() -> serde_json::Value {
+    serde_json::json!({
+        "indexed": false,
+        "message": "Code graph is not indexed yet. Run project map refresh/deep indexing for this workspace, then retry the codegraph tool.",
+    })
+}
+
+fn parse_explore_budget(value: &serde_json::Value) -> deepagent_codegraph::query::ExploreBudget {
+    let mut budget = deepagent_codegraph::query::ExploreBudget::default();
+    set_usize(value, "maxHitsPerSymbol", &mut budget.max_hits_per_symbol);
+    set_usize(value, "maxBridgeHops", &mut budget.max_bridge_hops);
+    set_usize(value, "maxFiles", &mut budget.max_files);
+    set_usize(value, "maxSymbolsPerFile", &mut budget.max_symbols_per_file);
+    set_usize(value, "maxFlowHops", &mut budget.max_flow_hops);
+    budget
+}
+
+fn set_usize(value: &serde_json::Value, key: &str, target: &mut usize) {
+    if let Some(n) = value.get(key).and_then(|v| v.as_u64()) {
+        *target = n as usize;
+    }
+}

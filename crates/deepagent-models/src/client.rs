@@ -5,6 +5,7 @@
 //! a single [`ModelClient::stream_chat`] call that returns a complete
 //! [`ChatResponse`] with `reasoning_content` preserved.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use deepagent_core::error::Result;
@@ -82,6 +83,16 @@ impl ModelClient {
             .await
     }
 
+    /// Cancel-aware variant of [`ModelClient::stream_chat`].
+    pub async fn stream_chat_cancelled(
+        &self,
+        request: ChatRequest,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<ChatResponse> {
+        self.stream_chat_observed_cancelled(request, &mut crate::stream::NoopObserver, cancel)
+            .await
+    }
+
     /// Like [`ModelClient::stream_chat`] but forwards each semantic delta
     /// (content / reasoning / tool-call start) to `observer` as it arrives, for
     /// live token streaming to a UI or event bus.
@@ -117,13 +128,49 @@ impl ModelClient {
 
         accumulator.finish()
     }
+
+    /// Like [`ModelClient::stream_chat_observed`], but aborts promptly when
+    /// `cancel` is set. The real reqwest transport uses this to stop an
+    /// in-flight SSE body read; mock/default transports still preserve the old
+    /// behavior unless they opt in.
+    pub async fn stream_chat_observed_cancelled(
+        &self,
+        mut request: ChatRequest,
+        observer: &mut dyn crate::stream::DeltaObserver,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<ChatResponse> {
+        request.stream = true;
+        request.stream_options = Some(crate::chat::StreamOptions {
+            include_usage: true,
+        });
+        let body = serde_json::to_string(&request)?;
+        let transport_req = TransportRequest {
+            url: self.config.endpoint(),
+            api_key: self.config.api_key.clone(),
+            body,
+        };
+
+        let mut accumulator = DeltaAccumulator::new();
+        {
+            let acc = &mut accumulator;
+            let mut sink =
+                move |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
+            self.transport
+                .stream_cancelled(transport_req, &mut sink, cancel)
+                .await?;
+        }
+
+        accumulator.finish()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::MockTransport;
+    use crate::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
+    use async_trait::async_trait;
     use deepagent_core::message::Message;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn client_with(events: Vec<String>) -> ModelClient {
         let transport = Arc::new(MockTransport::new(events));
@@ -159,6 +206,66 @@ mod tests {
             resp.message.reasoning_content.as_deref(),
             Some("thinking hard")
         );
+    }
+
+    struct WaitingTransport {
+        entered: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl HttpTransport for WaitingTransport {
+        async fn stream(
+            &self,
+            _request: TransportRequest,
+            _sink: &mut dyn EventSink,
+        ) -> Result<()> {
+            panic!("cancelled stream should use stream_cancelled");
+        }
+
+        async fn stream_cancelled(
+            &self,
+            _request: TransportRequest,
+            _sink: &mut dyn EventSink,
+            cancel: Arc<AtomicBool>,
+        ) -> Result<()> {
+            self.entered.notify_waiters();
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(deepagent_core::error::CoreError::other("request cancelled"));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_chat_cancelled_interrupts_transport() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let transport = Arc::new(WaitingTransport {
+            entered: entered.clone(),
+        });
+        let client = ModelClient::new(transport, ModelConfig::deepseek("test-key"));
+        let request = ChatRequest::new("deepseek-v4-flash", vec![Message::user("hi")]);
+
+        let run = client.stream_chat_cancelled(request, cancel.clone());
+        tokio::pin!(run);
+        tokio::select! {
+            result = &mut run => {
+                panic!("stream completed before cancellation: {result:?}");
+            }
+            _ = entered.notified() => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                panic!("transport did not enter stream_cancelled");
+            }
+        }
+        cancel.store(true, Ordering::Relaxed);
+
+        let err = tokio::time::timeout(std::time::Duration::from_secs(1), run)
+            .await
+            .expect("stream should stop promptly")
+            .expect_err("cancelled stream should return an error");
+        assert!(err.to_string().contains("request cancelled"));
     }
 
     #[tokio::test]

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use deepagent_core::error::{CoreError, Result};
 
 use crate::permission::PermissionSet;
-use crate::{Tool, ToolDescriptor, ToolOutput};
+use crate::{Tool, ToolDescriptor, ToolExecutionContext, ToolOutput};
 
 /// A registered tool plus its cached descriptor.
 #[derive(Clone)]
@@ -36,6 +36,14 @@ pub enum DenyReason {
     MissingPermissions(Vec<crate::permission::Permission>),
     /// The tool is high-risk and approval was not granted.
     ApprovalRequired,
+}
+
+/// A model-issued invocation that passed descriptor schema validation and the
+/// tool's value-level validation/normalization hook.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidatedInvocation {
+    pub name: String,
+    pub arguments: serde_json::Value,
 }
 
 impl std::fmt::Display for DenyReason {
@@ -75,6 +83,15 @@ impl ToolRegistry {
         }
         self.tools.insert(name, ToolSpec { tool, descriptor });
         Ok(())
+    }
+
+    /// Replace an existing implementation by descriptor name, or insert it.
+    /// Used when a child run rebinds workspace-aware built-ins to an isolated
+    /// worktree while retaining root-independent MCP/plugin tools.
+    pub fn replace(&mut self, tool: Arc<dyn Tool>) {
+        let descriptor = tool.descriptor();
+        self.tools
+            .insert(descriptor.name.clone(), ToolSpec { tool, descriptor });
     }
 
     /// Number of registered tools.
@@ -134,6 +151,42 @@ impl ToolRegistry {
         Ok(spec)
     }
 
+    /// Validate a model invocation before hooks, permissions or execution.
+    pub fn validate_invocation(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<ValidatedInvocation> {
+        let spec = self
+            .tools
+            .get(name)
+            .ok_or_else(|| CoreError::invalid(format!("unknown tool: {name}")))?;
+        let compiled = jsonschema::JSONSchema::compile(&spec.descriptor.parameters)
+            .map_err(|e| CoreError::invalid(format!("invalid schema for tool '{name}': {e}")))?;
+        if let Err(errors) = compiled.validate(&arguments) {
+            let detail = errors
+                .take(8)
+                .map(|error| {
+                    let path = error.instance_path.to_string();
+                    if path.is_empty() {
+                        error.to_string()
+                    } else {
+                        format!("{path}: {error}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(CoreError::invalid(format!(
+                "tool '{name}' input validation failed: {detail}"
+            )));
+        }
+        let arguments = spec.tool.validate_input(arguments)?;
+        Ok(ValidatedInvocation {
+            name: name.to_string(),
+            arguments,
+        })
+    }
+
     /// Route and execute an invocation, enforcing permissions and approval.
     pub async fn invoke(
         &self,
@@ -142,11 +195,31 @@ impl ToolRegistry {
         granted: &PermissionSet,
         approval_granted: bool,
     ) -> Result<ToolOutput> {
+        let validated = self.validate_invocation(name, arguments)?;
         let spec = self
             .check(name, granted, approval_granted)
             .map_err(|reason| CoreError::invalid(reason.to_string()))?;
         tracing::debug!(tool = name, risk = ?spec.descriptor.risk, "invoking tool");
-        spec.tool.invoke(arguments).await
+        spec.tool.invoke(validated.arguments).await
+    }
+
+    /// Route and execute with controls owned by the current kernel run.
+    pub async fn invoke_with_context(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+        granted: &PermissionSet,
+        approval_granted: bool,
+        context: ToolExecutionContext,
+    ) -> Result<ToolOutput> {
+        let validated = self.validate_invocation(name, arguments)?;
+        let spec = self
+            .check(name, granted, approval_granted)
+            .map_err(|reason| CoreError::invalid(reason.to_string()))?;
+        tracing::debug!(tool = name, risk = ?spec.descriptor.risk, "invoking tool");
+        spec.tool
+            .invoke_with_context(validated.arguments, context)
+            .await
     }
 }
 
@@ -239,5 +312,38 @@ mod tests {
             perms: PermissionSet::empty(),
         }));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn schema_validation_rejects_before_invoke() {
+        struct StrictTool;
+        #[async_trait]
+        impl Tool for StrictTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor {
+                    name: "strict".into(),
+                    description: "strict".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "required": ["path"],
+                        "properties": { "path": { "type": "string" } },
+                        "additionalProperties": false
+                    }),
+                    risk: RiskLevel::Safe,
+                    required_permissions: PermissionSet::read_only(),
+                }
+            }
+            async fn invoke(&self, arguments: serde_json::Value) -> Result<ToolOutput> {
+                Ok(ToolOutput::success(arguments))
+            }
+        }
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(StrictTool)).unwrap();
+        assert!(registry
+            .validate_invocation("strict", serde_json::json!({"path": 1}))
+            .is_err());
+        assert!(registry
+            .validate_invocation("strict", serde_json::json!({"path": "a"}))
+            .is_ok());
     }
 }

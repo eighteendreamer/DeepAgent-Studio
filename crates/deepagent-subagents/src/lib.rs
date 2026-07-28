@@ -24,4 +24,4 @@ pub mod worktree;
 
 pub use scheduler::{DagScheduler, ScheduleReport};
 pub use subagent::{context_for, SubAgentContext, SubAgentExecutor, SubAgentResult};
-pub use worktree::{InMemoryWorktrees, Worktree, WorktreeProvider};
+pub use worktree::{GitWorktrees, InMemoryWorktrees, Worktree, WorktreeProvider};

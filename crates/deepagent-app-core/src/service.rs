@@ -8,20 +8,23 @@ use std::str::FromStr;
 
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
-use deepagent_core::id::SessionId;
+use deepagent_core::id::{SessionId, TaskId};
+use deepagent_core::task::TaskState;
 use deepagent_observation::{build_timeline, export_transcript, SessionStats, TranscriptFormat};
+use deepagent_persistence::checkpoint_store::CheckpointStore;
 use deepagent_persistence::cost_store::CostStore;
 use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
-use deepagent_runtime::tool_ui_metadata;
+use deepagent_runtime::{tool_ui_metadata, CheckpointManager};
 use deepagent_session::Session;
 
 use crate::commands::{builtin_commands, commands_from_roots, filter_commands};
 use crate::diff::{diff_lines, DiffResult};
 use crate::dto::{
     AttachmentDto, CommandDto, ConversationMessageDto, ConversationPartDto, ConversationUsageDto,
-    ForkResultDto, RewindResultDto, SessionDetailDto, SessionStatsDto, SessionSummaryDto,
-    TimelineEntryDto, TranscriptDto,
+    ForkResultDto, RewindResultDto, RunRecoveryDto, SessionDetailDto, SessionStatsDto,
+    SessionSummaryDto, TimelineEntryDto, TranscriptDto,
 };
 use crate::{ArchiveService, ProjectService, SessionStateService};
 
@@ -58,6 +61,82 @@ impl AppService {
     /// The shared database handle (e.g. to build a `SettingsService` on the same DB).
     pub fn shared_database(&self) -> std::sync::Arc<Database> {
         self.db.clone()
+    }
+
+    /// Close out kernel runs that were left non-terminal by a previous process
+    /// crash or forced app shutdown. This does not resume model execution yet;
+    /// it makes the persisted state truthful and prevents stale running tasks
+    /// from blocking cancellation/UI state on the next boot.
+    pub fn recover_unfinished_runs(&self) -> Result<Vec<RunRecoveryDto>> {
+        let clock = SystemClock;
+        let store = RunStore::new(&self.db);
+        let runs = store.unfinished()?;
+        let mut recovered = Vec::new();
+        for run in runs {
+            let reason = format!(
+                "run was not terminal when the application started; previous state was {}",
+                run.state
+            );
+            let checkpoint_ids: Vec<String> = CheckpointStore::new(&self.db)
+                .list_for_run(&run.id)
+                .map(|records| records.into_iter().map(|record| record.id).collect())
+                .unwrap_or_default();
+            if let Ok(session_id) = SessionId::from_str(&run.session_id) {
+                if let Ok(mut session) = Session::recover(&self.db, &clock, session_id) {
+                    if let Some(task_id) = run
+                        .task_id
+                        .as_deref()
+                        .and_then(|task_id| TaskId::from_str(task_id).ok())
+                    {
+                        if session
+                            .state()
+                            .task(task_id)
+                            .is_some_and(|task| task.state.is_active())
+                        {
+                            if let Err(error) = session.transition_task(task_id, TaskState::Failed)
+                            {
+                                tracing::warn!(
+                                    run_id = %run.id,
+                                    task_id = %task_id,
+                                    error = %error,
+                                    "failed to mark recovered task failed"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            store.append_event(
+                &run.id,
+                now_millis(),
+                "finalizing",
+                "completed",
+                "run_recovered_after_startup",
+                &serde_json::json!({
+                    "session_id": run.session_id.clone(),
+                    "task_id": run.task_id.clone(),
+                    "previous_state": run.state.clone(),
+                    "terminal_kind": "failed",
+                    "reason": reason,
+                    // Phase D: incremental checkpoint commits keep backups
+                    // reachable across a crash. Surface them so the UI (or a
+                    // later auto-resume) can offer rolling files back to the
+                    // pre-run state via the standard rewind path.
+                    "checkpoint_ids": checkpoint_ids,
+                    "has_file_backups": !checkpoint_ids.is_empty(),
+                }),
+            )?;
+            store.finish(&run.id, "failed", Some(&reason), now_millis())?;
+            recovered.push(RunRecoveryDto {
+                run_id: run.id,
+                session_id: run.session_id,
+                task_id: run.task_id,
+                previous_state: run.state,
+                terminal_kind: "failed".to_string(),
+                terminal_reason: reason,
+            });
+        }
+        Ok(recovered)
     }
 
     /// List all sessions, newest first, as summaries for the sidebar.
@@ -380,18 +459,21 @@ impl AppService {
         Ok(messages)
     }
 
-    /// **Fork** a session at sequence `at_seq`: create a new sibling branch
-    /// whose stream copies events `0..=at_seq` from the source. The source is
-    /// left untouched (non-destructive branching). Returns the new branch id.
+    /// **Fork** a session at sequence `at_seq`: restore workspace files to the
+    /// same checkpoint horizon, then create a new sibling branch whose stream
+    /// copies events `0..=at_seq` from the source. The source event log is left
+    /// untouched; the workspace is stateful and follows the fork point.
     pub fn fork_session(&self, session_id: &str, at_seq: u64) -> Result<ForkResultDto> {
         let id = SessionId::from_str(session_id)
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         let clock = SystemClock;
+        let restored_paths = self.restore_checkpoints_after(session_id, at_seq)?;
         let forked = Session::fork(&self.db, &clock, id, at_seq)?;
         Ok(ForkResultDto {
             new_session_id: forked.id().to_string(),
             source_session_id: session_id.to_string(),
             forked_at: at_seq,
+            restored_paths,
         })
     }
 
@@ -404,12 +486,29 @@ impl AppService {
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         let clock = SystemClock;
         let mut session = Session::recover(&self.db, &clock, id)?;
+        let restored_paths = self.restore_checkpoints_after(session_id, to_seq)?;
         let removed = session.rewind(to_seq)?;
         Ok(RewindResultDto {
             session_id: session_id.to_string(),
             kept_through: to_seq,
             events_removed: removed,
+            restored_paths,
         })
+    }
+
+    fn restore_checkpoints_after(&self, session_id: &str, sequence: u64) -> Result<Vec<String>> {
+        let checkpoints = CheckpointStore::new(&self.db)
+            .list_for_session_after_sequence(session_id, sequence as i64)?;
+        let mut restored_paths = Vec::new();
+        for checkpoint in checkpoints {
+            for path in CheckpointManager::restore(&self.db, &checkpoint.id)? {
+                let rendered = path.to_string_lossy().to_string();
+                if !restored_paths.contains(&rendered) {
+                    restored_paths.push(rendered);
+                }
+            }
+        }
+        Ok(restored_paths)
     }
 
     /// Export a session's transcript in `format` ("markdown"/"md" or "json").
@@ -664,6 +763,14 @@ fn infer_attachment_kind(mime: &str) -> &str {
     }
 }
 
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,6 +1001,161 @@ mod tests {
 
         let after = svc.session_detail(&sid).unwrap();
         assert_eq!(after.timeline.len(), 1);
+    }
+
+    #[test]
+    fn rewind_restores_files_from_checkpoints() {
+        let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let workspace = tempfile::tempdir().unwrap();
+        let checkpoint_root = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("file.txt");
+        std::fs::write(&target, "before").unwrap();
+
+        let sid;
+        let checkpoint_id;
+        {
+            let mut session =
+                Session::create_in_project(&db, &clock, Some("restore"), Default::default(), None)
+                    .unwrap();
+            sid = session.id().to_string();
+            session
+                .append(deepagent_core::event::EventPayload::MessageAppended {
+                    message: deepagent_core::message::Message::user("change file"),
+                })
+                .unwrap();
+            let task = session.create_task("change file").unwrap();
+            let sequence = deepagent_persistence::event_store::EventStore::new(&db)
+                .load_session(session.id())
+                .unwrap()
+                .last()
+                .unwrap()
+                .sequence as i64;
+            deepagent_persistence::run_store::RunStore::new(&db)
+                .create("run_restore", &sid, Some(&task.to_string()), 1_000)
+                .unwrap();
+            let checkpoint = CheckpointManager::new(
+                db.clone(),
+                "run_restore",
+                sequence,
+                workspace.path(),
+                checkpoint_root.path(),
+            )
+            .unwrap();
+            checkpoint.capture_before(&target).unwrap();
+            std::fs::write(&target, "after").unwrap();
+            checkpoint_id = checkpoint.commit().unwrap();
+        }
+
+        let svc = AppService::from_shared(db);
+        let result = svc.rewind_session(&sid, 0).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
+        let target_display = target.to_string_lossy().to_string();
+        assert!(result
+            .restored_paths
+            .iter()
+            .any(|path| path == &target_display));
+        assert!(!checkpoint_id.is_empty());
+    }
+
+    #[test]
+    fn fork_restores_files_from_checkpoints() {
+        let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let workspace = tempfile::tempdir().unwrap();
+        let checkpoint_root = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("forked.txt");
+        std::fs::write(&target, "before fork point").unwrap();
+
+        let sid;
+        {
+            let mut session =
+                Session::create_in_project(&db, &clock, Some("fork"), Default::default(), None)
+                    .unwrap();
+            sid = session.id().to_string();
+            session
+                .append(deepagent_core::event::EventPayload::MessageAppended {
+                    message: deepagent_core::message::Message::user("change file"),
+                })
+                .unwrap();
+            let task = session.create_task("change file").unwrap();
+            let sequence = deepagent_persistence::event_store::EventStore::new(&db)
+                .load_session(session.id())
+                .unwrap()
+                .last()
+                .unwrap()
+                .sequence as i64;
+            deepagent_persistence::run_store::RunStore::new(&db)
+                .create("run_fork_restore", &sid, Some(&task.to_string()), 1_000)
+                .unwrap();
+            let checkpoint = CheckpointManager::new(
+                db.clone(),
+                "run_fork_restore",
+                sequence,
+                workspace.path(),
+                checkpoint_root.path(),
+            )
+            .unwrap();
+            checkpoint.capture_before(&target).unwrap();
+            std::fs::write(&target, "after fork point").unwrap();
+            checkpoint.commit().unwrap();
+        }
+
+        let svc = AppService::from_shared(db);
+        let result = svc.fork_session(&sid, 0).unwrap();
+        assert_ne!(result.new_session_id, sid);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "before fork point"
+        );
+        let target_display = target.to_string_lossy().to_string();
+        assert!(result
+            .restored_paths
+            .iter()
+            .any(|path| path == &target_display));
+
+        let forked = svc.session_detail(&result.new_session_id).unwrap();
+        assert_eq!(forked.timeline.len(), 1);
+    }
+
+    #[test]
+    fn startup_recovery_finalizes_unfinished_runs_and_active_tasks() {
+        let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let sid;
+        let task;
+        {
+            let mut session =
+                Session::create_in_project(&db, &clock, Some("crash"), Default::default(), None)
+                    .unwrap();
+            sid = session.id().to_string();
+            task = session.create_task("unfinished").unwrap();
+            session.transition_task(task, TaskState::Running).unwrap();
+        }
+        let runs = RunStore::new(&db);
+        runs.create("run_crashed", &sid, Some(&task.to_string()), 1_100)
+            .unwrap();
+        runs.transition("run_crashed", "running_turn", 1_200)
+            .unwrap();
+
+        let svc = AppService::from_shared(db.clone());
+        let recovered = svc.recover_unfinished_runs().unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].run_id, "run_crashed");
+        assert_eq!(recovered[0].terminal_kind, "failed");
+
+        let record = RunStore::new(&db).get("run_crashed").unwrap().unwrap();
+        assert_eq!(record.state, "terminal");
+        assert_eq!(record.terminal_kind.as_deref(), Some("failed"));
+        let events = RunStore::new(&db)
+            .events_after("run_crashed", None)
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "run_recovered_after_startup"));
+
+        let session = Session::recover(&db, &clock, SessionId::from_str(&sid).unwrap()).unwrap();
+        assert_eq!(session.state().task(task).unwrap().state, TaskState::Failed);
     }
 
     #[test]

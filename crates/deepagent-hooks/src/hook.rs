@@ -167,6 +167,12 @@ pub trait Hook: Send + Sync {
     /// A stable, human-readable name (for tracing / debugging).
     fn name(&self) -> &str;
 
+    /// Stable identity used to deduplicate equivalent handlers registered from
+    /// overlapping config sources.
+    fn dedup_key(&self) -> String {
+        self.name().to_string()
+    }
+
     /// Run the hook for the given context.
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome>;
 }

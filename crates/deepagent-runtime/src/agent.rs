@@ -10,6 +10,30 @@ use async_trait::async_trait;
 use deepagent_core::error::Result;
 use deepagent_core::message::Message;
 use deepagent_tools::ToolInvocation;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+/// Attempt-scoped receiver for complete tool calls discovered while a model
+/// response is still streaming.
+///
+/// Implementations may parse, validate, normalize and classify calls eagerly,
+/// but must not publish side effects until [`ToolAttemptController::commit`].
+/// A failed provider attempt is always followed by `abort`, allowing the
+/// runtime to discard every call/result associated with that attempt.
+pub trait ToolAttemptController: Send {
+    /// Start a provider attempt. Attempts are 1-based within one model turn.
+    fn begin(&mut self, attempt: usize);
+
+    /// A complete JSON object for one tool call arrived from the stream.
+    fn prepare(&mut self, invocation: ToolInvocation);
+
+    /// The provider stream completed successfully and this attempt may be used.
+    fn commit(&mut self, attempt: usize);
+
+    /// The provider stream failed or was cancelled. All attempt-local work must
+    /// be cancelled/discarded before a retry can begin.
+    fn abort(&mut self, attempt: usize, reason: &str);
+}
 
 /// What the agent decided to do on a given `think` step.
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +111,37 @@ pub trait Agent: Send + Sync {
     /// `last` carries the observations from the previous step (empty on the
     /// first step; more than one when the previous step ran tools in parallel).
     async fn think(&mut self, step: usize, last: &[Observation]) -> Result<AgentDecision>;
+
+    /// Cancel-aware decision path. Implementations that can interrupt blocking
+    /// work should override this; the default preserves existing agent
+    /// implementations and checks only before starting the old `think`.
+    async fn think_cancelled(
+        &mut self,
+        step: usize,
+        last: &[Observation],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<AgentDecision> {
+        if cancel
+            .as_ref()
+            .map(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(false)
+        {
+            return Err(deepagent_core::error::CoreError::other("request cancelled"));
+        }
+        self.think(step, last).await
+    }
+
+    /// Cancel-aware decision path with an attempt-scoped streaming tool-call
+    /// receiver. Non-model agents keep the old behavior through this default.
+    async fn think_streaming_cancelled(
+        &mut self,
+        step: usize,
+        last: &[Observation],
+        cancel: Option<Arc<AtomicBool>>,
+        _tools: Option<&mut dyn ToolAttemptController>,
+    ) -> Result<AgentDecision> {
+        self.think_cancelled(step, last, cancel).await
+    }
 
     /// Cumulative token usage observed so far this run. Defaults to none (for
     /// agents that don't track it); model-backed agents sum each call's usage.

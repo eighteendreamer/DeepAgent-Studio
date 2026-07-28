@@ -1,0 +1,7 @@
+﻿{"hook_event_name":"UserPromptSubmit","prompt":"你好","session_id":"ses_019fa400093078c2ac265f822f17256c"}
+{"hook_event_name":"UserPromptSubmit","prompt":"当前目录下有哪些文件？","session_id":"ses_019fa400093078c2ac265f822f17256c"}
+{"hook_event_name":"UserPromptSubmit","prompt":"删除 check_dir.py  文件","session_id":"ses_019fa400093078c2ac265f822f17256c"}
+{"hook_event_name":"UserPromptSubmit","prompt":"现在还有哪些文件？","session_id":"ses_019fa400093078c2ac265f822f17256c"}
+{"hook_event_name":"UserPromptSubmit","prompt":"删掉 __pycache__/ 目录","session_id":"ses_019fa400093078c2ac265f822f17256c"}
+{"hook_event_name":"UserPromptSubmit","prompt":"当前目录下有哪些文件？","session_id":"ses_019fa40324a478829bf8b86848f19767"}
+{"hook_event_name":"UserPromptSubmit","prompt":"删除 .ruff_cache","session_id":"ses_019fa40324a478829bf8b86848f19767"}

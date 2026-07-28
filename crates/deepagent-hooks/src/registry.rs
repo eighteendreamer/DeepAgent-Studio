@@ -63,16 +63,23 @@ impl HookRegistry {
     /// At non-vetoable points every non-`Continue` outcome is downgraded to a
     /// warning and `Continue` is returned.
     pub async fn dispatch(&self, ctx: &HookContext) -> Result<HookOutcome> {
-        let Some(hooks) = self.hooks.get(&ctx.point) else {
+        let Some(registered) = self.hooks.get(&ctx.point) else {
             return Ok(HookOutcome::Continue);
         };
+
+        let mut seen = std::collections::HashSet::new();
+        let hooks = registered
+            .iter()
+            .filter(|hook| seen.insert(hook.dedup_key()))
+            .collect::<Vec<_>>();
+        let results = futures::future::join_all(hooks.iter().map(|hook| hook.run(ctx))).await;
 
         let vetoable = ctx.point.is_vetoable();
         // Accumulator: the highest-precedence non-terminal outcome so far.
         let mut effective = HookOutcome::Continue;
 
-        for hook in hooks {
-            let outcome = hook.run(ctx).await?;
+        for (hook, result) in hooks.into_iter().zip(results) {
+            let outcome = result?;
             if matches!(outcome, HookOutcome::Continue) {
                 continue;
             }
@@ -95,7 +102,7 @@ impl HookRegistry {
                         source = source.label(),
                         "hook denied operation"
                     );
-                    return Ok(outcome); // terminal
+                    return Ok(outcome);
                 }
                 HookOutcome::Ask { reason, source } => {
                     tracing::info!(
@@ -165,7 +172,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deny_at_vetoable_point_short_circuits() {
+    async fn deny_at_vetoable_point_runs_handlers_concurrently_then_wins() {
         let calls_a = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls_b = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reg = HookRegistry::new();
@@ -190,7 +197,7 @@ mod tests {
         assert_eq!(out, HookOutcome::deny("blocked"));
         // First hook ran, second was short-circuited.
         assert_eq!(calls_a.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(calls_b.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(calls_b.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

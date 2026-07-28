@@ -1268,9 +1268,12 @@ impl SettingsService {
     pub fn effective_permission_profile(&self) -> Result<EffectivePermissionProfile> {
         let policy = self.approval_policy()?;
         let sandbox = self.sandbox_mode()?;
-        let local_execution_mode = match sandbox {
-            SandboxMode::FullAccess => LocalExecutionMode::Direct,
-            _ => LocalExecutionMode::SandboxiePreferred,
+        let local_execution_mode = if matches!(policy, ApprovalPolicy::FullAccess)
+            && matches!(sandbox, SandboxMode::FullAccess)
+        {
+            LocalExecutionMode::Direct
+        } else {
+            LocalExecutionMode::SandboxiePreferred
         };
         let network_always_ask = matches!(policy, ApprovalPolicy::AlwaysAsk);
         Ok(EffectivePermissionProfile {

@@ -6,8 +6,10 @@
 //! transport live behind the optional `http` feature.
 
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use deepagent_core::error::Result;
+use deepagent_core::error::{CoreError, Result};
 
 /// An outbound chat request at the transport level (already serialized).
 #[derive(Debug, Clone)]
@@ -29,6 +31,22 @@ pub struct TransportRequest {
 pub trait HttpTransport: Send + Sync {
     /// Perform the request and drive `sink` with each SSE payload string.
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()>;
+
+    /// Cancel-aware streaming variant. The default preserves compatibility for
+    /// test transports and embedders; real transports should override this so a
+    /// UI stop can abort an in-flight network read instead of waiting for the
+    /// provider stream to finish naturally.
+    async fn stream_cancelled(
+        &self,
+        request: TransportRequest,
+        sink: &mut dyn EventSink,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<()> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(CoreError::other("request cancelled"));
+        }
+        self.stream(request, sink).await
+    }
 
     /// Perform an authenticated `GET` and return the raw JSON body. Used for
     /// non-streaming endpoints like `GET /models` (model discovery).
@@ -95,6 +113,18 @@ impl HttpTransport for MockTransport {
             }
         }
         Ok(())
+    }
+
+    async fn stream_cancelled(
+        &self,
+        request: TransportRequest,
+        sink: &mut dyn EventSink,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<()> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(CoreError::other("request cancelled"));
+        }
+        self.stream(request, sink).await
     }
 
     async fn get_json(&self, _url: &str, _api_key: &str) -> Result<String> {

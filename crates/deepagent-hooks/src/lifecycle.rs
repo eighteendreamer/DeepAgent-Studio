@@ -23,6 +23,7 @@ use deepagent_core::id::SessionId;
 pub enum HookPoint {
     /// Fired once when a session is created / resumed.
     SessionStart,
+    InstructionsLoaded,
     /// Fired when a user prompt is submitted, before it becomes a task. Hooks
     /// here may **deny** (reject the input) or **modify** (rewrite/augment it).
     UserPromptSubmit,
@@ -30,12 +31,28 @@ pub enum HookPoint {
     BeforePlan,
     /// Before a tool is executed. Hooks here may **deny** the call.
     BeforeToolUse,
+    PermissionRequest,
+    PermissionDenied,
     /// After a tool has executed (success or failure).
     AfterToolUse,
+    PostToolUseFailure,
+    PostToolBatch,
     /// Before the context pipeline compacts.
     BeforeCompact,
+    PostCompact,
     /// Before the assistant response is emitted to the user.
     BeforeResponse,
+    Stop,
+    StopFailure,
+    SubagentStart,
+    SubagentStop,
+    TaskCreated,
+    TaskCompleted,
+    WorktreeCreate,
+    WorktreeRemove,
+    CwdChanged,
+    FileChanged,
+    Notification,
     /// After a verification step failed (build/test/lint).
     VerificationFailed,
     /// Fired once when a session ends.
@@ -47,12 +64,29 @@ impl HookPoint {
     pub const fn label(&self) -> &'static str {
         match self {
             HookPoint::SessionStart => "session_start",
+            HookPoint::InstructionsLoaded => "instructions_loaded",
             HookPoint::UserPromptSubmit => "user_prompt_submit",
             HookPoint::BeforePlan => "before_plan",
             HookPoint::BeforeToolUse => "before_tool_use",
+            HookPoint::PermissionRequest => "permission_request",
+            HookPoint::PermissionDenied => "permission_denied",
             HookPoint::AfterToolUse => "after_tool_use",
+            HookPoint::PostToolUseFailure => "post_tool_use_failure",
+            HookPoint::PostToolBatch => "post_tool_batch",
             HookPoint::BeforeCompact => "before_compact",
+            HookPoint::PostCompact => "post_compact",
             HookPoint::BeforeResponse => "before_response",
+            HookPoint::Stop => "stop",
+            HookPoint::StopFailure => "stop_failure",
+            HookPoint::SubagentStart => "subagent_start",
+            HookPoint::SubagentStop => "subagent_stop",
+            HookPoint::TaskCreated => "task_created",
+            HookPoint::TaskCompleted => "task_completed",
+            HookPoint::WorktreeCreate => "worktree_create",
+            HookPoint::WorktreeRemove => "worktree_remove",
+            HookPoint::CwdChanged => "cwd_changed",
+            HookPoint::FileChanged => "file_changed",
+            HookPoint::Notification => "notification",
             HookPoint::VerificationFailed => "verification_failed",
             HookPoint::SessionEnd => "session_end",
         }
@@ -69,6 +103,11 @@ impl HookPoint {
                 | HookPoint::BeforeToolUse
                 | HookPoint::BeforeCompact
                 | HookPoint::BeforeResponse
+                | HookPoint::PermissionRequest
+                | HookPoint::PostToolBatch
+                | HookPoint::Stop
+                | HookPoint::SubagentStop
+                | HookPoint::WorktreeCreate
         )
     }
 }
@@ -116,6 +155,11 @@ pub enum HookData {
         /// For [`HookPoint::AfterToolUse`], whether it succeeded.
         ok: Option<bool>,
     },
+    /// A batch of tool calls finished in one model turn.
+    ToolBatch {
+        /// Tool results in the model's original call order.
+        tools: Vec<ToolBatchItem>,
+    },
     /// A verification step failed.
     Verification {
         /// The command / check that failed.
@@ -128,6 +172,53 @@ pub enum HookData {
         /// The candidate response text.
         content: String,
     },
+    Instructions {
+        paths: Vec<String>,
+    },
+    Permission {
+        tool: String,
+        arguments: serde_json::Value,
+        reason: String,
+    },
+    Compact {
+        trigger: String,
+        summary: Option<String>,
+    },
+    Subagent {
+        agent_id: String,
+        agent_type: String,
+        summary: Option<String>,
+    },
+    Task {
+        task_id: String,
+        subject: String,
+    },
+    FileChange {
+        path: String,
+        kind: String,
+    },
+    Path {
+        path: String,
+    },
+    Notification {
+        message: String,
+    },
+}
+
+/// One entry in a [`HookData::ToolBatch`] payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolBatchItem {
+    /// Tool name.
+    pub name: String,
+    /// Model/tool call id, when available.
+    pub call_id: Option<String>,
+    /// Validated JSON arguments that were executed.
+    pub arguments: serde_json::Value,
+    /// Whether the tool result was successful.
+    pub ok: bool,
+    /// Bounded preview of the structured output. Large outputs should already
+    /// be artifact-backed before this payload is built.
+    pub output_preview: serde_json::Value,
 }
 
 impl HookData {
@@ -152,6 +243,11 @@ impl HookData {
             arguments,
             ok: Some(ok),
         }
+    }
+
+    /// Convenience constructor for a post-tool-batch payload.
+    pub fn tool_batch(tools: Vec<ToolBatchItem>) -> Self {
+        HookData::ToolBatch { tools }
     }
 }
 

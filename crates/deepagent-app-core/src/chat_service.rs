@@ -9,76 +9,90 @@
 //! The model client is built from the persisted [`ModelCatalog`] + the API key
 //! from the secret store, so the UI only needs to call [`ChatService::run`].
 
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use deepagent_builtins::WorkspaceRoot;
 use deepagent_context::{
-    CacheScope, CompactionPolicy, ContextBlock, ContextBlockKind, ContextPack, ContextPolicy,
-    HeuristicSummarizer, HeuristicTokenizer, ModelCompactor, Summarizer, TaskSummary, TokenCounter,
+    CompactionPolicy, ContextPolicy, HeuristicSummarizer, HeuristicTokenizer, ModelCompactor,
+    Summarizer, TaskSummary, TokenCounter,
 };
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
 use deepagent_core::message::{Message, ToolCall};
 use deepagent_hooks::{
-    DecisionSource, Hook, HookCommandResult, HookCommandRunner, HookContext, HookData,
-    HookDefinitions, HookOutcome, HookPoint, HookRegistry, PermissionRulesHook, SystemHookRunner,
+    DecisionSource, Hook, HookContext, HookData, HookDefinitions, HookOutcome, HookPoint,
+    HookRegistry,
 };
 use deepagent_intent::{CommandContext, CommandDef, SlashAction, SlashRegistry};
 use deepagent_models::transport::HttpTransport;
+#[cfg(test)]
+use deepagent_models::ToolSchema;
 use deepagent_models::{
-    ModelCapabilityResolver, ModelClient, ModelConfig, ModelRole, ThinkingDepth, ToolSchema,
+    ModelCapabilityResolver, ModelClient, ModelConfig, ModelRole, ThinkingDepth,
 };
+use deepagent_persistence::runtime_log_store::{NewRuntimeLogEntry, RuntimeLogStore};
 use deepagent_persistence::Database;
 use deepagent_runtime::{
-    tool_ui_metadata, Agent, ChannelSink, ModelAgent, PromptDecision, RuntimeConfig, RuntimeEngine,
-    RuntimeEvent, RuntimeEventSink,
+    tool_ui_metadata, Agent, AgentKernel, ChannelSink, InputIngress, InputLeaseRegistry, InputMode,
+    ModelAgent, PromptDecision, ReactiveContextCompactor, RunRequest, RuntimeEvent,
+    RuntimeEventSink,
 };
 use deepagent_session::Session;
+#[cfg(test)]
+use deepagent_tools::RiskLevel;
 use deepagent_tools::{PermissionSet, ToolRegistry};
 
 use crate::approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
-use crate::cost_service::CostRecordRequest;
+use crate::context_runtime::{
+    build_run_context, collect_invoked_skill_ids_from_events, HookedReactiveContextCompactor,
+    RemoteContextFactory, RunContextRequest,
+};
+#[cfg(test)]
+use crate::context_runtime::{
+    collect_invoked_skill_records_from_events, invoked_skills_reminder,
+    pairing_safe_compaction_split, plugin_output_styles_prompt, render_message_for_compaction,
+};
 use crate::dto::{ApprovalRequestDto, PreflightToolCallDto};
+use crate::hook_assembly::{assemble_run_hooks, HookAssemblyRequest};
+use crate::input_runtime::{
+    accept_input_turn, collect_discovered_tools_from_events, conversation_from_events,
+};
+use crate::kernel_runtime::{build_kernel_runtime_config, KernelRuntimeConfigRequest};
+use crate::model_runtime::{build_model_client, select_run_model};
 use crate::office_service::OfficeService;
 use crate::project_map_service::ProjectMapService;
+use crate::prompt_gate::{finalize_blocked_user_prompt, submit_user_prompt};
+use crate::run_environment::RunEnvironment;
+use crate::run_finalizer::{AppRunFinalizer, AppRunFinalizerRequest};
+use crate::runtime_event_log::{append_runtime_log, spawn_runtime_event_pump};
 use crate::settings::SettingsService;
 use crate::slash_panel::{kv, SlashPanel, SlashPanelItem, SlashSection};
-
-/// The base system prompt seeded into every chat run, modeled on Claude Code's
-/// layered prompt (System / Doing tasks / Using your tools / Tone & style /
-/// Output efficiency). A dynamic environment block carrying the **current
-/// date**, OS, and working directory is appended at runtime by
-/// [`build_system_prompt`] so the model never reasons from a stale year (the
-/// root cause of a web_search that searched the wrong year). The full layered
-/// assembly lives in `deepagent-prompts`; this is the runtime's always-on
-/// baseline.
-/// The full layered assembly lives in [`crate::system_prompt`]; the runtime
-/// pulls the cacheable static prefix from there via
-/// [`crate::system_prompt::system_prompt_base`]. Phase 1A of the
-/// coding-amplifier spec extracted the prompt into named topical sections so
-/// later phases can edit individual sections without rewriting the whole text.
-/// Marker separating the **static** (prefix-cacheable) portion of the system
-/// prompt from the **dynamic** (per-request) portion, mirroring Claude Code's
-/// `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`.
-///
-/// DeepSeek (like Anthropic/OpenAI) caches by **longest common prefix**: the
-/// moment a token near the start changes — e.g. a freshly formatted date — the
-/// cache invalidates from that point on and every later token is recomputed at
-/// full price. So everything that is stable across requests (identity, working
-/// style, tool guidance) must come BEFORE this boundary, and everything
-/// volatile (today's date, cwd) must come AFTER it. Keeping the prefix
-/// byte-identical across an agent loop is what lets DeepSeek serve the system
-/// prompt + tool schemas from cache (~5–10x cheaper, lower first-token latency).
-pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "\n\n<<<DYNAMIC>>>\n\n";
+#[cfg(test)]
+use crate::subagent_runner::{apply_runtime_agent_tool_filter, subagent_system_prompt};
+use crate::subagent_runner::{
+    collect_runtime_agent_definitions, ChatSubagentRunner, RuntimeAgentDefinition,
+};
+pub use crate::system_context::SYSTEM_PROMPT_DYNAMIC_BOUNDARY;
+#[cfg(test)]
+use crate::system_context::{build_system_manifest, build_system_prompt, current_date_string};
+#[cfg(test)]
+use crate::tool_manifest::deferred_tools_announcement;
+#[cfg(test)]
+use crate::tool_manifest::should_activate_tool_search;
+use crate::tool_manifest::DiscoveredToolSet;
+#[cfg(test)]
+use crate::tool_manifest::{build_visible_tool_schemas, register_tool_search_into};
+#[cfg(test)]
+use crate::tool_runtime::register_skill_tool;
+use crate::tool_runtime::{
+    build_base_tool_registry, build_main_run_toolset, CommandExecutorFactory,
+    MainRunToolsetRequest, RemoteOpsFactory, ToolRegistryBuildRequest,
+};
 const SESSION_TITLE_SYSTEM_PROMPT: &str = concat!(
     "You generate concise conversation titles for a coding assistant session.\n",
     "Return only the title text.\n",
@@ -87,364 +101,6 @@ const SESSION_TITLE_SYSTEM_PROMPT: &str = concat!(
     "Focus on the user's concrete task or goal, not greetings or assistant boilerplate.\n",
     "Keep it short and specific."
 );
-
-static HOOK_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
-
-struct ObservableHookRunner {
-    inner: SystemHookRunner,
-    events: Arc<dyn RuntimeEventSink>,
-    cwd: Option<PathBuf>,
-}
-
-impl ObservableHookRunner {
-    fn new(events: Arc<dyn RuntimeEventSink>) -> Self {
-        Self {
-            inner: SystemHookRunner,
-            events,
-            cwd: None,
-        }
-    }
-
-    fn new_in_dir(events: Arc<dyn RuntimeEventSink>, cwd: PathBuf) -> Self {
-        Self {
-            inner: SystemHookRunner,
-            events,
-            cwd: Some(cwd),
-        }
-    }
-}
-
-#[async_trait]
-impl HookCommandRunner for ObservableHookRunner {
-    async fn run(
-        &self,
-        command: &str,
-        stdin_json: &str,
-        env: &BTreeMap<String, String>,
-        timeout: Duration,
-    ) -> Result<HookCommandResult> {
-        let id = format!("hook-{}", HOOK_EVENT_SEQ.fetch_add(1, Ordering::Relaxed));
-        let event = hook_event_name(stdin_json);
-        self.events.emit(RuntimeEvent::HookStarted {
-            id: id.clone(),
-            event: event.clone(),
-            command: command.to_string(),
-        });
-        let started = Instant::now();
-        let result = if let Some(cwd) = &self.cwd {
-            run_hook_command_in_dir(command, stdin_json, env, timeout, cwd).await
-        } else {
-            self.inner.run(command, stdin_json, env, timeout).await
-        };
-        let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        if let Ok(result) = &result {
-            self.events.emit(RuntimeEvent::HookCompleted {
-                id,
-                event,
-                command: command.to_string(),
-                exit_code: result.exit_code,
-                stdout: result.stdout.clone(),
-                stderr: result.stderr.clone(),
-                outcome: hook_command_outcome(result),
-                duration_ms,
-            });
-        }
-        result
-    }
-}
-
-async fn run_hook_command_in_dir(
-    command: &str,
-    stdin_json: &str,
-    env: &BTreeMap<String, String>,
-    timeout: Duration,
-    cwd: &Path,
-) -> Result<HookCommandResult> {
-    use tokio::io::AsyncWriteExt;
-
-    let mut cmd = if cfg!(windows) {
-        let mut c = tokio::process::Command::new("cmd");
-        c.args(["/C", command]);
-        c
-    } else {
-        let mut c = tokio::process::Command::new("sh");
-        c.args(["-c", command]);
-        c
-    };
-    cmd.current_dir(cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    cmd.envs(env);
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(0x08000000);
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| CoreError::other(format!("hook spawn failed: {e}")))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let payload = stdin_json.as_bytes().to_vec();
-        let _ = stdin.write_all(&payload).await;
-        let _ = stdin.shutdown().await;
-    }
-
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(res) => res.map_err(|e| CoreError::other(format!("hook wait failed: {e}")))?,
-        Err(_) => {
-            return Ok(HookCommandResult {
-                exit_code: 124,
-                stdout: String::new(),
-                stderr: format!("hook timed out after {:?}", timeout),
-            });
-        }
-    };
-
-    Ok(HookCommandResult {
-        exit_code: output.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
-}
-
-fn hook_event_name(stdin_json: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(stdin_json)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("hook_event_name")
-                .and_then(|event| event.as_str())
-                .map(ToOwned::to_owned)
-        })
-        .unwrap_or_else(|| "Hook".to_string())
-}
-
-fn hook_command_outcome(result: &HookCommandResult) -> String {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(result.stdout.trim()) {
-        if value
-            .get("decision")
-            .and_then(|decision| decision.as_str())
-            .is_some_and(|decision| decision.eq_ignore_ascii_case("block"))
-        {
-            return "blocked".to_string();
-        }
-    }
-    match result.exit_code {
-        0 => "continued".to_string(),
-        2 => "blocked".to_string(),
-        _ => "error".to_string(),
-    }
-}
-
-/// Build the effective system prompt for a run: the stable, prefix-cacheable
-/// base, then the [`SYSTEM_PROMPT_DYNAMIC_BOUNDARY`], then a dynamic environment
-/// block carrying the current date, OS, and working directory. The date line is
-/// what stops the model from searching a stale year; placing it AFTER the
-/// boundary keeps the cached prefix intact across requests.
-fn build_system_prompt(root: &std::path::Path) -> String {
-    let today = current_date_string();
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    format!(
-        "{base}{SYSTEM_PROMPT_DYNAMIC_BOUNDARY}# Environment\n- Today's date: {today}\n- Operating system: {os} ({arch})\n- Working directory: {cwd}\n- When you need current information, use this date — especially the year — in web_search queries.",
-        base = crate::system_prompt::system_prompt_base(),
-        cwd = root.display(),
-    )
-}
-
-fn plugin_output_styles_prompt(
-    styles: &[crate::plugin_runtime::PluginOutputStyleEntry],
-) -> Option<String> {
-    let styles = styles
-        .iter()
-        .filter(|style| !style.prompt.trim().is_empty())
-        .collect::<Vec<_>>();
-    if styles.is_empty() {
-        return None;
-    }
-
-    if let Some(style) = styles
-        .iter()
-        .find(|style| style.force_for_plugin.unwrap_or(false))
-    {
-        let mut out = format!(
-            "# Plugin output style\nThe enabled plugin output style `{}` from plugin `{}` is forced for this run. Follow it for user-visible responses unless it conflicts with safety, tool-use rules, or the user's explicit request.\n\n<output-style name=\"{}\">\n{}\n</output-style>",
-            style.name,
-            style.plugin_name,
-            style.name,
-            truncate_prompt_block(&style.prompt, 6000),
-        );
-        let forced_count = styles
-            .iter()
-            .filter(|style| style.force_for_plugin.unwrap_or(false))
-            .count();
-        if forced_count > 1 {
-            out.push_str(&format!(
-                "\n\nNote: {forced_count} plugin output styles are forced; using the first loaded style."
-            ));
-        }
-        return Some(out);
-    }
-
-    let mut out = String::from(
-        "# Plugin output styles\nEnabled plugins provide these optional output styles. Use one only when the user explicitly asks for it by exact name or the active plugin workflow clearly calls for it. These style prompts do not override safety, tool-use rules, or the user's explicit request.",
-    );
-    for style in styles.iter().take(8) {
-        out.push_str(&format!(
-            "\n\n## `{}`\nPlugin: `{}`\nDescription: {}\n\n<output-style name=\"{}\">\n{}\n</output-style>",
-            style.name,
-            style.plugin_name,
-            single_line(&style.description),
-            style.name,
-            truncate_prompt_block(&style.prompt, 2500),
-        ));
-    }
-    if styles.len() > 8 {
-        out.push_str(&format!(
-            "\n\n{} additional plugin output style(s) are available through the plugin runtime but omitted from this prompt block.",
-            styles.len() - 8
-        ));
-    }
-    Some(out)
-}
-
-fn truncate_prompt_block(input: &str, cap: usize) -> String {
-    if input.chars().count() <= cap {
-        return input.trim().to_string();
-    }
-    let keep = cap.saturating_sub(32);
-    let mut out = input.trim().chars().take(keep).collect::<String>();
-    out.push_str("\n\n[truncated]");
-    out
-}
-
-fn single_line(input: &str) -> String {
-    input.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Today's date as `YYYY-MM-DD` (local time, falling back to UTC if the local
-/// offset can't be determined). Kept dependency-light via the `time` crate.
-fn current_date_string() -> String {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    let fmt = time::macros::format_description!("[year]-[month]-[day]");
-    now.format(&fmt)
-        .unwrap_or_else(|_| format!("{}", now.year()))
-}
-
-fn build_context_pack_snapshot(
-    policy: &ContextPolicy,
-    system_prompt: &str,
-    history: &[Message],
-    final_user_prompt: &str,
-    tools: &[ToolSchema],
-    compacted: bool,
-    counter: &dyn TokenCounter,
-) -> deepagent_context::ContextUsageSnapshot {
-    let mut blocks = Vec::new();
-    let (stable_prefix, dynamic_runtime) = split_system_prompt_for_context(system_prompt);
-    push_context_block(
-        &mut blocks,
-        ContextBlockKind::StablePrefix,
-        "system_prompt_base",
-        u8::MAX,
-        CacheScope::StablePrefix,
-        stable_prefix,
-        counter,
-    );
-    push_context_block(
-        &mut blocks,
-        ContextBlockKind::DynamicRuntime,
-        "runtime_environment",
-        200,
-        CacheScope::Dynamic,
-        dynamic_runtime,
-        counter,
-    );
-
-    let rendered_history = render_history_for_context_usage(history);
-    push_context_block(
-        &mut blocks,
-        ContextBlockKind::RecentConversation,
-        "session_history",
-        130,
-        CacheScope::Dynamic,
-        &rendered_history,
-        counter,
-    );
-
-    let tool_schema_json = serde_json::to_string(tools).unwrap_or_default();
-    push_context_block(
-        &mut blocks,
-        ContextBlockKind::ToolSchemas,
-        "visible_tool_schemas",
-        180,
-        CacheScope::StablePrefix,
-        &tool_schema_json,
-        counter,
-    );
-
-    push_context_block(
-        &mut blocks,
-        ContextBlockKind::UserGoal,
-        "current_user_prompt",
-        u8::MAX,
-        CacheScope::Dynamic,
-        final_user_prompt,
-        counter,
-    );
-
-    let pack = ContextPack::new(blocks);
-    deepagent_context::ContextUsageSnapshot::from_pack(policy, &pack, compacted)
-}
-
-fn split_system_prompt_for_context(system_prompt: &str) -> (&str, &str) {
-    if let Some(idx) = system_prompt.find(SYSTEM_PROMPT_DYNAMIC_BOUNDARY) {
-        let dynamic_start = idx + SYSTEM_PROMPT_DYNAMIC_BOUNDARY.len();
-        (&system_prompt[..idx], &system_prompt[dynamic_start..])
-    } else {
-        (system_prompt, "")
-    }
-}
-
-fn render_history_for_context_usage(history: &[Message]) -> String {
-    history
-        .iter()
-        .map(|m| format!("{:?}: {}", m.role, m.content))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn push_context_block(
-    blocks: &mut Vec<ContextBlock>,
-    kind: ContextBlockKind,
-    source: &str,
-    priority: u8,
-    cache_scope: CacheScope,
-    content: &str,
-    counter: &dyn TokenCounter,
-) {
-    if content.trim().is_empty() {
-        return;
-    }
-    blocks.push(ContextBlock {
-        kind,
-        source: source.to_string(),
-        priority,
-        cache_scope,
-        estimated_tokens: counter.count(content),
-        content: content.to_string(),
-    });
-}
-
-#[cfg(feature = "web")]
-fn configured_searxng_url(setting: Option<String>) -> Option<String> {
-    setting
-        .or_else(|| std::env::var("DEEPAGENT_SEARXNG_URL").ok())
-        .or_else(|| std::env::var("SEARXNG_URL").ok())
-        .map(|s| s.trim().trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
-}
 
 fn web_search_summary(settings: &crate::settings::WebSearchSettings) -> String {
     if !settings.enabled {
@@ -457,285 +113,8 @@ fn web_search_summary(settings: &crate::settings::WebSearchSettings) -> String {
     }
 }
 
-#[derive(Clone)]
-struct ProjectMapToolBackend {
-    service: Arc<ProjectMapService>,
-    root: PathBuf,
-}
-
-#[async_trait]
-impl deepagent_builtins::ProjectMapBackend for ProjectMapToolBackend {
-    async fn overview(&self) -> Result<serde_json::Value> {
-        serde_json::to_value(self.service.overview(&self.root)).map_err(Into::into)
-    }
-
-    async fn search(&self, query: &str, limit: usize) -> Result<serde_json::Value> {
-        let hits = self.service.search(&self.root, query, limit)?;
-        Ok(serde_json::json!({
-            "count": hits.len(),
-            "hits": hits,
-        }))
-    }
-
-    async fn neighbors(&self, node_id: &str) -> Result<serde_json::Value> {
-        serde_json::to_value(self.service.neighbors(&self.root, node_id)?).map_err(Into::into)
-    }
-
-    async fn impact(&self, target: &str) -> Result<serde_json::Value> {
-        serde_json::to_value(self.service.impact(&self.root, target)?).map_err(Into::into)
-    }
-}
-
-/// Bridges the `office_*` tools to the app-core [`OfficeService`] (Tier C
-/// pure-Rust read/generate; Tier R when a conversion runtime is installed).
-#[cfg(feature = "runtimes")]
-#[derive(Clone)]
-struct OfficeToolBackend {
-    service: Arc<OfficeService>,
-}
-
-#[cfg(feature = "runtimes")]
-#[async_trait]
-impl deepagent_builtins::OfficeBackend for OfficeToolBackend {
-    async fn read_text(&self, path: &str) -> Result<serde_json::Value> {
-        let text = self.service.read_text(path)?;
-        Ok(serde_json::json!({ "path": path, "text": text }))
-    }
-
-    async fn create_docx_from_markdown(
-        &self,
-        markdown: &str,
-        title: Option<String>,
-        out_path: &str,
-        overwrite: bool,
-    ) -> Result<serde_json::Value> {
-        if !overwrite && std::path::Path::new(out_path).exists() {
-            return Err(CoreError::invalid(
-                "file already exists — pass overwrite=true to replace it",
-            ));
-        }
-        self.service
-            .create_docx_from_markdown(markdown, title.as_deref(), out_path)?;
-        Ok(serde_json::json!({ "path": out_path, "ok": true }))
-    }
-
-    async fn create_xlsx(
-        &self,
-        sheets: serde_json::Value,
-        out_path: &str,
-        overwrite: bool,
-    ) -> Result<serde_json::Value> {
-        if !overwrite && std::path::Path::new(out_path).exists() {
-            return Err(CoreError::invalid(
-                "file already exists — pass overwrite=true to replace it",
-            ));
-        }
-        let parsed = parse_office_sheets(&sheets)?;
-        self.service.create_xlsx(&parsed, out_path)?;
-        Ok(serde_json::json!({ "path": out_path, "ok": true }))
-    }
-}
-
-/// Parse the `sheets` tool argument (`[{ name, rows: [[..]] }]`) into the
-/// `(name, rows)` shape [`OfficeService::create_xlsx`] expects.
-#[cfg(feature = "runtimes")]
-fn parse_office_sheets(value: &serde_json::Value) -> Result<Vec<(String, Vec<Vec<String>>)>> {
-    let arr = value
-        .as_array()
-        .ok_or_else(|| CoreError::invalid("'sheets' must be an array"))?;
-    let mut out = Vec::with_capacity(arr.len());
-    for (i, sheet) in arr.iter().enumerate() {
-        let name = sheet
-            .get("name")
-            .and_then(|n| n.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("Sheet{}", i + 1));
-        let rows = sheet
-            .get("rows")
-            .and_then(|r| r.as_array())
-            .map(|rows| {
-                rows.iter()
-                    .map(|row| {
-                        row.as_array()
-                            .map(|cells| {
-                                cells
-                                    .iter()
-                                    .map(|c| {
-                                        c.as_str()
-                                            .map(str::to_string)
-                                            .unwrap_or_else(|| c.to_string())
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        out.push((name, rows));
-    }
-    Ok(out)
-}
-
-#[derive(Clone)]
-struct CodeGraphToolBackend {
-    root: PathBuf,
-    graph: Arc<Mutex<Option<deepagent_codegraph::CodeGraph>>>,
-}
-
-#[async_trait]
-impl deepagent_builtins::CodeGraphBackend for CodeGraphToolBackend {
-    async fn search(
-        &self,
-        query: &str,
-        kind: Option<String>,
-        limit: usize,
-    ) -> Result<serde_json::Value> {
-        self.with_graph(|graph| {
-            let kind = kind
-                .as_deref()
-                .and_then(deepagent_codegraph::types::NodeKind::try_parse);
-            serde_json::to_value(graph.search(query, kind, limit)?).map_err(Into::into)
-        })
-    }
-
-    async fn explore(
-        &self,
-        symbols: &[String],
-        budget: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        self.with_graph(|graph| {
-            serde_json::to_value(graph.explore(symbols, parse_explore_budget(&budget))?)
-                .map_err(Into::into)
-        })
-    }
-
-    async fn callers(&self, symbol: &str, limit: usize) -> Result<serde_json::Value> {
-        self.with_graph(|graph| {
-            serde_json::to_value(graph.callers(symbol, limit)?).map_err(Into::into)
-        })
-    }
-
-    async fn callees(&self, symbol: &str, limit: usize) -> Result<serde_json::Value> {
-        self.with_graph(|graph| {
-            serde_json::to_value(graph.callees(symbol, limit)?).map_err(Into::into)
-        })
-    }
-
-    async fn impact(&self, symbol: &str, depth: usize) -> Result<serde_json::Value> {
-        self.with_graph(|graph| {
-            serde_json::to_value(graph.impact(symbol, depth)?).map_err(Into::into)
-        })
-    }
-
-    async fn node(&self, target: &str) -> Result<serde_json::Value> {
-        self.with_graph(|graph| serde_json::to_value(graph.node(target)?).map_err(Into::into))
-    }
-
-    async fn node_at_location(&self, file: &str, line: u32) -> Result<serde_json::Value> {
-        self.with_graph(|graph| {
-            serde_json::to_value(graph.store().node_at_location(file, line)?).map_err(Into::into)
-        })
-    }
-
-    async fn locate(&self, text: &str) -> Result<serde_json::Value> {
-        self.with_graph(|graph| {
-            let files = graph
-                .store()
-                .all_file_nodes()?
-                .into_iter()
-                .map(|node| node.file_path)
-                .collect();
-            let parser =
-                deepagent_codegraph::error_locator::ErrorParser::with_project(&self.root, files);
-            let frames = parser.parse(text);
-            let mut located = Vec::new();
-            let mut external = Vec::new();
-            for frame in frames {
-                let frame_json = serde_json::json!({
-                    "file": frame.file,
-                    "line": frame.line,
-                    "col": frame.col,
-                    "symbol": frame.symbol,
-                    "errorCode": frame.error_code,
-                    "isProject": frame.is_project,
-                });
-                if !frame.is_project {
-                    external.push(frame_json);
-                    continue;
-                }
-                let node = graph.store().node_at_location(&frame.file, frame.line)?;
-                let detail = match &node {
-                    Some(node) => graph.node(&node.id)?,
-                    None => None,
-                };
-                located.push(serde_json::json!({
-                    "frame": frame_json,
-                    "node": node,
-                    "detail": detail,
-                }));
-            }
-            Ok(serde_json::json!({
-                "indexed": true,
-                "located": located,
-                "externalFrames": external,
-            }))
-        })
-    }
-}
-
-impl CodeGraphToolBackend {
-    fn new(root: PathBuf) -> Self {
-        Self {
-            root,
-            graph: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    fn with_graph<F>(&self, f: F) -> Result<serde_json::Value>
-    where
-        F: FnOnce(&deepagent_codegraph::CodeGraph) -> Result<serde_json::Value>,
-    {
-        let mut cached = self.graph.lock().map_err(|_| {
-            CoreError::Persistence("code graph connection cache lock poisoned".to_string())
-        })?;
-        if cached.is_none() {
-            *cached = Some(deepagent_codegraph::CodeGraph::open(&self.root)?);
-        }
-        let graph = cached
-            .as_ref()
-            .ok_or_else(|| CoreError::other("code graph connection cache was not initialized"))?;
-        if !graph.has_existing_index() {
-            return Ok(codegraph_not_indexed());
-        }
-        f(graph)
-    }
-}
-
-fn codegraph_not_indexed() -> serde_json::Value {
-    serde_json::json!({
-        "indexed": false,
-        "message": "Code graph is not indexed yet. Run project map refresh/deep indexing for this workspace, then retry the codegraph tool.",
-    })
-}
-
-fn parse_explore_budget(value: &serde_json::Value) -> deepagent_codegraph::query::ExploreBudget {
-    let mut budget = deepagent_codegraph::query::ExploreBudget::default();
-    set_usize(value, "maxHitsPerSymbol", &mut budget.max_hits_per_symbol);
-    set_usize(value, "maxBridgeHops", &mut budget.max_bridge_hops);
-    set_usize(value, "maxFiles", &mut budget.max_files);
-    set_usize(value, "maxSymbolsPerFile", &mut budget.max_symbols_per_file);
-    set_usize(value, "maxFlowHops", &mut budget.max_flow_hops);
-    budget
-}
-
-fn set_usize(value: &serde_json::Value, key: &str, target: &mut usize) {
-    if let Some(n) = value.get(key).and_then(|v| v.as_u64()) {
-        *target = n as usize;
-    }
-}
-
 /// Orchestrates streamed chat runs over the kernel.
+#[derive(Clone)]
 pub struct ChatService {
     db: Arc<Database>,
     settings: Arc<SettingsService>,
@@ -774,6 +153,9 @@ pub struct ChatService {
     /// unset, behavior is identical to before the feature (no recording, no
     /// budget enforcement) — preserving backward compatibility.
     cost: Option<Arc<crate::cost_service::CostService>>,
+    /// Optional dedicated runtime diagnostics log. This is separate from the
+    /// session event log and is used only for troubleshooting execution flow.
+    runtime_logs: Option<Arc<RuntimeLogStore>>,
     /// Base directory for persisted large tool results.
     tool_results_dir: PathBuf,
     /// Per-session Plan-mode flags. Plan mode is a read-only planning state:
@@ -787,6 +169,13 @@ pub struct ChatService {
     /// [`ChatService::cancel_session`] to stop a run; the engine checks it at
     /// each step boundary.
     cancellations: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+    /// Per-session input dispatch lease. A continued session may receive a new
+    /// prompt while the previous turn is still streaming; the lease serializes
+    /// those turns and lets the new prompt request interruption first.
+    input_leases: Arc<InputLeaseRegistry>,
+    /// Background child cancellation handles survive the parent tool registry,
+    /// so desktop APIs can still inspect or stop a child after the parent turn.
+    subagent_controls: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
     /// Per-session discovered-tool sets for lazy tool loading (tool-search
     /// spec). Each entry is the set of deferred tool names the model has
     /// already pulled into its active toolset via `tool_search`. Sessions
@@ -836,17 +225,63 @@ pub struct ChatService {
 /// Factory that creates a [`CommandExecutor`] for a given connection id.
 /// Used for remote (SSH) sessions — the factory is set up by the desktop
 /// app and captures the `SshService` handle.
-type ExecutorFactory =
-    Arc<dyn Fn(String) -> Arc<dyn deepagent_builtins::bash_tool::CommandExecutor> + Send + Sync>;
+type ExecutorFactory = CommandExecutorFactory;
 
-type RemoteContextFuture = Pin<Box<dyn Future<Output = Result<Option<String>>> + Send>>;
-type RemoteContextFactory = Arc<dyn Fn(String) -> RemoteContextFuture + Send + Sync>;
-type RemoteOpsFactory =
-    Arc<dyn Fn(String) -> Arc<dyn deepagent_builtins::RemoteOpsBackend> + Send + Sync>;
+struct RunCancellationRegistration {
+    map: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+    flag: Arc<AtomicBool>,
+    keys: std::sync::Mutex<Vec<String>>,
+}
 
-/// One session's discovered-tool set: shared between the runtime tool
-/// (`ToolSearchTool`) and the chat-service's per-turn tools-array assembly.
-type DiscoveredToolSet = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+impl RunCancellationRegistration {
+    fn new(
+        map: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+        run_id: String,
+        session_id: Option<&str>,
+    ) -> Self {
+        let registration = Self {
+            map,
+            flag: Arc::new(AtomicBool::new(false)),
+            keys: std::sync::Mutex::new(Vec::new()),
+        };
+        registration.add_alias(run_id);
+        if let Some(session_id) = session_id {
+            registration.add_alias(session_id.to_string());
+        }
+        registration
+    }
+
+    fn add_alias(&self, key: String) {
+        let mut keys = self.keys.lock().unwrap_or_else(|p| p.into_inner());
+        if keys.contains(&key) {
+            return;
+        }
+        self.map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key.clone(), self.flag.clone());
+        keys.push(key);
+    }
+
+    fn flag(&self) -> Arc<AtomicBool> {
+        self.flag.clone()
+    }
+}
+
+impl Drop for RunCancellationRegistration {
+    fn drop(&mut self) {
+        let keys = self.keys.lock().unwrap_or_else(|p| p.into_inner());
+        let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        for key in keys.iter() {
+            if map
+                .get(key)
+                .is_some_and(|flag| Arc::ptr_eq(flag, &self.flag))
+            {
+                map.remove(key);
+            }
+        }
+    }
+}
 
 /// Per-session map of [`DiscoveredToolSet`]s, keyed by session id.
 type DiscoveredToolsMap =
@@ -854,15 +289,6 @@ type DiscoveredToolsMap =
 
 type InvokedSkillMap =
     Arc<std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct InvokedSkillRecord {
-    id: String,
-    name: String,
-    body: String,
-    base_dir: Option<String>,
-    resources: Vec<String>,
-}
 
 #[derive(Clone)]
 struct OfficeSkillGuardHook {
@@ -1015,9 +441,12 @@ impl ChatService {
             project_map: None,
             office: None,
             cost: None,
+            runtime_logs: None,
             tool_results_dir,
             plan_modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cancellations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            input_leases: Arc::new(InputLeaseRegistry::default()),
+            subagent_controls: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             discovered_tools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             skills: None,
             skill_catalog_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -1030,17 +459,62 @@ impl ChatService {
         }
     }
 
-    /// Request cancellation of an in-flight run for `session_id`. Returns
+    /// Request cancellation of an in-flight run by session id or diagnostic
+    /// run id. Both keys point at the same flag while a run is active. Returns
     /// whether a matching in-flight run was found. The run stops at its next
     /// step boundary and ends as cancelled (partial transcript preserved).
     pub fn cancel_session(&self, session_id: &str) -> bool {
         let map = self.cancellations.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(flag) = map.get(session_id) {
+        let found = if let Some(flag) = map.get(session_id) {
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
             true
         } else {
             false
-        }
+        };
+        drop(map);
+        append_runtime_log(
+            &self.runtime_logs,
+            NewRuntimeLogEntry::info("cancel", "cancel_requested")
+                .with_session_id(session_id)
+                .with_source("deepagent-app-core::chat_service")
+                .with_message(if found {
+                    "cancel flag set"
+                } else {
+                    "cancel requested but no in-flight run found"
+                })
+                .with_data(serde_json::json!({ "found": found })),
+        );
+        found
+    }
+
+    /// Request cancellation of one background child without stopping its
+    /// parent run. Returns false when the child is already terminal or unknown.
+    pub fn cancel_subagent(&self, subagent_id: &str) -> bool {
+        self.subagent_controls
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(subagent_id)
+            .map(|flag| !flag.swap(true, std::sync::atomic::Ordering::AcqRel))
+            .unwrap_or(false)
+    }
+
+    /// List durable child runs for one parent run.
+    pub fn subagent_runs(
+        &self,
+        parent_run_id: &str,
+    ) -> Result<Vec<deepagent_persistence::subagent_store::SubagentRunRecord>> {
+        deepagent_persistence::subagent_store::SubagentRunStore::new(&self.db)
+            .list_for_parent(parent_run_id)
+    }
+
+    /// Ordered Agent Kernel v2 events for reconnect/replay consumers.
+    pub fn run_events(
+        &self,
+        run_id: &str,
+        after_sequence: Option<u64>,
+    ) -> Result<Vec<deepagent_persistence::run_store::StoredRunEvent>> {
+        deepagent_persistence::run_store::RunStore::new(&self.db)
+            .events_after(run_id, after_sequence)
     }
 
     /// Attach an [`McpService`](crate::mcp_service::McpService) so enabled MCP
@@ -1098,6 +572,12 @@ impl ChatService {
     /// before this feature existed (no recording, no enforcement).
     pub fn with_cost(mut self, cost: Arc<crate::cost_service::CostService>) -> Self {
         self.cost = Some(cost);
+        self
+    }
+
+    /// Attach a dedicated runtime diagnostics log.
+    pub fn with_runtime_logs(mut self, logs: Arc<RuntimeLogStore>) -> Self {
+        self.runtime_logs = Some(logs);
         self
     }
 
@@ -1255,14 +735,17 @@ impl ChatService {
     }
 
     fn project_hook_definitions(&self, root: &Path) -> Result<Option<HookDefinitions>> {
-        let path = project_hooks_path(root);
-        if !path.exists() {
+        let paths = project_hook_paths(root)
+            .into_iter()
+            .filter(|path| path.exists())
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
             return Ok(None);
         }
 
         let Some(projects) = &self.projects else {
             tracing::info!(
-                path = path.display().to_string(),
+                paths = ?paths,
                 "skipping project hooks because no project registry is attached"
             );
             return Ok(None);
@@ -1271,18 +754,29 @@ impl ChatService {
         if !projects.hooks_trusted(&project_path)? {
             tracing::info!(
                 project = project_path.as_str(),
-                path = path.display().to_string(),
+                paths = ?paths,
                 "skipping untrusted project hooks"
             );
             return Ok(None);
         }
 
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|e| CoreError::other(format!("read project hooks: {e}")))?;
-        if raw.trim().is_empty() {
+        let mut defs = HookDefinitions::default();
+        for path in paths {
+            let raw = std::fs::read_to_string(&path).map_err(|e| {
+                CoreError::other(format!("read project hooks '{}': {e}", path.display()))
+            })?;
+            if raw.trim().is_empty() {
+                continue;
+            }
+            let parsed = HookDefinitions::parse(&raw)
+                .map_err(|e| CoreError::invalid(format!("{}: {e}", path.display())))?;
+            for (event, groups) in parsed.hooks {
+                defs.hooks.entry(event).or_default().extend(groups);
+            }
+        }
+        if defs.is_empty() {
             return Ok(None);
         }
-        let mut defs = HookDefinitions::parse(&raw)?;
         for groups in defs.hooks.values_mut() {
             for group in groups {
                 for action in &mut group.hooks {
@@ -2233,6 +1727,7 @@ impl ChatService {
         client: &Arc<ModelClient>,
         model: &str,
         context_policy: &ContextPolicy,
+        hooks: &HookRegistry,
     ) -> (Vec<Message>, bool) {
         let policy = CompactionPolicy {
             trigger_tokens: context_policy.compaction_trigger_tokens(),
@@ -2249,6 +1744,29 @@ impl ChatService {
 
         if !policy.should_compact(total) || history.len() <= policy.keep_recent_turns {
             return (history, false);
+        }
+
+        let pre_compact = hooks
+            .dispatch(&deepagent_hooks::HookContext::new(
+                session.id(),
+                HookPoint::BeforeCompact,
+                deepagent_hooks::HookData::Compact {
+                    trigger: "token_pressure".to_string(),
+                    summary: None,
+                },
+            ))
+            .await;
+        match pre_compact {
+            Ok(deepagent_hooks::HookOutcome::Deny { reason, .. })
+            | Ok(deepagent_hooks::HookOutcome::Ask { reason, .. }) => {
+                tracing::warn!(reason, "context compaction blocked by PreCompact hook");
+                return (history, false);
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "PreCompact hook failed; keeping full history");
+                return (history, false);
+            }
+            _ => {}
         }
 
         let split = history.len() - policy.keep_recent_turns;
@@ -2286,94 +1804,20 @@ impl ChatService {
             "[Earlier conversation compacted to summary]\n{summary_block}"
         )));
         compacted.extend(history.into_iter().skip(split));
+        if let Err(error) = hooks
+            .dispatch(&deepagent_hooks::HookContext::new(
+                session.id(),
+                HookPoint::PostCompact,
+                deepagent_hooks::HookData::Compact {
+                    trigger: "token_pressure".to_string(),
+                    summary: Some(summary_block),
+                },
+            ))
+            .await
+        {
+            tracing::warn!(error = %error, "PostCompact hook failed");
+        }
         (compacted, true)
-    }
-
-    /// Map the sandbox mode to the filesystem access mode used by the built-in
-    /// file tools and the path guard:
-    /// - 默认权限 (AlwaysAsk) → workspace-confined (out-of-workspace asks).
-    /// - 自动审核 (AutoReview) → reads anywhere; writes confined; bash asks.
-    /// - 完全访问 (FullAccess) → unrestricted reads + writes.
-    fn fs_access_for(mode: crate::settings::SandboxMode) -> deepagent_builtins::FsAccess {
-        use crate::settings::SandboxMode;
-        use deepagent_builtins::FsAccess;
-        match mode {
-            SandboxMode::ReadOnly => FsAccess::ReadOnly,
-            SandboxMode::WorkspaceWrite => FsAccess::Workspace,
-            SandboxMode::FullAccess => FsAccess::Full,
-        }
-    }
-
-    #[cfg(feature = "web")]
-    fn register_web_tools(&self, registry: &mut ToolRegistry) -> Result<()> {
-        use crate::settings::WebSearchProvider;
-        use deepagent_builtins::{ReqwestWebClient, WebFetchTool, WebSearchTool};
-
-        registry.register(Arc::new(WebFetchTool::new(ReqwestWebClient::new())))?;
-        let settings = self.settings.web_search_settings()?;
-        if !settings.enabled {
-            return Ok(());
-        }
-
-        let anysearch = if settings.anysearch_enabled {
-            self.anysearch_config(settings.anysearch_base_url.clone())
-        } else {
-            None
-        };
-        let (deepseek, searxng_url) = match settings.provider {
-            WebSearchProvider::DeepSeekFirst => (
-                self.deepseek_web_search_config(),
-                configured_searxng_url(settings.searxng_url),
-            ),
-            WebSearchProvider::Searxng => (None, configured_searxng_url(settings.searxng_url)),
-            WebSearchProvider::DuckDuckGo => (None, None),
-        };
-        registry.register(Arc::new(WebSearchTool::new(
-            ReqwestWebClient::with_search_chain(anysearch, deepseek, searxng_url),
-        )))?;
-        Ok(())
-    }
-
-    #[cfg(feature = "web")]
-    fn anysearch_config(
-        &self,
-        base_url: Option<String>,
-    ) -> Option<deepagent_builtins::AnySearchConfig> {
-        use deepagent_builtins::AnySearchConfig;
-
-        let api_key = self.settings.anysearch_api_key().ok().flatten()?;
-        if api_key.trim().is_empty() {
-            return None;
-        }
-        Some(AnySearchConfig::new(
-            Some(api_key),
-            base_url.unwrap_or_else(|| "https://api.anysearch.com".to_string()),
-        ))
-    }
-
-    #[cfg(feature = "web")]
-    fn deepseek_web_search_config(&self) -> Option<deepagent_builtins::DeepSeekWebSearchConfig> {
-        use deepagent_builtins::DeepSeekWebSearchConfig;
-
-        let api_key = self.settings.api_key().ok().flatten()?;
-        if api_key.trim().is_empty() {
-            return None;
-        }
-        let settings = self.settings.load().ok().flatten();
-        let base_url = settings
-            .as_ref()
-            .map(|s| s.catalog.base_url.clone())
-            .unwrap_or_else(|| "https://api.deepseek.com".to_string());
-        let model = std::env::var("DEEPAGENT_DEEPSEEK_WEB_SEARCH_MODEL")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| {
-                settings
-                    .as_ref()
-                    .map(|s| s.catalog.chat_model.clone())
-                    .filter(|s| !s.trim().is_empty())
-            })?;
-        Some(DeepSeekWebSearchConfig::new(api_key, base_url, model))
     }
 
     /// Build the tool registry with the built-ins confined to `root`.
@@ -2384,135 +1828,54 @@ impl ChatService {
     /// sub-agent tool — that is added only to the *main* run's registry (see
     /// [`ChatService::run_in_session`]) so sub-agents can't recurse into more
     /// sub-agents, mirroring Claude Code's agent-disallowed-tools rule.
-    fn build_registry(
+    pub(crate) fn build_registry(
         &self,
         root: &std::path::Path,
         access: deepagent_builtins::FsAccess,
         env_mode: Option<&str>,
         connection_id: Option<&str>,
         local_exec_mode: Option<crate::settings::LocalExecutionMode>,
+        bash_external_safety_gate: bool,
     ) -> Result<(ToolRegistry, deepagent_builtins::TodoStore)> {
-        use deepagent_builtins::{
-            register_builtins, AskUserQuestionTool, BuiltinConfig, DeclineResponder, WorkspaceRoot,
-        };
-        let mut registry = ToolRegistry::new();
-        let mut config = BuiltinConfig::new(
-            WorkspaceRoot::new(root.to_path_buf()).with_access(access),
-            self.bash_allow.clone(),
-        );
-        // When the session is remote, create an SSH-backed executor through the
-        // factory and attach it to the builtin config so bash/git commands are
-        // routed through SSH instead of local execution.
-        if let (Some("remote"), Some(factory), Some(conn_id)) =
-            (env_mode, &self.executor_factory, connection_id)
-        {
-            config = config.with_command_executor(factory(conn_id.to_string()));
-        } else if env_mode != Some("remote") {
-            let use_sandbox = !matches!(
-                local_exec_mode,
-                Some(crate::settings::LocalExecutionMode::Direct)
-            );
-            if use_sandbox {
-                if let Some(executor) = &self.local_command_executor {
-                    config = config.with_command_executor(executor.clone());
-                }
-            }
-        }
-        let todo_store = register_builtins(&mut registry, config)?;
-        // Network web tools (web_fetch / web_search) when built with `web`.
-        #[cfg(feature = "web")]
-        self.register_web_tools(&mut registry)?;
-
-        // Interactive tool (Claude-Code parity): surfaces multiple-choice
-        // questions to the user. Wired to DeclineResponder here (headless-safe);
-        // the desktop app can later supply a dialog-backed responder.
-        registry.register(Arc::new(AskUserQuestionTool::new(DeclineResponder)))?;
-
-        // Knowledge base active channel: `knowledge_search` is read-only and
-        // safe, so BOTH the main run and sub-agents get it (registered here in
-        // the shared builder). `knowledge_write` is added only to the main run
-        // (see `run_in_session`) so sub-agents cannot litter the vault.
-        if let Some(knowledge) = &self.knowledge {
-            use deepagent_builtins::KnowledgeSearchTool;
-            let backend = crate::knowledge_service::KnowledgeServiceBackend::new(knowledge.clone());
-            registry.register(Arc::new(KnowledgeSearchTool::new(backend)))?;
-        }
-        if let Some(project_map) = &self.project_map {
-            use deepagent_builtins::{
-                CodeMapImpactTool, CodeMapNeighborsTool, CodeMapOverviewTool, CodeMapSearchTool,
-            };
-            let backend = ProjectMapToolBackend {
-                service: project_map.clone(),
-                root: root.to_path_buf(),
-            };
-            registry.register(Arc::new(CodeMapOverviewTool::new(backend.clone())))?;
-            registry.register(Arc::new(CodeMapSearchTool::new(backend.clone())))?;
-            registry.register(Arc::new(CodeMapNeighborsTool::new(backend.clone())))?;
-            registry.register(Arc::new(CodeMapImpactTool::new(backend)))?;
-        }
-        {
-            use deepagent_builtins::{
-                CodeGraphCalleesTool, CodeGraphCallersTool, CodeGraphExploreTool,
-                CodeGraphImpactTool, CodeGraphLocateTool, CodeGraphNodeTool, CodeGraphSearchTool,
-            };
-            let backend = CodeGraphToolBackend::new(root.to_path_buf());
-            registry.register(Arc::new(CodeGraphSearchTool::new(backend.clone())))?;
-            registry.register(Arc::new(CodeGraphExploreTool::new(backend.clone())))?;
-            registry.register(Arc::new(CodeGraphCallersTool::new(backend.clone())))?;
-            registry.register(Arc::new(CodeGraphCalleesTool::new(backend.clone())))?;
-            registry.register(Arc::new(CodeGraphImpactTool::new(backend.clone())))?;
-            registry.register(Arc::new(CodeGraphNodeTool::new(backend.clone())))?;
-            registry.register(Arc::new(CodeGraphLocateTool::new(backend)))?;
-        }
-        #[cfg(feature = "runtimes")]
-        {
-            if let Some(office) = &self.office {
-                use deepagent_builtins::{
-                    OfficeDocxCreateTool, OfficeReadTool, OfficeXlsxCreateTool,
-                };
-                let backend = OfficeToolBackend {
-                    service: office.clone(),
-                };
-                registry.register(Arc::new(OfficeReadTool::new(backend.clone())))?;
-                registry.register(Arc::new(OfficeDocxCreateTool::new(backend.clone())))?;
-                registry.register(Arc::new(OfficeXlsxCreateTool::new(backend)))?;
-            }
-        }
-        if let (Some("remote"), Some(factory), Some(conn_id)) =
-            (env_mode, &self.remote_ops_factory, connection_id)
-        {
-            use deepagent_builtins::{
-                RemoteInstallTool, RemoteProbeTool, RemotePushBundleTool, RemotePushFileTool,
-                RemoteRequireTool,
-            };
-            let backend = factory(conn_id.to_string());
-            registry.register(Arc::new(RemoteProbeTool::new(backend.clone())))?;
-            registry.register(Arc::new(RemotePushFileTool::new(backend.clone())))?;
-            registry.register(Arc::new(RemotePushBundleTool::new(backend.clone())))?;
-            registry.register(Arc::new(RemoteRequireTool::new(backend.clone())))?;
-            registry.register(Arc::new(RemoteInstallTool::new(backend)))?;
-        }
-
-        Ok((registry, todo_store))
+        build_base_tool_registry(self.base_registry_request(
+            root,
+            access,
+            env_mode,
+            connection_id,
+            local_exec_mode,
+            bash_external_safety_gate,
+        ))
     }
 
-    /// Wire the `tool_search` built-in into a registry that already contains
-    /// every other tool (built-ins + MCP + knowledge + code-map). No-op when
-    /// `mode == Disabled` or when `Auto` mode's deferred-tool schema budget
-    /// is below the threshold.
-    ///
-    /// Returns the **names** of every deferred tool captured in the snapshot
-    /// (empty vec when no-op). The caller uses this list to produce the
-    /// `<available-deferred-tools>` system-prompt block: undiscovered names
-    /// = `returned_names \ discovered_set`.
-    fn maybe_register_tool_search(
+    /// Assemble the shared [`ToolRegistryBuildRequest`] from this service's
+    /// wiring. Used by both [`ChatService::build_registry`] (sub-agent /
+    /// standalone registries) and the main run's
+    /// [`build_main_run_toolset`] single entry point.
+    fn base_registry_request<'a>(
         &self,
-        registry: &mut ToolRegistry,
-        mode: deepagent_builtins::ToolSearchMode,
-        discovered: DiscoveredToolSet,
-        auto_threshold_chars: usize,
-    ) -> Result<Vec<String>> {
-        register_tool_search_into(registry, mode, discovered, auto_threshold_chars)
+        root: &'a std::path::Path,
+        access: deepagent_builtins::FsAccess,
+        env_mode: Option<&'a str>,
+        connection_id: Option<&'a str>,
+        local_exec_mode: Option<crate::settings::LocalExecutionMode>,
+        bash_external_safety_gate: bool,
+    ) -> ToolRegistryBuildRequest<'a> {
+        ToolRegistryBuildRequest {
+            root,
+            access,
+            env_mode,
+            connection_id,
+            local_exec_mode,
+            bash_external_safety_gate,
+            bash_allow: self.bash_allow.clone(),
+            settings: self.settings.clone(),
+            executor_factory: self.executor_factory.clone(),
+            local_command_executor: self.local_command_executor.clone(),
+            knowledge: self.knowledge.clone(),
+            project_map: self.project_map.clone(),
+            office: self.office.clone(),
+            remote_ops_factory: self.remote_ops_factory.clone(),
+        }
     }
 
     /// Wire the `skill` built-in into a registry. No-op when no
@@ -2531,19 +1894,9 @@ impl ChatService {
     /// stable.
     ///
     /// _Validates: Requirements R6.1, R6.2, R6.3, R6.4, R6.5, R6.6._
+    #[cfg(test)]
     fn maybe_register_skill_tool(&self, registry: &mut ToolRegistry) -> Result<()> {
-        if let Some(skills) = &self.skills {
-            let registry_snapshot = {
-                let svc = skills
-                    .lock()
-                    .map_err(|_| CoreError::invalid("skills service mutex poisoned"))?;
-                Arc::new(svc.manager().registry().clone())
-            };
-            registry.register(Arc::new(deepagent_builtins::SkillTool::new(
-                registry_snapshot,
-            )))?;
-        }
-        Ok(())
+        register_skill_tool(registry, self.skills.as_ref())
     }
 
     fn office_skill_guard_hook(
@@ -2582,19 +1935,7 @@ impl ChatService {
     /// stored API key. Thinking depth is a request-parameter concern only; it
     /// does not implicitly swap the selected model role.
     fn build_model(&self, role: ModelRole) -> Result<(Arc<ModelClient>, String, ThinkingDepth)> {
-        let settings = self
-            .settings
-            .load()?
-            .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?;
-        let api_key = self
-            .settings
-            .api_key()?
-            .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
-        let thinking_depth = settings.thinking_depth;
-        let model = settings.catalog.model_for(role).to_string();
-        let config = ModelConfig::from_catalog(api_key, &settings.catalog, role);
-        let client = Arc::new(ModelClient::new(self.transport.clone(), config));
-        Ok((client, model, thinking_depth))
+        build_model_client(&self.settings, self.transport.clone(), role)
     }
 
     /// Run a single non-session, non-tool, streaming LLM completion.
@@ -2847,6 +2188,7 @@ impl ChatService {
             Vec::new(),
             None,
             false,
+            None,
             on_event,
             on_approval,
         )
@@ -2868,6 +2210,7 @@ impl ChatService {
         preflight_tools: Vec<PreflightToolCallDto>,
         preflight_abort_message: Option<String>,
         initial_plan_mode: bool,
+        diagnostic_run_id: Option<&str>,
         on_event: F,
         on_approval: A,
     ) -> Result<String>
@@ -2875,6 +2218,18 @@ impl ChatService {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
+        let root = self.effective_root();
+        let normalized_input = InputIngress::normalize(
+            continue_session.map(ToOwned::to_owned),
+            root.clone(),
+            prompt,
+            InputMode::Prompt,
+            Vec::new(),
+        )?;
+        let raw_prompt = prompt;
+        let effective_input_text = normalized_input.effective_text.clone();
+        let prompt = effective_input_text.as_str();
+
         if let Some(session_id) = self
             .maybe_handle_slash_command(prompt, continue_session, &on_event)
             .await?
@@ -2882,7 +2237,49 @@ impl ChatService {
             return Ok(session_id);
         }
 
+        let run_id = diagnostic_run_id
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("run_{}", deepagent_core::id::EventId::new()));
+        let cancellation = RunCancellationRegistration::new(
+            self.cancellations.clone(),
+            run_id.clone(),
+            continue_session,
+        );
+        append_runtime_log(
+            &self.runtime_logs,
+            NewRuntimeLogEntry::info("chat", "run_requested")
+                .with_run_id(run_id.clone())
+                .with_source("deepagent-app-core::chat_service")
+                .with_message("chat run requested")
+                .with_data(serde_json::json!({
+                    "continue_session": continue_session,
+                    "env_mode": env_mode,
+                    "connection_id": connection_id,
+                    "preflight_tool_count": preflight_tools.len(),
+                    "preflight_abort": preflight_abort_message.is_some(),
+                    "initial_plan_mode": initial_plan_mode,
+                    "input_id": normalized_input.input_id.clone(),
+                    "input_kind": format!("{:?}", normalized_input.kind),
+                    "raw_prompt_len": raw_prompt.chars().count(),
+                    "effective_prompt_len": prompt.chars().count(),
+                })),
+        );
+
         let plugin_projection = self.sync_plugin_runtime()?;
+        let RunEnvironment {
+            config: run_config,
+            profile: _profile,
+            policy,
+            sandbox_mode,
+            local_execution_mode,
+            access,
+        } = RunEnvironment::resolve(
+            &root,
+            &self.settings,
+            &self.runtime_logs,
+            &self.sandboxie_executor,
+            &run_id,
+        )?;
 
         let mut model_prompt = self
             .dynamic_command_prompt(prompt)?
@@ -2896,18 +2293,8 @@ impl ChatService {
             cost.check_budget()?;
         }
 
-        let root = self.effective_root();
         if let Some(knowledge) = &self.knowledge {
             knowledge.activate_project(&root)?;
-        }
-        let profile = self.settings.effective_permission_profile()?;
-        let policy = profile.approval_policy;
-        let sandbox_mode = profile.sandbox_mode;
-        let local_execution_mode = profile.local_execution_mode;
-        let access = Self::fs_access_for(sandbox_mode);
-        // Update the Sandboxie executor's OS-level confinement for this run.
-        if let Some(sbox) = &self.sandboxie_executor {
-            sbox.set_sandbox_mode(sandbox_mode);
         }
         // The main run's tools are built permissive (Full, sensitive-blocked):
         // the BeforeToolUse path guard is the SINGLE policy gate, asking/denying
@@ -2916,33 +2303,26 @@ impl ChatService {
         // re-rejected inside the tool. Sub-agents (below) have no interactive
         // gate, so their tools stay confined to the sandbox `access`.
         let clock = SystemClock;
-        // Bind the session to the active project (its folder path) so the
-        // sidebar groups it under the right project folder.
         let project = root.to_string_lossy().into_owned();
-        // Continuation vs new session: when `continue_session` names an existing
-        // session, recover it and append the new turn (so one chat thread keeps
-        // accumulating); otherwise start a fresh session. Recovery also lets us
-        // rebuild the prior conversation to seed the model with context.
-        let (mut session, history, prior_events) = match continue_session {
-            Some(id_str) => {
-                let id = deepagent_core::id::SessionId::from_str(id_str)
-                    .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
-                let session = Session::recover(&self.db, &clock, id)?;
-                let store = deepagent_persistence::event_store::EventStore::new(&self.db);
-                let events = store.load_session(id)?;
-                let history = conversation_from_events(&events);
-                (session, history, events)
-            }
-            None => {
-                let mode = match env_mode {
-                    Some("remote") => deepagent_core::SessionMode::Remote,
-                    _ => deepagent_core::SessionMode::Normal,
-                };
-                let session =
-                    Session::create_in_project(&self.db, &clock, None, mode, Some(&project))?;
-                (session, Vec::new(), Vec::new())
-            }
-        };
+        let accepted_turn = accept_input_turn(
+            &self.db,
+            &clock,
+            self.input_leases.clone(),
+            self.runtime_logs.as_ref().map(Arc::clone),
+            &run_id,
+            continue_session,
+            env_mode,
+            &project,
+            normalized_input.clone(),
+            cancellation.flag(),
+            |active_run| self.cancel_session(active_run),
+        )
+        .await?;
+        let mut session = accepted_turn.session;
+        let history = accepted_turn.history;
+        let prior_events = accepted_turn.prior_events;
+        let session_id_str = accepted_turn.session_id;
+        let _input_lease = accepted_turn.lease;
 
         // Derive the effective env_mode: for continuation sessions, use the
         // persisted session mode; for new sessions, use the caller-supplied
@@ -2956,16 +2336,18 @@ impl ChatService {
             None => env_mode,
         };
 
-        let (registry, todo_store) = self.build_registry(
-            &root,
-            deepagent_builtins::FsAccess::Full,
-            effective_env_mode,
-            connection_id,
-            Some(local_execution_mode),
+        let run_model = select_run_model(
+            &self.settings,
+            self.transport.clone(),
+            ModelRole::Chat,
+            ModelRole::Reasoner,
+            run_config.model_override(),
         )?;
-        let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
+        let client = run_model.client;
+        let model = run_model.model;
+        let thinking_depth = run_model.thinking_depth;
+        let fallback_model = run_model.fallback_model;
 
-        let session_id_str = session.id().to_string();
         let plan = self.plan_mode_for_session(&session_id_str);
         if continue_session.is_none() && initial_plan_mode {
             plan.set(true);
@@ -2981,42 +2363,6 @@ impl ChatService {
             let mut guard = set.lock().unwrap_or_else(|p| p.into_inner());
             for name in restored_discovered {
                 guard.insert(name);
-            }
-        }
-
-        // Live MCP tool registration: connect enabled servers and register their
-        // namespaced tools into the runtime registry, so they are advertised to
-        // the model and routed like built-ins. Connection failures are
-        // non-fatal (logged + skipped) so one bad server never blocks a run.
-        let mut registry = registry;
-        if let Some(mcp) = &self.mcp {
-            let connect_result = match plugin_projection.as_ref() {
-                Some(projection) if !projection.mcp_config.servers.is_empty() => {
-                    mcp.connected_registry_with_plugin_overlay(
-                        projection.mcp_config.clone(),
-                        &projection.mcp_server_sources,
-                    )
-                    .await
-                }
-                _ => mcp.connected_registry().await,
-            };
-            match connect_result {
-                Ok((mcp_registry, failures)) => {
-                    if !failures.is_empty() {
-                        tracing::warn!(
-                            count = failures.len(),
-                            "some MCP servers failed to connect"
-                        );
-                    }
-                    for adapter in deepagent_mcp::adapters_for(mcp_registry) {
-                        if let Err(e) = registry.register(adapter) {
-                            tracing::warn!(error = %e, "failed to register MCP tool adapter");
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "MCP connected_registry failed; continuing without MCP tools");
-                }
             }
         }
 
@@ -3037,6 +2383,25 @@ impl ChatService {
             initial_plan_mode,
         );
 
+        // Create the live event channel before registering the task tool so
+        // child-agent lifecycle events use the same UI/logging pump. The
+        // runner stores only a Weak sender; detached children must not keep the
+        // parent run waiting for this channel to close.
+        let (sink, rx) = ChannelSink::new();
+        let sink: Arc<dyn RuntimeEventSink> = Arc::new(sink);
+        let subagent_hooks: Arc<std::sync::OnceLock<Arc<HookRegistry>>> =
+            Arc::new(std::sync::OnceLock::new());
+        let subagent_parent_checkpoint: Arc<
+            std::sync::OnceLock<Arc<deepagent_runtime::CheckpointManager>>,
+        > = Arc::new(std::sync::OnceLock::new());
+        let pump = spawn_runtime_event_pump(
+            rx,
+            self.runtime_logs.clone(),
+            run_id.clone(),
+            session_id_str.clone(),
+            on_event,
+        );
+
         // Sub-agent orchestration (Claude-Code parity): register the `task`
         // tool into the MAIN run's registry only. Its runner executes a nested
         // agent loop over a fresh sub-registry (the same built-ins, minus
@@ -3050,11 +2415,17 @@ impl ChatService {
         // gets its own fresh `Arc<Mutex<HashSet>>` seeded from that snapshot,
         // so discoveries inside a sub-agent don't leak back into the parent
         // (Req 4.6 default behavior, now extended with snapshot inheritance).
-        {
-            use deepagent_builtins::TaskTool;
+        let (task_runner, task_agent_types) = {
             let sub_registry = Arc::new(
-                self.build_registry(&root, access, None, None, Some(local_execution_mode))?
-                    .0,
+                self.build_registry(
+                    &root,
+                    access,
+                    None,
+                    None,
+                    Some(local_execution_mode),
+                    matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
+                )?
+                .0,
             );
             let runtime_agents = collect_runtime_agent_definitions(
                 [root.clone(), self.workspace.clone()],
@@ -3075,6 +2446,9 @@ impl ChatService {
                     .unwrap_or_else(|p| p.into_inner())
                     .clone();
             let runner = ChatSubagentRunner {
+                db: self.db.clone(),
+                parent_run_id: run_id.clone(),
+                transcript_root: self.tool_results_dir.join("subagents"),
                 client: client.clone(),
                 model: model.clone(),
                 thinking_depth: subagent_thinking_depth,
@@ -3084,65 +2458,65 @@ impl ChatService {
                 tool_search_auto_threshold: tool_search_threshold,
                 parent_discovered_snapshot,
                 agent_definitions,
+                background: self.subagent_controls.clone(),
+                events: Arc::downgrade(&sink),
+                skills: self.skills.clone(),
+                host: self.clone(),
+                access,
+                local_execution_mode,
+                bash_full_access: matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
+                hooks: subagent_hooks.clone(),
+                parent_checkpoint: subagent_parent_checkpoint.clone(),
             };
-            registry.register(Arc::new(TaskTool::new_with_agent_types(
-                runner,
-                task_agent_types,
-            )))?;
-        }
+            (runner, task_agent_types)
+        };
 
-        // Knowledge capture: the `knowledge_write` tool is added to the MAIN
-        // run's registry only (sub-agents get search but not write), so the
-        // agent can persist reusable knowledge it discovers this turn.
-        if let Some(knowledge) = &self.knowledge {
-            use deepagent_builtins::KnowledgeWriteTool;
-            let backend = crate::knowledge_service::KnowledgeServiceBackend::new(knowledge.clone());
-            registry.register(Arc::new(KnowledgeWriteTool::new(backend)))?;
-        }
-
-        registry.register(Arc::new(deepagent_builtins::EnterPlanModeTool::new(
-            plan.clone(),
-        )))?;
-        registry.register(Arc::new(deepagent_builtins::ExitPlanModeTool::new(
-            plan.clone(),
-        )))?;
-
-        // Skill tool (channel B of the auto-activation design). Only wired
-        // when a `SkillsService` was attached via [`ChatService::with_skills`]
-        // — without it, the chat runtime has no way to look up skills and
-        // the catalog reminder injection below is also a no-op (Property 9).
-        self.maybe_register_skill_tool(&mut registry)?;
-
-        // Tool-search wiring (lazy tool loading). Snapshot deferred tools
-        // AFTER built-ins, MCP, knowledge, code-map, plan-mode, and skill
-        // tools are all registered. No-op when the user hasn't enabled
-        // tool-search mode (default Disabled is byte-equivalent to the old
-        // behavior).
-        let deferred_tool_names = self.maybe_register_tool_search(
-            &mut registry,
+        // Single-entry main-run tool wiring (Phase A): base built-ins -> MCP
+        // adapters -> `task` -> `knowledge_write` -> plan-mode toggles ->
+        // `skill` -> tool-search manifest snapshot. The manifest is prepared
+        // LAST so deferred-tool snapshots cover every registered tool.
+        let toolset = build_main_run_toolset(MainRunToolsetRequest {
+            base: self.base_registry_request(
+                &root,
+                deepagent_builtins::FsAccess::Full,
+                effective_env_mode,
+                connection_id,
+                Some(local_execution_mode),
+                true,
+            ),
+            mcp: self.mcp.as_deref(),
+            plugin_projection: plugin_projection.as_ref(),
+            task_runner,
+            task_agent_types,
+            plan: plan.clone(),
+            skills: self.skills.as_ref(),
             tool_search_mode,
-            tool_search_discovered.clone(),
+            tool_search_discovered: tool_search_discovered.clone(),
             tool_search_threshold,
-        )?;
-
-        // Advertise the registry's visible tools to the model.
+        })
+        .await?;
+        let registry = toolset.registry;
+        let todo_store = toolset.todo_store;
+        let hook_mcp_registry = toolset.hook_mcp_registry;
+        let tool_manifest = toolset.manifest;
+        let tools = tool_manifest.tools.clone();
         let granted = PermissionSet::developer();
-        let tools: Vec<ToolSchema> = build_visible_tool_schemas(
-            &registry,
-            &granted,
-            tool_search_mode,
-            &tool_search_discovered,
+        append_runtime_log(
+            &self.runtime_logs,
+            NewRuntimeLogEntry::info("runtime", "registry_ready")
+                .with_run_id(run_id.clone())
+                .with_session_id(session_id_str.clone())
+                .with_source("deepagent-app-core::chat_service")
+                .with_message("tool registry prepared")
+                .with_data(serde_json::json!({
+                    "registered_tools": registry.len(),
+                    "visible_tools": tools.len(),
+                    "deferred_tools": tool_manifest.deferred_tool_names.clone(),
+                    "tool_search_mode": tool_search_mode.label(),
+                    "tool_search_threshold": tool_search_threshold,
+                    "effective_env_mode": effective_env_mode,
+                })),
         );
-
-        // Wire the event sink: a channel the loop emits into, drained by a task
-        // that calls `on_event`.
-        let (sink, mut rx) = ChannelSink::new();
-        let sink: Arc<dyn RuntimeEventSink> = Arc::new(sink);
-        let pump = tokio::spawn(async move {
-            while let Some(ev) = rx.recv().await {
-                on_event(ev);
-            }
-        });
 
         // Wire the approval gate: AlwaysAsk → channel gate (prompts the UI);
         // auto policies short-circuit to allow.
@@ -3152,157 +2526,130 @@ impl ChatService {
                 .with_classifier(deepagent_builtins::SafetyClassifier::with_defaults()),
         );
 
-        // Wire hooks: declarative permission rules + path/bash safety guards +
-        // declarative external hooks (hooks.json), all at their lifecycle
-        // points. The rules resolve allow/ask/deny; the guards add
-        // path-confinement and command-safety as a centralized boundary; the
-        // external hooks run user/plugin-declared commands (e.g. a PreToolUse
-        // validator that blocks dangerous bash via exit code 2).
-        let rules = self.settings.permission_rules().unwrap_or_default();
-        let mut hooks = HookRegistry::new();
-        hooks.register(
-            HookPoint::BeforeToolUse,
-            Arc::new(deepagent_builtins::PlanModeHook::new(plan.clone())),
-        );
-        if let Some(office_skill_guard) =
-            self.office_skill_guard_hook(&session_id_str, &prior_events)?
-        {
-            let hook: Arc<dyn Hook> = Arc::new(office_skill_guard);
-            hooks.register(HookPoint::BeforeToolUse, hook.clone());
-            hooks.register(HookPoint::AfterToolUse, hook);
-        }
-        if !rules.is_empty() {
-            hooks.register(
-                HookPoint::BeforeToolUse,
-                Arc::new(PermissionRulesHook::new(rules)),
-            );
-        }
-        // Declarative external hooks from hooks.json (best-effort: malformed
-        // JSON is logged and skipped rather than failing the run).
-        match self.settings.hook_definitions() {
-            Ok(defs) if !defs.is_empty() => {
-                let runner: Arc<dyn HookCommandRunner> =
-                    Arc::new(ObservableHookRunner::new(sink.clone()));
-                let n = defs.register_into(&mut hooks, runner);
-                tracing::info!(count = n, "registered external hooks from hooks.json");
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "ignoring malformed hooks.json");
-            }
-        }
-        match self.project_hook_definitions(&root) {
-            Ok(Some(defs)) if !defs.is_empty() => {
-                let runner: Arc<dyn HookCommandRunner> =
-                    Arc::new(ObservableHookRunner::new_in_dir(sink.clone(), root.clone()));
-                let n = defs.register_into(&mut hooks, runner);
-                tracing::info!(
-                    count = n,
-                    project = root.display().to_string(),
-                    "registered external hooks from project .deepagent/hooks.json"
-                );
-            }
-            Ok(_) => {}
+        // Wire hooks through a dedicated assembler: rules, declarative hooks,
+        // plugin/project overlays, office guards, and path/bash guards keep one
+        // deterministic order outside the chat entrypoint.
+        let project_hooks = match self.project_hook_definitions(&root) {
+            Ok(defs) => defs,
             Err(e) => {
                 tracing::warn!(
                     project = root.display().to_string(),
                     error = %e,
                     "ignoring malformed project hooks.json"
                 );
+                None
             }
-        }
-        if let Some(projection) = plugin_projection.as_ref() {
-            if !projection.hook_definitions.is_empty() {
-                let runner: Arc<dyn HookCommandRunner> =
-                    Arc::new(ObservableHookRunner::new(sink.clone()));
-                let n = projection
-                    .hook_definitions
-                    .register_into(&mut hooks, runner);
-                tracing::info!(count = n, "registered external hooks from enabled plugins");
-            }
-            for error in &projection.errors {
-                tracing::warn!(
-                    plugin = error.plugin_id.as_str(),
-                    component = error.component.as_str(),
-                    path = error.path.as_deref().unwrap_or(""),
-                    message = error.message.as_str(),
-                    "plugin runtime projection error"
-                );
-            }
-        }
-        deepagent_builtins::register_guard_hooks(
-            &mut hooks,
-            WorkspaceRoot::new(root.clone()).with_access(access),
-            self.bash_allow.clone(),
+        };
+        let office_skill_guard = self
+            .office_skill_guard_hook(&session_id_str, &prior_events)?
+            .map(|hook| Arc::new(hook) as Arc<dyn Hook>);
+        let hooks = assemble_run_hooks(HookAssemblyRequest {
+            settings: &self.settings,
+            run_config: &run_config,
+            project_hooks,
+            plugin_projection: plugin_projection.as_ref(),
+            root: &root,
+            sink: sink.clone(),
+            client: client.clone(),
+            model: model.clone(),
+            thinking_depth,
+            mcp: hook_mcp_registry,
+            registry: &registry,
+            plan: plan.clone(),
+            office_skill_guard,
+            access,
+            bash_allow: self.bash_allow.clone(),
+            bash_full_access: matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
+        })?
+        .hooks;
+        let _ = subagent_hooks.set(hooks.clone());
+        append_runtime_log(
+            &self.runtime_logs,
+            NewRuntimeLogEntry::info("hook", "hooks_registered")
+                .with_run_id(run_id.clone())
+                .with_session_id(session_id_str.clone())
+                .with_source("deepagent-app-core::chat_service")
+                .with_message("runtime hooks registered")
+                .with_data(serde_json::json!({
+                    "before_tool_use": hooks.count_at(HookPoint::BeforeToolUse),
+                    "after_tool_use": hooks.count_at(HookPoint::AfterToolUse),
+                    "user_prompt_submit": hooks.count_at(HookPoint::UserPromptSubmit),
+                    "session_start": hooks.count_at(HookPoint::SessionStart),
+                    "session_end": hooks.count_at(HookPoint::SessionEnd),
+                    "verification_failed": hooks.count_at(HookPoint::VerificationFailed),
+                    "approval_policy": policy.label(),
+                    "sandbox_mode": sandbox_mode.label(),
+                })),
         );
 
-        let prompt_gate: RuntimeEngine<'_, SystemClock> =
-            RuntimeEngine::new(&registry, Default::default(), RuntimeConfig::default())
-                .with_hooks(&hooks);
-        match prompt_gate
-            .submit_prompt(session.id(), model_prompt.clone())
+        let prompt_decision = {
+            submit_user_prompt(
+                &registry,
+                &hooks,
+                session.id(),
+                model_prompt.clone(),
+                cancellation.flag(),
+            )
             .await?
-        {
+        };
+        match prompt_decision {
             PromptDecision::Accept(effective_prompt) => {
+                append_runtime_log(
+                    &self.runtime_logs,
+                    NewRuntimeLogEntry::info("hook", "user_prompt_submit_accepted")
+                        .with_run_id(run_id.clone())
+                        .with_session_id(session_id_str.clone())
+                        .with_source("deepagent-app-core::chat_service")
+                        .with_message("UserPromptSubmit accepted prompt")
+                        .with_data(serde_json::json!({
+                            "modified": effective_prompt != model_prompt,
+                            "prompt_len": effective_prompt.chars().count(),
+                        })),
+                );
                 if effective_prompt != model_prompt {
                     prompt_to_record = effective_prompt.clone();
                 }
                 model_prompt = effective_prompt;
             }
             PromptDecision::Rejected { reason } => {
+                append_runtime_log(
+                    &self.runtime_logs,
+                    NewRuntimeLogEntry {
+                        level: "warn".into(),
+                        ..NewRuntimeLogEntry::info("hook", "user_prompt_submit_rejected")
+                            .with_run_id(run_id.clone())
+                            .with_session_id(session_id_str.clone())
+                            .with_source("deepagent-app-core::chat_service")
+                            .with_message(format!("UserPromptSubmit rejected prompt: {reason}"))
+                            .with_data(serde_json::json!({ "reason": reason.clone() }))
+                    },
+                );
                 let message = format!("UserPromptSubmit hook blocked the prompt: {reason}");
-                let session_id = session.id().to_string();
-                session.append(EventPayload::MessageAppended {
-                    message: Message::user(prompt),
-                })?;
-                let task = session.create_task(prompt)?;
-                session.transition_task(task, deepagent_core::task::TaskState::Running)?;
-                sink.emit(RuntimeEvent::RunStarted {
-                    task_id: task.to_string(),
-                });
-                sink.emit(RuntimeEvent::SessionRegistered {
-                    session_id: session_id.clone(),
-                    title: session.state().title.clone(),
-                });
-                sink.emit(RuntimeEvent::TurnStarted { step: 0 });
-                sink.emit(RuntimeEvent::ContentDelta {
-                    text: message.clone(),
-                });
-                session.append(EventPayload::MessageAppended {
-                    message: Message::assistant(&message),
-                })?;
-                session.transition_task(task, deepagent_core::task::TaskState::Completed)?;
-                sink.emit(RuntimeEvent::RunCompleted { message });
+                let session_id =
+                    finalize_blocked_user_prompt(&mut session, prompt, message, sink.as_ref())?;
+                drop(hooks);
                 drop(sink);
                 let _ = pump.await;
                 return Ok(session_id);
             }
             PromptDecision::NeedsApproval { reason, .. } => {
+                append_runtime_log(
+                    &self.runtime_logs,
+                    NewRuntimeLogEntry::info("hook", "user_prompt_submit_needs_approval")
+                        .with_run_id(run_id.clone())
+                        .with_session_id(session_id_str.clone())
+                        .with_source("deepagent-app-core::chat_service")
+                        .with_message(format!(
+                            "UserPromptSubmit needs approval before prompt can run: {reason}"
+                        ))
+                        .with_data(serde_json::json!({ "reason": reason.clone() })),
+                );
                 let message = format!(
                     "UserPromptSubmit hook requires approval before this prompt can run: {reason}"
                 );
-                let session_id = session.id().to_string();
-                session.append(EventPayload::MessageAppended {
-                    message: Message::user(prompt),
-                })?;
-                let task = session.create_task(prompt)?;
-                session.transition_task(task, deepagent_core::task::TaskState::Running)?;
-                sink.emit(RuntimeEvent::RunStarted {
-                    task_id: task.to_string(),
-                });
-                sink.emit(RuntimeEvent::SessionRegistered {
-                    session_id: session_id.clone(),
-                    title: session.state().title.clone(),
-                });
-                sink.emit(RuntimeEvent::TurnStarted { step: 0 });
-                sink.emit(RuntimeEvent::ContentDelta {
-                    text: message.clone(),
-                });
-                session.append(EventPayload::MessageAppended {
-                    message: Message::assistant(&message),
-                })?;
-                session.transition_task(task, deepagent_core::task::TaskState::Completed)?;
-                sink.emit(RuntimeEvent::RunCompleted { message });
+                let session_id =
+                    finalize_blocked_user_prompt(&mut session, prompt, message, sink.as_ref())?;
+                drop(hooks);
                 drop(sink);
                 let _ = pump.await;
                 return Ok(session_id);
@@ -3327,7 +2674,14 @@ impl ChatService {
         // the heuristic summarizer if the model call fails, and records a
         // `ContextCompacted` event. No-op for new sessions / short history.
         let (history, context_compacted) = self
-            .maybe_compact_history(&mut session, history, &client, &model, &context_policy)
+            .maybe_compact_history(
+                &mut session,
+                history,
+                &client,
+                &model,
+                &context_policy,
+                &hooks,
+            )
             .await;
         let session_id = session.id().to_string();
         {
@@ -3401,213 +2755,115 @@ impl ChatService {
             sink.emit(RuntimeEvent::RunCompleted {
                 message: abort_message,
             });
+            drop(hooks);
             drop(sink);
             let _ = pump.await;
             return Ok(session_id);
         }
 
-        // Passive knowledge injection (primary precision channel): retrieve
-        // entries relevant to this prompt and inject them as a `<system-
-        // reminder>` block prepended to the user-facing message we send to
-        // the model. This keeps the system prompt's static + dynamic split
-        // unchanged and routes the hint through the well-known reminder
-        // meta-channel (Phase 3C), so the model treats it as system metadata
-        // rather than authentic user wording.
-        let mut system_prompt = build_system_prompt(&root);
-        if let Some(projection) = plugin_projection.as_ref() {
-            if let Some(block) = plugin_output_styles_prompt(&projection.output_styles) {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(&block);
-            }
-        }
-        // Git context injection (Phase 2A): append a compact VCS snapshot after
-        // the DYNAMIC boundary so the cacheable static prefix stays intact.
-        // Best-effort: no git / non-repo yields nothing (backward compatible).
-        if let Some(git) = deepagent_workspace::detect_git_context(&root) {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&git.to_prompt_block());
-        }
-        // Sandbox permissions injection: tell the model its current sandbox
-        // constraints so it doesn't attempt blocked operations or retry
-        // indefinitely after a denial.
-        {
-            let perm_block = crate::permissions_prompt::sandbox_instructions(sandbox_mode);
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&perm_block);
-        }
-        // Tool-search announcement (Phase 3B). Lists the deferred tool names
-        // the model can `tool_search` for. Lives in the dynamic section so
-        // the static prefix stays cache-stable; emitted only when at least
-        // one deferred tool is currently undiscovered.
-        let undiscovered_deferred_names: Vec<String> = {
-            let set = tool_search_discovered
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let mut out: Vec<String> = deferred_tool_names
-                .iter()
-                .filter(|n| !set.contains(n.as_str()))
-                .cloned()
-                .collect();
-            out.sort();
-            out.dedup();
-            out
-        };
-        if let Some(block) = deferred_tools_announcement(&undiscovered_deferred_names) {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&block);
-        }
-        // Skill-catalog reminder injection (channel A of the auto-activation
-        // design). Only when a `SkillsService` is attached AND the catalog
-        // master switch is on AND something new has appeared since the last
-        // turn. The state-tracker mutates per-session so a fresh session
-        // sees the full visible registry on turn 0; subsequent turns only
-        // see deltas (Property 11). The block is wrapped in
-        // `<system-reminder>` so the model treats it as meta-channel
-        // commentary rather than authentic user wording — the rendered
-        // body is itself an `<available-skills>` envelope produced by
-        // [`SkillRegistry::formatted_catalog`]
-        // (deepagent-skills/src/registry.rs).
-        if let Some(skills) = &self.skills {
-            let settings = self.settings.load().ok().flatten();
-            let catalog_block = if let Some(settings) = settings {
-                let svc = skills
-                    .lock()
-                    .map_err(|_| CoreError::invalid("skills service mutex poisoned"))?;
-                let mut state_map = self.skill_catalog_state.lock().unwrap_or_else(|p| {
-                    // Poisoned guard: clear the inner map so subsequent
-                    // turns recover. The current turn re-announces the full
-                    // catalog (default state).
-                    let mut inner = p.into_inner();
-                    inner.clear();
-                    inner
-                });
-                let entry = state_map.entry(session_id.clone()).or_default();
-                entry.next_delta(svc.manager().registry(), &settings)
-            } else {
-                // Settings not initialized yet (the user hasn't set an API
-                // key). The chat run won't actually reach the model — it'll
-                // fail upstream — but we still don't want to crash the
-                // catalog injection here.
-                None
-            };
-            if let Some(block) = catalog_block {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(&crate::system_reminder::wrap(&block));
-            }
-            let invoked = collect_invoked_skill_records_from_events(&prior_events);
-            if let Some(block) = invoked_skills_reminder(&invoked) {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(&crate::system_reminder::wrap(&block));
-            }
-        }
-        let knowledge_reminder = self
-            .knowledge
-            .as_ref()
-            .map(|k| k.passive_block(prompt_for_model))
-            .filter(|b| !b.trim().is_empty())
-            .map(|b| crate::system_reminder::wrap(&b));
-        let remote_reminder = if matches!(effective_env_mode, Some("remote")) {
-            if let (Some(factory), Some(conn_id)) = (&self.remote_context_factory, connection_id) {
-                match factory(conn_id.to_string()).await {
-                    Ok(Some(block)) if !block.trim().is_empty() => {
-                        Some(crate::system_reminder::wrap(&block))
-                    }
-                    Ok(_) => None,
-                    Err(err) => {
-                        tracing::warn!(connection_id = conn_id, error = %err, "failed to collect remote context");
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let mut prompt_prefixes: Vec<String> = Vec::new();
-        if let Some(reminder) = remote_reminder {
-            prompt_prefixes.push(reminder);
-        }
-        if let Some(reminder) = knowledge_reminder.clone() {
-            prompt_prefixes.push(reminder);
-        }
-        let final_user_prompt: String = if prompt_prefixes.is_empty() {
-            prompt_for_model.to_string()
-        } else {
-            format!("{}\n\n{}", prompt_prefixes.join("\n\n"), prompt_for_model)
-        };
-        let context_usage = build_context_pack_snapshot(
-            &context_policy,
-            &system_prompt,
-            &history,
-            &final_user_prompt,
-            &tools,
+        let run_context = build_run_context(RunContextRequest {
+            root: &root,
+            sandbox_mode,
+            plugin_projection: plugin_projection.as_ref(),
+            tool_manifest: &tool_manifest,
+            skills: self.skills.as_ref(),
+            settings: &self.settings,
+            skill_catalog_state: &self.skill_catalog_state,
+            session_id: &session_id,
+            prior_events: &prior_events,
+            knowledge: self.knowledge.as_ref(),
+            prompt_for_model,
+            effective_env_mode,
+            connection_id,
+            remote_context_factory: self.remote_context_factory.as_ref(),
+            context_policy: &context_policy,
+            history: &history,
+            tools: &tools,
             context_compacted,
-            &HeuristicTokenizer::new(),
-        );
+        })
+        .await?;
+        let system_manifest = run_context.system_manifest;
+        if !system_manifest.loaded_paths.is_empty() {
+            if let Err(error) = hooks
+                .dispatch(&deepagent_hooks::HookContext::new(
+                    session.id(),
+                    HookPoint::InstructionsLoaded,
+                    deepagent_hooks::HookData::Instructions {
+                        paths: system_manifest
+                            .loaded_paths
+                            .iter()
+                            .map(|path| path.to_string_lossy().to_string())
+                            .collect(),
+                    },
+                ))
+                .await
+            {
+                tracing::warn!(error = %error, "InstructionsLoaded hook failed");
+            }
+        }
+        let system_prompt = run_context.system_prompt;
+        let final_user_prompt = run_context.final_user_prompt;
         sink.emit(RuntimeEvent::ContextUsage {
-            snapshot: context_usage,
+            snapshot: run_context.context_usage,
         });
 
         // Clone the model handle for the post-run auto-capture (the originals
         // are moved into the agent below).
         let capture_client = client.clone();
         let capture_model = model.clone();
+        let reactive_compactor: Arc<dyn ReactiveContextCompactor> =
+            Arc::new(HookedReactiveContextCompactor::new(
+                client.clone(),
+                model.clone(),
+                hooks.clone(),
+                session.id(),
+            ));
         // Model name for cost attribution (the original `model` is moved into
         // the agent below).
         let model_name_for_cost = model.clone();
 
         let mut agent = ModelAgent::new(client, model, system_prompt, final_user_prompt, tools)
             .with_thinking_depth(effective_thinking_depth)
+            .with_fallback_model(fallback_model)
+            .with_reactive_compactor(reactive_compactor)
             .with_history(history)
             .with_events(sink.clone());
 
         let verification_policy = self.settings.verification_policy().unwrap_or_default();
 
-        let mut per_tool_max_tokens = std::collections::BTreeMap::new();
-        per_tool_max_tokens.insert(deepagent_builtins::SKILL_TOOL_NAME.to_string(), 24_000);
-        let config = RuntimeConfig {
-            permissions: granted,
-            tool_result_budget: deepagent_runtime::ToolResultBudgetConfig {
-                output_dir: self.tool_results_dir.clone(),
-                per_tool_max_tokens,
-                ..Default::default()
-            },
-            tool_result_decorator: Some(Arc::new(
-                deepagent_runtime::ChainDecorator::new()
-                    .push(Arc::new(
-                        crate::plan_mode_reminder::PlanModeReminderDecorator::new(plan.clone()),
-                    ))
-                    .push(Arc::new(
-                        crate::todo_snapshot_reminder::TodoSnapshotReminderDecorator::new(
-                            todo_store.clone(),
-                        ),
-                    ))
-                    .push(Arc::new(
-                        crate::verification_decorator::VerificationDecorator::with_policy(
-                            Arc::new(
-                                crate::verification_dispatcher::VerificationDispatcher::standard(),
-                            ),
-                            Some(root.clone()),
-                            verification_policy,
-                        ),
-                    )),
+        let session_sequence = deepagent_persistence::event_store::EventStore::new(&self.db)
+            .load_session(session.id())?
+            .last()
+            .map(|event| event.sequence as i64)
+            .unwrap_or(0);
+
+        let kernel_runtime = build_kernel_runtime_config(KernelRuntimeConfigRequest {
+            db: self.db.clone(),
+            run_id: &run_id,
+            session_sequence,
+            root: &root,
+            tool_results_dir: &self.tool_results_dir,
+            plan: plan.clone(),
+            todo_store: todo_store.clone(),
+            verification_policy,
+            fire_session_start: continue_session.is_none(),
+            granted,
+            prompt_for_model,
+            nested_instructions: Some(Arc::new(
+                crate::nested_instructions::NestedInstructionsDecorator::new(
+                    root.clone(),
+                    system_manifest.loaded_paths.iter().cloned(),
+                    hooks.clone(),
+                    session.id(),
+                ),
             )),
-            ..Default::default()
-        };
+        })?;
+        let _ = subagent_parent_checkpoint.set(kernel_runtime.checkpoint.clone());
+        let config = kernel_runtime.config;
 
         // Register a cancellation flag for this session so the UI can stop it.
-        let cancel = Arc::new(AtomicBool::new(false));
-        {
-            let mut map = self.cancellations.lock().unwrap_or_else(|p| p.into_inner());
-            map.insert(session_id.clone(), cancel.clone());
-        }
-
-        let engine = RuntimeEngine::new(&registry, Default::default(), config)
-            .with_events(sink.clone())
-            .with_approvals(gate)
-            .with_hooks(&hooks)
-            .with_cancel(cancel);
+        cancellation.add_alias(session_id.clone());
+        let cancel = cancellation.flag();
 
         // Snapshot the current discovered set before the engine starts so we
         // can compute the delta after — only newly-discovered names get
@@ -3618,472 +2874,74 @@ impl ChatService {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
 
-        // Run the loop. Errors are surfaced as a terminal RunFailed event so the
-        // UI always gets a clean end, then returned to the caller.
-        let run_result = engine.run(&mut session, task, &mut agent).await;
-
-        // Persist the discovered-tools delta (Phase 3C). Anything in the
-        // current set that wasn't there before the run is new — append it as
-        // a `ToolsDiscovered` event so a future resume reconstructs the same
-        // active toolset without forcing the model to re-issue `tool_search`.
-        let new_discovered: Vec<String> = {
-            let now = tool_search_discovered
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let mut out: Vec<String> = now
-                .iter()
-                .filter(|n| !discovered_before_run.contains(n.as_str()))
-                .cloned()
-                .collect();
-            out.sort();
-            out
-        };
-        if !new_discovered.is_empty() {
-            if let Err(e) = session.append(EventPayload::ToolsDiscovered {
-                names: new_discovered,
-            }) {
-                tracing::warn!(error = %e, "failed to persist ToolsDiscovered event");
+        // Run the loop through AgentKernel v2. The legacy RuntimeEngine branch
+        // is no longer a production fallback for root chat runs; RuntimeEngine
+        // remains available only as an internal execution primitive while the
+        // kernel is being expanded.
+        // Auto-discovered acceptance plan (Phase E): code tasks in a
+        // recognized build system run build/type checks after completion,
+        // with bounded self-repair rounds via the reflection engine.
+        let verification_plan =
+            crate::completion_plan::discover_verification_plan(&root, prompt_for_model);
+        let (run_result, run_succeeded): (Result<()>, bool) = {
+            let mut kernel = AgentKernel::<SystemClock>::new(
+                self.db.clone(),
+                &registry,
+                Default::default(),
+                config,
+                run_id.clone(),
+            )
+            .with_events(sink.clone())
+            .with_approvals(gate)
+            .with_hooks(&hooks)
+            .with_cancellation_flag(cancel);
+            if let Some(plan) = verification_plan.as_ref() {
+                kernel = kernel.with_verification(plan);
             }
-        }
-
-        // Cost recording: persist this run's token cost (Phase 1B). Done before
-        // dropping the agent so `cumulative_usage()` is still reachable. No-op
-        // when no cost tracker is attached. Failures are logged, never fatal.
-        if let Some(cost) = &self.cost {
-            if let Some(u) = agent.cumulative_usage() {
-                if u.total_tokens > 0 {
-                    match cost.record(CostRecordRequest {
-                        session_id: session_id.clone(),
-                        model: model_name_for_cost.clone(),
-                        input_tokens: u.prompt_tokens,
-                        output_tokens: u.completion_tokens,
-                        cache_hit_tokens: u.prompt_cache_hit_tokens,
-                        cache_miss_tokens: u.prompt_cache_miss_tokens,
-                        total_tokens: u.total_tokens,
-                    }) {
-                        Ok(cny) => {
-                            tracing::info!(cost_yuan = cny, "recorded run cost");
-                            sink.emit(RuntimeEvent::Usage {
-                                prompt_tokens: 0,
-                                completion_tokens: 0,
-                                total_tokens: 0,
-                                prompt_cache_hit_tokens: 0,
-                                prompt_cache_miss_tokens: 0,
-                                cost_yuan: Some(cny),
-                            });
-                        }
-                        Err(e) => tracing::warn!(error = %e, "failed to record run cost"),
-                    }
+            match kernel
+                .start(RunRequest::new(&mut session, task, &mut agent))
+                .await
+            {
+                Ok(terminal) => {
+                    let succeeded = terminal.succeeded();
+                    (terminal.into_completion_result(), succeeded)
                 }
+                Err(error) => (Err(error), false),
             }
-        }
+        };
 
-        // Drop the cancellation flag for this session (run is over).
-        {
-            let mut map = self.cancellations.lock().unwrap_or_else(|p| p.into_inner());
-            map.remove(&session_id);
-        }
+        AppRunFinalizer::new(
+            self.db.clone(),
+            self.cost.clone(),
+            self.knowledge.clone(),
+            self.cancellations.clone(),
+        )
+        .finalize_after_kernel(
+            &mut session,
+            AppRunFinalizerRequest {
+                session_id: &session_id,
+                run_id: &run_id,
+                discovered_before_run: &discovered_before_run,
+                discovered_tools: &tool_search_discovered,
+                usage: agent.cumulative_usage(),
+                model_name: &model_name_for_cost,
+                sink: sink.as_ref(),
+                run_succeeded,
+                capture_client,
+                capture_model,
+            },
+        )?;
 
         // Drop everything holding a clone of the event-sink sender so the
         // channel closes and the pump task can finish; then await it to ensure
         // all events were delivered.
-        drop(engine);
         drop(agent);
+        drop(hooks);
         drop(sink);
         let _ = pump.await;
 
-        // Session auto-capture: if the run succeeded and a knowledge base with
-        // auto-capture is attached, persist a reusable recovery lesson in the
-        // background. Spawned detached so it never delays the user's answer; all
-        // failures are silent.
-        if run_result.is_ok() {
-            if let Some(knowledge) = &self.knowledge {
-                if knowledge.auto_capture_enabled() {
-                    let knowledge = knowledge.clone();
-                    let db = self.db.clone();
-                    let sid = session_id.clone();
-                    let client = capture_client;
-                    let model = capture_model;
-                    tokio::spawn(async move {
-                        let events = match deepagent_core::id::SessionId::from_str(&sid) {
-                            Ok(id) => {
-                                let store =
-                                    deepagent_persistence::event_store::EventStore::new(&db);
-                                match store.load_session(id) {
-                                    Ok(evs) => evs,
-                                    Err(e) => {
-                                        tracing::warn!(error = %e, "auto-capture: load session failed");
-                                        return;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "auto-capture: bad session id");
-                                return;
-                            }
-                        };
-                        if let Some(dto) = knowledge
-                            .capture_from_session(client, model, &events, &sid)
-                            .await
-                        {
-                            tracing::info!(id = %dto.id, "auto-captured knowledge");
-                        }
-                    });
-                }
-            }
-        }
-
         run_result.map(|_| session_id)
     }
-}
-
-/// Runs a sub-agent for the `task` tool: a nested agent loop over a sub-registry
-/// (the built-ins minus `task`, so no recursion), on an ephemeral in-memory
-/// session, returning only the sub-agent's final message.
-struct ChatSubagentRunner {
-    client: Arc<ModelClient>,
-    model: String,
-    thinking_depth: ThinkingDepth,
-    registry: Arc<ToolRegistry>,
-    root: PathBuf,
-    /// Tool-search mode at the time the parent session built this runner.
-    /// Captured per-runner (not per-call) so swapping the user setting
-    /// mid-run doesn't change behavior of an in-flight sub-agent.
-    tool_search_mode: deepagent_builtins::ToolSearchMode,
-    /// Auto-mode threshold inherited from the parent.
-    tool_search_auto_threshold: usize,
-    /// Snapshot of parent's discovered tool names at runner construction.
-    /// Each `run()` call seeds a fresh `Arc<Mutex<HashSet>>` from this
-    /// snapshot — sub-agent discoveries DON'T propagate back to the parent.
-    parent_discovered_snapshot: std::collections::HashSet<String>,
-    /// Local and plugin-provided sub-agent definitions keyed by `subagent_type`.
-    agent_definitions: std::collections::BTreeMap<String, RuntimeAgentDefinition>,
-}
-
-#[async_trait::async_trait]
-impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
-    async fn run(&self, request: deepagent_builtins::SubagentRequest) -> Result<String> {
-        use deepagent_runtime::{ModelAgent, RunOutcome, RuntimeConfig, RuntimeEngine};
-
-        let agent_profile = request
-            .subagent_type
-            .as_deref()
-            .and_then(|agent_type| self.agent_definitions.get(agent_type));
-
-        // Sub-agent gets a CLONE of the parent's discovered set so it starts
-        // with the same active toolset, but writes here don't affect the
-        // parent (independent context — Req 4.6).
-        let sub_discovered: DiscoveredToolSet = Arc::new(std::sync::Mutex::new(
-            self.parent_discovered_snapshot.clone(),
-        ));
-
-        // Clone the (shared) parent sub-registry so we can register the
-        // sub-agent's own `tool_search` tool without mutating the Arc the
-        // chat_service hands out to every sub-agent invocation. ToolRegistry
-        // is a `BTreeMap<String, ToolSpec>` clone — cheap by Rust standards
-        // and amortized over the entire sub-agent run.
-        let mut sub_registry: ToolRegistry = (*self.registry).clone();
-        let _ = register_tool_search_into(
-            &mut sub_registry,
-            self.tool_search_mode,
-            sub_discovered.clone(),
-            self.tool_search_auto_threshold,
-        );
-
-        // A sub-agent gets the same tool schemas (minus task) advertised to
-        // it, with deferred-but-not-yet-discovered tools filtered out exactly
-        // like the main run.
-        let granted = PermissionSet::developer();
-        let mut tools: Vec<ToolSchema> = build_visible_tool_schemas(
-            &sub_registry,
-            &granted,
-            self.tool_search_mode,
-            &sub_discovered,
-        );
-        apply_runtime_agent_tool_filter(&mut tools, agent_profile);
-
-        let system = subagent_system_prompt(&self.root, agent_profile);
-
-        // Ephemeral in-memory session: sub-agent runs are not persisted to the
-        // main project DB (only the final result re-enters the main transcript
-        // as the tool result).
-        let db = Database::open_in_memory()?;
-        let clock = SystemClock;
-        let mut session = Session::create(&db, &clock, Some(&request.description))?;
-        let task = session.create_task(&request.prompt)?;
-
-        let mut agent = ModelAgent::new(
-            self.client.clone(),
-            self.model.clone(),
-            system,
-            &request.prompt,
-            tools,
-        )
-        .with_thinking_depth(self.thinking_depth);
-        let config = RuntimeConfig {
-            permissions: granted,
-            ..Default::default()
-        };
-        let engine = RuntimeEngine::new(&sub_registry, Default::default(), config);
-        match engine.run(&mut session, task, &mut agent).await? {
-            RunOutcome::Completed(msg) => Ok(msg),
-            RunOutcome::AwaitingApproval(msg) => {
-                Ok(format!("sub-agent paused awaiting approval: {msg}"))
-            }
-            RunOutcome::StepLimitReached => Ok(
-                "sub-agent stopped after reaching its step limit without a final answer."
-                    .to_string(),
-            ),
-            RunOutcome::Cancelled => Ok("sub-agent was cancelled.".to_string()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RuntimeAgentDefinition {
-    type_name: String,
-    source_label: String,
-    def: deepagent_prompts::AgentDef,
-}
-
-impl RuntimeAgentDefinition {
-    fn task_agent_type(&self) -> deepagent_builtins::TaskAgentType {
-        deepagent_builtins::TaskAgentType::new(self.type_name.clone(), self.def.description.clone())
-    }
-}
-
-fn collect_runtime_agent_definitions(
-    local_roots: impl IntoIterator<Item = PathBuf>,
-    plugin_projection: Option<&crate::plugin_runtime::PluginRuntimeProjection>,
-) -> Vec<RuntimeAgentDefinition> {
-    let mut definitions = Vec::new();
-    let mut seen_types = std::collections::HashSet::new();
-    let mut seen_local_roots = std::collections::HashSet::new();
-
-    for root in local_roots {
-        if seen_local_roots.insert(root.clone()) {
-            let dir = root.join(".deepagent").join("agents");
-            collect_runtime_agent_dir(&dir, None, &mut definitions, &mut seen_types);
-        }
-    }
-
-    if let Some(projection) = plugin_projection {
-        for root in &projection.agent_roots {
-            collect_runtime_agent_dir(
-                &root.path,
-                Some(root.plugin_name.as_str()),
-                &mut definitions,
-                &mut seen_types,
-            );
-        }
-    }
-
-    definitions
-}
-
-fn collect_runtime_agent_dir(
-    dir: &std::path::Path,
-    plugin_name: Option<&str>,
-    definitions: &mut Vec<RuntimeAgentDefinition>,
-    seen_types: &mut std::collections::HashSet<String>,
-) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("md"))
-        .collect();
-    paths.sort();
-
-    for path in paths {
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Some(def) = deepagent_prompts::AgentDef::parse(&content) else {
-            continue;
-        };
-        let type_name = runtime_agent_type_name(plugin_name, &def.name);
-        if !seen_types.insert(type_name.clone()) {
-            continue;
-        }
-        let source_label = plugin_name
-            .map(|name| format!("plugin:{name}"))
-            .unwrap_or_else(|| "project".to_string());
-        definitions.push(RuntimeAgentDefinition {
-            type_name,
-            source_label,
-            def,
-        });
-    }
-}
-
-fn runtime_agent_type_name(plugin_name: Option<&str>, agent_name: &str) -> String {
-    match plugin_name {
-        Some(plugin) => format!("{plugin}:{agent_name}"),
-        None => agent_name.to_string(),
-    }
-}
-
-fn subagent_system_prompt(
-    root: &std::path::Path,
-    agent_profile: Option<&RuntimeAgentDefinition>,
-) -> String {
-    let mut system = format!(
-        "{base}{boundary}",
-        base = crate::system_prompt::system_prompt_base(),
-        boundary = SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
-    );
-
-    if let Some(agent) = agent_profile {
-        system.push_str("# Sub-agent identity\n");
-        system.push_str("- Agent type: ");
-        system.push_str(&agent.type_name);
-        system.push('\n');
-        system.push_str("- Source: ");
-        system.push_str(&agent.source_label);
-        system.push('\n');
-        system.push_str("- Description: ");
-        system.push_str(&agent.def.description);
-        system.push('\n');
-        if !agent.def.tools.is_empty() {
-            system.push_str("- Declared tools: ");
-            system.push_str(&agent.def.tools.join(", "));
-            system.push('\n');
-        }
-        if let Some(model) = agent.def.model.name() {
-            system.push_str("- Preferred model: ");
-            system.push_str(model);
-            system.push_str(" (host may still use the session model)\n");
-        }
-        let body = agent.def.body.trim();
-        if !body.is_empty() {
-            system.push('\n');
-            system.push_str(body);
-            system.push_str("\n\n");
-        }
-    }
-
-    system.push_str("# Sub-agent task\n");
-    system.push_str(
-        "You are a focused sub-agent. Do exactly the delegated task and return a complete, \
-         self-contained final answer - the calling agent sees only your final message, not \
-         your intermediate steps.\n- Working directory: ",
-    );
-    system.push_str(&root.display().to_string());
-    system
-}
-
-fn apply_runtime_agent_tool_filter(
-    tools: &mut Vec<ToolSchema>,
-    agent_profile: Option<&RuntimeAgentDefinition>,
-) {
-    let Some(agent) = agent_profile else {
-        return;
-    };
-    let Some(allowlist) = runtime_agent_tool_allowlist(&agent.def.tools) else {
-        return;
-    };
-    tools.retain(|tool| allowlist.contains(&tool.function.name));
-}
-
-fn runtime_agent_tool_allowlist(
-    declared_tools: &[String],
-) -> Option<std::collections::HashSet<String>> {
-    if declared_tools.is_empty() {
-        return None;
-    }
-    let mut allowlist = std::collections::HashSet::new();
-    for raw in declared_tools {
-        for name in normalize_runtime_agent_tool_name(raw) {
-            allowlist.insert(name);
-        }
-    }
-    Some(allowlist)
-}
-
-fn normalize_runtime_agent_tool_name(raw: &str) -> Vec<String> {
-    let name = raw
-        .trim()
-        .split_once('(')
-        .map(|(name, _)| name)
-        .unwrap_or(raw)
-        .trim();
-    if name.is_empty() {
-        return Vec::new();
-    }
-
-    let compact = name
-        .chars()
-        .filter(|c| *c != '_' && *c != '-' && !c.is_whitespace())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    let mapped = match compact.as_str() {
-        "bash" => Some("bash"),
-        "glob" => Some("glob"),
-        "grep" => Some("grep"),
-        "read" => Some("read_file"),
-        "write" => Some("write_file"),
-        "edit" => Some("edit_file"),
-        "multiedit" => Some("multi_edit"),
-        "ls" | "list" | "listdir" => Some("list_dir"),
-        "todowrite" => Some("todo_write"),
-        "tasklist" => Some("task_list"),
-        "webfetch" => Some("web_fetch"),
-        "websearch" => Some("web_search"),
-        "skill" => Some("skill"),
-        "askuserquestion" => Some("ask_user_question"),
-        "task" => None,
-        _ => None,
-    };
-
-    let mut names = Vec::new();
-    if let Some(mapped) = mapped {
-        names.push(mapped.to_string());
-    } else {
-        names.push(name.to_string());
-        let snake = deepagent_builtins::parse_tool_name(name).join("_");
-        if !snake.is_empty() && snake != name {
-            names.push(snake);
-        }
-    }
-    names.sort();
-    names.dedup();
-    names
-}
-
-/// Rebuild a plain conversation (user/assistant text turns) from a session's
-/// event log, for seeding the model when continuing an existing session.
-///
-/// Only [`EventPayload::MessageAppended`] user/assistant turns are taken, and
-/// any `tool_calls` are stripped: tool *requests* live as separate
-/// `ToolCallRequested`/`ToolCallCompleted` events (not assistant messages), so
-/// replaying them as bare `tool_calls` would dangle without their matching
-/// `tool` results and the API would reject the request. Plain text turns are
-/// enough context for a follow-up question.
-fn conversation_from_events(events: &[deepagent_core::event::Event]) -> Vec<Message> {
-    use deepagent_core::message::Role;
-    let mut out = Vec::new();
-    for ev in events {
-        if let EventPayload::MessageAppended { message } = &ev.payload {
-            if message
-                .content
-                .starts_with("[Earlier conversation compacted to summary]")
-            {
-                out.clear();
-                out.push(Message::text(message.role, message.content.clone()));
-                continue;
-            }
-            match message.role {
-                Role::User | Role::Assistant if !message.content.trim().is_empty() => {
-                    out.push(Message::text(message.role, message.content.clone()));
-                }
-                _ => {}
-            }
-        }
-    }
-    out
 }
 
 fn parse_slash_invocation(line: &str) -> Option<(&str, &str)> {
@@ -4262,340 +3120,6 @@ fn on_off(value: bool) -> &'static str {
     }
 }
 
-/// Decide whether to actually activate tool-search for this registry.
-/// `Disabled` is rejected upstream; `Enabled` is always active; `Auto` is
-/// active only when the deferred-tool schema size meets `threshold_chars`.
-fn should_activate_tool_search(
-    registry: &ToolRegistry,
-    mode: deepagent_builtins::ToolSearchMode,
-    threshold_chars: usize,
-) -> bool {
-    match mode {
-        deepagent_builtins::ToolSearchMode::Disabled => false,
-        deepagent_builtins::ToolSearchMode::Enabled => true,
-        deepagent_builtins::ToolSearchMode::Auto => {
-            let total: usize = registry
-                .iter_specs()
-                .filter(|spec| deepagent_builtins::is_deferred_tool(spec.tool.as_ref(), mode))
-                .map(|spec| {
-                    spec.descriptor.name.len()
-                        + spec.descriptor.description.len()
-                        + spec.descriptor.parameters.to_string().len()
-                })
-                .sum();
-            total >= threshold_chars
-        }
-    }
-}
-
-/// Register the `tool_search` built-in into `registry` if `mode` activates
-/// (subject to the threshold for `Auto`). Returns the names of every
-/// deferred tool the snapshot captured (or empty when the mode short-
-/// circuits / no tools are eligible).
-///
-/// Free function so both the main session (via `ChatService`) and the
-/// sub-agent runner (`ChatSubagentRunner`) can call it without sharing
-/// service-level state.
-fn register_tool_search_into(
-    registry: &mut ToolRegistry,
-    mode: deepagent_builtins::ToolSearchMode,
-    discovered: DiscoveredToolSet,
-    auto_threshold_chars: usize,
-) -> Result<Vec<String>> {
-    if !mode.is_active() || !should_activate_tool_search(registry, mode, auto_threshold_chars) {
-        return Ok(Vec::new());
-    }
-    let deferred: Vec<deepagent_builtins::DeferredToolSnapshot> = registry
-        .iter_specs()
-        .filter(|spec| deepagent_builtins::is_deferred_tool(spec.tool.as_ref(), mode))
-        .map(|spec| deepagent_builtins::DeferredToolSnapshot {
-            name: spec.descriptor.name.clone(),
-            description: spec.descriptor.description.clone(),
-        })
-        .collect();
-    if deferred.is_empty() {
-        return Ok(Vec::new());
-    }
-    let names: Vec<String> = deferred.iter().map(|s| s.name.clone()).collect();
-    registry.register(Arc::new(deepagent_builtins::ToolSearchTool::new(
-        deferred, discovered,
-    )))?;
-    Ok(names)
-}
-
-/// Extract the cumulative set of discovered-tool names from a session's
-/// event stream. Walks every `ToolsDiscovered` payload (each carrying a
-/// delta) and returns the union, preserving first-seen order. Used at the
-/// start of `run_in_session` to seed `tool_search_discovered` on resume.
-fn collect_discovered_tools_from_events(events: &[deepagent_core::event::Event]) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for e in events {
-        if let EventPayload::ToolsDiscovered { names } = &e.payload {
-            for name in names {
-                if seen.insert(name.clone()) {
-                    out.push(name.clone());
-                }
-            }
-        }
-    }
-    out
-}
-
-fn collect_invoked_skill_ids_from_events(
-    events: &[deepagent_core::event::Event],
-) -> std::collections::HashSet<String> {
-    let mut pending: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut invoked = std::collections::HashSet::new();
-    for event in events {
-        match &event.payload {
-            EventPayload::ToolCallRequested { call }
-                if call.name == deepagent_builtins::SKILL_TOOL_NAME =>
-            {
-                if let Some(id) = call
-                    .arguments
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    pending.insert(call.id.clone(), id.to_string());
-                }
-            }
-            EventPayload::ToolCallCompleted { call_id, ok, .. } if *ok => {
-                if let Some(id) = pending.remove(call_id) {
-                    invoked.insert(id);
-                }
-            }
-            _ => {}
-        }
-    }
-    invoked
-}
-
-fn collect_invoked_skill_records_from_events(
-    events: &[deepagent_core::event::Event],
-) -> Vec<InvokedSkillRecord> {
-    let mut pending: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut index_by_id: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    let mut records = Vec::new();
-
-    for event in events {
-        match &event.payload {
-            EventPayload::ToolCallRequested { call }
-                if call.name == deepagent_builtins::SKILL_TOOL_NAME =>
-            {
-                if let Some(id) = call
-                    .arguments
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    pending.insert(call.id.clone(), id.to_string());
-                }
-            }
-            EventPayload::ToolCallCompleted {
-                call_id,
-                ok,
-                output,
-                ..
-            } if *ok => {
-                let Some(requested_id) = pending.remove(call_id) else {
-                    continue;
-                };
-                let Some(record) = invoked_skill_record_from_output(&requested_id, output) else {
-                    continue;
-                };
-                if let Some(index) = index_by_id.get(&record.id).copied() {
-                    records[index] = record;
-                } else {
-                    index_by_id.insert(record.id.clone(), records.len());
-                    records.push(record);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    records
-}
-
-fn invoked_skill_record_from_output(
-    requested_id: &str,
-    output: &serde_json::Value,
-) -> Option<InvokedSkillRecord> {
-    let body = output
-        .get("body")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())?
-        .to_string();
-    let id = output
-        .get("id")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(requested_id)
-        .to_string();
-    let name = output
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&id)
-        .to_string();
-    let base_dir = output
-        .get("base_dir")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let resources = output
-        .get("resources")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Some(InvokedSkillRecord {
-        id,
-        name,
-        body,
-        base_dir,
-        resources,
-    })
-}
-
-fn invoked_skills_reminder(records: &[InvokedSkillRecord]) -> Option<String> {
-    if records.is_empty() {
-        return None;
-    }
-
-    let mut out = String::from(
-        "The following skills have already been invoked in this session. Continue following these instructions. Do not re-invoke a listed skill unless you need fresh arguments or updated resources.\n\n<invoked-skills>\n",
-    );
-    for record in records {
-        out.push_str("\n### Skill: ");
-        out.push_str(&record.name);
-        if record.id != record.name {
-            out.push_str(" (`");
-            out.push_str(&record.id);
-            out.push_str("`)");
-        }
-        out.push('\n');
-        if let Some(base_dir) = &record.base_dir {
-            out.push_str("Base directory: ");
-            out.push_str(base_dir);
-            out.push('\n');
-        }
-        if !record.resources.is_empty() {
-            out.push_str("Resources:\n");
-            for resource in &record.resources {
-                out.push_str("- ");
-                out.push_str(resource);
-                out.push('\n');
-            }
-        }
-        out.push('\n');
-        out.push_str(&record.body);
-        out.push('\n');
-    }
-    out.push_str("\n</invoked-skills>");
-    Some(out)
-}
-
-/// Render the dynamic-section "available deferred tools" block.
-///
-/// Returned only when `undiscovered` is non-empty; otherwise `None` so the
-/// caller can skip the append and avoid burning cache on an empty section.
-/// The block lives in the dynamic section (after `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`)
-/// so the static prefix stays byte-stable across turns and across modes.
-fn deferred_tools_announcement(undiscovered: &[String]) -> Option<String> {
-    if undiscovered.is_empty() {
-        return None;
-    }
-    let mut out =
-        String::with_capacity(256 + undiscovered.iter().map(|n| n.len() + 4).sum::<usize>());
-    out.push_str(
-        "## Lazy-loaded tools
-
-The tools below are NOT yet loaded in this session — only their names are visible. To call one, first invoke `tool_search` to fetch its full schema:
-- `select:Name1,Name2` — load these specific names.
-- `slack send` — keyword search; returns the best matches by name + description.
-- `+slack send` — `+`-prefixed terms are required (must appear in name or description).
-
-Once the matching schema lands, the tool becomes callable on the next turn.
-
-<available-deferred-tools>
-",
-    );
-    for name in undiscovered {
-        out.push_str("- ");
-        out.push_str(name);
-        out.push('\n');
-    }
-    out.push_str("</available-deferred-tools>");
-    Some(out)
-}
-
-/// Build the per-turn `tools` array sent to the model.
-///
-/// When `mode == Disabled`, this is byte-identical to the pre-feature
-/// implementation: every tool returned by `registry.visible_to(granted)` is
-/// converted to a `ToolSchema`.
-///
-/// When `mode.is_active()`, deferred tools whose name is NOT in `discovered`
-/// are filtered out — the model only sees their names via the
-/// `<available-deferred-tools>` block (Phase 3B / Task 5) and pulls schemas
-/// in on demand through `tool_search`.
-fn build_visible_tool_schemas(
-    registry: &ToolRegistry,
-    granted: &PermissionSet,
-    mode: deepagent_builtins::ToolSearchMode,
-    discovered: &DiscoveredToolSet,
-) -> Vec<ToolSchema> {
-    let active = mode.is_active();
-    let descriptors = registry.visible_to(granted);
-    if !active {
-        return descriptors
-            .into_iter()
-            .map(|d| ToolSchema::function(d.name, d.description, d.parameters))
-            .collect();
-    }
-    let discovered_snapshot: std::collections::HashSet<String> = discovered
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .iter()
-        .cloned()
-        .collect();
-    descriptors
-        .into_iter()
-        .filter(|d| {
-            // Look up the live tool spec to apply `is_deferred_tool` (which
-            // touches `should_defer` / `always_load`). If the tool isn't in
-            // the registry (race with concurrent edits) keep it visible
-            // — that matches the pre-feature default.
-            let Some(spec) = registry.get(&d.name) else {
-                return true;
-            };
-            if !deepagent_builtins::is_deferred_tool(spec.tool.as_ref(), mode) {
-                return true;
-            }
-            discovered_snapshot.contains(&d.name)
-        })
-        .map(|d| ToolSchema::function(d.name, d.description, d.parameters))
-        .collect()
-}
-
 /// Collect up to `cap` verifier-eligible files from `root`, walking one
 /// directory level deep. Used by the `/verify` slash command.
 fn collect_verifiable_files(root: &std::path::Path, out: &mut Vec<PathBuf>, cap: usize) {
@@ -4643,8 +3167,16 @@ fn collect_verifiable_files(root: &std::path::Path, out: &mut Vec<PathBuf>, cap:
 }
 
 /// A conservative default bash allow-list (read-ish / build commands).
-fn project_hooks_path(root: &Path) -> PathBuf {
-    root.join(".deepagent").join("hooks.json")
+fn project_hook_paths(root: &Path) -> Vec<PathBuf> {
+    // Lower-precedence Claude-compatible files are loaded first; native
+    // DeepAgent files are appended last at the same project scope.
+    vec![
+        root.join(".claude").join("settings.json"),
+        root.join(".claude").join("settings.local.json"),
+        root.join(".deepagent").join("settings.json"),
+        root.join(".deepagent").join("settings.local.json"),
+        root.join(".deepagent").join("hooks.json"),
+    ]
 }
 
 fn default_bash_allow() -> Vec<String> {
@@ -4676,7 +3208,14 @@ fn default_bash_allow() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hook_runtime::{
+        build_hook_agent_registry, parse_model_hook_decision, render_model_hook_prompt,
+        AppHookActionExecutor,
+    };
     use crate::secret_store::MemorySecretStore;
+    use crate::settings::SandboxMode;
+    use deepagent_context::ContextSourceKind;
+    use deepagent_hooks::{HookAction, HookActionType};
     use deepagent_models::transport::{EventSink, MockTransport, TransportRequest};
 
     /// A transport that answers model discovery (GET) AND a streamed chat (the
@@ -4728,6 +3267,187 @@ mod tests {
         settings.initialize("sk-test-1234").await.unwrap();
         let dir = tempfile::tempdir().unwrap();
         (db, settings, dir)
+    }
+
+    #[test]
+    fn model_hook_prompt_replaces_arguments_without_leaking_placeholder() {
+        let action = HookAction {
+            action_type: HookActionType::Prompt,
+            prompt: "Review this lifecycle input: $ARGUMENTS".to_string(),
+            ..HookAction::default()
+        };
+        let rendered = render_model_hook_prompt(
+            &action,
+            &serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"shell"}),
+        )
+        .unwrap();
+        assert!(!rendered.contains("$ARGUMENTS"));
+        assert!(rendered.contains("PreToolUse"));
+        assert!(rendered.contains("shell"));
+    }
+
+    #[test]
+    fn model_hook_decision_is_strict_and_structured() {
+        assert_eq!(
+            parse_model_hook_decision(r#"{"ok":true}"#).unwrap(),
+            HookOutcome::Continue
+        );
+        assert_eq!(
+            parse_model_hook_decision(r#"{"ok":false,"reason":"blocked"}"#)
+                .unwrap()
+                .deny_reason(),
+            Some("blocked")
+        );
+        assert!(parse_model_hook_decision("Looks fine").is_err());
+    }
+
+    #[tokio::test]
+    async fn hook_agent_registry_contains_only_safe_non_recursive_tools() {
+        let (db, settings, dir) = seeded().await;
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path());
+        let (mut source, _) = chat
+            .build_registry(
+                dir.path(),
+                deepagent_builtins::FsAccess::Workspace,
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        source
+            .register(Arc::new(deepagent_builtins::TaskTool::new(
+                deepagent_builtins::UnavailableSubagentRunner,
+                Vec::<String>::new(),
+            )))
+            .unwrap();
+        let isolated = build_hook_agent_registry(&source).unwrap();
+        assert!(isolated.get("task").is_none());
+        assert!(isolated.get("shell").is_none());
+        assert!(isolated
+            .iter_specs()
+            .all(|spec| spec.descriptor.risk == RiskLevel::Safe));
+        assert!(
+            !isolated.is_empty(),
+            "read-only hook agent should retain safe tools"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_hook_blocks_user_input_before_main_agent_turn() {
+        let (db, settings, dir) = seeded().await;
+        settings
+            .set_hooks_json(
+                r#"{
+                    "hooks": {
+                        "UserPromptSubmit": [{"hooks": [{
+                            "type": "prompt",
+                            "prompt": "Reject destructive requests: $ARGUMENTS",
+                            "timeout": 5
+                        }]}]
+                    }
+                }"#,
+            )
+            .unwrap();
+        let transport = Arc::new(MockTransport::new([
+            r#"{"choices":[{"delta":{"content":"{\"ok\":false,\"reason\":\"destructive request\"}"},"finish_reason":"stop"}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]));
+        let chat = ChatService::new(db, settings, transport, dir.path());
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let event_sink = events.clone();
+        chat.run(
+            "delete everything",
+            move |event| event_sink.lock().unwrap().push(event),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        assert!(events.lock().unwrap().iter().any(|event| {
+            matches!(event, RuntimeEvent::RunCompleted { message } if message.contains("destructive request"))
+        }));
+    }
+
+    fn hook_executor_with(
+        transport: Arc<dyn HttpTransport>,
+        mcp: Option<Arc<deepagent_mcp::McpRegistry>>,
+    ) -> AppHookActionExecutor {
+        let (sink, _rx) = ChannelSink::new();
+        let sink: Arc<dyn RuntimeEventSink> = Arc::new(sink);
+        AppHookActionExecutor {
+            client: Arc::new(ModelClient::new(
+                transport,
+                ModelConfig::deepseek("test-key"),
+            )),
+            model: "deepseek-v4-flash".to_string(),
+            thinking_depth: ThinkingDepth::Simple,
+            mcp,
+            agent_registry: Arc::new(ToolRegistry::new()),
+            events: Arc::downgrade(&sink),
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_hook_invokes_connected_tool_and_honors_decision() {
+        let transport = deepagent_mcp::MockTransport::new()
+            .with_result(
+                "tools/list",
+                serde_json::json!({"tools":[{
+                    "name":"check",
+                    "description":"check policy",
+                    "inputSchema":{"type":"object"}
+                }]}),
+            )
+            .with_result(
+                "tools/call",
+                serde_json::json!({
+                    "content":[{"type":"text","text":"{\"ok\":false,\"reason\":\"MCP policy denied\"}"}],
+                    "isError":false
+                }),
+            );
+        let mut registry = deepagent_mcp::McpRegistry::new();
+        registry
+            .register(
+                "policy",
+                Arc::new(deepagent_mcp::McpClient::new(Arc::new(transport))),
+            )
+            .await
+            .unwrap();
+        let executor = hook_executor_with(chat_transport(), Some(Arc::new(registry)));
+        let action = HookAction {
+            action_type: HookActionType::McpTool,
+            command: "mcp__policy__check".to_string(),
+            ..HookAction::default()
+        };
+        let outcome = executor
+            .execute_mcp(&action, serde_json::json!({"hook_event_name":"PreToolUse"}))
+            .await
+            .unwrap();
+        assert_eq!(outcome.deny_reason(), Some("MCP policy denied"));
+    }
+
+    #[tokio::test]
+    async fn agent_hook_runs_isolated_runtime_and_honors_decision() {
+        let transport = Arc::new(MockTransport::new([
+            r#"{"choices":[{"delta":{"content":"{\"ok\":false,\"reason\":\"agent review denied\"}"},"finish_reason":"stop"}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]));
+        let executor = hook_executor_with(transport, None);
+        let action = HookAction {
+            action_type: HookActionType::Agent,
+            prompt: "Review: $ARGUMENTS".to_string(),
+            timeout: Some(5),
+            ..HookAction::default()
+        };
+        let outcome = executor
+            .execute_agent(
+                &action,
+                serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"shell"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.deny_reason(), Some("agent review denied"));
     }
 
     fn style_entry(
@@ -4873,6 +3593,7 @@ mod tests {
                 }],
                 None,
                 false,
+                None,
                 move |ev| {
                     sink.lock().unwrap().push(ev);
                 },
@@ -4912,7 +3633,11 @@ mod tests {
     async fn preflight_abort_persists_failure_without_calling_model() {
         let (db, settings, dir) = seeded().await;
         let transport = Arc::new(RecordingTransport::default());
-        let chat = ChatService::new(db.clone(), settings, transport.clone(), dir.path());
+        let logs = Arc::new(
+            deepagent_persistence::runtime_log_store::RuntimeLogStore::open_in_memory().unwrap(),
+        );
+        let chat = ChatService::new(db.clone(), settings, transport.clone(), dir.path())
+            .with_runtime_logs(logs.clone());
 
         let session_id = chat
             .run_in_session(
@@ -4930,6 +3655,7 @@ mod tests {
                 }],
                 Some("图片识别失败，已停止本轮请求。".to_string()),
                 false,
+                Some("test-run-preflight-abort"),
                 |_| {},
                 |_| {},
             )
@@ -4950,8 +3676,51 @@ mod tests {
             &event.payload,
             EventPayload::MessageAppended { message }
                 if message.role == deepagent_core::message::Role::Assistant
-                    && message.content.contains("图片识别失败")
+            && message.content.contains("图片识别失败")
         )));
+        let log_entries = logs.recent_for_session(&session_id, 100).unwrap();
+        assert!(log_entries
+            .iter()
+            .any(|entry| entry.run_id.as_deref() == Some("test-run-preflight-abort")));
+        assert!(log_entries
+            .iter()
+            .any(|entry| { entry.category == "runtime" && entry.event == "registry_ready" }));
+        assert!(log_entries
+            .iter()
+            .any(|entry| { entry.category == "model" && entry.event == "content_delta_batch" }));
+    }
+
+    #[tokio::test]
+    async fn run_with_external_hooks_returns_after_pump_drains() {
+        let (_db, settings, dir) = seeded().await;
+        settings
+            .set_hooks_json(
+                r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo ok","timeout":5}]}]}}"#,
+            )
+            .unwrap();
+        let chat = ChatService::new(_db, settings, chat_transport(), dir.path());
+
+        let session_id = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            chat.run_in_session(
+                "say hello",
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                None,
+                |_| {},
+                |_| {},
+            ),
+        )
+        .await
+        .expect("run should not hang waiting for hook-held event sink")
+        .unwrap();
+
+        assert!(session_id.starts_with("ses_"));
+        assert!(!chat.cancel_session(&session_id));
     }
 
     #[tokio::test]
@@ -4984,6 +3753,7 @@ mod tests {
             Vec::new(),
             None,
             false,
+            None,
             |_| {},
             |_| {},
         )
@@ -5110,7 +3880,7 @@ mod tests {
         assert_eq!(json["model"], "deepseek-v4-flash");
         assert_eq!(json["thinking"]["type"], "enabled");
         assert_eq!(json["reasoning_effort"], "max");
-        assert!(json.get("max_tokens").is_none());
+        assert_eq!(json["max_tokens"], 32_768);
     }
 
     #[tokio::test]
@@ -5155,6 +3925,7 @@ mod tests {
                 Vec::new(),
                 None,
                 false,
+                None,
                 |_| {},
                 |_| {},
             )
@@ -5277,6 +4048,37 @@ mod tests {
     }
 
     #[test]
+    fn system_manifest_tracks_dynamic_context_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = build_system_manifest(
+            tmp.path(),
+            SandboxMode::FullAccess,
+            Some("# Plugin output style\nUse a terse style.".to_string()),
+            Some("# Deferred tools\n- tool_search".to_string()),
+            vec!["<system-reminder>\n<available-skills />\n</system-reminder>".to_string()],
+        );
+        let sources = manifest
+            .entries
+            .iter()
+            .map(|entry| entry.source)
+            .collect::<Vec<_>>();
+
+        assert!(sources.contains(&ContextSourceKind::System));
+        assert!(sources.contains(&ContextSourceKind::RuntimeEnvironment));
+        assert!(sources.contains(&ContextSourceKind::PermissionContext));
+        assert!(sources.contains(&ContextSourceKind::PluginContext));
+        assert!(sources.contains(&ContextSourceKind::ToolCatalog));
+        assert!(sources.contains(&ContextSourceKind::SkillCatalog));
+
+        let rendered = manifest.render();
+        assert!(rendered.contains("Current sandbox mode: **full-access**"));
+        assert!(rendered.contains("# Plugin output style"));
+        assert!(rendered.contains("# Deferred tools"));
+        assert!(rendered.contains("<available-skills"));
+        assert!(rendered.contains("Today's date:"));
+    }
+
+    #[test]
     fn current_date_string_is_iso_like() {
         let d = current_date_string();
         // YYYY-MM-DD → at least 3 dash-separated numeric parts.
@@ -5322,6 +4124,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
             )
             .unwrap();
         assert!(
@@ -5345,6 +4148,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
             )
             .unwrap();
         assert!(
@@ -5376,6 +4180,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
             )
             .unwrap();
         assert!(
@@ -5555,14 +4360,14 @@ mod tests {
             def,
         };
 
-        let prompt = subagent_system_prompt(tmp.path(), Some(&agent));
+        let prompt = subagent_system_prompt(tmp.path(), Some(&agent), "");
         assert!(prompt.contains("Agent type: audit-pack:inspect"));
         assert!(prompt.contains("plugin:audit-pack"));
         assert!(prompt.contains("Declared tools: Read, Grep"));
         assert!(prompt.contains("Use the plugin inspection checklist."));
         assert!(prompt.contains(&tmp.path().display().to_string()));
 
-        let general = subagent_system_prompt(tmp.path(), None);
+        let general = subagent_system_prompt(tmp.path(), None, "");
         assert!(!general.contains("# Sub-agent identity"));
         assert!(general.contains("# Sub-agent task"));
     }
@@ -6154,8 +4959,8 @@ mod tests {
     // resolves a tool call to one of three terminal outcomes.
 
     use crate::approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
-    use crate::settings::{ApprovalPolicy, SandboxMode};
-    use deepagent_builtins::{register_guard_hooks, WorkspaceRoot};
+    use crate::settings::ApprovalPolicy;
+    use deepagent_builtins::{register_guard_hooks_with_bash_full_access, WorkspaceRoot};
     use deepagent_hooks::{HookData, HookOutcome, HookPoint, HookRegistry};
     use deepagent_runtime::{ApprovalDecision, ApprovalGate, ApprovalRequest};
 
@@ -6178,14 +4983,15 @@ mod tests {
         args: serde_json::Value,
     ) -> Outcome {
         let root = "/work/proj";
-        let access = ChatService::fs_access_for(sandbox);
+        let access = crate::run_environment::fs_access_for(sandbox);
 
         // Compose the BeforeToolUse guards exactly like run_in_session.
         let mut hooks = HookRegistry::new();
-        register_guard_hooks(
+        register_guard_hooks_with_bash_full_access(
             &mut hooks,
             WorkspaceRoot::new(root).with_access(access),
             default_bash_allow(),
+            matches!(policy, ApprovalPolicy::FullAccess),
         );
         let ctx = deepagent_hooks::HookContext::new(
             deepagent_core::id::SessionId::nil(),
@@ -6212,7 +5018,8 @@ mod tests {
                 p2.store(true, std::sync::atomic::Ordering::SeqCst);
             }),
         );
-        let gate = PolicyGate::new(policy, Arc::new(channel));
+        let gate = PolicyGate::new(policy, Arc::new(channel))
+            .with_classifier(deepagent_builtins::SafetyClassifier::with_defaults());
         let req = ApprovalRequest {
             call_id: "c1".into(),
             tool: tool.to_string(),
@@ -6236,10 +5043,10 @@ mod tests {
         let decision = handle.await.unwrap();
         if prompted.load(std::sync::atomic::Ordering::SeqCst) {
             Outcome::Prompted
-        } else {
-            // Auto-resolved by policy without prompting.
-            assert_eq!(decision, ApprovalDecision::Allow);
+        } else if decision == ApprovalDecision::Allow {
             Outcome::AutoAllow
+        } else {
+            Outcome::Denied
         }
     }
 
@@ -6318,6 +5125,29 @@ mod tests {
                 SandboxMode::WorkspaceWrite,
                 "bash",
                 serde_json::json!({"command": "rm -rf build"})
+            )
+            .await,
+            Outcome::Prompted
+        );
+        // Safe shell inspection is auto-approved by the classifier, even when
+        // it is not part of the conservative Bash(prefix:*) allow-list.
+        assert_eq!(
+            decide(
+                p,
+                SandboxMode::FullAccess,
+                "bash",
+                serde_json::json!({"command": "dir G:\\Code\\Kotlin_code\\demo"})
+            )
+            .await,
+            Outcome::AutoAllow
+        );
+        // Risky shell still asks; AutoReview is not the same as FullAccess.
+        assert_eq!(
+            decide(
+                p,
+                SandboxMode::FullAccess,
+                "bash",
+                serde_json::json!({"command": "git push origin main"})
             )
             .await,
             Outcome::Prompted
@@ -6424,6 +5254,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
             )
             .unwrap();
         chat.maybe_register_skill_tool(&mut registry).unwrap();
@@ -6448,6 +5279,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
             )
             .unwrap();
         chat.maybe_register_skill_tool(&mut registry).unwrap();
@@ -6529,5 +5361,41 @@ mod tests {
         // Idempotent: should not panic even with no skills attached.
         chat.reset_sent_skills("never-existed");
         chat.reset_all_sent_skills();
+    }
+
+    #[test]
+    fn reactive_compaction_keeps_tool_request_with_leading_results() {
+        let mut assistant = Message::assistant("");
+        assistant.tool_calls = vec![
+            ToolCall {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "one"}),
+            },
+            ToolCall {
+                id: "c2".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "two"}),
+            },
+        ];
+        let messages = vec![
+            Message::user("old"),
+            assistant,
+            Message::tool_result("c1", "one"),
+            Message::tool_result("c2", "two"),
+            Message::user("u1"),
+            Message::assistant("a1"),
+            Message::user("u2"),
+            Message::assistant("a2"),
+            Message::user("u3"),
+            Message::assistant("a3"),
+        ];
+
+        // Naive len-keep would split at index 2 (a tool result). The safe
+        // boundary walks back to the assistant request at index 1.
+        assert_eq!(pairing_safe_compaction_split(&messages, 8), Some(1));
+        let rendered = render_message_for_compaction(&messages[1]);
+        assert!(rendered.contains("name=read_file"));
+        assert!(rendered.contains("\"path\":\"one\""));
     }
 }

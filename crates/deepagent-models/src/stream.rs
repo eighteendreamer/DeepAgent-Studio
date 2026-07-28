@@ -14,7 +14,7 @@
 //! [`ChatResponse`], preserving the DeepSeek Thinking Mode `reasoning_content`
 //! so it can be persisted and replayed.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::{Message, Role, ToolCall};
@@ -83,6 +83,43 @@ pub struct FunctionDelta {
     pub arguments: Option<String>,
 }
 
+/// Provider-neutral semantic model stream used by Agent Kernel v2.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ModelStreamEvent {
+    ContentDelta {
+        text: String,
+    },
+    ReasoningDelta {
+        text: String,
+    },
+    ToolCallStarted {
+        index: usize,
+        id: Option<String>,
+        name: String,
+    },
+    ToolArgumentsDelta {
+        index: usize,
+        delta: String,
+    },
+    /// A complete, schema-neutral JSON argument object is available for a
+    /// tool call. This can arrive before the provider closes the assistant
+    /// stream, allowing the query loop to prepare execution without guessing
+    /// where a fragmented JSON value ends.
+    ToolCallCompleted {
+        index: usize,
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    Usage {
+        usage: Usage,
+    },
+    Finished {
+        reason: Option<FinishReason>,
+    },
+}
+
 /// Observes streaming deltas as they arrive (for live UIs / event streams).
 ///
 /// Distinct from the transport-level [`crate::transport::EventSink`] (raw SSE
@@ -90,6 +127,19 @@ pub struct FunctionDelta {
 /// Mode reasoning, and tool-call starts — already decoded from each chunk. The
 /// default no-op impl lets callers ignore deltas (the non-streaming path).
 pub trait DeltaObserver: Send {
+    /// Unified event entry point. Existing observers overriding the legacy
+    /// callbacks continue to work through this default dispatcher.
+    fn on_event(&mut self, event: ModelStreamEvent) {
+        match event {
+            ModelStreamEvent::ContentDelta { text } => self.on_content(&text),
+            ModelStreamEvent::ReasoningDelta { text } => self.on_reasoning(&text),
+            ModelStreamEvent::ToolCallStarted { name, .. } => self.on_tool_call(&name),
+            ModelStreamEvent::ToolArgumentsDelta { .. }
+            | ModelStreamEvent::ToolCallCompleted { .. }
+            | ModelStreamEvent::Usage { .. }
+            | ModelStreamEvent::Finished { .. } => {}
+        }
+    }
     /// A visible content fragment arrived.
     fn on_content(&mut self, _delta: &str) {}
     /// A Thinking Mode reasoning fragment arrived.
@@ -120,6 +170,7 @@ struct ToolCallBuilder {
     id: Option<String>,
     name: Option<String>,
     arguments: String,
+    completed_emitted: bool,
 }
 
 impl DeltaAccumulator {
@@ -138,24 +189,28 @@ impl DeltaAccumulator {
     pub fn push_chunk_observed(&mut self, chunk: &ChatChunk, observer: &mut dyn DeltaObserver) {
         if let Some(usage) = chunk.usage {
             self.usage = Some(usage);
+            observer.on_event(ModelStreamEvent::Usage { usage });
         }
         let Some(choice) = chunk.choices.first() else {
             return;
         };
         if let Some(reason) = choice.finish_reason {
             self.finish_reason = Some(reason);
+            observer.on_event(ModelStreamEvent::Finished {
+                reason: Some(reason),
+            });
         }
         let delta = &choice.delta;
         if let Some(c) = &delta.content {
             self.content.push_str(c);
             if !c.is_empty() {
-                observer.on_content(c);
+                observer.on_event(ModelStreamEvent::ContentDelta { text: c.clone() });
             }
         }
         if let Some(r) = &delta.reasoning_content {
             self.reasoning.push_str(r);
             if !r.is_empty() {
-                observer.on_reasoning(r);
+                observer.on_event(ModelStreamEvent::ReasoningDelta { text: r.clone() });
             }
         }
         for tc in &delta.tool_calls {
@@ -174,8 +229,26 @@ impl DeltaAccumulator {
                     .find(|b| b.index == tc.index)
                     .and_then(|b| b.name.clone())
                 {
-                    observer.on_tool_call(&name);
+                    observer.on_event(ModelStreamEvent::ToolCallStarted {
+                        index: tc.index,
+                        id: tc.id.clone(),
+                        name,
+                    });
                 }
+            }
+            if let Some(arguments) = tc
+                .function
+                .as_ref()
+                .and_then(|function| function.arguments.as_ref())
+                .filter(|arguments| !arguments.is_empty())
+            {
+                observer.on_event(ModelStreamEvent::ToolArgumentsDelta {
+                    index: tc.index,
+                    delta: arguments.clone(),
+                });
+            }
+            if let Some(event) = self.take_completed_event(tc.index) {
+                observer.on_event(event);
             }
         }
     }
@@ -219,7 +292,11 @@ impl DeltaAccumulator {
             }
         };
         if let Some(id) = &delta.id {
-            builder.id = Some(id.clone());
+            // Once a synthetic id has been observed it must stay stable so a
+            // later provider fragment cannot orphan the UI/tool result pair.
+            if builder.id.is_none() {
+                builder.id = Some(id.clone());
+            }
         }
         if let Some(func) = &delta.function {
             if let Some(name) = &func.name {
@@ -229,6 +306,38 @@ impl DeltaAccumulator {
                 builder.arguments.push_str(args);
             }
         }
+        if builder.name.is_some() && builder.id.is_none() {
+            builder.id = Some(format!("call_stream_{}", builder.index));
+        }
+    }
+
+    fn take_completed_event(&mut self, index: usize) -> Option<ModelStreamEvent> {
+        let builder = self.tool_calls.iter_mut().find(|b| b.index == index)?;
+        if builder.completed_emitted {
+            return None;
+        }
+        let name = builder.name.as_ref()?.trim();
+        if name.is_empty() {
+            return None;
+        }
+        // An empty fragment is commonly the provider's tool-call preamble,
+        // not proof that the call takes no arguments. Wait for actual JSON;
+        // truly empty arguments are normalized to `{}` only at stream finish.
+        if builder.arguments.trim().is_empty() {
+            return None;
+        }
+        let arguments = serde_json::from_str::<serde_json::Value>(builder.arguments.trim()).ok()?;
+        if !arguments.is_object() {
+            return None;
+        }
+        let id = builder.id.clone()?;
+        builder.completed_emitted = true;
+        Some(ModelStreamEvent::ToolCallCompleted {
+            index,
+            id,
+            name: name.to_string(),
+            arguments,
+        })
     }
 
     /// Whether any tool calls were accumulated.
@@ -239,24 +348,61 @@ impl DeltaAccumulator {
     /// Finalize into a [`ChatResponse`]. Tool-call argument strings are parsed
     /// as JSON; an empty/blank argument string becomes `{}`.
     pub fn finish(mut self) -> Result<ChatResponse> {
+        if self.content.trim().is_empty()
+            && self.reasoning.trim().is_empty()
+            && self.tool_calls.is_empty()
+        {
+            return Err(CoreError::other(
+                "empty model stream: provider returned no content, reasoning, or tool calls",
+            ));
+        }
         self.tool_calls.sort_by_key(|b| b.index);
 
         let mut tool_calls = Vec::with_capacity(self.tool_calls.len());
+        let mut call_ids = std::collections::HashSet::with_capacity(self.tool_calls.len());
         for b in &self.tool_calls {
             let args_str = if b.arguments.trim().is_empty() {
                 "{}"
             } else {
                 b.arguments.trim()
             };
-            let arguments: serde_json::Value = serde_json::from_str(args_str).map_err(|e| {
-                CoreError::Serialization(format!(
-                    "tool call {} has invalid argument JSON: {e}",
+            // Malformed argument JSON must NOT abort the whole turn: killing
+            // the run for one bad provider fragment orphans every other tool
+            // call in the batch. Degrade to a sentinel object the pipeline's
+            // validation gate rejects deterministically — the model gets a
+            // paired failure result and can retry (Claude Code parity).
+            let arguments: serde_json::Value = match serde_json::from_str(args_str) {
+                Ok(value) => value,
+                Err(error) => serde_json::json!({
+                    "__invalid_tool_arguments__": true,
+                    "raw": args_str,
+                    "parse_error": error.to_string(),
+                }),
+            };
+            if !arguments.is_object() {
+                return Err(CoreError::Serialization(format!(
+                    "tool call {} arguments must be a JSON object",
                     b.index
-                ))
-            })?;
+                )));
+            }
+            let name = b.name.as_deref().unwrap_or_default().trim();
+            if name.is_empty() {
+                return Err(CoreError::Serialization(format!(
+                    "tool call {} is missing a function name",
+                    b.index
+                )));
+            }
+            let id =
+                b.id.clone()
+                    .unwrap_or_else(|| format!("call_stream_{}", b.index));
+            if !call_ids.insert(id.clone()) {
+                return Err(CoreError::Serialization(format!(
+                    "duplicate tool call id: {id}"
+                )));
+            }
             tool_calls.push(ToolCall {
-                id: b.id.clone().unwrap_or_else(|| format!("call_{}", b.index)),
-                name: b.name.clone().unwrap_or_default(),
+                id,
+                name: name.to_string(),
                 arguments,
             });
         }
@@ -290,8 +436,20 @@ mod tests {
             content: String,
             reasoning: String,
             tools: Vec<String>,
+            completed: Vec<(String, serde_json::Value)>,
         }
         impl DeltaObserver for Rec {
+            fn on_event(&mut self, event: ModelStreamEvent) {
+                if let ModelStreamEvent::ToolCallCompleted { id, arguments, .. } = &event {
+                    self.completed.push((id.clone(), arguments.clone()));
+                }
+                match event {
+                    ModelStreamEvent::ContentDelta { text } => self.on_content(&text),
+                    ModelStreamEvent::ReasoningDelta { text } => self.on_reasoning(&text),
+                    ModelStreamEvent::ToolCallStarted { name, .. } => self.on_tool_call(&name),
+                    _ => {}
+                }
+            }
             fn on_content(&mut self, d: &str) {
                 self.content.push_str(d);
             }
@@ -330,6 +488,10 @@ mod tests {
         assert_eq!(rec.content, "Hi");
         assert_eq!(rec.reasoning, "think ");
         assert_eq!(rec.tools, vec!["search"]); // fired exactly once
+        assert_eq!(
+            rec.completed,
+            vec![("c0".to_string(), serde_json::json!({}))]
+        );
     }
 
     #[test]
@@ -469,14 +631,53 @@ mod tests {
     }
 
     #[test]
-    fn invalid_tool_json_errors() {
+    fn invalid_tool_json_degrades_to_rejectable_sentinel() {
+        // Phase G behavior fix: malformed argument bytes no longer abort the
+        // whole turn (which would orphan sibling tool calls). They become a
+        // sentinel object the pipeline's validation gate rejects with a
+        // paired failure result.
         let mut acc = DeltaAccumulator::new();
         acc.push_chunk(&chunk(serde_json::json!({
             "choices": [{ "delta": { "tool_calls": [
                 { "index": 0, "function": { "name": "bad", "arguments": "{not json" } }
             ]}}]
         })));
-        assert!(acc.finish().is_err());
+        let resp = acc.finish().unwrap();
+        let arguments = &resp.message.tool_calls[0].arguments;
+        assert_eq!(arguments["__invalid_tool_arguments__"], true);
+        assert_eq!(arguments["raw"], "{not json");
+        assert!(arguments["parse_error"].as_str().is_some());
+    }
+
+    #[test]
+    fn duplicate_tool_call_ids_are_rejected() {
+        let mut acc = DeltaAccumulator::new();
+        acc.push_chunk(&chunk(serde_json::json!({
+            "choices": [{ "delta": { "tool_calls": [
+                { "index": 0, "id": "same", "function": { "name": "first", "arguments": "{}" } },
+                { "index": 1, "id": "same", "function": { "name": "second", "arguments": "{}" } }
+            ]}}]
+        })));
+        assert!(acc
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate tool call id"));
+    }
+
+    #[test]
+    fn tool_call_without_name_is_rejected() {
+        let mut acc = DeltaAccumulator::new();
+        acc.push_chunk(&chunk(serde_json::json!({
+            "choices": [{ "delta": { "tool_calls": [
+                { "index": 0, "id": "c0", "function": { "arguments": "{}" } }
+            ]}}]
+        })));
+        assert!(acc
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("missing a function name"));
     }
 
     #[test]
