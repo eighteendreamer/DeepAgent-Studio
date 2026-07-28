@@ -96,6 +96,64 @@ function parseHookItems(json: string): ParsedHooks {
   }
 }
 
+type HooksDoc = { hooks?: Record<string, HookGroup[]> };
+
+function safeParseDoc(json: string): HooksDoc {
+  if (json.trim() === "") return { hooks: {} };
+  try {
+    const parsed = JSON.parse(json) as HooksDoc;
+    return parsed && typeof parsed === "object" ? parsed : { hooks: {} };
+  } catch {
+    return { hooks: {} };
+  }
+}
+
+/** Append every group from `incoming` into `base`, per event (add-only save). */
+function mergeHooksJson(baseJson: string, incomingJson: string): string {
+  const base = safeParseDoc(baseJson);
+  const incoming = safeParseDoc(incomingJson);
+  const merged: Record<string, HookGroup[]> = { ...(base.hooks ?? {}) };
+  for (const [event, groups] of Object.entries(incoming.hooks ?? {})) {
+    if (!Array.isArray(groups)) continue;
+    merged[event] = [...(merged[event] ?? []), ...groups];
+  }
+  return JSON.stringify({ hooks: merged }, null, 2);
+}
+
+/** Remove the group at `groupIndex` within `event` from the persisted doc. */
+function removeHookGroup(baseJson: string, event: string, groupIndex: number): string {
+  const base = safeParseDoc(baseJson);
+  const hooks: Record<string, HookGroup[]> = { ...(base.hooks ?? {}) };
+  const groups = Array.isArray(hooks[event]) ? [...hooks[event]] : [];
+  groups.splice(groupIndex, 1);
+  if (groups.length === 0) {
+    delete hooks[event];
+  } else {
+    hooks[event] = groups;
+  }
+  return JSON.stringify({ hooks }, null, 2);
+}
+
+/** Parse persisted hooks into list items carrying their (event, groupIndex)
+ * so the saved-hooks list can delete a specific group. */
+function userItemsFromJson(json: string): (HookListItem & { groupIndex: number })[] {
+  const doc = safeParseDoc(json);
+  const items: (HookListItem & { groupIndex: number })[] = [];
+  for (const [event, groups] of Object.entries(doc.hooks ?? {})) {
+    if (!Array.isArray(groups)) continue;
+    groups.forEach((group, groupIndex) => {
+      items.push({
+        source: "user",
+        event,
+        matcher: typeof group.matcher === "string" ? group.matcher : undefined,
+        actions: Array.isArray(group.hooks) ? group.hooks : [],
+        groupIndex,
+      });
+    });
+  }
+  return items;
+}
+
 function primaryCommand(actions: HookAction[]): string {
   const firstCommand = actions.find((action) => action.command?.trim())?.command?.trim();
   if (firstCommand) return firstCommand;
@@ -159,7 +217,13 @@ function effectiveToListItem(group: EffectiveHookGroup): HookListItem {
   };
 }
 
-function HookList({ items }: { items: HookListItem[] }) {
+function HookList({
+  items,
+  onDelete,
+}: {
+  items: (HookListItem & { groupIndex?: number })[];
+  onDelete?: (item: HookListItem & { groupIndex?: number }) => void;
+}) {
   if (items.length === 0) {
     return <div className="py-2 text-[12px] text-text-secondary">暂无保存的钩子</div>;
   }
@@ -196,8 +260,19 @@ function HookList({ items }: { items: HookListItem[] }) {
               {primaryCommand(item.actions)}
             </div>
           </div>
-          <div className="shrink-0 text-[11px] text-text-secondary">
-            {item.actions.length} actions
+          <div className="flex shrink-0 items-center gap-3">
+            <span className="text-[11px] text-text-secondary">
+              {item.actions.length} actions
+            </span>
+            {onDelete && item.source === "user" && (
+              <button
+                onClick={() => onDelete(item)}
+                className="rounded-md border border-border-theme px-2 py-0.5 text-[11px] text-text-secondary transition-colors hover:border-red-400 hover:text-red-500"
+                title="删除这条钩子"
+              >
+                删除
+              </button>
+            )}
           </div>
         </li>
       ))}
@@ -207,11 +282,17 @@ function HookList({ items }: { items: HookListItem[] }) {
 
 export function HooksSettings() {
   const { t } = useTranslation();
+  // The textarea is an ADD-only tool: it starts empty, and clicking Save
+  // appends its groups to the persisted set then clears it. Managing (viewing
+  // / deleting) saved hooks happens in the list below, not by editing this
+  // box. `savedJson` is the persisted hooks.json (DB-backed) that drives the
+  // saved list and is the merge base on save.
   const [value, setValue] = useState("");
+  const [savedJson, setSavedJson] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState<"idle" | "saved" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
-  const [savedHookItems, setSavedHookItems] = useState<HookListItem[]>([]);
+  const [pluginItems, setPluginItems] = useState<HookListItem[]>([]);
   const [builtinHookCount, setBuiltinHookCount] = useState(0);
   const [effectiveErrors, setEffectiveErrors] = useState<string[]>([]);
   const [testStatus, setTestStatus] = useState<"idle" | "running" | "done" | "error">("idle");
@@ -221,9 +302,7 @@ export function HooksSettings() {
   const refreshEffectiveHooks = async () => {
     try {
       const effective = await listEffectiveHooks();
-      setSavedHookItems(
-        [...effective.user_hooks, ...effective.plugin_hooks].map(effectiveToListItem),
-      );
+      setPluginItems(effective.plugin_hooks.map(effectiveToListItem));
       setBuiltinHookCount(effective.builtin_hooks.length);
       setEffectiveErrors(effective.errors);
     } catch (error) {
@@ -234,10 +313,9 @@ export function HooksSettings() {
   useEffect(() => {
     Promise.all([getHooksJson(), listEffectiveHooks()])
       .then(([j, effective]) => {
-        setValue(j);
-        setSavedHookItems(
-          [...effective.user_hooks, ...effective.plugin_hooks].map(effectiveToListItem),
-        );
+        // Persisted hooks drive the saved list; the add box stays empty.
+        setSavedJson(j);
+        setPluginItems(effective.plugin_hooks.map(effectiveToListItem));
         setBuiltinHookCount(effective.builtin_hooks.length);
         setEffectiveErrors(effective.errors);
         setLoaded(true);
@@ -247,6 +325,8 @@ export function HooksSettings() {
 
   const parsedHooks = useMemo(() => parseHookItems(value), [value]);
   const valid = parsedHooks.valid;
+  const hasInput = value.trim() !== "";
+  const userItems = useMemo(() => userItemsFromJson(savedJson), [savedJson]);
   const testTarget = useMemo(
     () => (parsedHooks.valid ? findFirstCommandHook(parsedHooks.items) : null),
     [parsedHooks],
@@ -254,7 +334,28 @@ export function HooksSettings() {
 
   const save = async () => {
     try {
-      await setHooksJson(value);
+      // Add-only: merge the input's groups into the persisted set, persist the
+      // merged JSON, then clear the box so it is ready for the next addition.
+      const merged = mergeHooksJson(savedJson, value);
+      await setHooksJson(merged);
+      setSavedJson(merged);
+      setValue("");
+      setStatus("saved");
+      setErrorMsg("");
+      await refreshEffectiveHooks();
+      setTimeout(() => setStatus("idle"), 1800);
+    } catch (e) {
+      setStatus("error");
+      setErrorMsg(String(e));
+    }
+  };
+
+  const deleteHook = async (item: HookListItem & { groupIndex?: number }) => {
+    if (item.source !== "user" || item.groupIndex === undefined) return;
+    try {
+      const next = removeHookGroup(savedJson, item.event, item.groupIndex);
+      await setHooksJson(next);
+      setSavedJson(next);
       setStatus("saved");
       setErrorMsg("");
       await refreshEffectiveHooks();
@@ -347,8 +448,9 @@ export function HooksSettings() {
             </button>
             <button
               onClick={save}
-              disabled={!valid || !loaded}
+              disabled={!valid || !loaded || !hasInput}
               className="rounded-md bg-text-base px-3 py-1 text-[12px] text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              title={hasInput ? undefined : "输入框仅用于新增：粘贴一段 hooks JSON 后保存，会追加到下方已保存列表"}
             >
               {t("settings.hooks.save")}
             </button>
@@ -427,11 +529,11 @@ export function HooksSettings() {
         <div className="mb-2 flex items-center justify-between">
           <div className="text-[13px] font-medium text-text-base">已保存的钩子</div>
           <div className="text-[11px] text-text-secondary">
-            {savedHookItems.length} groups
+            {userItems.length + pluginItems.length} groups
             {builtinHookCount > 0 ? ` · 内置 ${builtinHookCount}` : ""}
           </div>
         </div>
-        <HookList items={savedHookItems} />
+        <HookList items={[...userItems, ...pluginItems]} onDelete={deleteHook} />
         {effectiveErrors.length > 0 && (
           <div className="mt-2 space-y-1 text-[12px] text-red-500">
             {effectiveErrors.map((error, index) => (
