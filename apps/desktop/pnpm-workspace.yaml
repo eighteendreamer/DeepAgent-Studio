@@ -1,5 +1,5 @@
 allowBuilds:
-  '@alibaba-group/open-code-review': set this to true or false
+  '@alibaba-group/open-code-review': true
   esbuild: true
 minimumReleaseAgeExclude:
   - '@alibaba-group/ocr-darwin-arm64@1.8.0'
