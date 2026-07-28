@@ -230,7 +230,7 @@ impl DualConfigLoader {
 /// parity: `C:\Program Files\ClaudeCode` / `/Library/Application Support/
 /// ClaudeCode` / `/etc/claude-code`). `DEEPAGENT_MANAGED_SETTINGS_DIR`
 /// overrides for tests and hosted deployments.
-fn default_managed_dir() -> Option<PathBuf> {
+pub fn default_managed_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("DEEPAGENT_MANAGED_SETTINGS_DIR") {
         let dir = PathBuf::from(dir);
         return (!dir.as_os_str().is_empty()).then_some(dir);

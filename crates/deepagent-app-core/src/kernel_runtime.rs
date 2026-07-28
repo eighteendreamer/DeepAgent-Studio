@@ -19,7 +19,6 @@ pub(crate) struct KernelRuntimeConfigRequest<'a> {
     pub(crate) verification_policy: VerificationPolicy,
     pub(crate) fire_session_start: bool,
     pub(crate) granted: deepagent_tools::PermissionSet,
-    pub(crate) prompt_for_model: &'a str,
     /// Nested-instruction discovery (kernel-refactor Phase C): injects
     /// not-yet-loaded `CLAUDE.md`/`AGENTS.md` when tools touch their
     /// directories. `None` for callers without a hook registry (tests).
@@ -49,9 +48,11 @@ pub(crate) fn build_kernel_runtime_config(
     let config = RuntimeConfig {
         fire_session_start: request.fire_session_start,
         permissions: request.granted,
-        completion_policy: deepagent_runtime::CompletionPolicy::from_prompt(
-            request.prompt_for_model,
-        ),
+        // Completion is no longer gated on prompt-derived filesystem
+        // requirements (intent-guessing anti-pattern removed 2026-07-28).
+        // Upstream parity: model self-reports completion, verified by the
+        // fact-based build/type plan + hooks. An empty policy never blocks.
+        completion_policy: deepagent_runtime::CompletionPolicy::default(),
         checkpoint: Some(checkpoint.clone()),
         artifact_persistence: Some(
             deepagent_runtime::tool_pipeline::ToolArtifactPersistence::new(

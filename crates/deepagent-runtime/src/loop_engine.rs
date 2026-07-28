@@ -641,21 +641,24 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             match decision {
                 AgentDecision::Complete(msg) => {
                     let mut content = msg;
-                    // Post-completion verification / self-healing.
+                    // Post-completion verification / self-healing — only when
+                    // the run actually mutated files (fact-based gate).
                     if let (Some(plan), Some(engine)) =
                         (self.verification, reflection_engine.as_mut())
                     {
-                        match self
-                            .verify_after_completion(session, session_id, plan, engine)
-                            .await?
-                        {
-                            VerifyStep::Passed | VerifyStep::GaveUp => {
-                                // Either clean or exhausted: accept completion.
-                            }
-                            VerifyStep::Retry(obs) => {
-                                // Hand the reflection back; keep the task running.
-                                last_observations = vec![obs];
-                                continue;
+                        if self.run_mutated_files() {
+                            match self
+                                .verify_after_completion(session, session_id, plan, engine)
+                                .await?
+                            {
+                                VerifyStep::Passed | VerifyStep::GaveUp => {
+                                    // Either clean or exhausted: accept completion.
+                                }
+                                VerifyStep::Retry(obs) => {
+                                    // Hand the reflection back; keep the task running.
+                                    last_observations = vec![obs];
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -666,14 +669,25 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             last_observations = vec![observation];
                             continue;
                         }
+                        // Upstream parity (grok stop_gate.rs: continuation cap
+                        // => AllowStop; Claude Code stop hooks never fail the
+                        // run): once the retry budget is exhausted this gate
+                        // FAILS OPEN — record the unmet requirement and accept
+                        // the completion. The extractor is heuristic; killing
+                        // a run whose work may be correct is worse than
+                        // letting one slip through.
                         let reason = completion_failure_reason(&observation);
-                        session.transition_task(task, TaskState::Failed)?;
-                        self.emit(RuntimeEvent::RunFailed {
-                            reason: reason.clone(),
+                        session.append(EventPayload::Note {
+                            text: format!(
+                                "completion gate failed open after {completion_failures} attempts: {reason}"
+                            ),
+                        })?;
+                        self.emit(RuntimeEvent::Verification {
+                            passed: false,
+                            detail: format!(
+                                "completion gate exhausted its retry budget and failed open: {reason}"
+                            ),
                         });
-                        outcome = RunOutcome::CompletionFailed(reason);
-                        finished = true;
-                        break;
                     }
                     match self.completion_gate(session_id, content).await? {
                         CompletionDecision::Accept(updated) => content = updated,
@@ -697,21 +711,24 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 AgentDecision::CompleteMessage(message) => {
                     let mut message = message;
                     let mut content = message.content.clone();
-                    // Post-completion verification / self-healing.
+                    // Post-completion verification / self-healing — only when
+                    // the run actually mutated files (fact-based gate).
                     if let (Some(plan), Some(engine)) =
                         (self.verification, reflection_engine.as_mut())
                     {
-                        match self
-                            .verify_after_completion(session, session_id, plan, engine)
-                            .await?
-                        {
-                            VerifyStep::Passed | VerifyStep::GaveUp => {
-                                // Either clean or exhausted: accept completion.
-                            }
-                            VerifyStep::Retry(obs) => {
-                                // Hand the reflection back; keep the task running.
-                                last_observations = vec![obs];
-                                continue;
+                        if self.run_mutated_files() {
+                            match self
+                                .verify_after_completion(session, session_id, plan, engine)
+                                .await?
+                            {
+                                VerifyStep::Passed | VerifyStep::GaveUp => {
+                                    // Either clean or exhausted: accept completion.
+                                }
+                                VerifyStep::Retry(obs) => {
+                                    // Hand the reflection back; keep the task running.
+                                    last_observations = vec![obs];
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -722,14 +739,19 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             last_observations = vec![observation];
                             continue;
                         }
+                        // Same fail-open semantics as the Complete arm above.
                         let reason = completion_failure_reason(&observation);
-                        session.transition_task(task, TaskState::Failed)?;
-                        self.emit(RuntimeEvent::RunFailed {
-                            reason: reason.clone(),
+                        session.append(EventPayload::Note {
+                            text: format!(
+                                "completion gate failed open after {completion_failures} attempts: {reason}"
+                            ),
+                        })?;
+                        self.emit(RuntimeEvent::Verification {
+                            passed: false,
+                            detail: format!(
+                                "completion gate exhausted its retry budget and failed open: {reason}"
+                            ),
                         });
-                        outcome = RunOutcome::CompletionFailed(reason);
-                        finished = true;
-                        break;
                     }
                     match self.completion_gate(session_id, content).await? {
                         CompletionDecision::Accept(updated) => {
@@ -861,6 +883,29 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .push(path);
+        }
+    }
+
+    /// Whether this run actually created or modified files. The build/type
+    /// verification plan is gated on this FACT (not on prompt keywords):
+    /// aligns with Claude Code running verification only when non-trivial
+    /// implementation happened. Tests without a checkpoint keep the old
+    /// unconditional behaviour.
+    fn run_mutated_files(&self) -> bool {
+        match self.config.checkpoint.as_ref() {
+            Some(checkpoint) => checkpoint
+                .mutation_evidence()
+                .map(|mutations| {
+                    mutations.iter().any(|m| {
+                        matches!(
+                            m.kind,
+                            crate::checkpoint::MutationKind::Created
+                                | crate::checkpoint::MutationKind::Modified
+                        )
+                    })
+                })
+                .unwrap_or(false),
+            None => true,
         }
     }
 

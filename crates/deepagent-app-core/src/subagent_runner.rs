@@ -536,7 +536,10 @@ impl ChatSubagentRunner {
         )?);
         let config = RuntimeConfig {
             permissions: granted,
-            completion_policy: deepagent_runtime::CompletionPolicy::from_prompt(&request.prompt),
+            // Completion gate no longer derives requirements from the prompt
+            // (intent-guessing anti-pattern removed 2026-07-28). Empty policy
+            // = model self-reports; never blocks on keyword heuristics.
+            completion_policy: deepagent_runtime::CompletionPolicy::default(),
             checkpoint: Some(checkpoint.clone()),
             ..Default::default()
         };

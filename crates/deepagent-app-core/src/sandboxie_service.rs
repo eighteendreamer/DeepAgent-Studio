@@ -331,6 +331,33 @@ impl SandboxieService {
         })
     }
 
+    /// Terminate every process running in the app sandbox.
+    ///
+    /// Official Sandboxie semantics (StartCommandLine docs, "Stop Programs"):
+    /// `Start.exe /box:<name> /terminate` transmits the request to the
+    /// SbieSvc service, which kills all boxed processes. This is the ONLY
+    /// reliable way to stop a sandboxed command tree — killing our Start.exe
+    /// child does not touch the programs inside the box.
+    pub fn terminate_box_processes(&self) -> Result<()> {
+        let Some(tools) = self.locate_tools() else {
+            return Ok(());
+        };
+        let box_arg = format!("/box:{}", self.box_name);
+        let mut cmd = Command::new(&tools.start_exe);
+        cmd.args([box_arg.as_str(), "/terminate"]);
+        configure_hidden_process(&mut cmd);
+        let output = cmd
+            .output()
+            .map_err(|e| CoreError::other(format!("failed to run Start.exe /terminate: {e}")))?;
+        if !output.status.success() {
+            return Err(CoreError::other(format!(
+                "Start.exe /terminate exited with {:?}",
+                output.status.code()
+            )));
+        }
+        Ok(())
+    }
+
     fn install_bundled_silent(&self) -> Result<()> {
         let installer = self
             .bundled_installer
@@ -447,6 +474,81 @@ impl CommandExecutor for SandboxieExecutor {
                 self.fallback
                     .run_with_options(command.as_str(), cwd.as_str(), shell)
                     .await
+            }
+        }
+    }
+
+    /// Kernel-owned cancellation/deadline for sandboxed commands (M-06).
+    ///
+    /// The boxed process tree lives OUTSIDE our Job Object, so the
+    /// SystemExecutor kill path cannot reach it. Supervise the blocking
+    /// Start.exe run and, on cancel/timeout, ask SbieSvc to terminate every
+    /// process in the box (`Start.exe /box:<name> /terminate` — official
+    /// Sandboxie "Stop Programs" command line).
+    async fn run_controlled(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        timeout: std::time::Duration,
+    ) -> Result<CommandOutcome> {
+        use std::sync::atomic::Ordering;
+        if cancel.load(Ordering::Acquire) {
+            return Err(CoreError::other("command cancelled before start"));
+        }
+        // Fall back to the system executor (with its own full kill support)
+        // when Sandboxie is not installed, instead of losing control flags.
+        if self.service.locate_tools().is_none() {
+            return self
+                .fallback
+                .run_controlled(command, cwd, shell, cancel, timeout)
+                .await;
+        }
+
+        let service = self.service.clone();
+        let sandbox_command = command.to_string();
+        let sandbox_cwd = cwd.to_string();
+        let mode = self.current_mode();
+        let mut boxed_run = tokio::task::spawn_blocking(move || {
+            service.run_command_in_box(&sandbox_command, &sandbox_cwd, mode, shell)
+        });
+
+        let cancel_watch = cancel.clone();
+        let outcome = tokio::select! {
+            joined = &mut boxed_run => Some(joined),
+            _ = async {
+                while !cancel_watch.load(Ordering::Acquire) {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            } => None,
+            _ = tokio::time::sleep(timeout) => None,
+        };
+
+        match outcome {
+            Some(Ok(Ok(out))) => Ok(out),
+            Some(Ok(Err(_))) | Some(Err(_)) => {
+                self.fallback
+                    .run_controlled(command, cwd, shell, cancel, timeout)
+                    .await
+            }
+            None => {
+                // Cancelled or timed out: kill everything in the box, then
+                // let the (now unblocked) Start.exe wait finish in background.
+                let reason = if cancel.load(Ordering::Acquire) {
+                    "command cancelled"
+                } else {
+                    "command timed out"
+                };
+                if let Err(error) = self.service.terminate_box_processes() {
+                    tracing::warn!(%error, "Start.exe /terminate failed after {reason}");
+                } else {
+                    tracing::warn!(reason, "terminated sandboxed command via SbieSvc");
+                }
+                boxed_run.abort();
+                Err(CoreError::other(format!(
+                    "{reason}: sandboxed process tree terminated via Sandboxie /terminate"
+                )))
             }
         }
     }

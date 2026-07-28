@@ -1,18 +1,22 @@
-//! Auto-discovered build/test acceptance plans for code tasks (Phase E,
-//! CompletionGate deepening).
+//! Auto-discovered build/test acceptance plans (Phase E, CompletionGate
+//! deepening; intent-layer cleanup 2026-07-28).
 //!
 //! Claude Code verifies a coding task against the project's own toolchain
-//! before accepting completion. This module mirrors that: when the prompt
-//! implies code changes AND the workspace has a recognized build system, the
-//! run gets a [`VerificationPlan`] whose steps run after the model declares
-//! completion. Failures feed back as structured observations through the
-//! runtime's [`ReflectionEngine`](deepagent_verification::ReflectionEngine)
-//! with bounded repair rounds; repeated identical failures give up cleanly.
+//! before accepting completion, and it does so based on WHAT ACTUALLY
+//! HAPPENED (non-trivial implementation on this turn), never by grepping the
+//! user's prompt for "code"/"compile"/"refactor" keywords. This module
+//! mirrors that split:
+//! - **Discovery** (here) is purely structural: if the workspace has a
+//!   recognized build system, a [`VerificationPlan`] is produced. No prompt
+//!   inspection — guessing intent from prompt text is the anti-pattern we
+//!   removed.
+//! - **Triggering** lives in the runtime loop, which runs the plan only when
+//!   the run actually created/modified files (fact-based gate). A pure
+//!   question in a cargo repo mutates nothing, so no build runs.
 //!
-//! Discovery is intentionally conservative:
-//! - Read-only / question prompts produce NO plan (reads need no build).
-//! - Only fast, side-effect-free checks are used (`cargo check`,
-//!   `tsc --noEmit`, `python -m compileall`); full test suites stay opt-in.
+//! Discovery stays conservative on cost: only fast, side-effect-free checks
+//! (`cargo check`, `tsc --noEmit`, `python -m compileall`); full test suites
+//! stay opt-in.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -20,69 +24,13 @@ use std::sync::Arc;
 use deepagent_runtime::VerificationPlan;
 use deepagent_verification::{Command, SystemCommandRunner, VerificationStep};
 
-/// Code-ish prompt markers (EN + ZH). Combined with mutation intent so a
-/// prompt like "创建一个 txt 笔记" doesn't trigger a build.
-const CODE_HINTS: &[&str] = &[
-    "code",
-    "compile",
-    "build",
-    "bug",
-    "fix",
-    "refactor",
-    "implement",
-    "function",
-    "class",
-    "test",
-    "重构",
-    "修复",
-    "编译",
-    "实现",
-    "函数",
-    "代码",
-    "接口",
-    "模块",
-    "单元测试",
-    ".rs",
-    ".ts",
-    ".tsx",
-    ".js",
-    ".py",
-    ".java",
-    ".go",
-];
-
-/// Mutation verbs common in coding tasks that `CompletionPolicy::from_prompt`
-/// (which tracks filesystem effects only) does not treat as create/modify.
-const CODE_MUTATION_HINTS: &[&str] = &[
-    "fix",
-    "repair",
-    "implement",
-    "refactor",
-    "optimize",
-    "debug",
-    "修复",
-    "重构",
-    "实现",
-    "优化",
-    "调试",
-    "改造",
-];
-
-/// Discover a workspace-level acceptance plan for `prompt` in `root`.
-/// Returns `None` when the prompt does not look like a code-mutation task or
-/// no recognized build system exists.
-pub(crate) fn discover_verification_plan(root: &Path, prompt: &str) -> Option<VerificationPlan> {
-    let lower = prompt.to_lowercase();
-    let mutation = deepagent_runtime::CompletionPolicy::from_prompt(prompt);
-    let has_mutation_intent =
-        !mutation.is_empty() || CODE_MUTATION_HINTS.iter().any(|hint| lower.contains(hint));
-    if !has_mutation_intent {
-        return None;
-    }
-    if !CODE_HINTS.iter().any(|hint| lower.contains(hint)) {
-        return None;
-    }
-
+/// Discover a workspace-level acceptance plan for `root`.
+///
+/// Purely structural: returns a plan when a recognized build system exists,
+/// `None` otherwise. Whether the plan actually runs is decided by the runtime
+/// loop based on real filesystem mutations — this function never inspects the
+/// prompt (that was the intent-guessing anti-pattern).
+pub(crate) fn discover_verification_plan(root: &Path) -> Option<VerificationPlan> {
     let steps = discover_steps(root);
     if steps.is_empty() {
         return None;
@@ -129,29 +77,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn read_only_prompts_produce_no_plan() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
-        assert!(discover_verification_plan(tmp.path(), "解释一下这个函数的作用").is_none());
-        assert!(discover_verification_plan(tmp.path(), "list the files").is_none());
-    }
-
-    #[test]
-    fn non_code_write_prompts_produce_no_plan() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
-        assert!(
-            discover_verification_plan(tmp.path(), "创建一个 notes.txt 写入今天的日程").is_none()
-        );
-    }
-
-    #[test]
-    fn rust_code_task_gets_cargo_check_plan() {
+    fn build_system_yields_plan_regardless_of_prompt() {
+        // Discovery is structural, not prompt-driven: a cargo workspace always
+        // yields a cargo-check plan. Whether it RUNS is the loop's fact-based
+        // (mutation) decision, tested in the runtime crate.
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
         let plan =
-            discover_verification_plan(tmp.path(), "修复 src/main.rs 里的编译错误并重构这个函数")
-                .expect("code task in a cargo workspace must get a plan");
+            discover_verification_plan(tmp.path()).expect("a cargo workspace must yield a plan");
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.steps[0].command.program, "cargo");
         assert!(plan.max_attempts >= 1);
@@ -160,18 +93,14 @@ mod tests {
     #[test]
     fn workspace_without_build_system_gets_no_plan() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(
-            discover_verification_plan(tmp.path(), "fix the bug in code and edit main.rs")
-                .is_none()
-        );
+        assert!(discover_verification_plan(tmp.path()).is_none());
     }
 
     #[test]
     fn typescript_workspace_gets_tsc_plan() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("tsconfig.json"), "{}").unwrap();
-        let plan = discover_verification_plan(tmp.path(), "implement the parser function in .ts")
-            .expect("ts workspace code task must get a plan");
+        let plan = discover_verification_plan(tmp.path()).expect("ts workspace must yield a plan");
         assert_eq!(plan.steps[0].command.program, "tsc");
     }
 }

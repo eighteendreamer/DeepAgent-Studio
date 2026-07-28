@@ -30,6 +30,17 @@ impl RunEnvironment {
         run_id: &str,
     ) -> Result<Self> {
         let config = RunConfigOverlay::load(root);
+        // Surface the resolved managed-policy directory so a missing managed
+        // layer is diagnosable at a glance (manual acceptance M-09: the
+        // DEEPAGENT_MANAGED_SETTINGS_DIR env var did not propagate to the app
+        // process, so managed-settings.json was silently absent). `sources`
+        // lists what actually loaded; `managed_dir`/`managed_dir_exists` show
+        // where we looked.
+        let managed_dir = deepagent_context::default_managed_dir();
+        let managed_dir_exists = managed_dir
+            .as_ref()
+            .map(|dir| dir.exists())
+            .unwrap_or(false);
         append_runtime_log(
             runtime_logs,
             NewRuntimeLogEntry::info("config", "run_config_overlay_loaded")
@@ -39,6 +50,10 @@ impl RunEnvironment {
                 .with_data(serde_json::json!({
                     "sources": config.sources.clone(),
                     "errors": config.errors.clone(),
+                    "managed_dir": managed_dir
+                        .as_ref()
+                        .map(|dir| dir.to_string_lossy().to_string()),
+                    "managed_dir_exists": managed_dir_exists,
                     "has_permissions": config.value.get("permissions").is_some()
                         || config.value.get("permission_rules").is_some(),
                     "has_hooks": config.value.get("hooks").is_some()

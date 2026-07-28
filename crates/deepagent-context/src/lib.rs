@@ -34,7 +34,8 @@ pub use compaction::{
     CompactionPolicy, CompactionResult, Compactor, HeuristicSummarizer, Summarizer, TaskSummary,
 };
 pub use config_overlay::{
-    ConfigLayer, ConfigOverlay, ConfigSource, DualConfigLoader, MANAGED_PRECEDENCE,
+    default_managed_dir, ConfigLayer, ConfigOverlay, ConfigSource, DualConfigLoader,
+    MANAGED_PRECEDENCE,
 };
 pub use model_compactor::ModelCompactor;
 pub use pack::{

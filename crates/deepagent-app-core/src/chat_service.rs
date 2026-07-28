@@ -2375,13 +2375,11 @@ impl ChatService {
             .tool_search_auto_threshold()
             .unwrap_or(SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS);
         let tool_search_discovered = self.discovered_tools_for_session(&session_id_str);
-        let subagent_thinking_depth = effective_thinking_depth_for_prompt(
-            thinking_depth,
-            model_prompt.as_str(),
-            continue_session.is_none() && history.is_empty(),
-            preflight_tools.is_empty(),
-            initial_plan_mode,
-        );
+        // Thinking depth is the user's explicit setting — never inferred from
+        // prompt keywords. Upstream parity: codex reasoning effort is pure
+        // config; Claude Code keys thinking off model capability + explicit
+        // settings, and only a user-typed magic word (ultrathink) nudges it.
+        let subagent_thinking_depth = thinking_depth;
 
         // Create the live event channel before registering the task tool so
         // child-agent lifecycle events use the same UI/logging pump. The
@@ -2656,13 +2654,7 @@ impl ChatService {
             }
         }
         let prompt_for_model = model_prompt.as_str();
-        let effective_thinking_depth = effective_thinking_depth_for_prompt(
-            thinking_depth,
-            prompt_for_model,
-            continue_session.is_none() && history.is_empty(),
-            preflight_tools.is_empty(),
-            initial_plan_mode,
-        );
+        let effective_thinking_depth = thinking_depth;
         let model_capability = ModelCapabilityResolver::new().resolve_model_id(&model);
         let context_policy =
             ContextPolicy::for_capability(&model_capability, effective_thinking_depth);
@@ -2848,7 +2840,6 @@ impl ChatService {
             verification_policy,
             fire_session_start: continue_session.is_none(),
             granted,
-            prompt_for_model,
             nested_instructions: Some(Arc::new(
                 crate::nested_instructions::NestedInstructionsDecorator::new(
                     root.clone(),
@@ -2878,11 +2869,12 @@ impl ChatService {
         // is no longer a production fallback for root chat runs; RuntimeEngine
         // remains available only as an internal execution primitive while the
         // kernel is being expanded.
-        // Auto-discovered acceptance plan (Phase E): code tasks in a
-        // recognized build system run build/type checks after completion,
-        // with bounded self-repair rounds via the reflection engine.
-        let verification_plan =
-            crate::completion_plan::discover_verification_plan(&root, prompt_for_model);
+        // Auto-discovered acceptance plan (Phase E; intent-layer cleanup):
+        // discovery is purely structural — a recognized build system yields a
+        // plan. The runtime loop runs it ONLY when the run actually created or
+        // modified files (fact-based gate), so a pure question in a buildable
+        // repo never triggers a build. Prompt text is never inspected.
+        let verification_plan = crate::completion_plan::discover_verification_plan(&root);
         let (run_result, run_succeeded): (Result<()>, bool) = {
             let mut kernel = AgentKernel::<SystemClock>::new(
                 self.db.clone(),
@@ -3031,65 +3023,7 @@ fn parse_thinking_depth(depth: &str) -> Result<ThinkingDepth> {
     }
 }
 
-/// A tiny performance guard for the most common "empty first turn" case.
-///
-/// Deep/medium Thinking Mode is useful for real work, but it is wasteful for a
-/// brand-new session whose first prompt is just a greeting or acknowledgement:
-/// it increases first-token latency while adding no reasoning value. Keep this
-/// intentionally narrow so explicit work requests still honor the user's
-/// selected thinking depth.
-fn effective_thinking_depth_for_prompt(
-    requested: ThinkingDepth,
-    prompt: &str,
-    fresh_empty_session: bool,
-    preflight_tools_empty: bool,
-    initial_plan_mode: bool,
-) -> ThinkingDepth {
-    if requested == ThinkingDepth::Simple
-        || !fresh_empty_session
-        || !preflight_tools_empty
-        || initial_plan_mode
-    {
-        return requested;
-    }
-
-    if is_lightweight_opening_prompt(prompt) {
-        ThinkingDepth::Simple
-    } else {
-        requested
-    }
-}
-
-fn is_lightweight_opening_prompt(prompt: &str) -> bool {
-    let normalized = prompt
-        .trim()
-        .trim_matches(|c: char| c.is_ascii_punctuation() || "。！？!？，,～~ ".contains(c))
-        .to_ascii_lowercase();
-    if normalized.is_empty() || normalized.chars().count() > 24 {
-        return false;
-    }
-
-    matches!(
-        normalized.as_str(),
-        "hi" | "hello"
-            | "hey"
-            | "ok"
-            | "okay"
-            | "thanks"
-            | "thank you"
-            | "你好"
-            | "您好"
-            | "嗨"
-            | "哈喽"
-            | "在吗"
-            | "好的"
-            | "好"
-            | "嗯"
-            | "谢谢"
-            | "辛苦了"
-    )
-}
-
+/// Format a rule count with an optional inline listing (diagnostics helper).
 #[allow(dead_code)]
 fn format_rule_count(rules: &[String]) -> String {
     if rules.is_empty() {
@@ -3534,40 +3468,6 @@ mod tests {
         assert!(labels.iter().any(|l| l == "model_request_completed"));
         assert!(labels.iter().any(|l| l == "content_delta"));
         assert_eq!(labels.last().map(String::as_str), Some("run_completed"));
-    }
-
-    #[test]
-    fn lightweight_opening_prompt_uses_simple_thinking_only_for_fresh_empty_sessions() {
-        assert_eq!(
-            effective_thinking_depth_for_prompt(ThinkingDepth::Deep, "你好", true, true, false),
-            ThinkingDepth::Simple
-        );
-        assert_eq!(
-            effective_thinking_depth_for_prompt(ThinkingDepth::Medium, "hello!", true, true, false),
-            ThinkingDepth::Simple
-        );
-        assert_eq!(
-            effective_thinking_depth_for_prompt(
-                ThinkingDepth::Deep,
-                "你好，帮我分析这个项目",
-                true,
-                true,
-                false
-            ),
-            ThinkingDepth::Deep
-        );
-        assert_eq!(
-            effective_thinking_depth_for_prompt(ThinkingDepth::Deep, "你好", false, true, false),
-            ThinkingDepth::Deep
-        );
-        assert_eq!(
-            effective_thinking_depth_for_prompt(ThinkingDepth::Deep, "你好", true, false, false),
-            ThinkingDepth::Deep
-        );
-        assert_eq!(
-            effective_thinking_depth_for_prompt(ThinkingDepth::Deep, "你好", true, true, true),
-            ThinkingDepth::Deep
-        );
     }
 
     #[tokio::test]

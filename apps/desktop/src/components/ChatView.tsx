@@ -1467,7 +1467,17 @@ export function ChatView({
                           key={entry.sequence}
                           className="px-4 py-2.5 hover:bg-hover-bg cursor-pointer text-[12px] text-text-base"
                           onClick={() => {
-                            onRewind?.(entry.sequence);
+                            // Claude Code rewind semantics: rewinding to a
+                            // user message returns the session to the state
+                            // BEFORE it was sent, and puts the prompt back in
+                            // the composer for editing/resend. Keeping the
+                            // message while deleting its execution (the old
+                            // `entry.sequence` anchor) satisfied neither
+                            // reading (manual acceptance M-15).
+                            onRewind?.(Math.max(0, entry.sequence - 1));
+                            if (typeof entry.detail === "string" && entry.detail.trim()) {
+                              setValue(entry.detail);
+                            }
                             setIsRewindOpen(false);
                             setIsMenuOpen(false);
                           }}

@@ -1,2 +1,11 @@
 allowBuilds:
+  '@alibaba-group/open-code-review': set this to true or false
   esbuild: true
+minimumReleaseAgeExclude:
+  - '@alibaba-group/ocr-darwin-arm64@1.8.0'
+  - '@alibaba-group/ocr-darwin-x64@1.8.0'
+  - '@alibaba-group/ocr-linux-arm64@1.8.0'
+  - '@alibaba-group/ocr-linux-x64@1.8.0'
+  - '@alibaba-group/ocr-win32-arm64@1.8.0'
+  - '@alibaba-group/ocr-win32-x64@1.8.0'
+  - '@alibaba-group/open-code-review@1.8.0'

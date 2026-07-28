@@ -445,9 +445,16 @@ async fn native_move_and_delete_are_verified_and_recorded_as_completion_evidence
 }
 
 #[tokio::test]
-async fn delete_task_cannot_succeed_without_deleted_path_evidence() {
+async fn completion_is_not_gated_by_prompt_keyword_extraction() {
+    // Intent-layer cleanup 2026-07-28: completion is NEVER gated on
+    // requirements guessed from the prompt. Upstream (Claude Code / codex /
+    // grok) trust the model's self-report + Stop hooks + optional LLM
+    // verification. A "delete X" prompt whose run does not actually delete X
+    // therefore still completes (the model owns the honesty contract); the
+    // kernel does not resurrect the removed keyword gate. A single turn is
+    // enough — there is no feedback-retry loop keyed off prompt keywords.
     let run_id = format!(
-        "kernel-v2-fake-delete-{}-{}",
+        "kernel-v2-no-prompt-gate-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -468,17 +475,10 @@ async fn delete_task_cannot_succeed_without_deleted_path_evidence() {
         Arc::new(MemorySecretStore::new()),
     ));
     settings.initialize("sk-e2e-test").await.unwrap();
-    let false_final = || {
-        vec![
-            r#"{"choices":[{"delta":{"content":"Deleted target-dir successfully."},"finish_reason":"stop"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ]
-    };
-    let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([
-        false_final(),
-        false_final(),
-        false_final(),
-    ]));
+    let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([vec![
+        r#"{"choices":[{"delta":{"content":"Deleted target-dir successfully."},"finish_reason":"stop"}]}"#.to_string(),
+        "[DONE]".to_string(),
+    ]]));
     let chat = ChatService::new(db, settings, transport, &root);
 
     let result = chat
@@ -496,19 +496,20 @@ async fn delete_task_cannot_succeed_without_deleted_path_evidence() {
         )
         .await;
 
-    assert!(result.is_err(), "false completion was accepted: {result:?}");
-    assert!(root.join("target-dir/keep.txt").exists());
+    // No prompt gate: the run completes in one turn.
+    assert!(result.is_ok(), "run must complete: {result:?}");
     let events = chat.run_events(&run_id, None).unwrap();
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.event_type == "completion_evidence")
-            .count(),
-        3
-    );
+    // The keyword gate is gone: no completion-gate failure verification event
+    // referencing "required filesystem effect(s)".
+    assert!(!events.iter().any(|event| {
+        event.event_type == "verification"
+            && event.data["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("required filesystem effect"))
+    }));
     assert!(events
         .iter()
-        .any(|event| { event.event_type == "run_terminal" && event.data["kind"] == "failed" }));
+        .any(|event| { event.event_type == "run_terminal" && event.data["kind"] == "succeeded" }));
 
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -1737,7 +1737,12 @@ export function App() {
   // Fork the active session at its latest sequence into a new branch, then
   // switch to it.
   const onForkSession = useCallback(() => {
-    if (!activeId || !detail) return;
+    // Silent-return + swallowed rejection made the Fork button appear dead
+    // (manual acceptance M-16). Every early exit and failure now surfaces.
+    if (!activeId || !detail) {
+      message.warning("会话尚未加载完成，无法创建分支");
+      return;
+    }
     const lastSeq =
       detail.timeline.length > 0
         ? detail.timeline[detail.timeline.length - 1].sequence
@@ -1746,8 +1751,12 @@ export function App() {
       .then((res) => {
         refreshSessions();
         navigateTo(res.new_session_id, "chat");
+        message.success("已创建分支会话");
       })
-      .catch(() => {});
+      .catch((error) => {
+        console.error("fork_session failed", error);
+        message.error(`创建分支失败：${String(error)}`);
+      });
   }, [activeId, detail, refreshSessions, navigateTo]);
 
   // Rewind the active session to a timeline sequence (destructive truncate),
@@ -1766,8 +1775,10 @@ export function App() {
         ]);
         setDetail(nextDetail);
         setMessages(mapConversationToChatMessages(nextConversation));
-      } catch {
-        // keep current screen state if rewind fails
+      } catch (error) {
+        // keep current screen state if rewind fails, but never silently
+        console.error("rewind_session failed", error);
+        message.error(`回退失败：${String(error)}`);
       }
     },
     [activeId, refreshSessions]
