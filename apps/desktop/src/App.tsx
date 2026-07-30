@@ -1967,7 +1967,7 @@ export function App() {
           )}
         </>
 
-        <main className="app-main-surface flex-1 bg-white rounded-tl-2xl border-l border-t border-border-theme flex overflow-hidden shadow-sm relative">
+        <main className="app-main-surface flex-1 bg-white flex overflow-hidden shadow-sm relative">
           <Suspense fallback={<ViewLoading />}>
             {view === "start" && (
               <div key={viewFrameKey} className="view-frame">
