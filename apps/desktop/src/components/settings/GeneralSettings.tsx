@@ -678,7 +678,7 @@ export function GeneralSettings() {
             <div className="pr-8">
               <div className="text-[14px] font-medium text-text-base mb-1">停滞/假完成检测</div>
               <div className="text-[12px] text-text-secondary leading-relaxed">
-                终答时审查是否“只声称完成但无实际证据”，命中时注入一次建议提醒让模型继续（§2.3）。
+                终答时审查是否“只声称完成但无实际证据”，命中时注入一次建议提醒让模型继续。
               </div>
             </div>
             <div className="pt-1">
@@ -693,7 +693,7 @@ export function GeneralSettings() {
             <div className="pr-8">
               <div className="text-[14px] font-medium text-text-base mb-1">命令注入检测（LLM）</div>
               <div className="text-[12px] text-text-secondary leading-relaxed">
-                对结构可疑的 shell 命令做一次模型复审，疑似注入/渗出时升级为人工审批（§6.1）。
+                对结构可疑的 shell 命令做一次模型复审，疑似注入/渗出时升级为人工审批。
               </div>
             </div>
             <div className="pt-1">
@@ -708,7 +708,7 @@ export function GeneralSettings() {
             <div className="pr-8">
               <div className="text-[14px] font-medium text-text-base mb-1">项目信任网关</div>
               <div className="text-[12px] text-text-secondary leading-relaxed">
-                未信任的项目目录下，即使是白名单命令也将 bash/shell 升级为人工审批（§6.2）。
+                未信任的项目目录下，即使是白名单命令也将 bash/shell 升级为人工审批。
               </div>
             </div>
             <div className="pt-1">
@@ -723,7 +723,7 @@ export function GeneralSettings() {
             <div className="pr-8">
               <div className="text-[14px] font-medium text-text-base mb-1">对抗式目标验证</div>
               <div className="text-[12px] text-text-secondary leading-relaxed">
-                任务改动文件并声称完成后，由一个只读“怀疑者面板”审核目标是否真正达成（多数驳回，§2.2）。
+                任务改动文件并声称完成后，由一个只读“怀疑者面板”审核目标是否真正达成（多数驳回）。
               </div>
             </div>
             <div className="pt-1">
@@ -769,7 +769,7 @@ export function GeneralSettings() {
       <div className="mb-12 max-w-[700px]">
         <h2 className="text-[15px] font-medium text-text-base mb-1">输出风格</h2>
         <div className="text-[12px] text-text-secondary mb-4 leading-relaxed">
-          内置系统提示风格，切换后自下一次会话生效（注入稳定可缓存的风格块，§7.1）。
+          内置系统提示风格，切换后自下一次会话生效（注入稳定可缓存的风格块）。
         </div>
         <div className="border border-border-theme rounded-xl bg-white p-4 flex items-center justify-between">
           <div className="pr-8">
