@@ -583,6 +583,18 @@ export function App() {
     [activeId, sessions]
   );
 
+  // Header title bound strictly to the current session identity. A brand-new run
+  // streams under a pending key while `activeId` still points at the previously
+  // active (startup-preselected) session; showing that old session's title (or a
+  // stale `detail` left over from the prior session) is the "old title flashes on
+  // a new chat" bug. Fall back to `detail` only when it belongs to `activeId`.
+  const headerTitle = useMemo<string | null>(() => {
+    if (activePendingRunKey) return null;
+    if (activeSession?.title) return activeSession.title;
+    if (detail && detail.summary.id === activeId) return detail.summary.title;
+    return null;
+  }, [activePendingRunKey, activeSession, detail, activeId]);
+
   const navigateTo = useCallback((newActiveId: string | null, newView: View) => {
     if (newActiveId === activeId && newView === view) {
       return;
@@ -1990,7 +2002,7 @@ export function App() {
                     if (activeSession) onArchiveSession(activeSession.id);
                   }}
                   pinned={activeSession?.pinned ?? false}
-                  title={activeSession?.title ?? detail?.summary.title ?? null}
+                  title={headerTitle}
                   timeline={detail?.timeline ?? []}
                   approval={approvals[0] ?? null}
                   approvalQueueCount={approvals.length}
