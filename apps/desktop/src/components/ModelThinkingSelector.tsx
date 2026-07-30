@@ -1,4 +1,5 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { Slider } from "./ui/Slider";
 
 type ThinkingDepth = "simple" | "medium" | "deep";
 
@@ -107,25 +108,12 @@ export function ModelThinkingSelector({
             <div className="mb-1 flex items-center justify-between px-1 text-[12px]">
               <span className="font-medium text-text-base">推理强度</span>
             </div>
-            <div className="grid grid-cols-3 gap-0.5 rounded-full bg-gray-100 p-0.5">
-              {thinkingOptions.map((option) => {
-                const selected = option.id === selectedThinking;
-                return (
-                  <button
-                    type="button"
-                    key={option.id}
-                    onClick={() => onChooseThinking(option.id)}
-                    className={`flex h-7 items-center justify-center rounded-full text-[12px] font-medium transition-colors ${
-                      selected
-                        ? "bg-white text-text-base shadow-[0_1px_4px_rgba(15,23,42,0.12)]"
-                        : "text-text-secondary hover:text-text-base"
-                    }`}
-                  >
-                    {option.label}
-                  </button>
-                );
-              })}
-            </div>
+            <Slider
+              stops={thinkingOptions.map((option) => ({ value: option.id, label: option.label }))}
+              value={selectedThinking}
+              onChange={(value) => onChooseThinking(value as ThinkingDepth)}
+              ariaLabel="推理强度"
+            />
           </div>
         </div>
       )}
