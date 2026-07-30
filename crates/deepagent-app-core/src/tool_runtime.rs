@@ -77,7 +77,12 @@ pub(crate) fn build_base_tool_registry(
     // finds the index missing builds it once (grok-build code_nav.rs parity),
     // so the model isn't stuck being told to use a map it can't create.
     let code_index = CodeIndexAutoBuild::new(request.root.to_path_buf());
-    register_project_map_tools(&mut registry, request.project_map, request.root, &code_index)?;
+    register_project_map_tools(
+        &mut registry,
+        request.project_map,
+        request.root,
+        &code_index,
+    )?;
     register_codegraph_tools(&mut registry, request.root, &code_index)?;
     register_office_tools(&mut registry, request.office)?;
     register_remote_ops_tools(

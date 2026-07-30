@@ -1,6 +1,6 @@
 {
   "productName": "DeepAgent Studio",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "identifier": "com.deepagent.studio",
   "build": {
     "beforeDevCommand": "pnpm dev",
