@@ -1,5 +1,4 @@
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { getWelcomeName, isTauri, setWelcomeName } from "../../api";
 
@@ -13,61 +12,6 @@ function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () =>
     </div>
   );
 }
-
-function PersonalityDropdown() {
-  const { t } = useTranslation();
-  const [isOpen, setIsOpen] = useState(false);
-  const [selected, setSelected] = useState<"affable" | "pragmatic">("affable");
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  return (
-    <div className="relative" ref={dropdownRef}>
-      <div 
-        className="flex items-center bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg px-3 py-1.5 cursor-pointer transition-colors w-48 justify-between"
-        onClick={() => setIsOpen(!isOpen)}
-      >
-        <span className="text-[12px] font-medium text-text-base mr-3">{selected === "affable" ? t("settings.personalize.affable") : t("settings.personalize.pragmatic")}</span>
-        <FontAwesomeIcon icon={["fas", "chevron-down"]} className="text-[10px] text-text-secondary" />
-      </div>
-
-      {isOpen && (
-        <div className="absolute top-full mt-1 right-0 w-64 bg-white border border-border-theme rounded-xl shadow-lg z-10 overflow-hidden">
-          <div 
-            className="p-3 hover:bg-gray-50 cursor-pointer border-b border-border-theme flex items-center justify-between"
-            onClick={() => { setSelected("affable"); setIsOpen(false); }}
-          >
-            <div>
-              <div className="text-[13px] font-medium text-text-base mb-0.5">{t("settings.personalize.affable")}</div>
-              <div className="text-[11px] text-text-secondary">{t("settings.personalize.affableDesc")}</div>
-            </div>
-            {selected === "affable" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[12px] text-text-base" />}
-          </div>
-          <div 
-            className="p-3 hover:bg-gray-50 cursor-pointer flex items-center justify-between"
-            onClick={() => { setSelected("pragmatic"); setIsOpen(false); }}
-          >
-            <div>
-              <div className="text-[13px] font-medium text-text-base mb-0.5">{t("settings.personalize.pragmatic")}</div>
-              <div className="text-[11px] text-text-secondary">{t("settings.personalize.pragmaticDesc")}</div>
-            </div>
-            {selected === "pragmatic" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[12px] text-text-base" />}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function PersonalizeSettings() {
   const { t } = useTranslation();
   const [customInstruction, setCustomInstruction] = useState("");
@@ -131,20 +75,6 @@ export function PersonalizeSettings() {
       <div className="mb-10">
         <h1 className="text-2xl font-semibold text-text-base">{t("settings.personalize.title")}</h1>
       </div>
-
-      {/* Section: 个性 */}
-      <div className="mb-8 max-w-[700px]">
-        <div className="border border-border-theme rounded-xl overflow-visible shadow-[0_1px_2px_rgb(0,0,0,0.02)] bg-white">
-          <div className="flex items-center justify-between p-4">
-            <div>
-              <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.personalize.personality")}</div>
-              <div className="text-[12px] text-text-secondary">{t("settings.personalize.personalityDesc")}</div>
-            </div>
-            <PersonalityDropdown />
-          </div>
-        </div>
-      </div>
-
       {/* Section: Welcome message */}
       <div className="mb-8 max-w-[700px]">
         <div className="mb-2">
