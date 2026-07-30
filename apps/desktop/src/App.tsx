@@ -54,6 +54,7 @@ import type {
   ToolCall,
 } from "./types";
 import { TitleBar } from "./components/TitleBar";
+import { TrustDialog } from "./components/TrustDialog";
 import { Sidebar } from "./components/Sidebar";
 import { message } from "./components/message";
 
@@ -1893,6 +1894,7 @@ export function App() {
 
   return (
     <div className="bg-sidebar-bg text-text-base font-sans h-screen w-full overflow-hidden flex flex-col relative">
+      <TrustDialog projectPath={activeProjectPath} />
       <TitleBar 
         onToggleSidebar={toggleLeftSidebar}
         isSidebarOpen={isSidebarOpen} 

@@ -595,6 +595,86 @@ pub struct AppSettings {
     /// User-defined name displayed in the onboarding welcome message.
     #[serde(default)]
     pub welcome_name: String,
+    /// Optional override for the proactive auto-compact reserve buffer (the
+    /// tokens subtracted from the effective context window to form the
+    /// threshold). `None` uses the Claude-Code-aligned default (13_000; see
+    /// `ContextPolicy::autocompact_threshold_tokens`). Persisted as `Option`
+    /// so older settings docs round-trip cleanly.
+    #[serde(default)]
+    pub autocompact_reserve_tokens: Option<usize>,
+    /// Built-in system-prompt output style (Claude Code output styles §7.1).
+    /// `Default` injects nothing; `Explanatory`/`Learning` add a stable,
+    /// DeepSeek-worded style block. `#[serde(default)]` → `Default` for older
+    /// settings docs without the field.
+    #[serde(default)]
+    pub output_style: OutputStyle,
+    /// Opt-in advanced execution safeguards (§2.2/§2.3/§6.1/§6.2). Each is a
+    /// self-created "从宽" guard (advisory/fail-open) that is OFF by default;
+    /// this is the user-facing surface so they can be toggled without setting
+    /// environment variables before launch. The matching `DEEPAGENT_*` env
+    /// vars still force-enable regardless (power-user / CI override).
+    #[serde(default)]
+    pub execution_features: ExecutionFeatures,
+}
+
+/// Opt-in advanced execution safeguards, all default OFF (自创机制默认从宽:
+/// off unless the user asks for them). Persisted so the desktop UI can toggle
+/// them; the corresponding `DEEPAGENT_*` env var force-enables each one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ExecutionFeatures {
+    /// §2.3 stall/laziness detector: audit a final answer for false completion
+    /// and inject one advisory nudge (`DEEPAGENT_STALL_DETECTOR`).
+    #[serde(default)]
+    pub stall_detector: bool,
+    /// §6.1 LLM command-injection guard: second-opinion classify structurally
+    /// suspicious shell commands (`DEEPAGENT_LLM_COMMAND_GUARD`).
+    #[serde(default)]
+    pub command_guard: bool,
+    /// §6.2 per-project trust gate: untrusted project dirs escalate bash to
+    /// approval (`DEEPAGENT_PROJECT_TRUST`).
+    #[serde(default)]
+    pub project_trust: bool,
+    /// §2.2 adversarial goal verifier: a skeptic panel audits goal coverage
+    /// after the fact-gate (`DEEPAGENT_ADVERSARIAL_VERIFY`).
+    #[serde(default)]
+    pub adversarial_verify: bool,
+}
+
+/// Built-in system-prompt output style (Claude Code output styles §7.1).
+/// Structure aligns with CC's default/Explanatory/Learning set; the injected
+/// wording is DeepSeek-native (未照搬 Claude 措辞).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputStyle {
+    /// No extra style guidance — the base system prompt governs tone.
+    #[default]
+    Default,
+    /// Add brief “why” insights alongside the work, without slowing delivery.
+    Explanatory,
+    /// Teaching mode: explain concepts and reasoning as you go, for learning.
+    Learning,
+}
+
+impl OutputStyle {
+    /// Stable snake_case label for settings/UI.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OutputStyle::Default => "default",
+            OutputStyle::Explanatory => "explanatory",
+            OutputStyle::Learning => "learning",
+        }
+    }
+
+    /// Parse a snake_case label (from the UI / env). Returns `None` for an
+    /// unknown value so the caller can reject it rather than silently reset.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "default" => Some(OutputStyle::Default),
+            "explanatory" => Some(OutputStyle::Explanatory),
+            "learning" => Some(OutputStyle::Learning),
+            _ => None,
+        }
+    }
 }
 
 fn default_skill_catalog_enabled() -> bool {
@@ -636,6 +716,12 @@ pub struct SettingsView {
     pub web_search: WebSearchSettings,
     /// Current image-analysis settings.
     pub vision: VisionSettings,
+    /// Opt-in advanced execution safeguards (§2.2/§2.3/§6.1/§6.2).
+    #[serde(default)]
+    pub execution_features: ExecutionFeatures,
+    /// Selected built-in output style (§7.1): `default`/`explanatory`/`learning`.
+    #[serde(default)]
+    pub output_style: String,
 }
 
 /// One per-currency balance row exposed to the UI.
@@ -793,6 +879,12 @@ impl SettingsService {
                 .as_ref()
                 .map(|s| s.welcome_name.clone())
                 .unwrap_or_default(),
+            autocompact_reserve_tokens: prior.as_ref().and_then(|s| s.autocompact_reserve_tokens),
+            output_style: prior.as_ref().map(|s| s.output_style).unwrap_or_default(),
+            execution_features: prior
+                .as_ref()
+                .map(|s| s.execution_features)
+                .unwrap_or_default(),
         };
         self.save(&settings)?;
 
@@ -943,12 +1035,80 @@ impl SettingsService {
         Ok(self.load()?.map(|s| s.thinking_depth).unwrap_or_default())
     }
 
+    /// Effective proactive auto-compact reserve buffer override. Precedence:
+    /// `DEEPAGENT_AUTOCOMPACT_RESERVE_TOKENS` env var (operator escape hatch,
+    /// aligned with Claude Code's env overrides) > persisted setting > `None`
+    /// (the caller then uses the CC-aligned 13k default).
+    pub fn autocompact_reserve_tokens(&self) -> Option<usize> {
+        if let Ok(raw) = std::env::var("DEEPAGENT_AUTOCOMPACT_RESERVE_TOKENS") {
+            if let Ok(parsed) = raw.trim().parse::<usize>() {
+                return Some(parsed);
+            }
+        }
+        self.load()
+            .ok()
+            .flatten()
+            .and_then(|s| s.autocompact_reserve_tokens)
+    }
+
+    /// The selected built-in output style. `DEEPAGENT_OUTPUT_STYLE`
+    /// (`explanatory`/`learning`/`default`) overrides the persisted setting;
+    /// otherwise the persisted value, defaulting to `Default`.
+    pub fn output_style(&self) -> OutputStyle {
+        if let Ok(raw) = std::env::var("DEEPAGENT_OUTPUT_STYLE") {
+            match raw.trim().to_ascii_lowercase().as_str() {
+                "explanatory" => return OutputStyle::Explanatory,
+                "learning" => return OutputStyle::Learning,
+                "default" => return OutputStyle::Default,
+                _ => {}
+            }
+        }
+        self.load()
+            .ok()
+            .flatten()
+            .map(|s| s.output_style)
+            .unwrap_or_default()
+    }
+
+    /// Persist the selected built-in output style (§7.1). Takes effect on the
+    /// next run: `output_style()` → `output_style_prompt_block()` injects the
+    /// matching (or no) style block into the cacheable system prefix.
+    pub fn set_output_style(&self, style: OutputStyle) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.output_style = style;
+        self.save(&settings)?;
+        Ok(())
+    }
+
     /// The current post-edit verification policy.
     pub fn verification_policy(&self) -> Result<VerificationPolicy> {
         Ok(self
             .load()?
             .map(|s| s.verification_policy)
             .unwrap_or_default())
+    }
+
+    /// The persisted opt-in execution safeguards (default: all off). Env
+    /// overrides are applied by the per-feature enable checks, not here — this
+    /// returns exactly what the user persisted so the UI round-trips cleanly.
+    pub fn execution_features(&self) -> ExecutionFeatures {
+        self.load()
+            .ok()
+            .flatten()
+            .map(|s| s.execution_features)
+            .unwrap_or_default()
+    }
+
+    /// Persist the opt-in execution safeguards.
+    pub fn set_execution_features(&self, features: ExecutionFeatures) -> Result<()> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.execution_features = features;
+        self.save(&settings)?;
+        Ok(())
     }
 
     /// Set the post-edit verification policy, persisting it.
@@ -1407,6 +1567,8 @@ impl SettingsService {
                 settings.web_search.clone(),
             ))?,
             vision: self.vision_settings_view(settings.vision.clone())?,
+            execution_features: settings.execution_features,
+            output_style: settings.output_style.as_str().to_string(),
         })
     }
 
@@ -1453,6 +1615,61 @@ mod tests {
         let secrets = Arc::new(MemorySecretStore::new());
         let svc = SettingsService::new(db, transport_with_models(), secrets.clone());
         (svc, secrets)
+    }
+
+    #[tokio::test]
+    async fn output_style_round_trip_and_takes_effect_in_prompt() {
+        use crate::system_context::output_style_prompt_block;
+        let (svc, _secrets) = service();
+        svc.initialize("sk-secret-1234").await.unwrap();
+
+        // Default: no style block injected.
+        assert_eq!(svc.output_style(), OutputStyle::Default);
+        assert!(output_style_prompt_block(svc.output_style()).is_none());
+
+        // Switch to Explanatory → persisted, surfaced in the view, and the
+        // injected prompt block changes (“output style 切换生效” 验收).
+        svc.set_output_style(OutputStyle::Explanatory).unwrap();
+        assert_eq!(svc.output_style(), OutputStyle::Explanatory);
+        assert_eq!(svc.view().unwrap().unwrap().output_style, "explanatory");
+        let block = output_style_prompt_block(svc.output_style());
+        assert!(block.is_some(), "Explanatory must inject a style block");
+
+        // Parse round-trips the labels; unknown is rejected.
+        assert_eq!(OutputStyle::parse("learning"), Some(OutputStyle::Learning));
+        assert_eq!(OutputStyle::parse("Default"), Some(OutputStyle::Default));
+        assert_eq!(OutputStyle::parse("nonsense"), None);
+    }
+
+    #[tokio::test]
+    async fn execution_features_default_off_and_round_trip() {
+        let (svc, _secrets) = service();
+        svc.initialize("sk-secret-1234").await.unwrap();
+
+        // Default: every opt-in safeguard is OFF (自创机制默认从宽).
+        let features = svc.execution_features();
+        assert_eq!(features, ExecutionFeatures::default());
+        assert!(!features.stall_detector);
+        assert!(!features.command_guard);
+        assert!(!features.project_trust);
+        assert!(!features.adversarial_verify);
+
+        // Persist a subset and confirm it round-trips (and surfaces in the view).
+        svc.set_execution_features(ExecutionFeatures {
+            stall_detector: true,
+            command_guard: false,
+            project_trust: true,
+            adversarial_verify: false,
+        })
+        .unwrap();
+        let features = svc.execution_features();
+        assert!(features.stall_detector);
+        assert!(!features.command_guard);
+        assert!(features.project_trust);
+        assert!(!features.adversarial_verify);
+        let view = svc.view().unwrap().unwrap();
+        assert!(view.execution_features.stall_detector);
+        assert!(view.execution_features.project_trust);
     }
 
     #[tokio::test]
@@ -1878,6 +2095,9 @@ mod tests {
             active_permission_preset: PermissionPreset::default(),
             permission_preset_visibility: PermissionPresetVisibility::default(),
             welcome_name: String::new(),
+            autocompact_reserve_tokens: None,
+            output_style: OutputStyle::default(),
+            execution_features: ExecutionFeatures::default(),
         };
         svc.save(&settings).unwrap();
 

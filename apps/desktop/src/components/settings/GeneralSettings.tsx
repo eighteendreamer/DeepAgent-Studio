@@ -8,7 +8,13 @@ import {
   setTerminalShell as persistTerminalShell,
   getPermissionPresetVisibility,
   setPermissionPresetVisibility,
+  setExecutionFeatures,
+  setOutputStyle as persistOutputStyle,
+  listTrustedProjects,
+  setProjectTrust,
 } from "../../api";
+import type { OutputStyle } from "../../api";
+import type { ExecutionFeatures } from "../../types";
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
@@ -417,9 +423,60 @@ export function GeneralSettings() {
         if (view?.terminal_shell) {
           setTerminalShell(shellKeyToTitle(view.terminal_shell));
         }
+        if (view?.execution_features) {
+          setExecFeatures(view.execution_features);
+        }
+        if (view?.output_style) {
+          setOutputStyle(view.output_style as OutputStyle);
+        }
       })
       .catch(() => {});
   }, []);
+
+  // Built-in output style (§7.1): default / explanatory / learning. Switching
+  // persists via set_output_style and takes effect on the next run's system
+  // prompt (a stable, cacheable style block).
+  const [outputStyle, setOutputStyle] = useState<OutputStyle>("default");
+  const changeOutputStyle = (next: OutputStyle) => {
+    const prev = outputStyle;
+    setOutputStyle(next);
+    persistOutputStyle(next).catch((e) => {
+      console.error("set_output_style failed:", e);
+      setOutputStyle(prev);
+    });
+  };
+
+  // Opt-in advanced execution safeguards (§2.2/§2.3/§6.1/§6.2). All default
+  // OFF; toggling persists via set_execution_features. The matching
+  // DEEPAGENT_* env var force-enables regardless of this switch.
+  const [execFeatures, setExecFeatures] = useState<ExecutionFeatures>({
+    stall_detector: false,
+    command_guard: false,
+    project_trust: false,
+    adversarial_verify: false,
+  });
+  const toggleExecFeature = (key: keyof ExecutionFeatures) => {
+    const next = { ...execFeatures, [key]: !execFeatures[key] };
+    setExecFeatures(next);
+    setExecutionFeatures(next).catch((e) => {
+      console.error("set_execution_features failed:", e);
+      // Roll back the optimistic toggle on failure.
+      setExecFeatures(execFeatures);
+    });
+  };
+
+  // §6.2 trusted-project revoke list: the explicit grants the user made via the
+  // TrustDialog. Revoking removes the grant (descendants lose implicit trust).
+  const [trustedProjects, setTrustedProjects] = useState<string[]>([]);
+  useEffect(() => {
+    listTrustedProjects().then(setTrustedProjects).catch(() => {});
+  }, []);
+  const revokeTrust = (path: string) => {
+    setProjectTrust(path, false)
+      .then(() => listTrustedProjects())
+      .then(setTrustedProjects)
+      .catch((e) => console.error("revoke trust failed:", e));
+  };
   
   const mapLangToTitle = (lng: string) => {
     switch (lng) {
@@ -607,6 +664,129 @@ export function GeneralSettings() {
               />
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Section: 高级执行防护（§2.2/§2.3/§6.1/§6.2，默认均关） */}
+      <div className="mb-12 max-w-[700px]">
+        <h2 className="text-[15px] font-medium text-text-base mb-1">高级执行防护</h2>
+        <div className="text-[12px] text-text-secondary mb-4 leading-relaxed">
+          选入式安全岗哨，默认关闭。均为“宁可漏过不可误杀”的建议性机制（fail-open，不会阻断 run）。开启后会在相应时机额外调用一次轻量模型判定。
+        </div>
+        <div className="border border-border-theme rounded-xl overflow-hidden shadow-[0_1px_2px_rgb(0,0,0,0.02)]">
+          <div className="flex items-start justify-between p-4 bg-white border-b border-border-theme">
+            <div className="pr-8">
+              <div className="text-[14px] font-medium text-text-base mb-1">停滞/假完成检测</div>
+              <div className="text-[12px] text-text-secondary leading-relaxed">
+                终答时审查是否“只声称完成但无实际证据”，命中时注入一次建议提醒让模型继续（§2.3）。
+              </div>
+            </div>
+            <div className="pt-1">
+              <ToggleSwitch
+                checked={execFeatures.stall_detector}
+                onChange={() => toggleExecFeature("stall_detector")}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-start justify-between p-4 bg-white border-b border-border-theme">
+            <div className="pr-8">
+              <div className="text-[14px] font-medium text-text-base mb-1">命令注入检测（LLM）</div>
+              <div className="text-[12px] text-text-secondary leading-relaxed">
+                对结构可疑的 shell 命令做一次模型复审，疑似注入/渗出时升级为人工审批（§6.1）。
+              </div>
+            </div>
+            <div className="pt-1">
+              <ToggleSwitch
+                checked={execFeatures.command_guard}
+                onChange={() => toggleExecFeature("command_guard")}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-start justify-between p-4 bg-white border-b border-border-theme">
+            <div className="pr-8">
+              <div className="text-[14px] font-medium text-text-base mb-1">项目信任网关</div>
+              <div className="text-[12px] text-text-secondary leading-relaxed">
+                未信任的项目目录下，即使是白名单命令也将 bash/shell 升级为人工审批（§6.2）。
+              </div>
+            </div>
+            <div className="pt-1">
+              <ToggleSwitch
+                checked={execFeatures.project_trust}
+                onChange={() => toggleExecFeature("project_trust")}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-start justify-between p-4 bg-white">
+            <div className="pr-8">
+              <div className="text-[14px] font-medium text-text-base mb-1">对抗式目标验证</div>
+              <div className="text-[12px] text-text-secondary leading-relaxed">
+                任务改动文件并声称完成后，由一个只读“怀疑者面板”审核目标是否真正达成（多数驳回，§2.2）。
+              </div>
+            </div>
+            <div className="pt-1">
+              <ToggleSwitch
+                checked={execFeatures.adversarial_verify}
+                onChange={() => toggleExecFeature("adversarial_verify")}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* §6.2 已信任项目列表 + 撤销 */}
+        <div className="mt-4 border border-border-theme rounded-xl bg-white p-4">
+          <div className="text-[14px] font-medium text-text-base mb-1">已信任的项目</div>
+          <div className="text-[12px] text-text-secondary mb-3 leading-relaxed">
+            你通过信任弹框授予信任的项目目录（子目录自动继承，不单列）。撤销后，开启信任网关时该目录将重新需要确认。
+          </div>
+          {trustedProjects.length === 0 ? (
+            <div className="text-[12px] text-text-secondary italic">暂无已信任的项目。</div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {trustedProjects.map((path) => (
+                <div
+                  key={path}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border-theme px-3 py-2"
+                >
+                  <span className="text-[12px] font-mono text-text-base break-all">{path}</span>
+                  <button
+                    type="button"
+                    onClick={() => revokeTrust(path)}
+                    className="flex-shrink-0 px-2.5 py-1 text-[12px] rounded-md border border-border-theme text-red-600 hover:bg-red-50 transition-colors"
+                  >
+                    撤销
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Section: 输出风格（§7.1 output styles） */}
+      <div className="mb-12 max-w-[700px]">
+        <h2 className="text-[15px] font-medium text-text-base mb-1">输出风格</h2>
+        <div className="text-[12px] text-text-secondary mb-4 leading-relaxed">
+          内置系统提示风格，切换后自下一次会话生效（注入稳定可缓存的风格块，§7.1）。
+        </div>
+        <div className="border border-border-theme rounded-xl bg-white p-4 flex items-center justify-between">
+          <div className="pr-8">
+            <div className="text-[14px] font-medium text-text-base mb-1">回复风格</div>
+            <div className="text-[12px] text-text-secondary leading-relaxed">
+              默认：由基座提示词控制；解释型：边交付边补“为何”洞见；学习型：教学式讲解概念与思路。
+            </div>
+          </div>
+          <SegmentedControl
+            options={[
+              { label: "默认", value: "default" },
+              { label: "解释型", value: "explanatory" },
+              { label: "学习型", value: "learning" },
+            ]}
+            value={outputStyle}
+            onChange={(val) => changeOutputStyle(val as OutputStyle)}
+          />
         </div>
       </div>
 

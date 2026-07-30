@@ -208,6 +208,10 @@ where
     register_knowledge_write_tool(&mut registry, knowledge.as_ref())?;
     register_plan_mode_tools(&mut registry, &request.plan)?;
     register_skill_tool(&mut registry, request.skills)?;
+    // History-snip tool (Claude Code HISTORY_SNIP): lets the model free
+    // context by dropping clearly-finished earlier segments. Registered
+    // unconditionally; the ModelAgent applies the removal to the live window.
+    let _ = registry.register(Arc::new(deepagent_builtins::SnipHistoryTool::new()));
     let manifest = prepare_tool_manifest(
         &mut registry,
         request.tool_search_mode,

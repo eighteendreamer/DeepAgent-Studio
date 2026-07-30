@@ -33,6 +33,9 @@ pub(crate) struct HookAssemblyRequest<'a> {
     pub(crate) access: deepagent_builtins::FsAccess,
     pub(crate) bash_allow: Vec<String>,
     pub(crate) bash_full_access: bool,
+    /// Whether the project root is trusted (§6.2). When enforcement is on and
+    /// this is `false`, bash/shell escalates to approval.
+    pub(crate) is_trusted: bool,
 }
 
 pub(crate) struct HookAssemblyResult {
@@ -106,6 +109,49 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         request.bash_allow,
         request.bash_full_access,
     );
+
+    // Opt-in advanced safeguards resolve settings-first, with the matching
+    // `DEEPAGENT_*` env var as a force-enable override (power-user / CI).
+    let features = request.settings.execution_features();
+
+    // §6.1 LLM command-injection layer (opt-in, defense-in-depth atop the
+    // always-on heuristic). Additive `BeforeToolUse` hook: escalates
+    // structurally-suspicious commands to approval via a lightweight DeepSeek
+    // pass. Fail-open and Ask-only; registered only when enabled so the
+    // default build adds no per-command model calls.
+    if !request.bash_full_access
+        && (features.command_guard || crate::command_guard_llm::llm_command_guard_enabled())
+    {
+        let classifier: Arc<dyn crate::command_guard_llm::CommandClassifier> =
+            Arc::new(crate::command_guard_llm::ModelCommandClassifier::new(
+                request.client.clone(),
+                request.model.clone(),
+            ));
+        hooks.register(
+            HookPoint::BeforeToolUse,
+            Arc::new(crate::command_guard_llm::LlmCommandGuardHook::new(
+                classifier,
+            )),
+        );
+        tracing::info!("registered LLM command-injection guard (BeforeToolUse)");
+    }
+
+    // §6.2 per-project trust gate (opt-in). While a project is untrusted,
+    // escalate bash/shell to approval — even allow-listed commands that would
+    // otherwise auto-run wait for the user. Ask-only; once the user trusts the
+    // project the gate is not registered.
+    if (features.project_trust || crate::trust_service::project_trust_enforced())
+        && !request.is_trusted
+    {
+        hooks.register(
+            HookPoint::BeforeToolUse,
+            Arc::new(crate::trust_service::TrustGuardHook::new()),
+        );
+        tracing::info!(
+            project = request.root.display().to_string(),
+            "project untrusted: registered trust gate (bash → approval)"
+        );
+    }
 
     Ok(HookAssemblyResult {
         hooks: Arc::new(hooks),

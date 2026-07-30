@@ -932,12 +932,11 @@ impl ProcessTreeGuard {
 
 impl Drop for ProcessTreeGuard {
     fn drop(&mut self) {
-        if !self.armed || self.pid == 0 {
-            return;
-        }
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-(self.pid as i32), libc::SIGKILL);
+        if self.armed && self.pid != 0 {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(self.pid as i32), libc::SIGKILL);
+            }
         }
     }
 }

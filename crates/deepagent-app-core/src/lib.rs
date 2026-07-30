@@ -15,6 +15,7 @@ pub mod approval_bridge;
 pub mod archive_service;
 pub mod attachment_service;
 pub mod chat_service;
+pub mod command_guard_llm;
 pub mod commands;
 pub mod completion_plan;
 pub mod context_runtime;
@@ -61,6 +62,7 @@ pub mod skill_catalog_reminder;
 pub mod skills_service;
 pub mod slash_panel;
 pub mod speech_service;
+pub mod stall_classifier;
 pub mod subagent_runner;
 pub mod system_context;
 pub mod system_prompt;
@@ -69,8 +71,10 @@ pub mod terminal_service;
 pub mod todo_snapshot_reminder;
 pub mod tool_manifest;
 pub mod tool_runtime;
+pub mod trust_service;
 pub mod verification_decorator;
 pub mod verification_dispatcher;
+pub mod verification_panel;
 pub mod vision_cache_service;
 pub mod vision_provider_service;
 pub mod vision_service;
@@ -135,9 +139,9 @@ pub use service::AppService;
 pub use session_state_service::SessionStateService;
 pub use settings::{
     AppSettings, ApprovalPolicy, BalanceDto, BalanceInfoDto, EffectivePermissionProfile,
-    LocalExecutionMode, PermissionPreset, PermissionPresetVisibility, SandboxMode, SettingsService,
-    SettingsView, TerminalShell, VerificationPolicy, VisionMode, VisionSettings, WebSearchProvider,
-    WebSearchSettings,
+    ExecutionFeatures, LocalExecutionMode, OutputStyle, PermissionPreset,
+    PermissionPresetVisibility, SandboxMode, SettingsService, SettingsView, TerminalShell,
+    VerificationPolicy, VisionMode, VisionSettings, WebSearchProvider, WebSearchSettings,
 };
 pub use skill_catalog_reminder::SkillCatalogSendState;
 pub use skills_service::{
@@ -146,6 +150,7 @@ pub use skills_service::{
 };
 pub use slash_panel::{kv, SlashPanel, SlashPanelItem, SlashSection};
 pub use speech_service::{SpeechService, TranscriptionEngine, UnavailableEngine};
+pub use trust_service::{ProjectTrustDto, TrustService};
 
 // Re-export marketplace types from `deepagent-skills` so the desktop Tauri
 // layer can plumb the SkillsMP client handle into `AppState` without taking a

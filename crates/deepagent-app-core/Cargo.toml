@@ -12,6 +12,7 @@ deepagent-core.workspace = true
 deepagent-persistence.workspace = true
 deepagent-session.workspace = true
 deepagent-observation.workspace = true
+deepagent-tracing.workspace = true
 deepagent-models.workspace = true
 deepagent-skills.workspace = true
 deepagent-knowledge.workspace = true
@@ -89,7 +90,7 @@ keychain = ["dep:keyring"]
 # the ChatService tool registry. Pulls a TLS stack; the desktop app turns it on.
 # Also enables the MCP HTTP/SSE network transport so visually-configured hosted
 # MCP servers can connect and live-register their tools.
-web = ["deepagent-builtins/http", "deepagent-mcp/http"]
+web = ["deepagent-builtins/http", "deepagent-mcp/http", "deepagent-models/http"]
 # Real HTTP downloader for managed runtimes (office-agent RuntimeService). The
 # RuntimeService core (registry / resolve / sha256 verify / extract) is always
 # compiled; this only adds the reqwest-backed `ReqwestDownloader`. The desktop

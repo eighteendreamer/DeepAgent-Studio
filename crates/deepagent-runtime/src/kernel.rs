@@ -274,7 +274,9 @@ fn phase_for_event(event: &RuntimeEvent) -> (RunPhase, &'static str) {
         | RuntimeEvent::ModelAttemptReset { .. }
         | RuntimeEvent::Usage { .. }
         | RuntimeEvent::ContextUsage { .. }
-        | RuntimeEvent::ContextCompacted { .. } => (RunPhase::RunningTurn, "progress"),
+        | RuntimeEvent::ContextCompacted { .. }
+        | RuntimeEvent::RelevantMemoriesInjected { .. }
+        | RuntimeEvent::StallNudgeInjected { .. } => (RunPhase::RunningTurn, "progress"),
         RuntimeEvent::ToolStarted { .. }
         | RuntimeEvent::ToolCompleted { .. }
         | RuntimeEvent::ToolBlocked { .. }
@@ -318,6 +320,7 @@ pub struct AgentKernel<'a, C: Clock> {
     config: RuntimeConfig,
     hooks: Option<&'a HookRegistry>,
     verification: Option<&'a VerificationPlan>,
+    adversarial_verifier: Option<Arc<dyn crate::adversarial::AdversarialVerifier>>,
     approvals: Arc<dyn ApprovalGate>,
     events: Arc<dyn RuntimeEventSink>,
     handle: RunHandle,
@@ -340,6 +343,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             config,
             hooks: None,
             verification: None,
+            adversarial_verifier: None,
             approvals: Arc::new(AutoDenyGate),
             events: Arc::new(NullEventSink),
             handle: RunHandle {
@@ -361,6 +365,16 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
 
     pub fn with_verification(mut self, verification: &'a VerificationPlan) -> Self {
         self.verification = Some(verification);
+        self
+    }
+
+    /// Attach an advisory adversarial goal verifier (§2.2). Passed through to
+    /// the [`RuntimeEngine`]; never hard-fails a run.
+    pub fn with_adversarial_verifier(
+        mut self,
+        verifier: Arc<dyn crate::adversarial::AdversarialVerifier>,
+    ) -> Self {
+        self.adversarial_verifier = Some(verifier);
         self
     }
 
@@ -422,6 +436,9 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         }
         if let Some(verification) = self.verification {
             engine = engine.with_verification(verification);
+        }
+        if let Some(verifier) = self.adversarial_verifier.clone() {
+            engine = engine.with_adversarial_verifier(verifier);
         }
 
         let result = if let Some(deadline) = self.config.task_timeout {

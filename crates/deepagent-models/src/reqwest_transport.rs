@@ -261,7 +261,7 @@ fn sanitize_provider_message(message: &str) -> String {
         .join(" ");
     if sanitized.len() > 2_000 {
         sanitized.truncate(2_000);
-        sanitized.push_str("…");
+        sanitized.push('…');
     }
     if sanitized.is_empty() {
         "provider request failed without an error message".to_string()

@@ -19,6 +19,7 @@ pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "\n\n<<<DYNAMIC>>>\n\n";
 pub(crate) fn build_system_manifest(
     root: &Path,
     sandbox_mode: SandboxMode,
+    output_style_block: Option<String>,
     plugin_output_style_block: Option<String>,
     tool_catalog_block: Option<String>,
     skill_catalog_blocks: Vec<String>,
@@ -30,6 +31,12 @@ pub(crate) fn build_system_manifest(
         "# Environment\n- Today's date: {today}\n- Operating system: {os} ({arch})\n- Working directory: {cwd}\n- When you need current information, use this date — especially the year — in web_search queries.",
         cwd = root.display()
     );
+    // The built-in output style sits INSIDE the cacheable static prefix (before
+    // the dynamic boundary): it is stable across a session, so keeping it in
+    // the prefix preserves the prompt-cache hit (§7.1 cache boundary).
+    let style_prefix = output_style_block
+        .map(|block| format!("{block}\n\n"))
+        .unwrap_or_default();
     let mut assembler = ContextAssembler::new(root)
         .push(
             ContextSourceKind::System,
@@ -38,8 +45,9 @@ pub(crate) fn build_system_manifest(
             true,
             true,
             format!(
-                "{base}{boundary}",
+                "{base}\n\n{style}{boundary}",
                 base = crate::system_prompt::system_prompt_base(),
+                style = style_prefix,
                 boundary = SYSTEM_PROMPT_DYNAMIC_BOUNDARY
             ),
         )
@@ -63,6 +71,27 @@ pub(crate) fn build_system_manifest(
         );
     }
 
+    // Project structure (§3.1 `directory` high-value context): a bounded,
+    // noise-skipping snapshot of the project layout (type, manifests, README
+    // excerpt, truncated file tree) so the model has structural awareness up
+    // front instead of spending turns on `list_dir`/`glob`. The scan skips
+    // `target`/`node_modules`/dot-dirs and is bounded (depth 4 / 200 entries),
+    // so it stays cheap even in large repos. Scan failures are non-fatal
+    // (skip the block) — it is context enrichment, never required.
+    if let Ok(snapshot) = deepagent_workspace::WorkspaceScanner::default().scan(root) {
+        let block = snapshot.to_context_block();
+        if !block.trim().is_empty() {
+            assembler = assembler.push(
+                ContextSourceKind::RuntimeEnvironment,
+                "deepagent.workspace_structure",
+                880,
+                false,
+                false,
+                block,
+            );
+        }
+    }
+
     assembler = assembler.push(
         ContextSourceKind::PermissionContext,
         "deepagent.permissions",
@@ -71,6 +100,25 @@ pub(crate) fn build_system_manifest(
         true,
         crate::permissions_prompt::sandbox_instructions(sandbox_mode),
     );
+
+    // Project structure (§3.1 `directory` high-value context): a bounded,
+    // noise-skipping snapshot of the layout so the model has structural
+    // awareness up front instead of spending turns on `list_dir`/`glob`. Skips
+    // `target`/`node_modules`/dot-dirs, bounded (depth 4 / 200 entries), so it
+    // stays cheap in large repos. Scan failure is non-fatal (skip the block).
+    if let Ok(snapshot) = deepagent_workspace::WorkspaceScanner::default().scan(root) {
+        let block = snapshot.to_context_block();
+        if !block.trim().is_empty() {
+            assembler = assembler.push(
+                ContextSourceKind::RuntimeEnvironment,
+                "deepagent.workspace_structure",
+                880,
+                false,
+                false,
+                block,
+            );
+        }
+    }
 
     if let Some(block) = plugin_output_style_block {
         assembler = assembler.push(
@@ -215,7 +263,38 @@ fn push_context_block(
 
 #[cfg(test)]
 pub(crate) fn build_system_prompt(root: &Path) -> String {
-    build_system_manifest(root, SandboxMode::WorkspaceWrite, None, None, Vec::new()).render()
+    build_system_manifest(
+        root,
+        SandboxMode::WorkspaceWrite,
+        None,
+        None,
+        None,
+        Vec::new(),
+    )
+    .render()
+}
+
+/// The built-in output-style prompt block for `style`, or `None` for
+/// [`OutputStyle::Default`] (no injection). Wording is DeepSeek-native
+/// (Claude Code output styles §7.1: structure aligned, 措辞以 DeepSeek 为准).
+pub(crate) fn output_style_prompt_block(style: crate::settings::OutputStyle) -> Option<String> {
+    match style {
+        crate::settings::OutputStyle::Default => None,
+        crate::settings::OutputStyle::Explanatory => Some(
+            "# Output style: Explanatory\n\
+             Alongside completing the task, add brief “Insight” notes that explain WHY \
+             you chose an approach or what a non-obvious piece of code/decision does. Keep \
+             insights short and skimmable; never let them slow delivery or bloat the answer."
+                .to_string(),
+        ),
+        crate::settings::OutputStyle::Learning => Some(
+            "# Output style: Learning\n\
+             Act as a patient teacher: as you work, explain the concepts, trade-offs, and \
+             reasoning behind each step so the user learns from the process. Prefer clear, \
+             incremental explanations over terse output, but still finish the task."
+                .to_string(),
+        ),
+    }
 }
 
 /// Today's date as `YYYY-MM-DD` (local time, falling back to UTC if the local
@@ -237,5 +316,175 @@ mod tests {
         assert_eq!(d.len(), 10);
         assert_eq!(&d[4..5], "-");
         assert_eq!(&d[7..8], "-");
+    }
+
+    #[test]
+    fn output_style_block_default_is_none_others_present() {
+        use crate::settings::OutputStyle;
+        assert!(output_style_prompt_block(OutputStyle::Default).is_none());
+        let explanatory = output_style_prompt_block(OutputStyle::Explanatory).unwrap();
+        assert!(explanatory.contains("Explanatory"));
+        let learning = output_style_prompt_block(OutputStyle::Learning).unwrap();
+        assert!(learning.contains("Learning"));
+    }
+
+    #[test]
+    fn output_style_stays_in_cacheable_prefix_before_boundary() {
+        use std::path::Path;
+        let manifest = build_system_manifest(
+            Path::new("/work/proj"),
+            SandboxMode::WorkspaceWrite,
+            output_style_prompt_block(crate::settings::OutputStyle::Explanatory),
+            None,
+            None,
+            Vec::new(),
+        );
+        let system_entry = manifest
+            .entries
+            .iter()
+            .find(|e| e.origin == "deepagent.system_prompt")
+            .expect("system entry present");
+        assert!(system_entry.cacheable, "static prefix must stay cacheable");
+        let style_at = system_entry
+            .content
+            .find("Output style: Explanatory")
+            .expect("style injected");
+        let boundary_at = system_entry
+            .content
+            .find("<<<DYNAMIC>>>")
+            .expect("boundary present");
+        assert!(
+            style_at < boundary_at,
+            "output style must sit before the dynamic boundary (cacheable prefix)"
+        );
+    }
+
+    #[test]
+    fn injects_bounded_project_structure_block() {
+        // A real temp project so WorkspaceScanner has something to scan.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        // A noise dir that must NOT appear in the structure block.
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::write(root.join("target/debug/junk.o"), "").unwrap();
+
+        let manifest = build_system_manifest(
+            root,
+            SandboxMode::WorkspaceWrite,
+            None,
+            None,
+            None,
+            Vec::new(),
+        );
+        let ws = manifest
+            .entries
+            .iter()
+            .find(|e| e.origin == "deepagent.workspace_structure")
+            .expect("workspace structure block present");
+        assert!(
+            ws.content.contains("# Workspace"),
+            "has the workspace header"
+        );
+        assert!(
+            ws.content.contains("main.rs"),
+            "file tree lists project files"
+        );
+        assert!(
+            !ws.content.contains("target/"),
+            "noise dirs must be skipped from the structure block"
+        );
+        // Enrichment only: not required, not part of the cacheable prefix.
+        assert!(!ws.required);
+        assert!(!ws.cacheable);
+
+        // Cache-boundary guard (§7.1): the structure block must render in the
+        // DYNAMIC section (after `<<<DYNAMIC>>>`), never in the cacheable
+        // static prefix — otherwise a project's changing file tree would bust
+        // the prompt-cache hit for the whole stable prefix.
+        let rendered = manifest.render();
+        let boundary_at = rendered
+            .find("<<<DYNAMIC>>>")
+            .expect("dynamic boundary present in rendered prompt");
+        let ws_at = rendered
+            .find("# Workspace")
+            .expect("workspace block present in rendered prompt");
+        assert!(
+            ws_at > boundary_at,
+            "project-structure block must sit AFTER the dynamic boundary (not in the cacheable prefix)"
+        );
+    }
+
+    /// Real-model end-to-end (no mock): proves the injected project-structure
+    /// block actually reaches DeepSeek and the model can answer a
+    /// layout question it could ONLY know from that block. Reads the key from
+    /// `DEEPSEEK_API_KEY` or the desktop keychain; skips cleanly if absent. Run:
+    /// `cargo test -p deepagent-app-core --features web,runtimes,keychain --
+    /// --ignored real_deepseek_project_structure --nocapture`.
+    #[cfg(feature = "keychain")]
+    #[tokio::test]
+    #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
+    async fn real_deepseek_sees_injected_project_structure() {
+        use crate::secret_store::{KeychainStore, SecretStore};
+        use deepagent_core::message::Message;
+        use deepagent_models::chat::ChatRequest;
+        use deepagent_models::{ModelClient, ModelConfig, ReqwestTransport};
+        use std::sync::Arc;
+
+        let key = std::env::var("DEEPSEEK_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| {
+                KeychainStore::new("deepagent-studio")
+                    .get("deepseek_api_key")
+                    .ok()
+                    .flatten()
+            });
+        let Some(key) = key else {
+            eprintln!("[skip] no DeepSeek key in env or keychain");
+            return;
+        };
+        eprintln!("[real-model] key resolved (len={})", key.len());
+
+        // A temp project with a distinctive filename the model can only learn
+        // from the injected structure block.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        std::fs::write(root.join("src/zqx_marker_widget.rs"), "// marker\n").unwrap();
+
+        let system_prompt = build_system_prompt(root);
+        assert!(
+            system_prompt.contains("zqx_marker_widget.rs"),
+            "structure block must carry the marker file into the system prompt"
+        );
+
+        let client = Arc::new(ModelClient::new(
+            Arc::new(ReqwestTransport::new()),
+            ModelConfig::deepseek(key),
+        ));
+        let request = ChatRequest::new(
+            "deepseek-chat".to_string(),
+            vec![
+                Message::system(system_prompt),
+                Message::user(
+                    "Using ONLY the workspace/project-structure information already in your \
+                     context (do not call any tools), is there a source file whose name contains \
+                     `zqx_marker_widget`? Answer strictly `YES` or `NO` on the first line.",
+                ),
+            ],
+        )
+        .with_temperature(0.0)
+        .with_max_tokens(200);
+        let response = client.stream_chat(request).await.expect("live call");
+        let answer = response.message.content;
+        eprintln!("[real-model] answer: {answer}");
+        assert!(
+            answer.to_ascii_uppercase().contains("YES"),
+            "model must confirm the marker file from the injected structure; got: {answer}"
+        );
     }
 }

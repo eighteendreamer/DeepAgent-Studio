@@ -2240,6 +2240,13 @@ impl ChatService {
         let run_id = diagnostic_run_id
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("run_{}", deepagent_core::id::EventId::new()));
+        // §7.2 observability: a per-run W3C trace context. Its trace id is
+        // stamped into the run's structured logs so every log line for this
+        // run is correlatable ("W3C trace_id 贯穿"), and an OTLP exporter can
+        // later reuse the traceparent verbatim without touching call sites.
+        let run_trace = deepagent_tracing::trace_context::TraceContext::new_root();
+        let run_trace_id = run_trace.trace_id.to_hex();
+        let run_traceparent = run_trace.traceparent();
         let cancellation = RunCancellationRegistration::new(
             self.cancellations.clone(),
             run_id.clone(),
@@ -2252,6 +2259,8 @@ impl ChatService {
                 .with_source("deepagent-app-core::chat_service")
                 .with_message("chat run requested")
                 .with_data(serde_json::json!({
+                    "trace_id": run_trace_id,
+                    "traceparent": run_traceparent,
                     "continue_session": continue_session,
                     "env_mode": env_mode,
                     "connection_id": connection_id,
@@ -2558,6 +2567,7 @@ impl ChatService {
             access,
             bash_allow: self.bash_allow.clone(),
             bash_full_access: matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
+            is_trusted: crate::trust_service::TrustService::new(self.db.clone()).is_trusted(&root),
         })?
         .hooks;
         let _ = subagent_hooks.set(hooks.clone());
@@ -2814,12 +2824,96 @@ impl ChatService {
         // the agent below).
         let model_name_for_cost = model.clone();
 
+        // Proactive auto-compact threshold (Claude Code autoCompact.ts): checked
+        // before every model request. `reserve` overrides the 13k buffer via
+        // settings / DEEPAGENT_AUTOCOMPACT_RESERVE_TOKENS; the pct override is a
+        // testing knob (CC CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).
+        let autocompact_reserve = self.settings.autocompact_reserve_tokens();
+        let autocompact_pct_override = std::env::var("DEEPAGENT_AUTOCOMPACT_PCT_OVERRIDE")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<f32>().ok());
+        let proactive_threshold = context_policy
+            .autocompact_threshold_tokens(autocompact_reserve, autocompact_pct_override)
+            as u64;
+        // Prefire (Grok two-pass) start line: begin the background pass-1 when
+        // usage reaches `threshold - lead%` of the effective window, giving
+        // pass-1 runway before the hard threshold. Lead defaults to 10%
+        // (Grok `DEFAULT_PREFIRE_LEAD_PERCENT`), overridable via
+        // `DEEPAGENT_PREFIRE_LEAD_PERCENT`.
+        let prefire_lead_percent = std::env::var("DEEPAGENT_PREFIRE_LEAD_PERCENT")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(10)
+            .min(100);
+        let prefire_lead_tokens =
+            context_policy.effective_context_window() as u64 * prefire_lead_percent / 100;
+        let prefire_start = proactive_threshold.saturating_sub(prefire_lead_tokens);
+        append_runtime_log(
+            &self.runtime_logs,
+            NewRuntimeLogEntry::info("context", "autocompact_threshold_ready")
+                .with_run_id(&run_id)
+                .with_session_id(&session_id)
+                .with_data(serde_json::json!({
+                    "threshold_tokens": proactive_threshold,
+                    "reserve_override": autocompact_reserve,
+                    "pct_override": autocompact_pct_override,
+                    "context_window": context_policy.context_window,
+                    "prefire_start_tokens": prefire_start,
+                    "prefire_lead_percent": prefire_lead_percent,
+                })),
+        );
+
+        // Cloned before the agent takes ownership, for the opt-in stall
+        // detector wiring below (§2.3).
+        let stall_client = client.clone();
+        let stall_model = model.clone();
+        // Opt-in advanced execution safeguards resolve settings-first, with the
+        // matching `DEEPAGENT_*` env var as a force-enable override.
+        let execution_features = self.settings.execution_features();
+        // Captured before the agent takes ownership, for the opt-in advisory
+        // adversarial goal verifier (§2.2). `None` when the feature is off, so
+        // the default build pays nothing.
+        let adversarial_bits = (execution_features.adversarial_verify
+            || crate::verification_panel::adversarial_verify_enabled())
+        .then(|| (client.clone(), model.clone(), prompt_for_model.to_string()));
         let mut agent = ModelAgent::new(client, model, system_prompt, final_user_prompt, tools)
             .with_thinking_depth(effective_thinking_depth)
             .with_fallback_model(fallback_model)
             .with_reactive_compactor(reactive_compactor)
             .with_history(history)
+            .with_proactive_compaction(proactive_threshold)
+            .with_prefire(prefire_start)
+            .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME)
             .with_events(sink.clone());
+
+        // Background relevant-memory prefetch (§3.2): supplement the seeded
+        // passive knowledge block with an off-critical-path retrieval that
+        // surfaces newly-relevant entries as the conversation evolves. Only
+        // when a knowledge base is configured; no-op otherwise.
+        if let Some(knowledge) = &self.knowledge {
+            agent = agent.with_relevant_memory_provider(Arc::new(
+                crate::knowledge_service::KnowledgeMemoryProvider::new(knowledge.clone()),
+            ));
+        }
+
+        // Periodic on-plan todo reminder (§3.1, Claude Code
+        // getTodoReminderAttachments): after a stretch of todo inactivity, nudge
+        // the model to track/clean up its plan so long runs don't drift. Reads
+        // the same session TodoStore the tools write to.
+        agent = agent.with_todo_reminder_source(Arc::new(
+            crate::todo_snapshot_reminder::TodoReminderAdapter::new(todo_store.clone()),
+        ));
+
+        // Stall/laziness detector (§2.3, Grok laziness_classifier): when a
+        // final answer is emitted, a lightweight DeepSeek pass audits it for
+        // false completion / premature stop and, on a confident stalled
+        // verdict, injects one advisory nudge to re-enter the turn. Opt-in
+        // (DEEPAGENT_STALL_DETECTOR) and fail-open — never blocks a run.
+        if execution_features.stall_detector || crate::stall_classifier::stall_detector_enabled() {
+            agent = agent.with_stall_classifier(Arc::new(
+                crate::stall_classifier::ModelStallClassifier::new(stall_client, stall_model),
+            ));
+        }
 
         let verification_policy = self.settings.verification_policy().unwrap_or_default();
 
@@ -2889,6 +2983,25 @@ impl ChatService {
             .with_cancellation_flag(cancel);
             if let Some(plan) = verification_plan.as_ref() {
                 kernel = kernel.with_verification(plan);
+            }
+            // Advisory adversarial goal verification (§2.2, opt-in
+            // DEEPAGENT_ADVERSARIAL_VERIFY): after the fact-gate accepts, a
+            // read-only skeptic panel judges whether the change met the goal;
+            // a refuting majority feeds gaps back once (never hard-fails).
+            if let Some((av_client, av_model, av_goal)) = adversarial_bits {
+                let spawner = Arc::new(
+                    crate::verification_panel::ModelSkepticSpawner::new(av_client, av_model)
+                        .with_system_prompt(
+                            crate::verification_panel::GOAL_COVERAGE_SKEPTIC_PROMPT,
+                        ),
+                );
+                kernel = kernel.with_adversarial_verifier(Arc::new(
+                    crate::verification_panel::ModelAdversarialVerifier::new(
+                        spawner,
+                        av_goal,
+                        crate::verification_panel::DEFAULT_SKEPTIC_COUNT,
+                    ),
+                ));
             }
             match kernel
                 .start(RunRequest::new(&mut session, task, &mut agent))
@@ -3953,6 +4066,7 @@ mod tests {
         let manifest = build_system_manifest(
             tmp.path(),
             SandboxMode::FullAccess,
+            None,
             Some("# Plugin output style\nUse a terse style.".to_string()),
             Some("# Deferred tools\n- tool_search".to_string()),
             vec!["<system-reminder>\n<available-skills />\n</system-reminder>".to_string()],
@@ -4234,7 +4348,12 @@ mod tests {
             .iter()
             .map(|agent| agent.type_name.as_str())
             .collect();
-        assert_eq!(names, vec!["review", "audit-pack:inspect"]);
+        // Local + plugin agents come first; the built-in explore/plan agents
+        // are appended last (CC precedence: built-in < user/project).
+        assert_eq!(
+            names,
+            vec!["review", "audit-pack:inspect", "explore", "plan"]
+        );
         let advertised: Vec<deepagent_builtins::TaskAgentType> = definitions
             .iter()
             .map(RuntimeAgentDefinition::task_agent_type)
@@ -4245,6 +4364,52 @@ mod tests {
             advertised[1].description,
             "Inspect plugin-specific surfaces"
         );
+    }
+
+    #[test]
+    fn builtin_explore_plan_agents_are_read_only_and_overridable() {
+        // With no project/plugin agents, the built-in explore/plan are present.
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("empty-project");
+        std::fs::create_dir_all(&project).unwrap();
+        let definitions = collect_runtime_agent_definitions([project.clone()], None);
+        let by_type: std::collections::BTreeMap<&str, &RuntimeAgentDefinition> = definitions
+            .iter()
+            .map(|agent| (agent.type_name.as_str(), agent))
+            .collect();
+        let explore = by_type.get("explore").expect("built-in explore present");
+        let plan = by_type.get("plan").expect("built-in plan present");
+        assert_eq!(explore.source_label, "built-in");
+        // Read-only allowlist: no write/edit/bash tools.
+        for forbidden in ["write_file", "edit_file", "multi_edit", "bash", "task"] {
+            assert!(
+                !explore.def.tools.iter().any(|t| t == forbidden),
+                "explore must not advertise {forbidden}"
+            );
+            assert!(
+                !plan.def.tools.iter().any(|t| t == forbidden),
+                "plan must not advertise {forbidden}"
+            );
+        }
+        assert!(explore.def.tools.iter().any(|t| t == "read_file"));
+        assert!(plan.def.tools.iter().any(|t| t == "todo_write"));
+
+        // A project agent named `explore` overrides the built-in.
+        let local_agents = project.join(".deepagent").join("agents");
+        std::fs::create_dir_all(&local_agents).unwrap();
+        std::fs::write(
+            local_agents.join("explore.md"),
+            "---\nname: explore\ndescription: Custom explore\ntools: Read\n---\nCustom.",
+        )
+        .unwrap();
+        let overridden = collect_runtime_agent_definitions([project], None);
+        let explore_defs: Vec<&RuntimeAgentDefinition> = overridden
+            .iter()
+            .filter(|a| a.type_name == "explore")
+            .collect();
+        assert_eq!(explore_defs.len(), 1, "no duplicate explore");
+        assert_eq!(explore_defs[0].source_label, "project");
+        assert_eq!(explore_defs[0].def.description, "Custom explore");
     }
 
     #[test]

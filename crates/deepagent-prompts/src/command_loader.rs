@@ -93,6 +93,26 @@ mod tests {
         assert!(!rendered.contains(ARGUMENTS_PLACEHOLDER));
     }
 
+    /// Smoke test: the repo's shipped `/review` command file parses and keeps
+    /// its contract (skill reference, scope resolution, `$ARGUMENTS` slot).
+    #[test]
+    fn repo_review_command_parses() {
+        // CARGO_MANIFEST_DIR = <root>/crates/deepagent-prompts
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.deepagent/commands/review.md");
+        if !path.is_file() {
+            return; // checkout without the workspace commands tree
+        }
+        let def = load_command_file(&path).expect("review.md parses");
+        assert_eq!(def.name, "review");
+        assert!(!def.description.is_empty());
+        assert!(def.allowed_tools.iter().any(|t| t.contains("git")));
+        assert!(def.body.contains("deepagent-code-review"));
+        assert!(def.body.contains(ARGUMENTS_PLACEHOLDER));
+        let rendered = def.render("base main");
+        assert!(rendered.contains("base main"));
+    }
+
     #[test]
     fn user_only_flag() {
         let def = parse_command(

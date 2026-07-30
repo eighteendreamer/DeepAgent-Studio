@@ -624,6 +624,24 @@ export interface SettingsView {
   thinking_depth: "simple" | "medium" | "deep";
   web_search: WebSearchSettings;
   vision: VisionSettings;
+  execution_features: ExecutionFeatures;
+  /** Built-in output style (§7.1): default | explanatory | learning. */
+  output_style: string;
+}
+
+/**
+ * Opt-in advanced execution safeguards (§2.2/§2.3/§6.1/§6.2). All default OFF.
+ * The matching `DEEPAGENT_*` env var force-enables each one regardless.
+ */
+export interface ExecutionFeatures {
+  /** §2.3 stall/laziness detector: audit final answers for false completion. */
+  stall_detector: boolean;
+  /** §6.1 LLM command-injection guard on suspicious shell commands. */
+  command_guard: boolean;
+  /** §6.2 per-project trust gate: untrusted dirs escalate bash to approval. */
+  project_trust: boolean;
+  /** §2.2 adversarial goal verifier: skeptic panel audits goal coverage. */
+  adversarial_verify: boolean;
 }
 
 export type WebSearchProvider = "deepseek_first" | "searxng" | "duckduckgo";
@@ -883,6 +901,14 @@ export interface GitWorktree {
   branch: string | null;
   detached: boolean;
   bare: boolean;
+}
+
+/** §6.2 per-project workspace trust status. */
+export interface ProjectTrust {
+  project: string;
+  trusted: boolean;
+  /** Whether trust enforcement (untrusted → bash approval) is currently active. */
+  enforced: boolean;
 }
 
 export interface ArchivedConversation {

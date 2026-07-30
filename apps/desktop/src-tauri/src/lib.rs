@@ -36,6 +36,7 @@ use deepagent_app_core::{
     SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
     SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, StoredRunEvent,
     TerminalResultDto, TerminalService, TerminalShell, TranscriptDto, TranscriptSegmentDto,
+    ProjectTrustDto, TrustService,
     VisionRecognizeRequestDto, VisionRecognizeResultDto, VisionService, VisionSettings,
     WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
 };
@@ -338,6 +339,9 @@ struct AppState {
     office: Arc<OfficeService>,
     /// SSH long-lived connection service.
     ssh: Arc<SshService>,
+    /// Per-project workspace trust (§6.2): grant/query trust; the run hook
+    /// gate (opt-in) escalates bash in untrusted projects to approval.
+    trust: Arc<TrustService>,
     /// Tokio runtime for async calls invoked from sync commands.
     rt: tokio::runtime::Runtime,
 }
@@ -2067,6 +2071,45 @@ fn set_thinking_depth(state: State<'_, AppState>, depth: String) -> Result<Setti
         .settings
         .set_thinking_depth(parsed)
         .map_err(|e| e.to_string())
+}
+
+// ---- opt-in advanced execution safeguards (§2.2/§2.3/§6.1/§6.2) -----------
+
+#[tauri::command]
+fn get_execution_features(
+    state: State<'_, AppState>,
+) -> Result<deepagent_app_core::ExecutionFeatures, String> {
+    Ok(state.settings.execution_features())
+}
+
+#[tauri::command]
+fn set_execution_features(
+    state: State<'_, AppState>,
+    features: deepagent_app_core::ExecutionFeatures,
+) -> Result<deepagent_app_core::ExecutionFeatures, String> {
+    state
+        .settings
+        .set_execution_features(features)
+        .map_err(|e| e.to_string())?;
+    Ok(state.settings.execution_features())
+}
+
+// ---- built-in output style (§7.1) -----------------------------------------
+
+#[tauri::command]
+fn get_output_style(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.settings.output_style().as_str().to_string())
+}
+
+#[tauri::command]
+fn set_output_style(state: State<'_, AppState>, style: String) -> Result<String, String> {
+    let parsed = deepagent_app_core::OutputStyle::parse(&style)
+        .ok_or_else(|| format!("unknown output style: {style}"))?;
+    state
+        .settings
+        .set_output_style(parsed)
+        .map_err(|e| e.to_string())?;
+    Ok(parsed.as_str().to_string())
 }
 
 // ---- post-edit verification policy (Phase 4C) ------------------------------
@@ -4306,6 +4349,35 @@ fn git_worktrees(state: State<'_, AppState>, path: String) -> Result<Vec<GitWork
     state.git.worktrees(&path).map_err(|e| e.to_string())
 }
 
+/// §6.2 trust: current trust status for a project path (trusted + whether
+/// enforcement is active).
+#[tauri::command]
+fn project_trust_status(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ProjectTrustDto, String> {
+    Ok(state.trust.status(std::path::Path::new(&path)))
+}
+
+/// §6.2 trust: grant or revoke trust for a project path; returns the new status.
+#[tauri::command]
+fn set_project_trust(
+    state: State<'_, AppState>,
+    path: String,
+    trusted: bool,
+) -> Result<ProjectTrustDto, String> {
+    state
+        .trust
+        .set_and_status(std::path::Path::new(&path), trusted)
+        .map_err(|e| e.to_string())
+}
+
+/// §6.2 trust: list all explicitly-trusted project roots (for the revoke UI).
+#[tauri::command]
+fn list_trusted_projects(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    Ok(state.trust.list_trusted())
+}
+
 #[tauri::command]
 fn git_compare_refs(
     state: State<'_, AppState>,
@@ -4885,6 +4957,9 @@ pub fn run() {
             // MCP: visual server management over the shared DB.
             let mcp = Arc::new(McpService::new(service.shared_database()));
 
+            // Per-project workspace trust (§6.2), over the shared DB.
+            let trust = Arc::new(TrustService::new(service.shared_database()));
+
             // Workspace + projects: the launch directory is the default project.
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
             let workspace = Arc::new(WorkspaceService::new(workspace_root.clone()));
@@ -5106,6 +5181,7 @@ pub fn run() {
                 speech,
                 office,
                 ssh,
+                trust,
                 rt,
             });
             Ok(())
@@ -5216,6 +5292,10 @@ pub fn run() {
             set_thinking_depth,
             get_verification_policy,
             set_verification_policy,
+            get_execution_features,
+            set_execution_features,
+            get_output_style,
+            set_output_style,
             get_tool_search_mode,
             set_tool_search_mode,
             get_tool_search_threshold,
@@ -5322,6 +5402,9 @@ pub fn run() {
             git_fetch,
             git_pull_update,
             git_worktrees,
+            project_trust_status,
+            set_project_trust,
+            list_trusted_projects,
             git_compare_refs,
             git_ref_diff,
             git_batch_commit_preview,

@@ -67,6 +67,13 @@ fn discovers_the_bundled_skill_set() {
         assert!(reg.contains(id), "missing bundled skill: {id}");
     }
 
+    // First-party flat built-in skill (`<id>/SKILL.md`, depth 1): the
+    // /review companion (Codex rubric criteria + OCR delegate workflow).
+    assert!(
+        reg.contains("deepagent-code-review"),
+        "missing built-in skill: deepagent-code-review"
+    );
+
     // Superpowers ships as a single bundle entry (depth 1) — its parent
     // `SKILL.md` shadows every `superpowers/skills/<sub>/SKILL.md` under the
     // loader's "parent wins over child" rule, so the catalog must show

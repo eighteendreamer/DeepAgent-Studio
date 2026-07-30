@@ -1134,6 +1134,7 @@ dependencies = [
  "deepagent-skills",
  "deepagent-subagents",
  "deepagent-tools",
+ "deepagent-tracing",
  "deepagent-verification",
  "deepagent-workspace",
  "flate2",
@@ -1511,6 +1512,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

@@ -80,6 +80,15 @@ impl McpClient {
         Ok(parsed)
     }
 
+    /// Liveness check via the MCP spec's `ping` utility
+    /// (`basic/utilities/ping`): a no-param request the receiver MUST answer
+    /// promptly with an empty result. Any successful reply means the
+    /// connection is alive; a transport error (or a caller-imposed timeout)
+    /// means it should be treated as stale.
+    pub async fn ping(&self) -> Result<()> {
+        self.call("ping", None).await.map(|_| ())
+    }
+
     /// Close the underlying transport.
     pub async fn close(&self) -> Result<()> {
         self.transport.close().await
@@ -134,6 +143,14 @@ mod tests {
             .unwrap();
         assert_eq!(res.text(), "result body");
         assert!(!res.is_error);
+    }
+
+    #[tokio::test]
+    async fn ping_round_trips_empty_result() {
+        // Spec shape: `ping` -> `{ "result": {} }`.
+        let t = MockTransport::new().with_result("ping", serde_json::json!({}));
+        let client = client_with(t);
+        client.ping().await.unwrap();
     }
 
     #[tokio::test]

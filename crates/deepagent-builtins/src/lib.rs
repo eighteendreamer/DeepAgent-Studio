@@ -58,10 +58,12 @@ pub mod plan_mode;
 pub mod project_map_tools;
 pub mod remote_tools;
 pub mod skill_tool;
+pub mod snip_tool;
 pub mod task_tool;
 pub mod todo_tool;
 pub mod tool_search;
 pub mod web_tools;
+pub mod worktree_tools;
 
 #[cfg(feature = "http")]
 pub mod reqwest_web;
@@ -77,8 +79,8 @@ pub use ask_user_tool::{
     ASK_USER_QUESTION_TOOL_NAME,
 };
 pub use bash_tool::{
-    is_allowed, is_dangerous, BashTool, CommandExecutor, CommandOutcome, CommandShell,
-    SystemExecutor,
+    detect_command_injection, is_allowed, is_dangerous, BashTool, CommandExecutor, CommandOutcome,
+    CommandShell, SystemExecutor,
 };
 pub use classifier::{
     ClassifierConfig, ClassifierRule, SafetyClassifier, SafetyVerdict, VerdictKind,
@@ -124,6 +126,7 @@ pub use remote_tools::{
     REMOTE_REQUIRE_TOOL_NAME,
 };
 pub use skill_tool::{SkillTool, SKILL_TOOL_NAME};
+pub use snip_tool::{SnipHistoryTool, SNIP_HISTORY_TOOL_NAME};
 pub use task_tool::{
     BackgroundSubagent, SubagentRequest, SubagentRunner, SubagentStatus, TaskAgentType, TaskTool,
     UnavailableSubagentRunner, TASK_TOOL_NAME,
@@ -136,6 +139,10 @@ pub use tool_search::{
 };
 pub use web_tools::{
     SearchAttempt, SearchResponse, SearchResult, WebClient, WebFetchTool, WebSearchTool,
+};
+pub use worktree_tools::{
+    worktree_session_state, ActiveWorktree, EnterWorktreeTool, ExitWorktreeTool,
+    WorktreeSessionState, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME,
 };
 
 #[cfg(feature = "http")]
@@ -212,6 +219,8 @@ pub fn builtin_tools(config: BuiltinConfig) -> (Vec<Arc<dyn Tool>>, TodoStore) {
     } = config;
 
     let mut tools = file_tools(root);
+    // Worktree session state shared by the enter/exit pair (per-run scope).
+    let worktree_state = worktree_session_state();
     if let Some(exec) = command_executor {
         tools.push(Arc::new(
             BashTool::new(exec.clone(), bash_cwd.clone(), bash_allow)
@@ -220,6 +229,16 @@ pub fn builtin_tools(config: BuiltinConfig) -> (Vec<Arc<dyn Tool>>, TodoStore) {
         tools.push(Arc::new(GitStatusTool::new(exec.clone(), bash_cwd.clone())));
         tools.push(Arc::new(GitDiffTool::new(exec.clone(), bash_cwd.clone())));
         tools.push(Arc::new(GitLogTool::new(exec.clone(), bash_cwd.clone())));
+        tools.push(Arc::new(EnterWorktreeTool::new(
+            exec.clone(),
+            bash_cwd.clone(),
+            worktree_state.clone(),
+        )));
+        tools.push(Arc::new(ExitWorktreeTool::new(
+            exec.clone(),
+            bash_cwd.clone(),
+            worktree_state,
+        )));
         tools.push(Arc::new(GitCommitTool::new(exec, bash_cwd)));
     } else {
         tools.push(Arc::new(
@@ -234,6 +253,16 @@ pub fn builtin_tools(config: BuiltinConfig) -> (Vec<Arc<dyn Tool>>, TodoStore) {
         )));
         tools.push(Arc::new(GitDiffTool::new(SystemExecutor, bash_cwd.clone())));
         tools.push(Arc::new(GitLogTool::new(SystemExecutor, bash_cwd.clone())));
+        tools.push(Arc::new(EnterWorktreeTool::new(
+            SystemExecutor,
+            bash_cwd.clone(),
+            worktree_state.clone(),
+        )));
+        tools.push(Arc::new(ExitWorktreeTool::new(
+            SystemExecutor,
+            bash_cwd.clone(),
+            worktree_state,
+        )));
         tools.push(Arc::new(GitCommitTool::new(SystemExecutor, bash_cwd)));
     }
     tools.push(Arc::new(TodoWriteTool::new(todo_store.clone())));
@@ -351,12 +380,14 @@ mod tests {
             "git_diff",
             "git_log",
             "git_commit",
+            "enter_worktree",
+            "exit_worktree",
             "todo_write",
             "task_list",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 18);
     }
 
     #[test]

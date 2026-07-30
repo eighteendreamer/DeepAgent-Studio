@@ -39,21 +39,56 @@ pub struct WorkspaceRoot {
     access: FsAccess,
 }
 
-/// File/dir names that are refused outright (credentials & secrets).
+/// File/dir names that are refused outright (credentials, secrets, and
+/// host-control config the model has no business reading/rewriting through
+/// its file tools). Aligned with Claude Code's sensitive-file list (§6.2):
+/// this system DENIES outright rather than approval-gating — stricter is the
+/// safe direction for credentials, and consistent with the existing guard.
+/// Host services (McpService / SettingsService / DualConfigLoader) read their
+/// own config through dedicated code paths, never through these model tools,
+/// so denying the model here does not break legitimate host access.
 const SENSITIVE_NAMES: &[&str] = &[
+    // Environment / credential material.
     ".env",
     ".env.local",
     ".env.production",
     "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
     "id_ed25519",
     ".npmrc",
     ".pypirc",
+    ".netrc",
+    ".pgpass",
+    ".htpasswd",
     "credentials",
     ".git-credentials",
+    // Shell rc / profile files — writable shells are an injection vector
+    // (a rewritten rc runs arbitrary code on the next shell).
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+    // Agent/host control config — the model must not read or rewrite the
+    // harness's own configuration through its file tools.
+    ".mcp.json",
+    ".claude.json",
 ];
 
 /// Substrings in a filename that mark it sensitive.
-const SENSITIVE_SUBSTRINGS: &[&str] = &[".env.", "secret", "credential", ".pem", ".key"];
+const SENSITIVE_SUBSTRINGS: &[&str] = &[
+    ".env.",
+    "secret",
+    "credential",
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".keystore",
+    ".jks",
+];
 
 impl WorkspaceRoot {
     /// Create a root from a directory path. The path is normalized but not
@@ -240,6 +275,30 @@ mod tests {
         assert!(r.resolve("my_secret_config.json").is_err());
         // ordinary files are fine
         assert!(r.resolve("config/app.toml").is_ok());
+    }
+
+    #[test]
+    fn rejects_expanded_sensitive_list() {
+        let r = root();
+        // Shell rc / profile (injection vector).
+        for name in [".zshrc", ".bashrc", ".bash_profile", ".zshenv", ".profile"] {
+            assert!(r.resolve(name).is_err(), "{name} must be sensitive");
+        }
+        // Host-control config.
+        assert!(r.resolve(".mcp.json").is_err());
+        assert!(r.resolve(".claude.json").is_err());
+        // Extra credential material + key stores (name + substring).
+        assert!(r.resolve(".netrc").is_err());
+        assert!(r.resolve(".pgpass").is_err());
+        assert!(r.resolve("keys/id_ecdsa").is_err());
+        assert!(r.resolve("certs/client.p12").is_err());
+        assert!(r.resolve("app.keystore").is_err());
+        // Sensitivity holds anywhere in the path, and via resolve_read too.
+        assert!(r.resolve("nested/dir/.zshrc").is_err());
+        assert!(is_sensitive_path(".claude.json"));
+        // Legitimately-named files remain allowed.
+        assert!(r.resolve("src/config.rs").is_ok());
+        assert!(r.resolve("docs/environment.md").is_ok());
     }
 
     #[test]

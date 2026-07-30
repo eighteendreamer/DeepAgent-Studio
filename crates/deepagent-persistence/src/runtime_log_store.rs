@@ -126,7 +126,7 @@ pub struct RuntimeLogStore {
 }
 
 enum RuntimeLogCommand {
-    Append(NewRuntimeLogEntry, mpsc::Sender<Result<i64>>),
+    Append(Box<NewRuntimeLogEntry>, mpsc::Sender<Result<i64>>),
     Recent {
         session_id: Option<String>,
         limit: i64,
@@ -176,7 +176,7 @@ impl RuntimeLogStore {
     pub fn append(&self, entry: NewRuntimeLogEntry) -> Result<i64> {
         let (reply, result) = mpsc::channel();
         self.commands
-            .send(RuntimeLogCommand::Append(entry, reply))
+            .send(RuntimeLogCommand::Append(Box::new(entry), reply))
             .map_err(|_| CoreError::Persistence("runtime log writer stopped".into()))?;
         result
             .recv()
@@ -229,7 +229,7 @@ fn runtime_log_writer(conn: Connection, receiver: mpsc::Receiver<RuntimeLogComma
     for command in receiver {
         match command {
             RuntimeLogCommand::Append(entry, reply) => {
-                let _ = reply.send(append_on_conn(&conn, entry));
+                let _ = reply.send(append_on_conn(&conn, *entry));
             }
             RuntimeLogCommand::Recent {
                 session_id,

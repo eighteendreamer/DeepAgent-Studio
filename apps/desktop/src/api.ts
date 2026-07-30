@@ -34,6 +34,8 @@ import type {
   GitPushRiskScan,
   GitRefCompare,
   GitWorktree,
+  ProjectTrust,
+  ExecutionFeatures,
   KnowledgeDraft,
   KnowledgeEntry,
   KnowledgeHit,
@@ -115,6 +117,8 @@ export type SettingsChangedReason =
   | "tool_search"
   | "web_search"
   | "vision"
+  | "execution_features"
+  | "output_style"
   | "other";
 
 export type SettingsChangedDetail = {
@@ -364,6 +368,49 @@ export async function setTerminalShell(
     return view;
   }
   throw new Error("changing terminal shell requires the desktop app");
+}
+
+/** Read the opt-in advanced execution safeguards (§2.2/§2.3/§6.1/§6.2). */
+export async function getExecutionFeatures(): Promise<ExecutionFeatures> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ExecutionFeatures>("get_execution_features");
+  throw new Error("reading execution features requires the desktop app");
+}
+
+/** Persist the opt-in advanced execution safeguards; returns the stored set. */
+export async function setExecutionFeatures(
+  features: ExecutionFeatures
+): Promise<ExecutionFeatures> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const stored = await invoke<ExecutionFeatures>("set_execution_features", {
+      features,
+    });
+    emitSettingsChanged({ reason: "execution_features" });
+    return stored;
+  }
+  throw new Error("changing execution features requires the desktop app");
+}
+
+/** Built-in output style (§7.1): default | explanatory | learning. */
+export type OutputStyle = "default" | "explanatory" | "learning";
+
+/** Read the selected built-in output style. */
+export async function getOutputStyle(): Promise<OutputStyle> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<OutputStyle>("get_output_style");
+  throw new Error("reading output style requires the desktop app");
+}
+
+/** Persist the built-in output style; returns the stored style. */
+export async function setOutputStyle(style: OutputStyle): Promise<OutputStyle> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const stored = await invoke<OutputStyle>("set_output_style", { style });
+    emitSettingsChanged({ reason: "output_style" });
+    return stored;
+  }
+  throw new Error("changing output style requires the desktop app");
 }
 
 /**
@@ -2163,6 +2210,30 @@ export async function gitPullUpdate(path: string): Promise<GitOperationResult> {
 export async function gitWorktrees(path: string): Promise<GitWorktree[]> {
   const invoke = getInvoke();
   if (invoke) return invoke<GitWorktree[]>("git_worktrees", { path });
+  return [];
+}
+
+/** §6.2 trust: current trust status for a project path. */
+export async function projectTrustStatus(path: string): Promise<ProjectTrust> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ProjectTrust>("project_trust_status", { path });
+  return { project: path, trusted: true, enforced: false };
+}
+
+/** §6.2 trust: grant or revoke trust for a project path; returns the new status. */
+export async function setProjectTrust(
+  path: string,
+  trusted: boolean,
+): Promise<ProjectTrust> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<ProjectTrust>("set_project_trust", { path, trusted });
+  return { project: path, trusted, enforced: false };
+}
+
+/** §6.2 trust: list all explicitly-trusted project roots (for the revoke UI). */
+export async function listTrustedProjects(): Promise<string[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string[]>("list_trusted_projects");
   return [];
 }
 

@@ -12,6 +12,7 @@
 //! so that wiring an OTLP exporter later does not change call sites.
 
 pub mod metrics;
+pub mod trace_context;
 
 use std::sync::Once;
 

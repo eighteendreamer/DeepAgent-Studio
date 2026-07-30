@@ -23,6 +23,10 @@
 //! - [`adapter`] — bridges MCP [`registry::RemoteTool`]s into the runtime's
 //!   [`deepagent_tools::Tool`] system so they flow through the same capability
 //!   registry, permission gating, and runtime loop as built-in tools.
+//! - [`liveness`] — the [`liveness::LivenessProbe`] background pinger (MCP
+//!   spec `ping` utility) that detects dead servers proactively and lets the
+//!   self-healing [`reconnect::ReconnectingTransport`] recover them between
+//!   tool calls.
 //!
 //! Transports are unified behind the [`transport::McpTransport`] trait: stdio
 //! (local processes) and HTTP/SSE (hosted servers, `--features http`) are both
@@ -35,7 +39,9 @@ pub mod config;
 pub mod connect;
 #[cfg(feature = "http")]
 pub mod http;
+pub mod liveness;
 pub mod protocol;
+pub mod reconnect;
 pub mod registry;
 pub mod stdio;
 pub mod transport;
@@ -44,7 +50,15 @@ pub use adapter::{adapters_for, McpToolAdapter};
 pub use client::McpClient;
 pub use config::{McpConfig, McpServerConfig, TransportType};
 pub use connect::connect_transport;
+pub use liveness::{
+    LivenessConfig, LivenessProbe, DEFAULT_PING_FAILURE_LIMIT, DEFAULT_PING_INTERVAL,
+    DEFAULT_PING_TIMEOUT,
+};
 pub use protocol::{McpToolDef, SseFrames, ToolCallResult, ToolsListResult};
+pub use reconnect::{
+    is_transport_closed_error, ConfigReconnectFactory, ReconnectFactory, ReconnectingTransport,
+    DEFAULT_RECONNECT_BACKOFF,
+};
 pub use registry::{namespaced_name, split_namespaced, McpRegistry, RemoteTool};
 pub use stdio::StdioTransport;
 pub use transport::{McpTransport, MockTransport};

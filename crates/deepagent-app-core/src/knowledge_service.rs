@@ -652,6 +652,59 @@ impl deepagent_builtins::KnowledgeBackend for KnowledgeServiceBackend {
     }
 }
 
+/// Minimum relevance for a background-prefetched memory to surface. Set above
+/// the passive-injection threshold (0.30): the background channel supplements
+/// the seeded passive block, so only clearly-relevant entries are worth a
+/// mid-run `<system-reminder>`.
+const RELEVANT_MEMORY_MIN_SCORE: f32 = 0.35;
+/// How many entries to surface per background prefetch round.
+const RELEVANT_MEMORY_LIMIT: usize = 3;
+
+/// Adapts [`KnowledgeService`] to the runtime's background relevant-memory
+/// prefetch (§3.2). Reuses the existing retrieval stack; the runtime drives it
+/// off the critical path and injects settled results as a `<system-reminder>`.
+pub struct KnowledgeMemoryProvider {
+    service: std::sync::Arc<KnowledgeService>,
+}
+
+impl KnowledgeMemoryProvider {
+    /// Wrap a shared knowledge service.
+    pub fn new(service: std::sync::Arc<KnowledgeService>) -> Self {
+        Self { service }
+    }
+}
+
+#[async_trait::async_trait]
+impl deepagent_runtime::RelevantMemoryProvider for KnowledgeMemoryProvider {
+    async fn fetch_relevant(
+        &self,
+        query: &str,
+        already_surfaced: &[String],
+    ) -> Result<Vec<deepagent_runtime::RelevantMemory>> {
+        // Pull extra candidates so the surfaced-id filter still fills the limit.
+        let hits = self
+            .service
+            .search(query, None, RELEVANT_MEMORY_LIMIT + already_surfaced.len());
+        let out = hits
+            .into_iter()
+            .filter(|hit| hit.score >= RELEVANT_MEMORY_MIN_SCORE)
+            .filter(|hit| !already_surfaced.contains(&hit.id))
+            .take(RELEVANT_MEMORY_LIMIT)
+            .map(|hit| deepagent_runtime::RelevantMemory {
+                block: format!(
+                    "[source: {} ({}) · {}]\n{}",
+                    hit.title,
+                    hit.scope,
+                    hit.kind,
+                    hit.excerpt.trim()
+                ),
+                id: hit.id,
+            })
+            .collect();
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1097,5 +1150,45 @@ mod tests {
         assert!(svc.discard_draft(&d2.id).unwrap());
         assert!(svc.list_drafts().is_empty());
         assert_eq!(svc.list().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn memory_provider_retrieves_and_dedups() {
+        use deepagent_runtime::RelevantMemoryProvider;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = std::sync::Arc::new(service(tmp.path()));
+        let saved = svc
+            .save(draft(
+                "Sandboxie output relay pitfall",
+                "Sandboxie Start.exe does not relay sandboxed stdout; use the \
+                 workspace redirect readback fix. Do not revert this.",
+                "pitfall",
+                "project",
+            ))
+            .unwrap();
+
+        let provider = KnowledgeMemoryProvider::new(svc.clone());
+        let hits = provider
+            .fetch_relevant("sandboxie stdout output not showing", &[])
+            .await
+            .unwrap();
+        assert!(
+            hits.iter().any(|m| m.id == saved.id),
+            "seeded pitfall should surface for a relevant query; got {hits:?}"
+        );
+        assert!(hits
+            .iter()
+            .any(|m| m.block.contains("Sandboxie") && m.block.contains("redirect")));
+
+        // De-dup: excluding the surfaced id yields no repeat of it.
+        let again = provider
+            .fetch_relevant(
+                "sandboxie stdout output not showing",
+                std::slice::from_ref(&saved.id),
+            )
+            .await
+            .unwrap();
+        assert!(again.iter().all(|m| m.id != saved.id));
     }
 }

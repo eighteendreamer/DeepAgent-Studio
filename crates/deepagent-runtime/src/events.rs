@@ -287,6 +287,28 @@ pub enum RuntimeEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
     },
+    /// Background-prefetched relevant memories were injected into the context
+    /// (§3.2, Claude Code `relevant_memories`). Non-blocking: the prefetch ran
+    /// off the critical path; this fires only when fresh entries surfaced.
+    RelevantMemoriesInjected {
+        /// Number of distinct memory entries injected this round.
+        count: usize,
+        /// Milliseconds from prefetch start to injection.
+        latency_ms: u64,
+    },
+    /// The stall/laziness detector (§2.3, Grok laziness classifier) flagged a
+    /// final answer as stalled and injected one advisory nudge before
+    /// re-entering the model turn. Advisory: capped per run and never blocks.
+    StallNudgeInjected {
+        /// Loop step at which the nudge fired.
+        step: usize,
+        /// Stalled category label (snake_case, Grok category set).
+        category: String,
+        /// Classifier confidence in `[0.0, 1.0]`.
+        confidence: f32,
+        /// Classifier evidence sentence.
+        evidence: String,
+    },
     /// Token accounting for one model call (accumulates across a multi-turn run
     /// on the UI side). Carries DeepSeek's cache hit/miss breakdown when present.
     Usage {
@@ -526,6 +548,8 @@ impl RuntimeEvent {
             RuntimeEvent::CompletionEvidence { .. } => "completion_evidence",
             RuntimeEvent::ContextUsage { .. } => "context_usage",
             RuntimeEvent::ContextCompacted { .. } => "context_compacted",
+            RuntimeEvent::RelevantMemoriesInjected { .. } => "relevant_memories_injected",
+            RuntimeEvent::StallNudgeInjected { .. } => "stall_nudge_injected",
             RuntimeEvent::Usage { .. } => "usage",
             RuntimeEvent::RunCompleted { .. } => "run_completed",
             RuntimeEvent::RunAwaitingApproval { .. } => "run_awaiting_approval",

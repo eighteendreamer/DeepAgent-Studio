@@ -63,6 +63,11 @@ pub struct SubagentRequest {
     pub skills: Vec<String>,
     /// Execution isolation (`shared` or `worktree`).
     pub isolation: String,
+    /// Fork mode (Claude Code full-context fork): inherit the parent's complete
+    /// conversation and full tool pool, run in the background, and keep the
+    /// child's output out of the parent context. Overrides `subagent_type` tool
+    /// restrictions.
+    pub fork: bool,
 }
 
 /// Handle returned when a sub-agent is launched without blocking its parent.
@@ -307,6 +312,11 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
                         "enum": ["shared", "worktree"],
                         "default": "shared",
                         "description": "Use a detached Git worktree when filesystem isolation is required."
+                    },
+                    "fork": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Fork the current agent: the child inherits your COMPLETE conversation context and full tool pool, runs in the background, and its output does NOT return into your context. Use to explore a tangent or run an independent long task from the exact current state. Ignores subagent_type tool restrictions."
                     }
                 },
                 "additionalProperties": false
@@ -473,6 +483,10 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
                 "'isolation' must be either 'shared' or 'worktree'",
             ));
         }
+        let fork = args
+            .get("fork")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
 
         // Validate the requested type against the available set (if any).
         if let Some(t) = &subagent_type {
@@ -494,12 +508,16 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
             effort,
             skills,
             isolation,
+            fork,
         };
         if args
             .get("background")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
+            || fork
         {
+            // Fork always runs in the background (its output must not return
+            // into the parent context), so `fork` implies `background`.
             return match self.runner.start_background(request, context).await {
                 Ok(handle) => Ok(ToolOutput::success(serde_json::json!({
                     "subagent_id": handle.id,
@@ -619,6 +637,83 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.ok);
+    }
+
+    /// Captures the request handed to `start_background` so a fork test can
+    /// assert the flag and background routing.
+    #[derive(Default)]
+    struct CapturingRunner {
+        background_request: std::sync::Mutex<Option<SubagentRequest>>,
+    }
+
+    #[async_trait]
+    impl SubagentRunner for CapturingRunner {
+        async fn run(&self, _request: SubagentRequest) -> Result<String> {
+            Ok("sync".into())
+        }
+        async fn start_background(
+            &self,
+            request: SubagentRequest,
+            _context: ToolExecutionContext,
+        ) -> Result<BackgroundSubagent> {
+            *self.background_request.lock().unwrap() = Some(request);
+            Ok(BackgroundSubagent {
+                id: "fork-1".into(),
+                state: "running".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_implies_background_and_sets_flag() {
+        let tool = TaskTool::new_with_agent_types(CapturingRunner::default(), []);
+        // fork=true with NO explicit background → must still route to background.
+        let out = tool
+            .invoke(serde_json::json!({
+                "description": "explore tangent",
+                "prompt": "Investigate an alternative approach from the current state.",
+                "fork": true
+            }))
+            .await
+            .unwrap();
+        assert!(out.ok);
+        assert_eq!(out.value["background"], true);
+        assert_eq!(out.value["subagent_id"], "fork-1");
+    }
+
+    #[tokio::test]
+    async fn fork_flag_reaches_runner_request() {
+        let runner = std::sync::Arc::new(CapturingRunner::default());
+        // TaskTool owns its runner; use an Arc-cloning wrapper via a thin newtype.
+        struct ArcRunner(std::sync::Arc<CapturingRunner>);
+        #[async_trait]
+        impl SubagentRunner for ArcRunner {
+            async fn run(&self, request: SubagentRequest) -> Result<String> {
+                self.0.run(request).await
+            }
+            async fn start_background(
+                &self,
+                request: SubagentRequest,
+                context: ToolExecutionContext,
+            ) -> Result<BackgroundSubagent> {
+                self.0.start_background(request, context).await
+            }
+        }
+        let tool = TaskTool::new_with_agent_types(ArcRunner(runner.clone()), []);
+        let _ = tool
+            .invoke(serde_json::json!({
+                "description": "fork",
+                "prompt": "continue from here",
+                "fork": true
+            }))
+            .await
+            .unwrap();
+        let captured = runner.background_request.lock().unwrap().clone();
+        assert!(captured.is_some(), "fork must reach start_background");
+        assert!(
+            captured.unwrap().fork,
+            "fork flag must propagate to the runner"
+        );
     }
 
     #[tokio::test]

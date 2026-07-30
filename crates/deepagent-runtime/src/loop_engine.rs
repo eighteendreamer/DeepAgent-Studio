@@ -160,6 +160,10 @@ pub struct RuntimeConfig {
     /// extension point. `None` means "no decoration" — keeps zero overhead
     /// for embed contexts that don't need it.
     pub tool_result_decorator: Option<std::sync::Arc<dyn ToolResultDecorator>>,
+    /// Advisory adversarial-verification re-entries per run (§2.2). After this
+    /// many refuting verdicts the completion is accepted regardless (从宽:
+    /// never trap a run). Default 1.
+    pub max_adversarial_retries: usize,
 }
 
 impl Default for RuntimeConfig {
@@ -178,6 +182,7 @@ impl Default for RuntimeConfig {
             artifact_persistence: None,
             tool_result_budget: ToolResultBudgetConfig::default(),
             tool_result_decorator: None,
+            max_adversarial_retries: 1,
         }
     }
 }
@@ -189,6 +194,7 @@ pub struct RuntimeEngine<'a, C: Clock> {
     config: RuntimeConfig,
     hooks: Option<&'a HookRegistry>,
     verification: Option<&'a VerificationPlan>,
+    adversarial_verifier: Option<std::sync::Arc<dyn crate::adversarial::AdversarialVerifier>>,
     events: std::sync::Arc<dyn RuntimeEventSink>,
     approvals: std::sync::Arc<dyn ApprovalGate>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -417,6 +423,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             config,
             hooks: None,
             verification: None,
+            adversarial_verifier: None,
             events: std::sync::Arc::new(NullEventSink),
             approvals: std::sync::Arc::new(AutoDenyGate),
             cancel: None,
@@ -466,6 +473,19 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
     /// the plan after the agent completes and drives self-healing.
     pub fn with_verification(mut self, plan: &'a VerificationPlan) -> Self {
         self.verification = Some(plan);
+        self
+    }
+
+    /// Attach an advisory adversarial goal verifier (§2.2). When set, a
+    /// completed run that mutated files is judged once by the skeptic panel;
+    /// a refuting verdict feeds its gaps back as an observation (bounded by
+    /// [`RuntimeConfig::max_adversarial_retries`]). Advisory only — never
+    /// hard-fails a run.
+    pub fn with_adversarial_verifier(
+        mut self,
+        verifier: std::sync::Arc<dyn crate::adversarial::AdversarialVerifier>,
+    ) -> Self {
+        self.adversarial_verifier = Some(verifier);
         self
     }
 
@@ -546,6 +566,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let mut outcome = RunOutcome::StepLimitReached;
         let mut finished = false;
         let mut completion_failures = 0usize;
+        let mut adversarial_refutes = 0usize;
 
         // Verification state persists across attempts (tracks loop detection).
         let mut reflection_engine = self
@@ -566,21 +587,18 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             // BeforePlan hook (observational unless denied): fires before the
             // model decides its next move for this step. A Deny ends the run
             // cleanly instead of silently continuing — the hook is vetoable.
-            match self
+            if let HookOutcome::Deny { reason, .. } = self
                 .fire_hook(session_id, HookPoint::BeforePlan, HookData::None)
                 .await?
             {
-                HookOutcome::Deny { reason, .. } => {
-                    session.transition_task(task, TaskState::Failed)?;
-                    let reason = format!("run blocked by BeforePlan hook: {reason}");
-                    self.emit(RuntimeEvent::RunFailed {
-                        reason: reason.clone(),
-                    });
-                    outcome = RunOutcome::CompletionFailed(reason);
-                    finished = true;
-                    break;
-                }
-                _ => {}
+                session.transition_task(task, TaskState::Failed)?;
+                let reason = format!("run blocked by BeforePlan hook: {reason}");
+                self.emit(RuntimeEvent::RunFailed {
+                    reason: reason.clone(),
+                });
+                outcome = RunOutcome::CompletionFailed(reason);
+                finished = true;
+                break;
             }
             let runtime_cancel = self
                 .cancel
@@ -727,6 +745,60 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                                 VerifyStep::Retry(obs) => {
                                     // Hand the reflection back; keep the task running.
                                     last_observations = vec![obs];
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    // Advisory adversarial goal verification (§2.2, LLM 辅):
+                    // after the fact-gate accepts, an opt-in skeptic panel
+                    // judges whether the change actually met the goal. A
+                    // refuting verdict feeds its gaps back ONCE per budget
+                    // slot; it can never hard-fail the run (从宽 — the
+                    // CompletionGate 连环误杀 lesson). Fact-gated on file
+                    // mutation, same as verify_after_completion.
+                    if let Some(verifier) = self.adversarial_verifier.clone() {
+                        if self.run_mutated_files()
+                            && adversarial_refutes < self.config.max_adversarial_retries
+                        {
+                            let changed = self.changed_file_paths();
+                            match verifier.verify(&content, &changed).await {
+                                crate::adversarial::AdversarialVerdict::Accepted => {
+                                    self.emit(RuntimeEvent::Verification {
+                                        passed: true,
+                                        detail: "adversarial panel accepted the completion"
+                                            .to_string(),
+                                    });
+                                }
+                                crate::adversarial::AdversarialVerdict::Refuted { gaps } => {
+                                    adversarial_refutes += 1;
+                                    let detail = if gaps.is_empty() {
+                                        "adversarial panel refuted the completion".to_string()
+                                    } else {
+                                        format!(
+                                            "adversarial panel refuted the completion: {}",
+                                            gaps.join("; ")
+                                        )
+                                    };
+                                    tracing::warn!(refute = adversarial_refutes, "{detail}");
+                                    self.emit(RuntimeEvent::Verification {
+                                        passed: false,
+                                        detail: detail.clone(),
+                                    });
+                                    last_observations = vec![Observation::new(
+                                        "adversarial_verification",
+                                        false,
+                                        serde_json::json!({
+                                            "advisory": true,
+                                            "gaps": gaps,
+                                            "guidance": "An independent verification panel could \
+                                                not confirm the goal was met (see gaps). Address \
+                                                them with concrete tool calls, or if you believe \
+                                                the work is complete, restate the completion with \
+                                                the specific evidence already in the transcript."
+                                        }),
+                                    )];
                                     continue;
                                 }
                             }
@@ -907,6 +979,30 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 .unwrap_or(false),
             None => true,
         }
+    }
+
+    /// Created/modified file paths this run, for the adversarial panel's
+    /// mutation evidence (§2.2). Empty when no checkpoint tracks mutations.
+    fn changed_file_paths(&self) -> Vec<String> {
+        let Some(checkpoint) = self.config.checkpoint.as_ref() else {
+            return Vec::new();
+        };
+        checkpoint
+            .mutation_evidence()
+            .map(|mutations| {
+                mutations
+                    .iter()
+                    .filter(|m| {
+                        matches!(
+                            m.kind,
+                            crate::checkpoint::MutationKind::Created
+                                | crate::checkpoint::MutationKind::Modified
+                        )
+                    })
+                    .map(|m| m.path.display().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn completion_evidence_feedback(&self) -> Result<Option<Observation>> {
@@ -2429,6 +2525,140 @@ mod tests {
         // Metrics recorded the call.
         assert_eq!(metrics.get(names::TOOL_CALLS), 1);
         assert_eq!(metrics.get(names::TOOL_FAILURES), 0);
+    }
+
+    // --- §2.2 advisory adversarial verification wiring ----------------------
+
+    struct ScriptedVerifier {
+        verdicts:
+            std::sync::Mutex<std::collections::VecDeque<crate::adversarial::AdversarialVerdict>>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl crate::adversarial::AdversarialVerifier for ScriptedVerifier {
+        async fn verify(
+            &self,
+            _final_answer: &str,
+            _changed_files: &[String],
+        ) -> crate::adversarial::AdversarialVerdict {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            self.verdicts
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(crate::adversarial::AdversarialVerdict::Accepted)
+        }
+    }
+
+    fn scripted_verifier(
+        verdicts: impl IntoIterator<Item = crate::adversarial::AdversarialVerdict>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Arc<ScriptedVerifier> {
+        Arc::new(ScriptedVerifier {
+            verdicts: std::sync::Mutex::new(verdicts.into_iter().collect()),
+            calls,
+        })
+    }
+
+    #[tokio::test]
+    async fn adversarial_refute_feeds_gaps_back_then_accepts_within_budget() {
+        use crate::adversarial::AdversarialVerdict;
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("run")).unwrap();
+        let task = session.create_task("do the work").unwrap();
+
+        // First completion refuted → re-entry; second completion accepted
+        // (budget=1: the panel is not consulted again, it passes through).
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CompleteMessage(Message::assistant("done v1")),
+            AgentDecision::CompleteMessage(Message::assistant("done v2")),
+        ]);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let verifier = scripted_verifier(
+            [AdversarialVerdict::Refuted {
+                gaps: vec!["skeptic 0: tests look mocked out".to_string()],
+            }],
+            calls.clone(),
+        );
+        let reg = registry();
+        // Default config: no checkpoint → run_mutated_files() == true.
+        let engine = RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default())
+            .with_adversarial_verifier(verifier);
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+        assert_eq!(outcome, RunOutcome::Completed("done v2".into()));
+        // Panel consulted exactly once (budget=1); the agent saw the advisory.
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        let saw_advisory = agent.observations.iter().any(|o| {
+            o.tool == "adversarial_verification"
+                && o.output["advisory"] == true
+                && o.output["gaps"][0]
+                    .as_str()
+                    .is_some_and(|g| g.contains("mocked out"))
+        });
+        assert!(
+            saw_advisory,
+            "agent must receive the advisory gaps observation"
+        );
+    }
+
+    #[tokio::test]
+    async fn adversarial_accept_completes_without_reentry() {
+        use crate::adversarial::AdversarialVerdict;
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("run")).unwrap();
+        let task = session.create_task("do the work").unwrap();
+        let mut agent =
+            ScriptedAgent::new([AgentDecision::CompleteMessage(Message::assistant("done"))]);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let verifier = scripted_verifier([AdversarialVerdict::Accepted], calls.clone());
+        let reg = registry();
+        let engine = RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default())
+            .with_adversarial_verifier(verifier);
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+        assert_eq!(outcome, RunOutcome::Completed("done".into()));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        // No advisory observation was fed back.
+        assert!(agent
+            .observations
+            .iter()
+            .all(|o| o.tool != "adversarial_verification"));
+    }
+
+    #[tokio::test]
+    async fn adversarial_cap_prevents_infinite_reentry() {
+        use crate::adversarial::AdversarialVerdict;
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("run")).unwrap();
+        let task = session.create_task("do the work").unwrap();
+        // Panel ALWAYS refutes; run must still terminate at budget=1.
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CompleteMessage(Message::assistant("v1")),
+            AgentDecision::CompleteMessage(Message::assistant("v2")),
+        ]);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let verifier = scripted_verifier(
+            [
+                AdversarialVerdict::Refuted {
+                    gaps: vec!["skeptic 0: unmet".to_string()],
+                },
+                AdversarialVerdict::Refuted {
+                    gaps: vec!["skeptic 0: still unmet".to_string()],
+                },
+            ],
+            calls.clone(),
+        );
+        let reg = registry();
+        let engine = RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default())
+            .with_adversarial_verifier(verifier);
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+        // Second completion accepted despite a refuting panel (budget spent).
+        assert_eq!(outcome, RunOutcome::Completed("v2".into()));
+        // Panel consulted exactly once (cap short-circuits the second check).
+        assert_eq!(calls.load(Ordering::Acquire), 1);
     }
 
     #[tokio::test]

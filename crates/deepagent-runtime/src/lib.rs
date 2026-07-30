@@ -18,6 +18,7 @@
 //! Model providers, planners, verification and reflection engines are layered
 //! in over later phases behind the traits defined in [`agent`].
 
+pub mod adversarial;
 pub mod agent;
 pub mod approval;
 pub mod cancellation;
@@ -31,10 +32,12 @@ pub mod loop_engine;
 pub mod model_agent;
 pub mod phase;
 pub mod redaction;
+pub mod stall_detector;
 pub mod tool_budget;
 pub mod tool_pipeline;
 pub mod tool_result_decorator;
 
+pub use adversarial::{AdversarialVerdict, AdversarialVerifier};
 pub use agent::{Agent, AgentDecision, Observation, ToolAttemptController};
 pub use approval::{
     ApprovalDecision, ApprovalGate, ApprovalRequest, AutoApproveGate, AutoDenyGate,
@@ -51,8 +54,16 @@ pub use input::{
 };
 pub use kernel::{AgentKernel, KernelTerminal, RunHandle, RunPhase, RunRequest, TerminalKind};
 pub use loop_engine::{PromptDecision, RunOutcome, RuntimeConfig, RuntimeEngine, VerificationPlan};
-pub use model_agent::{ModelAgent, ReactiveCompaction, ReactiveContextCompactor};
+pub use model_agent::{
+    CompactionTrigger, ModelAgent, PrefireNote, ReactiveCompaction, ReactiveContextCompactor,
+    RelevantMemory, RelevantMemoryProvider, TodoReminderSnapshot, TodoReminderSource,
+};
 pub use phase::LoopPhase;
+pub use stall_detector::{
+    build_stall_nudge, evaluate_stall, parse_stall_verdict, render_stall_transcript, NoNudgeReason,
+    StallCategory, StallClassifier, StallDecision, StallParseError, StallVerdict,
+    MAX_STALL_NUDGES_PER_RUN, STALL_CLASSIFIER_PROMPT, STALL_MIN_CONFIDENCE,
+};
 pub use tool_budget::ToolResultBudgetConfig;
 pub use tool_pipeline::{
     PreparedToolInvocation, ToolArtifactPersistence, ToolExecutionPipeline, ToolPipelineResult,

@@ -28,6 +28,7 @@ pub(crate) struct AcceptedInputTurn<'db, C: Clock> {
     pub(crate) lease: InputLeaseGuard,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn accept_input_turn<'db, C, F>(
     db: &'db Database,
     clock: &'db C,

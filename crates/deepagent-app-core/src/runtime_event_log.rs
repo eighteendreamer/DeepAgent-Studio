@@ -258,7 +258,10 @@ fn runtime_event_category(event: &RuntimeEvent) -> &'static str {
         RuntimeEvent::Verification { .. } | RuntimeEvent::CompletionEvidence { .. } => {
             "verification"
         }
-        RuntimeEvent::ContextUsage { .. } | RuntimeEvent::ContextCompacted { .. } => "context",
+        RuntimeEvent::ContextUsage { .. }
+        | RuntimeEvent::ContextCompacted { .. }
+        | RuntimeEvent::RelevantMemoriesInjected { .. }
+        | RuntimeEvent::StallNudgeInjected { .. } => "context",
     }
 }
 
@@ -426,6 +429,15 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
         } => format!(
             "context compacted strategy={strategy} tokens={tokens_before}->{tokens_after}"
         ),
+        RuntimeEvent::RelevantMemoriesInjected { count, latency_ms } => {
+            format!("relevant memories injected count={count} latency_ms={latency_ms}")
+        }
+        RuntimeEvent::StallNudgeInjected {
+            step,
+            category,
+            confidence,
+            ..
+        } => format!("stall nudge injected step={step} category={category} confidence={confidence}"),
         RuntimeEvent::Usage { total_tokens, .. } => format!("usage total_tokens={total_tokens}"),
         RuntimeEvent::RunCompleted { .. } => "run completed".to_string(),
         RuntimeEvent::RunAwaitingApproval { message } => {

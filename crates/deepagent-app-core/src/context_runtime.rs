@@ -12,7 +12,9 @@ use deepagent_core::id::SessionId;
 use deepagent_core::message::Message;
 use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry};
 use deepagent_models::{ModelClient, ToolSchema};
-use deepagent_runtime::{ReactiveCompaction, ReactiveContextCompactor};
+use deepagent_runtime::{
+    CompactionTrigger, PrefireNote, ReactiveCompaction, ReactiveContextCompactor,
+};
 
 use crate::knowledge_service::KnowledgeService;
 use crate::plugin_runtime::{PluginOutputStyleEntry, PluginRuntimeProjection};
@@ -46,7 +48,9 @@ struct CompactionBreaker {
 
 impl CompactionBreaker {
     const COOLDOWN: std::time::Duration = std::time::Duration::from_secs(15);
-    const MAX_INEFFECTIVE: u32 = 2;
+    // Trip after this many consecutive ineffective compactions. Aligned with
+    // Claude Code autoCompact.ts::MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES (3).
+    const MAX_INEFFECTIVE: u32 = 3;
 
     fn admit(&mut self) -> bool {
         if self.tripped {
@@ -88,11 +92,66 @@ impl HookedReactiveContextCompactor {
             breaker: Mutex::new(CompactionBreaker::default()),
         }
     }
+
+    /// Summarize a compaction `zone` (the older turns being replaced) into a
+    /// structured block via the model compactor, appending the working-set
+    /// re-injection (modified files, failed checks, invoked skills). Shared by
+    /// the synchronous stage-2 compaction and the prefire pass-1.
+    async fn summarize_zone(&self, zone: &[Message]) -> String {
+        let rendered = zone
+            .iter()
+            .map(render_message_for_compaction)
+            .collect::<Vec<_>>();
+        let goal = zone
+            .iter()
+            .rev()
+            .find(|message| message.role == deepagent_core::message::Role::User)
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
+        let summary =
+            deepagent_context::ModelCompactor::new(self.client.clone(), self.model.clone())
+                .summarize(&goal, &deepagent_context::TaskSummary::default(), &rendered)
+                .await;
+        let mut summary_block = summary.to_context_block();
+        // Post-compaction re-injection (Phase E): modified files, failed checks
+        // and invoked skills from the compacted zone survive the summary so the
+        // model keeps its working set.
+        if let Some(reinjection) = compaction_reinjection_block(zone) {
+            summary_block.push_str("\n\n");
+            summary_block.push_str(&reinjection);
+        }
+        summary_block
+    }
+}
+
+/// Cheap fingerprint of a conversation prefix for prefire NOTE₁ validity
+/// (Grok `compaction.rs::fingerprint_prefix`). A mismatch means the prefix
+/// changed (edit / rewind / branch) since pass-1, so the cached note no longer
+/// summarizes the current prefix and must be dropped.
+fn fingerprint_prefix(items: &[Message]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    items.len().hash(&mut hasher);
+    for message in items {
+        let tag: u8 = match message.role {
+            deepagent_core::message::Role::System => 0,
+            deepagent_core::message::Role::User => 1,
+            deepagent_core::message::Role::Assistant => 2,
+            deepagent_core::message::Role::Tool => 3,
+        };
+        tag.hash(&mut hasher);
+        render_message_for_compaction(message).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 #[async_trait]
 impl ReactiveContextCompactor for HookedReactiveContextCompactor {
-    async fn compact(&self, messages: &[Message]) -> Result<Option<ReactiveCompaction>> {
+    async fn compact(
+        &self,
+        messages: &[Message],
+        trigger: CompactionTrigger,
+    ) -> Result<Option<ReactiveCompaction>> {
         const KEEP_RECENT_MESSAGES: usize = 8;
 
         // Unified debounce / circuit breaker (Phase E): refuse to thrash.
@@ -124,7 +183,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                 self.session_id,
                 HookPoint::BeforeCompact,
                 HookData::Compact {
-                    trigger: "context_overflow".to_string(),
+                    trigger: trigger.as_str().to_string(),
                     summary: None,
                 },
             ))
@@ -185,30 +244,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         }
 
         // Stage 2 — full structured summary of the compacted zone.
-        let rendered = body[..split]
-            .iter()
-            .map(render_message_for_compaction)
-            .collect::<Vec<_>>();
-        let goal = body
-            .iter()
-            .rev()
-            .find(|message| message.role == deepagent_core::message::Role::User)
-            .map(|message| message.content.clone())
-            .unwrap_or_default();
-        let summary =
-            deepagent_context::ModelCompactor::new(self.client.clone(), self.model.clone())
-                .summarize(&goal, &deepagent_context::TaskSummary::default(), &rendered)
-                .await;
-        let mut summary_block = summary.to_context_block();
-        // Post-compaction re-injection (Phase E): modified files, failed
-        // checks and invoked skills from the compacted zone survive the
-        // summary so the model keeps its working set. Project rules and the
-        // task goal are re-injected structurally (system manifest / summary
-        // goal), so they need no extra handling here.
-        if let Some(reinjection) = compaction_reinjection_block(&body[..split]) {
-            summary_block.push_str("\n\n");
-            summary_block.push_str(&reinjection);
-        }
+        let summary_block = self.summarize_zone(&body[..split]).await;
 
         let mut compacted = Vec::with_capacity(system_end + 1 + body.len() - split);
         compacted.extend_from_slice(&messages[..system_end]);
@@ -235,7 +271,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                 self.session_id,
                 HookPoint::PostCompact,
                 HookData::Compact {
-                    trigger: "context_overflow".to_string(),
+                    trigger: trigger.as_str().to_string(),
                     summary: Some(summary_block.clone()),
                 },
             ))
@@ -246,6 +282,112 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             tokens_before,
             tokens_after,
             summary: summary_block,
+        }))
+    }
+
+    async fn prefire_pass1(&self, messages: &[Message]) -> Result<Option<PrefireNote>> {
+        const KEEP_RECENT_MESSAGES: usize = 8;
+        // Background/speculative: no hook dispatch, no breaker mutation — this
+        // does not commit any state (Grok prefire pass-1 reads a snapshot only).
+        let system_end = messages
+            .iter()
+            .take_while(|m| m.role == deepagent_core::message::Role::System)
+            .count();
+        let body = &messages[system_end..];
+        if body.len() <= KEEP_RECENT_MESSAGES {
+            return Ok(None);
+        }
+        let Some(split) = pairing_safe_compaction_split(body, KEEP_RECENT_MESSAGES) else {
+            return Ok(None);
+        };
+        let prefix_end = system_end + split;
+        let summary_block = self.summarize_zone(&body[..split]).await;
+        Ok(Some(PrefireNote {
+            note: summary_block,
+            prefix_end,
+            fingerprint: fingerprint_prefix(&messages[..prefix_end]),
+        }))
+    }
+
+    async fn apply_prefire(
+        &self,
+        note: &PrefireNote,
+        messages: &[Message],
+    ) -> Result<Option<ReactiveCompaction>> {
+        // Validity: the cached note only summarizes `messages[..prefix_end]`, so
+        // that exact prefix must still be present (Grok fingerprint check;
+        // edit/rewind/branch invalidates it).
+        if note.prefix_end == 0 || note.prefix_end > messages.len() {
+            return Ok(None);
+        }
+        if fingerprint_prefix(&messages[..note.prefix_end]) != note.fingerprint {
+            return Ok(None);
+        }
+        let system_end = messages
+            .iter()
+            .take_while(|m| m.role == deepagent_core::message::Role::System)
+            .count();
+        if system_end > note.prefix_end {
+            return Ok(None);
+        }
+        let before = self
+            .hooks
+            .dispatch(&HookContext::new(
+                self.session_id,
+                HookPoint::BeforeCompact,
+                HookData::Compact {
+                    trigger: CompactionTrigger::AutoCompactThreshold.as_str().to_string(),
+                    summary: None,
+                },
+            ))
+            .await?;
+        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
+            return Ok(None);
+        }
+
+        let counter = HeuristicTokenizer::new();
+        let count = |items: &[Message]| {
+            items
+                .iter()
+                .map(|message| {
+                    deepagent_context::TokenCounter::count(
+                        &counter,
+                        &render_message_for_compaction(message),
+                    )
+                })
+                .sum::<usize>() as u64
+        };
+        let tokens_before = count(messages);
+
+        // Pass-2: system prefix + cached NOTE₁ + verbatim live tail.
+        let tail = &messages[note.prefix_end..];
+        let mut compacted = Vec::with_capacity(system_end + 1 + tail.len());
+        compacted.extend_from_slice(&messages[..system_end]);
+        compacted.push(Message::user(format!(
+            "[Earlier conversation compacted after context overflow]\n{}",
+            note.note
+        )));
+        compacted.extend_from_slice(tail);
+
+        let tokens_after = count(&compacted);
+        if tokens_after >= tokens_before {
+            return Ok(None);
+        }
+        self.hooks
+            .dispatch(&HookContext::new(
+                self.session_id,
+                HookPoint::PostCompact,
+                HookData::Compact {
+                    trigger: CompactionTrigger::AutoCompactThreshold.as_str().to_string(),
+                    summary: Some(note.note.clone()),
+                },
+            ))
+            .await?;
+        Ok(Some(ReactiveCompaction {
+            messages: compacted,
+            tokens_before,
+            tokens_after,
+            summary: note.note.clone(),
         }))
     }
 }
@@ -384,6 +526,10 @@ pub(crate) struct BuiltRunContext {
 }
 
 pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<BuiltRunContext> {
+    // Built-in output style (§7.1): stable per-session block injected into the
+    // cacheable system prefix. Read from the persisted setting (env-overridable).
+    let output_style_block =
+        crate::system_context::output_style_prompt_block(request.settings.output_style());
     let plugin_output_style_block = request
         .plugin_projection
         .and_then(|projection| plugin_output_styles_prompt(&projection.output_styles));
@@ -400,6 +546,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
     let system_manifest = build_system_manifest(
         request.root,
         request.sandbox_mode,
+        output_style_block,
         plugin_output_style_block,
         tool_catalog_block,
         skill_catalog_blocks,
@@ -899,7 +1046,11 @@ mod tests {
         assert!(!breaker.admit());
         breaker.record_ineffective();
         breaker.record_ineffective();
-        // Tripped: rejected regardless of time.
+        // Two ineffective attempts: not yet tripped (CC threshold is 3).
+        breaker.last_attempt = None;
+        assert!(breaker.admit());
+        breaker.record_ineffective();
+        // Tripped after the third: rejected regardless of time.
         breaker.last_attempt = None;
         assert!(!breaker.admit());
     }
@@ -970,5 +1121,430 @@ mod tests {
         assert!(composed.starts_with("<system-reminder>\nremote"));
         assert!(composed.contains("</system-reminder>\n\n<system-reminder>\nknowledge"));
         assert!(composed.ends_with("\n\ndelete temp"));
+    }
+
+    #[test]
+    fn prefire_fingerprint_stable_and_change_sensitive() {
+        // Grok parity: fingerprint is stable for an identical prefix and shifts
+        // when the prefix content or length changes (edit / rewind / branch).
+        let base = vec![
+            Message::system("sys"),
+            Message::user("first task"),
+            Message::assistant("did first"),
+        ];
+        assert_eq!(fingerprint_prefix(&base), fingerprint_prefix(&base));
+
+        let edited = vec![
+            Message::system("sys"),
+            Message::user("FIRST task changed"),
+            Message::assistant("did first"),
+        ];
+        assert_ne!(
+            fingerprint_prefix(&base),
+            fingerprint_prefix(&edited),
+            "an edited prefix must invalidate the cached NOTE₁ fingerprint"
+        );
+
+        let longer = {
+            let mut v = base.clone();
+            v.push(Message::user("second task"));
+            v
+        };
+        assert_ne!(fingerprint_prefix(&base), fingerprint_prefix(&longer));
+    }
+
+    /// Real-model end-to-end (no mock): proves proactive auto-compact fires
+    /// against a live DeepSeek call and the run continues. Reads the key from
+    /// `DEEPSEEK_API_KEY` or the desktop keychain; skips cleanly if absent.
+    /// Run with: `cargo test -p deepagent-app-core --features web,runtimes,keychain
+    /// -- --ignored real_deepseek_proactive_compaction`.
+    #[cfg(feature = "keychain")]
+    #[tokio::test]
+    #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
+    async fn real_deepseek_proactive_compaction_fires_and_run_continues() {
+        use crate::secret_store::{KeychainStore, SecretStore};
+        use deepagent_hooks::HookRegistry;
+        use deepagent_models::{ModelClient, ModelConfig, ReqwestTransport};
+        use deepagent_runtime::{
+            Agent, AgentDecision, ModelAgent, ReactiveContextCompactor, RuntimeEvent,
+            RuntimeEventSink,
+        };
+        use std::sync::Mutex as StdMutex;
+
+        let key = std::env::var("DEEPSEEK_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| {
+                KeychainStore::new("deepagent-studio")
+                    .get("deepseek_api_key")
+                    .ok()
+                    .flatten()
+            });
+        let Some(key) = key else {
+            eprintln!("[skip] no DeepSeek key in env or keychain");
+            return;
+        };
+        eprintln!("[real-model] key resolved (len={})", key.len());
+
+        #[derive(Default)]
+        struct CollectSink(StdMutex<Vec<RuntimeEvent>>);
+        impl RuntimeEventSink for CollectSink {
+            fn emit(&self, event: RuntimeEvent) {
+                self.0.lock().unwrap().push(event);
+            }
+        }
+        let sink = Arc::new(CollectSink::default());
+
+        let transport = Arc::new(ReqwestTransport::new());
+        let client = Arc::new(ModelClient::new(transport, ModelConfig::deepseek(key)));
+        let model = "deepseek-chat";
+        let compactor: Arc<dyn ReactiveContextCompactor> =
+            Arc::new(HookedReactiveContextCompactor::new(
+                client.clone(),
+                model.to_string(),
+                Arc::new(HookRegistry::new()),
+                SessionId::new(),
+            ));
+
+        // Long seeded history so the heuristic estimate is well above the low
+        // proactive threshold, forcing a pre-request compaction on step 0.
+        let history: Vec<Message> = (0..40)
+            .map(|i| {
+                if i % 2 == 0 {
+                    Message::user(format!(
+                        "Earlier step {i}: investigate module {i} and report findings with file \
+                         paths and rationale in detail."
+                    ))
+                } else {
+                    Message::assistant(format!(
+                        "Step {i}: inspected the module, found several functions, recorded the \
+                         relevant details for later."
+                    ))
+                }
+            })
+            .collect();
+
+        let mut agent = ModelAgent::new(
+            client,
+            model,
+            "You are a helpful engineering assistant.",
+            "Summarize the current status in one sentence.",
+            vec![],
+        )
+        .with_history(history)
+        .with_reactive_compactor(compactor)
+        .with_proactive_compaction(200)
+        .with_events(sink.clone());
+
+        let decision = agent
+            .think(0, &[])
+            .await
+            .expect("real DeepSeek think should succeed after proactive compaction");
+
+        let events = sink.0.lock().unwrap();
+        let compacted = events.iter().any(|event| {
+            matches!(
+                event,
+                RuntimeEvent::ContextCompacted { strategy, .. }
+                    if strategy == "proactive_threshold" || strategy == "prefire_pass2"
+            )
+        });
+        assert!(
+            compacted,
+            "expected a proactive ContextCompacted event among {} runtime events",
+            events.len()
+        );
+        assert!(matches!(
+            decision,
+            AgentDecision::Complete(_)
+                | AgentDecision::CompleteMessage(_)
+                | AgentDecision::CallTool(_)
+                | AgentDecision::CallTools(_)
+        ));
+        eprintln!("[real-model] proactive compaction fired and the run continued OK");
+    }
+
+    /// Real-model end-to-end (no mock): validates the DeepSeek contract the
+    /// max-tokens recovery logic depends on — a tiny `max_tokens` yields
+    /// `finish_reason = Length`, and appending the partial output plus the
+    /// continue prompt resumes the answer. Reads the key from
+    /// `DEEPSEEK_API_KEY` or the desktop keychain; skips cleanly if absent.
+    /// Run with: `cargo test -p deepagent-app-core --features web,runtimes,keychain
+    /// -- --ignored real_deepseek_max_tokens --nocapture`.
+    #[cfg(feature = "keychain")]
+    #[tokio::test]
+    #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
+    async fn real_deepseek_max_tokens_truncation_then_continue_resumes() {
+        use crate::secret_store::{KeychainStore, SecretStore};
+        use deepagent_models::chat::{ChatRequest, FinishReason};
+        use deepagent_models::{ModelClient, ModelConfig, ReqwestTransport};
+
+        let key = std::env::var("DEEPSEEK_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| {
+                KeychainStore::new("deepagent-studio")
+                    .get("deepseek_api_key")
+                    .ok()
+                    .flatten()
+            });
+        let Some(key) = key else {
+            eprintln!("[skip] no DeepSeek key in env or keychain");
+            return;
+        };
+        eprintln!("[real-model] key resolved (len={})", key.len());
+
+        let client = ModelClient::new(
+            Arc::new(ReqwestTransport::new()),
+            ModelConfig::deepseek(key),
+        );
+        let model = "deepseek-chat";
+        let system = Message::system("You are a helpful assistant. Answer directly.");
+        let user = Message::user(
+            "List the numbers from 1 to 40, one per line, as \"N. <english word>\" \
+             (e.g. \"1. one\"). Output only the list.",
+        );
+
+        // Tiny max_tokens forces truncation → finish_reason = Length.
+        let truncated = client
+            .stream_chat(
+                ChatRequest::new(model.to_string(), vec![system.clone(), user.clone()])
+                    .with_max_tokens(48),
+            )
+            .await
+            .expect("first (truncated) call");
+        eprintln!(
+            "[real-model] first finish_reason={:?}, content_len={}",
+            truncated.finish_reason,
+            truncated.message.content.len()
+        );
+        assert_eq!(
+            truncated.finish_reason,
+            Some(FinishReason::Length),
+            "tiny max_tokens must truncate the answer"
+        );
+        assert!(!truncated.message.content.trim().is_empty());
+
+        // Continuation: partial output + the exact recovery prompt the runtime
+        // injects, at a larger budget — the model must resume, not restart.
+        let mut partial = Message::assistant(&truncated.message.content);
+        partial.reasoning_content = truncated.message.reasoning_content.clone();
+        let resumed = client
+            .stream_chat(
+                ChatRequest::new(
+                    model.to_string(),
+                    vec![
+                        system,
+                        user,
+                        partial,
+                        Message::user(
+                            "Output token limit hit. Resume directly — no apology, no recap of \
+                             what you were doing. Pick up mid-thought if that is where the cut \
+                             happened. Break remaining work into smaller pieces.",
+                        ),
+                    ],
+                )
+                .with_max_tokens(512),
+            )
+            .await
+            .expect("continuation call");
+        eprintln!(
+            "[real-model] continuation finish_reason={:?}, content_len={}",
+            resumed.finish_reason,
+            resumed.message.content.len()
+        );
+        // The continuation produced further output (the run resumed rather than
+        // dead-ending on the truncation).
+        assert!(
+            !resumed.message.content.trim().is_empty(),
+            "continuation must produce further output"
+        );
+        eprintln!("[real-model] max-tokens truncation + continue resumed OK");
+    }
+
+    /// Real-model end-to-end (no mock): a seeded knowledge entry is
+    /// background-prefetched and injected into a live DeepSeek run as a
+    /// `relevant_memories` reminder, and a `RelevantMemoriesInjected` event
+    /// fires (§3.2 acceptance: non-blocking prefetch + visible in run_events).
+    /// Run with: `cargo test -p deepagent-app-core --features
+    /// web,runtimes,keychain -- --ignored real_deepseek_relevant_memory --nocapture`.
+    #[cfg(feature = "keychain")]
+    #[tokio::test]
+    #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
+    async fn real_deepseek_relevant_memory_prefetch_injects_and_emits_event() {
+        use crate::knowledge_service::{
+            KnowledgeDraftDto, KnowledgeMemoryProvider, KnowledgeService,
+        };
+        use crate::secret_store::{KeychainStore, SecretStore};
+        use deepagent_models::{ModelClient, ModelConfig, ReqwestTransport};
+        use deepagent_runtime::{Agent, ModelAgent, RuntimeEvent, RuntimeEventSink};
+        use std::sync::Mutex as StdMutex;
+
+        let key = std::env::var("DEEPSEEK_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| {
+                KeychainStore::new("deepagent-studio")
+                    .get("deepseek_api_key")
+                    .ok()
+                    .flatten()
+            });
+        let Some(key) = key else {
+            eprintln!("[skip] no DeepSeek key in env or keychain");
+            return;
+        };
+        eprintln!("[real-model] key resolved (len={})", key.len());
+
+        // Seed a knowledge entry relevant to the run's goal.
+        let tmp = tempfile::tempdir().unwrap();
+        let knowledge = Arc::new(
+            KnowledgeService::open(&tmp.path().join("proj"), &tmp.path().join("glob")).unwrap(),
+        );
+        knowledge
+            .save(KnowledgeDraftDto {
+                title: "Windows sandbox stdout relay fix".to_string(),
+                body: "Sandboxie Start.exe does not relay sandboxed stdout. Use the workspace \
+                       redirect readback fix; never revert it, or the model loses tool output."
+                    .to_string(),
+                kind: Some("pitfall".to_string()),
+                tags: vec!["sandbox".into()],
+                scope: Some("project".to_string()),
+                source_session: None,
+            })
+            .unwrap();
+
+        #[derive(Default)]
+        struct CollectSink(StdMutex<Vec<RuntimeEvent>>);
+        impl RuntimeEventSink for CollectSink {
+            fn emit(&self, event: RuntimeEvent) {
+                self.0.lock().unwrap().push(event);
+            }
+        }
+        let sink = Arc::new(CollectSink::default());
+
+        let client = Arc::new(ModelClient::new(
+            Arc::new(ReqwestTransport::new()),
+            ModelConfig::deepseek(key),
+        ));
+        let provider = Arc::new(KnowledgeMemoryProvider::new(knowledge));
+        let mut agent = ModelAgent::new(
+            client,
+            "deepseek-chat",
+            "You are a helpful engineering assistant.",
+            "My Sandboxie sandboxed command shows no stdout output on Windows — what is the fix?",
+            vec![],
+        )
+        .with_relevant_memory_provider(provider)
+        .with_events(sink.clone());
+
+        // Turn 0: schedules the background prefetch, hits live DeepSeek.
+        let _ = agent.think(0, &[]).await.expect("first real turn");
+        // Let the (offline, fast) retrieval settle before the next turn polls it.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Turn 1: collects the settled prefetch and injects it before the request.
+        let _ = agent.think(1, &[]).await.expect("second real turn");
+
+        let injected = agent
+            .conversation()
+            .iter()
+            .any(|m| m.content.contains("相关记忆") && m.content.contains("Sandboxie"));
+        assert!(
+            injected,
+            "the seeded memory must be injected into the live run's context"
+        );
+        let events = sink.0.lock().unwrap();
+        assert!(
+            events.iter().any(
+                |e| matches!(e, RuntimeEvent::RelevantMemoriesInjected { count, .. } if *count > 0)
+            ),
+            "a RelevantMemoriesInjected event must fire (run_events visibility)"
+        );
+        eprintln!("[real-model] relevant-memory prefetch injected + event emitted OK");
+    }
+
+    /// Real-model end-to-end (no mock): after a stretch of todo inactivity the
+    /// periodic todo reminder (§3.1) surfaces in a *live* DeepSeek run and the
+    /// run keeps working with it in context. Run with: `cargo test -p
+    /// deepagent-app-core --features web,runtimes,keychain -- --ignored
+    /// real_deepseek_todo_reminder --nocapture`.
+    #[cfg(feature = "keychain")]
+    #[tokio::test]
+    #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
+    async fn real_deepseek_periodic_todo_reminder_surfaces_in_live_run() {
+        use crate::secret_store::{KeychainStore, SecretStore};
+        use crate::todo_snapshot_reminder::TodoReminderAdapter;
+        use deepagent_builtins::{TodoItem, TodoStatus, TodoStore};
+        use deepagent_models::{ModelClient, ModelConfig, ReqwestTransport};
+        use deepagent_runtime::{Agent, ModelAgent};
+
+        let key = std::env::var("DEEPSEEK_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| {
+                KeychainStore::new("deepagent-studio")
+                    .get("deepseek_api_key")
+                    .ok()
+                    .flatten()
+            });
+        let Some(key) = key else {
+            eprintln!("[skip] no DeepSeek key in env or keychain");
+            return;
+        };
+        eprintln!("[real-model] key resolved (len={})", key.len());
+
+        // Seed a todo list so the reminder carries the current plan.
+        let store = TodoStore::new();
+        store.replace(vec![
+            TodoItem {
+                content: "Investigate the flaky test".to_string(),
+                status: TodoStatus::InProgress,
+                active_form: "Investigating the flaky test".to_string(),
+            },
+            TodoItem {
+                content: "Write the regression test".to_string(),
+                status: TodoStatus::Pending,
+                active_form: "Writing the regression test".to_string(),
+            },
+        ]);
+
+        let client = Arc::new(ModelClient::new(
+            Arc::new(ReqwestTransport::new()),
+            ModelConfig::deepseek(key),
+        ));
+        let mut agent = ModelAgent::new(
+            client,
+            "deepseek-chat",
+            "You are a concise engineering assistant. Answer in one short sentence.",
+            "Briefly acknowledge you are working on the debugging task.",
+            vec![],
+        )
+        .with_todo_reminder_source(Arc::new(TodoReminderAdapter::new(store)));
+
+        // Drive live turns until the periodic reminder fires (bounded). The
+        // model never calls todo_write here (no tools), so the inactivity
+        // counter climbs each turn until the threshold.
+        let mut injected = false;
+        for step in 0..12 {
+            let _ = agent.think(step, &[]).await.expect("live turn");
+            if agent
+                .conversation()
+                .iter()
+                .any(|m| m.content.contains("todo-tracking tool hasn't been used"))
+            {
+                injected = true;
+                break;
+            }
+        }
+        assert!(
+            injected,
+            "the periodic todo reminder must surface within the inactivity window in a live run"
+        );
+        // The reminder carried the seeded plan (pending item renders by
+        // content; the in-progress item renders by its active form).
+        assert!(agent
+            .conversation()
+            .iter()
+            .any(|m| m.content.contains("Write the regression test")));
+        eprintln!("[real-model] periodic todo reminder surfaced in a live run OK");
     }
 }

@@ -12,6 +12,7 @@ use std::sync::Arc;
 use deepagent_core::error::{CoreError, Result};
 
 use crate::client::McpClient;
+use crate::liveness::{LivenessConfig, LivenessProbe};
 use crate::protocol::{McpToolDef, ToolCallResult};
 
 /// A discovered remote tool, namespaced and tagged with its server.
@@ -44,6 +45,9 @@ pub fn split_namespaced(name: &str) -> Option<(&str, &str)> {
 struct ConnectedServer {
     client: Arc<McpClient>,
     tools: Vec<RemoteTool>,
+    /// Background liveness pinger (long-lived registries only); aborts with
+    /// the entry, so probing stops exactly when the connection is dropped.
+    probe: Option<LivenessProbe>,
 }
 
 /// Registry of connected MCP servers and their tools.
@@ -78,9 +82,32 @@ impl McpRegistry {
             })
             .collect();
         let count = tools.len();
-        self.servers
-            .insert(server_name.to_string(), ConnectedServer { client, tools });
+        self.servers.insert(
+            server_name.to_string(),
+            ConnectedServer {
+                client,
+                tools,
+                probe: None,
+            },
+        );
         Ok(count)
+    }
+
+    /// Start a background liveness probe (MCP spec `ping` utility) for every
+    /// registered server. Intended for long-lived registries (the cross-run
+    /// connection cache): a dead server is detected between tool calls and
+    /// recovered by the self-healing transport underneath the ping, instead of
+    /// surprising the next tool invocation. Probes end with the registry.
+    pub fn enable_liveness(&mut self, config: LivenessConfig) {
+        for (name, server) in &mut self.servers {
+            if server.probe.is_none() {
+                server.probe = Some(LivenessProbe::spawn(
+                    server.client.clone(),
+                    name.clone(),
+                    config.clone(),
+                ));
+            }
+        }
     }
 
     /// Number of connected servers.
@@ -232,5 +259,34 @@ mod tests {
             .register("asana", client(tools_transport()))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn enable_liveness_probes_every_server_once() {
+        use crate::liveness::LivenessConfig;
+        use std::time::Duration;
+
+        let mut reg = McpRegistry::new();
+        reg.register(
+            "asana",
+            client(tools_transport().with_result("ping", serde_json::json!({}))),
+        )
+        .await
+        .unwrap();
+        let config = LivenessConfig {
+            interval: Duration::from_millis(1),
+            timeout: Duration::from_millis(200),
+            failure_limit: 3,
+        };
+        reg.enable_liveness(config.clone());
+        // Idempotent: a second call must not double-probe.
+        reg.enable_liveness(config);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Registry stays fully usable while probed.
+        let res = reg
+            .invoke("mcp__asana__search", serde_json::json!({"q": "x"}))
+            .await
+            .unwrap();
+        assert_eq!(res.text(), "ok");
     }
 }

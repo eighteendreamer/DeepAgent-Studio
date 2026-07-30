@@ -405,6 +405,7 @@ impl<'a> ToolExecutionPipeline<'a> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn blocked(
         &self,
         call_id: String,

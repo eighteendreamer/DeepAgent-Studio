@@ -506,7 +506,7 @@ impl McpService {
             let name = name.clone();
             let cfg = cfg.clone();
             async move {
-                let result = Self::connect_one(&name, &cfg).await;
+                let result = Self::connect_one_resilient(&name, &cfg).await;
                 (name, result)
             }
         });
@@ -595,6 +595,13 @@ impl McpService {
         }
 
         let (registry, failures) = self.connect_config(config).await?;
+        let mut registry = registry;
+        // Long-lived cached connections get a background liveness probe (MCP
+        // spec `ping` utility, §5.2): a server that dies between runs is
+        // detected and respawned by the self-healing transport underneath the
+        // ping, instead of failing the next tool call. Probes stop when the
+        // cache entry is replaced/dropped.
+        registry.enable_liveness(deepagent_mcp::LivenessConfig::default());
         let registry = Arc::new(registry);
         *guard = Some(CachedRegistry {
             fingerprint,
@@ -604,12 +611,33 @@ impl McpService {
         Ok((registry, failures))
     }
 
-    /// Connect a single server and perform the initialize handshake.
+    /// Connect a single server and perform the initialize handshake. Used by
+    /// one-shot probes (`test_server` / `connection_status`), which close the
+    /// connection immediately — no self-healing needed.
     async fn connect_one(name: &str, cfg: &McpServerConfig) -> Result<Arc<McpClient>> {
         let transport = connect_transport(cfg)?;
         let client = Arc::new(McpClient::new(transport));
         client.initialize("deepagent-studio").await?;
         tracing::info!(server = name, "MCP server initialized");
+        Ok(client)
+    }
+
+    /// Connect a single server for the long-lived run registry, wrapping the
+    /// transport with bounded auto-reconnect (§5.2 MCP resilience, Grok
+    /// `mcp_restart.rs` backoff): if the server crashes mid-run, a later tool
+    /// call transparently respawns it instead of staying dead for the session.
+    async fn connect_one_resilient(name: &str, cfg: &McpServerConfig) -> Result<Arc<McpClient>> {
+        let transport = connect_transport(cfg)?;
+        let factory = Arc::new(deepagent_mcp::ConfigReconnectFactory::new(
+            cfg.clone(),
+            "deepagent-studio",
+        ));
+        let resilient: Arc<dyn deepagent_mcp::McpTransport> = Arc::new(
+            deepagent_mcp::ReconnectingTransport::new(transport, factory),
+        );
+        let client = Arc::new(McpClient::new(resilient));
+        client.initialize("deepagent-studio").await?;
+        tracing::info!(server = name, "MCP server initialized (self-healing)");
         Ok(client)
     }
 

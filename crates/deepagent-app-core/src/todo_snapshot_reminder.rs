@@ -66,6 +66,32 @@ impl ToolResultDecorator for TodoSnapshotReminderDecorator {
     }
 }
 
+/// Adapts the session [`TodoStore`] to the runtime's periodic todo-reminder
+/// source (§3.1, Claude Code `getTodoReminderAttachments`). Distinct from the
+/// one-shot [`TodoSnapshotReminderDecorator`] above: this feeds the
+/// turn-paced reminder the `ModelAgent` injects when the model hasn't tracked
+/// its plan for a while, so a long run can't silently drift off-plan.
+pub struct TodoReminderAdapter {
+    store: TodoStore,
+}
+
+impl TodoReminderAdapter {
+    /// Wrap the session's shared todo store.
+    pub fn new(store: TodoStore) -> Self {
+        Self { store }
+    }
+}
+
+impl deepagent_runtime::TodoReminderSource for TodoReminderAdapter {
+    fn todo_snapshot(&self) -> deepagent_runtime::TodoReminderSnapshot {
+        let (pending, running, completed) = self.store.counts();
+        deepagent_runtime::TodoReminderSnapshot {
+            has_items: pending + running + completed > 0,
+            rendered: self.store.format_snapshot(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -365,7 +365,9 @@ function main() {
 
   // Flat office skills (`<id>/SKILL.md`) — docx/pdf/pptx/xlsx. These ship as
   // both Tier C generation knowledge and the Tier R script backend.
-  const flatIds = ['docx', 'pdf', 'pptx', 'xlsx'];
+  // deepagent-code-review is the first-party built-in review skill
+  // (Codex rubric criteria + OCR delegate workflow; /review companion).
+  const flatIds = ['docx', 'pdf', 'pptx', 'xlsx', 'deepagent-code-review'];
   for (const id of flatIds) {
     if (!fs.existsSync(path.join(SOURCE_ROOT, id))) continue;
     const action = unwrapDoubleShell(id, SOURCE_ROOT, DEST_ROOT);

@@ -373,4 +373,198 @@ mod tests {
             .iter()
             .any(|c| c.id == "slash.plan" && c.description == "Plugin plan"));
     }
+
+    /// Real-model end-to-end (no mock): the repo's `/review` command prompt +
+    /// the built-in `deepagent-code-review` skill body drive a live DeepSeek
+    /// review of a synthetic diff with a planted off-by-one bug. Asserts the
+    /// output honors the skill contract ([P0]-[P3] findings + overall verdict).
+    /// Reads the key from `DEEPSEEK_API_KEY` or the desktop keychain; skips
+    /// cleanly if absent. Run with: `cargo test -p deepagent-app-core
+    /// --features web,runtimes,keychain -- --ignored real_deepseek_review --nocapture`.
+    #[cfg(all(feature = "keychain", feature = "web"))]
+    #[tokio::test]
+    #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
+    async fn real_deepseek_review_command_honors_finding_contract() {
+        use crate::secret_store::{KeychainStore, SecretStore};
+        use deepagent_models::{ModelClient, ModelConfig, ReqwestTransport};
+        use std::sync::Arc;
+
+        let key = std::env::var("DEEPSEEK_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| {
+                KeychainStore::new("deepagent-studio")
+                    .get("deepseek_api_key")
+                    .ok()
+                    .flatten()
+            });
+        let Some(key) = key else {
+            eprintln!("[skip] no DeepSeek key in env or keychain");
+            return;
+        };
+        eprintln!("[real-model] key resolved (len={})", key.len());
+
+        // Load the real shipped assets: /review command + built-in skill body.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let command_path = repo_root.join(".deepagent/commands/review.md");
+        let skill_path = repo_root.join(".deepagent/skills/deepagent-code-review/SKILL.md");
+        if !command_path.is_file() || !skill_path.is_file() {
+            eprintln!("[skip] review command or skill asset missing in this checkout");
+            return;
+        }
+        let command = deepagent_prompts::load_command_file(&command_path).expect("review.md");
+        let skill_body = std::fs::read_to_string(&skill_path).expect("skill body");
+
+        // Synthetic diff with a planted off-by-one bug (`<` should be `<=`).
+        let diff = "diff --git a/src/pager.rs b/src/pager.rs\n\
+            +/// Returns the number of pages needed for `items` at `per_page`.\n\
+            +pub fn page_count(items: usize, per_page: usize) -> usize {\n\
+            +    let mut pages = 0;\n\
+            +    let mut done = 0;\n\
+            +    while done < items - per_page {\n\
+            +        pages += 1;\n\
+            +        done += per_page;\n\
+            +    }\n\
+            +    pages\n\
+            +}\n";
+        let user_prompt = command.render(diff);
+
+        let client = ModelClient::new(
+            Arc::new(ReqwestTransport::new()),
+            ModelConfig::deepseek(key),
+        );
+        let request = deepagent_models::chat::ChatRequest::new(
+            "deepseek-chat".to_string(),
+            vec![
+                deepagent_core::message::Message::system(&skill_body),
+                deepagent_core::message::Message::user(&user_prompt),
+            ],
+        )
+        .with_temperature(0.2)
+        .with_max_tokens(2048);
+        let response = client.stream_chat(request).await.expect("live review");
+        let text = response.message.content;
+        eprintln!("[real-model] review output:\n{text}");
+
+        // Contract: at least one prioritized finding tag and a verdict.
+        let has_priority_tag = ["[P0]", "[P1]", "[P2]", "[P3]"]
+            .iter()
+            .any(|t| text.contains(t));
+        assert!(
+            has_priority_tag,
+            "review output must contain a [P0]-[P3] prefixed finding"
+        );
+        assert!(
+            text.contains("不正确") || text.to_ascii_lowercase().contains("incorrect"),
+            "planted off-by-one/underflow bug should yield an 'incorrect' overall verdict"
+        );
+    }
+
+    /// Real-model end-to-end (no mock): live DeepSeek receives the
+    /// enter/exit_worktree schemas plus an explicit "work in a worktree"
+    /// request, must call `enter_worktree`, and the model-produced call must
+    /// succeed against a real git repo. Run with: `cargo test -p
+    /// deepagent-app-core --features web,runtimes,keychain -- --ignored
+    /// real_deepseek_worktree --nocapture`.
+    #[cfg(all(feature = "keychain", feature = "web"))]
+    #[tokio::test]
+    #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
+    async fn real_deepseek_worktree_tool_call_roundtrip() {
+        use crate::secret_store::{KeychainStore, SecretStore};
+        use deepagent_builtins::{
+            worktree_session_state, EnterWorktreeTool, ExitWorktreeTool, ENTER_WORKTREE_TOOL_NAME,
+        };
+        use deepagent_models::{ModelClient, ModelConfig, ReqwestTransport, ToolSchema};
+        use deepagent_tools::Tool;
+        use std::sync::Arc;
+
+        let key = std::env::var("DEEPSEEK_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| {
+                KeychainStore::new("deepagent-studio")
+                    .get("deepseek_api_key")
+                    .ok()
+                    .flatten()
+            });
+        let Some(key) = key else {
+            eprintln!("[skip] no DeepSeek key in env or keychain");
+            return;
+        };
+        eprintln!("[real-model] key resolved (len={})", key.len());
+
+        // Real git repo in a tempdir.
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&cwd)
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !git(&["init", "-q"]) {
+            eprintln!("[skip] git unavailable");
+            return;
+        }
+        assert!(git(&["config", "user.email", "t@example.com"]));
+        assert!(git(&["config", "user.name", "t"]));
+        assert!(git(&["commit", "--allow-empty", "-q", "-m", "init"]));
+
+        let state = worktree_session_state();
+        let enter = EnterWorktreeTool::new(
+            deepagent_builtins::bash_tool::SystemExecutor,
+            &cwd,
+            state.clone(),
+        );
+        let exit =
+            ExitWorktreeTool::new(deepagent_builtins::bash_tool::SystemExecutor, &cwd, state);
+        let (ed, xd) = (enter.descriptor(), exit.descriptor());
+        let schemas = vec![
+            ToolSchema::function(ed.name, ed.description, ed.parameters),
+            ToolSchema::function(xd.name, xd.description, xd.parameters),
+        ];
+
+        let client = ModelClient::new(
+            Arc::new(ReqwestTransport::new()),
+            ModelConfig::deepseek(key),
+        );
+        let request = deepagent_models::chat::ChatRequest::new(
+            "deepseek-chat".to_string(),
+            vec![
+                deepagent_core::message::Message::system(
+                    "You are a coding agent. Use the provided tools when appropriate.",
+                ),
+                deepagent_core::message::Message::user(
+                    "请在一个隔离的 worktree 中开始开发 feature-login 功能（用户明确要求使用 \
+                     worktree）。先创建 worktree。",
+                ),
+            ],
+        )
+        .with_tools(schemas)
+        .with_temperature(0.0)
+        .with_max_tokens(512);
+        let response = client.stream_chat(request).await.expect("live call");
+        let call = response
+            .message
+            .tool_calls
+            .iter()
+            .find(|c| c.name == ENTER_WORKTREE_TOOL_NAME)
+            .expect("model must call enter_worktree for an explicit worktree request")
+            .clone();
+        eprintln!("[real-model] tool call args: {}", call.arguments);
+
+        // Execute the model-produced call against the real repo.
+        let out = enter.invoke(call.arguments).await.unwrap();
+        assert!(
+            out.ok,
+            "model-produced enter_worktree failed: {}",
+            out.value
+        );
+        let path = out.value["worktree_path"].as_str().unwrap();
+        assert!(std::path::Path::new(path).is_dir());
+        eprintln!("[real-model] worktree created at {path}");
+    }
 }

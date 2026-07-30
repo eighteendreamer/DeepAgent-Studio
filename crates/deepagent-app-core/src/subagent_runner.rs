@@ -163,6 +163,25 @@ impl ChatSubagentRunner {
         deepagent_core::id::SessionId::from_str(&run.session_id)
     }
 
+    /// Reconstruct the parent session's conversation for a full-context fork
+    /// (Claude Code fork inherits the parent's exact prefix). Best-effort: an
+    /// unpersisted parent (ephemeral/test run) or a load failure yields an
+    /// empty history, so a fork degrades gracefully to a fresh child rather
+    /// than failing.
+    fn parent_conversation(&self) -> Vec<deepagent_core::message::Message> {
+        let Ok(session_id) = self.parent_session_id() else {
+            return Vec::new();
+        };
+        let store = deepagent_persistence::event_store::EventStore::new(&self.db);
+        match store.load_session(session_id) {
+            Ok(events) => crate::input_runtime::conversation_from_events(&events),
+            Err(error) => {
+                tracing::warn!(%error, "fork: failed to load parent conversation; starting fresh");
+                Vec::new()
+            }
+        }
+    }
+
     async fn dispatch_child_hook(&self, point: HookPoint, data: HookData) -> Result<HookOutcome> {
         let Some(hooks) = self.hooks.get() else {
             return Ok(HookOutcome::Continue);
@@ -498,10 +517,23 @@ impl ChatSubagentRunner {
             self.tool_search_mode,
             &sub_discovered,
         );
-        apply_runtime_agent_tool_filter(&mut tools, agent_profile);
-        if let Some(allowlist) = runtime_agent_tool_allowlist(&request.allowed_tools) {
-            tools.retain(|tool| allowlist.contains(&tool.function.name));
+        // Fork (Claude Code full-context fork, `tools:['*']`): the child gets
+        // the parent's FULL tool pool — skip the agent-profile / allowlist
+        // restrictions. A normal sub-agent stays restricted to its profile.
+        if !request.fork {
+            apply_runtime_agent_tool_filter(&mut tools, agent_profile);
+            if let Some(allowlist) = runtime_agent_tool_allowlist(&request.allowed_tools) {
+                tools.retain(|tool| allowlist.contains(&tool.function.name));
+            }
         }
+        // Fork inherits the parent's COMPLETE conversation (byte-similar prefix
+        // so the child continues from the exact current state). Best-effort:
+        // reconstruct from the parent session's event log.
+        let fork_history = if request.fork {
+            self.parent_conversation()
+        } else {
+            Vec::new()
+        };
         let preloaded_skills = self.preload_skills(&request.skills)?;
         let system = subagent_system_prompt(execution_root, agent_profile, &preloaded_skills);
         let db = Database::open_in_memory()?;
@@ -515,6 +547,7 @@ impl ChatSubagentRunner {
             &request.prompt,
             tools,
         )
+        .with_history(fork_history)
         .with_thinking_depth(subagent_thinking_depth(
             request.effort.as_deref(),
             self.thinking_depth,
@@ -675,6 +708,8 @@ impl ChatSubagentRunner {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("shared")
                 .to_string(),
+            // A resumed child continues its own line; it is not a fresh fork.
+            fork: false,
         })
     }
 
@@ -921,8 +956,99 @@ pub(crate) fn collect_runtime_agent_definitions(
         }
     }
 
+    // Built-in specialized agents (Claude Code parity: explore / plan). Added
+    // LAST with the same dedup set, so a project/plugin agent of the same
+    // `type_name` overrides the built-in (CC precedence: built-in < user/
+    // project). Read-only by construction: their tool allowlist carries only
+    // read/search tools, so file-writing/bash tools are filtered out for the
+    // child (our positive-allowlist equivalent of CC's `disallowedTools`).
+    for builtin in builtin_runtime_agent_definitions() {
+        if seen_types.insert(builtin.type_name.clone()) {
+            definitions.push(builtin);
+        }
+    }
+
     definitions
 }
+
+/// The read-only tool allowlist shared by the built-in `explore` and `plan`
+/// agents (internal tool names; `apply_runtime_agent_tool_filter` keeps only
+/// these, dropping every write/bash/subagent tool).
+const READ_ONLY_AGENT_TOOLS: &[&str] = &["read_file", "glob", "grep", "list_dir"];
+
+/// Built-in specialized sub-agents, aligned with Claude Code's Explore/Plan
+/// (`builtInAgents.ts`). Both are strictly read-only. Returned as
+/// project-source [`RuntimeAgentDefinition`]s so they flow through the same
+/// tool-filter + system-prompt path as user/plugin agents.
+pub(crate) fn builtin_runtime_agent_definitions() -> Vec<RuntimeAgentDefinition> {
+    let read_only_tools: Vec<String> = READ_ONLY_AGENT_TOOLS
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let mut plan_tools = read_only_tools.clone();
+    // Plan may record an in-memory todo list (Safe, no workspace write).
+    plan_tools.push("todo_write".to_string());
+
+    vec![
+        RuntimeAgentDefinition {
+            type_name: "explore".to_string(),
+            source_label: "built-in".to_string(),
+            def: deepagent_prompts::AgentDef {
+                name: "explore".to_string(),
+                description: "Fast READ-ONLY codebase exploration: find files by glob, search \
+                    code by regex, and read files to answer questions about the codebase. \
+                    Returns a findings report; makes NO changes."
+                    .to_string(),
+                tools: read_only_tools,
+                model: deepagent_prompts::ModelPref::Inherit,
+                color: None,
+                body: EXPLORE_AGENT_BODY.to_string(),
+            },
+        },
+        RuntimeAgentDefinition {
+            type_name: "plan".to_string(),
+            source_label: "built-in".to_string(),
+            def: deepagent_prompts::AgentDef {
+                name: "plan".to_string(),
+                description: "READ-ONLY implementation planning: explore the codebase and design \
+                    a concrete implementation plan (files to change, sequence, trade-offs). \
+                    Makes NO changes; returns the plan plus the critical files."
+                    .to_string(),
+                tools: plan_tools,
+                model: deepagent_prompts::ModelPref::Inherit,
+                color: None,
+                body: PLAN_AGENT_BODY.to_string(),
+            },
+        },
+    ]
+}
+
+/// Read-only exploration prompt (Claude Code `exploreAgent.ts` parity, DeepSeek
+/// wording). Advisory-but-firm read-only contract; the tool allowlist enforces
+/// it structurally.
+const EXPLORE_AGENT_BODY: &str = "You are a fast, thorough codebase exploration specialist.\n\n\
+=== READ-ONLY MODE ===\n\
+This is a READ-ONLY task. You do not have write, edit, or shell tools — only \
+read_file, glob, grep, and list_dir. Do not attempt to create, modify, move, or \
+delete files; such attempts will simply fail.\n\n\
+Your strengths: quickly finding files by glob pattern, searching code with regex, \
+and reading files to answer questions. Prefer several parallel read/search calls \
+over long sequential probing. Adapt breadth to the requested thoroughness.\n\n\
+Return your findings directly as your final message (file paths with `path:line` \
+references, concise summaries) — the calling agent sees only that message.";
+
+/// Read-only planning prompt (Claude Code `planAgent.ts` parity, DeepSeek
+/// wording).
+const PLAN_AGENT_BODY: &str = "You are a software architect and planning specialist.\n\n\
+=== READ-ONLY MODE ===\n\
+This is a READ-ONLY planning task. You have only read/search tools (and an \
+in-memory todo list); you cannot and must not modify the workspace.\n\n\
+Process: (1) understand the requirements; (2) explore thoroughly — read the files \
+you are given, find existing patterns/conventions, trace relevant code paths; \
+(3) design one concrete approach and commit to it; (4) detail a phased, \
+step-by-step implementation plan with dependencies and trade-offs.\n\n\
+End your response with a `Critical Files for Implementation` section listing the \
+3-5 files most central to the plan. Return everything as your final message.";
 
 fn collect_runtime_agent_dir(
     dir: &std::path::Path,
