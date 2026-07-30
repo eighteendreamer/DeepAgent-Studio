@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -72,8 +73,12 @@ pub(crate) fn build_base_tool_registry(
 
     registry.register(Arc::new(AskUserQuestionTool::new(DeclineResponder)))?;
     register_knowledge_search(&mut registry, request.knowledge);
-    register_project_map_tools(&mut registry, request.project_map, request.root)?;
-    register_codegraph_tools(&mut registry, request.root)?;
+    // Shared lazy code-index builder: the first code_map_*/codegraph_* call that
+    // finds the index missing builds it once (grok-build code_nav.rs parity),
+    // so the model isn't stuck being told to use a map it can't create.
+    let code_index = CodeIndexAutoBuild::new(request.root.to_path_buf());
+    register_project_map_tools(&mut registry, request.project_map, request.root, &code_index)?;
+    register_codegraph_tools(&mut registry, request.root, &code_index)?;
     register_office_tools(&mut registry, request.office)?;
     register_remote_ops_tools(
         &mut registry,
@@ -241,30 +246,38 @@ fn register_project_map_tools(
     registry: &mut ToolRegistry,
     project_map: Option<Arc<ProjectMapService>>,
     root: &Path,
+    auto: &CodeIndexAutoBuild,
 ) -> Result<()> {
     let Some(project_map) = project_map else {
         return Ok(());
     };
     use deepagent_builtins::{
-        CodeMapImpactTool, CodeMapNeighborsTool, CodeMapOverviewTool, CodeMapSearchTool,
+        CodeMapImpactTool, CodeMapNeighborsTool, CodeMapOverviewTool, CodeMapRefreshTool,
+        CodeMapSearchTool,
     };
     let backend = ProjectMapToolBackend {
         service: project_map,
         root: root.to_path_buf(),
+        auto: auto.clone(),
     };
     registry.register(Arc::new(CodeMapOverviewTool::new(backend.clone())))?;
     registry.register(Arc::new(CodeMapSearchTool::new(backend.clone())))?;
     registry.register(Arc::new(CodeMapNeighborsTool::new(backend.clone())))?;
-    registry.register(Arc::new(CodeMapImpactTool::new(backend)))?;
+    registry.register(Arc::new(CodeMapImpactTool::new(backend.clone())))?;
+    registry.register(Arc::new(CodeMapRefreshTool::new(backend)))?;
     Ok(())
 }
 
-fn register_codegraph_tools(registry: &mut ToolRegistry, root: &Path) -> Result<()> {
+fn register_codegraph_tools(
+    registry: &mut ToolRegistry,
+    root: &Path,
+    auto: &CodeIndexAutoBuild,
+) -> Result<()> {
     use deepagent_builtins::{
         CodeGraphCalleesTool, CodeGraphCallersTool, CodeGraphExploreTool, CodeGraphImpactTool,
         CodeGraphLocateTool, CodeGraphNodeTool, CodeGraphSearchTool,
     };
-    let backend = CodeGraphToolBackend::new(root.to_path_buf());
+    let backend = CodeGraphToolBackend::new(root.to_path_buf(), auto.clone());
     registry.register(Arc::new(CodeGraphSearchTool::new(backend.clone())))?;
     registry.register(Arc::new(CodeGraphExploreTool::new(backend.clone())))?;
     registry.register(Arc::new(CodeGraphCallersTool::new(backend.clone())))?;
@@ -415,15 +428,18 @@ fn deepseek_web_search_config(
 struct ProjectMapToolBackend {
     service: Arc<ProjectMapService>,
     root: PathBuf,
+    auto: CodeIndexAutoBuild,
 }
 
 #[async_trait]
 impl deepagent_builtins::ProjectMapBackend for ProjectMapToolBackend {
     async fn overview(&self) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         serde_json::to_value(self.service.overview(&self.root)).map_err(Into::into)
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         let hits = self.service.search(&self.root, query, limit)?;
         Ok(serde_json::json!({
             "count": hits.len(),
@@ -432,11 +448,26 @@ impl deepagent_builtins::ProjectMapBackend for ProjectMapToolBackend {
     }
 
     async fn neighbors(&self, node_id: &str) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         serde_json::to_value(self.service.neighbors(&self.root, node_id)?).map_err(Into::into)
     }
 
     async fn impact(&self, target: &str) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         serde_json::to_value(self.service.impact(&self.root, target)?).map_err(Into::into)
+    }
+
+    async fn refresh(&self) -> Result<serde_json::Value> {
+        // Explicit rebuild: run the same deep refresh the UI button uses, off the
+        // async runtime (tree-sitter parse + SQLite writes are blocking work).
+        let service = self.service.clone();
+        let root = self.root.clone();
+        let dto = tokio::task::spawn_blocking(move || service.refresh_deep(&root))
+            .await
+            .map_err(|e| CoreError::other(format!("code_map_refresh task join failed: {e}")))??;
+        // A fresh build now exists; let lazy callers take the fast path.
+        self.auto.mark_done();
+        serde_json::to_value(dto).map_err(Into::into)
     }
 }
 
@@ -527,9 +558,92 @@ fn parse_office_sheets(value: &serde_json::Value) -> Result<Vec<(String, Vec<Vec
     Ok(out)
 }
 
+/// Lazily builds the code index (codegraph.db + the projected UA
+/// knowledge-graph.json) the first time a `code_map_*` / `codegraph_*` tool is
+/// used on a project whose index is missing.
+///
+/// The system prompt tells the model to prefer the project map, so the map must
+/// build itself on first use instead of returning "not indexed" with no way for
+/// the model to fix it. Mirrors grok-build's `code_nav.rs` "first lazy spawn of
+/// codebase index". Best-effort and at most one attempt per run: a failure is
+/// logged and the tool falls back to its normal missing payload.
+#[derive(Clone)]
+struct CodeIndexAutoBuild {
+    root: PathBuf,
+    /// Set once an index exists (built here or already present) so subsequent
+    /// tool calls take a lock-free fast path.
+    done: Arc<AtomicBool>,
+    /// Serializes concurrent first-use tool calls so we build at most once.
+    building: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl CodeIndexAutoBuild {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            done: Arc::new(AtomicBool::new(false)),
+            building: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    /// Mark the index as present without building (e.g. after an explicit
+    /// `code_map_refresh`), so lazy callers skip straight to querying.
+    fn mark_done(&self) {
+        self.done.store(true, Ordering::Relaxed);
+    }
+
+    async fn ensure_built(&self) {
+        if self.done.load(Ordering::Relaxed) {
+            return;
+        }
+        let _guard = self.building.lock().await;
+        if self.done.load(Ordering::Relaxed) {
+            return;
+        }
+        let root = self.root.clone();
+        let outcome = tokio::task::spawn_blocking(move || -> Result<bool> {
+            let mut graph = deepagent_codegraph::CodeGraph::open(&root)?;
+            if graph.has_existing_index() {
+                return Ok(false);
+            }
+            let stats = graph.index_all()?;
+            // Keep the human-facing panel graph consistent with the AI index so a
+            // model-triggered build also lights up the Project Map panel.
+            let ua = root.join(".understand-anything/knowledge-graph.json");
+            let _ = graph.project_ua_json(&ua);
+            Ok(stats.files_indexed > 0)
+        })
+        .await;
+        // Attempt at most once per run regardless of outcome: on failure the
+        // tool returns its normal missing payload rather than rebuilding each call.
+        self.done.store(true, Ordering::Relaxed);
+        match outcome {
+            Ok(Ok(built)) => tracing::info!(
+                target: "deepagent::codegraph",
+                root = %self.root.display(),
+                built,
+                "lazy code-index ensure complete"
+            ),
+            Ok(Err(err)) => tracing::warn!(
+                target: "deepagent::codegraph",
+                root = %self.root.display(),
+                error = %err,
+                "lazy code-index build failed"
+            ),
+            Err(err) => tracing::warn!(
+                target: "deepagent::codegraph",
+                root = %self.root.display(),
+                error = %err,
+                "lazy code-index build task join failed"
+            ),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct CodeGraphToolBackend {
     root: PathBuf,
+    auto: CodeIndexAutoBuild,
     graph: Arc<Mutex<Option<deepagent_codegraph::CodeGraph>>>,
 }
 
@@ -541,6 +655,7 @@ impl deepagent_builtins::CodeGraphBackend for CodeGraphToolBackend {
         kind: Option<String>,
         limit: usize,
     ) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         self.with_graph(|graph| {
             let kind = kind
                 .as_deref()
@@ -554,6 +669,7 @@ impl deepagent_builtins::CodeGraphBackend for CodeGraphToolBackend {
         symbols: &[String],
         budget: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         self.with_graph(|graph| {
             serde_json::to_value(graph.explore(symbols, parse_explore_budget(&budget))?)
                 .map_err(Into::into)
@@ -561,34 +677,40 @@ impl deepagent_builtins::CodeGraphBackend for CodeGraphToolBackend {
     }
 
     async fn callers(&self, symbol: &str, limit: usize) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         self.with_graph(|graph| {
             serde_json::to_value(graph.callers(symbol, limit)?).map_err(Into::into)
         })
     }
 
     async fn callees(&self, symbol: &str, limit: usize) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         self.with_graph(|graph| {
             serde_json::to_value(graph.callees(symbol, limit)?).map_err(Into::into)
         })
     }
 
     async fn impact(&self, symbol: &str, depth: usize) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         self.with_graph(|graph| {
             serde_json::to_value(graph.impact(symbol, depth)?).map_err(Into::into)
         })
     }
 
     async fn node(&self, target: &str) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         self.with_graph(|graph| serde_json::to_value(graph.node(target)?).map_err(Into::into))
     }
 
     async fn node_at_location(&self, file: &str, line: u32) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         self.with_graph(|graph| {
             serde_json::to_value(graph.store().node_at_location(file, line)?).map_err(Into::into)
         })
     }
 
     async fn locate(&self, text: &str) -> Result<serde_json::Value> {
+        self.auto.ensure_built().await;
         self.with_graph(|graph| {
             let files = graph
                 .store()
@@ -635,9 +757,10 @@ impl deepagent_builtins::CodeGraphBackend for CodeGraphToolBackend {
 }
 
 impl CodeGraphToolBackend {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, auto: CodeIndexAutoBuild) -> Self {
         Self {
             root,
+            auto,
             graph: Arc::new(Mutex::new(None)),
         }
     }
@@ -649,7 +772,15 @@ impl CodeGraphToolBackend {
         let mut cached = self.graph.lock().map_err(|_| {
             CoreError::Persistence("code graph connection cache lock poisoned".to_string())
         })?;
-        if cached.is_none() {
+        // (Re)open when there is no cached handle, or when the cached handle was
+        // opened before an index existed — a lazy/explicit build may have just
+        // populated codegraph.db through a separate connection, and a fresh open
+        // picks up those committed rows.
+        let needs_open = match cached.as_ref() {
+            None => true,
+            Some(graph) => !graph.has_existing_index(),
+        };
+        if needs_open {
             *cached = Some(deepagent_codegraph::CodeGraph::open(&self.root)?);
         }
         let graph = cached
@@ -665,7 +796,7 @@ impl CodeGraphToolBackend {
 fn codegraph_not_indexed() -> serde_json::Value {
     serde_json::json!({
         "indexed": false,
-        "message": "Code graph is not indexed yet. Run project map refresh/deep indexing for this workspace, then retry the codegraph tool.",
+        "message": "Code graph index is unavailable (auto-build may have failed or is still running). Call code_map_refresh to (re)build it, then retry, or open the Project Map panel and click Refresh.",
     })
 }
 

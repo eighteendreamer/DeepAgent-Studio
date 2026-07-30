@@ -114,9 +114,9 @@ pub use plan_mode::{
     is_plan_safe_tool, EnterPlanModeTool, ExitPlanModeTool, PlanMode, PlanModeHook, PLAN_SAFE_TOOLS,
 };
 pub use project_map_tools::{
-    CodeMapImpactTool, CodeMapNeighborsTool, CodeMapOverviewTool, CodeMapSearchTool,
-    ProjectMapBackend, CODE_MAP_IMPACT_TOOL_NAME, CODE_MAP_NEIGHBORS_TOOL_NAME,
-    CODE_MAP_OVERVIEW_TOOL_NAME, CODE_MAP_SEARCH_TOOL_NAME,
+    CodeMapImpactTool, CodeMapNeighborsTool, CodeMapOverviewTool, CodeMapRefreshTool,
+    CodeMapSearchTool, ProjectMapBackend, CODE_MAP_IMPACT_TOOL_NAME, CODE_MAP_NEIGHBORS_TOOL_NAME,
+    CODE_MAP_OVERVIEW_TOOL_NAME, CODE_MAP_REFRESH_TOOL_NAME, CODE_MAP_SEARCH_TOOL_NAME,
 };
 pub use remote_tools::{
     RemoteInstallArgs, RemoteInstallTool, RemoteOpsBackend, RemoteProbeArgs, RemoteProbeTool,

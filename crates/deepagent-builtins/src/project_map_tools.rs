@@ -17,6 +17,10 @@ pub trait ProjectMapBackend: Send + Sync {
     async fn neighbors(&self, node_id: &str) -> Result<serde_json::Value>;
     /// Query likely dependents impacted by changing a file/node.
     async fn impact(&self, target: &str) -> Result<serde_json::Value>;
+    /// (Re)build the project's code index (code graph + map). Used by the
+    /// `code_map_refresh` tool so the model can build/refresh the map itself
+    /// instead of being stuck when it is missing or stale.
+    async fn refresh(&self) -> Result<serde_json::Value>;
 }
 
 /// Tool name for overview.
@@ -27,6 +31,8 @@ pub const CODE_MAP_SEARCH_TOOL_NAME: &str = "code_map_search";
 pub const CODE_MAP_NEIGHBORS_TOOL_NAME: &str = "code_map_neighbors";
 /// Tool name for impact lookup.
 pub const CODE_MAP_IMPACT_TOOL_NAME: &str = "code_map_impact";
+/// Tool name for refresh/index build.
+pub const CODE_MAP_REFRESH_TOOL_NAME: &str = "code_map_refresh";
 
 const DEFAULT_LIMIT: usize = 8;
 const MAX_LIMIT: usize = 30;
@@ -197,6 +203,43 @@ impl<B: ProjectMapBackend> Tool for CodeMapImpactTool<B> {
             return Ok(ToolOutput::failure("missing 'target'"));
         };
         let value = self.backend.impact(target).await?;
+        Ok(ToolOutput::success(value))
+    }
+}
+
+/// `code_map_refresh` — (re)build the project's code index/map on demand.
+///
+/// The index is also built lazily on first use, but this lets the model force a
+/// rebuild after large edits or when a tool reports the map is missing/stale.
+pub struct CodeMapRefreshTool<B: ProjectMapBackend> {
+    backend: B,
+}
+
+impl<B: ProjectMapBackend> CodeMapRefreshTool<B> {
+    /// Build the tool.
+    pub fn new(backend: B) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait]
+impl<B: ProjectMapBackend> Tool for CodeMapRefreshTool<B> {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: CODE_MAP_REFRESH_TOOL_NAME.into(),
+            description: "(Re)build the active project's code index and map (tree-sitter symbol \
+                graph). Call this once if code_map_*/codegraph_* reported the map is missing, or \
+                after large edits to refresh it. Incremental after the first build; safe and \
+                read-only with respect to your source files."
+                .into(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+            risk: RiskLevel::Safe,
+            required_permissions: PermissionSet::read_only(),
+        }
+    }
+
+    async fn invoke(&self, _args: serde_json::Value) -> Result<ToolOutput> {
+        let value = self.backend.refresh().await?;
         Ok(ToolOutput::success(value))
     }
 }
