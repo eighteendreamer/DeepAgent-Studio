@@ -29,12 +29,12 @@ function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () =>
 
 function SegmentedControl({ options, value, onChange }: { options: { label: string, value: string }[], value: string, onChange: (val: string) => void }) {
   return (
-    <div className="flex items-center bg-gray-100 p-0.5 rounded-lg border border-border-theme">
+    <div className="inline-flex shrink-0 items-center gap-0.5 bg-gray-100 p-0.5 rounded-lg border border-border-theme">
       {options.map((opt) => (
         <div 
           key={opt.value}
           onClick={() => onChange(opt.value)}
-          className={`px-3 py-1 text-[12px] font-medium cursor-pointer transition-all rounded-md ${value === opt.value ? 'bg-white shadow-[0_1px_2px_rgb(0,0,0,0.1)] text-text-base' : 'text-text-secondary hover:text-text-base'}`}
+          className={`px-3.5 py-1.5 text-[12px] font-medium leading-none whitespace-nowrap cursor-pointer transition-all rounded-md ${value === opt.value ? 'bg-white shadow-[0_1px_2px_rgb(0,0,0,0.1)] text-text-base' : 'text-text-secondary hover:text-text-base'}`}
         >
           {opt.label}
         </div>
