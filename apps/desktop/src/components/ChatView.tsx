@@ -21,6 +21,16 @@ import type { OutputItem } from "./EnvironmentInfoMenu";
 import { ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
+import { Button as AriaButton } from "react-aria-components";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+} from "./ui/DropdownMenu";
 import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
 import {
@@ -1009,9 +1019,7 @@ export function ChatView({
     changes: gitChangesState,
     refresh: refreshGitStatus,
   } = useGitStatus(activeProjectPath);
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
-  const chatMenuRef = useRef<HTMLDivElement>(null);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
   const [envMode, setEnvMode] = useState<"local" | "remote">(() =>
@@ -1023,8 +1031,6 @@ export function ChatView({
   const [selectedConnection, setSelectedConnection] = useState<PluginConnectionSummary | null>(null);
   const [sidebarTabs, setSidebarTabs] = useState<PluginTab[]>([]);
   const [activeSidebarTabId, setActiveSidebarTabId] = useState<string>("new");
-  const [isRewindOpen, setIsRewindOpen] = useState(false);
-  const rewindCloseTimerRef = useRef<number | null>(null);
   const [bottomTabs, setBottomTabs] = useState<PluginTab[]>([]);
   const [activeBottomTabId, setActiveBottomTabId] = useState<string>("new");
 
@@ -1190,28 +1196,6 @@ export function ChatView({
   }, [onSend]);
 
   useEffect(() => {
-    if (!isMenuOpen) {
-      setIsRewindOpen(false);
-      return;
-    }
-    const onMouseDown = (event: MouseEvent) => {
-      if (chatMenuRef.current?.contains(event.target as Node)) return;
-      setIsMenuOpen(false);
-      setIsRewindOpen(false);
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [isMenuOpen]);
-
-  useEffect(() => {
-    return () => {
-      if (rewindCloseTimerRef.current !== null) {
-        window.clearTimeout(rewindCloseTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
     let cancelled = false;
     setMapStatus(null);
     if (!activeProjectPath) return;
@@ -1255,30 +1239,10 @@ export function ChatView({
 
   const handleRename = () => {
     setIsRenameDialogOpen(true);
-    setIsMenuOpen(false);
   };
 
   const handleOpenAutomation = () => {
     window.dispatchEvent(new CustomEvent(OPEN_AUTOMATION_EVENT));
-    setIsMenuOpen(false);
-  };
-
-  const openRewindMenu = () => {
-    if (rewindCloseTimerRef.current !== null) {
-      window.clearTimeout(rewindCloseTimerRef.current);
-      rewindCloseTimerRef.current = null;
-    }
-    setIsRewindOpen(true);
-  };
-
-  const scheduleCloseRewindMenu = () => {
-    if (rewindCloseTimerRef.current !== null) {
-      window.clearTimeout(rewindCloseTimerRef.current);
-    }
-    rewindCloseTimerRef.current = window.setTimeout(() => {
-      setIsRewindOpen(false);
-      rewindCloseTimerRef.current = null;
-    }, 180);
   };
 
   const isUserRewindEntry = useCallback(
@@ -1351,183 +1315,103 @@ export function ChatView({
       <div className="relative flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="relative h-8 flex items-center pl-6 pr-6 justify-between flex-shrink-0 w-full">
-          <div className="relative" ref={chatMenuRef}>
-            <div
-              className="flex items-center text-sm font-medium text-text-base cursor-pointer px-2 py-1 -ml-2 rounded hover:bg-hover-bg transition-colors"
-              onClick={() => setIsMenuOpen(!isMenuOpen)}
-            >
-              {title?.trim() || t("chatView.chat")}
-              <FontAwesomeIcon
-                icon={["fas", "ellipsis"]}
-                className="ml-2 text-text-secondary"
-              />
-            </div>
-            
-            {/* Dropdown Menu */}
-            {isMenuOpen && (
-              <div className="absolute top-10 left-0 w-60 bg-elevated-bg border border-border-theme rounded-xl shadow-lg py-1.5 z-50 text-[13px] text-text-base font-normal">
-                <div
-                  className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
-                  onClick={() => {
-                    onPin?.();
-                    setIsMenuOpen(false);
-                  }}
-                >
-                  <div className="flex items-center">
-                    <FontAwesomeIcon icon={["fas", "thumbtack"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                    <span>{pinned ? t("sidebar.unpin") : t("chatView.pinChat")}</span>
-                  </div>
-                  <span className="text-gray-400 text-[11px] font-sans">Ctrl+Alt+P</span>
-                </div>
-                <div
-                  className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
-                  onClick={handleRename}
-                >
-                  <div className="flex items-center">
-                    <FontAwesomeIcon icon={["fas", "pen"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                    <span>{t("chatView.renameChat")}</span>
-                  </div>
-                  <span className="text-gray-400 text-[11px] font-sans">Ctrl+Alt+R</span>
-                </div>
-                <div
-                  className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
-                  onClick={() => {
-                    onArchive?.();
-                    setIsMenuOpen(false);
-                  }}
-                >
-                  <div className="flex items-center">
-                    <FontAwesomeIcon icon={["fas", "box-archive"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                    <span>{t("chatView.archiveChat")}</span>
-                  </div>
-                  <span className="text-gray-400 text-[11px] font-sans">Ctrl+Shift+A</span>
-                </div>
-                
-                <div className="w-full h-px bg-border-theme my-1.5"></div>
-                
-                <div className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
-                  onClick={() => {
-                    onCopy?.();
-                    setIsMenuOpen(false);
-                  }}
-                >
-                  <div className="flex items-center">
-                    <FontAwesomeIcon icon={["far", "copy"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                    <span>{t("chatView.copy")}</span>
-                  </div>
-                </div>
-                <div className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
-                  onClick={() => {
-                    onExport?.("json");
-                    setIsMenuOpen(false);
-                  }}
-                >
-                  <div className="flex items-center">
-                    <FontAwesomeIcon icon={["fas", "file-export"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                    <span>{t("chatView.exportJson")}</span>
-                  </div>
-                </div>
-                <div className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
-                  onClick={() => {
-                    onFork?.();
-                    setIsMenuOpen(false);
-                  }}
-                >
-                  <div className="flex items-center">
-                    <FontAwesomeIcon icon={["fas", "code-branch"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                    <span>{t("chatView.branch")}</span>
-                  </div>
-                </div>
-                <div
-                  className="relative"
-                  onMouseEnter={openRewindMenu}
-                  onMouseLeave={scheduleCloseRewindMenu}
-                >
-                  <div className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
-                    onMouseEnter={openRewindMenu}
-                    onClick={() => setIsRewindOpen((v) => !v)}
-                  >
-                    <div className="flex items-center">
-                      <FontAwesomeIcon icon={["fas", "clock-rotate-left"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                      <span>{t("chatView.rewind")}</span>
-                    </div>
-                    <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-gray-400" />
-                  </div>
-                  {isRewindOpen && (
-                    <div
-                      className="absolute left-full top-0 ml-1 w-72 max-h-72 overflow-y-auto bg-elevated-bg border border-border-theme rounded-xl shadow-lg py-1.5 z-50 custom-scrollbar"
-                      onMouseEnter={openRewindMenu}
-                      onMouseLeave={scheduleCloseRewindMenu}
-                    >
-                      {rewindEntries.length === 0 && (
-                        <div className="px-4 py-2 text-[12px] text-text-secondary">{t("chatView.noRewindPoints")}</div>
-                      )}
-                      {rewindEntries.map((entry) => (
-                        <div
+          <div className="relative">
+            <DropdownMenuTrigger>
+              <AriaButton
+                className="flex items-center text-sm font-medium text-text-base cursor-pointer px-2 py-1 -ml-2 rounded outline-none transition-colors hover:bg-hover-bg data-[pressed]:bg-hover-bg"
+              >
+                {title?.trim() || t("chatView.chat")}
+                <FontAwesomeIcon icon={["fas", "ellipsis"]} className="ml-2 text-text-secondary" />
+              </AriaButton>
+
+              <DropdownMenu aria-label={t("chatView.chat")}>
+                <DropdownMenuItem onAction={() => onPin?.()}>
+                  <FontAwesomeIcon icon={["fas", "thumbtack"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
+                  <span>{pinned ? t("sidebar.unpin") : t("chatView.pinChat")}</span>
+                  <DropdownMenuShortcut>Ctrl+Alt+P</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuItem onAction={handleRename}>
+                  <FontAwesomeIcon icon={["fas", "pen"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
+                  <span>{t("chatView.renameChat")}</span>
+                  <DropdownMenuShortcut>Ctrl+Alt+R</DropdownMenuShortcut>
+                </DropdownMenuItem>
+                <DropdownMenuItem onAction={() => onArchive?.()}>
+                  <FontAwesomeIcon icon={["fas", "box-archive"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
+                  <span>{t("chatView.archiveChat")}</span>
+                  <DropdownMenuShortcut>Ctrl+Shift+A</DropdownMenuShortcut>
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuItem onAction={() => onCopy?.()}>
+                  <FontAwesomeIcon icon={["far", "copy"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
+                  <span>{t("chatView.copy")}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onAction={() => onExport?.("json")}>
+                  <FontAwesomeIcon icon={["fas", "file-export"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
+                  <span>{t("chatView.exportJson")}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onAction={() => onFork?.()}>
+                  <FontAwesomeIcon icon={["fas", "code-branch"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
+                  <span>{t("chatView.branch")}</span>
+                </DropdownMenuItem>
+
+                <DropdownMenuSub>
+                  <DropdownMenuItem>
+                    <FontAwesomeIcon icon={["fas", "clock-rotate-left"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
+                    <span>{t("chatView.rewind")}</span>
+                    <FontAwesomeIcon icon={["fas", "chevron-right"]} className="ml-auto text-[10px] text-gray-400" />
+                  </DropdownMenuItem>
+                  <DropdownMenuSubContent aria-label={t("chatView.rewind")} className="max-h-72">
+                    {rewindEntries.length === 0 ? (
+                      <DropdownMenuItem isDisabled className="text-[12px] text-text-secondary">
+                        {t("chatView.noRewindPoints")}
+                      </DropdownMenuItem>
+                    ) : (
+                      rewindEntries.map((entry) => (
+                        <DropdownMenuItem
                           key={entry.sequence}
-                          className="px-4 py-2.5 hover:bg-hover-bg cursor-pointer text-[12px] text-text-base"
-                          onClick={() => {
-                            // Claude Code rewind semantics: rewinding to a
-                            // user message returns the session to the state
-                            // BEFORE it was sent, and puts the prompt back in
-                            // the composer for editing/resend. Keeping the
-                            // message while deleting its execution (the old
-                            // `entry.sequence` anchor) satisfied neither
-                            // reading (manual acceptance M-15).
+                          className="!items-start !py-2.5 text-[12px]"
+                          textValue={entry.detail ?? `#${entry.sequence}`}
+                          onAction={() => {
+                            // Claude Code rewind semantics: rewinding to a user
+                            // message returns the session to the state BEFORE it
+                            // was sent, and puts the prompt back in the composer
+                            // for editing/resend (manual acceptance M-15).
                             onRewind?.(Math.max(0, entry.sequence - 1));
                             if (typeof entry.detail === "string" && entry.detail.trim()) {
                               setValue(entry.detail);
                             }
-                            setIsRewindOpen(false);
-                            setIsMenuOpen(false);
                           }}
-                          title={entry.detail ?? undefined}
                         >
-                          <div className="flex items-start gap-2">
-                            <span className="text-gray-400 tabular-nums shrink-0">#{entry.sequence}</span>
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-[13px] text-text-base">
-                                {entry.detail}
-                              </div>
-                              <div className="mt-0.5 text-[11px] text-text-secondary">
-                                {formatRewindTimestamp(entry.timestamp)}
-                              </div>
+                          <span className="text-gray-400 tabular-nums shrink-0 mr-2">#{entry.sequence}</span>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[13px] text-text-base">{entry.detail}</div>
+                            <div className="mt-0.5 text-[11px] text-text-secondary">
+                              {formatRewindTimestamp(entry.timestamp)}
                             </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                        </DropdownMenuItem>
+                      ))
+                    )}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
 
-                <div className="w-full h-px bg-border-theme my-1.5"></div>
+                <DropdownMenuSeparator />
 
-                <div
-                  className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
-                  onClick={handleOpenAutomation}
-                >
-                  <div className="flex items-center">
-                    <FontAwesomeIcon icon={["far", "clock"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                    <span>{t("chatView.addAutomation")}</span>
-                  </div>
-                </div>
+                <DropdownMenuItem onAction={handleOpenAutomation}>
+                  <FontAwesomeIcon icon={["far", "clock"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
+                  <span>{t("chatView.addAutomation")}</span>
+                </DropdownMenuItem>
 
-                <div className="w-full h-px bg-border-theme my-1.5"></div>
+                <DropdownMenuSeparator />
 
-                <div
-                  className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer justify-between group"
-                  onClick={() => {
-                    onOpenInNewWindow?.();
-                    setIsMenuOpen(false);
-                  }}
-                >
-                  <div className="flex items-center">
-                    <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} className="w-4 mr-2.5 text-gray-500 group-hover:text-text-base" />
-                    <span>{t("chatView.openInNewWindow")}</span>
-                  </div>
-                </div>
-              </div>
-            )}
+                <DropdownMenuItem onAction={() => onOpenInNewWindow?.()}>
+                  <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
+                  <span>{t("chatView.openInNewWindow")}</span>
+                </DropdownMenuItem>
+              </DropdownMenu>
+            </DropdownMenuTrigger>
           </div>
           <div className="flex items-center text-text-secondary">
             <div
