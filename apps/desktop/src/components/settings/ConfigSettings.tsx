@@ -82,7 +82,7 @@ function ComplexDropdown({
   return (
     <div className="relative">
       <div 
-        className="flex items-center bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg px-3 py-1.5 cursor-pointer transition-colors w-[220px] justify-between"
+        className="flex items-center bg-black/5 hover:bg-black/5 rounded-lg px-3 py-1.5 cursor-pointer transition-colors w-[220px] justify-between"
         onClick={() => setIsOpen(!isOpen)}
         onBlur={() => setTimeout(() => setIsOpen(false), 200)}
         tabIndex={0}
@@ -92,11 +92,11 @@ function ComplexDropdown({
       </div>
 
       {isOpen && (
-        <div className="absolute top-full right-0 mt-1 bg-white border border-border-theme rounded-xl shadow-lg z-20 py-2 w-[300px]">
+        <div className="absolute top-full right-0 mt-1 bg-elevated-bg rounded-xl shadow-[0_6px_24px_rgba(0,0,0,0.10)] z-20 py-2 w-[300px]">
           {options.map((opt) => (
             <div 
               key={opt.title}
-              className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-center justify-between"
+              className="px-4 py-2 hover:bg-black/5 cursor-pointer flex items-center justify-between"
               onMouseDown={(e) => {
                 e.preventDefault(); // Prevent blur
                 onChange((opt as any).displayTitle || opt.title);
@@ -269,7 +269,7 @@ function RuntimeResourceSettings() {
               type="button"
               onClick={migrateResources}
               disabled={loading}
-              className="flex items-center px-3 py-1.5 rounded-lg border border-border-theme text-[12px] text-text-base hover:bg-gray-50 disabled:opacity-50"
+              className="flex items-center px-3 py-1.5 rounded-lg border border-border-theme text-[12px] text-text-base hover:bg-black/5 disabled:opacity-50"
             >
               <FontAwesomeIcon icon={["fas", "download"]} className="mr-2 text-[11px]" />
               迁移资源
@@ -279,7 +279,7 @@ function RuntimeResourceSettings() {
             type="button"
             onClick={refresh}
             disabled={loading}
-            className="flex items-center px-3 py-1.5 rounded-lg border border-border-theme text-[12px] text-text-base hover:bg-gray-50 disabled:opacity-50"
+            className="flex items-center px-3 py-1.5 rounded-lg border border-border-theme text-[12px] text-text-base hover:bg-black/5 disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "rotate-right"]} className={`mr-2 text-[11px] ${loading ? "animate-spin" : ""}`} />
             刷新
@@ -372,7 +372,7 @@ function RuntimeResourceSettings() {
                       <button
                         type="button"
                         onClick={() => cancelRuntime(runtime)}
-                        className="rounded-lg border border-border-theme px-3 py-1.5 text-[12px] text-text-base hover:bg-gray-50"
+                        className="rounded-lg border border-border-theme px-3 py-1.5 text-[12px] text-text-base hover:bg-black/5"
                       >
                         取消
                       </button>
@@ -596,7 +596,7 @@ function VisionResourceSettings() {
                 setTesting(false);
               }
             }}
-            className="px-3 py-1.5 text-[13px] rounded-md border border-border-theme bg-white hover:bg-gray-50 disabled:opacity-50"
+            className="px-3 py-1.5 text-[13px] rounded-md bg-black/5 hover:bg-black/5 disabled:opacity-50"
           >
             {testing ? "测试中..." : "测试连接"}
           </button>
@@ -833,7 +833,7 @@ export function ConfigSettings() {
         <h2 className="text-[15px] font-medium text-text-base mb-6">{t("settings.config.customSettings")}</h2>
         
         <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg px-3 py-1.5 cursor-pointer transition-colors">
+          <div className="flex items-center bg-black/5 hover:bg-black/5 rounded-lg px-3 py-1.5 cursor-pointer transition-colors">
             <span className="text-[12px] font-medium text-text-base mr-2">{t("settings.config.userConfig")}</span>
             <FontAwesomeIcon icon={["fas", "chevron-down"]} className="text-[10px] text-text-secondary" />
           </div>
@@ -1347,7 +1347,7 @@ export function ConfigSettings() {
               <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.config.diagnose")}</div>
               <div className="text-[12px] text-text-secondary">{t("settings.config.diagnoseDesc")}</div>
             </div>
-            <button className="flex items-center px-4 py-1.5 bg-gray-50 hover:bg-gray-100 border border-border-theme rounded-md text-[12px] font-medium text-text-base transition-colors shadow-sm">
+            <button className="flex items-center px-4 py-1.5 bg-black/5 hover:bg-black/5 rounded-md text-[12px] font-medium text-text-base transition-colors shadow-sm">
               <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="mr-2 text-[11px] text-text-secondary" /> {t("settings.config.diagnoseBtn")}
             </button>
           </div>

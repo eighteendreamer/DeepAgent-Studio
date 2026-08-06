@@ -66,7 +66,7 @@ export function BrowserSettings() {
               <div className="text-[12px] text-text-secondary">{t("settings.browser.clearDataDesc")}</div>
             </div>
             <div className="flex items-center space-x-3">
-              <button className="px-4 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-full text-[12px] font-medium text-text-base transition-colors">
+              <button className="px-4 py-1.5 bg-black/5 hover:bg-black/5 rounded-full text-[12px] font-medium text-text-base transition-colors">
                 {t("settings.browser.clearAllData")}
               </button>
               <button 
@@ -106,7 +106,7 @@ export function BrowserSettings() {
             {/* Custom Dropdown */}
             <div className="relative">
               <button 
-                className="w-[200px] flex items-center justify-between px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-[13px] font-medium text-text-base transition-colors"
+                className="w-[200px] flex items-center justify-between px-3 py-1.5 bg-black/5 hover:bg-black/5 rounded-lg text-[13px] font-medium text-text-base transition-colors"
                 onClick={() => setIsScreenshotDropdownOpen(!isScreenshotDropdownOpen)}
                 onBlur={() => setTimeout(() => setIsScreenshotDropdownOpen(false), 200)}
               >
@@ -115,14 +115,14 @@ export function BrowserSettings() {
               </button>
 
               {isScreenshotDropdownOpen && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-border-theme rounded-xl shadow-lg z-10 py-1">
+                <div className="absolute top-full left-0 right-0 mt-1 bg-elevated-bg rounded-xl shadow-[0_6px_24px_rgba(0,0,0,0.10)] z-10 py-1">
                   {[
                     { value: "alwaysInclude", label: t("settings.browser.alwaysInclude") },
                     { value: "onlySelected", label: t("settings.browser.onlySelected") }
                   ].map(opt => (
                     <button 
                       key={opt.value}
-                      className="w-full text-left px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 flex items-center justify-between"
+                      className="w-full text-left px-3 py-2 text-[13px] text-text-base hover:bg-black/5 flex items-center justify-between"
                       onClick={() => {
                         setScreenshotOption(opt.value);
                         setIsScreenshotDropdownOpen(false);
@@ -153,7 +153,7 @@ export function BrowserSettings() {
           {/* Complex Dropdown */}
           <div className="relative">
             <button 
-              className="w-[240px] flex items-center justify-between px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-[13px] font-medium text-text-base transition-colors"
+              className="w-[240px] flex items-center justify-between px-3 py-1.5 bg-black/5 hover:bg-black/5 rounded-lg text-[13px] font-medium text-text-base transition-colors"
               onClick={() => setIsApprovalDropdownOpen(!isApprovalDropdownOpen)}
               onBlur={() => setTimeout(() => setIsApprovalDropdownOpen(false), 200)}
             >
@@ -162,9 +162,9 @@ export function BrowserSettings() {
             </button>
 
             {isApprovalDropdownOpen && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-border-theme rounded-xl shadow-xl z-20 py-2 w-[280px] -ml-10">
+              <div className="absolute top-full left-0 right-0 mt-1 bg-elevated-bg rounded-xl shadow-[0_6px_24px_rgba(0,0,0,0.10)] z-20 py-2 w-[280px] -ml-10">
                 <button 
-                  className="w-full text-left px-4 py-2 hover:bg-gray-50"
+                  className="w-full text-left px-4 py-2 hover:bg-black/5"
                   onClick={() => {
                     setApprovalOption("alwaysAsk");
                     setIsApprovalDropdownOpen(false);
@@ -178,7 +178,7 @@ export function BrowserSettings() {
                 </button>
                 
                 <button 
-                  className="w-full text-left px-4 py-2 hover:bg-gray-50"
+                  className="w-full text-left px-4 py-2 hover:bg-black/5"
                   onClick={() => {
                     setApprovalOption("alwaysAllow");
                     setIsApprovalDropdownOpen(false);
@@ -206,7 +206,7 @@ export function BrowserSettings() {
               <div className="text-[13px] font-medium text-text-base mb-0.5">{t("settings.browser.blockedDomains")}</div>
               <div className="text-[12px] text-text-secondary">{t("settings.browser.blockedDesc")}</div>
             </div>
-            <button className="px-3 py-1.5 bg-gray-50 hover:bg-gray-100 border border-border-theme rounded-lg text-[12px] font-medium text-text-base transition-colors flex items-center">
+            <button className="px-3 py-1.5 bg-black/5 hover:bg-black/5 rounded-lg text-[12px] font-medium text-text-base transition-colors flex items-center">
               <FontAwesomeIcon icon={["fas", "plus"]} className="mr-1.5 text-[10px]" /> {t("settings.browser.add")}
             </button>
           </div>
@@ -222,7 +222,7 @@ export function BrowserSettings() {
               <div className="text-[13px] font-medium text-text-base mb-0.5">{t("settings.browser.allowedDomains")}</div>
               <div className="text-[12px] text-text-secondary">{t("settings.browser.allowedDesc")}</div>
             </div>
-            <button className="px-3 py-1.5 bg-gray-50 hover:bg-gray-100 border border-border-theme rounded-lg text-[12px] font-medium text-text-base transition-colors flex items-center">
+            <button className="px-3 py-1.5 bg-black/5 hover:bg-black/5 rounded-lg text-[12px] font-medium text-text-base transition-colors flex items-center">
               <FontAwesomeIcon icon={["fas", "plus"]} className="mr-1.5 text-[10px]" /> {t("settings.browser.add")}
             </button>
           </div>

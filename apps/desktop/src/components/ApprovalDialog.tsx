@@ -1,6 +1,8 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import type { ApprovalRequest } from "../types";
+import { Panel } from "./ui/Panel";
+import { TintButton } from "./ui/TintButton";
 
 interface Props {
   request: ApprovalRequest | null;
@@ -76,10 +78,7 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
   if (!request) return null;
 
   return (
-        <div
-          key={request.call_id}
-          className="approval-card w-full bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme overflow-hidden"
-        >
+        <Panel key={request.call_id} menu={false} className="approval-card w-full overflow-hidden rounded-2xl">
           <div className="px-4 pt-3 pb-2 flex items-center gap-2">
             <FontAwesomeIcon
               icon={["fas", "shield-halved"]}
@@ -119,19 +118,21 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
           </div>
 
           <div className="px-4 py-2.5 border-t border-border-theme flex justify-end gap-2 bg-[#FbFcFd]">
-            <button
-              className="px-3.5 py-1.5 rounded-full text-[13px] border border-border-theme text-text-base hover:bg-gray-100 transition-colors"
+            <TintButton
+              variant="default"
+              className="px-3.5 py-1.5 rounded-full text-[13px]"
               onClick={() => onReject(request)}
             >
               {t("approvalDialog.reject")}
-            </button>
-            <button
-              className="px-3.5 py-1.5 rounded-full text-[13px] bg-primary text-white hover:bg-opacity-90 transition-colors shadow-sm"
+            </TintButton>
+            <TintButton
+              variant="primary"
+              className="px-3.5 py-1.5 rounded-full text-[13px] shadow-sm"
               onClick={() => onApprove(request)}
             >
               {t("approvalDialog.approve")}
-            </button>
+            </TintButton>
           </div>
-        </div>
+        </Panel>
   );
 }

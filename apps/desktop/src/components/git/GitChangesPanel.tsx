@@ -296,7 +296,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
         {onClose && (
           <button
             type="button"
-            className="h-7 w-7 rounded-md text-text-secondary hover:bg-gray-100 hover:text-text-base"
+            className="h-7 w-7 rounded-md text-text-secondary hover:bg-black/5 hover:text-text-base"
             onClick={onClose}
             aria-label={t("git.closeChanges")}
           >
@@ -393,7 +393,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
                 type="button"
                 disabled={busyAction !== null || files.length === 0}
                 onClick={draftCommitMessage}
-                className="inline-flex h-7 items-center rounded-md border border-border-theme bg-white px-2 text-[11px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
+                className="inline-flex h-7 items-center rounded-md bg-black/5 px-2 text-[11px] font-medium text-text-base hover:bg-black/5 disabled:opacity-50"
               >
                 <FontAwesomeIcon icon={["fas", "lightbulb"]} className="mr-1.5 text-[10px]" />
                 {busyAction === "draft" ? t("git.draftingMessage") : t("git.draftMessage")}

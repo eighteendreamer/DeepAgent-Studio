@@ -509,7 +509,7 @@ function LogActionButton({
   return (
     <button
       type="button"
-      className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2 text-[12px] font-medium text-text-secondary transition-colors hover:bg-gray-50 hover:text-text-base disabled:cursor-not-allowed disabled:opacity-50"
+      className="inline-flex h-8 items-center rounded-md bg-black/5 px-2 text-[12px] font-medium text-text-secondary transition-colors hover:bg-black/5 hover:text-text-base disabled:cursor-not-allowed disabled:opacity-50"
       disabled={disabled}
       onClick={onClick}
       title={label}

@@ -8,7 +8,7 @@ export function AutomationView() {
       
       {/* Top right actions */}
       <div className="absolute top-6 right-8 flex items-center space-x-3">
-        <button className="flex items-center text-text-base bg-gray-50 border border-border-theme hover:bg-gray-100 rounded-lg px-4 py-1.5 text-[13px] font-medium transition-colors">
+        <button className="flex items-center text-text-base bg-black/5 hover:bg-black/5 rounded-lg px-4 py-1.5 text-[13px] font-medium transition-colors">
           {t("automationView.viewTemplates")}
         </button>
         <button className="flex items-center text-white bg-text-base hover:bg-black rounded-lg px-4 py-1.5 text-[13px] font-medium transition-colors">
@@ -36,15 +36,15 @@ export function AutomationView() {
           <h2 className="text-base font-medium text-text-base mb-6">{t("automationView.createFirst")}</h2>
           
           <div className="flex items-center space-x-3">
-            <button className="flex items-center text-[13px] text-text-secondary bg-white border border-border-theme rounded-lg px-4 py-2 hover:bg-gray-50 hover:text-text-base transition-colors shadow-sm">
+            <button className="flex items-center text-[13px] text-text-secondary bg-black/5 rounded-lg px-4 py-2 hover:bg-black/5 hover:text-text-base transition-colors shadow-sm">
               <FontAwesomeIcon icon={["far", "bell"]} className="mr-2" />
               {t("automationView.dailyBriefing")}
             </button>
-            <button className="flex items-center text-[13px] text-text-secondary bg-white border border-border-theme rounded-lg px-4 py-2 hover:bg-gray-50 hover:text-text-base transition-colors shadow-sm">
+            <button className="flex items-center text-[13px] text-text-secondary bg-black/5 rounded-lg px-4 py-2 hover:bg-black/5 hover:text-text-base transition-colors shadow-sm">
               <FontAwesomeIcon icon={["far", "calendar-check"]} className="mr-2" />
               {t("automationView.weeklyReview")}
             </button>
-            <button className="flex items-center text-[13px] text-text-secondary bg-white border border-border-theme rounded-lg px-4 py-2 hover:bg-gray-50 hover:text-text-base transition-colors shadow-sm">
+            <button className="flex items-center text-[13px] text-text-secondary bg-black/5 rounded-lg px-4 py-2 hover:bg-black/5 hover:text-text-base transition-colors shadow-sm">
               <FontAwesomeIcon icon={["fas", "magnifying-glass-chart"]} className="mr-2" />
               {t("automationView.projectMonitoring")}
             </button>

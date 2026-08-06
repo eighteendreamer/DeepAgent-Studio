@@ -114,7 +114,7 @@ export function ShortcutsSettings() {
         {filteredShortcuts.map((item, idx) => (
           <div
             key={idx}
-            className="flex px-4 py-3 border-b border-border-theme hover:bg-gray-50/80 transition-colors group"
+            className="flex px-4 py-3 border-b border-border-theme hover:bg-black/5 transition-colors group"
           >
             <div className="flex-1 pr-4">
               <div className="text-[13px] text-text-base font-medium mb-0.5">

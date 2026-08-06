@@ -13,6 +13,7 @@ import type { PreviewResult, ProjectFileEntry } from "../../types";
 import { MarkdownText } from "../MarkdownText";
 import { message as toast } from "../message";
 import type { PluginDefinition } from "./pluginTypes";
+import { FLOATING_MENU } from "../ui/motion";
 
 interface FilesPluginProps {
   projectPath?: string | null;
@@ -637,7 +638,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
             className={`group flex items-center rounded-xl px-2.5 py-1.5 text-[13px] transition-colors ${
               isSelected
                 ? "bg-[#f3f4f6] text-text-base shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)]"
-                : "text-text-base hover:bg-gray-50"
+                : "text-text-base hover:bg-black/5"
             }`}
             style={{ paddingLeft: `${10 + depth * 18}px` }}
             onClick={() => {
@@ -703,11 +704,11 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
               <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[12px]" />
             </button>
             {isMoreMenuOpen ? (
-              <div className="absolute right-0 top-full z-20 mt-2 w-[220px] overflow-hidden rounded-2xl border border-border-theme bg-white p-1.5 shadow-[0_18px_36px_rgba(15,23,42,0.12)]">
+              <div className={`${FLOATING_MENU.shell} absolute right-0 top-full z-20 mt-2 w-[220px] overflow-hidden`}>
                 <button
                   type="button"
                   onClick={() => void handleCopyCurrentPath()}
-                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] text-text-base transition-colors hover:bg-[#f7f8fa]"
+                  className={`${FLOATING_MENU.row} w-full gap-3 text-left text-[14px] text-text-base`}
                 >
                   <FontAwesomeIcon icon={["far", "copy"]} className="text-[13px] text-text-secondary" />
                   <span>复制路径</span>
@@ -715,7 +716,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                 <button
                   type="button"
                   onClick={() => void handleCopyFileContent()}
-                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] text-text-base transition-colors hover:bg-[#f7f8fa]"
+                  className={`${FLOATING_MENU.row} w-full gap-3 text-left text-[14px] text-text-base`}
                 >
                   <FontAwesomeIcon icon={["far", "file-lines"]} className="text-[13px] text-text-secondary" />
                   <span>复制文件内容</span>
@@ -726,7 +727,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                     setEnhancedViewEnabled((prev) => !prev);
                     setIsMoreMenuOpen(false);
                   }}
-                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] text-text-base transition-colors hover:bg-[#f7f8fa]"
+                  className={`${FLOATING_MENU.row} w-full gap-3 text-left text-[14px] text-text-base`}
                 >
                   <FontAwesomeIcon icon={["fas", "code"]} className="text-[13px] text-text-secondary" />
                   <span>{enhancedViewEnabled ? "禁用增强视图" : "启用增强视图"}</span>
@@ -749,11 +750,11 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
               <FontAwesomeIcon icon={["fas", "chevron-down"]} className="text-[10px] text-text-secondary" />
             </button>
             {isOpenMenuOpen ? (
-              <div className="absolute right-0 top-full z-20 mt-2 w-[220px] overflow-hidden rounded-2xl border border-border-theme bg-white p-1.5 shadow-[0_18px_36px_rgba(15,23,42,0.12)]">
+              <div className={`${FLOATING_MENU.shell} absolute right-0 top-full z-20 mt-2 w-[220px] overflow-hidden`}>
                 <button
                   type="button"
                   onClick={() => void handleOpenLocation(selectedOpenPath)}
-                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] text-text-base transition-colors hover:bg-[#f7f8fa]"
+                  className={`${FLOATING_MENU.row} w-full gap-3 text-left text-[14px] text-text-base`}
                 >
                   <FontAwesomeIcon icon={["far", "folder-open"]} className="text-[13px] text-text-secondary" />
                   <span>打开当前文件位置</span>
@@ -761,7 +762,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                 <button
                   type="button"
                   onClick={() => void handleOpenLocation(rootPath)}
-                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] text-text-base transition-colors hover:bg-[#f7f8fa]"
+                  className={`${FLOATING_MENU.row} w-full gap-3 text-left text-[14px] text-text-base`}
                 >
                   <FontAwesomeIcon icon={["far", "folder"]} className="text-[13px] text-text-secondary" />
                   <span>打开项目根目录</span>

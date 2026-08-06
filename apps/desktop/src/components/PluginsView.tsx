@@ -539,21 +539,21 @@ export function PluginsView() {
           <button
             type="button"
             onClick={() => setActionsOpen((open) => !open)}
-            className="h-8 rounded-xl border border-border-theme bg-white px-3 text-text-base hover:bg-gray-50 transition-colors flex items-center gap-2"
+            className="h-8 rounded-xl bg-black/5px-3 text-text-base hover:bg-black/5 transition-colors flex items-center gap-2"
             title="添加"
           >
             <FontAwesomeIcon icon={["fas", "plus"]} className="text-[13px]" />
             <FontAwesomeIcon icon={["fas", "chevron-down"]} className="text-[10px] text-text-secondary" />
           </button>
           {actionsOpen && (
-            <div className="absolute right-0 top-full mt-2 w-52 rounded-xl border border-border-theme bg-white py-2 shadow-[0_10px_35px_rgba(15,23,42,0.14)]">
+            <div className="absolute right-0 top-full mt-2 w-52 rounded-xl bg-black/5py-2 shadow-[0_10px_35px_rgba(15,23,42,0.14)]">
               <button
                 type="button"
                 onClick={() => {
                   setActionsOpen(false);
                   setCreateDialogOpen(true);
                 }}
-                className="w-full px-4 py-2.5 text-left text-[13px] text-text-base hover:bg-gray-50 flex items-center"
+                className="w-full px-4 py-2.5 text-left text-[13px] text-text-base hover:bg-black/5 flex items-center"
               >
                 <FontAwesomeIcon icon={["fas", "puzzle-piece"]} className="w-4 mr-3 text-text-secondary" />
                 创建插件
@@ -564,7 +564,7 @@ export function PluginsView() {
                   setActionsOpen(false);
                   setMarketplaceDialogOpen(true);
                 }}
-                className="w-full px-4 py-2.5 text-left text-[13px] text-text-base hover:bg-gray-50 flex items-center"
+                className="w-full px-4 py-2.5 text-left text-[13px] text-text-base hover:bg-black/5 flex items-center"
               >
                 <FontAwesomeIcon icon={["fas", "plus"]} className="w-4 mr-3 text-text-secondary" />
                 添加插件市场
@@ -574,7 +574,7 @@ export function PluginsView() {
         </div>
         <button
           type="button"
-          className="h-8 w-8 rounded-lg text-text-secondary hover:text-text-base hover:bg-gray-50 transition-colors"
+          className="h-8 w-8 rounded-lg text-text-secondary hover:text-text-base hover:bg-black/5 transition-colors"
           title="刷新"
         >
           <FontAwesomeIcon icon={["fas", "rotate-right"]} className="text-[13px]" />
@@ -598,7 +598,7 @@ export function PluginsView() {
             </div>
 
             <div className="mb-9 flex items-center gap-3">
-              <div className="flex h-11 flex-1 items-center rounded-full border border-border-theme bg-white px-4 focus-within:border-gray-300 transition-colors">
+              <div className="flex h-11 flex-1 items-center rounded-full bg-black/5px-4 focus-within:border-gray-300 transition-colors">
                 <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="mr-3 text-text-secondary" />
                 <input
                   value={query}
@@ -621,7 +621,7 @@ export function PluginsView() {
                   <FontAwesomeIcon icon={["fas", "sliders"]} />
                 </button>
                 {filterOpen && (
-                  <div className="absolute right-0 top-full mt-2 w-60 rounded-xl border border-border-theme bg-white py-2 shadow-[0_12px_40px_rgba(15,23,42,0.14)]">
+                  <div className="absolute right-0 top-full mt-2 w-60 rounded-xl bg-black/5py-2 shadow-[0_12px_40px_rgba(15,23,42,0.14)]">
                     {(["all", ...categoryOrder] as Array<PluginCategory | "all">).map((category) => (
                       <button
                         key={category}
@@ -630,7 +630,7 @@ export function PluginsView() {
                           setCategoryFilter(category);
                           setFilterOpen(false);
                         }}
-                        className="w-full px-4 py-2.5 text-left text-[13px] text-text-base hover:bg-gray-50 flex items-center justify-between"
+                        className="w-full px-4 py-2.5 text-left text-[13px] text-text-base hover:bg-black/5 flex items-center justify-between"
                       >
                         <span>{category === "all" ? "全部" : categoryLabels[category as PluginCategory]}</span>
                         {categoryFilter === category && (
@@ -681,8 +681,8 @@ export function PluginsView() {
                   onClick={() => setSourceTab(tab.id)}
                   className={`rounded-lg px-3 py-1.5 text-[13px] transition-colors font-medium ${
                     sourceTab === tab.id
-                      ? "bg-gray-100 text-text-base"
-                      : "text-text-secondary hover:text-text-base hover:bg-gray-50"
+                      ? "bg-black/5 text-text-base"
+                      : "text-text-secondary hover:text-text-base hover:bg-black/5"
                   }`}
                 >
                   {tab.label}
@@ -801,7 +801,7 @@ function PluginRow({
         <button
           type="button"
           onClick={onInstall}
-          className="rounded-full border border-border-theme px-3 py-1 text-[12px] text-text-base hover:bg-gray-50"
+          className="rounded-full border border-border-theme px-3 py-1 text-[12px] text-text-base hover:bg-black/5"
         >
           添加插件
         </button>
@@ -845,7 +845,7 @@ function PluginDetail({
           <div className="flex items-center gap-3">
             <button
               type="button"
-              className="h-9 w-9 rounded-lg text-text-secondary hover:bg-gray-50 hover:text-text-base"
+              className="h-9 w-9 rounded-lg text-text-secondary hover:bg-black/5 hover:text-text-base"
               title="更多"
             >
               <FontAwesomeIcon icon={["fas", "ellipsis"]} />
@@ -977,7 +977,7 @@ function AddMarketplaceDialog({
         </div>
 
         <div className="mt-8 flex justify-end gap-3">
-          <button type="button" onClick={onClose} className="rounded-lg border border-border-theme px-5 py-2 text-[13px] text-text-base hover:bg-gray-50">
+          <button type="button" onClick={onClose} className="rounded-lg border border-border-theme px-5 py-2 text-[13px] text-text-base hover:bg-black/5">
             取消
           </button>
           <button
@@ -1052,7 +1052,7 @@ function CreatePluginDialog({
         </div>
 
         <div className="mt-8 flex justify-end gap-3">
-          <button type="button" onClick={onClose} className="rounded-lg border border-border-theme px-5 py-2 text-[13px] text-text-base hover:bg-gray-50">
+          <button type="button" onClick={onClose} className="rounded-lg border border-border-theme px-5 py-2 text-[13px] text-text-base hover:bg-black/5">
             取消
           </button>
           <button

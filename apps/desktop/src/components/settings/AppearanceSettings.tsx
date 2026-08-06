@@ -30,7 +30,7 @@ function SegmentedControl({
   indicatorLayoutId?: string;
 }) {
   return (
-    <div className="relative flex items-center bg-gray-100 p-0.5 rounded-lg border border-border-theme">
+    <div className="relative flex items-center bg-black/5 p-0.5 rounded-lg">
       {options.map((opt) => {
         const selected = value === opt.value;
         return (
@@ -62,9 +62,9 @@ function SegmentedControl({
 function PetItem({ name, desc, icon, iconColor, selected }: { name: string, desc: string, icon: IconProp, iconColor: string, selected: boolean }) {
   const { t } = useTranslation();
   return (
-    <div className="flex items-center justify-between p-3 border border-border-theme rounded-xl hover:border-gray-300 transition-colors cursor-pointer">
+    <div className="flex items-center justify-between p-3 rounded-xl transition-colors cursor-pointer hover:bg-black/5">
       <div className="flex items-center">
-        <div className="w-12 h-12 rounded-lg bg-gray-50 flex items-center justify-center mr-4 border border-border-theme shadow-sm">
+        <div className="w-12 h-12 rounded-lg bg-black/5 flex items-center justify-center mr-4 shadow-sm">
           <FontAwesomeIcon icon={icon} className={`text-xl ${iconColor}`} />
         </div>
         <div>
@@ -74,11 +74,11 @@ function PetItem({ name, desc, icon, iconColor, selected }: { name: string, desc
       </div>
       <div>
         {selected ? (
-          <div className="px-4 py-1.5 bg-gray-100 text-gray-400 rounded-md text-[12px] font-medium">
+          <div className="px-4 py-1.5 bg-black/5 text-gray-400 rounded-md text-[12px] font-medium">
             {t("settings.appearance.selected")}
           </div>
         ) : (
-          <div className="px-4 py-1.5 bg-white border border-border-theme text-text-base hover:bg-gray-50 rounded-md text-[12px] font-medium transition-colors">
+          <div className="px-4 py-1.5 bg-black/5 text-text-base hover:bg-black/5 rounded-md text-[12px] font-medium transition-colors">
             {t("settings.appearance.select")}
           </div>
         )}
@@ -188,7 +188,7 @@ export function AppearanceSettings() {
               </div>
             </div>
             
-            <div className="flex justify-between items-center p-1 bg-gray-50 border-t border-border-theme">
+            <div className="flex justify-between items-center p-1 bg-black/5 border-t border-border-theme">
               <button className="text-gray-400 hover:text-text-base px-2"><FontAwesomeIcon icon={["fas", "caret-left"]} /></button>
               <div className="flex space-x-1">
                 <div className="w-1.5 h-1.5 rounded-full bg-gray-300"></div>
@@ -362,7 +362,7 @@ export function AppearanceSettings() {
       <div className="mb-6 max-w-[700px]">
         <div className="border border-border-theme rounded-xl shadow-[0_1px_2px_rgb(0,0,0,0.02)] bg-white overflow-hidden">
           <div 
-            className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors border-b border-border-theme"
+            className="flex items-center justify-between p-4 cursor-pointer hover:bg-black/5 transition-colors border-b border-border-theme"
             onClick={() => setIsPetExpanded(!isPetExpanded)}
           >
             <div>
@@ -375,13 +375,13 @@ export function AppearanceSettings() {
           {isPetExpanded && (
             <>
               <div className="p-4 bg-gray-50/50 border-b border-border-theme flex justify-end space-x-2">
-                <button className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] font-medium text-text-base hover:bg-gray-50 transition-colors shadow-sm">
+                <button className="px-3 py-1.5 bg-black/5 rounded-md text-[12px] font-medium text-text-base hover:bg-black/5 transition-colors shadow-sm">
                   {t("settings.appearance.createPet")}
                 </button>
-                <button className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] font-medium text-text-base hover:bg-gray-50 transition-colors shadow-sm">
+                <button className="px-3 py-1.5 bg-black/5 rounded-md text-[12px] font-medium text-text-base hover:bg-black/5 transition-colors shadow-sm">
                   {t("settings.appearance.refresh")}
                 </button>
-                <button className="px-3 py-1.5 bg-white border border-border-theme rounded-md text-[12px] font-medium text-text-base hover:bg-gray-50 transition-colors shadow-sm">
+                <button className="px-3 py-1.5 bg-black/5 rounded-md text-[12px] font-medium text-text-base hover:bg-black/5 transition-colors shadow-sm">
                   {t("settings.appearance.wakePet")}
                 </button>
               </div>

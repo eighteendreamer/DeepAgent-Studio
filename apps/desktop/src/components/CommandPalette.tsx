@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { getCommands } from "../api";
 import type { Command } from "../types";
 import { useTranslation } from "react-i18next";
+import { Panel } from "./ui/Panel";
+import { ListItem } from "./ui/ListItem";
 
 interface Props {
   open: boolean;
@@ -55,14 +57,15 @@ export function CommandPalette({ open, onClose, onRun }: Props) {
       className="fixed inset-0 z-[80] flex items-start justify-center bg-black/20 px-4 pt-[12vh]"
       onClick={onClose}
     >
-      <div
-        className="w-full max-w-xl overflow-hidden rounded-lg border border-border-theme bg-white shadow-[0_16px_50px_rgba(0,0,0,0.18)]"
+      <Panel
+        menu={false}
+        className="w-full max-w-xl overflow-hidden rounded-2xl"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
       >
         <input
           ref={inputRef}
-          className="w-full border-b border-border-theme bg-white px-4 py-3 text-sm text-text-base placeholder:text-text-secondary"
+          className="w-full border-b border-border-theme bg-elevated-bg px-4 py-3 text-sm text-text-base placeholder:text-text-secondary"
           placeholder={t("commandPalette.placeholder")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -74,11 +77,10 @@ export function CommandPalette({ open, onClose, onRun }: Props) {
             </div>
           )}
           {results.map((c, i) => (
-            <div
+            <ListItem
               key={c.id}
-              className={`grid cursor-pointer grid-cols-[96px_minmax(0,1fr)_auto] gap-x-3 gap-y-1 px-4 py-2.5 text-left transition-colors ${
-                i === selected ? "bg-gray-100" : "hover:bg-gray-50"
-              }`}
+              selected={i === selected}
+              className="grid cursor-pointer grid-cols-[96px_minmax(0,1fr)_auto] items-stretch gap-x-3 gap-y-1 px-4 py-2.5 text-left"
               onMouseEnter={() => setSelected(i)}
               onClick={() => {
                 onRun(c);
@@ -97,10 +99,10 @@ export function CommandPalette({ open, onClose, onRun }: Props) {
               <span className="col-start-2 col-end-4 line-clamp-2 text-xs leading-snug text-text-secondary">
                 {c.description}
               </span>
-            </div>
+            </ListItem>
           ))}
         </div>
-      </div>
+      </Panel>
     </div>
   );
 }

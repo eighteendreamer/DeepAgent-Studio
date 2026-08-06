@@ -1,6 +1,7 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
+import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 
 interface Category {
   id: string;
@@ -35,11 +36,17 @@ interface Props {
 export function SettingsSidebar({ onBack, activeCategoryId, onSelectCategory }: Props) {
   const { t } = useTranslation();
 
+  /* 滑动药丸指示器（静默着色）：悬停跟随，离开滑回激活项 */
+  const { containerRef: listRef, containerProps, indicatorStyle } = useSlidingIndicator({
+    hoverSelector: "[data-cat]",
+    activeSelector: `[data-cat="${activeCategoryId}"]`,
+  });
+
   return (
     <aside className="w-[240px] flex flex-col bg-sidebar-bg h-full no-select flex-shrink-0 pb-2">
       <div className="px-3 pt-4 pb-4">
-        <button 
-          onClick={onBack} 
+        <button
+          onClick={onBack}
           className="flex items-center text-text-secondary hover:text-text-base transition-colors text-[13px] font-medium px-2"
         >
           <FontAwesomeIcon icon={["fas", "arrow-left"]} className="mr-2" />
@@ -47,21 +54,29 @@ export function SettingsSidebar({ onBack, activeCategoryId, onSelectCategory }: 
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 space-y-0.5">
-        {CATEGORIES.map((cat) => (
-          <button
-            key={cat.id}
-            onClick={() => onSelectCategory(cat.id)}
-            className={`w-full flex items-center px-2.5 py-1.5 rounded-md text-[13px] transition-colors ${
-              activeCategoryId === cat.id
-                ? "bg-black/5 text-text-base font-medium"
-                : "text-text-base hover:bg-black/5"
-            }`}
-          >
-            <FontAwesomeIcon icon={cat.icon} className="w-5 text-left text-text-secondary" />
-            <span className="ml-1">{t(`settings.tabs.${cat.id}`)}</span>
-          </button>
-        ))}
+      <div
+        ref={listRef}
+        {...containerProps}
+        className="relative flex-1 overflow-y-auto px-3"
+      >
+        <div className="space-y-0.5">
+          {CATEGORIES.map((cat) => (
+            <button
+              key={cat.id}
+              data-cat={cat.id}
+              onClick={() => onSelectCategory(cat.id)}
+              className={`relative z-[1] w-full flex items-center px-2.5 py-1.5 rounded-md text-[13px] text-text-base ${
+                activeCategoryId === cat.id ? "font-medium" : ""
+              }`}
+            >
+              <FontAwesomeIcon icon={cat.icon} className="w-5 text-left text-text-secondary" />
+              <span className="ml-1">{t(`settings.tabs.${cat.id}`)}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* 滑动药丸指示器 */}
+        <SlidingPill style={indicatorStyle} />
       </div>
     </aside>
   );

@@ -131,7 +131,7 @@ export function EnvironmentInfoMenu({
             <div className="text-[13px] font-normal text-text-secondary">{t("chatView.environmentInfo")}</div>
             <button
               type="button"
-              className="flex h-6 w-6 items-center justify-center rounded-md text-[16px] text-text-secondary transition-colors hover:bg-gray-100 hover:text-text-base"
+              className="flex h-6 w-6 items-center justify-center rounded-md text-[16px] text-text-secondary transition-colors hover:bg-black/5 hover:text-text-base"
               aria-label={t("chatView.environmentSettings")}
               onClick={(event) => event.preventDefault()}
             >
@@ -201,7 +201,7 @@ export function EnvironmentInfoMenu({
               <div className="text-[13px] text-text-secondary">{t("chatView.sources")}</div>
               <button
                 type="button"
-                className="flex h-6 w-6 items-center justify-center rounded-md text-[16px] text-text-secondary transition-colors hover:bg-gray-100 hover:text-text-base"
+                className="flex h-6 w-6 items-center justify-center rounded-md text-[16px] text-text-secondary transition-colors hover:bg-black/5 hover:text-text-base"
                 aria-label={t("chatView.sources")}
                 onClick={(event) => event.preventDefault()}
               >
@@ -290,7 +290,7 @@ function EnvironmentModeMenu({
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className="flex min-h-[34px] w-full items-center justify-between rounded-md px-3 py-2 text-left text-[13px] text-text-base outline-none transition-colors hover:bg-gray-100 data-[state=open]:bg-gray-100"
+              className="flex min-h-[34px] w-full items-center justify-between rounded-md px-3 py-2 text-left text-[13px] text-text-base outline-none transition-colors hover:bg-black/5 data-[state=open]:bg-black/5"
               onClick={onRefreshConnections}
             >
               <span className="flex min-w-0 items-center">

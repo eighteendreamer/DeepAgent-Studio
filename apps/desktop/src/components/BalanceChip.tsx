@@ -4,13 +4,14 @@ import { useTranslation } from "react-i18next";
 
 import { getBalance, SETTINGS_CHANGED_EVENT, type SettingsChangedDetail } from "../api";
 import type { Balance, BalanceInfo } from "../types";
+import { FLOATING_MENU } from "./ui/motion";
 
 /**
  * A compact "余额: ¥xx.xx" chip that calls DeepSeek's `/user/balance` and
  * shows the primary balance line. Click to refresh; hover to see the
  * granted/topped-up breakdown across every currency the account holds.
  */
-export function BalanceChip() {
+export function BalanceChip({ popoverSuppressed = false }: { popoverSuppressed?: boolean }) {
   const { t } = useTranslation();
   const [balance, setBalance] = useState<Balance | null>(null);
   const [loading, setLoading] = useState(false);
@@ -77,28 +78,33 @@ export function BalanceChip() {
         {label}
       </button>
 
-      {hovered && balance && balance.infos.length > 0 && (
-        <div className="absolute bottom-full right-0 mb-2 min-w-[220px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] p-3 z-50 text-[12px] text-text-base">
+      {hovered && !popoverSuppressed && balance && balance.infos.length > 0 && (
+        <div
+          className={`${FLOATING_MENU.shell} absolute bottom-full right-0 z-50 mb-2 min-w-[240px] px-3 py-2.5 text-[12px] text-text-base`}
+        >
           {balance.infos.map((info, i) => (
-            <div key={`${info.currency}-${i}`} className={i > 0 ? "mt-2 pt-2 border-t border-border-theme" : ""}>
-              <div className="flex items-center justify-between font-medium mb-1">
+            <div key={`${info.currency}-${i}`} className={i > 0 ? "mt-3" : ""}>
+              {i > 0 && <div className="my-1.5 h-px shrink-0 bg-border-theme opacity-[0.55]" />}
+              <div className="flex items-center justify-between pb-2 font-medium">
                 <span>{info.currency}</span>
                 <span className="tabular-nums">{formatAmount(info.currency, info.total_balance)}</span>
               </div>
-              <div className="flex items-center justify-between text-text-secondary tabular-nums">
+              <div className="my-1.5 h-px shrink-0 bg-border-theme opacity-[0.55]" />
+              <div className="flex items-center justify-between py-0.5 text-text-secondary tabular-nums">
                 <span>{t("balanceChip.granted")}</span>
                 <span>{formatAmount(info.currency, info.granted_balance)}</span>
               </div>
-              <div className="flex items-center justify-between text-text-secondary tabular-nums">
+              <div className="flex items-center justify-between py-0.5 text-text-secondary tabular-nums">
                 <span>{t("balanceChip.toppedUp")}</span>
                 <span>{formatAmount(info.currency, info.topped_up_balance)}</span>
               </div>
             </div>
           ))}
           {!balance.is_available && (
-            <div className="mt-2 pt-2 border-t border-border-theme text-[11px] text-amber-600">
-              {t("balanceChip.depleted")}
-            </div>
+            <>
+              <div className="my-1.5 h-px shrink-0 bg-border-theme opacity-[0.55]" />
+              <div className="pt-0.5 text-[11px] text-amber-600">{t("balanceChip.depleted")}</div>
+            </>
           )}
         </div>
       )}

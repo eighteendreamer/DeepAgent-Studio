@@ -118,7 +118,7 @@ export function ArchiveSettings() {
                       <FontAwesomeIcon icon={["far", "trash-can"]} className="text-[14px]" />
                     </button>
                     <button 
-                      className="px-4 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-full text-[12px] font-medium text-text-base transition-colors"
+                      className="px-4 py-1.5 bg-black/5 hover:bg-black/5 rounded-full text-[12px] font-medium text-text-base transition-colors"
                       onClick={() => handleUnarchive(chat.session_id)}
                     >
                       {t("settings.archive.unarchive")}

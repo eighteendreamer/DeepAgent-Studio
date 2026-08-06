@@ -8,6 +8,7 @@ import type { ComposerAttachment, ComposerMention, ComposerSkillSelection, Proje
 import { sshListConnections, type SshConnection } from "../api";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { GitBranchChip } from "./git/GitBranchChip";
+import { ToolbarMenuTrigger } from "./ui/ToolbarMenuTrigger";
 import {
   createPluginTab,
   PLUGIN_TOOL_CARDS,
@@ -17,9 +18,33 @@ import {
 } from "./plugins/pluginRegistry";
 import { RightSidebarWorkbench } from "./RightSidebarWorkbench";
 import { usePanelPresence } from "../hooks/usePanelPresence";
+import { MENU_LIST } from "./ui/motion";
+import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
+import { Panel } from "./ui/Panel";
+import { cn } from "./shadcn/utils";
 
 const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
 const PROJECT_MAP_TAB_ID = "project-map";
+
+/** 项目下拉 —— 与 Git 分支菜单同宽：px-2 外框 + 药丸贴齐内容区 */
+const PROJECT_MENU = {
+  padX: "px-2",
+  divider: "mx-2 my-1.5 h-px shrink-0 bg-border-theme opacity-[0.55]",
+  searchWrap: "px-2 pb-2.5 pt-3",
+  searchBar: "flex items-center text-[13px] text-text-secondary",
+  icon: "mr-2 w-3.5 shrink-0 text-[13px] text-text-secondary",
+  row: "flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-left text-[13px] text-text-base",
+  pill: "left-0 right-0 rounded-lg",
+} as const;
+
+/** 环境模式下拉 —— 同行宽 + 远程子菜单 */
+const ENV_MENU = {
+  pad: "px-2 py-1.5",
+  icon: "mr-2 w-3.5 shrink-0 text-[13px] text-text-secondary",
+  row: "flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-left text-[13px] text-text-base",
+  rowMulti: "flex w-full cursor-pointer items-start justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] text-text-base",
+  pill: "left-0 right-0 rounded-lg",
+} as const;
 
 interface Props {
   projectName: string;
@@ -44,6 +69,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   const [value, setValue] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [isGitMenuOpen, setIsGitMenuOpen] = useState(false);
+  const [composerOverlayCloseSignal, setComposerOverlayCloseSignal] = useState(0);
+  const [isComposerOverlayOpen, setIsComposerOverlayOpen] = useState(false);
   const [isEnvDropdownOpen, setIsEnvDropdownOpen] = useState(false);
   const envDropdownRef = useRef<HTMLDivElement>(null);
   const [envMode, setEnvMode] = useState<"local" | "remote">(() => (localStorage.getItem("envMode") as any) || "local");
@@ -52,6 +80,17 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   );
   const [sshConnections, setSshConnections] = useState<SshConnection[]>([]);
   const [isRemoteSubmenuOpen, setIsRemoteSubmenuOpen] = useState(false);
+
+  const closeFooterMenus = useCallback(() => {
+    setIsDropdownOpen(false);
+    setIsEnvDropdownOpen(false);
+    setIsRemoteSubmenuOpen(false);
+    setIsGitMenuOpen(false);
+  }, []);
+
+  const closeComposerOverlays = useCallback(() => {
+    setComposerOverlayCloseSignal((signal) => signal + 1);
+  }, []);
 
   const handleEnvModeChange = (mode: "local" | "remote") => {
     setEnvMode(mode);
@@ -196,17 +235,14 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setIsDropdownOpen(false);
-      }
-      if (envDropdownRef.current && !envDropdownRef.current.contains(e.target as Node)) {
-        setIsEnvDropdownOpen(false);
+        closeFooterMenus();
       }
     };
-    if (isDropdownOpen || isEnvDropdownOpen) {
+    if (isDropdownOpen || isEnvDropdownOpen || isGitMenuOpen) {
       document.addEventListener("mousedown", handleClickOutside);
     }
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isDropdownOpen, isEnvDropdownOpen]);
+  }, [isDropdownOpen, isEnvDropdownOpen, isGitMenuOpen, closeFooterMenus]);
 
   useEffect(() => {
     if (!isEnvDropdownOpen) {
@@ -246,10 +282,10 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
     sshConnections.find((conn) => conn.id === selectedConnectionId) ?? null;
   const envLabel =
     envMode === "local"
-      ? "\u672c\u5730\u6a21\u5f0f"
+      ? t("chatView.localMode")
       : selectedConnection
-      ? `\u8fdc\u7a0b\u6a21\u5f0f \u00b7 ${selectedConnection.name}`
-      : "\u8fdc\u7a0b\u6a21\u5f0f";
+      ? `${t("chatView.remoteMode")} · ${selectedConnection.name}`
+      : t("chatView.remoteMode");
 
   const submit = (
     attachments: ComposerAttachment[] = [],
@@ -308,52 +344,146 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           placeholder={t("startView.placeholder")}
           activeProjectPath={activeProjectPath}
           textareaMaxHeight={300}
+          overlayCloseSignal={composerOverlayCloseSignal}
+          onOverlayOpenChange={(open) => {
+            setIsComposerOverlayOpen(open);
+            if (open) closeFooterMenus();
+          }}
           footer={
-            <div className="flex items-center w-full relative" ref={dropdownRef}>
-              <div className="flex items-center space-x-4">
-              <div 
-                className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors"
+            <div className="flex w-full items-center overflow-visible" ref={dropdownRef}>
+              <div className="flex min-w-0 flex-1 items-center gap-6 overflow-visible">
+              <div className="relative shrink-0">
+              <ToolbarMenuTrigger
+                open={isDropdownOpen}
+                icon={["far", "folder"]}
+                label={projectName}
                 onClick={() => {
-                  setIsDropdownOpen(!isDropdownOpen);
-                  setIsEnvDropdownOpen(false);
+                  const next = !isDropdownOpen;
+                  if (next) {
+                    setIsEnvDropdownOpen(false);
+                    setIsRemoteSubmenuOpen(false);
+                    setIsGitMenuOpen(false);
+                    closeComposerOverlays();
+                  }
+                  setIsDropdownOpen(next);
                 }}
-              >
-                <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-[13px]" />
-                {projectName}
-                <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
+              />
+
+              {isDropdownOpen && (
+                  <Panel
+                    menu
+                    className="absolute bottom-full left-0 z-50 mb-2 flex w-[300px] flex-col origin-bottom-left overflow-hidden"
+                  >
+                    <div className={cn(PROJECT_MENU.searchWrap, PROJECT_MENU.searchBar)}>
+                      <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className={PROJECT_MENU.icon} />
+                      <input
+                        type="text"
+                        placeholder={t("startView.searchProject")}
+                        className={MENU_LIST.searchInput}
+                      />
+                    </div>
+
+                    <div className={PROJECT_MENU.divider} aria-hidden />
+
+                    <div className={cn(PROJECT_MENU.padX, "max-h-[200px] overflow-y-auto pb-0.5")}>
+                      <SlidingMenuList
+                        activeId={activeProjectPath ?? ""}
+                        pillClassName={PROJECT_MENU.pill}
+                        className="w-full"
+                      >
+                        {projects.map(p => (
+                          <div
+                            key={p.path}
+                            {...{ [MENU_ITEM_ATTR]: p.path }}
+                            className={cn(PROJECT_MENU.row, "relative z-[1] hover:bg-transparent")}
+                            onClick={() => {
+                              onSelectProject(p.path);
+                              setIsDropdownOpen(false);
+                            }}
+                          >
+                            <div className="flex min-w-0 items-center">
+                              <FontAwesomeIcon icon={["far", "folder"]} className={PROJECT_MENU.icon} />
+                              <span className="truncate">{p.name ?? "Untitled project"}</span>
+                            </div>
+                            {p.path === activeProjectPath && (
+                              <FontAwesomeIcon icon={["fas", "check"]} className="ml-2 shrink-0 text-[11px] text-text-secondary" />
+                            )}
+                          </div>
+                        ))}
+                      </SlidingMenuList>
+                    </div>
+
+                    <div className={PROJECT_MENU.divider} aria-hidden />
+
+                    <div className={cn(PROJECT_MENU.padX, "pb-2 pt-0.5")}>
+                      <SlidingMenuList
+                        activeId={activeProjectPath ? "" : "__none__"}
+                        pillClassName={PROJECT_MENU.pill}
+                        className="w-full"
+                      >
+                        <div
+                          {...{ [MENU_ITEM_ATTR]: "__add__" }}
+                          className={cn(PROJECT_MENU.row, "relative z-[1] hover:bg-transparent")}
+                          onClick={() => { onAddProject(); setIsDropdownOpen(false); }}
+                        >
+                          <div className="flex min-w-0 items-center">
+                            <FontAwesomeIcon icon={["fas", "plus"]} className={PROJECT_MENU.icon} />
+                            <span className="truncate">{t("startView.addNewProject")}</span>
+                          </div>
+                          <FontAwesomeIcon icon={["fas", "chevron-right"]} className="ml-2 shrink-0 text-[10px] text-text-secondary" />
+                        </div>
+                        <div
+                          {...{ [MENU_ITEM_ATTR]: "__none__" }}
+                          className={cn(PROJECT_MENU.row, "relative z-[1] hover:bg-transparent")}
+                        >
+                          <div className="flex min-w-0 items-center">
+                            <FontAwesomeIcon icon={["far", "folder"]} className={PROJECT_MENU.icon} />
+                            <span className="truncate">{t("startView.noProject")}</span>
+                          </div>
+                        </div>
+                      </SlidingMenuList>
+                    </div>
+                  </Panel>
+                )}
               </div>
 
-              <div className="relative" ref={envDropdownRef}>
-                <div 
-                  className="inline-flex items-center text-[12px] font-medium text-text-secondary hover:text-text-base cursor-pointer transition-colors"
+              <div className="relative shrink-0" ref={envDropdownRef}>
+                <ToolbarMenuTrigger
+                  open={isEnvDropdownOpen}
+                  icon={envMode === "local" ? ["fas", "desktop"] : ["fas", "cloud"]}
+                  label={envLabel}
                   onClick={() => {
-                    setIsEnvDropdownOpen(!isEnvDropdownOpen);
-                    setIsDropdownOpen(false);
-                    setIsRemoteSubmenuOpen(false);
+                    const next = !isEnvDropdownOpen;
+                    if (next) {
+                      setIsDropdownOpen(false);
+                      setIsGitMenuOpen(false);
+                      closeComposerOverlays();
+                    }
+                    setIsEnvDropdownOpen(next);
+                    if (!next) setIsRemoteSubmenuOpen(false);
                   }}
-                >
-                  <FontAwesomeIcon icon={envMode === "local" ? ["fas", "desktop"] : ["fas", "cloud"]} className="mr-2 w-4 text-[13px]" />
-                  {envLabel}
-                  <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
-                </div>
+                />
                 
                 {isEnvDropdownOpen && (
-                    <div
-                      className="popover-menu absolute bottom-full left-0 mb-2 w-[180px] bg-elevated-bg border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-[60] py-1 origin-bottom-left"
-                    >
+                    <Panel menu className="absolute bottom-full left-0 z-[60] mb-2 w-[200px] origin-bottom-left overflow-visible">
+                    <div className={ENV_MENU.pad}>
+                    <SlidingMenuList activeId={envMode} pillClassName={ENV_MENU.pill} className="flex w-full flex-col">
                       <div 
-                        className="px-3 py-2 hover:bg-hover-bg cursor-pointer flex items-center justify-between group"
+                        {...{ [MENU_ITEM_ATTR]: "local" }}
+                        className={cn(ENV_MENU.row, "relative z-[1] hover:bg-transparent")}
                         onClick={() => {
                           handleEnvModeChange("local");
                           setIsEnvDropdownOpen(false);
                           setIsRemoteSubmenuOpen(false);
                         }}
                       >
-                        <div className="flex items-center text-[13px] text-text-base">
-                          <FontAwesomeIcon icon={["fas", "desktop"]} className="w-4 mr-2 text-text-secondary group-hover:text-text-base" />
-                          {"\u672c\u5730\u6a21\u5f0f"}
+                        <div className="flex min-w-0 items-center">
+                          <FontAwesomeIcon icon={["fas", "desktop"]} className={ENV_MENU.icon} />
+                          <span className="truncate">{t("chatView.localMode")}</span>
                         </div>
-                        {envMode === "local" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-secondary" />}
+                        {envMode === "local" && (
+                          <FontAwesomeIcon icon={["fas", "check"]} className="ml-2 shrink-0 text-[11px] text-text-secondary" />
+                        )}
                       </div>
 
                       <div
@@ -361,162 +491,147 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                         onMouseEnter={() => setIsRemoteSubmenuOpen(true)}
                         onMouseLeave={() => setIsRemoteSubmenuOpen(false)}
                       >
-                        <div 
-                          className="px-3 py-2 hover:bg-hover-bg cursor-pointer flex items-center justify-between group"
+                        <div
+                          {...{ [MENU_ITEM_ATTR]: "remote" }}
+                          className={cn(ENV_MENU.row, "relative z-[1] hover:bg-transparent")}
                           onClick={() => {
                             handleEnvModeChange("remote");
-                            setIsRemoteSubmenuOpen((prev) => !prev);
+                            setIsRemoteSubmenuOpen(true);
                           }}
                         >
-                          <div className="flex items-center text-[13px] text-text-base">
-                            <FontAwesomeIcon icon={["fas", "cloud"]} className="w-4 mr-2 text-text-secondary group-hover:text-text-base" />
-                            {"\u8fdc\u7a0b\u6a21\u5f0f"}
+                          <div className="flex min-w-0 items-center">
+                            <FontAwesomeIcon icon={["fas", "cloud"]} className={ENV_MENU.icon} />
+                            <span className="truncate">{t("chatView.remoteMode")}</span>
                           </div>
-                          <div className="flex items-center gap-2">
-                            {envMode === "remote" && <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-secondary" />}
+                          <div className="ml-2 flex shrink-0 items-center gap-2">
+                            {envMode === "remote" && (
+                              <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-secondary" />
+                            )}
                             <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
                           </div>
                         </div>
 
                         {isRemoteSubmenuOpen && (
-                            <div
-                              className="popover-menu absolute left-full top-0 ml-2 w-[280px] overflow-hidden rounded-xl border border-border-theme bg-elevated-bg py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)]"
+                            <Panel
+                              menu
+                              className="absolute left-full top-0 z-[70] ml-1.5 w-[220px] min-w-[200px] max-w-[260px] origin-top-left"
                             >
-                              <div className="px-3 py-2 text-[11px] font-medium text-text-secondary">
-                                {"\u5df2\u6709 SSH \u8fde\u63a5"}
-                              </div>
-
-                              {sshConnections.length === 0 ? (
-                                <div className="px-3 py-2 text-[12px] text-text-secondary">
-                                  {"\u6682\u65e0 SSH \u8fde\u63a5"}
+                              <div className="px-2 py-2">
+                                <div className="px-0.5 pb-1.5 text-[11px] font-medium text-text-secondary">
+                                  {t("chatView.existingSshConnections")}
                                 </div>
-                              ) : (
-                                sshConnections.map((conn) => {
-                                  const checked =
-                                    envMode === "remote" &&
-                                    selectedConnectionId === conn.id;
 
-                                  return (
-                                    <div
-                                      key={conn.id}
-                                      className="px-3 py-2 hover:bg-hover-bg cursor-pointer flex items-start justify-between gap-3"
-                                      onClick={() => handleRemoteConnectionSelect(conn.id)}
-                                    >
-                                      <div className="min-w-0">
-                                        <div className="text-[13px] text-text-base">
-                                          {conn.name}
+                                {sshConnections.length === 0 ? (
+                                  <div className="rounded-lg bg-black/5 px-2.5 py-2.5 text-[12px] leading-relaxed text-text-secondary">
+                                    {t("chatView.noSshConnections")}
+                                  </div>
+                                ) : (
+                                  <SlidingMenuList
+                                    activeId={
+                                      envMode === "remote" && selectedConnectionId ? selectedConnectionId : ""
+                                    }
+                                    pillClassName={ENV_MENU.pill}
+                                    className="w-full"
+                                  >
+                                  {sshConnections.map((conn) => {
+                                    const checked =
+                                      envMode === "remote" &&
+                                      selectedConnectionId === conn.id;
+
+                                    return (
+                                      <div
+                                        key={conn.id}
+                                        {...{ [MENU_ITEM_ATTR]: conn.id }}
+                                        className={cn(ENV_MENU.rowMulti, "relative z-[1] hover:bg-transparent")}
+                                        onClick={() => handleRemoteConnectionSelect(conn.id)}
+                                      >
+                                        <div className="min-w-0">
+                                          <div className="truncate text-text-base">
+                                            {conn.name}
+                                          </div>
+                                          <div className="break-all text-[11px] text-text-secondary">
+                                            {conn.username}@{conn.host}:{conn.port}
+                                          </div>
                                         </div>
-                                        <div className="text-[11px] text-text-secondary break-all">
-                                          {conn.username}@{conn.host}:{conn.port}
-                                        </div>
-                                      </div>
-                                      <div className="flex items-center gap-2 pt-0.5">
-                                        <span
-                                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] ${
-                                            conn.status === "connected"
-                                              ? "bg-green-100 text-green-700"
-                                              : conn.status === "connecting"
-                                              ? "bg-yellow-100 text-yellow-700"
-                                              : conn.status === "error"
-                                              ? "bg-red-100 text-red-700"
-                                              : "bg-sidebar-bg text-text-secondary"
-                                          }`}
-                                        >
+                                        <div className="flex shrink-0 items-center gap-2 pt-0.5">
                                           <span
-                                            className={`mr-1 h-1.5 w-1.5 rounded-full ${
+                                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] ${
                                               conn.status === "connected"
-                                                ? "bg-green-500"
+                                                ? "bg-green-100 text-green-700"
                                                 : conn.status === "connecting"
-                                                ? "bg-yellow-500"
+                                                ? "bg-yellow-100 text-yellow-700"
                                                 : conn.status === "error"
-                                                ? "bg-red-500"
-                                                : "bg-gray-400"
+                                                ? "bg-red-100 text-red-700"
+                                                : "bg-sidebar-bg text-text-secondary"
                                             }`}
-                                          />
-                                          {conn.status === "connected"
-                                            ? t("settings.connections.online")
-                                            : conn.status === "connecting"
-                                            ? t("settings.connections.checking")
-                                            : conn.status === "error"
-                                            ? t("settings.connections.offline")
-                                            : t("settings.connections.unknown")}
-                                        </span>
-                                        {checked && (
-                                          <FontAwesomeIcon
-                                            icon={["fas", "check"]}
-                                            className="text-[11px] text-text-secondary"
-                                          />
-                                        )}
+                                          >
+                                            <span
+                                              className={`mr-1 h-1.5 w-1.5 rounded-full ${
+                                                conn.status === "connected"
+                                                  ? "bg-green-500"
+                                                  : conn.status === "connecting"
+                                                  ? "bg-yellow-500"
+                                                  : conn.status === "error"
+                                                  ? "bg-red-500"
+                                                  : "bg-gray-400"
+                                              }`}
+                                            />
+                                            {conn.status === "connected"
+                                              ? t("settings.connections.online")
+                                              : conn.status === "connecting"
+                                              ? t("settings.connections.checking")
+                                              : conn.status === "error"
+                                              ? t("settings.connections.offline")
+                                              : t("settings.connections.unknown")}
+                                          </span>
+                                          {checked && (
+                                            <FontAwesomeIcon
+                                              icon={["fas", "check"]}
+                                              className="text-[11px] text-text-secondary"
+                                            />
+                                          )}
+                                        </div>
                                       </div>
-                                    </div>
-                                  );
-                                })
-                              )}
-                            </div>
+                                    );
+                                  })}
+                                  </SlidingMenuList>
+                                )}
+                              </div>
+                            </Panel>
                           )}
                       </div>
+                    </SlidingMenuList>
                     </div>
+                    </Panel>
                   )}
               </div>
 
-              <GitBranchChip projectPath={activeProjectPath} compactMenu />
+              <GitBranchChip
+                projectPath={activeProjectPath}
+                compactMenu
+                className="shrink-0"
+                open={isGitMenuOpen}
+                onOpenChange={(next) => {
+                  if (next) {
+                    setIsDropdownOpen(false);
+                    setIsEnvDropdownOpen(false);
+                    setIsRemoteSubmenuOpen(false);
+                    closeComposerOverlays();
+                  }
+                  setIsGitMenuOpen(next);
+                }}
+              />
               </div>
 
               {/* Right-aligned: live DeepSeek balance chip. */}
-              <div className="ml-auto">
-                <BalanceChip />
+              <div className="ml-auto shrink-0">
+                <BalanceChip
+                  popoverSuppressed={
+                    isDropdownOpen || isEnvDropdownOpen || isGitMenuOpen || isComposerOverlayOpen
+                  }
+                />
               </div>
 
-              {/* Dropdown Menu */}
-              {isDropdownOpen && (
-                  <div
-                    className="popover-menu absolute bottom-full left-0 mb-2 w-[300px] bg-elevated-bg border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1 origin-bottom-left"
-                  >
-                    <div className="px-3 py-2 border-b border-transparent text-[13px] flex items-center text-text-secondary">
-                      <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="mr-2" />
-                      <input 
-                        type="text"
-                        placeholder={t("startView.searchProject")}
-                        className="bg-transparent outline-none w-full"
-                      />
-                    </div>
-                    
-                    <div className="flex-1 max-h-[200px] overflow-y-auto py-1">
-                      {projects.map(p => (
-                        <div
-                          key={p.path}
-                          className="flex items-center justify-between px-4 py-2 hover:bg-hover-bg cursor-pointer text-[13px] text-text-base group"
-                          onClick={() => {
-                            onSelectProject(p.path);
-                            setIsDropdownOpen(false);
-                          }}
-                        >
-                          <div className="flex items-center">
-                            <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
-                            <span className="truncate">{p.name ?? "Untitled project"}</span>
-                          </div>
-                          {p.path === activeProjectPath && (
-                            <FontAwesomeIcon icon={["fas", "check"]} className="text-text-secondary text-[11px]" />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="w-full h-px bg-border-theme my-1"></div>
-
-                    <div className="flex items-center justify-between px-4 py-2 hover:bg-hover-bg cursor-pointer text-[13px] text-text-base" onClick={() => { onAddProject(); setIsDropdownOpen(false); }}>
-                      <div className="flex items-center">
-                        <FontAwesomeIcon icon={["fas", "plus"]} className="mr-2 text-text-secondary w-4" />
-                        {t("startView.addNewProject")}
-                      </div>
-                      <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
-                    </div>
-                    <div className="flex items-center px-4 py-2 hover:bg-hover-bg cursor-pointer text-[13px] text-text-base">
-                      <FontAwesomeIcon icon={["far", "folder"]} className="mr-2 text-text-secondary w-4" />
-                      {t("startView.noProject")}
-                    </div>
-                  </div>
-                )}
             </div>
           }
         />

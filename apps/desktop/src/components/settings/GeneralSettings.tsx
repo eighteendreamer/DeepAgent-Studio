@@ -29,7 +29,7 @@ function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () =>
 
 function SegmentedControl({ options, value, onChange }: { options: { label: string, value: string }[], value: string, onChange: (val: string) => void }) {
   return (
-    <div className="inline-flex shrink-0 items-center gap-0.5 bg-gray-100 p-0.5 rounded-lg border border-border-theme">
+    <div className="inline-flex shrink-0 items-center gap-0.5 bg-black/5 p-0.5 rounded-lg">
       {options.map((opt) => (
         <div 
           key={opt.value}
@@ -98,7 +98,7 @@ function IconDropdown({
   return (
     <div className="relative" ref={dropdownRef}>
       <div 
-        className="flex items-center bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg px-3 py-1.5 cursor-pointer transition-colors min-w-[150px] justify-between"
+        className="flex items-center bg-black/5 hover:bg-black/5 rounded-lg px-3 py-1.5 cursor-pointer transition-colors min-w-[150px] justify-between"
         onClick={() => setIsOpen(!isOpen)}
       >
         <div className="flex items-center">
@@ -109,11 +109,11 @@ function IconDropdown({
       </div>
 
       {isOpen && (
-        <div className="absolute top-full right-0 mt-1 bg-white border border-border-theme rounded-xl shadow-[0_4px_20px_rgb(0,0,0,0.1)] z-20 py-2 w-[220px] max-h-[300px] overflow-y-auto">
+        <div className="absolute top-full right-0 mt-1 bg-elevated-bg rounded-xl shadow-[0_6px_24px_rgba(0,0,0,0.10)] z-20 py-2 w-[220px] max-h-[300px] overflow-y-auto">
           {options.map((opt) => (
             <div 
               key={opt.title}
-              className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-center justify-between"
+              className="px-4 py-2 hover:bg-black/5 cursor-pointer flex items-center justify-between"
               onClick={() => {
                 onChange(opt.title);
                 setIsOpen(false);
@@ -165,7 +165,7 @@ function ComplexDropdown({
   return (
     <div className="relative" ref={dropdownRef}>
       <div 
-        className={`flex items-center bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg px-3 py-1.5 cursor-pointer transition-colors ${width} justify-between`}
+        className={`flex items-center bg-black/5 hover:bg-black/5 rounded-lg px-3 py-1.5 cursor-pointer transition-colors ${width} justify-between`}
         onClick={() => setIsOpen(!isOpen)}
       >
         <span className="text-[12px] font-medium text-text-base">{selectedTitle}</span>
@@ -173,11 +173,11 @@ function ComplexDropdown({
       </div>
 
       {isOpen && (
-        <div className={`absolute top-full right-0 mt-1 bg-white border border-border-theme rounded-xl shadow-[0_4px_20px_rgb(0,0,0,0.1)] z-20 py-2 ${dropdownWidth}`}>
+        <div className={`absolute top-full right-0 mt-1 bg-elevated-bg rounded-xl shadow-[0_6px_24px_rgba(0,0,0,0.10)] z-20 py-2 ${dropdownWidth}`}>
           {options.map((opt) => (
             <div 
               key={opt.title}
-              className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-center justify-between"
+              className="px-4 py-2 hover:bg-black/5 cursor-pointer flex items-center justify-between"
               onClick={() => {
                 onChange(opt.title);
                 setIsOpen(false);
@@ -230,7 +230,7 @@ function SearchableDropdown({
   return (
     <div className="relative" ref={dropdownRef}>
       <div 
-        className="flex items-center bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg px-3 py-1.5 cursor-pointer transition-colors w-[180px] justify-between"
+        className="flex items-center bg-black/5 hover:bg-black/5 rounded-lg px-3 py-1.5 cursor-pointer transition-colors w-[180px] justify-between"
         onClick={() => {
           setIsOpen(!isOpen);
           setSearch("");
@@ -241,9 +241,9 @@ function SearchableDropdown({
       </div>
 
       {isOpen && (
-        <div className="absolute top-full right-0 mt-1 bg-white border border-border-theme rounded-xl shadow-[0_4px_20px_rgb(0,0,0,0.1)] z-20 flex flex-col w-[260px] max-h-[320px] overflow-hidden">
+        <div className="absolute top-full right-0 mt-1 bg-elevated-bg rounded-xl shadow-[0_6px_24px_rgba(0,0,0,0.10)] z-20 flex flex-col w-[260px] max-h-[320px] overflow-hidden">
           <div className="p-2 border-b border-border-theme">
-            <div className="flex items-center bg-gray-50 border border-border-theme rounded-md px-2.5 py-1.5">
+            <div className="flex items-center bg-black/5 rounded-md px-2.5 py-1.5">
               <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="text-text-secondary text-[12px] mr-2" />
               <input 
                 type="text" 
@@ -259,7 +259,7 @@ function SearchableDropdown({
             {filteredOptions.map((opt) => (
               <div 
                 key={opt.title}
-                className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-center justify-between"
+                className="px-4 py-2 hover:bg-black/5 cursor-pointer flex items-center justify-between"
                 onClick={() => {
                   onChange(opt.title);
                   setIsOpen(false);
@@ -545,7 +545,7 @@ export function GeneralSettings() {
         <p className="text-[13px] text-text-secondary mb-4">{t("settings.general.workMode.desc")}</p>
         <div className="flex space-x-4">
           <div 
-            className={`flex-1 rounded-xl p-4 cursor-pointer transition-all border-2 relative overflow-hidden ${workMode === 'code' ? 'border-blue-100 bg-gray-50' : 'border-border-theme bg-white hover:bg-gray-50'}`}
+            className={`flex-1 rounded-xl p-4 cursor-pointer transition-all relative overflow-hidden bg-black/5 hover:bg-black/5`}
             onClick={() => handleWorkModeChange('code')}
           >
             <div className="flex items-start">
@@ -563,7 +563,7 @@ export function GeneralSettings() {
           </div>
 
           <div 
-            className={`flex-1 rounded-xl p-4 cursor-pointer transition-all border-2 relative overflow-hidden ${workMode === 'daily' ? 'border-blue-100 bg-gray-50' : 'border-border-theme bg-white hover:bg-gray-50'}`}
+            className={`flex-1 rounded-xl p-4 cursor-pointer transition-all relative overflow-hidden bg-black/5 hover:bg-black/5`}
             onClick={() => handleWorkModeChange('daily')}
           >
             <div className="flex items-start">
@@ -893,7 +893,7 @@ export function GeneralSettings() {
               <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.general.generalSection.import")}</div>
               <div className="text-[12px] text-text-secondary">{t("settings.general.generalSection.importDesc")}</div>
             </div>
-            <button className="px-4 py-1.5 bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg text-[12px] font-medium text-text-base transition-colors ml-4">
+            <button className="px-4 py-1.5 bg-black/5 hover:bg-black/5 rounded-lg text-[12px] font-medium text-text-base transition-colors ml-4">
               {t("settings.general.generalSection.importBtn")}
             </button>
           </div>
@@ -911,7 +911,7 @@ export function GeneralSettings() {
             </div>
             <div className="flex items-center">
               <span className="text-[12px] text-text-secondary mr-3">{t("settings.general.popup.disabled")}</span>
-              <button className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg text-[12px] font-medium text-text-base transition-colors">{t("settings.general.popup.set")}</button>
+              <button className="px-3 py-1.5 bg-black/5 hover:bg-black/5 rounded-lg text-[12px] font-medium text-text-base transition-colors">{t("settings.general.popup.set")}</button>
             </div>
           </div>
           <div className="flex items-center justify-between p-4 bg-white">
@@ -937,7 +937,7 @@ export function GeneralSettings() {
             </div>
             <div className="flex items-center">
               <span className="text-[12px] text-text-secondary mr-3">{t("settings.general.dictation.off")}</span>
-              <button className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg text-[12px] font-medium text-text-base transition-colors">{t("settings.general.dictation.set")}</button>
+              <button className="px-3 py-1.5 bg-black/5 hover:bg-black/5 rounded-lg text-[12px] font-medium text-text-base transition-colors">{t("settings.general.dictation.set")}</button>
             </div>
           </div>
           <div className="flex items-center justify-between p-4 bg-white border-b border-border-theme">
@@ -947,10 +947,10 @@ export function GeneralSettings() {
             </div>
             <div className="flex items-center">
               <span className="text-[12px] text-text-secondary mr-3">{t("settings.general.dictation.off")}</span>
-              <button className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg text-[12px] font-medium text-text-base transition-colors">{t("settings.general.dictation.set")}</button>
+              <button className="px-3 py-1.5 bg-black/5 hover:bg-black/5 rounded-lg text-[12px] font-medium text-text-base transition-colors">{t("settings.general.dictation.set")}</button>
             </div>
           </div>
-          <div className="flex items-center justify-between p-4 bg-white border-b border-border-theme cursor-pointer hover:bg-gray-50 transition-colors">
+          <div className="flex items-center justify-between p-4 bg-white border-b border-border-theme cursor-pointer hover:bg-black/5 transition-colors">
             <div>
               <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.general.dictation.dictionary")}</div>
               <div className="text-[12px] text-text-secondary">{t("settings.general.dictation.dictionaryDesc")}</div>

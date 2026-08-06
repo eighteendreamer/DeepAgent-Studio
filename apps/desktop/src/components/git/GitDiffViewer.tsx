@@ -151,7 +151,7 @@ function DiffModeToggle({ mode, onChange }: { mode: DiffMode; onChange: (mode: D
       <button
         type="button"
         className={`px-2.5 font-medium ${
-          mode === "unified" ? "bg-gray-100 text-text-base" : "text-text-secondary hover:bg-gray-50"
+          mode === "unified" ? "bg-black/5 text-text-base" : "text-text-secondary hover:bg-black/5"
         }`}
         onClick={() => onChange("unified")}
       >
@@ -160,7 +160,7 @@ function DiffModeToggle({ mode, onChange }: { mode: DiffMode; onChange: (mode: D
       <button
         type="button"
         className={`border-l border-border-theme px-2.5 font-medium ${
-          mode === "split" ? "bg-gray-100 text-text-base" : "text-text-secondary hover:bg-gray-50"
+          mode === "split" ? "bg-black/5 text-text-base" : "text-text-secondary hover:bg-black/5"
         }`}
         onClick={() => onChange("split")}
       >

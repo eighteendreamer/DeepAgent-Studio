@@ -326,7 +326,7 @@ export function ConnectionsSettings() {
               {t("settings.connections.sshDesc")}
             </div>
             <button
-              className="rounded-full border border-transparent bg-gray-100 px-4 py-1.5 text-[13px] font-medium text-text-base transition-colors hover:bg-gray-200"
+              className="rounded-full bg-black/5 px-4 py-1.5 text-[13px] font-medium text-text-base transition-colors hover:bg-black/5"
               onClick={openCreate}
             >
               {t("settings.connections.add")}
@@ -341,7 +341,7 @@ export function ConnectionsSettings() {
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex min-w-0 items-center space-x-3">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-black/5 text-gray-600">
                       <FontAwesomeIcon icon={["fas", "server"]} />
                     </div>
                     <div className="min-w-0">
@@ -375,7 +375,7 @@ export function ConnectionsSettings() {
                         : t("settings.connections.test")}
                     </button>
                     <button
-                      className="rounded-full bg-gray-100 px-3 py-1 text-[12px] hover:bg-gray-200"
+                      className="rounded-full bg-black/5 px-3 py-1 text-[12px] hover:bg-black/5"
                       onClick={() => openEdit(conn)}
                     >
                       {t("settings.connections.edit")}
@@ -417,7 +417,7 @@ export function ConnectionsSettings() {
           onMouseDown={closeModal}
         >
           <div
-            className="flex max-h-[calc(100vh-64px)] w-full max-w-[520px] flex-col overflow-hidden rounded-[20px] border border-black/5 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.16)]"
+            className="flex max-h-[calc(100vh-64px)] w-full max-w-[520px] flex-col overflow-hidden rounded-[20px] bg-elevated-bg shadow-[0_6px_24px_rgba(0,0,0,0.10)]"
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-3 border-b border-border-theme px-5 py-4">
@@ -433,7 +433,7 @@ export function ConnectionsSettings() {
               </div>
               <button
                 type="button"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-text-base"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-black/5 hover:text-text-base"
                 onClick={closeModal}
               >
                 <FontAwesomeIcon icon={["fas", "times"]} className="text-[12px]" />
@@ -536,7 +536,7 @@ export function ConnectionsSettings() {
                         />
                         <button
                           type="button"
-                          className="inline-flex h-[34px] shrink-0 items-center rounded-[14px] border border-border-theme bg-gray-50 px-3 text-[12px] font-medium text-text-base transition-colors hover:bg-gray-100"
+                          className="inline-flex h-[34px] shrink-0 items-center rounded-[14px] bg-black/5 px-3 text-[12px] font-medium text-text-base transition-colors hover:bg-black/5"
                           onClick={() => void handlePickKeyFile()}
                         >
                           <FontAwesomeIcon icon={["fas", "folder-open"]} className="mr-1.5 text-[11px] text-text-secondary" />
@@ -546,7 +546,7 @@ export function ConnectionsSettings() {
                     </div>
                   )}
 
-                  <div className="flex overflow-hidden rounded-full border border-border-theme bg-gray-100 p-0.5">
+                  <div className="flex overflow-hidden rounded-full bg-black/5 p-0.5">
                     <button
                       type="button"
                       className={`flex h-[28px] flex-1 items-center justify-center rounded-full px-3 text-[12px] font-medium transition-colors ${
@@ -573,10 +573,10 @@ export function ConnectionsSettings() {
                 </section>
               </div>
 
-              <div className="flex items-center justify-end gap-2.5 border-t border-border-theme bg-gray-50/70 px-5 py-2.5">
+              <div className="flex items-center justify-end gap-2.5 border-t border-border-theme bg-black/5 px-5 py-2.5">
                 <button
                   type="button"
-                  className="rounded-full px-3.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-gray-200/70 hover:text-text-base"
+                  className="rounded-full px-3.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-black/5 hover:text-text-base"
                   onClick={closeModal}
                 >
                   {t("settings.connections.cancel")}

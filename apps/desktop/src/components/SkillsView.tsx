@@ -318,7 +318,7 @@ export function SkillsView() {
               <button
                 onClick={() => refresh(true)}
                 title={t("skillsView.refresh")}
-                className="flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-gray-50 transition-colors"
+                className="flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-black/5 transition-colors"
               >
                 <FontAwesomeIcon
                   icon={["fas", "rotate-right"]}
@@ -331,7 +331,7 @@ export function SkillsView() {
             {marketTab === "installed" && (
               <button
                 onClick={handleInstallZip}
-                className="flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-gray-50 transition-colors"
+                className="flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-black/5 transition-colors"
                 title="Upload ZIP Skill"
               >
                 <FontAwesomeIcon icon={["fas", "upload"]} className="text-sm" />
@@ -345,8 +345,8 @@ export function SkillsView() {
               <div className="relative">
                 <button
                   onClick={handleProviderConfig}
-                  className={`flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-gray-50 transition-colors ${
-                    providerConfigOpen ? "bg-gray-100 text-text-base" : ""
+                  className={`flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-black/5 transition-colors ${
+                    providerConfigOpen ? "bg-black/5 text-text-base" : ""
                   }`}
                   title={t("skillsView.market_provider_config")}
                   aria-haspopup="dialog"
@@ -507,7 +507,7 @@ function InstalledBody({
                 key={skill.id}
                 onClick={() => onSelect(skill)}
                 className={`flex items-center p-3 rounded-xl cursor-pointer transition-colors group ${
-                  active ? "bg-gray-100" : "hover:bg-gray-50"
+                  active ? "bg-gray-100" : "hover:bg-black/5"
                 }`}
               >
                 <div
@@ -610,7 +610,7 @@ function MarketBody({
               <button
                 onClick={onLoadMore}
                 disabled={marketLoading}
-                className="px-4 py-2 text-sm rounded-full border border-border-theme bg-white text-text-base hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="px-4 py-2 text-sm rounded-full border border-border-theme bg-white text-text-base hover:bg-black/5 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {marketLoading
                   ? t("skillsView.market_loading")

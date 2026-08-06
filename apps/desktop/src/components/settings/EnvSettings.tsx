@@ -187,7 +187,7 @@ export function EnvSettings() {
                 <div className="text-[14px] font-medium text-text-base mb-1">{t("settings.env.actions")}</div>
                 <div className="text-[12px] text-text-secondary">{t("settings.env.actionsDesc")}</div>
               </div>
-              <button className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 border border-transparent rounded-full text-[12px] text-text-base font-medium transition-colors">
+              <button className="px-3 py-1.5 bg-black/5 hover:bg-black/5 rounded-full text-[12px] text-text-base font-medium transition-colors">
                 {t("settings.env.addAction")}
               </button>
             </div>
@@ -219,7 +219,7 @@ export function EnvSettings() {
       <div className="max-w-[700px]">
         <div className="flex items-center justify-between mb-4">
           <div className="text-[14px] font-medium text-text-base">{t("settings.env.selectProject")}</div>
-          <button className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-full text-[12px] font-medium text-text-base transition-colors">
+          <button className="px-3 py-1.5 bg-black/5 hover:bg-black/5 rounded-full text-[12px] font-medium text-text-base transition-colors">
             {t("settings.env.addProject")}
           </button>
         </div>
@@ -228,7 +228,7 @@ export function EnvSettings() {
           {projects.map((proj, idx) => (
             <div 
               key={idx} 
-              className="border border-border-theme rounded-xl p-3 flex items-center justify-between bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)] hover:border-gray-300 transition-colors cursor-pointer"
+              className="rounded-xl p-3 flex items-center justify-between bg-black/5 shadow-[0_1px_2px_rgb(0,0,0,0.02)] hover:bg-black/5 transition-colors cursor-pointer"
               onClick={() => {
                 if (idx === 0) setView("detail"); // Only wire up the first one for demo
               }}
@@ -239,7 +239,7 @@ export function EnvSettings() {
                 {proj.sub && <span className="text-[12px] text-text-secondary">{proj.sub}</span>}
               </div>
               <button 
-                className="w-6 h-6 rounded-md border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 transition-colors"
+                className="w-6 h-6 rounded-md border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-black/5 transition-colors"
                 onClick={(e) => {
                   e.stopPropagation();
                   setView("detail");

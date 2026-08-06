@@ -3,6 +3,8 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { useThemeContext } from "../../theme/ThemeProvider";
 import type { ThemePreset, ThemeVariant } from "../../theme/themeTypes";
+import { Panel } from "../ui/Panel";
+import { ListItem } from "../ui/ListItem";
 
 function PaletteSwatches({ preset, variant }: { preset: ThemePreset; variant: ThemeVariant }) {
   const palette = preset.variants[variant];
@@ -77,7 +79,7 @@ export function ThemePresetMenu({ variant }: { variant: ThemeVariant }) {
     <div className="relative" ref={containerRef}>
       <button
         type="button"
-        className="flex items-center bg-gray-100 hover:bg-gray-200 border border-border-theme rounded-lg px-2 py-1 cursor-pointer transition-colors min-w-[130px] justify-between"
+        className="flex items-center bg-black/5 hover:bg-black/5 rounded-lg px-2 py-1 cursor-pointer transition-colors min-w-[130px] justify-between"
         onClick={() => setIsOpen((v) => !v)}
       >
         <div className="flex items-center">
@@ -101,14 +103,14 @@ export function ThemePresetMenu({ variant }: { variant: ThemeVariant }) {
       </button>
 
       {isOpen && (
-        <div className="absolute top-full right-0 mt-1 bg-white border border-border-theme rounded-xl shadow-lg z-20 py-1 w-[220px] max-h-[280px] overflow-y-auto">
+        <Panel className="absolute top-full right-0 mt-1 z-20 py-1 w-[220px] max-h-[280px] overflow-y-auto">
           {presets.map((preset) => {
             const label = sourceLabel(preset);
             const isBuiltin = preset.source === "builtin";
             return (
-              <div
+              <ListItem
                 key={preset.id}
-                className="px-3 py-1.5 hover:bg-gray-50 cursor-pointer flex items-center justify-between group"
+                className="px-3 py-1.5 cursor-pointer group"
                 onClick={() => {
                   selectPreset(variant, preset.id);
                   setIsOpen(false);
@@ -164,10 +166,10 @@ export function ThemePresetMenu({ variant }: { variant: ThemeVariant }) {
                     )}
                   </div>
                 </div>
-              </div>
+              </ListItem>
             );
           })}
-        </div>
+        </Panel>
       )}
     </div>
   );

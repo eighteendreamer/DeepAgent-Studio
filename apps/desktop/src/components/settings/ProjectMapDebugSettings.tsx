@@ -51,10 +51,10 @@ function SettingsSwitch({
   return (
     <button
       type="button"
-      className={`min-w-[176px] rounded-lg border px-3 py-2 text-left transition-colors ${
+      className={`min-w-[176px] rounded-lg px-3 py-2 text-left transition-colors ${
         enabled
-          ? "border-gray-900 bg-gray-900 text-white"
-          : "border-border-theme bg-white text-text-base hover:bg-gray-50"
+          ? "bg-gray-900 text-white"
+          : "bg-black/5 text-text-base hover:bg-black/5"
       }`}
       onClick={() => onChange(!enabled)}
     >

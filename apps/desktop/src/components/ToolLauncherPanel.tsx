@@ -112,7 +112,7 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
                   key={`${card.type}:${card.title}`}
                   type="button"
                   onClick={() => onSelect(card)}
-                  className="group grid min-h-[58px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 px-2.5 py-2.5 text-left transition-colors duration-150 hover:bg-gray-50"
+                  className="group grid min-h-[58px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 px-2.5 py-2.5 text-left transition-colors duration-150 hover:bg-black/5"
                 >
                   <div className="flex h-8 w-8 items-center justify-center text-primary">
                     <FontAwesomeIcon icon={card.icon} className="text-[16px]" />

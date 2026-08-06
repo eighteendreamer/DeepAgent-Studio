@@ -66,7 +66,7 @@ export function ProcessSectionRow({
         type="button"
         onClick={() => canOpen && setUserOpen((value) => !(value ?? defaultOpen))}
         className={`group flex w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[13.5px] font-medium leading-6 transition ${
-          hasError ? "text-orange-700" : "text-text-secondary hover:bg-gray-50 hover:text-text-base"
+          hasError ? "text-orange-700" : "text-text-secondary hover:bg-black/5 hover:text-text-base"
         }`}
       >
         <FontAwesomeIcon icon={["fas", icon]} className="w-4 shrink-0 text-[12px] opacity-75" />

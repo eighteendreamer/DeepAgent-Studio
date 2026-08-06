@@ -91,7 +91,7 @@ export function TrustDialog({ projectPath }: { projectPath: string | null }) {
             type="button"
             onClick={dismiss}
             disabled={busy}
-            className="px-3.5 py-1.5 text-[13px] rounded-lg border border-border-theme text-text-secondary hover:text-text-base hover:bg-gray-50 transition-colors disabled:opacity-50"
+            className="px-3.5 py-1.5 text-[13px] rounded-lg bg-black/5 text-text-secondary hover:text-text-base hover:bg-black/5 transition-colors disabled:opacity-50"
           >
             暂不信任
           </button>

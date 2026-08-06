@@ -208,7 +208,7 @@ export function KnowledgeView() {
   }
 
   const iconBtn =
-    "flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-gray-50 transition-colors";
+    "flex items-center justify-center w-8 h-8 rounded bg-black/5 text-text-secondary hover:text-text-base hover:bg-black/5 transition-colors";
 
   return (
     <div className="w-full h-full flex bg-white overflow-hidden">
@@ -361,7 +361,7 @@ export function KnowledgeView() {
                         setEditing(false);
                       }}
                       className={`flex items-center p-3 rounded-xl cursor-pointer transition-colors group ${
-                        active ? "bg-gray-100" : "hover:bg-gray-50"
+                        active ? "bg-black/5" : "hover:bg-black/5"
                       }`}
                     >
                       <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 mr-4 ${v.bg}`}>
@@ -430,7 +430,7 @@ export function KnowledgeView() {
                         </button>
                         <button
                           onClick={() => onDiscardDraft(d)}
-                          className="px-2.5 py-1 text-xs rounded-md border border-border-theme text-text-secondary hover:bg-gray-50 transition-colors"
+                          className="px-2.5 py-1 text-xs rounded-md bg-black/5 text-text-secondary hover:bg-black/5 transition-colors"
                         >
                           {t("knowledgeView.discard")}
                         </button>
@@ -529,7 +529,7 @@ export function KnowledgeView() {
               <div className="px-6 py-4 border-t border-border-theme flex justify-end gap-2">
                 <button
                   onClick={() => setEditing(false)}
-                  className="px-4 py-1.5 text-sm rounded-lg border border-border-theme text-text-secondary hover:bg-gray-50 transition-colors"
+                  className="px-4 py-1.5 text-sm rounded-lg bg-black/5 text-text-secondary hover:bg-black/5 transition-colors"
                 >
                   {t("knowledgeView.cancel")}
                 </button>

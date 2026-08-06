@@ -323,7 +323,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             type="button"
             onClick={() => openBatchDialog("commit", selectedRows)}
             disabled={loading || busyGroup !== null || selectedRows.length === 0}
-            className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
+            className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-black/5 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "check"]} className="mr-1.5 text-[11px]" />
             {t("git.projectsPanel.commitSelected")}
@@ -332,7 +332,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             type="button"
             onClick={() => openBatchDialog("commit-push", selectedRows)}
             disabled={loading || busyGroup !== null || selectedRows.length === 0}
-            className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
+            className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-black/5 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "upload"]} className="mr-1.5 text-[11px]" />
             {t("git.projectsPanel.commitAndPushSelected")}
@@ -341,7 +341,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             type="button"
             onClick={() => openBatchDialog("step", selectedRows)}
             disabled={loading || busyGroup !== null || selectedRows.length === 0}
-            className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
+            className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-black/5 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-1.5 text-[11px]" />
             {t("git.projectsPanel.handleIndividually")}
@@ -350,7 +350,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             type="button"
             onClick={() => void fetchAll()}
             disabled={loading || busyGroup !== null}
-            className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
+            className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-black/5 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "download"]} className="mr-1.5 text-[11px]" />
             {busyGroup === "fetch-all" ? t("git.projectsPanel.fetchingAll") : t("git.projectsPanel.fetchAll")}
@@ -359,7 +359,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             type="button"
             onClick={() => void refreshAll()}
             disabled={loading || refreshing || busyGroup !== null}
-            className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
+            className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-black/5 hover:text-text-base disabled:opacity-50"
           >
             <FontAwesomeIcon icon={["fas", "rotate-right"]} className="mr-1.5 text-[11px]" />
             {t("git.projectsPanel.refresh")}
@@ -387,7 +387,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
           {loading ? (
             <div className="text-[13px] text-text-secondary">{t("git.projectsPanel.loadingBranches")}</div>
           ) : groups.length === 0 ? (
-            <div className="rounded-lg border border-border-theme bg-white p-4 text-[13px] text-text-secondary">
+            <div className="rounded-lg bg-black/5p-4 text-[13px] text-text-secondary">
               {t("git.projectsPanel.noOpenGitProjects")}
             </div>
           ) : (
@@ -415,7 +415,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                 <div className="divide-y divide-border-theme">
                   {repo.branches.map((branch) => (
                     <div key={branch.key}>
-                      <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50 px-3 py-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 bg-black/5 px-3 py-2">
                         <div className="flex min-w-0 items-center">
                           <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-text-secondary" />
                           <span className="truncate text-[13px] font-medium text-text-base">
@@ -430,7 +430,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                             type="button"
                             disabled={busyGroup !== null}
                             onClick={() => openBatchDialog("commit", branch.rows)}
-                            className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
+                            className="inline-flex h-8 items-center rounded-md bg-black/5px-2.5 text-[12px] font-medium text-text-base hover:bg-black/5 disabled:opacity-50"
                           >
                             <FontAwesomeIcon icon={["fas", "check"]} className="mr-1.5 text-[11px]" />
                             {t("git.projectsPanel.commit")}
@@ -439,7 +439,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                             type="button"
                             disabled={busyGroup !== null}
                             onClick={() => openBatchDialog("commit-push", branch.rows)}
-                            className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
+                            className="inline-flex h-8 items-center rounded-md bg-black/5px-2.5 text-[12px] font-medium text-text-base hover:bg-black/5 disabled:opacity-50"
                           >
                             <FontAwesomeIcon icon={["fas", "upload"]} className="mr-1.5 text-[11px]" />
                             {t("git.projectsPanel.commitAndPush")}
@@ -448,7 +448,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                             type="button"
                             disabled={busyGroup !== null}
                             onClick={() => openBatchDialog("step", branch.rows)}
-                            className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
+                            className="inline-flex h-8 items-center rounded-md bg-black/5px-2.5 text-[12px] font-medium text-text-base hover:bg-black/5 disabled:opacity-50"
                           >
                             <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-1.5 text-[11px]" />
                             {t("git.projectsPanel.handleIndividually")}
@@ -457,7 +457,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                             type="button"
                             disabled={busyGroup !== null}
                             onClick={() => void updateBranchGroup(branch)}
-                            className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
+                            className="inline-flex h-8 items-center rounded-md bg-black/5px-2.5 text-[12px] font-medium text-text-base hover:bg-black/5 disabled:opacity-50"
                           >
                             <FontAwesomeIcon icon={["fas", "download"]} className="mr-1.5 text-[11px]" />
                             {busyGroup === `update:${branch.key}` ? t("git.projectsPanel.updating") : t("git.projectsPanel.update")}
@@ -466,7 +466,7 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
                             type="button"
                             disabled={busyGroup !== null}
                             onClick={() => void pushBranchGroup(branch)}
-                            className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
+                            className="inline-flex h-8 items-center rounded-md bg-black/5px-2.5 text-[12px] font-medium text-text-base hover:bg-black/5 disabled:opacity-50"
                           >
                             <FontAwesomeIcon icon={["fas", "upload"]} className="mr-1.5 text-[11px]" />
                             {busyGroup === branch.key ? t("git.projectsPanel.pushing") : t("git.projectsPanel.push")}
@@ -585,7 +585,7 @@ function RepoCompareForm({
         name="baseRef"
         list={listId}
         defaultValue={defaultBase}
-        className="h-8 w-28 rounded-md border border-border-theme bg-white px-2 text-[12px] text-text-base outline-none focus:border-blue-400"
+        className="h-8 w-28 rounded-md bg-black/5px-2 text-[12px] text-text-base outline-none focus:border-blue-400"
         aria-label={t("git.projectsPanel.baseRef")}
       />
       <span className="text-[11px] text-text-secondary">...</span>
@@ -593,13 +593,13 @@ function RepoCompareForm({
         name="targetRef"
         list={listId}
         defaultValue={defaultTarget}
-        className="h-8 w-28 rounded-md border border-border-theme bg-white px-2 text-[12px] text-text-base outline-none focus:border-blue-400"
+        className="h-8 w-28 rounded-md bg-black/5px-2 text-[12px] text-text-base outline-none focus:border-blue-400"
         aria-label={t("git.projectsPanel.targetRef")}
       />
       <button
         type="submit"
         disabled={busy}
-        className="inline-flex h-8 items-center rounded-md border border-border-theme bg-white px-2.5 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
+        className="inline-flex h-8 items-center rounded-md bg-black/5px-2.5 text-[12px] font-medium text-text-base hover:bg-black/5 disabled:opacity-50"
       >
         <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-1.5 text-[11px]" />
         {active ? t("git.projectsPanel.comparing") : t("git.projectsPanel.compare")}
@@ -687,7 +687,7 @@ function CompareResultView({ title, result }: { title: string; result: GitRefCom
                     className={`flex w-full min-w-0 items-center justify-between gap-2 rounded px-2 py-1 text-left text-[12px] ${
                       selectedFile === file.path
                         ? "bg-blue-50 text-blue-700"
-                        : "text-text-base hover:bg-gray-50"
+                        : "text-text-base hover:bg-black/5"
                     }`}
                   >
                     <span className="truncate" title={file.path}>
@@ -727,7 +727,7 @@ function CompareCommitColumn({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="min-w-0 rounded-md border border-border-theme bg-white p-2">
+    <div className="min-w-0 rounded-md bg-black/5p-2">
       <div className="mb-1 text-[11px] font-medium uppercase text-text-secondary">{title}</div>
       {commits.length === 0 ? (
         <div className="text-[12px] text-text-secondary">{empty}</div>
@@ -940,7 +940,7 @@ function BatchCommitPanel({
         <button
           type="button"
           onClick={onClose}
-          className="h-8 w-8 rounded-md text-text-secondary hover:bg-gray-100 hover:text-text-base"
+          className="h-8 w-8 rounded-md text-text-secondary hover:bg-black/5 hover:text-text-base"
           aria-label={t("git.projectsPanel.closeBatchCommit")}
         >
           <FontAwesomeIcon icon={["fas", "xmark"]} />
@@ -951,7 +951,7 @@ function BatchCommitPanel({
           <textarea
             value={message}
             onChange={(event) => setMessage(event.target.value)}
-            className="h-24 w-full resize-none rounded-md border border-border-theme bg-white px-3 py-2 text-[13px] text-text-base outline-none focus:border-blue-400"
+            className="h-24 w-full resize-none rounded-md bg-black/5px-3 py-2 text-[13px] text-text-base outline-none focus:border-blue-400"
             placeholder={settings.commitInstructions || t("git.commitMessage")}
           />
           <label className="mt-2 flex items-center gap-2 text-[12px] text-text-secondary">
@@ -992,7 +992,7 @@ function BatchCommitPanel({
               type="button"
               disabled={busy || loading}
               onClick={() => void loadPreview()}
-              className="inline-flex h-9 items-center rounded-md border border-border-theme bg-white px-3 text-[12px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
+              className="inline-flex h-9 items-center rounded-md bg-black/5px-3 text-[12px] font-medium text-text-base hover:bg-black/5 disabled:opacity-50"
             >
               {t("git.projectsPanel.refreshPreview")}
             </button>
@@ -1042,7 +1042,7 @@ function BatchCommitPanel({
                         type="button"
                         disabled={busy || loading || !message.trim()}
                         onClick={() => void runSingle(item.project_path, false)}
-                        className="inline-flex h-7 items-center rounded-md border border-border-theme bg-white px-2 text-[11px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
+                        className="inline-flex h-7 items-center rounded-md bg-black/5px-2 text-[11px] font-medium text-text-base hover:bg-black/5 disabled:opacity-50"
                       >
                         {t("git.projectsPanel.commit")}
                       </button>
@@ -1050,7 +1050,7 @@ function BatchCommitPanel({
                         type="button"
                         disabled={busy || loading || !message.trim()}
                         onClick={() => void runSingle(item.project_path, true)}
-                        className="inline-flex h-7 items-center rounded-md border border-border-theme bg-white px-2 text-[11px] font-medium text-text-base hover:bg-gray-100 disabled:opacity-50"
+                        className="inline-flex h-7 items-center rounded-md bg-black/5px-2 text-[11px] font-medium text-text-base hover:bg-black/5 disabled:opacity-50"
                       >
                         {t("git.projectsPanel.commitAndPush")}
                       </button>

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Project, SessionSummary } from "../types";
+import { Panel } from "./ui/Panel";
+import { ListItem } from "./ui/ListItem";
 
 interface Props {
   isOpen: boolean;
@@ -68,7 +70,7 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
           />
       
           {/* Modal */}
-          <div className="modal-panel relative w-[380px] h-[340px] max-w-[calc(100vw-32px)] max-h-[calc(100vh-96px)] bg-white rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme flex flex-col overflow-hidden">
+          <Panel menu={false} className="modal-panel relative h-[340px] w-[380px] max-h-[calc(100vh-96px)] max-w-[calc(100vw-32px)] flex flex-col overflow-hidden">
         {/* Header / Input area */}
         <div className="px-4 py-3 border-b border-transparent">
           <input 
@@ -86,9 +88,9 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
           <div className="px-2 py-1.5 text-[11px] text-text-secondary font-medium">{t("searchModal.recentChats")}</div>
           <div className="flex flex-col space-y-0.5">
             {results.map((item, i) => (
-              <div 
+              <ListItem
                 key={item.id}
-                className="flex items-center justify-between px-2 py-2 rounded-lg cursor-pointer hover:bg-gray-100 group transition-colors"
+                className="px-2 py-2 rounded-lg cursor-pointer group"
                 onClick={() => handleSelect(item.id)}
               >
                 <div className="text-[13px] text-text-base truncate pr-3 flex-1">
@@ -104,7 +106,7 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
                     </span>
                   )}
                 </div>
-              </div>
+              </ListItem>
             ))}
             {results.length === 0 && (
               <div className="px-3 py-8 text-center text-[13px] text-text-secondary">
@@ -113,7 +115,7 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
             )}
           </div>
         </div>
-      </div>
+      </Panel>
     </div>
   );
 }

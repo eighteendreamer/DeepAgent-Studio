@@ -45,7 +45,7 @@ export function ComputerSettings() {
               </div>
             </div>
             <button 
-              className="px-4 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-full text-[12px] font-medium text-text-base transition-colors"
+              className="px-4 py-1.5 bg-black/5 hover:bg-black/5 rounded-full text-[12px] font-medium text-text-base transition-colors"
               onClick={() => setIsInstallModalOpen(true)}
             >
               {t("settings.computer.install")}
@@ -63,7 +63,7 @@ export function ComputerSettings() {
       {/* Installation Modal */}
       {isInstallModalOpen && (
         <div className="fixed inset-0 bg-white/60 backdrop-blur-sm z-50 flex justify-center items-center">
-          <div className="bg-white border border-border-theme rounded-2xl shadow-xl w-[500px] flex flex-col max-h-[90vh] overflow-hidden relative">
+          <div className="bg-elevated-bg rounded-2xl shadow-[0_6px_24px_rgba(0,0,0,0.10)] w-[500px] flex flex-col max-h-[90vh] overflow-hidden relative">
             
             {/* Close Button */}
             <button 

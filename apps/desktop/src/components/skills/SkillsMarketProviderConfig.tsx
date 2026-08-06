@@ -278,7 +278,7 @@ export function SkillsMarketProviderConfig({
         <button
           onClick={handleTest}
           disabled={testing}
-          className="flex-1 px-3 py-1.5 text-xs rounded-md border border-border-theme text-text-base hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="flex-1 px-3 py-1.5 text-xs rounded-md bg-black/5 text-text-base hover:bg-black/5 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           {testing ? t("skillsmp.testing") : t("skillsmp.test_connection")}
         </button>

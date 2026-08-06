@@ -51,7 +51,7 @@ export function GitWorkbench({ projectPath, status, changes, loading = false, on
           {onClose && (
             <button
               type="button"
-              className="ml-2 h-8 w-8 rounded-md text-text-secondary hover:bg-gray-100 hover:text-text-base"
+              className="ml-2 h-8 w-8 rounded-md text-text-secondary hover:bg-black/5 hover:text-text-base"
               onClick={onClose}
               aria-label={t("git.close")}
             >
@@ -93,7 +93,7 @@ function TabButton({
     <button
       type="button"
       className={`inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium transition-colors ${
-        active ? "bg-gray-100 text-text-base" : "text-text-secondary hover:bg-gray-50 hover:text-text-base"
+        active ? "bg-black/5 text-text-base" : "text-text-secondary hover:bg-black/5 hover:text-text-base"
       }`}
       onClick={onClick}
     >

@@ -318,7 +318,7 @@ export function SkillInstallDialog({
             onClick={handleCancelClick}
             disabled={phase.kind === "installing"}
             title={t("skillInstallDialog.cancel")}
-            className="w-7 h-7 rounded-full border border-border-theme flex items-center justify-center text-text-secondary hover:bg-gray-50 hover:text-text-base transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+            className="w-7 h-7 rounded-full bg-black/5 flex items-center justify-center text-text-secondary hover:bg-black/5 hover:text-text-base transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
           >
             <FontAwesomeIcon icon={["fas", "xmark"]} className="text-xs" />
           </button>
@@ -350,7 +350,7 @@ export function SkillInstallDialog({
           <button
             onClick={handleCancelClick}
             disabled={phase.kind === "installing"}
-            className="px-4 py-1.5 text-sm rounded-full border border-border-theme bg-white text-text-base hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-1.5 text-sm rounded-full bg-black/5 text-text-base hover:bg-black/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {t("skillInstallDialog.cancel")}
           </button>

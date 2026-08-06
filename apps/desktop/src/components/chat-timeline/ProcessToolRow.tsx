@@ -207,7 +207,7 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
         type="button"
         onClick={() => canOpen && tool.status !== "running" && setOpen((value) => !value)}
         className={`group/tool flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left text-[13.5px] leading-6 transition ${
-          canOpen ? "cursor-pointer hover:bg-gray-50/70" : "cursor-default"
+          canOpen ? "cursor-pointer hover:bg-black/5" : "cursor-default"
         }`}
       >
         <span className="flex h-5 w-5 shrink-0 items-center justify-center text-text-secondary">

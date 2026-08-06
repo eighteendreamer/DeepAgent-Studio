@@ -694,8 +694,12 @@
       "lingsiAPI": "灵思API",
       "lingsiAPI_5_5_zh": "5.5 中"
     },
-    "defaultPermission": "默认权限",
-    "fullAccess": "完全访问权限"
+    "defaultPermission": "请求批准",
+    "defaultPermissionDesc": "编辑外部文件和使用互联网时始终询问",
+    "autoReview": "替我审批",
+    "autoReviewDesc": "仅对检测到的风险操作请求批准",
+    "fullAccess": "完全访问权限",
+    "fullAccessDesc": "可不受限制地访问互联网和您电脑上的任何文件"
   },
   "balanceChip": {
     "label": "余额",

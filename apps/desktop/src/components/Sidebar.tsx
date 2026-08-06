@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
+import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import type { Project, SessionSummary } from "../types";
 
 interface Props {
@@ -34,11 +35,12 @@ interface Props {
   runningSessionIds?: Set<string>;
 }
 
-function NavButton({ icon, label, active = false, onClick }: { icon: IconProp; label: string; active?: boolean; onClick?: () => void }) {
+function NavButton({ icon, label, active = false, onClick, navId }: { icon: IconProp; label: string; active?: boolean; onClick?: () => void; navId: string }) {
   return (
-    <button 
-      className={`w-full flex items-center px-2.5 py-1.5 rounded-md text-sm transition-colors ${
-        active ? "bg-black/5 text-text-base font-medium" : "text-text-base hover:bg-black/5"
+    <button
+      data-nav={navId}
+      className={`relative z-[1] w-full flex items-center px-2.5 py-1.5 rounded-md text-sm text-text-base ${
+        active ? "font-medium" : ""
       }`}
       onClick={onClick}
     >
@@ -96,6 +98,18 @@ function writeExpandedProjects(value: Record<string, boolean>) {
 
 export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
+
+  /* 顶部导航滑动药丸（静默着色）：悬停跟随，离开滑回激活项；无 surface 激活时停靠「新对话」 */
+  const activeNavId = activeSurface ?? "new-chat";
+  const {
+    containerRef: topNavRef,
+    containerProps: topNavProps,
+    indicatorStyle: pillStyle,
+  } = useSlidingIndicator({
+    hoverSelector: "[data-nav]",
+    activeSelector: `[data-nav="${activeNavId}"]`,
+  });
+
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [activeMoreSubmenu, setActiveMoreSubmenu] = useState<"organize" | "sort" | null>(null);
@@ -387,7 +401,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                     onClick={() => {
                       const path = nameToPath[proj];
                       if (!path) return;
@@ -399,7 +413,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                     {isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}
                   </button>
                   <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                     onClick={() => {
                       const path = nameToPath[proj];
                       if (!path) return;
@@ -411,7 +425,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                     {t("sidebar.openInExplorer")}
                   </button>
                   <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                     onClick={() => {
                       const path = nameToPath[proj];
                       if (!path) return;
@@ -423,7 +437,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                     项目地图
                   </button>
                   <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                     onClick={() => {
                       const path = nameToPath[proj];
                       if (!path) return;
@@ -437,7 +451,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   </button>
                   <div className="my-1 border-t border-border-theme"></div>
                   <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                     onClick={() => {
                       const path = nameToPath[proj];
                       if (!path) return;
@@ -449,7 +463,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                     {t("sidebar.archive")}
                   </button>
                   <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                     onClick={() => {
                       setActiveProjectMenu(null);
                       const path = nameToPath[proj];
@@ -491,20 +505,30 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
 
   return (
     <aside className="w-[240px] flex flex-col bg-sidebar-bg h-full no-select flex-shrink-0 pb-2">
-      {/* Top actions */}
-      <div className="px-3 py-2 space-y-0.5">
-        <button
-          className="w-full flex items-center px-2.5 py-1.5 rounded-md text-sm text-text-base hover:bg-black/5 transition-colors"
-          onClick={onNewChat}
-        >
-          <FontAwesomeIcon icon={["far", "pen-to-square"]} className="w-5 text-left text-text-secondary" />
-          <span className="ml-0.5">{t("sidebar.newChat")}</span>
-        </button>
-        <NavButton icon={["fas", "magnifying-glass"]} label={t("sidebar.search")} onClick={onOpenSearch} />
-        <NavButton icon={["fas", "layer-group"]} label={t("sidebar.skills")} active={activeSurface === "skills"} onClick={onOpenSkills} />
-        <NavButton icon={["fas", "book"]} label={t("sidebar.knowledge")} active={activeSurface === "knowledge"} onClick={onOpenKnowledge} />
-        <NavButton icon={["fas", "puzzle-piece"]} label={t("sidebar.plugins")} active={activeSurface === "plugins"} onClick={onOpenPlugins} />
-        <NavButton icon={["far", "clock"]} label={t("sidebar.automation")} active={activeSurface === "automation"} onClick={onOpenAutomation} />
+      {/* Top actions：滑动药丸指示器（同设置侧栏），无 surface 激活时停靠「新对话」 */}
+      <div
+        ref={topNavRef}
+        {...topNavProps}
+        className="relative px-3 py-2"
+      >
+        <div className="space-y-0.5">
+          <button
+            data-nav="new-chat"
+            className="relative z-[1] w-full flex items-center px-2.5 py-1.5 rounded-md text-sm text-text-base"
+            onClick={onNewChat}
+          >
+            <FontAwesomeIcon icon={["far", "pen-to-square"]} className="w-5 text-left text-text-secondary" />
+            <span className="ml-0.5">{t("sidebar.newChat")}</span>
+          </button>
+          <NavButton icon={["fas", "magnifying-glass"]} label={t("sidebar.search")} navId="search" onClick={onOpenSearch} />
+          <NavButton icon={["fas", "layer-group"]} label={t("sidebar.skills")} navId="skills" active={activeSurface === "skills"} onClick={onOpenSkills} />
+          <NavButton icon={["fas", "book"]} label={t("sidebar.knowledge")} navId="knowledge" active={activeSurface === "knowledge"} onClick={onOpenKnowledge} />
+          <NavButton icon={["fas", "puzzle-piece"]} label={t("sidebar.plugins")} navId="plugins" active={activeSurface === "plugins"} onClick={onOpenPlugins} />
+          <NavButton icon={["far", "clock"]} label={t("sidebar.automation")} navId="automation" active={activeSurface === "automation"} onClick={onOpenAutomation} />
+        </div>
+
+        {/* 滑动药丸指示器 */}
+        <SlidingPill style={pillStyle} />
       </div>
 
       {/* Project / session list */}
@@ -549,7 +573,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 {isMoreMenuOpen && (
                   <div className="absolute top-full right-0 mt-1 w-48 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
                     <button
-                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                       onClick={() => {
                         setIsMoreMenuOpen(false);
                         setActiveMoreSubmenu(null);
@@ -561,7 +585,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                     </button>
                     <div className="my-1 border-t border-border-theme"></div>
                     <button
-                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "organize" ? "bg-gray-50" : "hover:bg-gray-50"}`}
+                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "organize" ? "bg-gray-50" : "hover:bg-black/5"}`}
                       onClick={() => {
                         if (activeMoreSubmenu === "organize") setActiveMoreSubmenu(null);
                         else openMoreSubmenu("organize");
@@ -574,7 +598,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                       <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-text-secondary text-[10px]" />
                     </button>
                     <button
-                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "sort" ? "bg-gray-50" : "hover:bg-gray-50"}`}
+                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "sort" ? "bg-gray-50" : "hover:bg-black/5"}`}
                       onClick={() => {
                         if (activeMoreSubmenu === "sort") setActiveMoreSubmenu(null);
                         else openMoreSubmenu("sort");
@@ -599,7 +623,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                         ].map((item) => (
                           <button
                             key={item.id}
-                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                             onClick={() => {
                               setOrganizeMode(item.id);
                               setIsMoreMenuOpen(false);
@@ -628,7 +652,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                         ].map((item) => (
                           <button
                             key={item.id}
-                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                             onClick={() => {
                               setSortCriterion(item.id);
                               setIsMoreMenuOpen(false);
@@ -661,14 +685,14 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 {isNewProjectMenuOpen && (
                   <div className="absolute top-full right-0 mt-1 w-40 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
                     <button
-                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                       onClick={() => { setIsNewProjectMenuOpen(false); onAddProject(); }}
                     >
                       <FontAwesomeIcon icon={["fas", "folder-plus"]} className="text-text-secondary mr-2.5 w-4" />
                       {t("sidebar.newBlankProject")}
                     </button>
                     <button
-                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                       onClick={() => { setIsNewProjectMenuOpen(false); onAddProject(); }}
                     >
                       <FontAwesomeIcon icon={["fas", "folder-plus"]} className="text-text-secondary mr-2.5 w-4" />
@@ -723,7 +747,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                             onClick={() => {
                               const path = nameToPath[proj];
                               if (!path) return;
@@ -735,7 +759,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                             {isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}
                           </button>
                           <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                             onClick={() => {
                               const path = nameToPath[proj];
                               if (!path) return;
@@ -747,7 +771,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                             {t("sidebar.openInExplorer")}
                           </button>
                           <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                             onClick={() => {
                               const path = nameToPath[proj];
                               if (!path) return;
@@ -759,7 +783,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                             项目地图
                           </button>
                           <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                             onClick={() => {
                               const path = nameToPath[proj];
                               if (!path) return;
@@ -773,7 +797,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                           </button>
                           <div className="my-1 border-t border-border-theme"></div>
                           <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                             onClick={() => {
                               const path = nameToPath[proj];
                               if (!path) return;
@@ -785,7 +809,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                             {t("sidebar.archive")}
                           </button>
                           <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
                             onClick={() => {
                               setActiveProjectMenu(null);
                               const path = nameToPath[proj];
@@ -848,7 +872,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             </div>
             
             <button 
-              className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+              className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
               onClick={() => {
                 setIsSettingsOpen(false);
                 onOpenSettings();
@@ -858,7 +882,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               {t("sidebar.settings")}
             </button>
             <button 
-              className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-gray-50 transition-colors w-full text-left"
+              className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
               onClick={() => { setIsSettingsOpen(false); onLogout(); }}
             >
               <FontAwesomeIcon icon={["fas", "arrow-right-from-bracket"]} className="text-text-secondary mr-2.5 w-4" />
@@ -896,7 +920,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             <div className="flex justify-end gap-2 border-t border-border-theme px-5 py-3">
               <button
                 type="button"
-                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-gray-50 transition-colors"
+                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-black/5 transition-colors"
                 onClick={() => {
                   setRenameProject(null);
                   setRenameValue("");
@@ -931,7 +955,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             </div>
             <div className="flex justify-end gap-2 border-t border-border-theme px-5 py-3">
               <button
-                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-gray-50 transition-colors"
+                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-black/5 transition-colors"
                 onClick={() => setRemoveProject(null)}
               >
                 {t("sidebar.removeProjectDialog.cancel")}
@@ -965,7 +989,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             </div>
             <div className="flex justify-end gap-2 border-t border-border-theme px-5 py-3">
               <button
-                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-gray-50 transition-colors"
+                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-black/5 transition-colors"
                 onClick={() => setArchiveProject(null)}
               >
                 {t("sidebar.archiveProjectDialog.cancel")}

@@ -7,6 +7,7 @@ import { useGitStatus } from "../../hooks/useGitStatus";
 import { getGitUiSettings } from "./gitSettings";
 import { GitCreateBranchDialog } from "./GitCreateBranchDialog";
 import { GitBranchMenuContent, formatAheadBehind } from "./GitBranchMenuContent";
+import { ToolbarMenuTrigger } from "../ui/ToolbarMenuTrigger";
 
 interface Props {
   projectPath?: string | null;
@@ -18,6 +19,8 @@ interface Props {
   dropdownAlign?: "left" | "right";
   onStatusChange?: (status: ReturnType<typeof useGitStatus>["status"]) => void;
   onOpenWorkbench?: () => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 export function GitBranchChip({
@@ -30,10 +33,17 @@ export function GitBranchChip({
   dropdownAlign = "left",
   onStatusChange,
   onOpenWorkbench,
+  open: openProp,
+  onOpenChange,
 }: Props) {
   const { t } = useTranslation();
   const { loading, status, branches, changes, refresh } = useGitStatus(projectPath);
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = openProp ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    if (openProp === undefined) setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -127,22 +137,38 @@ export function GitBranchChip({
 
   return (
     <div className={`relative ${className}`} ref={ref}>
+      {variant === "chip" ? (
+        <ToolbarMenuTrigger
+          open={open}
+          onClick={() => setOpen(!open)}
+          icon={["fas", "code-branch"]}
+          label={currentLabel ?? t("git.title")}
+          trailing={
+            dirty ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden /> : undefined
+          }
+          title={
+            [
+              status?.repo_root ?? projectPath ?? undefined,
+              displayAheadBehind || undefined,
+              dirty ? t("git.changedFilesCount", { count: status?.files_changed ?? 0 }) : undefined,
+            ]
+              .filter(Boolean)
+              .join(" · ") || undefined
+          }
+        />
+      ) : (
       <button
         type="button"
         className={
           variant === "env"
-            ? `flex w-full min-w-0 items-center justify-between rounded-xl px-3 py-2 text-[14px] text-text-base transition-colors hover:bg-gray-100/80 ${
+            ? `flex w-full min-w-0 items-center justify-between rounded-xl px-3 py-2 text-[14px] text-text-base transition-colors hover:bg-black/5 ${
                 compact ? "min-h-[38px]" : "min-h-[42px]"
               }`
-            : variant === "row"
-              ? `flex w-full min-w-0 items-center justify-between rounded-xl px-3 py-2 text-[14px] font-medium text-text-base transition-colors hover:bg-gray-50 ${
-                  compact ? "min-h-[38px]" : "min-h-[42px]"
-                }`
-              : `inline-flex min-w-0 items-center rounded-md text-[12px] font-medium text-text-secondary transition-colors hover:bg-gray-100 hover:text-text-base ${
-                  compact ? "px-1.5 py-1" : "px-2 py-1.5"
-                }`
+            : `flex w-full min-w-0 items-center justify-between rounded-xl px-3 py-2 text-[14px] font-medium text-text-base transition-colors hover:bg-black/5 ${
+                compact ? "min-h-[38px]" : "min-h-[42px]"
+              }`
         }
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen(!open)}
         title={status?.repo_root ?? projectPath ?? undefined}
       >
         {variant === "env" ? (
@@ -158,7 +184,7 @@ export function GitBranchChip({
               <FontAwesomeIcon icon={["fas", open ? "chevron-up" : "chevron-down"]} className="ml-2 text-[11px] text-text-secondary" />
             </div>
           </>
-        ) : variant === "row" ? (
+        ) : (
           <>
             <div className="flex min-w-0 items-center">
               <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-3 w-4 text-text-secondary" />
@@ -168,20 +194,13 @@ export function GitBranchChip({
             </div>
             <FontAwesomeIcon icon={["fas", open ? "chevron-up" : "chevron-down"]} className="ml-3 text-[11px] text-text-secondary" />
           </>
-        ) : (
-          <>
-            <FontAwesomeIcon icon={["fas", "code-branch"]} className="mr-2 text-[13px]" />
-            <span className="max-w-[150px] truncate">{currentLabel ?? t("git.title")}</span>
-            {dirty && <span className="ml-1.5 h-1.5 w-1.5 rounded-full bg-amber-500" />}
-            {displayAheadBehind && <span className="ml-1.5 text-[11px] text-blue-500">{displayAheadBehind}</span>}
-            <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1.5 text-[9px]" />
-          </>
         )}
       </button>
+      )}
 
       {open && (
         <div
-          className={`absolute z-[70] ${
+          className={`absolute z-[70] origin-bottom-left ${
             dropdownPlacement === "top" ? "bottom-full mb-2" : "top-full mt-2"
           } ${dropdownAlign === "right" ? "right-0" : "left-0"}`}
         >

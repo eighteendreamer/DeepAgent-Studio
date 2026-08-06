@@ -41,7 +41,7 @@ export function ProjectMapDebugToggle({
       className={`h-7 rounded-md px-2 text-[11px] transition-colors ${
         enabled
           ? "bg-gray-900 text-white hover:bg-gray-800"
-          : "text-text-secondary hover:bg-gray-100 hover:text-text-base"
+          : "text-text-secondary hover:bg-black/5 hover:text-text-base"
       }`}
       onClick={() => onChange(!enabled)}
     >
@@ -134,7 +134,7 @@ export function ProjectMapDebugView({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              className="h-8 rounded-md px-3 text-[12px] text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
+              className="h-8 rounded-md px-3 text-[12px] text-text-secondary hover:bg-black/5 hover:text-text-base disabled:opacity-50"
               disabled={loading}
               onClick={reload}
             >
@@ -172,7 +172,7 @@ export function ProjectMapDebugView({
         <div className="mt-3 flex items-center justify-between">
           <button
             type="button"
-            className="h-8 rounded-md px-3 text-[12px] text-text-secondary hover:bg-gray-100 hover:text-text-base"
+            className="h-8 rounded-md px-3 text-[12px] text-text-secondary hover:bg-black/5 hover:text-text-base"
             onClick={copyDebugInfo}
           >
             复制调试信息

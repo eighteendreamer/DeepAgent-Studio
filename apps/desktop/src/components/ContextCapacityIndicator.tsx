@@ -1,10 +1,16 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import type { ContextUsageSnapshot } from "../types";
+import { MOTION } from "./ui/motion";
 
 interface Props {
   snapshot?: ContextUsageSnapshot | null;
   modelId?: string;
   fallbackPromptTokens?: number;
+  /** Hide popover while another toolbar overlay is open. */
+  popoverSuppressed?: boolean;
+  /** Increment to force-close the popover. */
+  overlayCloseSignal?: number;
+  onPopoverOpenChange?: (open: boolean) => void;
 }
 
 function contextWindowForModel(modelId?: string): number {
@@ -32,8 +38,17 @@ function capacityTone(ratio: number, isEmptySession: boolean): string {
   return "#94a3b8";
 }
 
-export function ContextCapacityIndicator({ snapshot, modelId, fallbackPromptTokens = 0 }: Props) {
+export function ContextCapacityIndicator({
+  snapshot,
+  modelId,
+  fallbackPromptTokens = 0,
+  popoverSuppressed = false,
+  overlayCloseSignal = 0,
+  onPopoverOpenChange,
+}: Props) {
   const [open, setOpen] = useState(false);
+  const lastOverlayCloseSignal = useRef(overlayCloseSignal);
+  const lastReportedOpen = useRef(false);
   const contextWindow = snapshot?.context_window ?? contextWindowForModel(modelId);
   const usedTokens = snapshot?.estimated_prompt_tokens ?? Math.max(0, Math.round(fallbackPromptTokens));
   const isEmptySession = !snapshot && usedTokens === 0;
@@ -53,44 +68,76 @@ export function ContextCapacityIndicator({ snapshot, modelId, fallbackPromptToke
   const cacheRatio =
     snapshot?.cache_hit_ratio ?? (cacheTotal > 0 ? (snapshot?.cache_hit_tokens ?? 0) / cacheTotal : undefined);
 
+  useEffect(() => {
+    if (popoverSuppressed && open) setOpen(false);
+  }, [popoverSuppressed, open]);
+
+  useEffect(() => {
+    if (overlayCloseSignal > lastOverlayCloseSignal.current) {
+      lastOverlayCloseSignal.current = overlayCloseSignal;
+      setOpen(false);
+    }
+  }, [overlayCloseSignal]);
+
+  useEffect(() => {
+    if (open === lastReportedOpen.current) return;
+    lastReportedOpen.current = open;
+    onPopoverOpenChange?.(open);
+  }, [open, onPopoverOpenChange]);
+
+  const showPopover = open && !popoverSuppressed;
+
   return (
     <div
-      className="relative"
-      onMouseEnter={() => setOpen(true)}
+      className="relative flex h-8 w-8 shrink-0 items-center justify-center"
+      onMouseEnter={() => {
+        if (!popoverSuppressed) setOpen(true);
+      }}
       onMouseLeave={() => setOpen(false)}
     >
       <button
         type="button"
-        className="flex h-7 w-7 items-center justify-center rounded-full border border-border-theme bg-gray-50 text-text-secondary transition-colors hover:bg-gray-100 hover:text-text-base"
+        className={`flex h-8 w-8 items-center justify-center rounded-full text-text-secondary ${MOTION.fast}`}
         title={`Context ${percent}%`}
         aria-label={`Context ${percent}%`}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          if (popoverSuppressed) return;
+          setOpen((value) => !value);
+        }}
       >
-        <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true">
-          <circle cx="10" cy="10" r="8.5" fill="none" stroke="#e5e7eb" strokeWidth="2.2" />
+        <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
           <circle
             cx="10"
             cy="10"
             r="8.5"
             fill="none"
-            stroke={stroke}
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeDasharray={circumference}
-            strokeDashoffset={dashOffset}
-            transform="rotate(-90 10 10)"
+            className="stroke-border-theme"
+            strokeWidth="1.8"
           />
-          <circle cx="10" cy="10" r="2.2" fill={stroke} opacity="0.85" />
+          {(ratio > 0 || !isEmptySession) && (
+            <circle
+              cx="10"
+              cy="10"
+              r="8.5"
+              fill="none"
+              stroke={stroke}
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeDasharray={circumference}
+              strokeDashoffset={dashOffset}
+              transform="rotate(-90 10 10)"
+            />
+          )}
         </svg>
       </button>
 
-      {open && (
-        <div className="absolute bottom-full right-0 z-50 mb-2 w-[180px] rounded-xl border border-border-theme bg-white px-3 py-2 text-[12px] text-text-base shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
+      {showPopover && (
+        <div className="absolute bottom-full right-0 z-50 mb-2 w-[200px] rounded-2xl bg-elevated-bg px-3.5 py-3 text-[12px] text-text-base shadow-[0_6px_24px_rgba(0,0,0,0.10)]">
           <div className="flex items-baseline justify-between gap-2">
             <span className="font-semibold">上下文</span>
             <span className="text-[18px] font-semibold leading-none">{percent}%</span>
           </div>
-          <div className="mt-1 text-text-secondary">
+          <div className="mt-1.5 text-[13px] text-text-secondary">
             {formatTokens(usedTokens)} / {formatTokens(contextWindow)}
           </div>
 

@@ -1,70 +1,174 @@
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
+
+import { Panel } from "./ui/Panel";
+
+import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
+
+
 
 export type ComposerSuggestSection<T> = {
+
   key: string;
+
   label: string;
+
   items: T[];
+
 };
 
+
+
 interface Props<T> {
+
   open: boolean;
+
   sections: ComposerSuggestSection<T>[];
+
   selectedIndex: number;
+
   getKey: (item: T) => string;
+
   renderItem: (item: T, selected: boolean) => ReactNode;
+
   onSelect: (item: T) => void;
+
   onHover: (index: number) => void;
+
   className?: string;
+
 }
+
+
 
 export function ComposerSuggestPanel<T>({
+
   open,
+
   sections,
+
   selectedIndex,
+
   getKey,
+
   renderItem,
+
   onSelect,
+
   onHover,
+
   className = "",
+
 }: Props<T>) {
+
+  const activeId = useMemo(() => {
+
+    let index = 0;
+
+    for (const section of sections) {
+
+      for (const item of section.items) {
+
+        if (index === selectedIndex) return getKey(item);
+
+        index += 1;
+
+      }
+
+    }
+
+    return "";
+
+  }, [sections, selectedIndex, getKey]);
+
+
+
   if (!open) return null;
 
-  return (
-    <div
-      className={`absolute left-3 bottom-full mb-2 max-h-60 w-[min(680px,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border-theme bg-white py-1.5 shadow-[0_10px_30px_rgb(0,0,0,0.10)] z-50 ${className}`}
-    >
-      {sections.map((section, sectionIndex) => {
-        let baseIndex = 0;
-        for (let i = 0; i < sectionIndex; i += 1) {
-          baseIndex += sections[i].items.length;
-        }
 
-        return (
-          <div key={section.key} className={sectionIndex > 0 ? "mt-1" : ""}>
-            <div className="px-4 py-1 text-[12px] font-medium text-text-secondary">
-              {section.label}
+
+  return (
+
+    <Panel
+
+      className={`absolute left-3 bottom-full z-50 mb-2 max-h-60 w-[min(680px,calc(100%-1.5rem))] overflow-y-auto p-1.5 ${className}`}
+
+    >
+
+      <SlidingMenuList activeId={activeId}>
+
+        {sections.map((section, sectionIndex) => {
+
+          let baseIndex = 0;
+
+          for (let i = 0; i < sectionIndex; i += 1) {
+
+            baseIndex += sections[i].items.length;
+
+          }
+
+
+
+          return (
+
+            <div key={section.key} className={sectionIndex > 0 ? "mt-1" : ""}>
+
+              <div className="px-4 py-1 text-[12px] font-medium text-text-secondary">
+
+                {section.label}
+
+              </div>
+
+              {section.items.map((item, index) => {
+
+                const flatIndex = baseIndex + index;
+
+                const selected = flatIndex === selectedIndex;
+
+                const itemKey = getKey(item);
+
+                return (
+
+                  <button
+
+                    key={itemKey}
+
+                    type="button"
+
+                    {...{ [MENU_ITEM_ATTR]: itemKey }}
+
+                    onMouseDown={(event) => {
+
+                      event.preventDefault();
+
+                      onSelect(item);
+
+                    }}
+
+                    onMouseEnter={() => onHover(flatIndex)}
+
+                    className="relative z-[1] w-full text-left"
+
+                  >
+
+                    {renderItem(item, selected)}
+
+                  </button>
+
+                );
+
+              })}
+
             </div>
-            {section.items.map((item, index) => {
-              const flatIndex = baseIndex + index;
-              const selected = flatIndex === selectedIndex;
-              return (
-                <button
-                  key={getKey(item)}
-                  type="button"
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    onSelect(item);
-                  }}
-                  onMouseEnter={() => onHover(flatIndex)}
-                  className="w-full text-left"
-                >
-                  {renderItem(item, selected)}
-                </button>
-              );
-            })}
-          </div>
-        );
-      })}
-    </div>
+
+          );
+
+        })}
+
+      </SlidingMenuList>
+
+    </Panel>
+
   );
+
 }
+

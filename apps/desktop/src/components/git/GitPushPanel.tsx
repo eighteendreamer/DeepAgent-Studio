@@ -145,7 +145,7 @@ export function GitPushPanel({ projectPath, onRefresh }: Props) {
           type="button"
           onClick={() => void load()}
           disabled={loading || pushing}
-          className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
+          className="inline-flex h-8 items-center rounded-md px-2.5 text-[12px] font-medium text-text-secondary hover:bg-black/5 hover:text-text-base disabled:opacity-50"
         >
           <FontAwesomeIcon icon={["fas", "rotate-right"]} className="mr-1.5 text-[11px]" />
           {t("git.pushPanel.refresh")}

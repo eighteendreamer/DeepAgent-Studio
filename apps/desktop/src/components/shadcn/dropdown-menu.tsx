@@ -1,6 +1,7 @@
 import * as React from "react";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { FLOATING_MENU, MOTION } from "../ui/motion";
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -13,6 +14,18 @@ const DropdownMenuPortal = DropdownMenuPrimitive.Portal;
 const DropdownMenuSub = DropdownMenuPrimitive.Sub;
 const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
 
+const menuPanelClass = cn(
+  "z-[70] min-w-[8rem] overflow-hidden rounded-2xl bg-elevated-bg p-1.5 text-text-base shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
+  FLOATING_MENU.panel,
+);
+
+const menuItemClass = cn(
+  "relative flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-[12px] outline-none",
+  FLOATING_MENU.item,
+  MOTION.fast,
+  "focus:bg-black/5 data-[highlighted]:bg-black/5 data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+);
+
 const DropdownMenuSubTrigger = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.SubTrigger>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubTrigger> & {
@@ -21,11 +34,7 @@ const DropdownMenuSubTrigger = React.forwardRef<
 >(({ className, inset, children, ...props }, ref) => (
   <DropdownMenuPrimitive.SubTrigger
     ref={ref}
-    className={cn(
-      "flex cursor-default select-none items-center rounded-md px-3 py-2 text-[13px] outline-none transition-colors focus:bg-gray-100 data-[state=open]:bg-gray-100",
-      inset && "pl-8",
-      className,
-    )}
+    className={cn(menuItemClass, "data-[state=open]:bg-black/5", inset && "pl-8", className)}
     {...props}
   >
     {children}
@@ -40,10 +49,7 @@ const DropdownMenuSubContent = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DropdownMenuPrimitive.SubContent
     ref={ref}
-    className={cn(
-      "z-[80] min-w-[8rem] overflow-hidden rounded-lg border border-border-theme bg-white p-1 text-text-base shadow-[0_12px_36px_rgb(0,0,0,0.14)] data-[side=bottom]:animate-in data-[side=left]:animate-in data-[side=right]:animate-in data-[side=top]:animate-in",
-      className,
-    )}
+    className={cn(menuPanelClass, "z-[80]", className)}
     {...props}
   />
 ));
@@ -57,10 +63,7 @@ const DropdownMenuContent = React.forwardRef<
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
-      className={cn(
-        "z-[70] min-w-[8rem] overflow-hidden rounded-xl border border-border-theme bg-white p-1 text-text-base shadow-[0_12px_36px_rgb(0,0,0,0.12)]",
-        className,
-      )}
+      className={cn(menuPanelClass, className)}
       {...props}
     />
   </DropdownMenuPrimitive.Portal>
@@ -75,11 +78,7 @@ const DropdownMenuItem = React.forwardRef<
 >(({ className, inset, ...props }, ref) => (
   <DropdownMenuPrimitive.Item
     ref={ref}
-    className={cn(
-      "relative flex cursor-default select-none items-center rounded-md px-3 py-2 text-[13px] outline-none transition-colors focus:bg-gray-100 data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
-      inset && "pl-8",
-      className,
-    )}
+    className={cn(menuItemClass, inset && "pl-8", className)}
     {...props}
   />
 ));
@@ -101,11 +100,21 @@ const DropdownMenuLabel = React.forwardRef<
 >(({ className, inset, ...props }, ref) => (
   <DropdownMenuPrimitive.Label
     ref={ref}
-    className={cn("px-3 py-1.5 text-[12px] font-medium text-text-secondary", inset && "pl-8", className)}
+    className={cn("px-2 py-1 text-[11px] font-medium text-text-secondary", inset && "pl-8", className)}
     {...props}
   />
 ));
 DropdownMenuLabel.displayName = DropdownMenuPrimitive.Label.displayName;
+
+const DropdownMenuShortcut = ({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) => {
+  return (
+    <span
+      className={cn("ml-auto text-xs tracking-widest text-text-secondary opacity-60", className)}
+      {...props}
+    />
+  );
+};
+DropdownMenuShortcut.displayName = "DropdownMenuShortcut";
 
 export {
   DropdownMenu,
@@ -120,4 +129,5 @@ export {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuRadioGroup,
+  DropdownMenuShortcut,
 };

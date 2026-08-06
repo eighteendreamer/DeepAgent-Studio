@@ -235,10 +235,10 @@ export function MCPSettings() {
           </div>
 
           {/* 传输协议 */}
-          <div className="flex border border-border-theme rounded-lg overflow-hidden bg-white">
+          <div className="flex rounded-lg overflow-hidden bg-black/5">
             <button
               className={`flex-1 py-2 text-[13px] font-medium transition-colors ${
-                isStdio ? "bg-gray-200 text-text-base" : "text-text-secondary hover:bg-gray-50"
+                isStdio ? "bg-black/5 text-text-base" : "text-text-secondary hover:bg-black/5"
               }`}
               onClick={() => setDraft({ ...draft, transport: "stdio" })}
             >
@@ -248,8 +248,8 @@ export function MCPSettings() {
             <button
               className={`flex-1 py-2 text-[13px] font-medium transition-colors ${
                 draft.transport === "http"
-                  ? "bg-gray-200 text-text-base"
-                  : "text-text-secondary hover:bg-gray-50"
+                  ? "bg-black/5 text-text-base"
+                  : "text-text-secondary hover:bg-black/5"
               }`}
               onClick={() => setDraft({ ...draft, transport: "http" })}
             >
@@ -297,7 +297,7 @@ export function MCPSettings() {
                   </div>
                 ))}
                 <button
-                  className="w-full py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-[13px] text-text-secondary font-medium transition-colors"
+                  className="w-full py-1.5 bg-black/5 hover:bg-black/5 rounded-lg text-[13px] text-text-secondary font-medium transition-colors"
                   onClick={() => setDraft({ ...draft, args: [...draft.args, ""] })}
                 >
                   {t("settings.mcp.addArg")}
@@ -357,7 +357,7 @@ export function MCPSettings() {
               </div>
             ))}
             <button
-              className="w-full py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-[13px] text-text-secondary font-medium transition-colors"
+              className="w-full py-1.5 bg-black/5 hover:bg-black/5 rounded-lg text-[13px] text-text-secondary font-medium transition-colors"
               onClick={() => setEnvPairs([...envPairs, { key: "", value: "" }])}
             >
               {t("settings.mcp.addEnvVar")}
@@ -404,7 +404,7 @@ export function MCPSettings() {
               onClick={onTest}
               className={`px-5 py-1.5 rounded-full text-[13px] font-medium border transition-colors ${
                 canSave && !testing
-                  ? "border-border-theme text-text-base hover:bg-gray-100"
+                  ? "border-border-theme text-text-base hover:bg-black/5"
                   : "border-gray-200 text-gray-400 cursor-not-allowed"
               }`}
             >
@@ -446,7 +446,7 @@ export function MCPSettings() {
           <div className="flex items-center space-x-2">
             {servers.length > 0 && (
               <button
-                className="flex items-center px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-full text-[12px] font-medium text-text-base transition-colors disabled:opacity-50"
+                className="flex items-center px-3 py-1 bg-black/5 hover:bg-black/5 rounded-full text-[12px] font-medium text-text-base transition-colors disabled:opacity-50"
                 onClick={refreshStatuses}
                 disabled={checking}
                 title={t("settings.mcp.refreshStatus")}
@@ -460,7 +460,7 @@ export function MCPSettings() {
               </button>
             )}
             <button
-              className="flex items-center px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-full text-[12px] font-medium text-text-base transition-colors"
+              className="flex items-center px-3 py-1 bg-black/5 hover:bg-black/5 rounded-full text-[12px] font-medium text-text-base transition-colors"
               onClick={() => openAdd()}
             >
               <FontAwesomeIcon icon={["fas", "plus"]} className="mr-1.5 text-[10px]" /> {t("settings.mcp.addServer")}

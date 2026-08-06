@@ -110,6 +110,7 @@ export function GitBranchSubMenu({ projectPath, onOpenWorkbench }: GitBranchSubM
         <DropdownMenuContent side="left" align="start" sideOffset={8} className="p-0">
           <div onClick={(event) => event.stopPropagation()}>
             <GitBranchMenuContent
+              embedded
               branches={branches}
               loading={loading}
               busy={busy}

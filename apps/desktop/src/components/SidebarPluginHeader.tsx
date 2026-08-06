@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, type ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
+import { FLOATING_MENU } from "./ui/motion";
 
 export type SidebarHeaderTab = {
   id: string;
@@ -148,7 +149,7 @@ export function SidebarPluginHeader({
             </button>
 
             {isMenuOpen && availablePlugins && (
-              <div className="popover-menu absolute right-0 top-full mt-1 flex w-56 origin-top-right flex-col rounded-xl border border-border-theme bg-elevated-bg py-1.5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] z-[100]">
+              <div className={`${FLOATING_MENU.shell} absolute right-0 top-full z-[100] mt-1 flex w-56 origin-top-right flex-col`}>
                 {availablePlugins.map((plugin) => (
                   <button
                     key={plugin.id ?? `${plugin.type}:${plugin.title}`}
@@ -157,7 +158,7 @@ export function SidebarPluginHeader({
                       setIsMenuOpen(false);
                       onSelectPlugin?.(plugin);
                     }}
-                    className="flex w-full items-center px-4 py-2 text-left transition-colors hover:bg-hover-bg"
+                    className={`${FLOATING_MENU.row} w-full text-left`}
                   >
                     <div className="mr-3 flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
                       <FontAwesomeIcon icon={plugin.icon} className="text-[12px]" />

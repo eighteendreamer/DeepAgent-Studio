@@ -64,7 +64,7 @@ export function TurnFooter({
         <button
           type="button"
           onClick={copyAnswer}
-          className="flex h-7 w-7 items-center justify-center rounded-md transition hover:bg-gray-100 hover:text-text-base"
+          className="flex h-7 w-7 items-center justify-center rounded-md transition hover:bg-black/5 hover:text-text-base"
           title="复制回答"
           aria-label="复制回答"
         >
@@ -72,7 +72,7 @@ export function TurnFooter({
         </button>
         <button
           type="button"
-          className="flex h-7 w-7 items-center justify-center rounded-md transition hover:bg-gray-100 hover:text-text-base"
+          className="flex h-7 w-7 items-center justify-center rounded-md transition hover:bg-black/5 hover:text-text-base"
           title="从这里创建分支"
           aria-label="从这里创建分支"
         >

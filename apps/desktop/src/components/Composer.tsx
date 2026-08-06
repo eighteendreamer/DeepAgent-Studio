@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
@@ -6,8 +6,9 @@ import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import { ModelThinkingSelector } from "./ModelThinkingSelector";
 import { InputSurface } from "./ui/InputSurface";
 import { IconButton } from "./ui/IconButton";
-import { TintButton } from "./ui/TintButton";
+import { Panel } from "./ui/Panel";
 import { MOTION } from "./ui/motion";
+import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 import { cn } from "./shadcn/utils";
 import {
   SETTINGS_CHANGED_EVENT,
@@ -201,6 +202,10 @@ interface Props {
   contextUsageFallbackTokens?: number;
   /** Maximum auto-expanded textarea height in pixels. */
   textareaMaxHeight?: number;
+  /** Increment to force-close composer toolbar overlays (model / approval). */
+  overlayCloseSignal?: number;
+  /** Fired when any composer toolbar overlay opens or closes. */
+  onOverlayOpenChange?: (open: boolean) => void;
 }
 
 export function Composer({
@@ -216,12 +221,17 @@ export function Composer({
   contextUsage = null,
   contextUsageFallbackTokens = 0,
   textareaMaxHeight = COMPOSER_TEXTAREA_DEFAULT_MAX_HEIGHT,
+  overlayCloseSignal = 0,
+  onOverlayOpenChange,
 }: Props) {
   const { t } = useTranslation();
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const [isApprovalDropdownOpen, setIsApprovalDropdownOpen] = useState(false);
+  const [isContextPopoverOpen, setIsContextPopoverOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const approvalDropdownRef = useRef<HTMLDivElement>(null);
+  const lastOverlayCloseSignal = useRef(overlayCloseSignal);
+  const lastReportedOverlayOpen = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
@@ -351,9 +361,9 @@ export function Composer({
   };
 
   const ALL_APPROVAL_OPTIONS = [
-    { id: "default", label: "composer.defaultPermission", icon: ["fas", "hand"] as const },
-    { id: "auto", label: "composer.autoReview", icon: ["fas", "clock-rotate-left"] as const },
-    { id: "full", label: "composer.fullAccess", icon: ["fas", "circle-exclamation"] as const }
+    { id: "default", label: "composer.defaultPermission", desc: "composer.defaultPermissionDesc", icon: ["fas", "hand"] as const },
+    { id: "auto", label: "composer.autoReview", desc: "composer.autoReviewDesc", icon: ["fas", "shield-halved"] as const },
+    { id: "full", label: "composer.fullAccess", desc: "composer.fullAccessDesc", icon: ["fas", "circle-exclamation"] as const },
   ];
   
   const [visibleOptions, setVisibleOptions] = useState(ALL_APPROVAL_OPTIONS);
@@ -881,6 +891,22 @@ export function Composer({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isModelDropdownOpen, isApprovalDropdownOpen]);
 
+  useEffect(() => {
+    const open = isModelDropdownOpen || isApprovalDropdownOpen || isContextPopoverOpen;
+    if (open === lastReportedOverlayOpen.current) return;
+    lastReportedOverlayOpen.current = open;
+    onOverlayOpenChange?.(open);
+  }, [isModelDropdownOpen, isApprovalDropdownOpen, isContextPopoverOpen, onOverlayOpenChange]);
+
+  useEffect(() => {
+    if (overlayCloseSignal > lastOverlayCloseSignal.current) {
+      lastOverlayCloseSignal.current = overlayCloseSignal;
+      setIsModelDropdownOpen(false);
+      setIsApprovalDropdownOpen(false);
+      setIsContextPopoverOpen(false);
+    }
+  }, [overlayCloseSignal]);
+
   const submitWithAttachments = () => {
     const readyAttachments = attachments.filter((item) => item.status === "ready");
     onSubmit(readyAttachments, selectedSkills, selectedMentions, draftValue);
@@ -1396,11 +1422,11 @@ export function Composer({
   return (
     <div className="group/composer relative w-full">
       <InputSurface
-        className="flex flex-col overflow-visible rounded-[20px] shadow-[0_8px_28px_rgba(31,38,48,0.10)] focus-within:shadow-[0_10px_34px_rgba(31,38,48,0.14)]"
+        className="flex flex-col overflow-visible rounded-[24px] shadow-[0_8px_24px_rgba(31,38,48,0.09)] focus-within:shadow-[0_10px_30px_rgba(31,38,48,0.13)]"
         onDragOver={(event) => event.preventDefault()}
         onDrop={onDrop}
       >
-        <div className="relative flex w-full flex-col p-4 pb-3">
+        <div className="relative flex w-full flex-col p-3.5 pb-2.5">
       <ComposerSuggestPanel
         open={atOpen}
         sections={atSections}
@@ -1410,8 +1436,8 @@ export function Composer({
         onHover={setAtSelected}
         renderItem={(item, selected) => (
           <div
-            className={`grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors ${
-              selected ? "bg-black/5 text-text-base" : "text-text-secondary"
+            className={`grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors duration-150 ${
+              selected ? "font-medium text-text-base" : "text-text-secondary"
             }`}
           >
             <span className="flex h-4 w-4 items-center justify-center text-text-base">
@@ -1437,8 +1463,8 @@ export function Composer({
         onHover={setSlashSelected}
         renderItem={(cmd, selected) => (
           <div
-            className={`grid w-full grid-cols-[130px_minmax(0,1fr)_64px] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors ${
-              selected ? "bg-black/5 text-text-base" : "text-text-secondary"
+            className={`grid w-full grid-cols-[130px_minmax(0,1fr)_64px] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors duration-150 ${
+              selected ? "font-medium text-text-base" : "text-text-secondary"
             }`}
           >
             <span className="truncate font-medium text-text-base">{cmd.title}</span>
@@ -1452,7 +1478,7 @@ export function Composer({
         )}
       />
       {planMode && (
-        <div className="mb-2 inline-flex w-fit items-center rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-[11px] font-medium text-amber-700">
+        <div className="mb-2 inline-flex w-fit items-center rounded-full bg-amber-500/10 px-3 py-1.5 text-[11px] font-medium text-amber-700">
           <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-1.5 text-[10px]" />
           Plan Mode
         </div>
@@ -1463,12 +1489,12 @@ export function Composer({
           {attachments.map((item) => (
             <div
               key={item.id}
-              className="flex h-14 max-w-[220px] shrink-0 items-center gap-2 rounded-xl bg-black/5 px-2 text-left"
+              className="flex h-14 max-w-[220px] shrink-0 items-center gap-2 rounded-2xl bg-black/5 px-2 text-left"
             >
               {item.kind === "image" && item.dataUrl ? (
-                <img src={item.dataUrl} alt="" className="h-10 w-10 rounded-lg object-cover" />
+                <img src={item.dataUrl} alt="" className="h-10 w-10 rounded-xl object-cover" />
               ) : (
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-text-secondary">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-text-secondary">
                   <FontAwesomeIcon icon={["fas", item.kind === "text" ? "file-lines" : "file"]} />
                 </div>
               )}
@@ -1548,8 +1574,8 @@ export function Composer({
         />
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <div className="mt-2.5 flex h-8 items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-visible">
           <input
             ref={fileInputRef}
             type="file"
@@ -1569,64 +1595,140 @@ export function Composer({
                 ? `Maximum ${MAX_COMPOSER_ATTACHMENTS} attachments allowed`
                 : undefined
             }
-            className="h-9 w-9 rounded-full bg-black/5"
+            className="h-8 w-8 rounded-full bg-black/5"
           >
-            <FontAwesomeIcon icon={["fas", "plus"]} className="text-[12px]" />
+            <FontAwesomeIcon icon={["fas", "plus"]} className="text-[11px]" />
           </IconButton>
           
           {visibleOptions.length > 0 && (
-            <div className="relative" ref={approvalDropdownRef}>
-              <TintButton
+            <div className="relative min-w-0 max-w-full" ref={approvalDropdownRef}>
+              <button
                 type="button"
-                variant="default"
-                className="flex h-9 flex-shrink-0 items-center whitespace-nowrap rounded-[10px] bg-primary/10 px-3 text-xs font-medium text-primary hover:bg-primary/15"
-                onClick={() => setIsApprovalDropdownOpen(!isApprovalDropdownOpen)}
+                className={cn(
+                  "flex h-8 max-w-full min-w-0 flex-shrink items-center whitespace-nowrap rounded-full px-3 text-[11px] font-medium",
+                  MOTION.fast,
+                  selectedApproval?.id === "full"
+                    ? cn(
+                        "text-[#e25507] bg-[#e25507]/10 hover:bg-[#e25507]/18 active:bg-[#e25507]/22",
+                        isApprovalDropdownOpen && "bg-[#e25507]/18",
+                      )
+                    : cn(
+                        "text-text-secondary bg-black/5 hover:bg-black/10 hover:text-text-base active:bg-black/[0.12]",
+                        isApprovalDropdownOpen && "bg-black/10 text-text-base",
+                      ),
+                )}
+                onClick={() => {
+                  const next = !isApprovalDropdownOpen;
+                  if (next) {
+                    setIsModelDropdownOpen(false);
+                    setIsContextPopoverOpen(false);
+                  }
+                  setIsApprovalDropdownOpen(next);
+                }}
               >
                 {selectedApproval && (
                   <>
                     <FontAwesomeIcon
                       icon={selectedApproval.icon as any}
-                      className="mr-1.5 text-[11px]"
+                      className={cn(
+                        "mr-1.5 shrink-0 text-[11px]",
+                        selectedApproval.id === "full" ? "text-[#e25507]" : "text-text-secondary",
+                      )}
                     />
-                    {t(selectedApproval.label)}
+                    <span className="truncate">{t(selectedApproval.label)}</span>
                   </>
                 )}
-                <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1 text-[10px]" />
-              </TintButton>
+                <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1 shrink-0 text-[10px]" />
+              </button>
 
               {/* Approval Dropdown */}
               {isApprovalDropdownOpen && (
-                <div className="absolute bottom-full left-0 mb-2 w-[160px] bg-elevated-bg rounded-xl shadow-[0_6px_24px_rgba(0,0,0,0.10)] flex flex-col z-50 overflow-hidden py-1">
-                  {visibleOptions.map((opt) => (
-                    <div
-                      key={opt.id}
-                      className="flex items-center justify-between px-3 py-2 hover:bg-black/5 cursor-pointer text-xs text-text-base group transition-colors"
-                      onClick={() => chooseApproval(opt)}
-                    >
-                      <div className="flex items-center">
-                        <div className="w-5 flex justify-center mr-1">
-                          <FontAwesomeIcon icon={opt.icon as any} className="text-[11px] text-text-secondary" />
+                <Panel
+                  menu
+                  className="absolute bottom-full left-0 z-50 mb-2 w-[min(380px,calc(100vw-48px))] origin-bottom-left"
+                >
+                  <div className="p-2">
+                  <SlidingMenuList
+                    activeId={selectedApproval?.id ?? ""}
+                    pillClassName={cn(
+                      "left-0 right-0 rounded-xl",
+                      selectedApproval?.id === "full" && "bg-[#e25507]/10",
+                    )}
+                    className="flex w-full flex-col gap-1"
+                  >
+                  {visibleOptions.map((opt) => {
+                    const selected = selectedApproval?.id === opt.id;
+                    const isFull = opt.id === "full";
+                    return (
+                      <div
+                        key={opt.id}
+                        {...{ [MENU_ITEM_ATTR]: opt.id }}
+                        className={cn(
+                          "relative z-[1] flex w-full cursor-pointer items-start gap-3 rounded-xl px-3 py-3 text-left",
+                          MOTION.fast,
+                          selected
+                            ? isFull
+                              ? "font-medium text-[#e25507]"
+                              : "font-medium text-text-base"
+                            : "text-text-base",
+                        )}
+                        onClick={() => chooseApproval(opt)}
+                      >
+                        <div className="mt-0.5 flex w-4 shrink-0 justify-center">
+                          <FontAwesomeIcon
+                            icon={opt.icon as any}
+                            className={cn(
+                              "text-[14px]",
+                              selected && isFull ? "text-[#e25507]" : "text-text-secondary",
+                            )}
+                          />
                         </div>
-                        <span className="font-medium text-text-secondary group-hover:text-text-base transition-colors">{t(opt.label)}</span>
+                        <div className="min-w-0 flex-1">
+                          <div className={cn("text-[13px] font-medium leading-normal", selected && !isFull && "text-text-base")}>
+                            {t(opt.label)}
+                          </div>
+                          <div
+                            className={cn(
+                              "mt-1.5 text-[11px] leading-relaxed",
+                              selected && isFull ? "text-[#e25507]/80" : "text-text-secondary",
+                            )}
+                          >
+                            {t(opt.desc)}
+                          </div>
+                        </div>
+                        {selected && (
+                          <FontAwesomeIcon
+                            icon={["fas", "check"]}
+                            className={cn("mt-1 shrink-0 text-[11px]", isFull ? "text-[#e25507]" : "text-text-secondary")}
+                          />
+                        )}
                       </div>
-                      {selectedApproval?.id === opt.id && (
-                        <FontAwesomeIcon icon={["fas", "check"]} className="text-text-base text-[10px]" />
-                      )}
-                    </div>
-                  ))}
-                </div>
+                    );
+                  })}
+                  </SlidingMenuList>
+                  </div>
+                </Panel>
               )}
             </div>
           )}
         </div>
 
-        <div className="flex flex-shrink-0 flex-wrap items-center gap-2">
+        <div className="flex h-8 shrink-0 items-center gap-2">
           <ContextCapacityIndicator
             snapshot={contextUsage}
             modelId={selectedModel}
             fallbackPromptTokens={contextUsageFallbackTokens}
+            popoverSuppressed={isModelDropdownOpen || isApprovalDropdownOpen}
+            overlayCloseSignal={overlayCloseSignal}
+            onPopoverOpenChange={(next) => {
+              if (next) {
+                setIsModelDropdownOpen(false);
+                setIsApprovalDropdownOpen(false);
+              }
+              setIsContextPopoverOpen(next);
+            }}
           />
-          <div className="relative" ref={dropdownRef}>
+          <div className="relative flex h-8 items-center" ref={dropdownRef}>
             <ModelThinkingSelector
               open={isModelDropdownOpen}
               disabled={busy && !onStop}
@@ -1640,7 +1742,13 @@ export function Composer({
               }))}
               selectModelLabel={t("composer.selectModel")}
               noModelsLabel={t("composer.noModels")}
-              onOpenChange={setIsModelDropdownOpen}
+              onOpenChange={(next) => {
+                if (next) {
+                  setIsApprovalDropdownOpen(false);
+                  setIsContextPopoverOpen(false);
+                }
+                setIsModelDropdownOpen(next);
+              }}
               onChooseModel={chooseModel}
               onChooseThinking={chooseThinking}
             />
@@ -1655,7 +1763,7 @@ export function Composer({
             }}
             disabled={busy ? !onStop : !hasComposerContent}
             title={busy ? t("composer.stop") : undefined}
-            className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
+            className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
               busy
                 ? onStop
                   ? "bg-text-base text-white cursor-pointer"
@@ -1669,7 +1777,7 @@ export function Composer({
                   : "bg-black/10 text-text-secondary cursor-not-allowed"
             }`}
           >
-            <FontAwesomeIcon icon={busy ? ["fas", "stop"] : ["fas", "arrow-up"]} className="text-[12px]" />
+            <FontAwesomeIcon icon={busy ? ["fas", "stop"] : ["fas", "arrow-up"]} className="text-[11px]" />
           </button>
         </div>
       </div>
@@ -1679,7 +1787,7 @@ export function Composer({
       {footer && (
         <div
           className={cn(
-            "mt-2 flex min-h-[48px] w-full items-center rounded-[18px] bg-gradient-to-r from-hover-bg via-selection-bg/70 to-primary/10 px-4 py-2 shadow-[0_6px_20px_rgba(0,0,0,0.06)] group-focus-within/composer:shadow-[0_8px_24px_rgba(0,0,0,0.10)]",
+            "relative mt-2 flex min-h-[48px] w-full items-center overflow-visible rounded-[20px] bg-gradient-to-r from-hover-bg via-selection-bg/70 to-primary/10 px-3.5 py-2 shadow-[0_6px_20px_rgba(0,0,0,0.06)] group-focus-within/composer:shadow-[0_8px_24px_rgba(0,0,0,0.10)]",
             MOTION.standard,
           )}
         >
