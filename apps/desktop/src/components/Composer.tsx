@@ -5,6 +5,7 @@ import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import { ModelThinkingSelector } from "./ModelThinkingSelector";
 import { InputSurface } from "./ui/InputSurface";
+import { ComposerAttachButton } from "./ComposerAttachButton";
 import { IconButton } from "./ui/IconButton";
 import { Panel } from "./ui/Panel";
 import { MOTION } from "./ui/motion";
@@ -1586,19 +1587,11 @@ export function Composer({
               event.currentTarget.value = "";
             }}
           />
-          <IconButton
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
+          <ComposerAttachButton
             disabled={attachments.length >= MAX_COMPOSER_ATTACHMENTS}
-            title={
-              attachments.length >= MAX_COMPOSER_ATTACHMENTS
-                ? `Maximum ${MAX_COMPOSER_ATTACHMENTS} attachments allowed`
-                : undefined
-            }
-            className="h-8 w-8 rounded-full bg-black/5"
-          >
-            <FontAwesomeIcon icon={["fas", "plus"]} className="text-[11px]" />
-          </IconButton>
+            disabledTitle={`Maximum ${MAX_COMPOSER_ATTACHMENTS} attachments allowed`}
+            onClick={() => fileInputRef.current?.click()}
+          />
           
           {visibleOptions.length > 0 && (
             <div className="relative min-w-0 max-w-full" ref={approvalDropdownRef}>

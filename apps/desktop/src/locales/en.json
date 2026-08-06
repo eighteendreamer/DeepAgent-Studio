@@ -699,7 +699,13 @@
     "autoReview": "Auto Review",
     "autoReviewDesc": "Only ask for approval on detected risky actions",
     "fullAccess": "Full Access",
-    "fullAccessDesc": "Unrestricted access to the internet and any file on your computer"
+    "fullAccessDesc": "Unrestricted access to the internet and any file on your computer",
+    "addMenu": {
+      "addFiles": "Add files",
+      "addFilesDesc": "Choose from device",
+      "hoverLabel": "Add files",
+      "tooltipDesc": "Pick files from your device, or paste images and text"
+    }
   },
   "balanceChip": {
     "label": "Balance",

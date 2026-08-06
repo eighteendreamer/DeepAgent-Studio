@@ -699,7 +699,13 @@
     "autoReview": "替我审批",
     "autoReviewDesc": "仅对检测到的风险操作请求批准",
     "fullAccess": "完全访问权限",
-    "fullAccessDesc": "可不受限制地访问互联网和您电脑上的任何文件"
+    "fullAccessDesc": "可不受限制地访问互联网和您电脑上的任何文件",
+    "addMenu": {
+      "addFiles": "添加文件",
+      "addFilesDesc": "从本机选择",
+      "hoverLabel": "添加文件",
+      "tooltipDesc": "从本机选择文件，或粘贴图片与文本"
+    }
   },
   "balanceChip": {
     "label": "余额",
