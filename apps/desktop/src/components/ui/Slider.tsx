@@ -37,17 +37,32 @@ export function Slider<T extends string>({ stops, value, onChange, ariaLabel }: 
   const pointerStartX = useRef(0);
   const didDrag = useRef(false);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  const fillRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
   const previewIndexRef = useRef(activeIndex);
   const [dragging, setDragging] = useState(false);
   const [settling, setSettling] = useState(false);
   const [directSettling, setDirectSettling] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(activeIndex);
-  const [motionEpoch, setMotionEpoch] = useState(0);
   const previewActiveIndex = Math.max(0, Math.min(maxIndex, Math.round(previewIndex)));
   const positionRatio = stops.length <= 1 ? 0.5 : previewIndex / maxIndex;
-  const reasoningMotion = reasoningMotionAt(previewIndex, maxIndex);
   const position = `calc(${positionRatio * 100}% + ${thumbRadius - positionRatio * thumbRadius * 2}px)`;
+
+  const applyParticleMotion = useCallback(
+    (index: number) => {
+      const fill = fillRef.current;
+      if (!fill) return;
+      const motion = reasoningMotionAt(index, maxIndex);
+      fill.querySelectorAll<HTMLElement>(
+        ".reasoning-slider-d-flow, .reasoning-slider-d-breathe, .reasoning-slider-d-particles",
+      ).forEach((el) => {
+        for (const anim of el.getAnimations()) {
+          anim.playbackRate = motion;
+        }
+      });
+    },
+    [maxIndex],
+  );
 
   const updatePreview = useCallback(
     (nextIndex: number) => {
@@ -110,9 +125,23 @@ export function Slider<T extends string>({ stops, value, onChange, ariaLabel }: 
     if (!draggingRef.current) updatePreview(activeIndex);
     if (previousIndex.current === activeIndex) return;
     previousIndex.current = activeIndex;
-    triggerSettle();
-    setMotionEpoch((epoch) => epoch + 1);
-  }, [activeIndex, triggerSettle, updatePreview]);
+  }, [activeIndex, updatePreview]);
+
+  useEffect(() => {
+    applyParticleMotion(activeIndex);
+    const fill = fillRef.current;
+    if (!fill) return;
+    let raf = 0;
+    const retry = () => {
+      if (fill.querySelector(".reasoning-slider-d-particles-1")?.getAnimations().length) {
+        applyParticleMotion(activeIndex);
+        return;
+      }
+      raf = requestAnimationFrame(retry);
+    };
+    raf = requestAnimationFrame(retry);
+    return () => cancelAnimationFrame(raf);
+  }, [activeIndex, applyParticleMotion]);
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
@@ -198,29 +227,29 @@ export function Slider<T extends string>({ stops, value, onChange, ariaLabel }: 
           className="reasoning-slider-track absolute inset-x-0 top-1.5 h-6 overflow-hidden rounded-full"
         >
           <div
+            ref={fillRef}
             className={cn(
               "reasoning-slider-fill absolute inset-0 rounded-full",
               dragging
                 ? "transition-none"
                 : directSettling
-                  ? "transition-[clip-path,--reasoning-motion] duration-[560ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
-                  : "transition-[clip-path,--reasoning-motion] duration-300 ease-out",
+                  ? "transition-[clip-path] duration-[560ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
+                  : "transition-[clip-path] duration-300 ease-out",
             )}
             style={{
               clipPath: `inset(0 calc(${(1 - positionRatio) * 100}% - ${
                 thumbRadius - positionRatio * thumbRadius * 2
               }px) 0 0 round 9999px)`,
-              ["--reasoning-motion" as string]: String(reasoningMotion),
             }}
           >
             <span className="reasoning-slider-d-energy absolute inset-0" />
-            <span key={`flow-${motionEpoch}`} className="reasoning-slider-d-flow absolute inset-0" aria-hidden="true" />
-            <span key={`breathe-${motionEpoch}`} className="reasoning-slider-d-breathe absolute inset-0" aria-hidden="true" />
-            <span key={`p1-${motionEpoch}`} className="reasoning-slider-d-particles reasoning-slider-d-particles-1 absolute inset-0" aria-hidden="true" />
-            <span key={`p2-${motionEpoch}`} className="reasoning-slider-d-particles reasoning-slider-d-particles-2 absolute inset-0" aria-hidden="true" />
-            <span key={`p3-${motionEpoch}`} className="reasoning-slider-d-particles reasoning-slider-d-particles-3 absolute inset-0" aria-hidden="true" />
-            <span key={`p4-${motionEpoch}`} className="reasoning-slider-d-particles reasoning-slider-d-particles-4 absolute inset-0" aria-hidden="true" />
-            <span key={`p5-${motionEpoch}`} className="reasoning-slider-d-particles reasoning-slider-d-particles-5 absolute inset-0" aria-hidden="true" />
+            <span className="reasoning-slider-d-flow absolute inset-0" aria-hidden="true" />
+            <span className="reasoning-slider-d-breathe absolute inset-0" aria-hidden="true" />
+            <span className="reasoning-slider-d-particles reasoning-slider-d-particles-1 absolute inset-0" aria-hidden="true" />
+            <span className="reasoning-slider-d-particles reasoning-slider-d-particles-2 absolute inset-0" aria-hidden="true" />
+            <span className="reasoning-slider-d-particles reasoning-slider-d-particles-3 absolute inset-0" aria-hidden="true" />
+            <span className="reasoning-slider-d-particles reasoning-slider-d-particles-4 absolute inset-0" aria-hidden="true" />
+            <span className="reasoning-slider-d-particles reasoning-slider-d-particles-5 absolute inset-0" aria-hidden="true" />
           </div>
 
           {stops.map((stop, index) => {
