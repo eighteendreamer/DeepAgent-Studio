@@ -2,6 +2,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "../shadcn/utils";
 
+/** 方案 E：简单 / 中等 / 深度 对应粒子速度（越大越快） */
+const REASONING_MOTION_STOPS = [0.32, 1.05, 3.0] as const;
+
+function reasoningMotionAt(index: number, maxIndex: number): number {
+  if (maxIndex <= 0) return REASONING_MOTION_STOPS[0];
+  const scaled = (index / maxIndex) * (REASONING_MOTION_STOPS.length - 1);
+  const lo = Math.min(REASONING_MOTION_STOPS.length - 1, Math.floor(scaled));
+  const hi = Math.min(REASONING_MOTION_STOPS.length - 1, Math.ceil(scaled));
+  const t = scaled - lo;
+  return REASONING_MOTION_STOPS[lo] + (REASONING_MOTION_STOPS[hi] - REASONING_MOTION_STOPS[lo]) * t;
+}
+
 export type SliderStop<T extends string = string> = {
   value: T;
   label: string;
@@ -31,8 +43,10 @@ export function Slider<T extends string>({ stops, value, onChange, ariaLabel }: 
   const [settling, setSettling] = useState(false);
   const [directSettling, setDirectSettling] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(activeIndex);
+  const [motionEpoch, setMotionEpoch] = useState(0);
   const previewActiveIndex = Math.max(0, Math.min(maxIndex, Math.round(previewIndex)));
   const positionRatio = stops.length <= 1 ? 0.5 : previewIndex / maxIndex;
+  const reasoningMotion = reasoningMotionAt(previewIndex, maxIndex);
   const position = `calc(${positionRatio * 100}% + ${thumbRadius - positionRatio * thumbRadius * 2}px)`;
 
   const updatePreview = useCallback(
@@ -97,6 +111,7 @@ export function Slider<T extends string>({ stops, value, onChange, ariaLabel }: 
     if (previousIndex.current === activeIndex) return;
     previousIndex.current = activeIndex;
     triggerSettle();
+    setMotionEpoch((epoch) => epoch + 1);
   }, [activeIndex, triggerSettle, updatePreview]);
 
   useEffect(() => {
@@ -188,17 +203,24 @@ export function Slider<T extends string>({ stops, value, onChange, ariaLabel }: 
               dragging
                 ? "transition-none"
                 : directSettling
-                  ? "transition-[clip-path] duration-[560ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
-                  : "transition-[clip-path] duration-300 ease-out",
+                  ? "transition-[clip-path,--reasoning-motion] duration-[560ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
+                  : "transition-[clip-path,--reasoning-motion] duration-300 ease-out",
             )}
             style={{
               clipPath: `inset(0 calc(${(1 - positionRatio) * 100}% - ${
                 thumbRadius - positionRatio * thumbRadius * 2
               }px) 0 0 round 9999px)`,
+              ["--reasoning-motion" as string]: String(reasoningMotion),
             }}
           >
             <span className="reasoning-slider-d-energy absolute inset-0" />
-            <span className="reasoning-slider-d-flow absolute inset-0" />
+            <span key={`flow-${motionEpoch}`} className="reasoning-slider-d-flow absolute inset-0" aria-hidden="true" />
+            <span key={`breathe-${motionEpoch}`} className="reasoning-slider-d-breathe absolute inset-0" aria-hidden="true" />
+            <span key={`p1-${motionEpoch}`} className="reasoning-slider-d-particles reasoning-slider-d-particles-1 absolute inset-0" aria-hidden="true" />
+            <span key={`p2-${motionEpoch}`} className="reasoning-slider-d-particles reasoning-slider-d-particles-2 absolute inset-0" aria-hidden="true" />
+            <span key={`p3-${motionEpoch}`} className="reasoning-slider-d-particles reasoning-slider-d-particles-3 absolute inset-0" aria-hidden="true" />
+            <span key={`p4-${motionEpoch}`} className="reasoning-slider-d-particles reasoning-slider-d-particles-4 absolute inset-0" aria-hidden="true" />
+            <span key={`p5-${motionEpoch}`} className="reasoning-slider-d-particles reasoning-slider-d-particles-5 absolute inset-0" aria-hidden="true" />
           </div>
 
           {stops.map((stop, index) => {
