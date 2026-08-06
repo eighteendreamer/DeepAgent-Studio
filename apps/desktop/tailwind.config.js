@@ -14,6 +14,15 @@ export default {
         "elevated-bg": "var(--theme-elevated, #FFFFFF)",
         "hover-bg": "var(--theme-hover, #F3F4F6)",
         "selection-bg": "var(--theme-selection, #DBEAFE)",
+        "reasoning-simple-from": "var(--theme-reasoning-simple-from, #8ECBC6)",
+        "reasoning-simple-mid": "var(--theme-reasoning-simple-mid, #A9DAD0)",
+        "reasoning-simple-to": "var(--theme-reasoning-simple-to, #C9E8DF)",
+        "reasoning-medium-from": "var(--theme-reasoning-medium-from, #48BFC0)",
+        "reasoning-medium-mid": "var(--theme-reasoning-medium-mid, #55CDAE)",
+        "reasoning-medium-to": "var(--theme-reasoning-medium-to, #91E0C9)",
+        "reasoning-deep-from": "var(--theme-reasoning-deep-from, #22B8C0)",
+        "reasoning-deep-mid": "var(--theme-reasoning-deep-mid, #1FC28F)",
+        "reasoning-deep-to": "var(--theme-reasoning-deep-to, #45D9A0)",
       },
       fontFamily: {
         sans: [

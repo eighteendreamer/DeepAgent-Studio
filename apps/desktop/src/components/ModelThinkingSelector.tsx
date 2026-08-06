@@ -1,5 +1,8 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { Slider } from "./ui/Slider";
+import { Panel } from "./ui/Panel";
+import { ListItem } from "./ui/ListItem";
+import { TintButton } from "./ui/TintButton";
 
 type ThinkingDepth = "simple" | "medium" | "deep";
 
@@ -56,25 +59,25 @@ export function ModelThinkingSelector({
 
   return (
     <div className="relative">
-      <button
+      <TintButton
         type="button"
         disabled={disabled}
         onClick={() => onOpenChange(!open)}
-        className="flex h-8 max-w-[160px] flex-shrink-0 items-center rounded-full border border-border-theme bg-gray-50 px-2.5 text-xs text-text-base transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+        className="flex h-9 max-w-[210px] flex-shrink-0 items-center rounded-[10px] px-3 text-xs"
         title={`${selectModelLabel} / ${selectedThinkingOption.label}`}
       >
         <FontAwesomeIcon icon={selectedThinkingOption.icon as any} className="mr-1.5 text-[11px] text-text-secondary" />
         <span className="truncate font-medium">{pillModel}</span>
         <span className="ml-1.5 shrink-0 text-text-secondary">{selectedThinkingOption.label}</span>
         <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[9px] text-text-secondary" />
-      </button>
+      </TintButton>
 
       {open && (
-        <div className="absolute bottom-full right-0 z-50 mb-2 w-[168px] overflow-hidden rounded-xl border border-border-theme bg-white py-1.5 shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
-          <div className="px-1.5 pb-0.5">
+        <Panel className="absolute bottom-full right-0 z-50 mb-2 w-[264px] overflow-hidden py-2">
+          <div className="px-2 pb-0.5">
             <div className="flex items-center justify-between px-1 py-1 text-[12px]">
               <span className="font-medium text-text-base">模型</span>
-              <span className="max-w-[88px] truncate text-text-secondary">{modelLabel(selectedModel) || "未选择"}</span>
+              <span className="max-w-[150px] truncate text-text-secondary">{modelLabel(selectedModel) || "未选择"}</span>
             </div>
 
             <div className="max-h-[96px] overflow-y-auto py-0.5">
@@ -84,28 +87,27 @@ export function ModelThinkingSelector({
                 models.map((id) => {
                   const selected = id === selectedModel;
                   return (
-                    <button
-                      type="button"
+                    <ListItem
                       key={id}
-                      disabled={switching}
-                      onClick={() => onChooseModel(id)}
-                      className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-[12px] transition-colors ${
-                        selected ? "bg-gray-100 text-text-base" : "text-text-secondary hover:bg-gray-50 hover:text-text-base"
+                      selected={selected}
+                      onClick={switching ? undefined : () => onChooseModel(id)}
+                      className={`text-left cursor-pointer ${
+                        selected ? "text-text-base" : "text-text-secondary hover:text-text-base"
                       }`}
                     >
                       <span className="truncate font-medium">{modelLabel(id)}</span>
                       {selected && <FontAwesomeIcon icon={["fas", "check"]} className="ml-3 text-[10px] text-text-base" />}
-                    </button>
+                    </ListItem>
                   );
                 })
               )}
             </div>
           </div>
 
-          <div className="mx-1.5 my-1 h-px bg-border-theme" />
+          <div className="mx-2 my-1.5 h-px bg-border-theme" />
 
-          <div className="px-1.5 pt-0.5 pb-0.5">
-            <div className="mb-1 flex items-center justify-between px-1 text-[12px]">
+          <div className="px-2 pb-1 pt-0.5">
+            <div className="mb-1.5 flex items-center justify-between px-1 text-[12px]">
               <span className="font-medium text-text-base">推理强度</span>
             </div>
             <Slider
@@ -115,7 +117,7 @@ export function ModelThinkingSelector({
               ariaLabel="推理强度"
             />
           </div>
-        </div>
+        </Panel>
       )}
     </div>
   );

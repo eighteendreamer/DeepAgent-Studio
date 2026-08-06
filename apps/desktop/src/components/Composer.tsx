@@ -4,6 +4,11 @@ import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import { ModelThinkingSelector } from "./ModelThinkingSelector";
+import { InputSurface } from "./ui/InputSurface";
+import { IconButton } from "./ui/IconButton";
+import { TintButton } from "./ui/TintButton";
+import { MOTION } from "./ui/motion";
+import { cn } from "./shadcn/utils";
 import {
   SETTINGS_CHANGED_EVENT,
   attachmentIngest,
@@ -1263,7 +1268,7 @@ export function Composer({
               className={`mx-0.5 inline-flex h-[20px] max-w-[220px] items-center rounded-[3px] px-1 text-[13px] font-medium leading-none align-baseline ${
                 markerSelected
                   ? "bg-primary text-white"
-                  : "border border-gray-300 bg-gray-100 text-text-base"
+                  : "bg-black/5 text-text-base"
               }`}
               title={title}
             >
@@ -1389,12 +1394,13 @@ export function Composer({
   };
 
   return (
-    <div
-      className="relative w-full border border-border-theme rounded-2xl shadow-[0_2px_10px_rgba(0,0,0,0.02)] bg-white flex flex-col transition-all focus-within:border-gray-300 focus-within:shadow-md"
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={onDrop}
-    >
-      <div className="p-3 pb-2 flex flex-col relative w-full">
+    <div className="group/composer relative w-full">
+      <InputSurface
+        className="flex flex-col overflow-visible rounded-[20px] shadow-[0_8px_28px_rgba(31,38,48,0.10)] focus-within:shadow-[0_10px_34px_rgba(31,38,48,0.14)]"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={onDrop}
+      >
+        <div className="relative flex w-full flex-col p-4 pb-3">
       <ComposerSuggestPanel
         open={atOpen}
         sections={atSections}
@@ -1405,7 +1411,7 @@ export function Composer({
         renderItem={(item, selected) => (
           <div
             className={`grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors ${
-              selected ? "bg-gray-100 text-text-base" : "text-text-secondary"
+              selected ? "bg-black/5 text-text-base" : "text-text-secondary"
             }`}
           >
             <span className="flex h-4 w-4 items-center justify-center text-text-base">
@@ -1432,7 +1438,7 @@ export function Composer({
         renderItem={(cmd, selected) => (
           <div
             className={`grid w-full grid-cols-[130px_minmax(0,1fr)_64px] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors ${
-              selected ? "bg-gray-100 text-text-base" : "text-text-secondary"
+              selected ? "bg-black/5 text-text-base" : "text-text-secondary"
             }`}
           >
             <span className="truncate font-medium text-text-base">{cmd.title}</span>
@@ -1446,7 +1452,7 @@ export function Composer({
         )}
       />
       {planMode && (
-        <div className="mb-2 inline-flex w-fit items-center rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700">
+        <div className="mb-2 inline-flex w-fit items-center rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-[11px] font-medium text-amber-700">
           <FontAwesomeIcon icon={["fas", "list-check"]} className="mr-1.5 text-[10px]" />
           Plan Mode
         </div>
@@ -1457,7 +1463,7 @@ export function Composer({
           {attachments.map((item) => (
             <div
               key={item.id}
-              className="flex h-14 max-w-[220px] shrink-0 items-center gap-2 rounded-xl border border-border-theme bg-gray-50 px-2 text-left"
+              className="flex h-14 max-w-[220px] shrink-0 items-center gap-2 rounded-xl bg-black/5 px-2 text-left"
             >
               {item.kind === "image" && item.dataUrl ? (
                 <img src={item.dataUrl} alt="" className="h-10 w-10 rounded-lg object-cover" />
@@ -1482,13 +1488,13 @@ export function Composer({
                     : "文件"}
                 </div>
               </div>
-              <button
+              <IconButton
                 type="button"
                 onClick={() => removeAttachment(item.id)}
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-gray-200 hover:text-text-base"
+                className="h-6 w-6 rounded-full"
               >
                 <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[11px]" />
-              </button>
+              </IconButton>
             </div>
           ))}
         </div>
@@ -1542,8 +1548,8 @@ export function Composer({
         />
       </div>
 
-      <div className="flex flex-wrap items-center justify-between mt-2 pt-1 gap-y-2">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -1554,7 +1560,7 @@ export function Composer({
               event.currentTarget.value = "";
             }}
           />
-          <button
+          <IconButton
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={attachments.length >= MAX_COMPOSER_ATTACHMENTS}
@@ -1563,15 +1569,17 @@ export function Composer({
                 ? `Maximum ${MAX_COMPOSER_ATTACHMENTS} attachments allowed`
                 : undefined
             }
-            className="w-7 h-7 flex-shrink-0 rounded flex items-center justify-center text-text-secondary hover:bg-gray-100 transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+            className="h-9 w-9 rounded-full bg-black/5"
           >
             <FontAwesomeIcon icon={["fas", "plus"]} className="text-[12px]" />
-          </button>
+          </IconButton>
           
           {visibleOptions.length > 0 && (
             <div className="relative" ref={approvalDropdownRef}>
-              <div 
-                className="flex items-center flex-shrink-0 whitespace-nowrap text-blue-500 text-xs font-medium cursor-pointer hover:bg-blue-50 px-2 py-1.5 rounded transition-colors"
+              <TintButton
+                type="button"
+                variant="default"
+                className="flex h-9 flex-shrink-0 items-center whitespace-nowrap rounded-[10px] bg-primary/10 px-3 text-xs font-medium text-primary hover:bg-primary/15"
                 onClick={() => setIsApprovalDropdownOpen(!isApprovalDropdownOpen)}
               >
                 {selectedApproval && (
@@ -1584,15 +1592,15 @@ export function Composer({
                   </>
                 )}
                 <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1 text-[10px]" />
-              </div>
+              </TintButton>
 
               {/* Approval Dropdown */}
               {isApprovalDropdownOpen && (
-                <div className="absolute bottom-full left-0 mb-2 w-[160px] bg-white border border-border-theme rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex flex-col z-50 overflow-hidden py-1">
+                <div className="absolute bottom-full left-0 mb-2 w-[160px] bg-elevated-bg rounded-xl shadow-[0_6px_24px_rgba(0,0,0,0.10)] flex flex-col z-50 overflow-hidden py-1">
                   {visibleOptions.map((opt) => (
                     <div
                       key={opt.id}
-                      className="flex items-center justify-between px-3 py-2 hover:bg-gray-100 cursor-pointer text-xs text-text-base group transition-colors"
+                      className="flex items-center justify-between px-3 py-2 hover:bg-black/5 cursor-pointer text-xs text-text-base group transition-colors"
                       onClick={() => chooseApproval(opt)}
                     >
                       <div className="flex items-center">
@@ -1612,7 +1620,7 @@ export function Composer({
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-shrink-0 flex-wrap items-center gap-2">
           <ContextCapacityIndicator
             snapshot={contextUsage}
             modelId={selectedModel}
@@ -1647,28 +1655,34 @@ export function Composer({
             }}
             disabled={busy ? !onStop : !hasComposerContent}
             title={busy ? t("composer.stop") : undefined}
-            className={`w-8 h-8 flex-shrink-0 rounded-full flex items-center justify-center transition-colors ${
+            className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
               busy
                 ? onStop
                   ? "bg-text-base text-white cursor-pointer"
-                  : "bg-gray-300 text-text-secondary cursor-not-allowed"
+                  : "bg-black/10 text-text-secondary cursor-not-allowed"
                 : planMode
                 ? hasComposerContent
                   ? "bg-amber-500 text-white cursor-pointer"
-                  : "bg-gray-300 text-text-secondary cursor-not-allowed"
+                  : "bg-black/10 text-text-secondary cursor-not-allowed"
                 : hasComposerContent
-                ? "bg-primary text-white cursor-pointer"
-                : "bg-gray-300 text-text-secondary cursor-not-allowed"
+                  ? "bg-primary text-white cursor-pointer"
+                  : "bg-black/10 text-text-secondary cursor-not-allowed"
             }`}
           >
             <FontAwesomeIcon icon={busy ? ["fas", "stop"] : ["fas", "arrow-up"]} className="text-[12px]" />
           </button>
         </div>
       </div>
-      </div>
-      
+        </div>
+      </InputSurface>
+
       {footer && (
-        <div className="w-full bg-gray-50 border-t border-border-theme px-3 py-1.5 flex items-center min-h-[32px] rounded-b-2xl">
+        <div
+          className={cn(
+            "mt-2 flex min-h-[48px] w-full items-center rounded-[18px] bg-gradient-to-r from-hover-bg via-selection-bg/70 to-primary/10 px-4 py-2 shadow-[0_6px_20px_rgba(0,0,0,0.06)] group-focus-within/composer:shadow-[0_8px_24px_rgba(0,0,0,0.10)]",
+            MOTION.standard,
+          )}
+        >
           {footer}
         </div>
       )}
