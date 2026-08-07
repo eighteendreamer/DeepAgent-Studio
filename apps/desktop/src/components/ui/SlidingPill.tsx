@@ -19,8 +19,19 @@ import { MOTION } from "./motion";
  *
  * 注意：容器内按钮必须 `relative z-[1]`（在药丸 z-0 之上），否则药丸会遮住文字。
  */
-export function useSlidingIndicator({ hoverSelector, activeSelector }: { hoverSelector: string; activeSelector: string }) {
+export function useSlidingIndicator({
+  hoverSelector,
+  activeSelector,
+  layoutAnimating = false,
+}: {
+  hoverSelector: string;
+  activeSelector: string;
+  /** Morph 面板展开中：每帧重测，药丸跟随行位（不隐藏） */
+  layoutAnimating?: boolean;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const hoveredRef = useRef<Element | null>(null);
+  const [hovering, setHovering] = useState(false);
   const [pill, setPill] = useState<{ top: number; height: number } | null>(null);
 
   const positionPillOn = useCallback((el: Element | null | undefined) => {
@@ -46,20 +57,60 @@ export function useSlidingIndicator({ hoverSelector, activeSelector }: { hoverSe
     positionPillOn(el);
   }, [activeSelector, positionPillOn]);
 
+  const repositionPill = useCallback(() => {
+    if (hoveredRef.current) {
+      positionPillOn(hoveredRef.current);
+    } else {
+      positionOnActive();
+    }
+  }, [positionOnActive, positionPillOn]);
+
   /* 挂载 & 激活项变化时，药丸滑到激活项 */
   useEffect(() => {
     positionOnActive();
   }, [positionOnActive]);
 
+  /* morph / 面板尺寸变化时重新测量（hover 时跟 hover 行） */
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const ro = new ResizeObserver(() => repositionPill());
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [repositionPill]);
+
+  /* 形变期间且无 hover：每帧跟激活项；有 hover 时交给 CSS transition + mouseover */
+  useEffect(() => {
+    if (!layoutAnimating) return;
+    let rafId = 0;
+    const start = performance.now();
+    const tick = () => {
+      if (!hoveredRef.current) {
+        positionOnActive();
+      }
+      if (performance.now() - start < 700) {
+        rafId = requestAnimationFrame(tick);
+      }
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [layoutAnimating, positionOnActive]);
+
   const handleMouseOver = useCallback(
     (e: MouseEvent<HTMLDivElement>) => {
       const btn = (e.target as HTMLElement).closest(hoverSelector);
-      if (btn) positionPillOn(btn);
+      if (btn) {
+        hoveredRef.current = btn;
+        setHovering(true);
+        positionPillOn(btn);
+      }
     },
     [hoverSelector, positionPillOn],
   );
 
   const handleMouseLeave = useCallback(() => {
+    hoveredRef.current = null;
+    setHovering(false);
     positionOnActive();
   }, [positionOnActive]);
 
@@ -70,6 +121,8 @@ export function useSlidingIndicator({ hoverSelector, activeSelector }: { hoverSe
       top: pill?.top ?? 0,
       height: pill?.height ?? 0,
       opacity: pill ? 1 : 0,
+      /* 仅形变且无 hover 时关闭过渡，避免激活项跟随时滞后；hover 滑块保持 300ms ease-out */
+      transition: layoutAnimating && !hovering ? "none" : undefined,
     } as CSSProperties,
   };
 }

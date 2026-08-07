@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
@@ -7,7 +7,7 @@ import { ModelThinkingSelector } from "./ModelThinkingSelector";
 import { InputSurface } from "./ui/InputSurface";
 import { ComposerAttachButton } from "./ComposerAttachButton";
 import { IconButton } from "./ui/IconButton";
-import { Panel } from "./ui/Panel";
+import { MorphingMenuShell } from "./ui/MorphingMenuShell";
 import { MOTION } from "./ui/motion";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 import { cn } from "./shadcn/utils";
@@ -231,6 +231,7 @@ export function Composer({
   const [isContextPopoverOpen, setIsContextPopoverOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const approvalDropdownRef = useRef<HTMLDivElement>(null);
+  const approvalMorphLayoutId = useId().replace(/:/g, "");
   const lastOverlayCloseSignal = useRef(overlayCloseSignal);
   const lastReportedOverlayOpen = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1594,53 +1595,62 @@ export function Composer({
           />
           
           {visibleOptions.length > 0 && (
-            <div className="relative min-w-0 max-w-full" ref={approvalDropdownRef}>
-              <button
-                type="button"
-                className={cn(
-                  "flex h-8 max-w-full min-w-0 flex-shrink items-center whitespace-nowrap rounded-full px-3 text-[11px] font-medium",
-                  MOTION.fast,
-                  selectedApproval?.id === "full"
-                    ? cn(
-                        "text-[#e25507] bg-[#e25507]/10 hover:bg-[#e25507]/18 active:bg-[#e25507]/22",
-                        isApprovalDropdownOpen && "bg-[#e25507]/18",
-                      )
-                    : cn(
-                        "text-text-secondary bg-black/5 hover:bg-black/10 hover:text-text-base active:bg-black/[0.12]",
-                        isApprovalDropdownOpen && "bg-black/10 text-text-base",
-                      ),
-                )}
-                onClick={() => {
-                  const next = !isApprovalDropdownOpen;
+            <div ref={approvalDropdownRef} className="min-w-0 max-w-full">
+              <MorphingMenuShell
+                open={isApprovalDropdownOpen}
+                onOpenChange={(next) => {
                   if (next) {
                     setIsModelDropdownOpen(false);
                     setIsContextPopoverOpen(false);
                   }
                   setIsApprovalDropdownOpen(next);
                 }}
+                layoutId={approvalMorphLayoutId}
+                trigger={
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex h-8 max-w-full min-w-0 flex-shrink items-center whitespace-nowrap rounded-full px-3 text-[11px] font-medium",
+                      MOTION.fast,
+                      selectedApproval?.id === "full"
+                        ? cn(
+                            "text-[#e25507] bg-[#e25507]/10 hover:bg-[#e25507]/18 active:bg-[#e25507]/22",
+                            isApprovalDropdownOpen && "bg-[#e25507]/18",
+                          )
+                        : cn(
+                            "text-text-secondary bg-black/5 hover:bg-black/10 hover:text-text-base active:bg-black/[0.12]",
+                            isApprovalDropdownOpen && "bg-black/10 text-text-base",
+                          ),
+                    )}
+                    onClick={() => {
+                      const next = !isApprovalDropdownOpen;
+                      if (next) {
+                        setIsModelDropdownOpen(false);
+                        setIsContextPopoverOpen(false);
+                      }
+                      setIsApprovalDropdownOpen(next);
+                    }}
+                  >
+                    {selectedApproval && (
+                      <>
+                        <FontAwesomeIcon
+                          icon={selectedApproval.icon as any}
+                          className={cn(
+                            "mr-1.5 shrink-0 text-[11px]",
+                            selectedApproval.id === "full" ? "text-[#e25507]" : "text-text-secondary",
+                          )}
+                        />
+                        <span className="truncate">{t(selectedApproval.label)}</span>
+                      </>
+                    )}
+                    <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1 shrink-0 text-[10px]" />
+                  </button>
+                }
+                className="min-w-0 max-w-full"
+                panelClassName="w-[min(380px,calc(100vw-48px))]"
+                panelAlign="left"
               >
-                {selectedApproval && (
-                  <>
-                    <FontAwesomeIcon
-                      icon={selectedApproval.icon as any}
-                      className={cn(
-                        "mr-1.5 shrink-0 text-[11px]",
-                        selectedApproval.id === "full" ? "text-[#e25507]" : "text-text-secondary",
-                      )}
-                    />
-                    <span className="truncate">{t(selectedApproval.label)}</span>
-                  </>
-                )}
-                <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1 shrink-0 text-[10px]" />
-              </button>
-
-              {/* Approval Dropdown */}
-              {isApprovalDropdownOpen && (
-                <Panel
-                  menu
-                  className="absolute bottom-full left-0 z-50 mb-2 w-[min(380px,calc(100vw-48px))] origin-bottom-left"
-                >
-                  <div className="p-2">
+                <div className="p-2">
                   <SlidingMenuList
                     activeId={selectedApproval?.id ?? ""}
                     pillClassName={cn(
@@ -1649,59 +1659,58 @@ export function Composer({
                     )}
                     className="flex w-full flex-col gap-1"
                   >
-                  {visibleOptions.map((opt) => {
-                    const selected = selectedApproval?.id === opt.id;
-                    const isFull = opt.id === "full";
-                    return (
-                      <div
-                        key={opt.id}
-                        {...{ [MENU_ITEM_ATTR]: opt.id }}
-                        className={cn(
-                          "relative z-[1] flex w-full cursor-pointer items-start gap-3 rounded-xl px-3 py-3 text-left",
-                          MOTION.fast,
-                          selected
-                            ? isFull
-                              ? "font-medium text-[#e25507]"
-                              : "font-medium text-text-base"
-                            : "text-text-base",
-                        )}
-                        onClick={() => chooseApproval(opt)}
-                      >
-                        <div className="mt-0.5 flex w-4 shrink-0 justify-center">
-                          <FontAwesomeIcon
-                            icon={opt.icon as any}
-                            className={cn(
-                              "text-[14px]",
-                              selected && isFull ? "text-[#e25507]" : "text-text-secondary",
-                            )}
-                          />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className={cn("text-[13px] font-medium leading-normal", selected && !isFull && "text-text-base")}>
-                            {t(opt.label)}
+                    {visibleOptions.map((opt) => {
+                      const selected = selectedApproval?.id === opt.id;
+                      const isFull = opt.id === "full";
+                      return (
+                        <div
+                          key={opt.id}
+                          {...{ [MENU_ITEM_ATTR]: opt.id }}
+                          className={cn(
+                            "relative z-[1] flex w-full cursor-pointer items-start gap-3 rounded-xl px-3 py-3 text-left",
+                            MOTION.fast,
+                            selected
+                              ? isFull
+                                ? "font-medium text-[#e25507]"
+                                : "font-medium text-text-base"
+                              : "text-text-base",
+                          )}
+                          onClick={() => chooseApproval(opt)}
+                        >
+                          <div className="mt-0.5 flex w-4 shrink-0 justify-center">
+                            <FontAwesomeIcon
+                              icon={opt.icon as any}
+                              className={cn(
+                                "text-[14px]",
+                                selected && isFull ? "text-[#e25507]" : "text-text-secondary",
+                              )}
+                            />
                           </div>
-                          <div
-                            className={cn(
-                              "mt-1.5 text-[11px] leading-relaxed",
-                              selected && isFull ? "text-[#e25507]/80" : "text-text-secondary",
-                            )}
-                          >
-                            {t(opt.desc)}
+                          <div className="min-w-0 flex-1">
+                            <div className={cn("text-[13px] font-medium leading-normal", selected && !isFull && "text-text-base")}>
+                              {t(opt.label)}
+                            </div>
+                            <div
+                              className={cn(
+                                "mt-1.5 text-[11px] leading-relaxed",
+                                selected && isFull ? "text-[#e25507]/80" : "text-text-secondary",
+                              )}
+                            >
+                              {t(opt.desc)}
+                            </div>
                           </div>
+                          {selected && (
+                            <FontAwesomeIcon
+                              icon={["fas", "check"]}
+                              className={cn("mt-1 shrink-0 text-[11px]", isFull ? "text-[#e25507]" : "text-text-secondary")}
+                            />
+                          )}
                         </div>
-                        {selected && (
-                          <FontAwesomeIcon
-                            icon={["fas", "check"]}
-                            className={cn("mt-1 shrink-0 text-[11px]", isFull ? "text-[#e25507]" : "text-text-secondary")}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
                   </SlidingMenuList>
-                  </div>
-                </Panel>
-              )}
+                </div>
+              </MorphingMenuShell>
             </div>
           )}
         </div>

@@ -315,6 +315,45 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
   }
 }
 
+/* MorphingSelect — goo morph + stagger items + label roll */
+.morph-select-item-in {
+  animation: morph-select-item-in 360ms cubic-bezier(0.19, 1, 0.22, 1) both;
+}
+
+@keyframes morph-select-item-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.morph-select-label {
+  display: inline-block;
+  animation: morph-select-label-roll 320ms cubic-bezier(0.19, 1, 0.22, 1) both;
+}
+
+@keyframes morph-select-label-roll {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morph-select-item-in,
+  .morph-select-label {
+    animation: none !important;
+  }
+}
+
 .message-notice {
   animation: message-notice-in 160ms ease-out;
   will-change: opacity, transform;

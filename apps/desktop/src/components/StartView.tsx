@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { Composer } from "./Composer";
@@ -8,7 +8,6 @@ import type { ComposerAttachment, ComposerMention, ComposerSkillSelection, Proje
 import { sshListConnections, type SshConnection } from "../api";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { GitBranchChip } from "./git/GitBranchChip";
-import { ToolbarMenuTrigger } from "./ui/ToolbarMenuTrigger";
 import {
   createPluginTab,
   PLUGIN_TOOL_CARDS,
@@ -22,6 +21,7 @@ import { MENU_LIST } from "./ui/motion";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 import { Panel } from "./ui/Panel";
 import { cn } from "./shadcn/utils";
+import { MorphingToolbarMenu } from "./ui/MorphingToolbarMenu";
 
 const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
 const PROJECT_MAP_TAB_ID = "project-map";
@@ -73,13 +73,14 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   const [composerOverlayCloseSignal, setComposerOverlayCloseSignal] = useState(0);
   const [isComposerOverlayOpen, setIsComposerOverlayOpen] = useState(false);
   const [isEnvDropdownOpen, setIsEnvDropdownOpen] = useState(false);
-  const envDropdownRef = useRef<HTMLDivElement>(null);
   const [envMode, setEnvMode] = useState<"local" | "remote">(() => (localStorage.getItem("envMode") as any) || "local");
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(
     () => localStorage.getItem("ssh_connection_id")
   );
   const [sshConnections, setSshConnections] = useState<SshConnection[]>([]);
   const [isRemoteSubmenuOpen, setIsRemoteSubmenuOpen] = useState(false);
+  const projectMorphLayoutId = useId().replace(/:/g, "");
+  const envMorphLayoutId = useId().replace(/:/g, "");
 
   const closeFooterMenus = useCallback(() => {
     setIsDropdownOpen(false);
@@ -352,13 +353,9 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
           footer={
             <div className="flex w-full items-center overflow-visible" ref={dropdownRef}>
               <div className="flex min-w-0 flex-1 items-center gap-6 overflow-visible">
-              <div className="relative shrink-0">
-              <ToolbarMenuTrigger
+              <MorphingToolbarMenu
                 open={isDropdownOpen}
-                icon={["far", "folder"]}
-                label={projectName}
-                onClick={() => {
-                  const next = !isDropdownOpen;
+                onOpenChange={(next) => {
                   if (next) {
                     setIsEnvDropdownOpen(false);
                     setIsRemoteSubmenuOpen(false);
@@ -367,13 +364,13 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                   }
                   setIsDropdownOpen(next);
                 }}
-              />
-
-              {isDropdownOpen && (
-                  <Panel
-                    menu
-                    className="absolute bottom-full left-0 z-50 mb-2 flex w-[300px] flex-col origin-bottom-left overflow-hidden"
-                  >
+                layoutId={projectMorphLayoutId}
+                icon={["far", "folder"]}
+                label={projectName}
+                panelClassName="flex w-[300px] flex-col"
+                zIndex={50}
+                staggerContent={false}
+              >
                     <div className={cn(PROJECT_MENU.searchWrap, PROJECT_MENU.searchBar)}>
                       <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className={PROJECT_MENU.icon} />
                       <input
@@ -443,29 +440,25 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                         </div>
                       </SlidingMenuList>
                     </div>
-                  </Panel>
-                )}
-              </div>
+              </MorphingToolbarMenu>
 
-              <div className="relative shrink-0" ref={envDropdownRef}>
-                <ToolbarMenuTrigger
-                  open={isEnvDropdownOpen}
-                  icon={envMode === "local" ? ["fas", "desktop"] : ["fas", "cloud"]}
-                  label={envLabel}
-                  onClick={() => {
-                    const next = !isEnvDropdownOpen;
-                    if (next) {
-                      setIsDropdownOpen(false);
-                      setIsGitMenuOpen(false);
-                      closeComposerOverlays();
-                    }
-                    setIsEnvDropdownOpen(next);
-                    if (!next) setIsRemoteSubmenuOpen(false);
-                  }}
-                />
-                
-                {isEnvDropdownOpen && (
-                    <Panel menu className="absolute bottom-full left-0 z-[60] mb-2 w-[200px] origin-bottom-left overflow-visible">
+              <MorphingToolbarMenu
+                open={isEnvDropdownOpen}
+                onOpenChange={(next) => {
+                  if (next) {
+                    setIsDropdownOpen(false);
+                    setIsGitMenuOpen(false);
+                    closeComposerOverlays();
+                  }
+                  setIsEnvDropdownOpen(next);
+                  if (!next) setIsRemoteSubmenuOpen(false);
+                }}
+                layoutId={envMorphLayoutId}
+                icon={envMode === "local" ? ["fas", "desktop"] : ["fas", "cloud"]}
+                label={envLabel}
+                panelClassName="w-[200px] overflow-visible"
+                staggerContent={false}
+              >
                     <div className={ENV_MENU.pad}>
                     <SlidingMenuList activeId={envMode} pillClassName={ENV_MENU.pill} className="flex w-full flex-col">
                       <div 
@@ -512,27 +505,32 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                         </div>
 
                         {isRemoteSubmenuOpen && (
-                            <Panel
-                              menu
-                              className="absolute left-full top-0 z-[70] ml-1.5 w-[220px] min-w-[200px] max-w-[260px] origin-top-left"
-                            >
-                              <div className="px-2 py-2">
-                                <div className="px-0.5 pb-1.5 text-[11px] font-medium text-text-secondary">
-                                  {t("chatView.existingSshConnections")}
-                                </div>
+                          <>
+                            <div
+                              className="absolute left-full top-0 z-[65] h-full w-2"
+                              aria-hidden
+                            />
+                          <Panel
+                            menu
+                            className="absolute left-full top-0 z-[70] ml-1.5 w-[220px] min-w-[200px] max-w-[260px] origin-top-left"
+                          >
+                            <div className="px-2 py-2">
+                              <div className="px-0.5 pb-1.5 text-[11px] font-medium text-text-secondary">
+                                {t("chatView.existingSshConnections")}
+                              </div>
 
-                                {sshConnections.length === 0 ? (
-                                  <div className="rounded-lg bg-black/5 px-2.5 py-2.5 text-[12px] leading-relaxed text-text-secondary">
-                                    {t("chatView.noSshConnections")}
-                                  </div>
-                                ) : (
-                                  <SlidingMenuList
-                                    activeId={
-                                      envMode === "remote" && selectedConnectionId ? selectedConnectionId : ""
-                                    }
-                                    pillClassName={ENV_MENU.pill}
-                                    className="w-full"
-                                  >
+                              {sshConnections.length === 0 ? (
+                                <div className="rounded-lg bg-black/5 px-2.5 py-2.5 text-[12px] leading-relaxed text-text-secondary">
+                                  {t("chatView.noSshConnections")}
+                                </div>
+                              ) : (
+                                <SlidingMenuList
+                                  activeId={
+                                    envMode === "remote" && selectedConnectionId ? selectedConnectionId : ""
+                                  }
+                                  pillClassName={ENV_MENU.pill}
+                                  className="w-full"
+                                >
                                   {sshConnections.map((conn) => {
                                     const checked =
                                       envMode === "remote" &&
@@ -594,17 +592,16 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                                       </div>
                                     );
                                   })}
-                                  </SlidingMenuList>
-                                )}
-                              </div>
-                            </Panel>
-                          )}
+                                </SlidingMenuList>
+                              )}
+                            </div>
+                          </Panel>
+                          </>
+                        )}
                       </div>
                     </SlidingMenuList>
                     </div>
-                    </Panel>
-                  )}
-              </div>
+              </MorphingToolbarMenu>
 
               <GitBranchChip
                 projectPath={activeProjectPath}

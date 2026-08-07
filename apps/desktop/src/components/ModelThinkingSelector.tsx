@@ -1,12 +1,13 @@
+import { useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 
 import { Slider } from "./ui/Slider";
 
-import { Panel } from "./ui/Panel";
-
 import { ListItem } from "./ui/ListItem";
 
 import { TintButton } from "./ui/TintButton";
+
+import { MorphingMenuShell } from "./ui/MorphingMenuShell";
 
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 
@@ -124,48 +125,40 @@ export function ModelThinkingSelector({
 
 }: Props) {
 
+  const morphLayoutId = useId().replace(/:/g, "");
+
   const selectedThinkingOption =
 
     thinkingOptions.find((option) => option.id === selectedThinking) ?? thinkingOptions[1];
 
   const pillModel = selectedModel ? compactModelLabel(selectedModel) : selectModelLabel;
 
-
+  const trigger = (
+    <TintButton
+      type="button"
+      disabled={disabled}
+      onClick={() => onOpenChange(!open)}
+      className={cn("flex h-8 max-w-[210px] flex-shrink-0 items-center rounded-full px-3 text-xs", triggerClassName)}
+      title={`${selectModelLabel} / ${selectedThinkingOption.label}`}
+    >
+      <FontAwesomeIcon icon={selectedThinkingOption.icon as any} className="mr-1.5 text-[11px] text-text-secondary" />
+      <span className="truncate font-medium">{pillModel}</span>
+      <span className="ml-1.5 shrink-0 text-text-secondary">{selectedThinkingOption.label}</span>
+      <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[9px] text-text-secondary" />
+    </TintButton>
+  );
 
   return (
-
-    <div className="relative">
-
-      <TintButton
-
-        type="button"
-
-        disabled={disabled}
-
-        onClick={() => onOpenChange(!open)}
-
-        className={cn("flex h-8 max-w-[210px] flex-shrink-0 items-center rounded-full px-3 text-xs", triggerClassName)}
-
-        title={`${selectModelLabel} / ${selectedThinkingOption.label}`}
-
-      >
-
-        <FontAwesomeIcon icon={selectedThinkingOption.icon as any} className="mr-1.5 text-[11px] text-text-secondary" />
-
-        <span className="truncate font-medium">{pillModel}</span>
-
-        <span className="ml-1.5 shrink-0 text-text-secondary">{selectedThinkingOption.label}</span>
-
-        <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[9px] text-text-secondary" />
-
-      </TintButton>
-
-
-
-      {open && (
-
-        <Panel className="absolute bottom-full right-0 z-50 mb-2 w-[264px] origin-bottom-right">
-
+    <MorphingMenuShell
+      open={open}
+      onOpenChange={onOpenChange}
+      layoutId={morphLayoutId}
+      trigger={trigger}
+      className="flex h-8 min-w-0 max-w-full items-center"
+      panelClassName="w-[264px]"
+      panelAlign="right"
+      zIndex={50}
+    >
           <div className="py-2">
 
           <div className={cn(MODEL_MENU.padX, "pb-1")}>
@@ -262,13 +255,7 @@ export function ModelThinkingSelector({
           </div>
 
           </div>
-
-        </Panel>
-
-      )}
-
-    </div>
-
+    </MorphingMenuShell>
   );
 
 }

@@ -2,6 +2,7 @@ import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "../shadcn/utils";
 import { MENU_LIST } from "./motion";
 import { useSlidingIndicator, SlidingPill } from "./SlidingPill";
+import { useMorphPanelLayoutAnimating } from "./MorphPanelLayoutContext";
 
 /** 浮层菜单行统一 data 属性，配合 SlidingMenuList 使用 */
 export const MENU_ITEM_ATTR = "data-menu-item";
@@ -23,9 +24,11 @@ export function SlidingMenuList({
   children,
   ...rest
 }: Props) {
+  const layoutAnimating = useMorphPanelLayoutAnimating();
   const { containerRef, containerProps, indicatorStyle } = useSlidingIndicator({
     hoverSelector: `[${MENU_ITEM_ATTR}]`,
     activeSelector: `[${MENU_ITEM_ATTR}="${activeId}"]`,
+    layoutAnimating,
   });
 
   return (

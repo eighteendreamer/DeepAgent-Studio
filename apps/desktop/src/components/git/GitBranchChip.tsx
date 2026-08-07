@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { gitCheckoutBranch, gitCreateBranch, gitFetch } from "../../api";
@@ -7,7 +7,7 @@ import { useGitStatus } from "../../hooks/useGitStatus";
 import { getGitUiSettings } from "./gitSettings";
 import { GitCreateBranchDialog } from "./GitCreateBranchDialog";
 import { GitBranchMenuContent, formatAheadBehind } from "./GitBranchMenuContent";
-import { ToolbarMenuTrigger } from "../ui/ToolbarMenuTrigger";
+import { MorphingToolbarMenu } from "../ui/MorphingToolbarMenu";
 
 interface Props {
   projectPath?: string | null;
@@ -51,6 +51,7 @@ export function GitBranchChip({
   const [createBranchOpen, setCreateBranchOpen] = useState(false);
   const [suggestedBranchName, setSuggestedBranchName] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+  const gitMorphLayoutId = useId().replace(/:/g, "");
 
   useEffect(() => {
     onStatusChange?.(status);
@@ -138,9 +139,10 @@ export function GitBranchChip({
   return (
     <div className={`relative ${className}`} ref={ref}>
       {variant === "chip" ? (
-        <ToolbarMenuTrigger
+        <MorphingToolbarMenu
           open={open}
-          onClick={() => setOpen(!open)}
+          onOpenChange={setOpen}
+          layoutId={gitMorphLayoutId}
           icon={["fas", "code-branch"]}
           label={currentLabel ?? t("git.title")}
           trailing={
@@ -155,7 +157,34 @@ export function GitBranchChip({
               .filter(Boolean)
               .join(" · ") || undefined
           }
-        />
+          panelClassName={`origin-bottom-left ${
+            dropdownPlacement === "top" ? "bottom-full mb-2" : "top-full mt-2"
+          } ${dropdownAlign === "right" ? "right-0 left-auto" : "left-0"}`}
+          zIndex={70}
+          staggerContent={false}
+          unstyled
+        >
+          <GitBranchMenuContent
+            small={compactMenu}
+            branches={branches}
+            loading={loading}
+            busy={busy}
+            query={query}
+            onQueryChange={setQuery}
+            currentBranch={status?.current_branch ?? null}
+            additions={status?.additions ?? changes?.additions ?? 0}
+            deletions={status?.deletions ?? changes?.deletions ?? 0}
+            filesChanged={status?.files_changed ?? changes?.files.length ?? 0}
+            rebaseState={status?.rebase_state ?? null}
+            mergeState={!!status?.merge_state}
+            operationError={operationError}
+            operationResult={operationResult}
+            onCheckout={checkoutBranch}
+            onFetch={fetchAndRefresh}
+            onCreateBranch={openCreateBranchDialog}
+            onOpenWorkbench={onOpenWorkbench}
+          />
+        </MorphingToolbarMenu>
       ) : (
       <button
         type="button"
@@ -198,7 +227,7 @@ export function GitBranchChip({
       </button>
       )}
 
-      {open && (
+      {variant !== "chip" && open && (
         <div
           className={`absolute z-[70] origin-bottom-left ${
             dropdownPlacement === "top" ? "bottom-full mb-2" : "top-full mt-2"
