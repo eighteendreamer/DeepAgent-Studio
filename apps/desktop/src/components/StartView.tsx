@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useId } from "react";
+import { useState, useRef, useEffect, useCallback, useId, useLayoutEffect } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { Composer } from "./Composer";
@@ -79,8 +79,34 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
   );
   const [sshConnections, setSshConnections] = useState<SshConnection[]>([]);
   const [isRemoteSubmenuOpen, setIsRemoteSubmenuOpen] = useState(false);
+  const envPadRef = useRef<HTMLDivElement>(null);
+  const remoteRowRef = useRef<HTMLDivElement>(null);
+  const [remoteFlyoutAnchor, setRemoteFlyoutAnchor] = useState({ top: 0, height: 36 });
   const projectMorphLayoutId = useId().replace(/:/g, "");
   const envMorphLayoutId = useId().replace(/:/g, "");
+
+  const syncRemoteFlyoutAnchor = useCallback(() => {
+    const pad = envPadRef.current;
+    const row = remoteRowRef.current;
+    if (!pad || !row) return;
+    const padRect = pad.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    setRemoteFlyoutAnchor({ top: rowRect.top - padRect.top, height: rowRect.height });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isEnvDropdownOpen) return;
+    syncRemoteFlyoutAnchor();
+  }, [isEnvDropdownOpen, isRemoteSubmenuOpen, envMode, syncRemoteFlyoutAnchor]);
+
+  useEffect(() => {
+    if (!isEnvDropdownOpen) return;
+    const pad = envPadRef.current;
+    if (!pad) return;
+    const ro = new ResizeObserver(() => syncRemoteFlyoutAnchor());
+    ro.observe(pad);
+    return () => ro.disconnect();
+  }, [isEnvDropdownOpen, syncRemoteFlyoutAnchor]);
 
   const closeFooterMenus = useCallback(() => {
     setIsDropdownOpen(false);
@@ -459,7 +485,11 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                 panelClassName="w-[200px] overflow-visible"
                 staggerContent={false}
               >
-                    <div className={ENV_MENU.pad}>
+                    <div
+                      ref={envPadRef}
+                      className={cn(ENV_MENU.pad, "relative")}
+                      onMouseLeave={() => setIsRemoteSubmenuOpen(false)}
+                    >
                     <SlidingMenuList activeId={envMode} pillClassName={ENV_MENU.pill} className="flex w-full flex-col">
                       <div 
                         {...{ [MENU_ITEM_ATTR]: "local" }}
@@ -480,39 +510,41 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                       </div>
 
                       <div
-                        className="relative"
+                        ref={remoteRowRef}
+                        {...{ [MENU_ITEM_ATTR]: "remote" }}
+                        className={cn(ENV_MENU.row, "relative z-[1] hover:bg-transparent")}
                         onMouseEnter={() => setIsRemoteSubmenuOpen(true)}
-                        onMouseLeave={() => setIsRemoteSubmenuOpen(false)}
+                        onClick={() => {
+                          handleEnvModeChange("remote");
+                          setIsRemoteSubmenuOpen(true);
+                        }}
                       >
-                        <div
-                          {...{ [MENU_ITEM_ATTR]: "remote" }}
-                          className={cn(ENV_MENU.row, "relative z-[1] hover:bg-transparent")}
-                          onClick={() => {
-                            handleEnvModeChange("remote");
-                            setIsRemoteSubmenuOpen(true);
-                          }}
-                        >
-                          <div className="flex min-w-0 items-center">
-                            <FontAwesomeIcon icon={["fas", "cloud"]} className={ENV_MENU.icon} />
-                            <span className="truncate">{t("chatView.remoteMode")}</span>
-                          </div>
-                          <div className="ml-2 flex shrink-0 items-center gap-2">
-                            {envMode === "remote" && (
-                              <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-secondary" />
-                            )}
-                            <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
-                          </div>
+                        <div className="flex min-w-0 items-center">
+                          <FontAwesomeIcon icon={["fas", "cloud"]} className={ENV_MENU.icon} />
+                          <span className="truncate">{t("chatView.remoteMode")}</span>
                         </div>
+                        <div className="ml-2 flex shrink-0 items-center gap-2">
+                          {envMode === "remote" && (
+                            <FontAwesomeIcon icon={["fas", "check"]} className="text-[11px] text-text-secondary" />
+                          )}
+                          <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
+                        </div>
+                      </div>
+                    </SlidingMenuList>
 
                         {isRemoteSubmenuOpen && (
                           <>
                             <div
-                              className="absolute left-full top-0 z-[65] h-full w-2"
+                              className="absolute left-full z-[65] w-2"
+                              style={{ top: remoteFlyoutAnchor.top, height: remoteFlyoutAnchor.height }}
+                              onMouseEnter={() => setIsRemoteSubmenuOpen(true)}
                               aria-hidden
                             />
                           <Panel
                             menu
                             className="absolute left-full top-0 z-[70] ml-1.5 w-[220px] min-w-[200px] max-w-[260px] origin-top-left"
+                            style={{ top: remoteFlyoutAnchor.top }}
+                            onMouseEnter={() => setIsRemoteSubmenuOpen(true)}
                           >
                             <div className="px-2 py-2">
                               <div className="px-0.5 pb-1.5 text-[11px] font-medium text-text-secondary">
@@ -598,8 +630,6 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                           </Panel>
                           </>
                         )}
-                      </div>
-                    </SlidingMenuList>
                     </div>
               </MorphingToolbarMenu>
 

@@ -32,7 +32,7 @@ export function SlidingMenuList({
   });
 
   return (
-    <div ref={containerRef} {...containerProps} className={cn("relative w-full", className)} {...rest}>
+    <div ref={containerRef} {...containerProps} className={cn("relative w-full overflow-hidden", className)} {...rest}>
       {children}
       <SlidingPill
         className={cn("rounded-lg", MENU_LIST.pillInset, pillClassName)}

@@ -79,7 +79,21 @@ export function useSlidingIndicator({
     return () => ro.disconnect();
   }, [repositionPill]);
 
-  /* 形变期间且无 hover：每帧跟激活项；有 hover 时交给 CSS transition + mouseover */
+  /* 形变结束：等 layout 稳定后再重测（双 rAF） */
+  useEffect(() => {
+    if (layoutAnimating) return;
+    let outer = 0;
+    let inner = 0;
+    outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => repositionPill());
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [layoutAnimating, repositionPill]);
+
+  /* 形变期间且无 hover：每帧跟激活项；有 hover 时交给 CSS transition + ResizeObserver */
   useEffect(() => {
     if (!layoutAnimating) return;
     let rafId = 0;
