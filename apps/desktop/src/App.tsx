@@ -1968,7 +1968,7 @@ export function App() {
         </>
 
         <main
-          className={`app-main-surface relative flex flex-1 overflow-hidden bg-white${isSidebarOpen ? " rounded-tl-2xl" : ""}`}
+          className="app-main-surface relative flex flex-1 overflow-hidden bg-white"
         >
           <Suspense fallback={<ViewLoading />}>
             {view === "start" && (
