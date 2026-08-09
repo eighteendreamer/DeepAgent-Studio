@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "js-reverse": {
+      "command": "${DEEPAGENT_NODE}",
+      "args": [
+        "${DEEPAGENT_MCP_DATA}/runtime/build/src/index.js",
+        "--isolated",
+        "--allowedRoots",
+        "${DEEPAGENT_MCP_DATA}/workspace",
+        "--allowedRoots",
+        "${DEEPAGENT_PROJECT_ROOT}"
+      ],
+      "env": {
+        "DEEPAGENT_RUNTIME_NODE_REQUIREMENT": ">=20.19",
+        "DEEPAGENT_RUNTIME_PREFERENCE": "prefer_local"
+      }
+    }
+  }
+}

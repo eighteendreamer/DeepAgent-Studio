@@ -10,6 +10,7 @@
 //! offline; the persisted config is always available.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use deepagent_core::clock::{Clock, SystemClock};
@@ -241,6 +242,8 @@ pub struct McpService {
     db: Arc<Database>,
     runtime: Option<Arc<RuntimeBroker>>,
     projects: Option<Arc<ProjectService>>,
+    builtin_mcp_root: Option<PathBuf>,
+    builtin_mcp_data: Option<PathBuf>,
     /// Cross-run cache of the connected registry, keyed by a fingerprint of the
     /// enabled-server config. Lets a chat run reuse already-spawned MCP servers
     /// (stdio/npx cold-start is the dominant per-run latency) instead of
@@ -263,6 +266,8 @@ impl McpService {
             db,
             runtime: None,
             projects: None,
+            builtin_mcp_root: None,
+            builtin_mcp_data: None,
             cache: Arc::new(AsyncMutex::new(None)),
         }
     }
@@ -277,6 +282,53 @@ impl McpService {
         self
     }
 
+    /// Register the bundled MCP resource. It is runtime-only: it is always
+    /// available to the agent, but is not editable through user MCP config.
+    pub fn with_builtin_mcp(mut self, resource_root: PathBuf, data_root: PathBuf) -> Self {
+        self.builtin_mcp_root = Some(resource_root);
+        self.builtin_mcp_data = Some(data_root);
+        self
+    }
+
+    fn builtin_config(&self) -> Result<McpConfig> {
+        let Some(resource_root) = self.builtin_mcp_root.as_ref() else {
+            return Ok(McpConfig {
+                servers: BTreeMap::new(),
+            });
+        };
+        let path = resource_root.join(".mcp.json");
+        if !path.is_file() {
+            tracing::warn!(path = %path.display(), "built-in MCP config is unavailable");
+            return Ok(McpConfig {
+                servers: BTreeMap::new(),
+            });
+        }
+        let body = std::fs::read_to_string(&path).map_err(|e| {
+            CoreError::Persistence(format!("read built-in MCP config {}: {e}", path.display()))
+        })?;
+        let config = McpConfig::parse(&body).map_err(|e| {
+            CoreError::invalid(format!("parse built-in MCP config {}: {e}", path.display()))
+        })?;
+        if let Some(data_root) = self.builtin_mcp_data.as_ref() {
+            crate::plugin_service::prepare_runtime_payload(resource_root, data_root)?;
+        }
+        Ok(config)
+    }
+
+    fn merge_builtin_config(&self, mut config: McpConfig) -> Result<McpConfig> {
+        for (name, server) in self.builtin_config()?.servers {
+            if config.servers.contains_key(&name) {
+                tracing::warn!(
+                    server = name.as_str(),
+                    "skipping built-in MCP because a user MCP server has the same name"
+                );
+                continue;
+            }
+            config.servers.insert(name, server);
+        }
+        Ok(config)
+    }
+
     fn prepare_runtime_config(&self, config: &mut McpConfig) {
         let project_root = self
             .projects
@@ -288,10 +340,16 @@ impl McpService {
             .as_ref()
             .map(|runtime| runtime.build_process_environment(project_root.as_deref()))
             .unwrap_or_default();
+        let builtin_data = self
+            .builtin_mcp_data
+            .as_ref()
+            .map(|path| path.display().to_string());
         // Expand placeholders before resolving plugin-declared requirements.
         config.expand_with(&|var| {
             if var == "DEEPAGENT_PROJECT_ROOT" {
                 project_root.as_ref().map(|root| root.display().to_string())
+            } else if var == "DEEPAGENT_MCP_DATA" {
+                builtin_data.clone()
             } else {
                 environment
                     .get(var)
@@ -540,7 +598,7 @@ impl McpService {
             .filter(|(name, _)| state.enabled.get(*name).copied().unwrap_or(true))
             .map(|(n, c)| (n.clone(), c.clone()))
             .collect();
-        Ok(McpConfig { servers })
+        self.merge_builtin_config(McpConfig { servers })
     }
 
     /// Enabled user MCP config plus a runtime-only overlay, used by plugins.
@@ -569,13 +627,24 @@ impl McpService {
         overlay: McpConfig,
         sources: &BTreeMap<String, PluginMcpServerSource>,
     ) -> Result<McpConfig> {
-        let servers = self
+        let mut config = self.enabled_config()?;
+        for entry in self
             .effective_entries_with_plugin_overlay(overlay, sources)?
             .into_iter()
-            .filter(|entry| entry.dto.enabled && entry.dto.conflict.is_none())
-            .map(|entry| (entry.dto.name, entry.config))
-            .collect();
-        Ok(McpConfig { servers })
+            .filter(|entry| {
+                entry.dto.source == "plugin" && entry.dto.enabled && entry.dto.conflict.is_none()
+            })
+        {
+            if config.servers.contains_key(&entry.dto.name) {
+                tracing::warn!(
+                    server = entry.dto.name.as_str(),
+                    "skipping plugin MCP because an existing MCP server has the same runtime name"
+                );
+                continue;
+            }
+            config.servers.insert(entry.dto.name, entry.config);
+        }
+        Ok(config)
     }
 
     /// Connect every **enabled** server, run the `initialize` + `tools/list`
@@ -862,6 +931,13 @@ mod tests {
         McpService::new(Arc::new(Database::open_in_memory().unwrap()))
     }
 
+    fn service_with_builtin(
+        resource_root: &std::path::Path,
+        data_root: &std::path::Path,
+    ) -> McpService {
+        service().with_builtin_mcp(resource_root.to_path_buf(), data_root.to_path_buf())
+    }
+
     fn stdio_dto(name: &str) -> McpServerDto {
         McpServerDto {
             name: name.to_string(),
@@ -880,6 +956,49 @@ mod tests {
             read_only: false,
             conflict: None,
         }
+    }
+
+    #[test]
+    fn enabled_config_includes_builtin_mcp() {
+        let resource = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        std::fs::write(
+            resource.path().join(".mcp.json"),
+            r#"{"mcpServers":{"js-reverse":{"command":"node","args":["server.js"]}}}"#,
+        )
+        .unwrap();
+
+        let config = service_with_builtin(resource.path(), data.path())
+            .enabled_config()
+            .unwrap();
+
+        assert_eq!(
+            config.servers["js-reverse"].command.as_deref(),
+            Some("node")
+        );
+    }
+
+    #[test]
+    fn user_mcp_server_overrides_builtin_name() {
+        let resource = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        std::fs::write(
+            resource.path().join(".mcp.json"),
+            r#"{"mcpServers":{"js-reverse":{"command":"builtin-node"}}}"#,
+        )
+        .unwrap();
+        let service = service_with_builtin(resource.path(), data.path());
+        let mut user = stdio_dto("js-reverse");
+        user.command = Some("user-node".into());
+        user.args.clear();
+        service.upsert(user).unwrap();
+
+        let config = service.enabled_config().unwrap();
+
+        assert_eq!(
+            config.servers["js-reverse"].command.as_deref(),
+            Some("user-node")
+        );
     }
 
     fn stdio_config(command: &str) -> McpServerConfig {

@@ -12,7 +12,7 @@ This is the single entry point for the bundled `reverse-skill` pack. Keep its sp
 2. Read `resources/skills/MASTER-ROUTING.md`; use `resources/skills/routing.md` only when the primary route is ambiguous.
 3. Read the selected module's `SKILL.md` completely before acting.
 4. Prefer the current project's tools and runtimes. DeepAgent managed Node, Python, and JDK are compatibility fallbacks.
-5. For JavaScript/browser work, prefer the built-in `js-reverse-mcp` plugin when its tools match the task.
+5. For JavaScript/browser work, prefer the built-in `js-reverse` MCP when its tools match the task.
 6. For WeChat mini-program packages, use the built-in `wedecode` plugin and preserve the original package.
 7. Keep evidence and generated output inside the current project or an explicitly authorized directory.
 

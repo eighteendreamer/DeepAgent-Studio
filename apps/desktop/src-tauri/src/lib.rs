@@ -469,6 +469,18 @@ fn locate_builtin_plugins_dir(resource_dir: &Path) -> PathBuf {
         .expect("non-empty plugin resource candidate list")
 }
 
+fn locate_builtin_mcp_dir(resource_dir: &Path) -> PathBuf {
+    let candidates = [
+        resource_dir.join("resources").join("mcp"),
+        resource_dir.join("mcp"),
+        resource_dir.join("_up_").join("resources").join("mcp"),
+    ];
+    candidates
+        .into_iter()
+        .find(|path| path.is_dir())
+        .unwrap_or_else(|| resource_dir.join("resources").join("mcp"))
+}
+
 fn session_plugin_roots_from_env() -> Vec<PathBuf> {
     let Some(raw) = std::env::var_os("DEEPAGENT_SESSION_PLUGIN_ROOTS") else {
         return Vec::new();
@@ -5052,7 +5064,15 @@ pub fn run() {
             ));
             let mcp = Arc::new(
                 McpService::new(service.shared_database())
-                    .with_runtime(runtime_broker.clone(), projects.clone()),
+                    .with_runtime(runtime_broker.clone(), projects.clone())
+                    .with_builtin_mcp(
+                        match app.path().resource_dir() {
+                            Ok(resource_dir) => locate_builtin_mcp_dir(&resource_dir)
+                                .join("js-reverse"),
+                            Err(_) => std::env::temp_dir().join("deepagent-builtin-mcp-missing"),
+                        },
+                        dir.join("mcp-data").join("js-reverse"),
+                    ),
             );
             let vision = Arc::new(VisionService::new(
                 settings_arc.clone(),

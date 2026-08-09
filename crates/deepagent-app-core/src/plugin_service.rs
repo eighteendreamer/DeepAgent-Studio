@@ -933,7 +933,7 @@ impl PluginService {
                 continue;
             };
             let data_dir = self.data_root.join(sanitize_file_name(&plugin.id));
-            prepare_plugin_payload(&plugin.root, &data_dir)?;
+            prepare_runtime_payload(&plugin.root, &data_dir)?;
             inputs.push(EnabledPluginRuntimeInput {
                 id: &plugin.id,
                 name: &plugin.name,
@@ -1540,8 +1540,8 @@ impl PluginService {
     }
 }
 
-fn prepare_plugin_payload(plugin_root: &Path, data_dir: &Path) -> Result<()> {
-    let archive_path = plugin_root.join("runtime.zip");
+pub(crate) fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<()> {
+    let archive_path = payload_root.join("runtime.zip");
     if !archive_path.is_file() {
         return Ok(());
     }
@@ -1564,49 +1564,51 @@ fn prepare_plugin_payload(plugin_root: &Path, data_dir: &Path) -> Result<()> {
     let file = File::open(&archive_path)
         .map_err(|e| CoreError::Persistence(format!("open {}: {e}", archive_path.display())))?;
     let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| CoreError::Persistence(format!("read plugin payload: {e}")))?;
+        .map_err(|e| CoreError::Persistence(format!("read runtime payload: {e}")))?;
     if archive.len() > 100_000 {
-        return Err(CoreError::invalid("plugin payload contains too many files"));
+        return Err(CoreError::invalid(
+            "runtime payload contains too many files",
+        ));
     }
     let stage = data_dir.join(".runtime.tmp");
     let _ = std::fs::remove_dir_all(&stage);
     std::fs::create_dir_all(&stage)
-        .map_err(|e| CoreError::Persistence(format!("create plugin runtime: {e}")))?;
+        .map_err(|e| CoreError::Persistence(format!("create runtime payload stage: {e}")))?;
     let mut extracted = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
-            .map_err(|e| CoreError::Persistence(format!("read plugin payload entry: {e}")))?;
+            .map_err(|e| CoreError::Persistence(format!("read runtime payload entry: {e}")))?;
         extracted = extracted.saturating_add(entry.size());
         if extracted > 512 * 1024 * 1024 {
             let _ = std::fs::remove_dir_all(&stage);
-            return Err(CoreError::invalid("plugin payload exceeds 512 MiB"));
+            return Err(CoreError::invalid("runtime payload exceeds 512 MiB"));
         }
         let relative = entry
             .enclosed_name()
-            .ok_or_else(|| CoreError::invalid("plugin payload contains an unsafe path"))?;
+            .ok_or_else(|| CoreError::invalid("runtime payload contains an unsafe path"))?;
         let output = stage.join(relative);
         if entry.is_dir() {
             std::fs::create_dir_all(&output)
-                .map_err(|e| CoreError::Persistence(format!("create plugin directory: {e}")))?;
+                .map_err(|e| CoreError::Persistence(format!("create payload directory: {e}")))?;
         } else {
             if let Some(parent) = output.parent() {
                 std::fs::create_dir_all(parent)
-                    .map_err(|e| CoreError::Persistence(format!("create plugin parent: {e}")))?;
+                    .map_err(|e| CoreError::Persistence(format!("create payload parent: {e}")))?;
             }
             let mut output_file = File::create(&output)
-                .map_err(|e| CoreError::Persistence(format!("create plugin file: {e}")))?;
+                .map_err(|e| CoreError::Persistence(format!("create payload file: {e}")))?;
             std::io::copy(&mut entry, &mut output_file)
-                .map_err(|e| CoreError::Persistence(format!("extract plugin file: {e}")))?;
+                .map_err(|e| CoreError::Persistence(format!("extract payload file: {e}")))?;
         }
     }
     let _ = std::fs::remove_dir_all(&runtime_dir);
     std::fs::rename(&stage, &runtime_dir)
-        .map_err(|e| CoreError::Persistence(format!("activate plugin runtime: {e}")))?;
+        .map_err(|e| CoreError::Persistence(format!("activate runtime payload: {e}")))?;
     std::fs::write(marker, archive_size.to_string())
-        .map_err(|e| CoreError::Persistence(format!("write plugin payload marker: {e}")))?;
+        .map_err(|e| CoreError::Persistence(format!("write runtime payload marker: {e}")))?;
     std::fs::create_dir_all(data_dir.join("workspace"))
-        .map_err(|e| CoreError::Persistence(format!("create plugin workspace: {e}")))?;
+        .map_err(|e| CoreError::Persistence(format!("create payload workspace: {e}")))?;
     Ok(())
 }
 
