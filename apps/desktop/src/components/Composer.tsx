@@ -5,6 +5,7 @@ import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import { ModelThinkingSelector } from "./ModelThinkingSelector";
 import { InputSurface } from "./ui/InputSurface";
+import { Tooltip, TooltipTrigger } from "./ui/Tooltip";
 import { ComposerAttachButton } from "./ComposerAttachButton";
 import { IconButton } from "./ui/IconButton";
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
@@ -1002,7 +1003,7 @@ export function Composer({
 
   const isTextLikeFile = (file: File) =>
     file.type.startsWith("text/") ||
-    /\.(txt|md|markdown|json|log|yaml|yml|toml|xml|ts|tsx|js|jsx|mjs|cjs|rs|go|py|java|kt|css|scss|html|htm|env|gitignore|npmrc|toml|ini|conf|cfg|sh|bash|zsh|fish|ps1|bat|cmd)$/i.test(
+    /\.(txt|md|markdown|json|log|yaml|yml|xml|ts|tsx|js|jsx|mjs|cjs|rs|go|py|java|kt|css|scss|html|htm|env|gitignore|npmrc|toml|ini|conf|cfg|sh|bash|zsh|fish|ps1|bat|cmd)$/i.test(
       file.name,
     );
 
@@ -1464,19 +1465,27 @@ export function Composer({
         onSelect={chooseSlash}
         onHover={setSlashSelected}
         renderItem={(cmd, selected) => (
-          <div
-            className={`grid w-full grid-cols-[130px_minmax(0,1fr)_64px] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors duration-150 ${
-              selected ? "font-medium text-text-base" : "text-text-secondary"
-            }`}
-          >
-            <span className="truncate font-medium text-text-base">{cmd.title}</span>
-            <span className="truncate text-[12px] leading-snug text-text-secondary">
-              {cmd.description}
-            </span>
-            <span className="truncate text-right text-[11px] text-text-secondary">
-              {cmd.category}
-            </span>
-          </div>
+          <TooltipTrigger>
+            <div
+              className={`grid w-full grid-cols-[130px_minmax(0,1fr)_64px] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors duration-150 ${
+                selected ? "font-medium text-text-base" : "text-text-secondary"
+              }`}
+            >
+              <span className="truncate font-medium text-text-base">{cmd.title}</span>
+              <span className="truncate text-[12px] leading-snug text-text-secondary">
+                {cmd.description}
+              </span>
+              <span className="truncate text-right text-[11px] text-text-secondary">
+                {cmd.category}
+              </span>
+            </div>
+            <Tooltip placement="top start">
+              <div className="font-medium">{cmd.title}</div>
+              {cmd.description && (
+                <div className="mt-1 max-w-sm text-bg-base/80">{cmd.description}</div>
+              )}
+            </Tooltip>
+          </TooltipTrigger>
         )}
       />
       {planMode && (
