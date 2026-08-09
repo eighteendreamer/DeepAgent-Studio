@@ -1,56 +1,42 @@
 import * as React from "react";
-import {
-  Focusable,
-  OverlayArrow,
-  Tooltip as TooltipPrimitive,
-  TooltipTrigger as TooltipTriggerPrimitive,
-} from "react-aria-components";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 
 import { cn } from "../shadcn/utils";
 
-export function TooltipTrigger({
-  delay = 250,
-  children,
+export function TooltipProvider({
+  delayDuration = 250,
   ...props
-}: React.ComponentProps<typeof TooltipTriggerPrimitive>) {
-  const [trigger, tooltip] = React.Children.toArray(children);
-
-  return (
-    <TooltipTriggerPrimitive delay={delay} {...props}>
-      <Focusable>
-        {trigger as React.ComponentProps<typeof Focusable>["children"]}
-      </Focusable>
-      {tooltip}
-    </TooltipTriggerPrimitive>
-  );
+}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+  return <TooltipPrimitive.Provider delayDuration={delayDuration} {...props} />;
 }
 
-export function Tooltip({
+export function Tooltip(props: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+  return <TooltipPrimitive.Root {...props} />;
+}
+
+export function TooltipTrigger(props: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+  return <TooltipPrimitive.Trigger {...props} />;
+}
+
+export function TooltipContent({
   className,
-  placement = "top",
-  offset = 6,
-  crossOffset = 0,
+  sideOffset = 6,
   children,
   ...props
-}: Omit<React.ComponentProps<typeof TooltipPrimitive>, "children" | "className"> & {
-  className?: string;
-  children?: React.ReactNode;
-}) {
+}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
   return (
-    <TooltipPrimitive
-      placement={placement}
-      offset={offset}
-      crossOffset={crossOffset}
-      className={cn(
-        "z-[70] w-fit max-w-sm rounded-md bg-text-base px-3 py-2 text-[11px] leading-snug text-bg-base shadow-[0_6px_24px_rgba(0,0,0,0.16)]",
-        className,
-      )}
-      {...props}
-    >
-      {children}
-      <OverlayArrow
-        className="z-[70] h-2.5 w-2.5 rotate-45 rounded-[2px] bg-text-base"
-      />
-    </TooltipPrimitive>
+    <TooltipPrimitive.Portal>
+      <TooltipPrimitive.Content
+        sideOffset={sideOffset}
+        className={cn(
+          "z-[70] w-fit max-w-sm rounded-md bg-text-base px-3 py-2 text-[11px] leading-snug text-bg-base shadow-[0_6px_24px_rgba(0,0,0,0.16)]",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+        <TooltipPrimitive.Arrow className="h-2.5 w-2.5 fill-text-base" />
+      </TooltipPrimitive.Content>
+    </TooltipPrimitive.Portal>
   );
 }

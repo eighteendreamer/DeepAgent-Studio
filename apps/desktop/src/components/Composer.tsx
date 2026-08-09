@@ -5,7 +5,6 @@ import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import { ModelThinkingSelector } from "./ModelThinkingSelector";
 import { InputSurface } from "./ui/InputSurface";
-import { Tooltip, TooltipTrigger } from "./ui/Tooltip";
 import { ComposerAttachButton } from "./ComposerAttachButton";
 import { IconButton } from "./ui/IconButton";
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
@@ -1464,28 +1463,28 @@ export function Composer({
         getKey={(cmd) => cmd.id}
         onSelect={chooseSlash}
         onHover={setSlashSelected}
+        renderTooltip={(cmd) => (
+          <>
+            <div className="font-medium">{cmd.title}</div>
+            {cmd.description && (
+              <div className="mt-1 max-w-sm text-bg-base/80">{cmd.description}</div>
+            )}
+          </>
+        )}
         renderItem={(cmd, selected) => (
-          <TooltipTrigger>
-            <div
-              className={`grid w-full grid-cols-[130px_minmax(0,1fr)_64px] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors duration-150 ${
-                selected ? "font-medium text-text-base" : "text-text-secondary"
-              }`}
-            >
-              <span className="truncate font-medium text-text-base">{cmd.title}</span>
-              <span className="truncate text-[12px] leading-snug text-text-secondary">
-                {cmd.description}
-              </span>
-              <span className="truncate text-right text-[11px] text-text-secondary">
-                {cmd.category}
-              </span>
-            </div>
-            <Tooltip placement="top start">
-              <div className="font-medium">{cmd.title}</div>
-              {cmd.description && (
-                <div className="mt-1 max-w-sm text-bg-base/80">{cmd.description}</div>
-              )}
-            </Tooltip>
-          </TooltipTrigger>
+          <div
+            className={`grid w-full grid-cols-[130px_minmax(0,1fr)_64px] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors duration-150 ${
+              selected ? "font-medium text-text-base" : "text-text-secondary"
+            }`}
+          >
+            <span className="truncate font-medium text-text-base">{cmd.title}</span>
+            <span className="truncate text-[12px] leading-snug text-text-secondary">
+              {cmd.description}
+            </span>
+            <span className="truncate text-right text-[11px] text-text-secondary">
+              {cmd.category}
+            </span>
+          </div>
         )}
       />
       {planMode && (
