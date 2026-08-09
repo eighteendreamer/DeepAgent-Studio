@@ -67,23 +67,6 @@ impl ProjectService {
         Self { db }
     }
 
-    /// Ensure `path` is registered and active (used to seed the launch project).
-    /// Idempotent: re-opening an existing project just marks it active.
-    pub fn ensure_default(&self, path: &str) -> Result<()> {
-        let mut reg = self.load()?;
-        let norm = path.trim().to_string();
-        if norm.is_empty() {
-            return Ok(());
-        }
-        if !reg.paths.iter().any(|p| p == &norm) {
-            reg.paths.push(norm.clone());
-        }
-        if reg.active.is_none() {
-            reg.active = Some(norm);
-        }
-        self.save(&reg)
-    }
-
     /// Add (open) a project folder. Becomes active. Returns its DTO.
     pub fn add_project(&self, path: &str) -> Result<ProjectDto> {
         let norm = path.trim().to_string();
@@ -134,6 +117,15 @@ impl ProjectService {
     /// The active project path, if any.
     pub fn active(&self) -> Result<Option<String>> {
         Ok(self.load()?.active)
+    }
+
+    /// Clear the active project without removing any registered projects or sessions.
+    pub fn clear_active(&self) -> Result<()> {
+        let mut reg = self.load()?;
+        if reg.active.take().is_some() {
+            self.save(&reg)?;
+        }
+        Ok(())
     }
 
     /// Registered project paths currently visible in the sidebar.
@@ -301,15 +293,6 @@ mod tests {
     }
 
     #[test]
-    fn ensure_default_is_idempotent() {
-        let (svc, _db) = service();
-        svc.ensure_default("/work/x").unwrap();
-        svc.ensure_default("/work/x").unwrap();
-        assert_eq!(svc.list().unwrap().len(), 1);
-        assert_eq!(svc.active().unwrap().as_deref(), Some("/work/x"));
-    }
-
-    #[test]
     fn list_counts_sessions_in_project() {
         let (svc, db) = service();
         svc.add_project("/work/p").unwrap();
@@ -388,5 +371,14 @@ mod tests {
     fn set_active_unknown_errors() {
         let (svc, _db) = service();
         assert!(svc.set_active("/nope").is_err());
+    }
+
+    #[test]
+    fn clear_active_preserves_registered_projects() {
+        let (svc, _db) = service();
+        svc.add_project("/work/a").unwrap();
+        svc.clear_active().unwrap();
+        assert!(svc.active().unwrap().is_none());
+        assert_eq!(svc.list().unwrap().len(), 1);
     }
 }

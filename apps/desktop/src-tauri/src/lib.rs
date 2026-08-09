@@ -4971,11 +4971,19 @@ pub fn run() {
             // Per-project workspace trust (§6.2), over the shared DB.
             let trust = Arc::new(TrustService::new(service.shared_database()));
 
-            // Workspace + projects: the launch directory is the default project.
+            // Workspace services provide the launch context, but no project is
+            // implicitly opened. A project becomes active only after the user
+            // explicitly adds or selects it from the sidebar.
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
             let workspace = Arc::new(WorkspaceService::new(workspace_root.clone()));
             let projects = Arc::new(ProjectService::new(service.shared_database()));
-            let _ = projects.ensure_default(&workspace_root.to_string_lossy());
+            // Development starts from the empty project state. This clears
+            // launch-default data created by older dev builds while keeping
+            // the user's registered projects and their sessions intact.
+            #[cfg(debug_assertions)]
+            projects
+                .clear_active()
+                .map_err(|e| format!("failed to clear development active project: {e}"))?;
             let project_map = Arc::new(ProjectMapService::new());
 
             let resource_plugins_dir = match app.path().resource_dir() {
