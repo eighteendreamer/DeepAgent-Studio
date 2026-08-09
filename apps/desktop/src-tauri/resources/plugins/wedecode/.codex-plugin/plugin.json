@@ -1,0 +1,22 @@
+{
+  "name": "wedecode",
+  "version": "0.9.1",
+  "description": "Built-in WeChat mini-program package analysis powered by wedecode.",
+  "author": {
+    "name": "xiaoshangongzuoshi"
+  },
+  "homepage": "https://gitee.com/xiaoshangongzuoshi/wxapkg",
+  "repository": "https://gitee.com/xiaoshangongzuoshi/wxapkg.git",
+  "license": "GPL-3.0-or-later",
+  "runtime": {"node": ">=20.19", "preference": "prefer_local"},
+  "commands": "commands",
+  "interface": {
+    "displayName": "Wedecode",
+    "shortDescription": "Analyze WeChat mini-program packages",
+    "longDescription": "Restores and audits WeChat mini-program source packages in an isolated plugin workspace.",
+    "developerName": "xiaoshangongzuoshi",
+    "category": "Developer Tools",
+    "capabilities": ["Command", "Execute"],
+    "permissions": ["process.execute", "workspace.read", "workspace.write"]
+  }
+}

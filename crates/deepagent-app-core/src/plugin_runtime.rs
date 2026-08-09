@@ -19,6 +19,7 @@ pub struct PluginCommandRoot {
     pub plugin_id: String,
     pub plugin_name: String,
     pub path: PathBuf,
+    pub data_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +155,7 @@ fn project_plugin(
             plugin_id: plugin.id.to_string(),
             plugin_name: plugin.name.to_string(),
             path,
+            data_dir: plugin.data_dir.clone(),
         });
     }
     for path in existing_dirs(&plugin.manifest.paths.agents) {
@@ -238,6 +240,7 @@ fn project_mcp(
                 plugin_name,
                 plugin_root,
                 plugin_data,
+                &manifest.runtime,
                 config,
                 projection,
                 Some(path),
@@ -257,6 +260,7 @@ fn project_mcp(
                 plugin_name,
                 plugin_root,
                 plugin_data,
+                &manifest.runtime,
                 config,
                 projection,
                 None,
@@ -273,6 +277,7 @@ fn merge_mcp_config(
     plugin_name: &str,
     plugin_root: &Path,
     plugin_data: &Path,
+    runtime: &crate::plugin_manifest::PluginRuntimeRequirements,
     mut config: McpConfig,
     projection: &mut PluginRuntimeProjection,
     path: Option<&PathBuf>,
@@ -282,6 +287,7 @@ fn merge_mcp_config(
     let plugin_key = safe_identifier(plugin_name);
     for (server_name, mut server) in config.servers {
         inject_plugin_env(&mut server, plugin_id, plugin_root, plugin_data);
+        inject_plugin_runtime_requirement(&mut server, runtime);
         if let Err(error) = server.validate() {
             push_error(projection, plugin_id, "mcp", path, error);
             continue;
@@ -677,6 +683,34 @@ fn inject_plugin_env(
         .or_insert(data);
 }
 
+fn inject_plugin_runtime_requirement(
+    server: &mut McpServerConfig,
+    runtime: &crate::plugin_manifest::PluginRuntimeRequirements,
+) {
+    let requirements = [
+        ("DEEPAGENT_RUNTIME_NODE_REQUIREMENT", runtime.node.as_ref()),
+        (
+            "DEEPAGENT_RUNTIME_PYTHON_REQUIREMENT",
+            runtime.python.as_ref(),
+        ),
+        ("DEEPAGENT_RUNTIME_JAVA_REQUIREMENT", runtime.java.as_ref()),
+    ];
+    for (key, value) in requirements {
+        if let Some(value) = value {
+            server
+                .env
+                .entry(key.to_string())
+                .or_insert_with(|| value.clone());
+        }
+    }
+    if let Some(preference) = runtime.preference.as_ref() {
+        server
+            .env
+            .entry("DEEPAGENT_RUNTIME_PREFERENCE".to_string())
+            .or_insert_with(|| preference.clone());
+    }
+}
+
 fn expand_plugin_vars(
     input: &str,
     plugin_id: &str,
@@ -698,6 +732,12 @@ fn plugin_env(
         "DEEPAGENT_PLUGIN_ID" => Some(plugin_id.to_string()),
         "DEEPAGENT_PLUGIN_ROOT" | "CLAUDE_PLUGIN_ROOT" => Some(plugin_root.display().to_string()),
         "DEEPAGENT_PLUGIN_DATA" | "CLAUDE_PLUGIN_DATA" => Some(plugin_data.display().to_string()),
+        "DEEPAGENT_NODE"
+        | "DEEPAGENT_PYTHON"
+        | "DEEPAGENT_JAVA"
+        | "DEEPAGENT_RUNTIME_ROOT"
+        | "DEEPAGENT_RUNTIME_SOURCE" => std::env::var(var).ok(),
+        "DEEPAGENT_PROJECT_ROOT" => Some("${DEEPAGENT_PROJECT_ROOT}".to_string()),
         other => std::env::var(other).ok(),
     }
 }
@@ -852,7 +892,8 @@ mod tests {
                 "outputStyles": "output-styles",
                 "apps": ".app.json",
                 "mcpServers": ".mcp.json",
-                "hooks": "hooks/hooks.json"
+                "hooks": "hooks/hooks.json",
+                "runtime": {"node": ">=20.19", "preference": "prefer_local"}
             }"#,
         );
         let manifest = load_plugin_manifest(&root).unwrap().unwrap();
@@ -901,6 +942,7 @@ mod tests {
         );
         assert_eq!(server.env["CLAUDE_PLUGIN_ROOT"], root.display().to_string());
         assert_eq!(server.env["PLUGIN_DATA"], data_dir.display().to_string());
+        assert_eq!(server.env["DEEPAGENT_RUNTIME_NODE_REQUIREMENT"], ">=20.19");
 
         let groups = projection
             .hook_definitions

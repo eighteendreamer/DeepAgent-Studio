@@ -24,6 +24,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::dto::TerminalResultDto;
 use crate::project_service::ProjectService;
+use crate::runtime_service::RuntimeBroker;
 use crate::settings::TerminalShell;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +47,7 @@ pub struct TerminalService {
     /// Fallback working directory when no project is active.
     default_cwd: String,
     executor: Arc<dyn CommandExecutor>,
+    runtime: Option<Arc<RuntimeBroker>>,
     ptys: RwLock<HashMap<String, Arc<LocalPtyState>>>,
     next_pty_id: AtomicU64,
 }
@@ -53,11 +55,16 @@ pub struct TerminalService {
 impl TerminalService {
     /// Build over the project registry, with a default cwd used when no project
     /// is active. Uses the real [`SystemExecutor`].
-    pub fn new(projects: Arc<ProjectService>, default_cwd: impl Into<String>) -> Self {
+    pub fn new(
+        projects: Arc<ProjectService>,
+        default_cwd: impl Into<String>,
+        runtime: Arc<RuntimeBroker>,
+    ) -> Self {
         Self {
             projects,
             default_cwd: default_cwd.into(),
             executor: Arc::new(SystemExecutor),
+            runtime: Some(runtime),
             ptys: RwLock::new(HashMap::new()),
             next_pty_id: AtomicU64::new(1),
         }
@@ -73,6 +80,7 @@ impl TerminalService {
             projects,
             default_cwd: default_cwd.into(),
             executor,
+            runtime: None,
             ptys: RwLock::new(HashMap::new()),
             next_pty_id: AtomicU64::new(1),
         }
@@ -141,7 +149,12 @@ impl TerminalService {
         rows: u16,
     ) -> Result<LocalPtyHandle> {
         let cwd = self.cwd();
-        let state = spawn_local_pty(shell, &cwd, cols, rows)?;
+        let environment = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.build_process_environment(Some(std::path::Path::new(&cwd))))
+            .unwrap_or_default();
+        let state = spawn_local_pty(shell, &cwd, cols, rows, &environment)?;
         let id = format!(
             "local-pty-{}",
             self.next_pty_id.fetch_add(1, Ordering::Relaxed)
@@ -250,12 +263,23 @@ impl TerminalService {
     /// using the preferred shell from settings.
     pub fn open_system(&self, shell: TerminalShell) -> Result<String> {
         let cwd = self.cwd();
-        spawn_system_terminal(shell, &cwd)?;
+        let environment = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.build_process_environment(Some(std::path::Path::new(&cwd))))
+            .unwrap_or_default();
+        spawn_system_terminal(shell, &cwd, &environment)?;
         Ok(cwd)
     }
 }
 
-fn spawn_local_pty(shell: TerminalShell, cwd: &str, cols: u16, rows: u16) -> Result<LocalPtyState> {
+fn spawn_local_pty(
+    shell: TerminalShell,
+    cwd: &str,
+    cols: u16,
+    rows: u16,
+    environment: &std::collections::BTreeMap<String, String>,
+) -> Result<LocalPtyState> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -266,7 +290,7 @@ fn spawn_local_pty(shell: TerminalShell, cwd: &str, cols: u16, rows: u16) -> Res
         })
         .map_err(|e| CoreError::other(format!("open pty failed: {e}")))?;
 
-    let cmd = terminal_command(shell, cwd)?;
+    let cmd = terminal_command(shell, cwd, environment)?;
     let child = pair
         .slave
         .spawn_command(cmd)
@@ -306,7 +330,11 @@ fn spawn_local_pty(shell: TerminalShell, cwd: &str, cols: u16, rows: u16) -> Res
     })
 }
 
-fn terminal_command(shell: TerminalShell, cwd: &str) -> Result<CommandBuilder> {
+fn terminal_command(
+    shell: TerminalShell,
+    cwd: &str,
+    environment: &std::collections::BTreeMap<String, String>,
+) -> Result<CommandBuilder> {
     let mut cmd = match shell {
         TerminalShell::PowerShell => {
             let mut cmd = CommandBuilder::new("powershell.exe");
@@ -332,11 +360,18 @@ fn terminal_command(shell: TerminalShell, cwd: &str) -> Result<CommandBuilder> {
         }
     };
     cmd.cwd(cwd);
+    for (key, value) in environment {
+        cmd.env(key, value);
+    }
     Ok(cmd)
 }
 
 #[cfg(target_os = "windows")]
-fn spawn_system_terminal(shell: TerminalShell, cwd: &str) -> Result<()> {
+fn spawn_system_terminal(
+    shell: TerminalShell,
+    cwd: &str,
+    environment: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
     use std::process::Command;
 
     match shell {
@@ -347,12 +382,14 @@ fn spawn_system_terminal(shell: TerminalShell, cwd: &str) -> Result<()> {
                     "-Command",
                     &format!("Set-Location -LiteralPath {}", powershell_quote(cwd)),
                 ])
+                .envs(environment)
                 .spawn()
                 .map_err(|e| CoreError::other(format!("failed to open PowerShell: {e}")))?;
         }
         TerminalShell::CommandPrompt => {
             Command::new("cmd.exe")
                 .args(["/K", &format!("cd /d {}", cmd_quote(cwd))])
+                .envs(environment)
                 .spawn()
                 .map_err(|e| CoreError::other(format!("failed to open Command Prompt: {e}")))?;
         }
@@ -366,6 +403,7 @@ fn spawn_system_terminal(shell: TerminalShell, cwd: &str) -> Result<()> {
                     "-c",
                     &format!("cd {}; exec bash -i", bash_quote(cwd)),
                 ])
+                .envs(environment)
                 .spawn()
                 .map_err(|e| CoreError::other(format!("failed to open Git Bash: {e}")))?;
         }
@@ -374,6 +412,7 @@ fn spawn_system_terminal(shell: TerminalShell, cwd: &str) -> Result<()> {
             if let Some(wsl_cwd) = to_wsl_path(cwd) {
                 cmd.args(["--cd", &wsl_cwd]);
             }
+            cmd.envs(environment);
             cmd.spawn()
                 .map_err(|e| CoreError::other(format!("failed to open WSL: {e}")))?;
         }
@@ -382,7 +421,11 @@ fn spawn_system_terminal(shell: TerminalShell, cwd: &str) -> Result<()> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn spawn_system_terminal(_shell: TerminalShell, _cwd: &str) -> Result<()> {
+fn spawn_system_terminal(
+    _shell: TerminalShell,
+    _cwd: &str,
+    _environment: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
     Err(CoreError::other(
         "opening a system terminal is currently supported on Windows only",
     ))

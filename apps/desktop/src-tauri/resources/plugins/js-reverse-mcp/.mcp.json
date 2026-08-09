@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "js-reverse": {
+      "command": "${DEEPAGENT_NODE}",
+      "args": [
+        "${DEEPAGENT_PLUGIN_DATA}/runtime/build/src/index.js",
+        "--isolated",
+        "--allowedRoots",
+        "${DEEPAGENT_PLUGIN_DATA}/workspace",
+        "--allowedRoots",
+        "${DEEPAGENT_PROJECT_ROOT}"
+      ]
+    }
+  }
+}

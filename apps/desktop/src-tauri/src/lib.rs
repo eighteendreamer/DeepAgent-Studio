@@ -31,7 +31,8 @@ use deepagent_app_core::{
     ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
     ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, RecordingService,
     RecordingSessionDto, RewindResultDto, RuntimeLogEntry, RuntimeLogStore, RuntimeProgressDto,
-    RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxieExecutor, SandboxieService,
+    RuntimeBroker, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxieExecutor,
+    SandboxieService,
     SandboxieStatusDto, SecretStore, SessionDetailDto, SessionStateService, SessionSummaryDto,
     SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
     SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, StoredRunEvent,
@@ -4954,9 +4955,6 @@ pub fn run() {
             // reminder + `skill` tool wiring (skill-marketplace task 14).
             let skills = Arc::new(Mutex::new(skills));
 
-            // MCP: visual server management over the shared DB.
-            let mcp = Arc::new(McpService::new(service.shared_database()));
-
             // Per-project workspace trust (§6.2), over the shared DB.
             let trust = Arc::new(TrustService::new(service.shared_database()));
 
@@ -5009,11 +5007,6 @@ pub fn run() {
                     .map_err(|e| format!("failed to open knowledge service: {e}"))?,
             );
 
-            // Terminal: interactive commands rooted at the active project.
-            let terminal = Arc::new(TerminalService::new(
-                projects.clone(),
-                workspace_root.to_string_lossy().into_owned(),
-            ));
             let git = Arc::new(GitService::new(projects.clone()));
 
             // File preview: stateless office-file previewer for the desktop
@@ -5046,6 +5039,21 @@ pub fn run() {
                 &legacy_runtime_roots,
                 Arc::new(deepagent_app_core::runtime_service::ReqwestDownloader::default()),
             ));
+            let runtime_broker = Arc::new(RuntimeBroker::new(runtime.clone()));
+            // This changes only DeepAgent's process environment. Every child
+            // process inherits it; the Windows user/system PATH is untouched.
+            for (key, value) in runtime_broker.build_process_environment(None) {
+                std::env::set_var(key, value);
+            }
+            let terminal = Arc::new(TerminalService::new(
+                projects.clone(),
+                workspace_root.to_string_lossy().into_owned(),
+                runtime_broker.clone(),
+            ));
+            let mcp = Arc::new(
+                McpService::new(service.shared_database())
+                    .with_runtime(runtime_broker.clone(), projects.clone()),
+            );
             let vision = Arc::new(VisionService::new(
                 settings_arc.clone(),
                 dir.join("vision-cache"),
@@ -5114,6 +5122,7 @@ pub fn run() {
                         Arc::new(ReqwestTransport::new()),
                         workspace_root,
                     )
+                    .with_runtime_broker(runtime_broker.clone())
                     .with_executor_factory(move |connection_id: String| {
                         Arc::new(SshExecutor {
                             ssh: ssh_clone.clone(),

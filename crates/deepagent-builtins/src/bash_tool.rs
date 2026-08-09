@@ -44,6 +44,19 @@ pub trait CommandExecutor: Send + Sync {
         self.run(command, cwd).await
     }
 
+    /// Run with additional process environment entries. Implementations that
+    /// do not own a local process can keep the default behavior.
+    async fn run_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
+        let _ = environment;
+        self.run_with_options(command, cwd, shell).await
+    }
+
     /// Run with kernel-owned cancellation and deadline controls.
     async fn run_controlled(
         &self,
@@ -54,6 +67,21 @@ pub trait CommandExecutor: Send + Sync {
         _timeout: Duration,
     ) -> Result<CommandOutcome> {
         self.run_with_options(command, cwd, shell).await
+    }
+
+    /// Environment-aware variant of [`CommandExecutor::run_controlled`].
+    async fn run_controlled_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        cancel: Arc<AtomicBool>,
+        timeout: Duration,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
+        let _ = environment;
+        self.run_controlled(command, cwd, shell, cancel, timeout)
+            .await
     }
 }
 
@@ -148,6 +176,18 @@ impl CommandExecutor for Box<dyn CommandExecutor> {
         self.as_ref().run_with_options(command, cwd, shell).await
     }
 
+    async fn run_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
+        self.as_ref()
+            .run_with_environment(command, cwd, shell, environment)
+            .await
+    }
+
     async fn run_controlled(
         &self,
         command: &str,
@@ -158,6 +198,20 @@ impl CommandExecutor for Box<dyn CommandExecutor> {
     ) -> Result<CommandOutcome> {
         self.as_ref()
             .run_controlled(command, cwd, shell, cancel, timeout)
+            .await
+    }
+
+    async fn run_controlled_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        cancel: Arc<AtomicBool>,
+        timeout: Duration,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
+        self.as_ref()
+            .run_controlled_with_environment(command, cwd, shell, cancel, timeout, environment)
             .await
     }
 }
@@ -177,6 +231,18 @@ impl CommandExecutor for std::sync::Arc<dyn CommandExecutor> {
         self.as_ref().run_with_options(command, cwd, shell).await
     }
 
+    async fn run_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
+        self.as_ref()
+            .run_with_environment(command, cwd, shell, environment)
+            .await
+    }
+
     async fn run_controlled(
         &self,
         command: &str,
@@ -187,6 +253,20 @@ impl CommandExecutor for std::sync::Arc<dyn CommandExecutor> {
     ) -> Result<CommandOutcome> {
         self.as_ref()
             .run_controlled(command, cwd, shell, cancel, timeout)
+            .await
+    }
+
+    async fn run_controlled_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        cancel: Arc<AtomicBool>,
+        timeout: Duration,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
+        self.as_ref()
+            .run_controlled_with_environment(command, cwd, shell, cancel, timeout, environment)
             .await
     }
 }
@@ -208,12 +288,31 @@ impl CommandExecutor for SystemExecutor {
         cwd: &str,
         shell: CommandShell,
     ) -> Result<CommandOutcome> {
-        self.run_controlled(
+        self.run_controlled_with_environment(
             command,
             cwd,
             shell,
             Arc::new(AtomicBool::new(false)),
             Duration::from_secs(120),
+            &[],
+        )
+        .await
+    }
+
+    async fn run_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
+        self.run_controlled_with_environment(
+            command,
+            cwd,
+            shell,
+            Arc::new(AtomicBool::new(false)),
+            Duration::from_secs(120),
+            environment,
         )
         .await
     }
@@ -226,7 +325,20 @@ impl CommandExecutor for SystemExecutor {
         cancel: Arc<AtomicBool>,
         timeout: Duration,
     ) -> Result<CommandOutcome> {
-        run_process_controlled(command, cwd, shell.resolve(), cancel, timeout).await
+        self.run_controlled_with_environment(command, cwd, shell, cancel, timeout, &[])
+            .await
+    }
+
+    async fn run_controlled_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        cancel: Arc<AtomicBool>,
+        timeout: Duration,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
+        run_process_controlled(command, cwd, shell.resolve(), cancel, timeout, environment).await
     }
 }
 
@@ -236,6 +348,7 @@ async fn run_process_controlled(
     shell: CommandShell,
     cancel: Arc<AtomicBool>,
     timeout: Duration,
+    environment: &[(String, String)],
 ) -> Result<CommandOutcome> {
     if cancel.load(Ordering::Acquire) {
         return Err(deepagent_core::error::CoreError::other(
@@ -255,6 +368,7 @@ async fn run_process_controlled(
         std_command.process_group(0);
     }
     std_command
+        .envs(environment.iter().map(|(key, value)| (key, value)))
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
         .env("POWERSHELL_TELEMETRY_OPTOUT", "1")

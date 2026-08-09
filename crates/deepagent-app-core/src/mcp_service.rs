@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::plugin_runtime::PluginMcpServerSource;
+use crate::runtime_service::{RuntimeKind, RuntimePreference, RuntimeRequirement};
+use crate::{ProjectService, RuntimeBroker};
 
 /// Document-store location for the MCP config.
 const MCP_COLLECTION: &str = "mcp";
@@ -237,6 +239,8 @@ pub struct McpConnectionStatusDto {
 /// UI-facing MCP server management.
 pub struct McpService {
     db: Arc<Database>,
+    runtime: Option<Arc<RuntimeBroker>>,
+    projects: Option<Arc<ProjectService>>,
     /// Cross-run cache of the connected registry, keyed by a fingerprint of the
     /// enabled-server config. Lets a chat run reuse already-spawned MCP servers
     /// (stdio/npx cold-start is the dominant per-run latency) instead of
@@ -257,7 +261,122 @@ impl McpService {
     pub fn new(db: Arc<Database>) -> Self {
         Self {
             db,
+            runtime: None,
+            projects: None,
             cache: Arc::new(AsyncMutex::new(None)),
+        }
+    }
+
+    pub fn with_runtime(
+        mut self,
+        runtime: Arc<RuntimeBroker>,
+        projects: Arc<ProjectService>,
+    ) -> Self {
+        self.runtime = Some(runtime);
+        self.projects = Some(projects);
+        self
+    }
+
+    fn prepare_runtime_config(&self, config: &mut McpConfig) {
+        let project_root = self
+            .projects
+            .as_ref()
+            .and_then(|projects| projects.active().ok().flatten())
+            .map(std::path::PathBuf::from);
+        let environment = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.build_process_environment(project_root.as_deref()))
+            .unwrap_or_default();
+        // Expand placeholders before resolving plugin-declared requirements.
+        config.expand_with(&|var| {
+            if var == "DEEPAGENT_PROJECT_ROOT" {
+                project_root.as_ref().map(|root| root.display().to_string())
+            } else {
+                environment
+                    .get(var)
+                    .cloned()
+                    .or_else(|| std::env::var(var).ok())
+            }
+        });
+        for server in config.servers.values_mut() {
+            let preference = server
+                .env
+                .get("DEEPAGENT_RUNTIME_PREFERENCE")
+                .and_then(|value| RuntimePreference::parse(value))
+                .unwrap_or(RuntimePreference::PreferLocal);
+            let declared = [
+                (
+                    RuntimeKind::Node,
+                    "DEEPAGENT_RUNTIME_NODE_REQUIREMENT",
+                    "node",
+                ),
+                (
+                    RuntimeKind::Python,
+                    "DEEPAGENT_RUNTIME_PYTHON_REQUIREMENT",
+                    "python",
+                ),
+                (
+                    RuntimeKind::Java,
+                    "DEEPAGENT_RUNTIME_JAVA_REQUIREMENT",
+                    "java",
+                ),
+            ];
+            if let Some(runtime) = self.runtime.as_ref() {
+                for (kind, requirement_key, label) in declared {
+                    let Some(version) = server.env.get(requirement_key).cloned() else {
+                        continue;
+                    };
+                    let requirement = RuntimeRequirement {
+                        kind,
+                        version: Some(version),
+                        preference,
+                    };
+                    match runtime.resolve(&requirement, project_root.as_deref(), None) {
+                        Ok(resolution) => {
+                            server.command = Some(resolution.executable.display().to_string())
+                        }
+                        Err(error) => {
+                            server.command = Some(format!("__deepagent_missing_{label}_runtime__"));
+                            server
+                                .env
+                                .insert("DEEPAGENT_RUNTIME_ERROR".to_string(), error.to_string());
+                        }
+                    }
+                    break;
+                }
+            }
+            let Some(command) = server.command.as_deref() else {
+                continue;
+            };
+            if let Some(executable) = [
+                ("node", "DEEPAGENT_NODE"),
+                ("python", "DEEPAGENT_PYTHON"),
+                ("python3", "DEEPAGENT_PYTHON"),
+                ("java", "DEEPAGENT_JAVA"),
+            ]
+            .iter()
+            .find_map(|(name, key)| {
+                command
+                    .eq_ignore_ascii_case(name)
+                    .then(|| environment.get(*key))
+            })
+            .flatten()
+            {
+                server.command = Some(executable.clone());
+            }
+            for (key, value) in &environment {
+                server
+                    .env
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
+            if let Some(root) = project_root.as_ref() {
+                server
+                    .env
+                    .entry("DEEPAGENT_PROJECT_ROOT".to_string())
+                    .or_insert_with(|| root.display().to_string());
+            }
         }
     }
 
@@ -496,8 +615,7 @@ impl McpService {
         &self,
         mut config: McpConfig,
     ) -> Result<(McpRegistry, Vec<(String, String)>)> {
-        // Expand ${VAR} from the environment (headers/urls/args/env).
-        config.expand_with(&|var| std::env::var(var).ok());
+        self.prepare_runtime_config(&mut config);
 
         // Connect (spawn + initialize) every server concurrently: the process
         // cold-start (npx/node) dominates, so fanning out turns a "sum of
@@ -579,8 +697,9 @@ impl McpService {
 
     async fn connected_registry_for_config(
         &self,
-        config: McpConfig,
+        mut config: McpConfig,
     ) -> Result<(Arc<McpRegistry>, Vec<(String, String)>)> {
+        self.prepare_runtime_config(&mut config);
         // Fingerprint = the serialized effective config. Any change to which
         // servers are enabled or how they're configured busts the cache.
         let fingerprint = serde_json::to_string(&config).unwrap_or_default();

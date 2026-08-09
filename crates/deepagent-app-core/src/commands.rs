@@ -358,6 +358,7 @@ mod tests {
             plugin_id: "demo-plugin@personal".to_string(),
             plugin_name: "demo-plugin".to_string(),
             path: dir,
+            data_dir: tmp.path().join("plugin-data"),
         }];
         let hits = commands_from_roots_and_plugins("demo", Vec::<PathBuf>::new(), &plugin_roots);
 

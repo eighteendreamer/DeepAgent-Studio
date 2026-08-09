@@ -21,6 +21,115 @@ pub(crate) type CommandExecutorFactory =
 pub(crate) type RemoteOpsFactory =
     Arc<dyn Fn(String) -> Arc<dyn deepagent_builtins::RemoteOpsBackend> + Send + Sync>;
 
+/// Adds the current project's resolved runtime environment to an existing
+/// command executor. The wrapped executor still owns sandboxing, cancellation
+/// and output capture; this type only supplies the process environment.
+pub(crate) struct RuntimeCommandExecutor {
+    inner: Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>,
+    broker: Arc<crate::RuntimeBroker>,
+    project_root: PathBuf,
+}
+
+impl RuntimeCommandExecutor {
+    pub(crate) fn new(
+        inner: Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>,
+        broker: Arc<crate::RuntimeBroker>,
+        project_root: &Path,
+    ) -> Self {
+        Self {
+            inner,
+            broker,
+            project_root: project_root.to_path_buf(),
+        }
+    }
+
+    fn environment(&self, extra: &[(String, String)]) -> Vec<(String, String)> {
+        let mut environment = self
+            .broker
+            .build_process_environment(Some(&self.project_root))
+            .into_iter()
+            .collect::<Vec<_>>();
+        for (key, value) in extra {
+            if let Some(existing) = environment.iter_mut().find(|(name, _)| name == key) {
+                existing.1 = value.clone();
+            } else {
+                environment.push((key.clone(), value.clone()));
+            }
+        }
+        environment
+    }
+}
+
+#[async_trait]
+impl deepagent_builtins::bash_tool::CommandExecutor for RuntimeCommandExecutor {
+    async fn run(
+        &self,
+        command: &str,
+        cwd: &str,
+    ) -> Result<deepagent_builtins::bash_tool::CommandOutcome> {
+        self.run_with_options(
+            command,
+            cwd,
+            deepagent_builtins::bash_tool::CommandShell::Auto,
+        )
+        .await
+    }
+
+    async fn run_with_options(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: deepagent_builtins::bash_tool::CommandShell,
+    ) -> Result<deepagent_builtins::bash_tool::CommandOutcome> {
+        let environment = self.environment(&[]);
+        self.inner
+            .run_with_environment(command, cwd, shell, &environment)
+            .await
+    }
+
+    async fn run_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: deepagent_builtins::bash_tool::CommandShell,
+        environment: &[(String, String)],
+    ) -> Result<deepagent_builtins::bash_tool::CommandOutcome> {
+        let environment = self.environment(environment);
+        self.inner
+            .run_with_environment(command, cwd, shell, &environment)
+            .await
+    }
+
+    async fn run_controlled(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: deepagent_builtins::bash_tool::CommandShell,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+        timeout: std::time::Duration,
+    ) -> Result<deepagent_builtins::bash_tool::CommandOutcome> {
+        let environment = self.environment(&[]);
+        self.inner
+            .run_controlled_with_environment(command, cwd, shell, cancel, timeout, &environment)
+            .await
+    }
+
+    async fn run_controlled_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: deepagent_builtins::bash_tool::CommandShell,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+        timeout: std::time::Duration,
+        environment: &[(String, String)],
+    ) -> Result<deepagent_builtins::bash_tool::CommandOutcome> {
+        let environment = self.environment(environment);
+        self.inner
+            .run_controlled_with_environment(command, cwd, shell, cancel, timeout, &environment)
+            .await
+    }
+}
+
 pub(crate) struct ToolRegistryBuildRequest<'a> {
     pub(crate) root: &'a Path,
     pub(crate) access: deepagent_builtins::FsAccess,

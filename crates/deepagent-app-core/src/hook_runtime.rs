@@ -217,6 +217,7 @@ pub(crate) struct ObservableHookRunner {
     inner: SystemHookRunner,
     events: std::sync::Weak<dyn RuntimeEventSink>,
     cwd: Option<PathBuf>,
+    runtime_environment: BTreeMap<String, String>,
 }
 
 pub(crate) struct AppHookActionExecutor {
@@ -488,19 +489,28 @@ pub(crate) fn build_hook_agent_registry(source: &ToolRegistry) -> Result<ToolReg
 }
 
 impl ObservableHookRunner {
-    pub(crate) fn new(events: Arc<dyn RuntimeEventSink>) -> Self {
+    pub(crate) fn new(
+        events: Arc<dyn RuntimeEventSink>,
+        runtime_environment: BTreeMap<String, String>,
+    ) -> Self {
         Self {
             inner: SystemHookRunner,
             events: Arc::downgrade(&events),
             cwd: None,
+            runtime_environment,
         }
     }
 
-    pub(crate) fn new_in_dir(events: Arc<dyn RuntimeEventSink>, cwd: PathBuf) -> Self {
+    pub(crate) fn new_in_dir(
+        events: Arc<dyn RuntimeEventSink>,
+        cwd: PathBuf,
+        runtime_environment: BTreeMap<String, String>,
+    ) -> Self {
         Self {
             inner: SystemHookRunner,
             events: Arc::downgrade(&events),
             cwd: Some(cwd),
+            runtime_environment,
         }
     }
 }
@@ -526,13 +536,15 @@ impl HookCommandRunner for ObservableHookRunner {
             });
         }
         let started = Instant::now();
+        let mut effective_env = self.runtime_environment.clone();
+        effective_env.extend(env.clone());
         let result = if let Some(cwd) = &self.cwd {
             self.inner
-                .run_in_dir(command, stdin_json, shell, env, timeout, cwd)
+                .run_in_dir(command, stdin_json, shell, &effective_env, timeout, cwd)
                 .await
         } else {
             self.inner
-                .run(command, stdin_json, shell, env, timeout)
+                .run(command, stdin_json, shell, &effective_env, timeout)
                 .await
         };
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;

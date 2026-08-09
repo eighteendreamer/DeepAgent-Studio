@@ -14,7 +14,8 @@ dist-ssr
 # Tauri
 apps/desktop/src-tauri/target
 apps/desktop/src-tauri/gen
-apps/desktop/src-tauri/resources/skills
+apps/desktop/src-tauri/resources/skills/*
+!apps/desktop/src-tauri/resources/skills/reverse/
 
 # Databases / runtime artifacts
 *.db

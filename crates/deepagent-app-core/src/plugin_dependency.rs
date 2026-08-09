@@ -269,6 +269,7 @@ mod tests {
                 dependencies: dependencies.into_iter().map(str::to_string).collect(),
                 paths: PluginManifestPaths::default(),
                 interface: Default::default(),
+                runtime: Default::default(),
                 manifest_path: Path::new("/plugins").join(name).join("plugin.json"),
             }),
             available: true,

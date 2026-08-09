@@ -17,7 +17,8 @@
 //! installed. This is deliberate: real registry entries must pin a verified
 //! checksum before the download path is enabled.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,6 +160,187 @@ pub struct RuntimeEntry {
     /// the managed runtime directory so software installed via package manager
     /// or manually is still detected as "installed".
     pub system_probe_paths: Vec<String>,
+}
+
+/// Executable SDKs shared by terminals, plugins, hooks and built-in tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeKind {
+    Node,
+    Python,
+    Java,
+}
+
+impl RuntimeKind {
+    fn command(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Python => "python",
+            Self::Java => "java",
+        }
+    }
+
+    fn managed_id(self) -> &'static str {
+        match self {
+            Self::Node => "node-22",
+            Self::Python => "python-3.11",
+            Self::Java => "jdk-17",
+        }
+    }
+
+    fn env_key(self) -> &'static str {
+        match self {
+            Self::Node => "DEEPAGENT_NODE",
+            Self::Python => "DEEPAGENT_PYTHON",
+            Self::Java => "DEEPAGENT_JAVA",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimePreference {
+    PreferLocal,
+    LocalOnly,
+    ManagedOnly,
+}
+
+impl RuntimePreference {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "prefer_local" | "local" => Some(Self::PreferLocal),
+            "local_only" => Some(Self::LocalOnly),
+            "managed_only" => Some(Self::ManagedOnly),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeRequirement {
+    pub kind: RuntimeKind,
+    pub version: Option<String>,
+    pub preference: RuntimePreference,
+}
+
+impl RuntimeRequirement {
+    pub fn prefer_local(kind: RuntimeKind, version: impl Into<String>) -> Self {
+        Self {
+            kind,
+            version: Some(version.into()),
+            preference: RuntimePreference::PreferLocal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeSource {
+    Local,
+    Managed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeResolution {
+    pub kind: RuntimeKind,
+    pub source: RuntimeSource,
+    pub executable: PathBuf,
+    pub version: String,
+    pub root: PathBuf,
+    pub reason: String,
+}
+
+/// One runtime probe result returned by [`RuntimeBroker::diagnostics`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeDiagnostic {
+    pub kind: RuntimeKind,
+    pub requirement: String,
+    pub resolution: Option<RuntimeResolution>,
+    pub error: Option<String>,
+}
+
+/// Global runtime resolver shared by every DeepAgent-owned process entry.
+///
+/// Installation and registry ownership remain in [`RuntimeService`]. The
+/// broker only centralizes project-aware resolution and child environments so
+/// callers cannot accidentally implement a second runtime selection policy.
+#[derive(Clone)]
+pub struct RuntimeBroker {
+    service: Arc<RuntimeService>,
+}
+
+impl RuntimeBroker {
+    pub fn new(service: Arc<RuntimeService>) -> Self {
+        Self { service }
+    }
+
+    pub fn service(&self) -> &Arc<RuntimeService> {
+        &self.service
+    }
+
+    pub fn resolve(
+        &self,
+        requirement: &RuntimeRequirement,
+        project_root: Option<&Path>,
+        explicit: Option<&Path>,
+    ) -> Result<RuntimeResolution> {
+        let result = self
+            .service
+            .resolve_runtime(requirement, project_root, explicit);
+        match &result {
+            Ok(runtime) => tracing::debug!(
+                runtime = requirement.kind.command(),
+                source = ?runtime.source,
+                version = runtime.version,
+                executable = %runtime.executable.display(),
+                reason = runtime.reason,
+                "runtime resolved"
+            ),
+            Err(error) => tracing::warn!(
+                runtime = requirement.kind.command(),
+                requirement = requirement.version.as_deref().unwrap_or("any"),
+                preference = ?requirement.preference,
+                project_root = project_root.map(|path| path.display().to_string()),
+                error = %error,
+                "runtime resolution failed"
+            ),
+        }
+        result
+    }
+
+    pub fn resolve_command(&self, command: &str, project_root: Option<&Path>) -> Result<PathBuf> {
+        self.service.resolve_command(command, project_root)
+    }
+
+    pub fn build_process_environment(
+        &self,
+        project_root: Option<&Path>,
+    ) -> BTreeMap<String, String> {
+        self.service.build_process_environment(project_root)
+    }
+
+    pub fn diagnostics(&self, project_root: Option<&Path>) -> Vec<RuntimeDiagnostic> {
+        [
+            RuntimeRequirement::prefer_local(RuntimeKind::Node, ">=20.19"),
+            RuntimeRequirement::prefer_local(RuntimeKind::Python, ">=3.11"),
+            RuntimeRequirement::prefer_local(RuntimeKind::Java, ">=17"),
+        ]
+        .into_iter()
+        .map(
+            |requirement| match self.resolve(&requirement, project_root, None) {
+                Ok(resolution) => RuntimeDiagnostic {
+                    kind: requirement.kind,
+                    requirement: requirement.version.unwrap_or_default(),
+                    resolution: Some(resolution),
+                    error: None,
+                },
+                Err(error) => RuntimeDiagnostic {
+                    kind: requirement.kind,
+                    requirement: requirement.version.unwrap_or_default(),
+                    resolution: None,
+                    error: Some(error.to_string()),
+                },
+            },
+        )
+        .collect()
+    }
 }
 
 impl RuntimeEntry {
@@ -341,6 +523,206 @@ impl RuntimeService {
             .iter()
             .filter(|e| e.capability == capability)
             .find_map(|e| self.installed_path(&e.id))
+    }
+
+    /// Resolve an SDK executable. Project and PATH runtimes win by default;
+    /// managed runtimes are a compatibility fallback and never alter the
+    /// user's machine-level environment.
+    pub fn resolve_runtime(
+        &self,
+        requirement: &RuntimeRequirement,
+        project_root: Option<&Path>,
+        explicit: Option<&Path>,
+    ) -> Result<RuntimeResolution> {
+        let mut rejected = Vec::new();
+        if requirement.preference != RuntimePreference::ManagedOnly {
+            if let Some(path) = explicit {
+                if let Some(found) = inspect_runtime(requirement.kind, path, &requirement.version) {
+                    return Ok(resolution(
+                        found,
+                        requirement.kind,
+                        RuntimeSource::Local,
+                        "explicit executable",
+                    ));
+                }
+                rejected.push(format!(
+                    "explicit executable '{}' is unavailable or incompatible",
+                    path.display()
+                ));
+            }
+            if let Some(root) = project_root {
+                for candidate in project_runtime_candidates(requirement.kind, root) {
+                    if let Some(found) =
+                        inspect_runtime(requirement.kind, &candidate, &requirement.version)
+                    {
+                        return Ok(resolution(
+                            found,
+                            requirement.kind,
+                            RuntimeSource::Local,
+                            "project runtime",
+                        ));
+                    }
+                }
+            }
+            if let Some(path) = find_executable_on_path(requirement.kind.command()) {
+                if let Some(found) = inspect_runtime(requirement.kind, &path, &requirement.version)
+                {
+                    return Ok(resolution(
+                        found,
+                        requirement.kind,
+                        RuntimeSource::Local,
+                        "user PATH",
+                    ));
+                }
+                rejected.push(format!(
+                    "{} on PATH does not satisfy the version requirement",
+                    path.display()
+                ));
+            }
+        }
+
+        if requirement.preference != RuntimePreference::LocalOnly {
+            if let Some(path) = self.managed_runtime_executable(requirement.kind) {
+                if let Some(found) = inspect_runtime(requirement.kind, &path, &requirement.version)
+                {
+                    return Ok(resolution(
+                        found,
+                        requirement.kind,
+                        RuntimeSource::Managed,
+                        "DeepAgent managed fallback",
+                    ));
+                }
+                rejected.push(format!("managed {} is incompatible", path.display()));
+            }
+        }
+
+        let detail = if rejected.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", rejected.join("; "))
+        };
+        Err(CoreError::Other(format!(
+            "no compatible {} runtime was found{}",
+            requirement.kind.command(),
+            detail
+        )))
+    }
+
+    /// Resolve a well-known command to an absolute executable path.
+    pub fn resolve_command(&self, command: &str, project_root: Option<&Path>) -> Result<PathBuf> {
+        let kind = match command.trim().to_ascii_lowercase().as_str() {
+            "node" | "node.exe" => RuntimeKind::Node,
+            "python" | "python.exe" | "python3" => RuntimeKind::Python,
+            "java" | "java.exe" => RuntimeKind::Java,
+            other => {
+                return find_executable_on_path(other).ok_or_else(|| {
+                    CoreError::Other(format!("command '{command}' was not found on PATH"))
+                })
+            }
+        };
+        self.resolve_runtime(
+            &RuntimeRequirement {
+                kind,
+                version: None,
+                preference: RuntimePreference::PreferLocal,
+            },
+            project_root,
+            None,
+        )
+        .map(|runtime| runtime.executable)
+    }
+
+    /// Environment inherited by every DeepAgent-owned local process. Existing
+    /// PATH entries remain first; managed SDK directories are appended only as
+    /// fallbacks. Absolute executable variables make plugin launch deterministic.
+    pub fn build_process_environment(
+        &self,
+        project_root: Option<&Path>,
+    ) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+        let requirements = [
+            RuntimeRequirement::prefer_local(RuntimeKind::Node, ">=20.19"),
+            RuntimeRequirement::prefer_local(RuntimeKind::Python, ">=3.11"),
+            RuntimeRequirement::prefer_local(RuntimeKind::Java, ">=17"),
+        ];
+        let mut project_bins = Vec::new();
+        let mut managed_bins = Vec::new();
+        let mut sources = Vec::new();
+        for requirement in requirements {
+            if let Ok(runtime) = self.resolve_runtime(&requirement, project_root, None) {
+                env.insert(
+                    requirement.kind.env_key().to_string(),
+                    runtime.executable.display().to_string(),
+                );
+                sources.push(match runtime.source {
+                    RuntimeSource::Local => "local",
+                    RuntimeSource::Managed => "managed",
+                });
+                if let Some(parent) = runtime.executable.parent() {
+                    if runtime.reason == "project runtime" {
+                        project_bins.push(parent.to_path_buf());
+                    } else if runtime.source == RuntimeSource::Managed {
+                        managed_bins.push(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+        let mut paths = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for path in project_bins.into_iter().rev() {
+            if !paths.iter().any(|existing| same_path(existing, &path)) {
+                paths.insert(0, path);
+            }
+        }
+        for path in managed_bins {
+            if !paths.iter().any(|existing| same_path(existing, &path)) {
+                paths.push(path);
+            }
+        }
+        if let Ok(path) = std::env::join_paths(paths) {
+            env.insert("PATH".to_string(), path.to_string_lossy().into_owned());
+        }
+        env.insert(
+            "DEEPAGENT_RUNTIME_ROOT".to_string(),
+            self.active_root.display().to_string(),
+        );
+        env.insert(
+            "DEEPAGENT_RUNTIME_SOURCE".to_string(),
+            if sources.is_empty() {
+                "unavailable"
+            } else if sources.iter().all(|source| *source == "local") {
+                "local"
+            } else if sources.iter().all(|source| *source == "managed") {
+                "managed"
+            } else {
+                "mixed"
+            }
+            .to_string(),
+        );
+        if let Some(root) = project_root {
+            env.insert(
+                "DEEPAGENT_PROJECT_ROOT".to_string(),
+                root.display().to_string(),
+            );
+        }
+        env
+    }
+
+    fn managed_runtime_executable(&self, kind: RuntimeKind) -> Option<PathBuf> {
+        let entry = self
+            .registry
+            .iter()
+            .find(|entry| entry.id == kind.managed_id())?;
+        let probe = entry
+            .artifact()
+            .and_then(|artifact| artifact.probe.as_deref())
+            .unwrap_or(&entry.probe);
+        let artifact = entry.artifact()?;
+        self.lookup_roots.iter().find_map(|root| {
+            let executable = root.join(&artifact.dest_subdir).join(probe);
+            executable.is_file().then_some(executable)
+        })
     }
 
     /// List all known runtimes with their status (for the UI catalog).
@@ -657,6 +1039,197 @@ impl RuntimeService {
             map.remove(id);
         }
     }
+}
+
+struct InspectedRuntime {
+    executable: PathBuf,
+    version: String,
+}
+
+fn resolution(
+    found: InspectedRuntime,
+    kind: RuntimeKind,
+    source: RuntimeSource,
+    reason: &str,
+) -> RuntimeResolution {
+    let root = found
+        .executable
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    RuntimeResolution {
+        kind,
+        source,
+        executable: found.executable,
+        version: found.version,
+        root,
+        reason: reason.to_string(),
+    }
+}
+
+fn inspect_runtime(
+    kind: RuntimeKind,
+    executable: &Path,
+    requirement: &Option<String>,
+) -> Option<InspectedRuntime> {
+    if !executable.is_file() {
+        return None;
+    }
+    let mut command = std::process::Command::new(executable);
+    command.arg("--version");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let output = command.output().ok()?;
+    let text = format!(
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let version = extract_version(&text)?;
+    if !version_matches(&version, requirement.as_deref()) {
+        return None;
+    }
+    let _ = kind;
+    Some(InspectedRuntime {
+        executable: executable.to_path_buf(),
+        version,
+    })
+}
+
+fn extract_version(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .find_map(|part| {
+            let trimmed = part.trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
+            let starts_numeric = trimmed
+                .as_bytes()
+                .first()
+                .map(|byte| byte.is_ascii_digit())
+                .unwrap_or(false);
+            starts_numeric.then(|| trimmed.trim_end_matches('.').to_string())
+        })
+        .filter(|version| !version.is_empty())
+}
+
+fn version_matches(version: &str, requirement: Option<&str>) -> bool {
+    let Some(requirement) = requirement.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let (operator, expected) = if let Some(value) = requirement.strip_prefix(">=") {
+        (">=", value.trim())
+    } else if let Some(value) = requirement.strip_prefix('=') {
+        ("=", value.trim())
+    } else {
+        ("prefix", requirement)
+    };
+    let actual = numeric_version(version);
+    let expected_numeric = numeric_version(expected);
+    match operator {
+        ">=" => compare_versions(&actual, &expected_numeric) != std::cmp::Ordering::Less,
+        "=" => compare_versions(&actual, &expected_numeric) == std::cmp::Ordering::Equal,
+        _ => actual.starts_with(&expected_numeric),
+    }
+}
+
+fn numeric_version(version: &str) -> Vec<u32> {
+    version
+        .split('.')
+        .map(|part| {
+            part.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u32>()
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+fn compare_versions(left: &[u32], right: &[u32]) -> std::cmp::Ordering {
+    let count = left.len().max(right.len());
+    (0..count)
+        .map(|index| {
+            left.get(index)
+                .copied()
+                .unwrap_or_default()
+                .cmp(&right.get(index).copied().unwrap_or_default())
+        })
+        .find(|ordering| *ordering != std::cmp::Ordering::Equal)
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+fn project_runtime_candidates(kind: RuntimeKind, root: &Path) -> Vec<PathBuf> {
+    let names: &[&str] = match kind {
+        RuntimeKind::Node => {
+            #[cfg(target_os = "windows")]
+            {
+                &["node.exe"]
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                &["node"]
+            }
+        }
+        RuntimeKind::Python => {
+            #[cfg(target_os = "windows")]
+            {
+                &[".venv/Scripts/python.exe", "venv/Scripts/python.exe"]
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                &[".venv/bin/python", "venv/bin/python"]
+            }
+        }
+        RuntimeKind::Java => {
+            #[cfg(target_os = "windows")]
+            {
+                &[".jdk/bin/java.exe", "jdk/bin/java.exe"]
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                &[".jdk/bin/java", "jdk/bin/java"]
+            }
+        }
+    };
+    names.iter().map(|name| root.join(name)).collect()
+}
+
+fn find_executable_on_path(command: &str) -> Option<PathBuf> {
+    let command_path = Path::new(command);
+    if command_path.is_absolute() && command_path.is_file() {
+        return Some(command_path.to_path_buf());
+    }
+    let paths = std::env::var_os("PATH")?;
+    let extensions: Vec<OsString> = if cfg!(target_os = "windows") {
+        if Path::new(command).extension().is_some() {
+            vec![OsString::new()]
+        } else {
+            std::env::var_os("PATHEXT")
+                .map(|value| {
+                    value
+                        .to_string_lossy()
+                        .split(';')
+                        .filter(|ext| !ext.is_empty())
+                        .map(OsString::from)
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![OsString::from(".EXE"), OsString::from(".CMD")])
+        }
+    } else {
+        vec![OsString::new()]
+    };
+    for dir in std::env::split_paths(&paths) {
+        for extension in &extensions {
+            let mut file = OsString::from(command);
+            file.push(extension);
+            let candidate = dir.join(file);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 /// Run an installer silently into `dest_dir` (the managed runtime directory).
@@ -1279,7 +1852,117 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
         "deepagent-whisper-cli-macos-arm64/whisper-cli",
     );
 
+    let node_artifacts = per_platform_pinned([
+        (
+            Platform::WindowsX64,
+            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-win-x64.zip",
+            &[] as &[&str],
+            "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97",
+            "sdk/node-22",
+            "node-v22.23.2-win-x64.zip",
+            ArchiveKind::Zip,
+            "node-v22.23.2-win-x64/node.exe",
+        ),
+        (
+            Platform::WindowsArm64,
+            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-win-arm64.zip",
+            &[],
+            "fec025a6da31757e3b6af84c5a1628e9d38442ca99a2161091d78f2fcfa35ef3",
+            "sdk/node-22",
+            "node-v22.23.2-win-arm64.zip",
+            ArchiveKind::Zip,
+            "node-v22.23.2-win-arm64/node.exe",
+        ),
+        (
+            Platform::MacOsX64,
+            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-x64.tar.gz",
+            &[],
+            "58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026",
+            "sdk/node-22",
+            "node-v22.23.2-darwin-x64.tar.gz",
+            ArchiveKind::TarGz,
+            "node-v22.23.2-darwin-x64/bin/node",
+        ),
+        (
+            Platform::MacOsArm64,
+            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-arm64.tar.gz",
+            &[],
+            "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
+            "sdk/node-22",
+            "node-v22.23.2-darwin-arm64.tar.gz",
+            ArchiveKind::TarGz,
+            "node-v22.23.2-darwin-arm64/bin/node",
+        ),
+        (
+            Platform::LinuxX64,
+            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.gz",
+            &[],
+            "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
+            "sdk/node-22",
+            "node-v22.23.2-linux-x64.tar.gz",
+            ArchiveKind::TarGz,
+            "node-v22.23.2-linux-x64/bin/node",
+        ),
+        (
+            Platform::LinuxArm64,
+            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-arm64.tar.gz",
+            &[],
+            "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30",
+            "sdk/node-22",
+            "node-v22.23.2-linux-arm64.tar.gz",
+            ArchiveKind::TarGz,
+            "node-v22.23.2-linux-arm64/bin/node",
+        ),
+    ]);
+    let python_artifacts = per_platform_pinned([(
+        Platform::WindowsX64,
+        "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip",
+        &[] as &[&str],
+        "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b",
+        "sdk/python-3.11",
+        "python-3.11.9-embed-amd64.zip",
+        ArchiveKind::Zip,
+        "python.exe",
+    )]);
+    let jdk_artifacts = per_platform_pinned([
+        (Platform::WindowsX64, "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jdk_x64_windows_hotspot_17.0.20_8.zip", &[] as &[&str], "418497be5cf585bdd2203d6486a565d66d3f5e992d5630d45104cb873fab8122", "sdk/jdk-17", "OpenJDK17U-jdk_x64_windows_hotspot_17.0.20_8.zip", ArchiveKind::Zip, "jdk-17.0.20+8/bin/java.exe"),
+        (Platform::MacOsX64, "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jdk_x64_mac_hotspot_17.0.20_8.tar.gz", &[], "3710c3131c5d7c090582b357f1310133a90bf701183d065223f1a0b90b9ed5ae", "sdk/jdk-17", "OpenJDK17U-jdk_x64_mac_hotspot_17.0.20_8.tar.gz", ArchiveKind::TarGz, "jdk-17.0.20+8/Contents/Home/bin/java"),
+        (Platform::MacOsArm64, "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jdk_aarch64_mac_hotspot_17.0.20_8.tar.gz", &[], "524850138c742324fb21fca4ff6ef68ea25f25bf59366a864e45b4a0c45ed0df", "sdk/jdk-17", "OpenJDK17U-jdk_aarch64_mac_hotspot_17.0.20_8.tar.gz", ArchiveKind::TarGz, "jdk-17.0.20+8/Contents/Home/bin/java"),
+        (Platform::LinuxX64, "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20_8.tar.gz", &[], "be7668bc030d578b83d6d5ef9221d6d6729bbbca8cf94a7d52e16ac68b5a5a35", "sdk/jdk-17", "OpenJDK17U-jdk_x64_linux_hotspot_17.0.20_8.tar.gz", ArchiveKind::TarGz, "jdk-17.0.20+8/bin/java"),
+        (Platform::LinuxArm64, "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.20_8.tar.gz", &[], "d143936f473a4cb24e3b0e247d6d0775769d55ec9775c339540e753059a8d77a", "sdk/jdk-17", "OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.20_8.tar.gz", ArchiveKind::TarGz, "jdk-17.0.20+8/bin/java"),
+    ]);
+
     vec![
+        RuntimeEntry {
+            id: "node-22".to_string(),
+            name: "Node.js".to_string(),
+            version: "22.23.2".to_string(),
+            capability: "node".to_string(),
+            size_bytes: 55 * 1024 * 1024,
+            artifacts: node_artifacts,
+            probe: if cfg!(target_os = "windows") { "node.exe" } else { "node" }.to_string(),
+            system_probe_paths: vec![],
+        },
+        RuntimeEntry {
+            id: "python-3.11".to_string(),
+            name: "Python".to_string(),
+            version: "3.11.9".to_string(),
+            capability: "python".to_string(),
+            size_bytes: 11 * 1024 * 1024,
+            artifacts: python_artifacts,
+            probe: if cfg!(target_os = "windows") { "python.exe" } else { "python" }.to_string(),
+            system_probe_paths: vec![],
+        },
+        RuntimeEntry {
+            id: "jdk-17".to_string(),
+            name: "Eclipse Temurin JDK".to_string(),
+            version: "17.0.20+8".to_string(),
+            capability: "java".to_string(),
+            size_bytes: 190 * 1024 * 1024,
+            artifacts: jdk_artifacts,
+            probe: if cfg!(target_os = "windows") { "java.exe" } else { "java" }.to_string(),
+            system_probe_paths: vec![],
+        },
         RuntimeEntry {
             id: "whisper-base".to_string(),
             name: "Whisper base model".to_string(),

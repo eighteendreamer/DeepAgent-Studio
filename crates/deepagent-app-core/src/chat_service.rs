@@ -91,7 +91,7 @@ use crate::tool_manifest::{build_visible_tool_schemas, register_tool_search_into
 use crate::tool_runtime::register_skill_tool;
 use crate::tool_runtime::{
     build_base_tool_registry, build_main_run_toolset, CommandExecutorFactory,
-    MainRunToolsetRequest, RemoteOpsFactory, ToolRegistryBuildRequest,
+    MainRunToolsetRequest, RemoteOpsFactory, RuntimeCommandExecutor, ToolRegistryBuildRequest,
 };
 const SESSION_TITLE_SYSTEM_PROMPT: &str = concat!(
     "You generate concise conversation titles for a coding assistant session.\n",
@@ -210,6 +210,7 @@ pub struct ChatService {
     /// Optional executor for local command execution. The desktop app uses this
     /// to wrap local shell/git commands in Sandboxie-Plus when available.
     local_command_executor: Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>,
+    runtime_broker: Option<Arc<crate::RuntimeBroker>>,
     /// Typed reference to the sandboxie executor for per-run mode updates.
     sandboxie_executor: Option<Arc<crate::sandboxie_service::SandboxieExecutor>>,
     /// Optional remote-context factory for remote (SSH) sessions. When set,
@@ -453,6 +454,7 @@ impl ChatService {
             invoked_skills: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             executor_factory: None,
             local_command_executor: None,
+            runtime_broker: None,
             sandboxie_executor: None,
             remote_context_factory: None,
             remote_ops_factory: None,
@@ -683,6 +685,12 @@ impl ChatService {
         executor: Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>,
     ) -> Self {
         self.local_command_executor = Some(executor);
+        self
+    }
+
+    /// Bind the shared runtime broker used by local built-in commands.
+    pub fn with_runtime_broker(mut self, broker: Arc<crate::RuntimeBroker>) -> Self {
+        self.runtime_broker = Some(broker);
         self
     }
 
@@ -957,6 +965,11 @@ impl ChatService {
                     }
                     let mut def = deepagent_prompts::load_command_file(path)?;
                     def.name = name.to_string();
+                    def.body.push_str(&format!(
+                        "\n\nPlugin runtime context:\nDEEPAGENT_PLUGIN_ROOT={}\nDEEPAGENT_PLUGIN_DATA={}\n",
+                        root.path.parent().unwrap_or(&root.path).display(),
+                        root.data_dir.display()
+                    ));
                     return Ok(Some(def));
                 }
             }
@@ -1860,6 +1873,21 @@ impl ChatService {
         local_exec_mode: Option<crate::settings::LocalExecutionMode>,
         bash_external_safety_gate: bool,
     ) -> ToolRegistryBuildRequest<'a> {
+        let local_command_executor = match (&self.runtime_broker, &self.local_command_executor) {
+            (Some(broker), Some(executor)) => Some(Arc::new(RuntimeCommandExecutor::new(
+                executor.clone(),
+                broker.clone(),
+                root,
+            ))
+                as Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>),
+            (Some(broker), None) => Some(Arc::new(RuntimeCommandExecutor::new(
+                Arc::new(deepagent_builtins::bash_tool::SystemExecutor),
+                broker.clone(),
+                root,
+            ))
+                as Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>),
+            (None, executor) => executor.clone(),
+        };
         ToolRegistryBuildRequest {
             root,
             access,
@@ -1870,7 +1898,7 @@ impl ChatService {
             bash_allow: self.bash_allow.clone(),
             settings: self.settings.clone(),
             executor_factory: self.executor_factory.clone(),
-            local_command_executor: self.local_command_executor.clone(),
+            local_command_executor,
             knowledge: self.knowledge.clone(),
             project_map: self.project_map.clone(),
             office: self.office.clone(),
@@ -2568,6 +2596,11 @@ impl ChatService {
             bash_allow: self.bash_allow.clone(),
             bash_full_access: matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
             is_trusted: crate::trust_service::TrustService::new(self.db.clone()).is_trusted(&root),
+            runtime_environment: self
+                .runtime_broker
+                .as_ref()
+                .map(|broker| broker.build_process_environment(Some(&root)))
+                .unwrap_or_default(),
         })?
         .hooks;
         let _ = subagent_hooks.set(hooks.clone());

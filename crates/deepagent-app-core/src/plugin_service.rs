@@ -927,17 +927,22 @@ impl PluginService {
                 .cmp(&plugin_runtime_priority(a.origin))
                 .then_with(|| a.id.cmp(&b.id))
         });
-        let inputs = enabled_plugins.into_iter().filter_map(|plugin| {
-            let manifest = plugin.manifest.as_ref()?;
-            Some(EnabledPluginRuntimeInput {
+        let mut inputs = Vec::new();
+        for plugin in enabled_plugins {
+            let Some(manifest) = plugin.manifest.as_ref() else {
+                continue;
+            };
+            let data_dir = self.data_root.join(sanitize_file_name(&plugin.id));
+            prepare_plugin_payload(&plugin.root, &data_dir)?;
+            inputs.push(EnabledPluginRuntimeInput {
                 id: &plugin.id,
                 name: &plugin.name,
                 source_priority: plugin_runtime_priority(plugin.origin),
                 root: &plugin.root,
-                data_dir: self.data_root.join(sanitize_file_name(&plugin.id)),
+                data_dir,
                 manifest,
-            })
-        });
+            });
+        }
         let projection = PluginRuntimeProjection::from_enabled_plugins(inputs);
         let snapshots = self.runtime_cache_snapshots(&loaded);
         self.store_runtime_projection_cache(projection.clone(), snapshots);
@@ -1533,6 +1538,76 @@ impl PluginService {
             })?;
         Ok((marketplace_key, entry))
     }
+}
+
+fn prepare_plugin_payload(plugin_root: &Path, data_dir: &Path) -> Result<()> {
+    let archive_path = plugin_root.join("runtime.zip");
+    if !archive_path.is_file() {
+        return Ok(());
+    }
+    let runtime_dir = data_dir.join("runtime");
+    let marker = runtime_dir.join(".payload-size");
+    let archive_size = std::fs::metadata(&archive_path)
+        .map_err(|e| CoreError::Persistence(format!("read {}: {e}", archive_path.display())))?
+        .len();
+    let expected_marker = archive_size.to_string();
+    if marker
+        .is_file()
+        .then(|| std::fs::read_to_string(&marker).ok())
+        .flatten()
+        .as_deref()
+        == Some(expected_marker.as_str())
+    {
+        return Ok(());
+    }
+
+    let file = File::open(&archive_path)
+        .map_err(|e| CoreError::Persistence(format!("open {}: {e}", archive_path.display())))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| CoreError::Persistence(format!("read plugin payload: {e}")))?;
+    if archive.len() > 100_000 {
+        return Err(CoreError::invalid("plugin payload contains too many files"));
+    }
+    let stage = data_dir.join(".runtime.tmp");
+    let _ = std::fs::remove_dir_all(&stage);
+    std::fs::create_dir_all(&stage)
+        .map_err(|e| CoreError::Persistence(format!("create plugin runtime: {e}")))?;
+    let mut extracted = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| CoreError::Persistence(format!("read plugin payload entry: {e}")))?;
+        extracted = extracted.saturating_add(entry.size());
+        if extracted > 512 * 1024 * 1024 {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(CoreError::invalid("plugin payload exceeds 512 MiB"));
+        }
+        let relative = entry
+            .enclosed_name()
+            .ok_or_else(|| CoreError::invalid("plugin payload contains an unsafe path"))?;
+        let output = stage.join(relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&output)
+                .map_err(|e| CoreError::Persistence(format!("create plugin directory: {e}")))?;
+        } else {
+            if let Some(parent) = output.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| CoreError::Persistence(format!("create plugin parent: {e}")))?;
+            }
+            let mut output_file = File::create(&output)
+                .map_err(|e| CoreError::Persistence(format!("create plugin file: {e}")))?;
+            std::io::copy(&mut entry, &mut output_file)
+                .map_err(|e| CoreError::Persistence(format!("extract plugin file: {e}")))?;
+        }
+    }
+    let _ = std::fs::remove_dir_all(&runtime_dir);
+    std::fs::rename(&stage, &runtime_dir)
+        .map_err(|e| CoreError::Persistence(format!("activate plugin runtime: {e}")))?;
+    std::fs::write(marker, archive_size.to_string())
+        .map_err(|e| CoreError::Persistence(format!("write plugin payload marker: {e}")))?;
+    std::fs::create_dir_all(data_dir.join("workspace"))
+        .map_err(|e| CoreError::Persistence(format!("create plugin workspace: {e}")))?;
+    Ok(())
 }
 
 #[derive(Default)]

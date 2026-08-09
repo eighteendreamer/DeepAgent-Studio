@@ -130,8 +130,9 @@ pub use project_map_service::{
 pub use project_service::{folder_name, ProjectService};
 pub use recording_service::{AudioRecorder, RecordingService, UnavailableRecorder};
 pub use runtime_service::{
-    default_registry, ArchiveKind, Downloader, Platform, RuntimeArtifact, RuntimeEntry,
-    RuntimeService, UnavailableDownloader,
+    default_registry, ArchiveKind, Downloader, Platform, RuntimeArtifact, RuntimeBroker,
+    RuntimeDiagnostic, RuntimeEntry, RuntimeKind, RuntimePreference, RuntimeRequirement,
+    RuntimeResolution, RuntimeService, RuntimeSource, UnavailableDownloader,
 };
 pub use sandboxie_service::{SandboxieExecutor, SandboxieService, SandboxieStatusDto};
 pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore};

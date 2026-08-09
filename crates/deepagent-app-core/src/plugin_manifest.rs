@@ -61,6 +61,18 @@ pub struct PluginInterface {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PluginRuntimeRequirements {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub java: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PluginManifestPaths {
     #[serde(default)]
     pub skills: Vec<PathBuf>,
@@ -104,6 +116,8 @@ pub struct PluginManifest {
     pub paths: PluginManifestPaths,
     #[serde(default)]
     pub interface: PluginInterface,
+    #[serde(default)]
+    pub runtime: PluginRuntimeRequirements,
     pub manifest_path: PathBuf,
 }
 
@@ -175,6 +189,20 @@ struct RawPluginManifest {
     apps: Option<RawPathList>,
     #[serde(default)]
     interface: Option<RawPluginInterface>,
+    #[serde(default)]
+    runtime: Option<RawPluginRuntimeRequirements>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawPluginRuntimeRequirements {
+    #[serde(default)]
+    node: Option<String>,
+    #[serde(default)]
+    python: Option<String>,
+    #[serde(default)]
+    java: Option<String>,
+    #[serde(default)]
+    preference: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -381,6 +409,7 @@ fn raw_manifest_to_manifest(
         hooks,
         apps,
         interface,
+        runtime,
     } = raw;
     let raw_paths = raw_paths.unwrap_or_default();
 
@@ -453,6 +482,14 @@ fn raw_manifest_to_manifest(
             .collect(),
         paths,
         interface,
+        runtime: runtime
+            .map(|runtime| PluginRuntimeRequirements {
+                node: runtime.node.and_then(trimmed_string),
+                python: runtime.python.and_then(trimmed_string),
+                java: runtime.java.and_then(trimmed_string),
+                preference: runtime.preference.and_then(trimmed_string),
+            })
+            .unwrap_or_default(),
         manifest_path,
     })
 }

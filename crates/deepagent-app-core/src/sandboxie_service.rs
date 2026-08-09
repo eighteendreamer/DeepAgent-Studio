@@ -266,6 +266,7 @@ impl SandboxieService {
         cwd: &str,
         mode: SandboxMode,
         shell: CommandShell,
+        environment: &[(String, String)],
     ) -> Result<CommandOutcome> {
         let Some(tools) = self.ensure_tools_available()? else {
             return Err(CoreError::not_found(
@@ -300,6 +301,7 @@ impl SandboxieService {
             cmd.args([box_arg.as_str(), "/wait", "/hide_window"]);
             configure_sandboxed_shell_args(&mut cmd, shell, &wrapped);
             cmd.current_dir(cwd);
+            cmd.envs(environment.iter().map(|(key, value)| (key, value)));
             configure_hidden_process(&mut cmd);
             cmd.output()
         })
@@ -458,21 +460,39 @@ impl CommandExecutor for SandboxieExecutor {
         cwd: &str,
         shell: CommandShell,
     ) -> Result<CommandOutcome> {
+        self.run_with_environment(command, cwd, shell, &[]).await
+    }
+
+    async fn run_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
         let command = command.to_string();
         let cwd = cwd.to_string();
+        let environment = environment.to_vec();
         let service = self.service.clone();
         let sandbox_command = command.clone();
         let sandbox_cwd = cwd.clone();
+        let sandbox_environment = environment.clone();
         let mode = self.current_mode();
         match tokio::task::spawn_blocking(move || {
-            service.run_command_in_box(&sandbox_command, &sandbox_cwd, mode, shell)
+            service.run_command_in_box(
+                &sandbox_command,
+                &sandbox_cwd,
+                mode,
+                shell,
+                &sandbox_environment,
+            )
         })
         .await
         {
             Ok(Ok(out)) => Ok(out),
             Ok(Err(_)) | Err(_) => {
                 self.fallback
-                    .run_with_options(command.as_str(), cwd.as_str(), shell)
+                    .run_with_environment(command.as_str(), cwd.as_str(), shell, &environment)
                     .await
             }
         }
@@ -493,6 +513,19 @@ impl CommandExecutor for SandboxieExecutor {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         timeout: std::time::Duration,
     ) -> Result<CommandOutcome> {
+        self.run_controlled_with_environment(command, cwd, shell, cancel, timeout, &[])
+            .await
+    }
+
+    async fn run_controlled_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        timeout: std::time::Duration,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
         use std::sync::atomic::Ordering;
         if cancel.load(Ordering::Acquire) {
             return Err(CoreError::other("command cancelled before start"));
@@ -502,16 +535,23 @@ impl CommandExecutor for SandboxieExecutor {
         if self.service.locate_tools().is_none() {
             return self
                 .fallback
-                .run_controlled(command, cwd, shell, cancel, timeout)
+                .run_controlled_with_environment(command, cwd, shell, cancel, timeout, environment)
                 .await;
         }
 
         let service = self.service.clone();
         let sandbox_command = command.to_string();
         let sandbox_cwd = cwd.to_string();
+        let sandbox_environment = environment.to_vec();
         let mode = self.current_mode();
         let mut boxed_run = tokio::task::spawn_blocking(move || {
-            service.run_command_in_box(&sandbox_command, &sandbox_cwd, mode, shell)
+            service.run_command_in_box(
+                &sandbox_command,
+                &sandbox_cwd,
+                mode,
+                shell,
+                &sandbox_environment,
+            )
         });
 
         let cancel_watch = cancel.clone();
@@ -529,7 +569,14 @@ impl CommandExecutor for SandboxieExecutor {
             Some(Ok(Ok(out))) => Ok(out),
             Some(Ok(Err(_))) | Some(Err(_)) => {
                 self.fallback
-                    .run_controlled(command, cwd, shell, cancel, timeout)
+                    .run_controlled_with_environment(
+                        command,
+                        cwd,
+                        shell,
+                        cancel,
+                        timeout,
+                        environment,
+                    )
                     .await
             }
             None => {

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -36,6 +37,7 @@ pub(crate) struct HookAssemblyRequest<'a> {
     /// Whether the project root is trusted (§6.2). When enforcement is on and
     /// this is `false`, bash/shell escalates to approval.
     pub(crate) is_trusted: bool,
+    pub(crate) runtime_environment: BTreeMap<String, String>,
 }
 
 pub(crate) struct HookAssemblyResult {
@@ -81,6 +83,7 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         request.settings,
         &request.sink,
         &hook_action_executor,
+        &request.runtime_environment,
     );
     register_run_config_hooks(
         &mut hooks,
@@ -88,6 +91,7 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         request.root,
         &request.sink,
         &hook_action_executor,
+        &request.runtime_environment,
     )?;
     register_project_hooks(
         &mut hooks,
@@ -95,12 +99,14 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         request.root,
         &request.sink,
         &hook_action_executor,
+        &request.runtime_environment,
     );
     register_plugin_hooks(
         &mut hooks,
         request.plugin_projection,
         &request.sink,
         &hook_action_executor,
+        &request.runtime_environment,
     );
 
     deepagent_builtins::register_guard_hooks_with_bash_full_access(
@@ -163,11 +169,14 @@ fn register_user_hooks(
     settings: &SettingsService,
     sink: &Arc<dyn RuntimeEventSink>,
     host: &Arc<dyn HookActionExecutor>,
+    runtime_environment: &BTreeMap<String, String>,
 ) {
     match settings.hook_definitions() {
         Ok(defs) if !defs.is_empty() => {
-            let runner: Arc<dyn HookCommandRunner> =
-                Arc::new(ObservableHookRunner::new(sink.clone()));
+            let runner: Arc<dyn HookCommandRunner> = Arc::new(ObservableHookRunner::new(
+                sink.clone(),
+                runtime_environment.clone(),
+            ));
             let n = defs.register_into_with_host(hooks, runner, host.clone());
             tracing::info!(count = n, "registered external hooks from hooks.json");
         }
@@ -184,12 +193,14 @@ fn register_run_config_hooks(
     root: &Path,
     sink: &Arc<dyn RuntimeEventSink>,
     host: &Arc<dyn HookActionExecutor>,
+    runtime_environment: &BTreeMap<String, String>,
 ) -> Result<()> {
     match run_config.hook_definitions() {
         Ok(Some(defs)) if !defs.is_empty() => {
             let runner: Arc<dyn HookCommandRunner> = Arc::new(ObservableHookRunner::new_in_dir(
                 sink.clone(),
                 root.to_path_buf(),
+                runtime_environment.clone(),
             ));
             let n = defs.register_into_with_host(hooks, runner, host.clone());
             tracing::info!(
@@ -216,11 +227,13 @@ fn register_project_hooks(
     root: &Path,
     sink: &Arc<dyn RuntimeEventSink>,
     host: &Arc<dyn HookActionExecutor>,
+    runtime_environment: &BTreeMap<String, String>,
 ) {
     if let Some(defs) = project_hooks.filter(|defs| !defs.is_empty()) {
         let runner: Arc<dyn HookCommandRunner> = Arc::new(ObservableHookRunner::new_in_dir(
             sink.clone(),
             root.to_path_buf(),
+            runtime_environment.clone(),
         ));
         let n = defs.register_into_with_host(hooks, runner, host.clone());
         tracing::info!(
@@ -236,11 +249,14 @@ fn register_plugin_hooks(
     plugin_projection: Option<&PluginRuntimeProjection>,
     sink: &Arc<dyn RuntimeEventSink>,
     host: &Arc<dyn HookActionExecutor>,
+    runtime_environment: &BTreeMap<String, String>,
 ) {
     if let Some(projection) = plugin_projection {
         if !projection.hook_definitions.is_empty() {
-            let runner: Arc<dyn HookCommandRunner> =
-                Arc::new(ObservableHookRunner::new(sink.clone()));
+            let runner: Arc<dyn HookCommandRunner> = Arc::new(ObservableHookRunner::new(
+                sink.clone(),
+                runtime_environment.clone(),
+            ));
             let n =
                 projection
                     .hook_definitions
