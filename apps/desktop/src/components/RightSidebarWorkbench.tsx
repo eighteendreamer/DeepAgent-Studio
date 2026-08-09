@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { SidebarPluginHeader } from "./SidebarPluginHeader";
-import { ToolLauncherPanel } from "./ToolLauncherPanel";
-import type { ToolLauncherCard } from "./ToolLauncherPanel";
+import { ToolLauncherPanel, type ToolLauncherCard } from "./ToolLauncherPanel";
 import {
   createPluginTab,
   getPluginDefinition,
@@ -15,7 +14,7 @@ import {
   type PluginToolCard,
   type PluginType,
 } from "./plugins/pluginRegistry";
-import { useResizableSidebar } from "../hooks/useResizableSidebar";
+import { SIDEBAR_MIN_WIDTH, useResizableSidebar } from "../hooks/useResizableSidebar";
 import { usePanelPresence } from "../hooks/usePanelPresence";
 import { listPluginApps, openStudioCanvasWindow, PLUGINS_CHANGED_EVENT } from "../api";
 import { message } from "./message";
@@ -31,26 +30,18 @@ const STATIC_PLUGIN_TYPES = new Set(PLUGIN_TOOL_CARDS.map((card) => card.type));
 
 interface RightSidebarWorkbenchProps {
   open: boolean;
-  /** Tabs currently open in the sidebar (owned by the parent view). */
   tabs: PluginTab[];
-  /** Id of the active tab, or "new" to show the plugin launcher. */
   activeTabId: string;
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onShowLauncher: () => void;
   onSelectPlugin: (card: PluginToolCard) => void;
   renderContext?: PluginRenderContext;
-  /** Extra actions rendered next to the launcher/close buttons in the tab header. */
   extraActions?: React.ReactNode;
 }
 
-/**
- * Unified right-side workbench shared by `ChatView` and `StartView`. Hosts
- * the plugin tab strip (files / chat / browser / terminal / project map /
- * recording / file preview), a drag-to-resize handle, and a "maximize" mode
- * for the files plugin. Width is always clamped so the conversation column
- * keeps at least `MIN_CHAT_WIDTH` (500px) - see `useResizableSidebar`.
- */
+const SIDEBAR_ANIM_MS = 400;
+
 export function RightSidebarWorkbench({
   open,
   tabs,
@@ -62,21 +53,39 @@ export function RightSidebarWorkbench({
   renderContext,
   extraActions,
 }: RightSidebarWorkbenchProps) {
-  const { width, sidebarRef, isResizing, startResizing, isMaximized, toggleMaximize, resetMaximize } =
-    useResizableSidebar();
   const [pluginAppCards, setPluginAppCards] = useState<PluginToolCard[]>([]);
-  const presence = usePanelPresence(open, 240);
+  const presence = usePanelPresence(open, SIDEBAR_ANIM_MS);
+  const [shellWidth, setShellWidth] = useState(0);
 
   const visibleTabs = useMemo(
     () => tabs.filter((tab) => getPluginDefinition(tab.type) != null),
     [tabs],
   );
   const activeTab = visibleTabs.find((tab) => tab.id === activeTabId) ?? null;
+  const showPluginContent = Boolean(activeTab && activeTabId !== "new");
+
+  const sidebarMinWidth = useMemo(() => {
+    if (!showPluginContent || !activeTab) return SIDEBAR_MIN_WIDTH.launcher;
+    switch (activeTab.type) {
+      case "chat":
+        return SIDEBAR_MIN_WIDTH.chat;
+      case "files":
+        return SIDEBAR_MIN_WIDTH.files;
+      case "browser":
+        return SIDEBAR_MIN_WIDTH.browser;
+      case "terminal":
+        return SIDEBAR_MIN_WIDTH.terminal;
+      default:
+        return SIDEBAR_MIN_WIDTH.default;
+    }
+  }, [activeTab, showPluginContent]);
+
+  const { width, sidebarRef, isResizing, startResizing, isMaximized, toggleMaximize, resetMaximize } =
+    useResizableSidebar({ defaultWidth: 400, minWidth: sidebarMinWidth });
   const visiblePluginAppCards = useMemo(
     () =>
       pluginAppCards.filter(
-        (card) =>
-          !(card.pluginId?.endsWith("@builtin") && STATIC_PLUGIN_TYPES.has(card.type)),
+        (card) => !(card.pluginId?.endsWith("@builtin") && STATIC_PLUGIN_TYPES.has(card.type)),
       ),
     [pluginAppCards],
   );
@@ -84,23 +93,38 @@ export function RightSidebarWorkbench({
     () => [...PLUGIN_TOOL_CARDS, ...visiblePluginAppCards],
     [visiblePluginAppCards],
   );
-  const launcherCards: ToolLauncherCard[] = [...availablePluginCards, STUDIO_CANVAS_CARD];
+  const launcherCards: ToolLauncherCard[] = useMemo(
+    () => [...availablePluginCards, STUDIO_CANVAS_CARD],
+    [availablePluginCards],
+  );
 
-  const handleLauncherSelect = (card: ToolLauncherCard) => {
-    if (card.type === STUDIO_CANVAS_CARD.type) {
-      void openStudioCanvasWindow().catch((error) => {
-        message.error(`打开工作画布失败：${String(error)}`);
-      });
-      return;
-    }
-    onSelectPlugin(card as PluginToolCard);
-  };
+  const showHeader = visibleTabs.length > 0;
 
-  // Dropping back to zero open tabs (all closed) should also drop out of
-  // maximize mode so the next open starts at the default width.
+  const targetShellWidth = showPluginContent ? Math.max(width, sidebarMinWidth) : width;
+
   useEffect(() => {
     if (tabs.length === 0) resetMaximize();
   }, [resetMaximize, tabs.length]);
+
+  useEffect(() => {
+    if (!presence.shouldRender) {
+      setShellWidth(0);
+      return;
+    }
+
+    if (!open) {
+      setShellWidth(0);
+      return;
+    }
+
+    if (presence.phase === "opening") {
+      setShellWidth(0);
+      const id = window.requestAnimationFrame(() => setShellWidth(targetShellWidth));
+      return () => window.cancelAnimationFrame(id);
+    }
+
+    setShellWidth(targetShellWidth);
+  }, [open, presence.shouldRender, presence.phase, targetShellWidth]);
 
   const refreshPluginApps = useCallback(async () => {
     if (!open) return;
@@ -122,21 +146,28 @@ export function RightSidebarWorkbench({
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const handler = () => {
-      void refreshPluginApps();
-    };
+    const handler = () => void refreshPluginApps();
     window.addEventListener(PLUGINS_CHANGED_EVENT, handler);
-    return () => {
-      window.removeEventListener(PLUGINS_CHANGED_EVENT, handler);
-    };
+    return () => window.removeEventListener(PLUGINS_CHANGED_EVENT, handler);
   }, [refreshPluginApps]);
 
-  const maximizedClasses = "absolute inset-0 z-40 border-l-0 shadow-none";
-  const normalClasses = "absolute inset-y-0 right-0 z-30";
+  const handleLauncherSelect = (card: ToolLauncherCard) => {
+    if (card.type === STUDIO_CANVAS_CARD.type) {
+      void openStudioCanvasWindow().catch((error) => {
+        message.error(`打开工作画布失败：${String(error)}`);
+      });
+      return;
+    }
+    const existing = visibleTabs.find((tab) => tab.type === card.type);
+    if (existing) {
+      onSelectTab(existing.id);
+      return;
+    }
+    onSelectPlugin(card as PluginToolCard);
+  };
 
   if (!presence.shouldRender) return null;
 
-  const visibleWidth = presence.isVisible || isMaximized ? width : 0;
   const headerExtraActions =
     activeTab?.type === "files" || extraActions ? (
       <>
@@ -157,54 +188,71 @@ export function RightSidebarWorkbench({
       </>
     ) : null;
 
+  if (isMaximized) {
+    return (
+      <aside
+        ref={sidebarRef}
+        className="right-sidebar-workbench absolute inset-0 z-40 h-full overflow-hidden is-maximized"
+      >
+        <div className="relative flex h-full w-full flex-col overflow-hidden bg-bg-base">
+          <SidebarPluginHeader
+            tabs={visibleTabs}
+            activeTabId={activeTabId}
+            onSelectTab={onSelectTab}
+            onCloseTab={onCloseTab}
+            onShowLauncher={onShowLauncher}
+            availablePlugins={availablePluginCards}
+            onSelectPlugin={(plugin) => onSelectPlugin(plugin as PluginToolCard & { type: PluginType })}
+            reserveRightActionsSpace
+            extraActions={headerExtraActions}
+          />
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {activeTab ? renderPluginTab(activeTab, renderContext) : null}
+          </div>
+        </div>
+      </aside>
+    );
+  }
+
+  const totalWidth = presence.shouldRender ? shellWidth : 0;
+  const isOpening = presence.phase === "opening";
+
   return (
     <aside
       ref={sidebarRef}
-      className={`right-sidebar-workbench h-full overflow-hidden ${
-        presence.isClosing ? "is-closing" : ""
-      } ${isResizing ? "is-resizing" : ""} ${
-        isMaximized ? `${maximizedClasses} is-maximized` : normalClasses
-      }`}
-      style={isMaximized ? { width: "100%" } : { width: visibleWidth }}
+      className={`right-sidebar-workbench relative flex h-full flex-shrink-0 overflow-hidden ${
+        isOpening ? "is-opening" : ""
+      } ${presence.isClosing ? "is-closing" : ""} ${isResizing ? "is-resizing" : ""}`}
+      style={{ width: totalWidth }}
     >
-      <div
-        className="relative flex h-full flex-col overflow-hidden border-l border-border-theme bg-bg-base"
-        style={isMaximized ? { width: "100%" } : { width, minWidth: 360 }}
-      >
-        {/* Drag handle on the left edge (hidden in maximize mode). */}
-        {!isMaximized && (
-          <div
-            className={`panel-resize-handle-col ${isResizing ? "is-active" : ""}`}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              startResizing();
-            }}
+      <div className="relative flex h-full w-full flex-col overflow-hidden bg-bg-base">
+        <div
+          className={`panel-resize-handle-col ${isResizing ? "is-active" : ""}`}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            startResizing();
+          }}
+        />
+
+        {showHeader && (
+          <SidebarPluginHeader
+            tabs={visibleTabs}
+            activeTabId={activeTabId}
+            onSelectTab={onSelectTab}
+            onCloseTab={onCloseTab}
+            onShowLauncher={onShowLauncher}
+            availablePlugins={availablePluginCards}
+            onSelectPlugin={(plugin) => onSelectPlugin(plugin as PluginToolCard & { type: PluginType })}
+            reserveRightActionsSpace
+            extraActions={headerExtraActions}
           />
         )}
 
-        <SidebarPluginHeader
-          tabs={visibleTabs}
-          activeTabId={activeTabId}
-          onSelectTab={onSelectTab}
-          onCloseTab={onCloseTab}
-          onShowLauncher={onShowLauncher}
-          availablePlugins={availablePluginCards}
-          onSelectPlugin={(plugin) =>
-            onSelectPlugin(plugin as PluginToolCard & { type: PluginType })
-          }
-          reserveRightActionsSpace
-          extraActions={headerExtraActions}
-        />
-
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          {activeTabId === "new" || !activeTab ? (
-            <ToolLauncherPanel
-              cards={launcherCards}
-              onSelect={handleLauncherSelect}
-              variant="sidebar"
-            />
-          ) : (
+          {showPluginContent && activeTab ? (
             renderPluginTab(activeTab, renderContext)
+          ) : (
+            <ToolLauncherPanel cards={launcherCards} onSelect={handleLauncherSelect} variant="codex" />
           )}
         </div>
       </div>
@@ -212,6 +260,5 @@ export function RightSidebarWorkbench({
   );
 }
 
-/** Re-exported so parent views can build tab objects without importing the registry directly. */
 export { createPluginTab };
 export type { PluginTab, PluginTitleContext, PluginToolCard };

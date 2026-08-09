@@ -1765,19 +1765,19 @@ export function Composer({
             }}
             disabled={busy ? !onStop : !hasComposerContent}
             title={busy ? t("composer.stop") : undefined}
-            className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
+            className={cn(
+              "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full",
+              MOTION.fast,
               busy
                 ? onStop
-                  ? "bg-text-base text-white cursor-pointer"
-                  : "bg-black/10 text-text-secondary cursor-not-allowed"
-                : planMode
-                ? hasComposerContent
-                  ? "bg-amber-500 text-white cursor-pointer"
-                  : "bg-black/10 text-text-secondary cursor-not-allowed"
+                  ? "cursor-pointer bg-text-base text-white hover:bg-black"
+                  : "cursor-not-allowed bg-black/20 text-white"
                 : hasComposerContent
-                  ? "bg-primary text-white cursor-pointer"
-                  : "bg-black/10 text-text-secondary cursor-not-allowed"
-            }`}
+                  ? planMode
+                    ? "cursor-pointer bg-amber-600 text-white hover:bg-amber-700"
+                    : "cursor-pointer bg-text-base text-white hover:bg-black"
+                  : "cursor-not-allowed bg-black/20 text-white",
+            )}
           >
             <FontAwesomeIcon icon={busy ? ["fas", "stop"] : ["fas", "arrow-up"]} className="text-[11px]" />
           </button>

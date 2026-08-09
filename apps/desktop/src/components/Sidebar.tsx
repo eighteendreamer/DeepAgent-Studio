@@ -3,6 +3,13 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
+import { SidebarProjectMenu } from "./SidebarProjectMenu";
+import { SidebarSettingsMenu } from "./SidebarSettingsMenu";
+import { Panel } from "./ui/Panel";
+import { InputSurface } from "./ui/InputSurface";
+import { TintButton } from "./ui/TintButton";
+import { PinThumbtackIcon } from "./ui/PinThumbtackIcon";
+import { cn } from "./shadcn/utils";
 import type { Project, SessionSummary } from "../types";
 
 interface Props {
@@ -110,7 +117,6 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     activeSelector: `[data-nav="${activeNavId}"]`,
   });
 
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [activeMoreSubmenu, setActiveMoreSubmenu] = useState<"organize" | "sort" | null>(null);
   const [moreSubmenuPosition, setMoreSubmenuPosition] = useState({ left: 252, top: 0 });
@@ -127,25 +133,17 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     readSidebarPreference("deepagent:sidebar-sort-criterion", "updated", SIDEBAR_SORT_CRITERIA)
   );
   
-  const settingsRef = useRef<HTMLDivElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const newProjectMenuRef = useRef<HTMLDivElement>(null);
-  const projMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
-        setIsSettingsOpen(false);
-      }
       if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
         setIsMoreMenuOpen(false);
         setActiveMoreSubmenu(null);
       }
       if (newProjectMenuRef.current && !newProjectMenuRef.current.contains(e.target as Node)) {
         setIsNewProjectMenuOpen(false);
-      }
-      if (projMenuRef.current && !projMenuRef.current.contains(e.target as Node)) {
-        setActiveProjectMenu(null);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -306,54 +304,67 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     const active = s.id === activeId;
     const isPinned = s.pinned;
     const isRunning = runningSessionIds?.has(s.id) ?? false;
+    const showActions = isPinned || isPinnedSection;
     return (
       <div
         key={s.id + (isPinnedSection ? '_pinned' : '')}
         onClick={() => onSelect(s.id)}
-        className={`flex items-center justify-between ${isPinnedSection ? 'px-2.5 py-1.5 mb-0.5' : 'pl-8 pr-2 py-1'} text-[12px] cursor-pointer rounded-md transition-colors group/session ${
+        className={cn(
+          "group/session flex cursor-pointer items-center rounded-md text-[13px] transition-colors duration-150",
+          isPinnedSection ? "mb-0.5 px-2.5 py-1.5" : "py-1.5 pl-[34px] pr-2.5",
           active
-            ? "bg-black/5 text-text-base font-medium"
-            : "text-text-secondary hover:bg-black/5 hover:text-text-base"
-        }`}
-      >
-        {isRunning && (
-          <FontAwesomeIcon
-            icon={["fas", "circle-notch"]}
-            spin
-            className="text-[11px] text-blue-500 mr-1.5 flex-shrink-0"
-            title={t("sidebar.running")}
-          />
+            ? "bg-black/5 font-medium text-text-base"
+            : "text-text-secondary hover:bg-black/5 hover:text-text-base",
         )}
-        <span className="truncate flex-1 pr-2">{s.title?.trim() || t("sidebar.newChat")}</span>
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
+          {isRunning && (
+            <FontAwesomeIcon
+              icon={["fas", "circle-notch"]}
+              spin
+              className="flex-shrink-0 text-[11px] text-blue-500"
+              title={t("sidebar.running")}
+            />
+          )}
+          <span className="truncate">{s.title?.trim() || t("sidebar.newChat")}</span>
+        </div>
 
-        {/* Right side container for timestamp and buttons using grid stacking */}
-        <div className="grid items-center flex-shrink-0">
-          {/* Running indicator takes precedence and never fades on hover. */}
+        {/* Fixed-width slot: timestamp ↔ actions swap without shifting title */}
+        <div className="relative h-5 w-11 flex-shrink-0">
           {isRunning ? (
-            <span className="col-start-1 row-start-1 text-[10px] text-blue-500 whitespace-nowrap justify-self-end">
+            <span className="absolute inset-0 flex items-center justify-end text-[10px] text-blue-500 whitespace-nowrap">
               {t("sidebar.running")}
             </span>
           ) : (
             <>
-              {/* Timestamp (fades out on hover) */}
               {!isPinnedSection && (
-                <span className="col-start-1 row-start-1 text-[10px] text-gray-400 group-hover/session:opacity-0 transition-opacity whitespace-nowrap justify-self-end">
+                <span className="absolute inset-0 flex items-center justify-end text-[10px] text-text-secondary whitespace-nowrap transition-opacity duration-150 group-hover/session:opacity-0">
                   {formatTimeAgo(s.created_at)}
                 </span>
               )}
-
-              {/* Action Buttons (fades in on hover) */}
-              <div className="col-start-1 row-start-1 flex items-center space-x-0.5 opacity-0 pointer-events-none group-hover/session:opacity-100 group-hover/session:pointer-events-auto transition-opacity justify-self-end">
+              <div
+                className={cn(
+                  "absolute inset-0 flex items-center justify-end gap-0.5 transition-opacity duration-150",
+                  showActions
+                    ? "opacity-100"
+                    : "pointer-events-none opacity-0 group-hover/session:pointer-events-auto group-hover/session:opacity-100",
+                )}
+              >
                 <button
+                  type="button"
                   onClick={(e) => { e.stopPropagation(); onPinSession(s.id, !isPinned); }}
-                  className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded text-text-secondary"
+                  className={cn(
+                    "flex h-5 w-5 items-center justify-center rounded hover:bg-black/10",
+                    isPinned ? "text-text-base" : "text-text-secondary",
+                  )}
                   title={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
                 >
-                  <FontAwesomeIcon icon={["fas", "thumbtack"]} className="text-[10px]" />
+                  <PinThumbtackIcon pinned={isPinned} />
                 </button>
                 <button
+                  type="button"
                   onClick={(e) => { e.stopPropagation(); onArchiveSession(s.id); }}
-                  className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded text-text-secondary"
+                  className="flex h-5 w-5 items-center justify-center rounded text-text-secondary hover:bg-black/10"
                   title={t("sidebar.archive")}
                 >
                   <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-[10px]" />
@@ -380,102 +391,56 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             toggleProject(proj);
           }}
         >
-          <FontAwesomeIcon icon={["far", "folder"]} className="w-4 text-left mr-2" />
+          <FontAwesomeIcon icon={["far", "folder"]} className="w-4 shrink-0 text-left mr-2 text-text-secondary" />
           <span className="truncate flex-1">{proj}</span>
 
-          <div className={`flex items-center space-x-0.5 transition-opacity ${activeProjectMenu === proj ? 'opacity-100' : 'opacity-0 group-hover/proj:opacity-100'}`}>
-            <div className="relative" ref={activeProjectMenu === proj ? projMenuRef : null}>
-              <button
-                className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded"
-                title="项目选项"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setActiveProjectMenu(activeProjectMenu === proj ? null : proj);
-                }}
-              >
-                <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[10px]" />
-              </button>
-              {activeProjectMenu === proj && (
-                <div
-                  className="absolute top-full right-0 mt-1 w-44 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col font-normal"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                    onClick={() => {
-                      const path = nameToPath[proj];
-                      if (!path) return;
-                      setActiveProjectMenu(null);
-                      onPinProject(path, !isProjectPinned);
-                    }}
-                  >
-                    <FontAwesomeIcon icon={["fas", "thumbtack"]} className="text-text-secondary mr-2.5 w-4" />
-                    {isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}
-                  </button>
-                  <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                    onClick={() => {
-                      const path = nameToPath[proj];
-                      if (!path) return;
-                      setActiveProjectMenu(null);
-                      onOpenProject(path);
-                    }}
-                  >
-                    <FontAwesomeIcon icon={["far", "folder"]} className="text-text-secondary mr-2.5 w-4" />
-                    {t("sidebar.openInExplorer")}
-                  </button>
-                  <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                    onClick={() => {
-                      const path = nameToPath[proj];
-                      if (!path) return;
-                      setActiveProjectMenu(null);
-                      onOpenProjectMap(path);
-                    }}
-                  >
-                    <FontAwesomeIcon icon={["fas", "share-nodes"]} className="text-text-secondary mr-2.5 w-4" />
-                    项目地图
-                  </button>
-                  <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                    onClick={() => {
-                      const path = nameToPath[proj];
-                      if (!path) return;
-                      setActiveProjectMenu(null);
-                      setRenameProject({ path, name: proj });
-                      setRenameValue(proj);
-                    }}
-                  >
-                    <FontAwesomeIcon icon={["fas", "pen"]} className="text-text-secondary mr-2.5 w-4" />
-                    {t("sidebar.renameProject")}
-                  </button>
-                  <div className="my-1 border-t border-border-theme"></div>
-                  <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                    onClick={() => {
-                      const path = nameToPath[proj];
-                      if (!path) return;
-                      setActiveProjectMenu(null);
-                      setArchiveProject({ path, name: proj });
-                    }}
-                  >
-                    <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-text-secondary mr-2.5 w-4" />
-                    {t("sidebar.archive")}
-                  </button>
-                  <button
-                    className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                    onClick={() => {
-                      setActiveProjectMenu(null);
-                      const path = nameToPath[proj];
-                      if (path) setRemoveProject({ path, name: proj });
-                    }}
-                  >
-                    <FontAwesomeIcon icon={["fas", "xmark"]} className="text-text-secondary mr-2.5 w-4" />
-                    {t("sidebar.remove")}
-                  </button>
-                </div>
+          <div className={`flex items-center space-x-0.5 transition-opacity ${activeProjectMenu === proj || isProjectPinned ? 'opacity-100' : 'opacity-0 group-hover/proj:opacity-100'}`}>
+            <button
+              type="button"
+              className={cn(
+                "w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded",
+                isProjectPinned && "text-text-base",
               )}
-            </div>
+              title={isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}
+              onClick={(e) => {
+                e.stopPropagation();
+                const path = nameToPath[proj];
+                if (path) onPinProject(path, !isProjectPinned);
+              }}
+            >
+              <PinThumbtackIcon pinned={isProjectPinned} />
+            </button>
+            <SidebarProjectMenu
+              isPinned={isProjectPinned}
+              open={activeProjectMenu === proj}
+              onOpenChange={(next) => setActiveProjectMenu(next ? proj : null)}
+              onPin={() => {
+                const path = nameToPath[proj];
+                if (path) onPinProject(path, !isProjectPinned);
+              }}
+              onOpenExplorer={() => {
+                const path = nameToPath[proj];
+                if (path) onOpenProject(path);
+              }}
+              onOpenMap={() => {
+                const path = nameToPath[proj];
+                if (path) onOpenProjectMap(path);
+              }}
+              onRename={() => {
+                const path = nameToPath[proj];
+                if (!path) return;
+                setRenameProject({ path, name: proj });
+                setRenameValue(proj);
+              }}
+              onArchive={() => {
+                const path = nameToPath[proj];
+                if (path) setArchiveProject({ path, name: proj });
+              }}
+              onRemove={() => {
+                const path = nameToPath[proj];
+                if (path) setRemoveProject({ path, name: proj });
+              }}
+            />
             <button
               className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded"
               title={t("sidebar.newChat")}
@@ -712,190 +677,20 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             )}
             {organizeMode === "time" &&
               chronologicalSessions.map((session) => renderSessionItem(session, true))}
-          {projectEntries.map(([proj, projSessions]) => {
-            const isExpanded = expandedProjects[proj];
-            const project = projectByName[proj];
-            const isProjectPinned = project?.pinned ?? false;
-            return (
-              <div key={proj} className="flex flex-col">
-                <div
-                  className={`flex items-center px-2.5 py-1.5 text-[13px] cursor-pointer hover:bg-black/5 rounded-md transition-colors group/proj ${activeProjectMenu === proj || nameToPath[proj] === activeProjectPath ? 'bg-black/5 text-text-base font-medium' : 'text-text-secondary'}`}
-                  onClick={() => {
-                    const path = nameToPath[proj];
-                    if (path) onSelectProject(path);
-                    toggleProject(proj);
-                  }}
-                >
-                  <FontAwesomeIcon icon={["far", "folder"]} className="w-4 text-left mr-2" />
-                  <span className="truncate flex-1">{proj}</span>
-                  
-                  <div className={`flex items-center space-x-0.5 transition-opacity ${activeProjectMenu === proj ? 'opacity-100' : 'opacity-0 group-hover/proj:opacity-100'}`}>
-                    <div className="relative" ref={activeProjectMenu === proj ? projMenuRef : null}>
-                      <button 
-                        className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded" 
-                        title="项目选项"
-                        onClick={(e) => { 
-                          e.stopPropagation(); 
-                          setActiveProjectMenu(activeProjectMenu === proj ? null : proj);
-                        }}
-                      >
-                        <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[10px]" />
-                      </button>
-                      {activeProjectMenu === proj && (
-                        <div 
-                          className="absolute top-full right-0 mt-1 w-44 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col font-normal"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                            onClick={() => {
-                              const path = nameToPath[proj];
-                              if (!path) return;
-                              setActiveProjectMenu(null);
-                              onPinProject(path, !isProjectPinned);
-                            }}
-                          >
-                            <FontAwesomeIcon icon={["fas", "thumbtack"]} className="text-text-secondary mr-2.5 w-4" />
-                            {isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}
-                          </button>
-                          <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                            onClick={() => {
-                              const path = nameToPath[proj];
-                              if (!path) return;
-                              setActiveProjectMenu(null);
-                              onOpenProject(path);
-                            }}
-                          >
-                            <FontAwesomeIcon icon={["far", "folder"]} className="text-text-secondary mr-2.5 w-4" />
-                            {t("sidebar.openInExplorer")}
-                          </button>
-                          <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                            onClick={() => {
-                              const path = nameToPath[proj];
-                              if (!path) return;
-                              setActiveProjectMenu(null);
-                              onOpenProjectMap(path);
-                            }}
-                          >
-                            <FontAwesomeIcon icon={["fas", "share-nodes"]} className="text-text-secondary mr-2.5 w-4" />
-                            项目地图
-                          </button>
-                          <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                            onClick={() => {
-                              const path = nameToPath[proj];
-                              if (!path) return;
-                              setActiveProjectMenu(null);
-                              setRenameProject({ path, name: proj });
-                              setRenameValue(proj);
-                            }}
-                          >
-                            <FontAwesomeIcon icon={["fas", "pen"]} className="text-text-secondary mr-2.5 w-4" />
-                            {t("sidebar.renameProject")}
-                          </button>
-                          <div className="my-1 border-t border-border-theme"></div>
-                          <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                            onClick={() => {
-                              const path = nameToPath[proj];
-                              if (!path) return;
-                              setActiveProjectMenu(null);
-                              setArchiveProject({ path, name: proj });
-                            }}
-                          >
-                            <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-text-secondary mr-2.5 w-4" />
-                            {t("sidebar.archive")}
-                          </button>
-                          <button
-                            className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-                            onClick={() => {
-                              setActiveProjectMenu(null);
-                              const path = nameToPath[proj];
-                              if (path) setRemoveProject({ path, name: proj });
-                            }}
-                          >
-                            <FontAwesomeIcon icon={["fas", "xmark"]} className="text-text-secondary mr-2.5 w-4" />
-                            {t("sidebar.remove")}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <button 
-                      className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded"
-                      title={t("sidebar.newChat")}
-                      onClick={(e) => { 
-                        e.stopPropagation(); 
-                        const path = nameToPath[proj];
-                        if (path) onSelectProject(path);
-                        onNewChat();
-                      }}
-                    >
-                      <FontAwesomeIcon icon={["far", "pen-to-square"]} className="text-[10px]" />
-                    </button>
-                  </div>
-                </div>
-                {isExpanded && (
-                  <div className="flex flex-col mt-0.5 space-y-0.5">
-                    {projSessions.length === 0 ? (
-                      <div className="pl-8 py-1 text-[12px] text-gray-400">{t("sidebar.noChats")}</div>
-                    ) : (
-                      projSessions.map((s) => renderSessionItem(s))
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+            {projectEntries.map(([proj, projSessions]) => renderProjectGroup(proj, projSessions))}
           </div>
         </div>
       </div>
 
       {/* Bottom settings */}
-      <div className="px-3 pt-2 relative" ref={settingsRef}>
-        <button 
-          className="w-full flex items-center px-2.5 py-2 rounded-md text-sm text-text-base hover:bg-black/5 transition-colors"
-          onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-        >
-          <FontAwesomeIcon icon={["fas", "gear"]} className="w-5 text-left text-text-secondary" />
-          <span className="ml-0.5">{t("sidebar.settings")}</span>
-        </button>
-
-        {isSettingsOpen && (
-          <div className="absolute bottom-full left-3 mb-1 w-56 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
-            <div className="px-3 py-2.5 border-b border-border-theme flex items-center mb-1">
-              <FontAwesomeIcon icon={["fas", "circle-user"]} className="text-text-secondary mr-2.5 text-base" />
-              <div className="text-[13px] text-text-base font-medium truncate">
-                {t("sidebar.loginApi")}
-              </div>
-            </div>
-            
-            <button 
-              className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-              onClick={() => {
-                setIsSettingsOpen(false);
-                onOpenSettings();
-              }}
-            >
-              <FontAwesomeIcon icon={["fas", "gear"]} className="text-text-secondary mr-2.5 w-4" />
-              {t("sidebar.settings")}
-            </button>
-            <button 
-              className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
-              onClick={() => { setIsSettingsOpen(false); onLogout(); }}
-            >
-              <FontAwesomeIcon icon={["fas", "arrow-right-from-bracket"]} className="text-text-secondary mr-2.5 w-4" />
-              {t("sidebar.logout")}
-            </button>
-          </div>
-        )}
+      <div className="px-3 pt-2">
+        <SidebarSettingsMenu onOpenSettings={onOpenSettings} onLogout={onLogout} />
       </div>
 
       {renameProject && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/20 px-4">
           <form
-            className="w-full max-w-[420px] rounded-2xl border border-border-theme bg-white shadow-[0_20px_60px_rgba(15,23,42,0.18)]"
+            className="w-full max-w-[340px]"
             onSubmit={(e) => {
               e.preventDefault();
               const nextName = renameValue.trim();
@@ -905,106 +700,108 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               setRenameValue("");
             }}
           >
-            <div className="px-5 pt-5 pb-3">
-              <div className="text-[17px] font-semibold text-text-base">
+            <Panel menu={false} className="p-5 shadow-none">
+              <div className="text-[15px] font-semibold text-text-base">
                 {t("sidebar.renameProjectDialog.title")}
               </div>
-              <input
-                autoFocus
-                className="mt-4 w-full rounded-xl border border-border-theme px-3 py-2 text-[14px] text-text-base outline-none focus:border-primary"
-                placeholder={t("sidebar.renameProjectDialog.placeholder")}
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-              />
-            </div>
-            <div className="flex justify-end gap-2 border-t border-border-theme px-5 py-3">
-              <button
-                type="button"
-                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-black/5 transition-colors"
-                onClick={() => {
-                  setRenameProject(null);
-                  setRenameValue("");
-                }}
-              >
-                {t("sidebar.renameProjectDialog.cancel")}
-              </button>
-              <button
-                type="submit"
-                disabled={!renameValue.trim()}
-                className="rounded-full bg-primary px-4 py-1.5 text-[13px] font-medium text-white hover:bg-opacity-90 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {t("sidebar.renameProjectDialog.confirm")}
-              </button>
-            </div>
+              <InputSurface className="mt-4 rounded-2xl bg-black/5 shadow-none focus-within:shadow-none">
+                <input
+                  autoFocus
+                  className="w-full bg-transparent px-4 py-2.5 text-[14px] text-text-base outline-none placeholder:text-text-secondary"
+                  placeholder={t("sidebar.renameProjectDialog.placeholder")}
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                />
+              </InputSurface>
+              <div className="mt-5 flex justify-end gap-2">
+                <TintButton
+                  type="button"
+                  className="px-4 py-2 text-[13px]"
+                  onClick={() => {
+                    setRenameProject(null);
+                    setRenameValue("");
+                  }}
+                >
+                  {t("sidebar.renameProjectDialog.cancel")}
+                </TintButton>
+                <TintButton
+                  type="submit"
+                  disabled={!renameValue.trim()}
+                  className="px-4 py-2 text-[13px] font-semibold"
+                >
+                  {t("sidebar.renameProjectDialog.confirm")}
+                </TintButton>
+              </div>
+            </Panel>
           </form>
         </div>
       )}
 
       {removeProject && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/20 px-4">
-          <div className="w-full max-w-[420px] rounded-2xl border border-border-theme bg-white shadow-[0_20px_60px_rgba(15,23,42,0.18)]">
-            <div className="px-5 pt-5 pb-3">
-              <div className="text-[17px] font-semibold text-text-base">
-                {t("sidebar.removeProjectDialog.title")}
-              </div>
-              <div className="mt-2 text-[13px] leading-6 text-text-secondary">
-                {t("sidebar.removeProjectDialog.description", {
-                  project: removeProject.name,
-                })}
-              </div>
+          <Panel menu={false} className="w-full max-w-[340px] p-5 shadow-none">
+            <div className="text-[15px] font-semibold text-text-base">
+              {t("sidebar.removeProjectDialog.title")}
             </div>
-            <div className="flex justify-end gap-2 border-t border-border-theme px-5 py-3">
-              <button
-                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-black/5 transition-colors"
+            <p className="mt-2 text-[13px] leading-relaxed text-text-secondary">
+              {t("sidebar.removeProjectDialog.description", {
+                project: removeProject.name,
+              })}
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <TintButton
+                type="button"
+                className="px-4 py-2 text-[13px]"
                 onClick={() => setRemoveProject(null)}
               >
                 {t("sidebar.removeProjectDialog.cancel")}
-              </button>
-              <button
-                className="rounded-full bg-primary px-4 py-1.5 text-[13px] font-medium text-white hover:bg-opacity-90 transition-colors"
+              </TintButton>
+              <TintButton
+                type="button"
+                className="px-4 py-2 text-[13px] font-semibold"
                 onClick={() => {
                   onRemoveProject(removeProject.path);
                   setRemoveProject(null);
                 }}
               >
                 {t("sidebar.removeProjectDialog.confirm")}
-              </button>
+              </TintButton>
             </div>
-          </div>
+          </Panel>
         </div>
       )}
 
       {archiveProject && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/20 px-4">
-          <div className="w-full max-w-[420px] rounded-2xl border border-border-theme bg-white shadow-[0_20px_60px_rgba(15,23,42,0.18)]">
-            <div className="px-5 pt-5 pb-3">
-              <div className="text-[17px] font-semibold text-text-base">
-                {t("sidebar.archiveProjectDialog.title")}
-              </div>
-              <div className="mt-2 text-[13px] leading-6 text-text-secondary">
-                {t("sidebar.archiveProjectDialog.description", {
-                  project: archiveProject.name,
-                })}
-              </div>
+          <Panel menu={false} className="w-full max-w-[340px] p-5 shadow-none">
+            <div className="text-[15px] font-semibold text-text-base">
+              {t("sidebar.archiveProjectDialog.title")}
             </div>
-            <div className="flex justify-end gap-2 border-t border-border-theme px-5 py-3">
-              <button
-                className="rounded-full border border-border-theme px-4 py-1.5 text-[13px] text-text-base hover:bg-black/5 transition-colors"
+            <p className="mt-2 text-[13px] leading-relaxed text-text-secondary">
+              {t("sidebar.archiveProjectDialog.description", {
+                project: archiveProject.name,
+              })}
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <TintButton
+                type="button"
+                className="px-4 py-2 text-[13px]"
                 onClick={() => setArchiveProject(null)}
               >
                 {t("sidebar.archiveProjectDialog.cancel")}
-              </button>
-              <button
-                className="rounded-full bg-primary px-4 py-1.5 text-[13px] font-medium text-white hover:bg-opacity-90 transition-colors"
+              </TintButton>
+              <TintButton
+                type="button"
+                className="px-4 py-2 text-[13px] font-semibold"
                 onClick={() => {
                   onArchiveProject(archiveProject.path, archiveProject.name);
                   setArchiveProject(null);
                 }}
               >
                 {t("sidebar.archiveProjectDialog.confirm")}
-              </button>
+              </TintButton>
             </div>
-          </div>
+          </Panel>
         </div>
       )}
     </aside>

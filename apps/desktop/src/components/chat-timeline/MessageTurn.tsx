@@ -5,6 +5,7 @@ import { AssistantMessageBubble, UserMessageBubble } from "./MessageBubble";
 import { ProcessSectionRow } from "./ProcessSectionRow";
 import type { Turn } from "./timelineTypes";
 import { WorkMetaRow } from "./WorkMetaRow";
+import { CollapseBlurPanel } from "./CollapseBlurPanel";
 
 function totalToolMs(turn: Turn): number {
   return turn.blocks.reduce((sum, block) => {
@@ -61,13 +62,13 @@ function MessageTurnComponent({
             expanded={expanded}
             onToggle={() => setExpandedOverride((value) => !(value ?? forceOpen))}
           />
-          {expanded && sections.length > 0 && (
+          <CollapseBlurPanel open={expanded && sections.length > 0}>
             <div className="flex min-w-0 flex-col gap-1">
               {sections.map((section) => (
                 <ProcessSectionRow key={section.id} section={section} processing={processing} />
               ))}
             </div>
-          )}
+          </CollapseBlurPanel>
         </div>
       )}
       {assistantContentBlocks.map((block) => (

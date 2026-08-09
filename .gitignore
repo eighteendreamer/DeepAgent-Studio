@@ -71,3 +71,13 @@ DeepSeek-Reasonix
 /theme-palette.md
 /执行报告/
 /docs/可以实现，而且现在最合适的形态不是再弹一个窗口，而是把“小程序预览器”.txt
+
+# OMC orchestration state
+.omc/
+**/.omc/
+
+# Local temp/preview artifacts
+choice-preview-*.html
+temp_*.mp4
+video_frames*/
+assets/

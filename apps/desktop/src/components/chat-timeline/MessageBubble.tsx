@@ -2,10 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "framer-motion";
 import type { ComposerMention, ComposerSkillSelection } from "../../types";
 import { MarkdownText } from "../MarkdownText";
+import { morphSpringTransition } from "../ui/morphingMenuMotion";
+import { TintButton } from "../ui/TintButton";
 import { TurnFooter } from "./TurnFooter";
 import type { ChatBlock } from "./timelineTypes";
+
+const USER_BUBBLE_READ =
+  "max-w-[80%] w-fit overflow-hidden rounded-2xl rounded-tr-sm bg-gray-100 px-4 py-3";
+const USER_BUBBLE_EDIT =
+  "w-full max-w-[80%] overflow-hidden rounded-2xl rounded-tr-sm bg-gray-100 px-4 py-3";
 
 const USER_SKILL_MARKER = "\uE000";
 const USER_MENTION_MARKER = "\uE001";
@@ -150,16 +158,37 @@ export function UserMessageBubble({
   const [draft, setDraft] = useState(block.text.replace(/[\uE000\uE001]/g, ""));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hasVisibleMessage = Boolean(block.text || block.selectedSkills.length > 0 || block.mentions.length > 0);
+  const reduced = useReducedMotion();
+  const spring = morphSpringTransition(reduced);
+  const layoutId = `user-msg-bubble-${block.id}`;
 
   useEffect(() => {
     if (!editing) return;
     const textarea = textareaRef.current;
     if (!textarea) return;
-    textarea.focus();
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 360)}px`;
-  }, [editing]);
+    const focus = () => {
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 360)}px`;
+    };
+    if (reduced) {
+      focus();
+      return;
+    }
+    const id = window.requestAnimationFrame(focus);
+    return () => window.cancelAnimationFrame(id);
+  }, [editing, reduced]);
+
+  const cancelEdit = () => {
+    setDraft(block.text.replace(/[\uE000\uE001]/g, ""));
+    setEditing(false);
+  };
+
+  const startEdit = () => {
+    setDraft(block.text.replace(/[\uE000\uE001]/g, ""));
+    setEditing(true);
+  };
 
   const submit = () => {
     const text = draft.trim();
@@ -171,60 +200,85 @@ export function UserMessageBubble({
   return (
     <div className="group flex w-full flex-col items-end">
       <AttachmentPreviews block={block} />
-      {editing ? (
-        <div className="w-full max-w-[80%] rounded-2xl rounded-tr-sm border border-primary/25 bg-gray-100 px-4 py-3 ring-1 ring-primary/10">
-          <textarea
-            ref={textareaRef}
-            value={draft}
-            rows={2}
-            onChange={(event) => {
-              setDraft(event.currentTarget.value);
-              event.currentTarget.style.height = "auto";
-              event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 360)}px`;
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setEditing(false);
-              }
-              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-            className="block w-full resize-none bg-transparent text-[15px] leading-relaxed text-text-base outline-none"
-          />
-          <div className="mt-2 flex items-center justify-end gap-2">
-            <button className="rounded-md px-3 py-1 text-[13px] text-text-secondary hover:bg-gray-200" onClick={() => setEditing(false)}>
-              取消
-            </button>
-            <button className="rounded-md bg-primary px-3 py-1 text-[13px] text-white disabled:opacity-50" disabled={!draft.trim() || busy} onClick={submit}>
-              重新发送
-            </button>
-          </div>
-        </div>
-      ) : (
-        hasVisibleMessage && (
-          <div className="max-w-[80%] rounded-2xl rounded-tr-sm bg-gray-100 px-4 py-3 text-[15px] leading-relaxed text-text-base">
-            <UserInlineContent content={block.text} skills={block.selectedSkills} mentions={block.mentions} />
-          </div>
-        )
-      )}
-      {!editing && (
-        <div className="mt-1 flex min-h-6 items-center gap-2 text-[11.5px] text-text-secondary opacity-0 transition group-hover:opacity-90">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              setDraft(block.text.replace(/[\uE000\uE001]/g, ""));
-              setEditing(true);
-            }}
-            className="rounded-md px-1.5 py-0.5 transition hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
+      <LayoutGroup id={block.id}>
+        <AnimatePresence mode="popLayout" initial={false}>
+          {editing ? (
+            <motion.div key="edit" layoutId={layoutId} transition={spring} className={USER_BUBBLE_EDIT}>
+              <textarea
+                ref={textareaRef}
+                value={draft}
+                rows={1}
+                onChange={(event) => {
+                  setDraft(event.currentTarget.value);
+                  event.currentTarget.style.height = "auto";
+                  event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 360)}px`;
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    cancelEdit();
+                  }
+                  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                    event.preventDefault();
+                    submit();
+                  }
+                }}
+                className="block min-h-[1.6em] w-full resize-none bg-transparent text-[15px] leading-relaxed text-text-base outline-none"
+              />
+              <motion.div
+                initial={reduced ? false : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduced ? undefined : { opacity: 0, y: 8 }}
+                transition={
+                  reduced
+                    ? { duration: 0 }
+                    : { delay: 0.06, type: "spring", stiffness: 320, damping: 28 }
+                }
+                className="mt-2 flex items-center justify-end gap-2"
+              >
+                <TintButton type="button" onClick={cancelEdit}>
+                  取消
+                </TintButton>
+                <TintButton type="button" className="font-medium" disabled={!draft.trim() || busy} onClick={submit}>
+                  重新发送
+                </TintButton>
+              </motion.div>
+            </motion.div>
+          ) : (
+            hasVisibleMessage && (
+              <motion.div
+                key="read"
+                layoutId={layoutId}
+                transition={spring}
+                className={`${USER_BUBBLE_READ} text-[15px] leading-relaxed text-text-base`}
+              >
+                <UserInlineContent content={block.text} skills={block.selectedSkills} mentions={block.mentions} />
+              </motion.div>
+            )
+          )}
+        </AnimatePresence>
+      </LayoutGroup>
+      <AnimatePresence initial={false}>
+        {!editing && (
+          <motion.div
+            key="edit-actions"
+            initial={reduced ? false : { opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={reduced ? undefined : { opacity: 0, height: 0 }}
+            transition={reduced ? { duration: 0 } : { duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+            className="mt-1 flex min-h-6 items-center gap-2 overflow-hidden text-[11.5px] text-text-secondary opacity-0 transition group-hover:opacity-90"
           >
-            编辑
-          </button>
-        </div>
-      )}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={startEdit}
+              className="rounded-md px-1.5 py-0.5 transition hover:bg-gray-100 hover:text-text-base disabled:opacity-50"
+            >
+              编辑
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

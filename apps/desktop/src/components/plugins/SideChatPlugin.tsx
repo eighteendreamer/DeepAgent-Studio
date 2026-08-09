@@ -87,10 +87,10 @@ export function SideChatPlugin() {
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-white">
+    <div className="flex h-full w-full min-w-[420px] flex-col bg-white">
       {/* Chat Flow */}
-      <div className="flex-1 flex flex-col relative">
-        <div className="flex-1 overflow-y-auto px-6 py-4 pb-32">
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 pb-32">
           {messages.length === 0 && (
             <div className="w-full max-w-4xl mx-auto text-text-secondary text-[15px] pl-2">
               {t("chatView.startConversation")}
@@ -118,8 +118,8 @@ export function SideChatPlugin() {
         </div>
 
         {/* Composer */}
-        <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
-          <div className="w-full max-w-4xl">
+        <div className="absolute bottom-4 left-0 w-full min-w-[420px] px-4">
+          <div className="w-full">
             <Composer
               value={value}
               onChange={setValue}

@@ -1,5 +1,6 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { formatMs } from "./format";
+import { CollapseChevron } from "./CollapseBlurPanel";
 
 export function WorkMetaRow({
   processing,
@@ -41,10 +42,7 @@ export function WorkMetaRow({
         {label}
       </span>
       {totalMs > 0 && <span className="text-[12px] font-normal text-text-secondary">{formatMs(totalMs)}</span>}
-      <FontAwesomeIcon
-        icon={["fas", expanded ? "chevron-down" : "chevron-right"]}
-        className="text-[10px] opacity-45 transition group-hover:opacity-80"
-      />
+      <CollapseChevron open={expanded} className="opacity-45 group-hover:opacity-80" />
     </button>
   );
 }

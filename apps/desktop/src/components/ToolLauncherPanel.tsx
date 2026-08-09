@@ -1,6 +1,7 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
+import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 
 export interface ToolLauncherCard {
   icon: IconProp;
@@ -12,7 +13,7 @@ export interface ToolLauncherCard {
 interface Props<T extends ToolLauncherCard = ToolLauncherCard> {
   cards: T[];
   onSelect: (card: T) => void;
-  variant?: "sidebar" | "bottom";
+  variant?: "sidebar" | "bottom" | "codex";
 }
 
 const FALLBACK_TOOL_NAMES: Record<string, string> = {
@@ -80,92 +81,149 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
 }: Props<T>) {
   const { t } = useTranslation();
   const isSidebar = variant === "sidebar";
+  const isCodex = variant === "codex";
+
+  if (isCodex) {
+    return (
+      <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-bg-base px-4 py-6">
+        <SlidingMenuList activeId="__none__" pillClassName="left-0 right-0 rounded-lg" className="w-full max-w-[220px]">
+          <div className="flex flex-col gap-0.5">
+            {cards.map((card) => {
+              const itemId = `${card.type}:${card.title}`;
+              const ownTitle = explicitLabel(card.title, card.type);
+              const translatedTitle =
+                ownTitle ||
+                t(`chatView.tools.${card.type}`, {
+                  defaultValue: toolLabel(card.type),
+                });
+              const shortcut = TOOL_SHORTCUTS[card.type] || "";
+
+              return (
+                <button
+                  key={itemId}
+                  type="button"
+                  {...{ [MENU_ITEM_ATTR]: itemId }}
+                  onClick={() => onSelect(card)}
+                  className="relative z-[1] grid w-full grid-cols-[auto_1fr_auto] items-center gap-2.5 rounded-lg px-2.5 py-2 text-left"
+                >
+                  <div className="flex h-7 w-7 items-center justify-center text-primary">
+                    <FontAwesomeIcon icon={card.icon} className="text-[15px]" />
+                  </div>
+                  <span className="truncate text-[13px] font-medium text-text-base">{translatedTitle}</span>
+                  {shortcut ? (
+                    <span className="font-mono text-[11px] tracking-wide text-text-secondary/60">{shortcut}</span>
+                  ) : (
+                    <span className="w-0" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </SlidingMenuList>
+      </div>
+    );
+  }
 
   return (
-    <div className={`w-full h-full overflow-y-auto ${isSidebar ? "bg-white" : ""}`}>
-      <div className={isSidebar ? "px-4 py-3" : "px-6 py-5"}>
-        <div
-          className={
-            isSidebar
-              ? "flex flex-col divide-y divide-border-theme/70"
-              : "grid gap-3 grid-cols-[repeat(auto-fit,minmax(190px,1fr))] max-w-5xl mx-auto"
-          }
-        >
-          {cards.map((card) => {
-            const ownTitle = explicitLabel(card.title, card.type);
-            const ownDesc = explicitLabel(card.desc, card.type, "Desc");
-            const translatedTitle =
-              ownTitle ||
-              t(`chatView.tools.${card.type}`, {
-                defaultValue: toolLabel(card.type),
-              });
-            const translatedDesc =
-              ownDesc ||
-              t(`chatView.tools.${card.type}Desc`, {
-                defaultValue: toolDescription(card.type),
-              });
-            const shortcut = TOOL_SHORTCUTS[card.type] || "";
+    <div className={`h-full w-full overflow-y-auto ${isSidebar ? "bg-white" : ""}`}>
+      <div className={isSidebar ? "px-3 py-3" : "px-6 py-5"}>
+        {isSidebar ? (
+          <SlidingMenuList activeId="__none__" pillClassName="left-0 right-0 rounded-lg">
+            <div className="flex flex-col gap-0.5">
+              {cards.map((card) => {
+                const itemId = `${card.type}:${card.title}`;
+                const ownTitle = explicitLabel(card.title, card.type);
+                const ownDesc = explicitLabel(card.desc, card.type, "Desc");
+                const translatedTitle =
+                  ownTitle ||
+                  t(`chatView.tools.${card.type}`, {
+                    defaultValue: toolLabel(card.type),
+                  });
+                const translatedDesc =
+                  ownDesc ||
+                  t(`chatView.tools.${card.type}Desc`, {
+                    defaultValue: toolDescription(card.type),
+                  });
+                const shortcut = TOOL_SHORTCUTS[card.type] || "";
 
-            if (isSidebar) {
+                return (
+                  <button
+                    key={itemId}
+                    type="button"
+                    {...{ [MENU_ITEM_ATTR]: itemId }}
+                    onClick={() => onSelect(card)}
+                    className="group relative z-[1] grid min-h-[58px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-lg px-2.5 py-2.5 text-left"
+                  >
+                    <div className="flex h-8 w-8 items-center justify-center text-primary">
+                      <FontAwesomeIcon icon={card.icon} className="text-[16px]" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-[13px] font-medium text-text-base transition-colors group-hover:text-primary">
+                        {translatedTitle}
+                      </div>
+                      <div className="mt-0.5 truncate text-[12px] leading-4 text-text-secondary">
+                        {translatedDesc}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2">
+                      {shortcut && (
+                        <span className="hidden text-[11px] font-mono tracking-wide text-text-secondary/60 xl:inline">
+                          {shortcut}
+                        </span>
+                      )}
+                      <div className="flex h-6 w-6 items-center justify-center text-text-secondary transition-colors duration-150 group-hover:text-primary">
+                        <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[11px]" />
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </SlidingMenuList>
+        ) : (
+          <div className="mx-auto grid max-w-5xl grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
+            {cards.map((card) => {
+              const ownTitle = explicitLabel(card.title, card.type);
+              const ownDesc = explicitLabel(card.desc, card.type, "Desc");
+              const translatedTitle =
+                ownTitle ||
+                t(`chatView.tools.${card.type}`, {
+                  defaultValue: toolLabel(card.type),
+                });
+              const translatedDesc =
+                ownDesc ||
+                t(`chatView.tools.${card.type}Desc`, {
+                  defaultValue: toolDescription(card.type),
+                });
+
               return (
                 <button
                   key={`${card.type}:${card.title}`}
                   type="button"
                   onClick={() => onSelect(card)}
-                  className="group grid min-h-[58px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 px-2.5 py-2.5 text-left transition-colors duration-150 hover:bg-black/5"
+                  className="group grid min-h-[88px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl border border-border-theme bg-white px-4 py-3 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/45 hover:shadow-[0_12px_28px_rgba(15,23,42,0.08)]"
                 >
-                  <div className="flex h-8 w-8 items-center justify-center text-primary">
-                    <FontAwesomeIcon icon={card.icon} className="text-[16px]" />
+                  <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105">
+                    <FontAwesomeIcon icon={card.icon} className="text-[18px]" />
                   </div>
                   <div className="min-w-0">
-                    <div className="truncate text-[13px] font-medium text-text-base transition-colors group-hover:text-primary">
+                    <div className="truncate text-[14px] font-semibold text-text-base transition-colors group-hover:text-primary">
                       {translatedTitle}
                     </div>
-                    <div className="mt-0.5 truncate text-[12px] leading-4 text-text-secondary">
+                    <div className="mt-0.5 line-clamp-2 text-[12px] leading-5 text-text-secondary">
                       {translatedDesc}
                     </div>
                   </div>
-                  <div className="flex items-center justify-end gap-2">
-                    {shortcut && (
-                      <span className="hidden text-[11px] font-mono tracking-wide text-text-secondary/60 xl:inline">
-                        {shortcut}
-                      </span>
-                    )}
-                    <div className="flex h-6 w-6 items-center justify-center text-text-secondary transition-colors duration-150 group-hover:text-primary">
-                      <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[11px]" />
+                  <div className="flex justify-end">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-black/[0.03] text-text-secondary transition-all duration-200 group-hover:bg-primary/10 group-hover:text-primary">
+                      <FontAwesomeIcon icon={["fas", "arrow-right"]} className="text-[12px]" />
                     </div>
                   </div>
                 </button>
               );
-            }
-
-            return (
-              <button
-                key={`${card.type}:${card.title}`}
-                type="button"
-                onClick={() => onSelect(card)}
-                className="group grid min-h-[88px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl border border-border-theme bg-white px-4 py-3 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/45 hover:shadow-[0_12px_28px_rgba(15,23,42,0.08)]"
-              >
-                <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105">
-                  <FontAwesomeIcon icon={card.icon} className="text-[18px]" />
-                </div>
-                <div className="min-w-0">
-                  <div className="truncate text-[14px] font-semibold text-text-base transition-colors group-hover:text-primary">
-                    {translatedTitle}
-                  </div>
-                  <div className="mt-0.5 line-clamp-2 text-[12px] leading-5 text-text-secondary">
-                    {translatedDesc}
-                  </div>
-                </div>
-                <div className="flex justify-end">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-black/[0.03] text-text-secondary transition-all duration-200 group-hover:bg-primary/10 group-hover:text-primary">
-                    <FontAwesomeIcon icon={["fas", "arrow-right"]} className="text-[12px]" />
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

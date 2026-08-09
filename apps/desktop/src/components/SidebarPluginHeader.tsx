@@ -81,7 +81,7 @@ export function SidebarPluginHeader({
   }, []);
 
   return (
-    <div className={`min-w-0 max-w-full border-b border-border-theme bg-bg-base ${className}`.trim()}>
+    <div className={`min-w-0 max-w-full bg-bg-base ${className}`.trim()}>
       <div
         className={`grid h-8 min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 pl-4 ${
           reserveRightActionsSpace ? "pr-24" : "pr-2"
@@ -98,8 +98,8 @@ export function SidebarPluginHeader({
                   onClick={() => onSelectTab(tab.id)}
                   className={`group relative flex h-6 min-w-[74px] max-w-[180px] flex-shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] transition-colors ${
                     active
-                      ? "bg-hover-bg text-text-base shadow-[inset_0_0_0_1px_rgba(15,23,42,0.04)]"
-                      : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
+                      ? "bg-black/5 font-medium text-text-base"
+                      : "text-text-secondary hover:bg-black/5 hover:text-text-base"
                   }`}
                 >
                   <FontAwesomeIcon icon={tab.icon} className="flex-shrink-0 text-[11px]" />

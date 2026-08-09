@@ -14,18 +14,44 @@ type Props = {
   trigger: ReactNode;
   className?: string;
   panelClassName?: string;
-  /** 面板在触发器上方左/右对齐 */
+  /** 面板在触发器上方/下方，左/右对齐 */
   panelAlign?: "left" | "right";
+  /** above：Composer/Footer 向上展开；below：侧栏 ⋯ 向下展开 */
+  panelPlacement?: "above" | "below";
   zIndex?: number;
   staggerContent?: boolean;
   /** 不包 elevated 外壳（子内容自带 Panel） */
   unstyled?: boolean;
+  /** inline：Composer/Footer 胶囊；block：侧栏整行触发器 */
+  triggerLayout?: "inline" | "block";
   children: ReactNode;
 };
 
+const TRIGGER_LAYOUT = {
+  inline: "inline-flex max-w-full",
+  block: "flex w-full",
+} as const;
+
 const PANEL_ANCHOR = {
-  left: "absolute bottom-full left-0 mb-2 origin-bottom-left",
-  right: "absolute bottom-full right-0 mb-2 origin-bottom-right",
+  above: {
+    left: "absolute bottom-full left-0 mb-2 origin-bottom-left",
+    right: "absolute bottom-full right-0 mb-2 origin-bottom-right",
+  },
+  below: {
+    left: "absolute top-full left-0 mt-1 origin-top-left",
+    right: "absolute top-full right-0 mt-1 origin-top-right",
+  },
+} as const;
+
+const CLOSED_ORIGIN = {
+  above: {
+    left: "origin-bottom-left",
+    right: "origin-bottom-right",
+  },
+  below: {
+    left: "origin-top-left",
+    right: "origin-top-right",
+  },
 } as const;
 
 /**
@@ -40,9 +66,11 @@ export function MorphingMenuShell({
   className,
   panelClassName,
   panelAlign = "left",
+  panelPlacement = "above",
   zIndex = 50,
   staggerContent = false,
   unstyled = false,
+  triggerLayout = "inline",
   children,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -86,15 +114,21 @@ export function MorphingMenuShell({
   const shellClass = unstyled
     ? cn(panelClassName, layoutAnimating && "!overflow-hidden")
     : cn(
-        "overflow-hidden rounded-2xl bg-elevated-bg shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
+        "overflow-hidden rounded-2xl bg-elevated-bg",
         panelClassName,
         layoutAnimating && "!overflow-hidden",
       );
 
+  const panelShadow =
+    open && !reduced ? "drop-shadow(0 6px 24px rgba(0,0,0,0.10))" : undefined;
+
   return (
     <div ref={containerRef} className={cn("relative", className)}>
       {open && (
-        <div className="invisible inline-flex max-w-full pointer-events-none" aria-hidden>
+        <div
+          className={cn("invisible pointer-events-none", TRIGGER_LAYOUT[triggerLayout])}
+          aria-hidden
+        >
           {trigger}
         </div>
       )}
@@ -102,14 +136,14 @@ export function MorphingMenuShell({
       <motion.div
         layoutId={layoutId}
         transition={spring}
-        style={{ zIndex: open ? zIndex : undefined }}
+        style={{ zIndex: open ? zIndex : undefined, filter: panelShadow }}
         onLayoutAnimationComplete={() => {
           if (open) setLayoutAnimating(false);
         }}
         className={cn(
           open
-            ? cn(shellClass, PANEL_ANCHOR[panelAlign])
-            : "inline-flex max-w-full origin-bottom-left",
+            ? cn(shellClass, PANEL_ANCHOR[panelPlacement][panelAlign])
+            : cn(TRIGGER_LAYOUT[triggerLayout], CLOSED_ORIGIN[panelPlacement][panelAlign]),
         )}
       >
         {!open ? (

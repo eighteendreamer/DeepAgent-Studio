@@ -3,6 +3,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { ChatBlock, ProcessSection } from "./timelineTypes";
 import { MarkdownText } from "../MarkdownText";
 import { ProcessToolRow } from "./ProcessToolRow";
+import { CollapseBlurPanel, CollapseChevron } from "./CollapseBlurPanel";
 
 function toolLabel(block: Extract<ChatBlock, { kind: "tool" }>): string {
   const tool = block.tool;
@@ -70,19 +71,18 @@ export function ProcessSectionRow({
         }`}
       >
         <FontAwesomeIcon icon={["fas", icon]} className="w-4 shrink-0 text-[12px] opacity-75" />
-        <span className={`min-w-0 flex-1 truncate ${active && !hasError ? "text-primary" : ""}`}>{title}</span>
-        <FontAwesomeIcon
-          icon={["fas", open ? "chevron-down" : "chevron-right"]}
-          className="shrink-0 text-[10px] opacity-40 transition group-hover:opacity-70"
-        />
+        <span className={`inline-flex min-w-0 items-center gap-1 ${active && !hasError ? "text-primary" : ""}`}>
+          <span className="truncate">{title}</span>
+          <CollapseChevron open={open && canOpen} />
+        </span>
       </button>
-      {open && (
-        <div className="ml-5 mt-1 flex min-w-0 flex-col gap-0.5 border-l border-border-theme/80 pl-3">
+      <CollapseBlurPanel open={open && canOpen} innerClassName="ml-5 mt-1 border-l border-border-theme/80 pl-3">
+        <div className="flex min-w-0 flex-col gap-0.5">
           {section.blocks.map((block) => (
             <ProcessBlockDetail key={block.id} block={block} />
           ))}
         </div>
-      )}
+      </CollapseBlurPanel>
     </div>
   );
 }

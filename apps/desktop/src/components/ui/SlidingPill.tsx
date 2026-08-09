@@ -23,11 +23,14 @@ export function useSlidingIndicator({
   hoverSelector,
   activeSelector,
   layoutAnimating = false,
+  hoverOnly = false,
 }: {
   hoverSelector: string;
   activeSelector: string;
   /** Morph 面板展开中：每帧重测，药丸跟随行位（不隐藏） */
   layoutAnimating?: boolean;
+  /** 无固定激活项（activeId=__none__）：形变期间不显示药丸，避免 scale 测量错位 */
+  hoverOnly?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const hoveredRef = useRef<Element | null>(null);
@@ -64,6 +67,31 @@ export function useSlidingIndicator({
       positionOnActive();
     }
   }, [positionOnActive, positionPillOn]);
+
+  /* 纯 hover 菜单：无 hover 时形变开始清药丸 */
+  useEffect(() => {
+    if (layoutAnimating && hoverOnly && !hovering) {
+      hoveredRef.current = null;
+      setPill(null);
+    }
+  }, [layoutAnimating, hoverOnly, hovering]);
+
+  /* 纯 hover + 形变中 + 有 hover：每帧跟鼠标行（scale 期间测量准确） */
+  useEffect(() => {
+    if (!layoutAnimating || !hoverOnly || !hovering) return;
+    let rafId = 0;
+    const start = performance.now();
+    const tick = () => {
+      if (hoveredRef.current) {
+        positionPillOn(hoveredRef.current);
+      }
+      if (performance.now() - start < 700) {
+        rafId = requestAnimationFrame(tick);
+      }
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [layoutAnimating, hoverOnly, hovering, positionPillOn]);
 
   /* 挂载 & 激活项变化时，药丸滑到激活项 */
   useEffect(() => {
@@ -134,9 +162,9 @@ export function useSlidingIndicator({
     indicatorStyle: {
       top: pill?.top ?? 0,
       height: pill?.height ?? 0,
-      opacity: pill ? 1 : 0,
-      /* 仅形变且无 hover 时关闭过渡，避免激活项跟随时滞后；hover 滑块保持 300ms ease-out */
-      transition: layoutAnimating && !hovering ? "none" : undefined,
+      opacity: pill && !(hoverOnly && layoutAnimating && !hovering) ? 1 : 0,
+      /* 形变期间跟 hover/激活项时用 rAF，关闭 CSS 过渡避免滞后 */
+      transition: layoutAnimating ? "none" : undefined,
     } as CSSProperties,
   };
 }

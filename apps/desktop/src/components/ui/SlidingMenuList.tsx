@@ -25,10 +25,12 @@ export function SlidingMenuList({
   ...rest
 }: Props) {
   const layoutAnimating = useMorphPanelLayoutAnimating();
+  const hoverOnly = activeId === "__none__";
   const { containerRef, containerProps, indicatorStyle } = useSlidingIndicator({
     hoverSelector: `[${MENU_ITEM_ATTR}]`,
     activeSelector: `[${MENU_ITEM_ATTR}="${activeId}"]`,
     layoutAnimating,
+    hoverOnly,
   });
 
   return (

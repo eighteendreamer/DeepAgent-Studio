@@ -180,7 +180,7 @@ export function GitBranchMenuContent({
 
       menu={!embedded}
 
-      className={cn(`${widthClass} max-w-[calc(100vw-48px)] overflow-hidden rounded-2xl`, className)}
+      className={cn(`${widthClass} max-w-[calc(100vw-48px)] overflow-hidden rounded-2xl shadow-none`, className)}
 
     >
 

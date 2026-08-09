@@ -21,16 +21,8 @@ import type { OutputItem } from "./EnvironmentInfoMenu";
 import { ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
-import { Button as AriaButton } from "react-aria-components";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuShortcut,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-} from "./ui/DropdownMenu";
+import { ChatSessionMenu } from "./ChatSessionMenu";
+import { TintButton } from "./ui/TintButton";
 import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
 import {
@@ -857,32 +849,27 @@ export function UserTurn({
   return (
     <div className="flex flex-col items-end mb-8 w-full max-w-4xl mx-auto group">
       {editing ? (
-        <div className="w-full max-w-[80%] rounded-2xl rounded-tr-sm bg-sidebar-bg p-3">
+        <div className="w-full max-w-[80%] rounded-2xl rounded-tr-sm bg-sidebar-bg px-4 py-3">
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            className="min-h-[120px] w-full resize-y rounded-xl border border-border-theme bg-elevated-bg px-3 py-2 text-[14px] leading-relaxed text-text-base outline-none focus:border-primary/60"
+            rows={1}
+            className="block min-h-[1.6em] w-full resize-none bg-transparent text-[15px] leading-relaxed text-text-base outline-none"
             autoFocus
           />
           <div className="mt-2 flex justify-end gap-2">
-            <button
+            <TintButton
               type="button"
               onClick={() => {
                 setDraft(visibleContent);
                 setEditing(false);
               }}
-              className="rounded-lg px-3 py-1.5 text-[12px] text-text-secondary hover:bg-hover-bg"
             >
               取消
-            </button>
-            <button
-              type="button"
-              onClick={submitEdit}
-              disabled={busy || !draft.trim()}
-              className="rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-            >
+            </TintButton>
+            <TintButton type="button" className="font-medium" onClick={submitEdit} disabled={busy || !draft.trim()}>
               重发
-            </button>
+            </TintButton>
           </div>
         </div>
       ) : (
@@ -1020,6 +1007,7 @@ export function ChatView({
     refresh: refreshGitStatus,
   } = useGitStatus(activeProjectPath);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
+  const [isSessionMenuOpen, setIsSessionMenuOpen] = useState(false);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
   const [envMode, setEnvMode] = useState<"local" | "remote">(() =>
@@ -1036,7 +1024,7 @@ export function ChatView({
 
   const [bottomPanelHeight, setBottomPanelHeight] = useState(280);
   const [isResizingBottom, setIsResizingBottom] = useState(false);
-  const bottomPanelPresence = usePanelPresence(isBottomPanelOpen, 260);
+  const bottomPanelPresence = usePanelPresence(isBottomPanelOpen, 400);
 
   useEffect(() => {
     if (!isResizingBottom) return;
@@ -1286,7 +1274,7 @@ export function ChatView({
         }}
       />
       {/* Global Window Actions: fixed position in all states. */}
-      <div className="absolute top-0.5 right-6 z-50 flex items-center gap-3 text-text-secondary pointer-events-auto">
+      <div className="absolute top-3 right-6 z-50 flex items-center gap-3 text-text-secondary pointer-events-auto">
         <button
           type="button"
           onClick={() => setIsRightSidebarOpen((v) => !v)}
@@ -1314,104 +1302,28 @@ export function ChatView({
       {/* Top half: conversation flow & overlay */}
       <div className="relative flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="relative h-8 flex items-center pl-6 pr-6 justify-between flex-shrink-0 w-full">
-          <div className="relative">
-            <DropdownMenuTrigger>
-              <AriaButton
-                className="flex items-center text-sm font-medium text-text-base cursor-pointer px-2 py-1 -ml-2 rounded outline-none transition-colors hover:bg-hover-bg data-[pressed]:bg-hover-bg"
-              >
-                {title?.trim() || t("chatView.chat")}
-                <FontAwesomeIcon icon={["fas", "ellipsis"]} className="ml-2 text-text-secondary" />
-              </AriaButton>
-
-              <DropdownMenu aria-label={t("chatView.chat")}>
-                <DropdownMenuItem onAction={() => onPin?.()}>
-                  <FontAwesomeIcon icon={["fas", "thumbtack"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
-                  <span>{pinned ? t("sidebar.unpin") : t("chatView.pinChat")}</span>
-                  <DropdownMenuShortcut>Ctrl+Alt+P</DropdownMenuShortcut>
-                </DropdownMenuItem>
-                <DropdownMenuItem onAction={handleRename}>
-                  <FontAwesomeIcon icon={["fas", "pen"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
-                  <span>{t("chatView.renameChat")}</span>
-                  <DropdownMenuShortcut>Ctrl+Alt+R</DropdownMenuShortcut>
-                </DropdownMenuItem>
-                <DropdownMenuItem onAction={() => onArchive?.()}>
-                  <FontAwesomeIcon icon={["fas", "box-archive"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
-                  <span>{t("chatView.archiveChat")}</span>
-                  <DropdownMenuShortcut>Ctrl+Shift+A</DropdownMenuShortcut>
-                </DropdownMenuItem>
-
-                <DropdownMenuSeparator />
-
-                <DropdownMenuItem onAction={() => onCopy?.()}>
-                  <FontAwesomeIcon icon={["far", "copy"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
-                  <span>{t("chatView.copy")}</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onAction={() => onExport?.("json")}>
-                  <FontAwesomeIcon icon={["fas", "file-export"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
-                  <span>{t("chatView.exportJson")}</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onAction={() => onFork?.()}>
-                  <FontAwesomeIcon icon={["fas", "code-branch"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
-                  <span>{t("chatView.branch")}</span>
-                </DropdownMenuItem>
-
-                <DropdownMenuSub>
-                  <DropdownMenuItem>
-                    <FontAwesomeIcon icon={["fas", "clock-rotate-left"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
-                    <span>{t("chatView.rewind")}</span>
-                    <FontAwesomeIcon icon={["fas", "chevron-right"]} className="ml-auto text-[10px] text-gray-400" />
-                  </DropdownMenuItem>
-                  <DropdownMenuSubContent aria-label={t("chatView.rewind")} className="max-h-72">
-                    {rewindEntries.length === 0 ? (
-                      <DropdownMenuItem isDisabled className="text-[12px] text-text-secondary">
-                        {t("chatView.noRewindPoints")}
-                      </DropdownMenuItem>
-                    ) : (
-                      rewindEntries.map((entry) => (
-                        <DropdownMenuItem
-                          key={entry.sequence}
-                          className="!items-start !py-2.5 text-[12px]"
-                          textValue={entry.detail ?? `#${entry.sequence}`}
-                          onAction={() => {
-                            // Claude Code rewind semantics: rewinding to a user
-                            // message returns the session to the state BEFORE it
-                            // was sent, and puts the prompt back in the composer
-                            // for editing/resend (manual acceptance M-15).
-                            onRewind?.(Math.max(0, entry.sequence - 1));
-                            if (typeof entry.detail === "string" && entry.detail.trim()) {
-                              setValue(entry.detail);
-                            }
-                          }}
-                        >
-                          <span className="text-gray-400 tabular-nums shrink-0 mr-2">#{entry.sequence}</span>
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-[13px] text-text-base">{entry.detail}</div>
-                            <div className="mt-0.5 text-[11px] text-text-secondary">
-                              {formatRewindTimestamp(entry.timestamp)}
-                            </div>
-                          </div>
-                        </DropdownMenuItem>
-                      ))
-                    )}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-
-                <DropdownMenuSeparator />
-
-                <DropdownMenuItem onAction={handleOpenAutomation}>
-                  <FontAwesomeIcon icon={["far", "clock"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
-                  <span>{t("chatView.addAutomation")}</span>
-                </DropdownMenuItem>
-
-                <DropdownMenuSeparator />
-
-                <DropdownMenuItem onAction={() => onOpenInNewWindow?.()}>
-                  <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} className="w-4 mr-2.5 text-gray-500 group-data-[focused]/menu-item:text-text-base" />
-                  <span>{t("chatView.openInNewWindow")}</span>
-                </DropdownMenuItem>
-              </DropdownMenu>
-            </DropdownMenuTrigger>
+        <header className="relative flex w-full flex-shrink-0 items-center justify-between pl-3 pr-6 pt-3 pb-1.5">
+          <div className="relative min-w-0 flex-1 pr-28">
+            <ChatSessionMenu
+              title={title}
+              pinned={pinned}
+              open={isSessionMenuOpen}
+              onOpenChange={setIsSessionMenuOpen}
+              rewindEntries={rewindEntries}
+              formatRewindTimestamp={formatRewindTimestamp}
+              onPin={onPin}
+              onRename={handleRename}
+              onArchive={onArchive}
+              onCopy={onCopy}
+              onExport={() => onExport?.("json")}
+              onFork={onFork}
+              onRewindEntry={(sequence, detail) => {
+                onRewind?.(sequence);
+                if (detail?.trim()) setValue(detail);
+              }}
+              onOpenAutomation={handleOpenAutomation}
+              onOpenInNewWindow={onOpenInNewWindow}
+            />
           </div>
           <div className="flex items-center text-text-secondary">
             <div
@@ -1525,8 +1437,8 @@ export function ChatView({
       {bottomPanelPresence.shouldRender && (
             <div
             className={`bottom-panel-workbench relative z-0 flex w-full min-w-0 flex-shrink-0 flex-col overflow-hidden border-t border-border-theme bg-bg-base ${
-                bottomPanelPresence.isClosing ? "is-closing" : ""
-              } ${isResizingBottom ? "is-resizing" : ""}`}
+                bottomPanelPresence.phase === "opening" ? "is-opening" : ""
+              } ${bottomPanelPresence.isClosing ? "is-closing" : ""} ${isResizingBottom ? "is-resizing" : ""}`}
               style={{
                 height: bottomPanelPresence.isVisible ? `${bottomPanelHeight}px` : "0px",
                 minHeight: bottomPanelPresence.isVisible ? "200px" : "0px",
@@ -1541,6 +1453,7 @@ export function ChatView({
                   setIsResizingBottom(true);
                 }}
               />
+              <div className="bottom-panel-workbench-inner flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="flex items-center justify-between border-b border-border-theme h-10 px-4 flex-shrink-0 bg-bg-base">
                 <div className="flex h-full min-w-0 flex-1 items-center overflow-x-auto text-[13px] text-text-secondary no-scrollbar">
                   {bottomTabs.map(tab => (
@@ -1601,6 +1514,7 @@ export function ChatView({
                       onProjectMapStatusChange: setMapStatus,
                     })
                   : null}
+              </div>
               </div>
             </div>
       )}

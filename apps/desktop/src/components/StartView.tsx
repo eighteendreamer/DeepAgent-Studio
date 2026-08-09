@@ -150,7 +150,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
 
   const [bottomPanelHeight, setBottomPanelHeight] = useState(280);
   const [isResizingBottom, setIsResizingBottom] = useState(false);
-  const bottomPanelPresence = usePanelPresence(isBottomPanelOpen, 260);
+  const bottomPanelPresence = usePanelPresence(isBottomPanelOpen, 400);
 
   useEffect(() => {
     if (!isResizingBottom) return;
@@ -682,8 +682,8 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
         {bottomPanelPresence.shouldRender && (
             <div 
               className={`bottom-panel-workbench relative z-0 flex w-full min-w-0 flex-shrink-0 flex-col overflow-hidden border-t border-border-theme bg-bg-base ${
-                bottomPanelPresence.isClosing ? "is-closing" : ""
-              } ${isResizingBottom ? "is-resizing" : ""}`}
+                bottomPanelPresence.phase === "opening" ? "is-opening" : ""
+              } ${bottomPanelPresence.isClosing ? "is-closing" : ""} ${isResizingBottom ? "is-resizing" : ""}`}
               style={{
                 height: bottomPanelPresence.isVisible ? `${bottomPanelHeight}px` : "0px",
                 minHeight: bottomPanelPresence.isVisible ? "200px" : "0px",
@@ -698,6 +698,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                   setIsResizingBottom(true);
                 }}
               />
+              <div className="bottom-panel-workbench-inner flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="flex items-center justify-between border-b border-border-theme h-10 px-4 flex-shrink-0 bg-bg-base">
                 <div className="flex h-full min-w-0 flex-1 items-center overflow-x-auto text-[13px] text-text-secondary no-scrollbar">
                   {bottomTabs.map(tab => (
@@ -757,6 +758,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                       selectedConnectionId,
                     })
                   : null}
+              </div>
               </div>
             </div>
         )}

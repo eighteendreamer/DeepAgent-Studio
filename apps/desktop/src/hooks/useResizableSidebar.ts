@@ -12,6 +12,16 @@ export const MIN_CHAT_WIDTH = 500;
 const DEFAULT_SIDEBAR_WIDTH = 360;
 const MIN_SIDEBAR_WIDTH = 360;
 
+/** Per-plugin minimum widths for the right workbench panel. */
+export const SIDEBAR_MIN_WIDTH = {
+  launcher: 280,
+  chat: 420,
+  files: 400,
+  browser: 380,
+  terminal: 360,
+  default: 340,
+} as const;
+
 interface UseResizableSidebarOptions {
   /** Sidebar width floor. Defaults to 360px. */
   minWidth?: number;
@@ -71,6 +81,10 @@ export function useResizableSidebar(options: UseResizableSidebarOptions = {}) {
     },
     [clampWidth],
   );
+
+  useEffect(() => {
+    setWidthState((prev) => clampWidth(prev));
+  }, [clampWidth]);
 
   // Re-clamp on window resize so a shrunk window can't leave the chat
   // column under `minChatWidth` even without the user dragging again.
