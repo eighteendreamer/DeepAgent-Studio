@@ -10,11 +10,12 @@
 //!   [`PromptFragment`] for the context pipeline, while Level-1 metadata is
 //!   exposed as a compact catalog blurb.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use deepagent_context::{PromptFragment, PromptSource};
 
-use crate::skill::{Skill, SkillMeta, SkillOrigin, SkillToolOutput};
+use crate::skill::{Skill, SkillMeta, SkillOrigin, SkillResource, SkillToolOutput};
 
 /// A scored passive-activation match.
 #[derive(Debug, Clone, PartialEq)]
@@ -226,10 +227,11 @@ impl SkillRegistry {
     /// by id, or passively via [`SkillRegistry::best_match`]).
     pub fn activate(&self, id: &str) -> Option<PromptFragment> {
         let skill = self.skills.get(id)?;
+        let resources = resources_for(skill);
         let mut content = format!("# Skill: {}\n\n{}", skill.meta.name, skill.body);
-        if skill.has_resources() {
+        if !resources.is_empty() {
             content.push_str("\n\n## Bundled resources (load on demand)\n");
-            for r in &skill.resources {
+            for r in resources.iter() {
                 content.push_str(&format!("- [{}] {}\n", resource_label(r.kind), r.rel_path));
             }
         }
@@ -385,6 +387,7 @@ impl SkillRegistry {
             .replace("${ARGS}", args_str)
             .replace("$ARGS", args_str);
 
+        let resources = resources_for(skill);
         Ok(SkillToolOutput {
             id: skill.meta.id.clone(),
             name: skill.meta.name.clone(),
@@ -393,7 +396,7 @@ impl SkillRegistry {
                 .base_dir
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
-            resources: skill.resources.iter().map(|r| r.rel_path.clone()).collect(),
+            resources: resources.iter().map(|r| r.rel_path.clone()).collect(),
         })
     }
 
@@ -473,6 +476,16 @@ fn resource_label(kind: crate::skill::ResourceKind) -> &'static str {
         Example => "example",
         Script => "script",
         Asset => "asset",
+    }
+}
+
+fn resources_for(skill: &Skill) -> Cow<'_, [SkillResource]> {
+    if !skill.resources.is_empty() {
+        Cow::Borrowed(&skill.resources)
+    } else if let Some(base_dir) = &skill.base_dir {
+        Cow::Owned(crate::loader::scan_resources(base_dir))
+    } else {
+        Cow::Borrowed(&[])
     }
 }
 

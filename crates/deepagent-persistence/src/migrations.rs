@@ -181,6 +181,12 @@ const MIGRATIONS: &[&str] = &[
     UPDATE subagent_runs SET origin_parent_run_id=parent_run_id WHERE origin_parent_run_id IS NULL;
     CREATE INDEX idx_subagent_runs_origin_parent ON subagent_runs(origin_parent_run_id, created_at);
     "#,
+    // V10: speed up the sidebar's newest-first session list. Without this,
+    // SQLite scans `sessions` and builds a temporary B-tree for
+    // `ORDER BY updated_at DESC` once the session count grows.
+    r#"
+    CREATE INDEX idx_sessions_updated_at_desc ON sessions(updated_at DESC);
+    "#,
 ];
 
 /// The highest schema version defined by this build.

@@ -145,7 +145,7 @@ impl AppService {
         let archived = ArchiveService::new(self.db.clone()).archived_ids()?;
         let pinned = SessionStateService::new(self.db.clone()).pinned_ids()?;
         let projects = ProjectService::new(self.db.clone());
-        let registered_projects = projects.registered_paths()?;
+        let (registered_projects, project_names) = projects.session_projection()?;
         let records = store.list_sessions()?;
         Ok(records
             .into_iter()
@@ -159,9 +159,11 @@ impl AppService {
             .map(|r| SessionSummaryDto {
                 id: r.id.to_string(),
                 project: r.project.as_deref().map(|path| {
-                    projects
-                        .display_name(path)
-                        .unwrap_or_else(|_| project_display_name(path))
+                    project_names
+                        .get(path)
+                        .filter(|name| !name.trim().is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| project_display_name(path))
                 }),
                 title: r.title,
                 mode: r.mode.label().to_string(),

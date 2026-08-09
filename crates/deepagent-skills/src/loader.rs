@@ -2,8 +2,8 @@
 //!
 //! Mirrors Claude Code's auto-discovery: scan a `skills/` root, find every
 //! subdirectory containing a `SKILL.md`, parse its frontmatter into a [`Skill`],
-//! and record any bundled `references/`/`examples/`/`scripts/`/`assets/` files
-//! in the resource manifest (paths only — Level 3 stays on disk until needed).
+//! without walking bundled `references/`/`examples/`/`scripts/`/`assets/`
+//! trees. Level-3 resource paths are discovered only when a skill is activated.
 
 use std::path::{Path, PathBuf};
 
@@ -149,7 +149,6 @@ pub fn load_skill_dir(dir: impl AsRef<Path>, origin: SkillOrigin) -> Result<Opti
         )));
     };
 
-    skill.resources = scan_resources(dir);
     // Record the absolute skill directory so the `skill` tool can surface
     // Level-3 resource paths to the model. Fall back to the (possibly
     // relative) input path if canonicalization fails (e.g. on platforms
@@ -160,7 +159,7 @@ pub fn load_skill_dir(dir: impl AsRef<Path>, origin: SkillOrigin) -> Result<Opti
 }
 
 /// Collect bundled resources (Level 3) under a skill directory.
-fn scan_resources(dir: &Path) -> Vec<SkillResource> {
+pub(crate) fn scan_resources(dir: &Path) -> Vec<SkillResource> {
     let mut out = Vec::new();
     for (sub, kind) in [
         ("references", ResourceKind::Reference),
@@ -250,9 +249,11 @@ mod tests {
         let s = &skills[0];
         assert_eq!(s.meta.id, "pdf-editor");
         assert_eq!(s.meta.name, "PDF Editor");
-        assert_eq!(s.resources.len(), 1);
-        assert_eq!(s.resources[0].rel_path, "scripts/rotate.py");
-        assert_eq!(s.resources[0].kind, ResourceKind::Script);
+        assert!(s.resources.is_empty(), "resources are loaded on activation");
+        let mut registry = crate::SkillRegistry::new();
+        registry.register(s.clone());
+        let activated = registry.body_for_invoke("pdf-editor", None).unwrap();
+        assert_eq!(activated.resources, vec!["scripts/rotate.py"]);
     }
 
     #[test]

@@ -141,6 +141,12 @@ impl ProjectService {
         Ok(self.load()?.paths.into_iter().collect())
     }
 
+    /// Read paths and aliases together for bulk session projection.
+    pub fn session_projection(&self) -> Result<(HashSet<String>, HashMap<String, String>)> {
+        let reg = self.load()?;
+        Ok((reg.paths.into_iter().collect(), reg.names))
+    }
+
     /// Whether project-local hooks are trusted for `path`.
     pub fn hooks_trusted(&self, path: &str) -> Result<bool> {
         Ok(self.load()?.trusted_hook_projects.contains(path))

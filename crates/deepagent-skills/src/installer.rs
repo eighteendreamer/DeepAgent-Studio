@@ -68,8 +68,10 @@ impl SkillInstaller {
         copy_tree(source, &dest)?;
 
         // Reload from the installed location so resource paths are correct.
-        loader::load_skill_dir(&dest, SkillOrigin::Installed)?
-            .ok_or_else(|| CoreError::other("installed skill failed to reload"))
+        let mut installed = loader::load_skill_dir(&dest, SkillOrigin::Installed)?
+            .ok_or_else(|| CoreError::other("installed skill failed to reload"))?;
+        installed.resources = loader::scan_resources(&dest);
+        Ok(installed)
     }
 
     /// Uninstall a skill by id. Returns `true` if it existed and was removed.
