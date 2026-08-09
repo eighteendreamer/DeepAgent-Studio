@@ -25,6 +25,7 @@ const CATEGORIES: Category[] = [
   { id: "computer", label: "电脑操控", icon: ["fas", "desktop"] },
   { id: "project_map_debug", label: "项目地图调试", icon: ["fas", "share-nodes"] },
   { id: "archive", label: "已归档对话", icon: ["fas", "box-archive"] },
+  { id: "about", label: "关于", icon: ["fas", "circle-info"] },
 ];
 
 interface Props {

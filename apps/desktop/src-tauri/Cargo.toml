@@ -47,6 +47,7 @@ deepagent-core = { path = "../../../crates/deepagent-core" }
 deepagent-ssh = { path = "../../../crates/deepagent-ssh" }
 deepagent-models = { path = "../../../crates/deepagent-models", features = ["http"] }
 tauri-plugin-dialog = "2.7.1"
+tauri-plugin-opener = "2.5.4"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 tempfile = "3.8"
 async-trait = "0.1"

@@ -155,6 +155,71 @@
       "computer": "电脑操控",
       "project_map_debug": "项目地图调试",
       "archive": "已归档对话"
+      ,"about": "关于"
+    },
+    "about": {
+      "title": "关于 DeepAgent Studio",
+      "subtitle": "面向 DeepSeek 的 Agent 运行时平台与桌面工作台。",
+      "project": {
+        "title": "项目信息",
+        "version": "桌面端 v0.0.8",
+        "description": "DeepAgent Studio 不只是聊天应用，而是一个可验证、可回放的 Agent 运行时平台，提供上下文工程、工具执行、权限控制、MCP 扩展与桌面工作流。"
+      },
+      "stack": {
+        "title": "技术栈"
+      },
+      "developer": {
+        "title": "开发者",
+        "name": "程序员Eighteen",
+        "role": "DeepAgent Studio 发起人与主要开发者"
+      },
+      "contact": {
+        "title": "快速联系",
+        "github": "在 GitHub 查看项目、提交 Issue 或参与贡献",
+        "repository": "个人代码仓库首页"
+      },
+      "actions": {
+        "contact": "快速联系",
+        "support": "项目支持",
+        "close": "关闭"
+      },
+      "contactDialog": {
+        "title": "联系开发者",
+        "email": "邮箱",
+        "phone": "手机号",
+        "qq": "QQ",
+        "wechat": "微信"
+      },
+      "developers": {
+        "eighteen": {
+          "name": "程序员Eighteen",
+          "role": "全栈开发",
+          "bio": "负责 DeepAgent Studio 的全栈开发，构建桌面应用、Agent 运行时和工具生态。",
+          "repository": "https://github.com/eighteendreamer",
+          "contact": { "email": "eighteendreamer@gmail.com", "phone": "待配置", "qq": "3273495516", "wechat": "Eighteenth_year" }
+        },
+        "designer": {
+          "name": "设计师雷师傅",
+          "role": "系统设计",
+          "bio": "负责系统架构与产品设计，关注 Agent 能力、交互流程和长期可维护性。",
+          "repository": "https://github.com/leishifu666",
+          "contact": { "email": "待配置", "phone": "待配置", "qq": "待配置", "wechat": "待配置" }
+        }
+      },
+      "support": {
+        "title": "项目支持",
+        "heading": "支持 DeepAgent Studio 持续开发",
+        "description": "你的支持会用于项目维护、运行时能力建设和桌面端体验改进。",
+        "pending": "付款码资源待配置"
+      },
+      "supportDialog": {
+        "title": "项目支持",
+        "heading": "支持 DeepAgent Studio 持续开发",
+        "pending": "感谢你的支持。",
+        "wechat": "微信支付",
+        "alipay": "支付宝",
+        "notAvailable": "该开发者的付款码待配置"
+      }
     },
     "hooks": {
       "title": "钩子",
@@ -676,7 +741,6 @@
   },
   "composer": {
     "placeholder": "尽管问...",
-    "autoReview": "自动审查",
     "selectModel": "选择模型",
     "noModels": "暂无可用模型，请先在登录时填写 API Key",
     "modelSwitched": "已切换模型：{{model}}",

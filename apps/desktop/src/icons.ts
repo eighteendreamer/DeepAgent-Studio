@@ -22,7 +22,7 @@ import {
   faImage, faFilePdf, faFileWord as faFileWordRegular, faFileExcel as faFileExcelRegular, faFilePowerpoint as faFilePowerpointRegular
 } from "@fortawesome/free-regular-svg-icons";
 
-import { faChrome, faFigma, faGitAlt, faGithub } from "@fortawesome/free-brands-svg-icons";
+import { faChrome, faFigma, faGitAlt, faGithub, faReact } from "@fortawesome/free-brands-svg-icons";
 
 const solidIcons = [
   faChevronDown, faMagnifyingGlassChart, faEllipsis, faThumbtack, faPen, faBoxArchive,
@@ -46,7 +46,7 @@ const regularIcons = [
 ];
 
 const brandIcons = [
-  faChrome, faFigma, faGitAlt, faGithub
+  faChrome, faFigma, faGitAlt, faGithub, faReact
 ];
 
 solidIcons.forEach(icon => library.add(icon));

@@ -2033,6 +2033,15 @@ export async function openSessionInNewWindow(sessionId: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+export async function openExternalUrl(url: string): Promise<void> {
+  if (typeof window !== "undefined" && (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 export async function openStudioCanvasWindow(): Promise<void> {
   const url = `${window.location.origin}${window.location.pathname}${window.location.search}#window=canvas`;
   if (typeof window !== "undefined" && (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {

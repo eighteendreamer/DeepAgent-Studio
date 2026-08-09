@@ -15,6 +15,7 @@ const BrowserSettings = lazy(() => import("./settings/BrowserSettings").then((m)
 const ComputerSettings = lazy(() => import("./settings/ComputerSettings").then((m) => ({ default: m.ComputerSettings })));
 const ArchiveSettings = lazy(() => import("./settings/ArchiveSettings").then((m) => ({ default: m.ArchiveSettings })));
 const ProjectMapDebugSettings = lazy(() => import("./settings/ProjectMapDebugSettings").then((m) => ({ default: m.ProjectMapDebugSettings })));
+const AboutSettings = lazy(() => import("./settings/AboutSettings").then((m) => ({ default: m.AboutSettings })));
 
 interface Props {
   activeCategoryId: string;
@@ -38,6 +39,7 @@ export function SettingsView({ activeCategoryId }: Props) {
       case "computer": return <ComputerSettings />;
       case "project_map_debug": return <ProjectMapDebugSettings />;
       case "archive": return <ArchiveSettings />;
+      case "about": return <AboutSettings />;
       default: return <GeneralSettings />;
     }
   };

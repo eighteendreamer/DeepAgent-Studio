@@ -21,6 +21,7 @@
     "core:webview:allow-webview-show",
     "dialog:allow-open",
     "dialog:allow-save",
+    "opener:default",
     "updater:default"
   ]
 }

@@ -155,6 +155,69 @@
       "computer": "Computer Control",
       "project_map_debug": "Project Map Debug",
       "archive": "Archived Chats"
+      ,"about": "About"
+    },
+    "about": {
+      "title": "About DeepAgent Studio",
+      "subtitle": "An Agent runtime platform and desktop workspace for DeepSeek.",
+      "project": {
+        "title": "Project",
+        "version": "Desktop v0.0.8",
+        "description": "DeepAgent Studio is more than a chat app: it is a verifiable, replayable Agent runtime platform with context engineering, tool execution, permissions, MCP extensions, and desktop workflows."
+      },
+      "stack": { "title": "Technology Stack" },
+      "developer": {
+        "title": "Developer",
+        "name": "Eighteen",
+        "role": "Creator and primary developer of DeepAgent Studio"
+      },
+      "contact": {
+        "title": "Quick Contact",
+        "github": "View the project, open an issue, or contribute on GitHub",
+        "repository": "Personal code repository"
+      },
+      "actions": {
+        "contact": "Quick Contact",
+        "support": "Support Project",
+        "close": "Close"
+      },
+      "contactDialog": {
+        "title": "Contact Developer",
+        "email": "Email",
+        "phone": "Phone",
+        "qq": "QQ",
+        "wechat": "WeChat"
+      },
+      "developers": {
+        "eighteen": {
+          "name": "Eighteen",
+          "role": "Full-stack Development",
+          "bio": "Leads full-stack development for DeepAgent Studio, including the desktop app, Agent runtime, and tool ecosystem.",
+          "repository": "https://github.com/eighteendreamer",
+          "contact": { "email": "eighteendreamer@gmail.com", "phone": "To be configured", "qq": "3273495516", "wechat": "Eighteenth_year" }
+        },
+        "designer": {
+          "name": "Designer Lei Shifu",
+          "role": "System Design",
+          "bio": "Leads system architecture and product design, with a focus on Agent capabilities, interaction flows, and maintainability.",
+          "repository": "https://github.com/leishifu666",
+          "contact": { "email": "To be configured", "phone": "To be configured", "qq": "To be configured", "wechat": "To be configured" }
+        }
+      },
+      "support": {
+        "title": "Support the Project",
+        "heading": "Help DeepAgent Studio keep improving",
+        "description": "Your support helps fund maintenance, runtime capabilities, and desktop experience improvements.",
+        "pending": "Payment QR code will be added here"
+      },
+      "supportDialog": {
+        "title": "Support the Project",
+        "heading": "Help DeepAgent Studio keep improving",
+        "pending": "Thank you for your support.",
+        "wechat": "WeChat Pay",
+        "alipay": "Alipay",
+        "notAvailable": "Payment QR code not configured for this developer"
+      }
     },
     "hooks": {
       "title": "Hooks",
@@ -676,7 +739,6 @@
   },
   "composer": {
     "placeholder": "Ask anything...",
-    "autoReview": "Auto Review",
     "selectModel": "Select Model",
     "noModels": "No models available — enter an API key at login first",
     "modelSwitched": "Switched model: {{model}}",
