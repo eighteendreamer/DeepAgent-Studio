@@ -48,7 +48,7 @@ export function ComposerSuggestPanel<T>({
   return (
     <TooltipProvider>
       <Panel
-        className={`absolute left-3 bottom-full z-50 mb-2 max-h-60 w-[min(680px,calc(100%-1.5rem))] overflow-y-auto p-1.5 ${className}`}
+        className={`absolute inset-x-3 bottom-full z-50 mb-2 max-h-60 w-auto overflow-y-auto p-1.5 ${className}`}
       >
       <SlidingMenuList activeId={activeId}>
         {sections.map((section, sectionIndex) => {
