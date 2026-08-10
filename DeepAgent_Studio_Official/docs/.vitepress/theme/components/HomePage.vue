@@ -3,6 +3,11 @@ import { ref } from 'vue'
 
 const isDownloading = ref(false)
 const downloadText = ref('软件下载 (Windows)')
+const githubMirror = 'https://gh-proxy.com/'
+
+function mirrorUrl(url) {
+  return `${githubMirror}${url}`
+}
 
 async function downloadLatest() {
   if (isDownloading.value) return;
@@ -10,15 +15,16 @@ async function downloadLatest() {
   downloadText.value = '获取最新版本...';
   try {
     // Fetch version from the raw main branch to completely bypass GitHub API rate limits (60/hr)
-    const res = await fetch('https://raw.githubusercontent.com/eighteendreamer/DeepAgent-Studio/main/apps/desktop/src-tauri/tauri.conf.json');
+    const rawUrl = 'https://raw.githubusercontent.com/eighteendreamer/DeepAgent-Studio/main/apps/desktop/src-tauri/tauri.conf.json'
+    const res = await fetch(mirrorUrl(rawUrl));
     if (!res.ok) throw new Error('Network Error');
     const tauriConf = await res.json();
     const version = tauriConf.version; // e.g., "0.0.4"
     
     if (version) {
       // Reconstruct the exact GitHub release download URL dynamically
-      const exactUrl = `https://github.com/eighteendreamer/DeepAgent-Studio/releases/download/${version}/DeepAgent.Studio_${version}_x64-setup.exe`;
-      window.location.href = exactUrl;
+      const githubUrl = `https://github.com/eighteendreamer/DeepAgent-Studio/releases/download/${version}/DeepAgent.Studio_${version}_x64-setup.exe`
+      window.location.href = mirrorUrl(githubUrl)
     } else {
       throw new Error('Version not found in tauri.conf.json');
     }

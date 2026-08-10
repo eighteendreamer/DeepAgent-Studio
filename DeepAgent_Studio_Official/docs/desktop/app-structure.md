@@ -14,7 +14,7 @@
 - dev server：`http://localhost:1420`
 - 主窗口：`1280x800`，最小 `900x600`，暗色主题，无系统装饰栏。
 - bundle resources：`resources/skills/**/*`
-- updater：GitHub release 和 `download.deepagent.studio` 两个 endpoint。
+- updater：通过 `gh-proxy.com` 加速 GitHub release 下载。
 - Tauri crate features：启用 `deepagent-app-core` 的 `keychain`、`web`、`audio`、`runtimes`。
 
 ### 6.2 前端主要文件
