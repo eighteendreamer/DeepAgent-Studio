@@ -1,10 +1,22 @@
 import * as React from "react";
 
+import {
+  GlobalModal,
+  GlobalModalDescription,
+  GlobalModalFooter,
+  GlobalModalHeader,
+  GlobalModalTitle,
+  modalOriginFromElement,
+  type ModalTriggerOrigin,
+} from "../ui/GlobalModal";
+import { MOTION } from "../ui/motion";
 import { cn } from "./utils";
 
 interface DialogContextValue {
   open: boolean;
   setOpen: (open: boolean) => void;
+  origin: ModalTriggerOrigin | null;
+  setOrigin: (origin: ModalTriggerOrigin | null) => void;
 }
 
 const DialogContext = React.createContext<DialogContextValue | null>(null);
@@ -26,6 +38,7 @@ export interface DialogProps {
 
 function Dialog({ open, defaultOpen = false, onOpenChange, children }: DialogProps) {
   const [internalOpen, setInternalOpen] = React.useState(defaultOpen);
+  const [origin, setOrigin] = React.useState<ModalTriggerOrigin | null>(null);
   const controlled = typeof open === "boolean";
   const actualOpen = controlled ? open : internalOpen;
   const setOpen = React.useCallback(
@@ -37,7 +50,7 @@ function Dialog({ open, defaultOpen = false, onOpenChange, children }: DialogPro
   );
 
   return (
-    <DialogContext.Provider value={{ open: actualOpen, setOpen }}>
+    <DialogContext.Provider value={{ open: actualOpen, setOpen, origin, setOrigin }}>
       {children}
     </DialogContext.Provider>
   );
@@ -49,14 +62,17 @@ interface DialogTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 
 const DialogTrigger = React.forwardRef<HTMLButtonElement, DialogTriggerProps>(
   ({ asChild: _asChild, onClick, ...props }, ref) => {
-    const { setOpen } = useDialogContext();
+    const { setOpen, setOrigin } = useDialogContext();
     return (
       <button
         ref={ref}
         type="button"
         onClick={(event) => {
           onClick?.(event);
-          if (!event.defaultPrevented) setOpen(true);
+          if (!event.defaultPrevented) {
+            setOrigin(modalOriginFromElement(event.currentTarget));
+            setOpen(true);
+          }
         }}
         {...props}
       />
@@ -65,55 +81,47 @@ const DialogTrigger = React.forwardRef<HTMLButtonElement, DialogTriggerProps>(
 );
 DialogTrigger.displayName = "DialogTrigger";
 
+/** @deprecated Prefer GlobalModal overlay; kept for API compatibility. */
 const DialogOverlay = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
-    <div
-      ref={ref}
-      className={cn("absolute inset-0 bg-black/30 backdrop-blur-[1px]", className)}
-      {...props}
-    />
+    <div ref={ref} className={cn("hidden", className)} {...props} />
   ),
 );
 DialogOverlay.displayName = "DialogOverlay";
 
 const DialogContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, children, ...props }, ref) => {
-    const { open, setOpen } = useDialogContext();
-    if (!open) return null;
+    const { open, setOpen, origin } = useDialogContext();
+
     return (
-      <div className="absolute inset-0 z-50 flex items-center justify-center px-5">
-        <DialogOverlay onClick={() => setOpen(false)} />
-        <div
-          ref={ref}
-          role="dialog"
-          aria-modal="true"
-          className={cn(
-            "relative z-10 flex max-h-[88vh] w-full max-w-[620px] flex-col rounded-lg border border-border-theme bg-white shadow-[0_24px_80px_rgba(15,23,42,0.24)]",
-            className,
-          )}
-          {...props}
-        >
+      <GlobalModal
+        open={open}
+        origin={origin}
+        onClose={() => setOpen(false)}
+        panelClassName={className}
+      >
+        <div ref={ref} role="dialog" aria-modal="true" className="flex min-h-0 flex-1 flex-col" {...props}>
           {children}
         </div>
-      </div>
+      </GlobalModal>
     );
   },
 );
 DialogContent.displayName = "DialogContent";
 
 const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("flex items-start justify-between gap-4 border-b border-border-theme px-6 py-5", className)} {...props} />
+  <GlobalModalHeader className={className} {...props} />
 );
 DialogHeader.displayName = "DialogHeader";
 
 const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("flex justify-end gap-2 border-t border-border-theme px-6 py-4", className)} {...props} />
+  <GlobalModalFooter className={className} {...props} />
 );
 DialogFooter.displayName = "DialogFooter";
 
 const DialogTitle = React.forwardRef<HTMLHeadingElement, React.HTMLAttributes<HTMLHeadingElement>>(
   ({ className, ...props }, ref) => (
-    <h2 ref={ref} className={cn("text-xl font-semibold text-text-base", className)} {...props} />
+    <GlobalModalTitle ref={ref} className={className} {...props} />
   ),
 );
 DialogTitle.displayName = "DialogTitle";
@@ -122,7 +130,7 @@ const DialogDescription = React.forwardRef<
   HTMLParagraphElement,
   React.HTMLAttributes<HTMLParagraphElement>
 >(({ className, ...props }, ref) => (
-  <p ref={ref} className={cn("mt-1 text-[13px] leading-5 text-text-secondary", className)} {...props} />
+  <GlobalModalDescription ref={ref} className={className} {...props} />
 ));
 DialogDescription.displayName = "DialogDescription";
 
@@ -148,9 +156,37 @@ const DialogClose = React.forwardRef<HTMLButtonElement, DialogCloseProps>(
 );
 DialogClose.displayName = "DialogClose";
 
+/** 弹窗右上角关闭 —— 6px 圆角 tint 底（非正圆 pill） */
+const DialogCloseIcon = React.forwardRef<HTMLButtonElement, DialogCloseProps>(
+  ({ className, children, onClick, ...props }, ref) => {
+    const { setOpen } = useDialogContext();
+    return (
+      <button
+        ref={ref}
+        type="button"
+        className={cn(
+          "flex h-8 w-8 flex-shrink-0 appearance-none items-center justify-center rounded-md border-0 bg-transparent text-text-secondary",
+          MOTION.fast,
+          "hover:bg-ui-tint-strong hover:text-text-base active:bg-ui-tint-strong",
+          className,
+        )}
+        onClick={(event) => {
+          onClick?.(event);
+          if (!event.defaultPrevented) setOpen(false);
+        }}
+        {...props}
+      >
+        {children}
+      </button>
+    );
+  },
+);
+DialogCloseIcon.displayName = "DialogCloseIcon";
+
 export {
   Dialog,
   DialogClose,
+  DialogCloseIcon,
   DialogContent,
   DialogDescription,
   DialogFooter,

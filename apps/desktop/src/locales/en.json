@@ -186,7 +186,9 @@
         "email": "Email",
         "phone": "Phone",
         "qq": "QQ",
-        "wechat": "WeChat"
+        "wechat": "WeChat",
+        "clickToCopy": "Click to copy",
+        "copied": "Copied"
       },
       "developers": {
         "eighteen": {
@@ -201,7 +203,7 @@
           "role": "System Design",
           "bio": "Leads system architecture and product design, with a focus on Agent capabilities, interaction flows, and maintainability.",
           "repository": "https://github.com/leishifu666",
-          "contact": { "email": "To be configured", "phone": "To be configured", "qq": "To be configured", "wechat": "To be configured" }
+          "contact": { "email": "2934546967@qq.com", "phone": "19277413890", "qq": "2934546967@qq.com", "wechat": "Capper2934546967" }
         }
       },
       "support": {

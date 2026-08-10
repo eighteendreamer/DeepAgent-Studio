@@ -188,7 +188,9 @@
         "email": "邮箱",
         "phone": "手机号",
         "qq": "QQ",
-        "wechat": "微信"
+        "wechat": "微信",
+        "clickToCopy": "点击复制",
+        "copied": "已复制"
       },
       "developers": {
         "eighteen": {
@@ -203,7 +205,7 @@
           "role": "系统设计",
           "bio": "负责系统架构与产品设计，关注 Agent 能力、交互流程和长期可维护性。",
           "repository": "https://github.com/leishifu666",
-          "contact": { "email": "待配置", "phone": "待配置", "qq": "待配置", "wechat": "待配置" }
+          "contact": { "email": "2934546967@qq.com", "phone": "19277413890", "qq": "2934546967@qq.com", "wechat": "Capper2934546967" }
         }
       },
       "support": {

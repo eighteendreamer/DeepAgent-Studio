@@ -6,17 +6,15 @@ import { openExternalUrl } from "../../api";
 
 import {
   Dialog,
-  DialogClose,
+  DialogCloseIcon,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from "../shadcn/dialog";
-import { Input } from "../shadcn/input";
-import { Label } from "../shadcn/label";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/Avatar";
+import { CopyContactField } from "../ui/CopyContactField";
 
 const PROJECT_URL = "https://github.com/eighteendreamer/DeepAgent-Studio";
 
@@ -30,6 +28,24 @@ const STACK = [
 ];
 
 type DeveloperId = "eighteen" | "designer";
+
+const DEVELOPER_ASSETS: Record<
+  DeveloperId,
+  { avatar: string; wechatQr: string; alipayQr: string; hasSupport: boolean }
+> = {
+  eighteen: {
+    avatar: "/avatars/eighteen.png",
+    wechatQr: "/support/eighteen-wechat.jpg",
+    alipayQr: "/support/eighteen-alipay.jpg",
+    hasSupport: true,
+  },
+  designer: {
+    avatar: "/avatars/designer.png",
+    wechatQr: "/support/designer-wechat.jpg",
+    alipayQr: "/support/designer-alipay.jpg",
+    hasSupport: true,
+  },
+};
 
 function ContactDialog({ developer }: { developer: DeveloperId }) {
   const { t } = useTranslation();
@@ -47,26 +63,25 @@ function ContactDialog({ developer }: { developer: DeveloperId }) {
             <DialogTitle>{t("settings.about.contactDialog.title")}</DialogTitle>
             <DialogDescription>{t(`${prefix}.name`)}</DialogDescription>
           </div>
-          <DialogClose aria-label={t("settings.about.actions.close")} className="text-xl text-text-secondary hover:text-text-base">
-            <FontAwesomeIcon icon={["fas", "xmark"]} />
-          </DialogClose>
+          <DialogCloseIcon aria-label={t("settings.about.actions.close")}>
+            <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[14px]" />
+          </DialogCloseIcon>
         </DialogHeader>
         <div className="grid gap-5 px-6 py-6">
           {(["email", "phone", "qq", "wechat"] as const).map((field) => {
             const inputId = `${developer}-${field}`;
             return (
-            <div key={field} className="grid gap-2">
-              <Label htmlFor={inputId}>{t(`settings.about.contactDialog.${field}`)}</Label>
-              <Input id={inputId} readOnly value={t(`${prefix}.contact.${field}`)} className="bg-hover-bg shadow-none" />
-            </div>
+              <CopyContactField
+                key={field}
+                id={inputId}
+                label={t(`settings.about.contactDialog.${field}`)}
+                value={t(`${prefix}.contact.${field}`)}
+                copyLabel={t("settings.about.contactDialog.clickToCopy")}
+                copiedLabel={t("settings.about.contactDialog.copied")}
+              />
             );
           })}
         </div>
-        <DialogFooter>
-          <DialogClose className="rounded-md bg-black/5 px-3 py-2 text-xs font-medium text-text-base hover:bg-black/10">
-            {t("settings.about.actions.close")}
-          </DialogClose>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -89,23 +104,31 @@ function SupportDialog({ developer }: { developer: DeveloperId }) {
             <DialogTitle>{t("settings.about.supportDialog.title")}</DialogTitle>
             <DialogDescription>{t(`${prefix}.name`)}</DialogDescription>
           </div>
-          <DialogClose aria-label={t("settings.about.actions.close")} className="text-xl text-text-secondary hover:text-text-base">
-            <FontAwesomeIcon icon={["fas", "xmark"]} />
-          </DialogClose>
+          <DialogCloseIcon aria-label={t("settings.about.actions.close")}>
+            <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[14px]" />
+          </DialogCloseIcon>
         </DialogHeader>
         <div className="flex flex-col items-center gap-4 px-6 py-7 text-center">
           <p className="text-sm font-medium">{t("settings.about.supportDialog.heading")}</p>
-          {developer === "eighteen" ? (
+          {DEVELOPER_ASSETS[developer].hasSupport ? (
             <div className="grid w-full grid-cols-2 gap-4">
               <figure className="min-w-0">
                 <div className="overflow-hidden rounded-md bg-hover-bg">
-                  <img src="/support/eighteen-wechat.jpg" alt={t("settings.about.supportDialog.wechat")} className="block aspect-square h-auto w-full object-cover object-center" />
+                  <img
+                    src={DEVELOPER_ASSETS[developer].wechatQr}
+                    alt={t("settings.about.supportDialog.wechat")}
+                    className="block aspect-square h-auto w-full object-cover object-center"
+                  />
                 </div>
                 <figcaption className="mt-2 text-xs text-text-secondary">{t("settings.about.supportDialog.wechat")}</figcaption>
               </figure>
               <figure className="min-w-0">
                 <div className="overflow-hidden rounded-md bg-hover-bg">
-                  <img src="/support/eighteen-alipay.jpg" alt={t("settings.about.supportDialog.alipay")} className="block aspect-square h-auto w-full object-cover object-center" />
+                  <img
+                    src={DEVELOPER_ASSETS[developer].alipayQr}
+                    alt={t("settings.about.supportDialog.alipay")}
+                    className="block aspect-square h-auto w-full object-cover object-center"
+                  />
                 </div>
                 <figcaption className="mt-2 text-xs text-text-secondary">{t("settings.about.supportDialog.alipay")}</figcaption>
               </figure>
@@ -117,22 +140,19 @@ function SupportDialog({ developer }: { developer: DeveloperId }) {
           )}
           <p className="max-w-sm text-xs leading-5 text-text-secondary">{t("settings.about.supportDialog.pending")}</p>
         </div>
-        <DialogFooter>
-          <DialogClose className="rounded-md bg-black/5 px-3 py-2 text-xs font-medium text-text-base hover:bg-black/10">
-            {t("settings.about.actions.close")}
-          </DialogClose>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
 function DeveloperAvatar({ developer }: { developer: DeveloperId }) {
+  const assets = DEVELOPER_ASSETS[developer];
+  const { t } = useTranslation();
+  const name = t(`settings.about.developers.${developer}.name`);
+
   return (
     <Avatar className="h-12 w-12">
-      {developer === "eighteen" ? (
-        <AvatarImage src="/avatars/eighteen.png" alt="程序员Eighteen" />
-      ) : null}
+      <AvatarImage src={assets.avatar} alt={name} />
       <AvatarFallback>
         <FontAwesomeIcon icon={["fas", "circle-user"]} aria-hidden="true" />
       </AvatarFallback>

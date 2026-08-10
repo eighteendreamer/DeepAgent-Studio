@@ -71,6 +71,16 @@ html.theme-color-transition .text-text-secondary {
     background-color: color-mix(in srgb, var(--theme-fg) 10%, transparent);
   }
 
+  /* WebView 原生 button 会盖掉 Tailwind 圆角，hover 底变方 —— 强制正圆 */
+  .ui-circle-icon-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    border: none;
+    border-radius: 9999px;
+    overflow: hidden;
+    background-color: transparent;
+  }
+
   /* Sidebar highlight — 与 Composer chip 同语言（中性 fg 5%）；暗色略加强 */
   .bg-sidebar-highlight {
     background-color: color-mix(in srgb, var(--theme-fg) 5%, transparent);
@@ -120,6 +130,71 @@ html.theme-color-transition .text-text-secondary {
 }
 .composer-send-btn--plan:hover {
   background-color: #b45309;
+}
+
+/* 联系开发者 · 跟随提示（字段本身用 bg-ui-tint，无额外边框/投影） */
+.contact-copy-field.is-copied {
+  background: color-mix(in srgb, #22c55e 14%, transparent);
+}
+.contact-copy-field.is-copied .block {
+  color: color-mix(in srgb, #15803d 88%, var(--theme-fg));
+}
+html.dark .contact-copy-field.is-copied .block {
+  color: #86efac;
+}
+.contact-copy-tip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 250;
+  padding: 6px 11px;
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  border: none;
+  color: var(--theme-fg);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #ffffff 62%, transparent) 0%,
+    color-mix(in srgb, var(--theme-bg) 22%, transparent) 100%
+  );
+  backdrop-filter: blur(24px) saturate(195%);
+  -webkit-backdrop-filter: blur(24px) saturate(195%);
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.12);
+  will-change: transform;
+}
+html.dark .contact-copy-tip {
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #ffffff 14%, transparent) 0%,
+    color-mix(in srgb, var(--theme-bg) 32%, transparent) 100%
+  );
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.38);
+}
+.contact-copy-tip.is-copied {
+  color: #15803d;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #bbf7d0 45%, transparent) 0%,
+    color-mix(in srgb, #22c55e 18%, transparent) 100%
+  );
+  backdrop-filter: blur(24px) saturate(195%);
+  -webkit-backdrop-filter: blur(24px) saturate(195%);
+  box-shadow: 0 8px 24px rgba(22, 163, 74, 0.2);
+}
+html.dark .contact-copy-tip.is-copied {
+  color: #86efac;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #4ade80 28%, transparent) 0%,
+    color-mix(in srgb, #166534 22%, transparent) 100%
+  );
 }
 
 /* Codex-style polish: slim scrollbars, no resize handles, focus rings off. */
