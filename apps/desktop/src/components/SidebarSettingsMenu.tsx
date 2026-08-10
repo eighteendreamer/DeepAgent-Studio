@@ -137,7 +137,7 @@ export function SidebarSettingsMenu({ onOpenSettings, onLogout }: Props) {
         className={cn(
           "flex w-full items-center rounded-md px-2.5 py-1.5 text-sm text-text-base",
           MOTION.fast,
-          open ? "bg-black/5" : "hover:bg-black/5",
+          open ? "bg-ui-tint" : "hover:bg-ui-tint",
         )}
         onClick={() => setOpen((v) => !v)}
       >

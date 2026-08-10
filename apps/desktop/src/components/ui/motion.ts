@@ -18,7 +18,7 @@ export const FLOATING_MENU = {
   shell:
     "floating-menu-panel rounded-2xl bg-elevated-bg p-1.5 shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
   row:
-    "floating-menu-item flex w-full cursor-pointer items-center rounded-lg px-2 py-1.5 text-[12px] transition-colors duration-150 hover:bg-black/5",
+    "floating-menu-item flex w-full cursor-pointer items-center rounded-lg px-2 py-1.5 text-[12px] transition-colors duration-150 hover:bg-ui-tint",
 } as const;
 
 /** 浮层内列表（方案 A）—— scroll/actions 同 gutter，行同 padding，hover 等宽 */

@@ -178,7 +178,7 @@ export function SidebarProjectMenu({
     <div ref={triggerRef} className="relative">
       <button
         type="button"
-        className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded"
+        className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded"
         title="项目选项"
         onClick={(e) => {
           e.stopPropagation();

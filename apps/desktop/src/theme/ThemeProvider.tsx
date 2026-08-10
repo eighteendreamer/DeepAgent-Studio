@@ -46,69 +46,75 @@ interface ThemeContextValue {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-const THEME_TRANSITION_DURATION_MS = 600;
-const THEME_COLOR_FADE_DURATION_MS = 240;
-let activeThemeRipple: Animation | null = null;
-let activeThemeRippleElement: HTMLDivElement | null = null;
-let activeThemeCommitTimer: number | null = null;
+const THEME_REVEAL_DURATION_MS = 480;
+const THEME_COLOR_FADE_DURATION_MS = 180;
+let activeThemeRevealRaf: number | null = null;
+let activeThemeRevealOverlay: HTMLDivElement | null = null;
 let activeThemeColorFadeTimer: number | null = null;
 
-function playThemeRipple(
-  origin: ThemeSwitchOrigin,
-  color: string,
-  onCovered: () => void,
-) {
-  activeThemeRipple?.cancel();
-  activeThemeRippleElement?.remove();
-  if (activeThemeCommitTimer !== null) {
-    window.clearTimeout(activeThemeCommitTimer);
+function prefersReducedMotion(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function cancelActiveThemeReveal() {
+  if (activeThemeRevealRaf !== null) {
+    cancelAnimationFrame(activeThemeRevealRaf);
+    activeThemeRevealRaf = null;
   }
+  activeThemeRevealOverlay?.remove();
+  activeThemeRevealOverlay = null;
+}
+
+/** 从点击处向外「挖洞」露出已切换的新主题，而非实心色块盖屏后再切换 */
+function playThemeReveal(
+  origin: ThemeSwitchOrigin,
+  previousBackground: string,
+  onCommit: () => void,
+) {
+  cancelActiveThemeReveal();
+
+  if (prefersReducedMotion()) {
+    onCommit();
+    return;
+  }
+
+  onCommit();
 
   const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
   const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
   const x = Number.isFinite(origin.x) ? origin.x : viewportWidth / 2;
   const y = Number.isFinite(origin.y) ? origin.y : viewportHeight / 2;
-  const radius =
+  const maxRadius =
     Math.hypot(Math.max(x, viewportWidth - x), Math.max(y, viewportHeight - y)) + 2;
 
-  const ripple = document.createElement("div");
-  ripple.className = "theme-switch-ripple";
-  ripple.style.width = `${radius * 2}px`;
-  ripple.style.height = `${radius * 2}px`;
-  ripple.style.left = `${x - radius}px`;
-  ripple.style.top = `${y - radius}px`;
-  ripple.style.backgroundColor = color;
-  document.body.appendChild(ripple);
+  const overlay = document.createElement("div");
+  overlay.className = "theme-switch-reveal-overlay";
+  overlay.style.backgroundColor = previousBackground;
+  document.body.appendChild(overlay);
+  activeThemeRevealOverlay = overlay;
 
-  const animation = ripple.animate(
-    [
-      { transform: "scale(0)", opacity: 0.08, offset: 0 },
-      { transform: "scale(1)", opacity: 0.18, offset: 0.82 },
-      { transform: "scale(1)", opacity: 0, offset: 1 },
-    ],
-    {
-      duration: THEME_TRANSITION_DURATION_MS,
-      easing: "cubic-bezier(0.16, 1, 0.3, 1)",
-      fill: "forwards",
-    },
-  );
+  const applyMask = (radius: number) => {
+    const mask = `radial-gradient(circle ${radius}px at ${x}px ${y}px, transparent ${radius}px, #000 ${radius}px)`;
+    overlay.style.maskImage = mask;
+    overlay.style.webkitMaskImage = mask;
+  };
 
-  activeThemeRipple = animation;
-  activeThemeRippleElement = ripple;
-  activeThemeCommitTimer = window.setTimeout(() => {
-    activeThemeCommitTimer = null;
-    onCovered();
-  }, THEME_TRANSITION_DURATION_MS * 0.82);
+  applyMask(0);
+  const start = performance.now();
 
-  animation.finished
-    .catch(() => undefined)
-    .finally(() => {
-      if (activeThemeRipple === animation) {
-        activeThemeRipple = null;
-        activeThemeRippleElement = null;
-      }
-      ripple.remove();
-    });
+  const frame = (now: number) => {
+    if (!activeThemeRevealOverlay) return;
+    const t = Math.min(1, (now - start) / THEME_REVEAL_DURATION_MS);
+    const eased = 1 - (1 - t) ** 3;
+    applyMask(eased * maxRadius);
+    if (t < 1) {
+      activeThemeRevealRaf = requestAnimationFrame(frame);
+    } else {
+      cancelActiveThemeReveal();
+    }
+  };
+
+  activeThemeRevealRaf = requestAnimationFrame(frame);
 }
 
 function beginColorFade() {
@@ -245,8 +251,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           : mode;
       const next = { ...current, mode };
       if (origin && prevVariant !== nextVariant) {
-        const targetColor = current.workingPalettes[nextVariant].background;
-        playThemeRipple(origin, targetColor, () => {
+        const previousBackground = current.workingPalettes[prevVariant].background;
+        playThemeReveal(origin, previousBackground, () => {
           beginColorFade();
           commit(next);
         });

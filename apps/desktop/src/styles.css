@@ -22,15 +22,13 @@
   }
 }
 
-.theme-switch-ripple {
+.theme-switch-reveal-overlay {
   position: fixed;
+  inset: 0;
   z-index: 2147483000;
-  border-radius: 50%;
   pointer-events: none;
   contain: strict;
-  transform: scale(0);
-  transform-origin: center;
-  will-change: transform, opacity;
+  will-change: mask-image, -webkit-mask-image;
 }
 
 html.theme-color-transition body,
@@ -44,7 +42,7 @@ html.theme-color-transition .border-border-theme,
 html.theme-color-transition .text-text-base,
 html.theme-color-transition .text-text-secondary {
   transition-property: background-color, border-color, color, fill, stroke;
-  transition-duration: 240ms;
+  transition-duration: 180ms;
   transition-timing-function: ease-out;
 }
 
@@ -54,6 +52,75 @@ html.theme-color-transition .text-text-secondary {
 .dark .hover\:bg-gray-100:hover, .dark .hover\:bg-gray-50:hover { background-color: var(--theme-border) !important; }
 .dark .border-gray-200, .dark .border-gray-300 { border-color: var(--theme-border) !important; }
 .dark .text-gray-500, .dark .text-gray-600 { color: var(--theme-text-secondary) !important; }
+
+/* Theme-aware silent tints — replace bg-black/N which vanish in dark mode */
+@layer utilities {
+  .bg-ui-tint {
+    background-color: color-mix(in srgb, var(--theme-fg) 5%, transparent);
+  }
+  .bg-ui-tint-strong {
+    background-color: color-mix(in srgb, var(--theme-fg) 10%, transparent);
+  }
+  .bg-ui-tint-medium {
+    background-color: color-mix(in srgb, var(--theme-fg) 20%, transparent);
+  }
+  .hover\:bg-ui-tint:hover {
+    background-color: color-mix(in srgb, var(--theme-fg) 5%, transparent);
+  }
+  .hover\:bg-ui-tint-strong:hover {
+    background-color: color-mix(in srgb, var(--theme-fg) 10%, transparent);
+  }
+
+  /* Sidebar highlight — 与 Composer chip 同语言（中性 fg 5%）；暗色略加强 */
+  .bg-sidebar-highlight {
+    background-color: color-mix(in srgb, var(--theme-fg) 5%, transparent);
+  }
+  html.dark .bg-sidebar-highlight {
+    background-color: color-mix(in srgb, var(--theme-fg) 10%, transparent);
+  }
+  .hover\:bg-sidebar-highlight:hover {
+    background-color: color-mix(in srgb, var(--theme-fg) 5%, transparent);
+  }
+  html.dark .hover\:bg-sidebar-highlight:hover {
+    background-color: color-mix(in srgb, var(--theme-fg) 10%, transparent);
+  }
+}
+
+/* Composer send — fg/bg invert per theme (ref: light=dark btn, dark=light btn) */
+.composer-send-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  height: 2rem;
+  width: 2rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1),
+    color 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.composer-send-btn--idle {
+  cursor: not-allowed;
+  background-color: color-mix(in srgb, var(--theme-fg) 22%, transparent);
+  color: color-mix(in srgb, var(--theme-bg) 90%, var(--theme-fg));
+}
+.composer-send-btn--ready,
+.composer-send-btn--stop {
+  cursor: pointer;
+  background-color: var(--theme-fg);
+  color: var(--theme-bg);
+}
+.composer-send-btn--ready:hover,
+.composer-send-btn--stop:hover {
+  background-color: color-mix(in srgb, var(--theme-fg) 88%, var(--theme-bg));
+}
+.composer-send-btn--plan {
+  cursor: pointer;
+  background-color: #d97706;
+  color: #fff;
+}
+.composer-send-btn--plan:hover {
+  background-color: #b45309;
+}
 
 /* Codex-style polish: slim scrollbars, no resize handles, focus rings off. */
 ::-webkit-scrollbar {

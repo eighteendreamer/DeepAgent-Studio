@@ -151,7 +151,7 @@ export function MorphingSelect({
                     tabIndex={0}
                     className={cn(
                       "relative flex h-10 cursor-pointer items-center justify-between rounded-xl px-3 text-[13px] text-text-base",
-                      isSelected ? "bg-black/5 font-medium" : "hover:bg-black/5",
+                      isSelected ? "bg-ui-tint font-medium" : "hover:bg-ui-tint",
                     )}
                     onClick={() => handleSelect(option.id)}
                     onKeyDown={(e) => {

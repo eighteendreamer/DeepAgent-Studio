@@ -77,7 +77,7 @@ export function SettingsSidebar({ onBack, activeCategoryId, onSelectCategory }: 
         </div>
 
         {/* 滑动药丸指示器 */}
-        <SlidingPill style={indicatorStyle} />
+        <SlidingPill style={indicatorStyle} className="bg-sidebar-highlight" />
       </div>
     </aside>
   );

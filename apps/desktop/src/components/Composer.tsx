@@ -1774,17 +1774,16 @@ export function Composer({
             disabled={busy ? !onStop : !hasComposerContent}
             title={busy ? t("composer.stop") : undefined}
             className={cn(
-              "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full",
-              MOTION.fast,
+              "composer-send-btn",
               busy
                 ? onStop
-                  ? "cursor-pointer bg-text-base text-white hover:bg-black"
-                  : "cursor-not-allowed bg-black/20 text-white"
+                  ? "composer-send-btn--stop"
+                  : "composer-send-btn--idle"
                 : hasComposerContent
                   ? planMode
-                    ? "cursor-pointer bg-amber-600 text-white hover:bg-amber-700"
-                    : "cursor-pointer bg-text-base text-white hover:bg-black"
-                  : "cursor-not-allowed bg-black/20 text-white",
+                    ? "composer-send-btn--plan"
+                    : "composer-send-btn--ready"
+                  : "composer-send-btn--idle",
             )}
           >
             <FontAwesomeIcon icon={busy ? ["fas", "stop"] : ["fas", "arrow-up"]} className="text-[11px]" />

@@ -20,9 +20,9 @@ export function ComposerAttachButton({ disabled = false, disabledTitle, onClick 
       aria-label={t("composer.addMenu.hoverLabel")}
       onClick={onClick}
       className={cn(
-        "group/add flex h-8 w-8 shrink-0 items-center overflow-hidden rounded-full bg-black/5 text-text-secondary",
+        "group/add flex h-8 w-8 shrink-0 items-center overflow-hidden rounded-full bg-ui-tint text-text-secondary",
         "transition-[width,background-color,padding] duration-500 ease-out motion-reduce:transition-none",
-        !disabled && "hover:w-[7.25rem] hover:pr-2.5 hover:bg-black/[0.08] hover:text-text-base",
+        !disabled && "hover:w-[7.25rem] hover:pr-2.5 hover:bg-ui-tint-strong hover:text-text-base",
         disabled && "cursor-not-allowed opacity-40",
       )}
     >

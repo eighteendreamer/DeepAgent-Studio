@@ -98,8 +98,8 @@ export function SidebarPluginHeader({
                   onClick={() => onSelectTab(tab.id)}
                   className={`group relative flex h-6 min-w-[74px] max-w-[180px] flex-shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] transition-colors ${
                     active
-                      ? "bg-black/5 font-medium text-text-base"
-                      : "text-text-secondary hover:bg-black/5 hover:text-text-base"
+                      ? "bg-ui-tint font-medium text-text-base"
+                      : "text-text-secondary hover:bg-ui-tint hover:text-text-base"
                   }`}
                 >
                   <FontAwesomeIcon icon={tab.icon} className="flex-shrink-0 text-[11px]" />

@@ -313,8 +313,8 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           "group/session flex cursor-pointer items-center rounded-md text-[13px] transition-colors duration-150",
           isPinnedSection ? "mb-0.5 px-2.5 py-1.5" : "py-1.5 pl-[34px] pr-2.5",
           active
-            ? "bg-black/5 font-medium text-text-base"
-            : "text-text-secondary hover:bg-black/5 hover:text-text-base",
+            ? "bg-sidebar-highlight font-medium text-text-base"
+            : "text-text-secondary hover:bg-sidebar-highlight hover:text-text-base",
         )}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
@@ -354,7 +354,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onPinSession(s.id, !isPinned); }}
                   className={cn(
-                    "flex h-5 w-5 items-center justify-center rounded hover:bg-black/10",
+                    "flex h-5 w-5 items-center justify-center rounded hover:bg-sidebar-highlight",
                     isPinned ? "text-text-base" : "text-text-secondary",
                   )}
                   title={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
@@ -364,7 +364,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onArchiveSession(s.id); }}
-                  className="flex h-5 w-5 items-center justify-center rounded text-text-secondary hover:bg-black/10"
+                  className="flex h-5 w-5 items-center justify-center rounded text-text-secondary hover:bg-sidebar-highlight"
                   title={t("sidebar.archive")}
                 >
                   <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-[10px]" />
@@ -384,7 +384,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     return (
       <div key={proj} className="flex flex-col">
         <div
-          className={`flex items-center px-2.5 py-1.5 text-[13px] cursor-pointer hover:bg-black/5 rounded-md transition-colors group/proj ${activeProjectMenu === proj || nameToPath[proj] === activeProjectPath ? 'bg-black/5 text-text-base font-medium' : 'text-text-secondary'}`}
+          className={`flex items-center px-2.5 py-1.5 text-[13px] cursor-pointer hover:bg-sidebar-highlight rounded-md transition-colors group/proj ${activeProjectMenu === proj || nameToPath[proj] === activeProjectPath ? 'bg-sidebar-highlight text-text-base font-medium' : 'text-text-secondary'}`}
           onClick={() => {
             const path = nameToPath[proj];
             if (path) onSelectProject(path);
@@ -398,7 +398,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             <button
               type="button"
               className={cn(
-                "w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded",
+                "w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded",
                 isProjectPinned && "text-text-base",
               )}
               title={isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}
@@ -442,7 +442,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               }}
             />
             <button
-              className="w-5 h-5 flex items-center justify-center hover:bg-black/10 rounded"
+              className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded"
               title={t("sidebar.newChat")}
               onClick={(e) => {
                 e.stopPropagation();
@@ -493,7 +493,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         </div>
 
         {/* 滑动药丸指示器 */}
-        <SlidingPill style={pillStyle} />
+        <SlidingPill style={pillStyle} className="bg-sidebar-highlight" />
       </div>
 
       {/* Project / session list */}
@@ -516,7 +516,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             <div className="text-[12px]">{t("sidebar.projects")}</div>
             <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
               <button 
-                className="w-5 h-5 flex items-center justify-center hover:bg-black/5 rounded" 
+                className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded" 
                 title={t("sidebar.collapseAll")}
                 onClick={toggleExpandAll}
               >
@@ -525,7 +525,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               
               <div className="relative" ref={moreMenuRef}>
                 <button 
-                  className="w-5 h-5 flex items-center justify-center hover:bg-black/5 rounded" 
+                  className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded" 
                   title={t("sidebar.more")}
                   onClick={() => {
                     setIsMoreMenuOpen(!isMoreMenuOpen);
@@ -536,9 +536,9 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[10px]" />
                 </button>
                 {isMoreMenuOpen && (
-                  <div className="absolute top-full right-0 mt-1 w-48 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
+                  <div className="absolute top-full right-0 mt-1 w-48 bg-elevated-bg rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
                     <button
-                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
+                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-sidebar-highlight transition-colors w-full text-left"
                       onClick={() => {
                         setIsMoreMenuOpen(false);
                         setActiveMoreSubmenu(null);
@@ -550,7 +550,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                     </button>
                     <div className="my-1 border-t border-border-theme"></div>
                     <button
-                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "organize" ? "bg-gray-50" : "hover:bg-black/5"}`}
+                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "organize" ? "bg-sidebar-highlight" : "hover:bg-sidebar-highlight"}`}
                       onClick={() => {
                         if (activeMoreSubmenu === "organize") setActiveMoreSubmenu(null);
                         else openMoreSubmenu("organize");
@@ -563,7 +563,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                       <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-text-secondary text-[10px]" />
                     </button>
                     <button
-                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "sort" ? "bg-gray-50" : "hover:bg-black/5"}`}
+                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "sort" ? "bg-sidebar-highlight" : "hover:bg-sidebar-highlight"}`}
                       onClick={() => {
                         if (activeMoreSubmenu === "sort") setActiveMoreSubmenu(null);
                         else openMoreSubmenu("sort");
@@ -588,7 +588,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                         ].map((item) => (
                           <button
                             key={item.id}
-                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
+                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-sidebar-highlight transition-colors w-full text-left"
                             onClick={() => {
                               setOrganizeMode(item.id);
                               setIsMoreMenuOpen(false);
@@ -617,7 +617,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                         ].map((item) => (
                           <button
                             key={item.id}
-                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
+                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-sidebar-highlight transition-colors w-full text-left"
                             onClick={() => {
                               setSortCriterion(item.id);
                               setIsMoreMenuOpen(false);
@@ -641,7 +641,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
 
               <div className="relative" ref={newProjectMenuRef}>
                 <button 
-                  className="w-5 h-5 flex items-center justify-center hover:bg-black/5 rounded" 
+                  className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded" 
                   title={t("sidebar.newProject")}
                   onClick={() => { setIsNewProjectMenuOpen(!isNewProjectMenuOpen); setIsMoreMenuOpen(false); }}
                 >
@@ -650,14 +650,14 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 {isNewProjectMenuOpen && (
                   <div className="absolute top-full right-0 mt-1 w-40 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
                     <button
-                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
+                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-sidebar-highlight transition-colors w-full text-left"
                       onClick={() => { setIsNewProjectMenuOpen(false); onAddProject(); }}
                     >
                       <FontAwesomeIcon icon={["fas", "folder-plus"]} className="text-text-secondary mr-2.5 w-4" />
                       {t("sidebar.newBlankProject")}
                     </button>
                     <button
-                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-black/5 transition-colors w-full text-left"
+                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-sidebar-highlight transition-colors w-full text-left"
                       onClick={() => { setIsNewProjectMenuOpen(false); onAddProject(); }}
                     >
                       <FontAwesomeIcon icon={["fas", "folder-plus"]} className="text-text-secondary mr-2.5 w-4" />
@@ -704,7 +704,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               <div className="text-[15px] font-semibold text-text-base">
                 {t("sidebar.renameProjectDialog.title")}
               </div>
-              <InputSurface className="mt-4 rounded-2xl bg-black/5 shadow-none focus-within:shadow-none">
+              <InputSurface className="mt-4 rounded-2xl bg-ui-tint shadow-none focus-within:shadow-none">
                 <input
                   autoFocus
                   className="w-full bg-transparent px-4 py-2.5 text-[14px] text-text-base outline-none placeholder:text-text-secondary"

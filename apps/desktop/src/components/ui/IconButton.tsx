@@ -12,7 +12,7 @@ export function IconButton({ className, ...rest }: ButtonHTMLAttributes<HTMLButt
       className={cn(
         "flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-text-secondary",
         MOTION.fast,
-        "hover:bg-black/5 hover:text-text-base",
+        "hover:bg-ui-tint hover:text-text-base",
         "disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent",
         className,
       )}

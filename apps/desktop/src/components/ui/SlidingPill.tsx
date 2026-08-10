@@ -169,9 +169,16 @@ export function useSlidingIndicator({
   };
 }
 
-/** 静默着色药丸本体（无边框、无阴影，bg-black/5 与 hover-bg 语言一致） */
-const PILL_CLASS = `absolute left-3 right-3 z-0 rounded-md bg-black/5 pointer-events-none ${MOTION.standard}`;
+/** 静默着色药丸 —— 默认 ui-tint；侧栏传 className="bg-sidebar-highlight" */
+const PILL_BASE = `absolute left-3 right-3 z-0 rounded-md pointer-events-none ${MOTION.standard}`;
 
 export function SlidingPill({ style, className }: { style: CSSProperties; className?: string }) {
-  return <div aria-hidden className={cn(PILL_CLASS, className)} style={style} />;
+  const hasBgClass = Boolean(className && /\bbg-/.test(className));
+  return (
+    <div
+      aria-hidden
+      className={cn(PILL_BASE, !hasBgClass && "bg-ui-tint", className)}
+      style={style}
+    />
+  );
 }
