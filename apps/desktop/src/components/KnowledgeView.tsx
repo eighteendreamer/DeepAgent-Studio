@@ -18,6 +18,7 @@ import {
 } from "../api";
 import { message } from "./message";
 import { KnowledgeGraph } from "./KnowledgeGraph";
+import { ToggleSwitchRow } from "./ui/ToggleSwitch";
 
 const KINDS = ["pitfall", "solution", "command", "config", "note"] as const;
 type Kind = (typeof KINDS)[number];
@@ -208,7 +209,7 @@ export function KnowledgeView() {
   }
 
   const iconBtn =
-    "flex items-center justify-center w-8 h-8 rounded bg-black/5 text-text-secondary hover:text-text-base hover:bg-black/5 transition-colors";
+    "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ui-tint text-text-secondary transition-colors duration-150 ease-out hover:bg-ui-tint-strong hover:text-text-base";
 
   return (
     <div className="w-full h-full flex bg-white overflow-hidden">
@@ -227,35 +228,44 @@ export function KnowledgeView() {
 
           <div className="flex items-center gap-2 flex-shrink-0">
             {/* graph / list switch */}
-            <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+            <div className="flex h-8 items-center rounded-lg bg-ui-tint p-0.5">
               <button
+                type="button"
                 onClick={() => setMode("graph")}
-                className={`px-2.5 py-1 text-xs rounded-md transition-colors flex items-center gap-1.5 ${
-                  mode === "graph" ? "bg-white text-text-base shadow-sm" : "text-text-secondary hover:text-text-base"
+                className={`flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-colors ${
+                  mode === "graph"
+                    ? "bg-elevated-bg text-text-base shadow-sm"
+                    : "text-text-secondary hover:text-text-base"
                 }`}
                 title={t("knowledgeView.graphView")}
               >
-                <FontAwesomeIcon icon={["fas", "share-nodes"]} />
+                <FontAwesomeIcon icon={["fas", "share-nodes"]} className="text-[11px]" />
                 {t("knowledgeView.graphView")}
               </button>
               <button
+                type="button"
                 onClick={() => setMode("list")}
-                className={`px-2.5 py-1 text-xs rounded-md transition-colors flex items-center gap-1.5 ${
-                  mode === "list" ? "bg-white text-text-base shadow-sm" : "text-text-secondary hover:text-text-base"
+                className={`flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-colors ${
+                  mode === "list"
+                    ? "bg-elevated-bg text-text-base shadow-sm"
+                    : "text-text-secondary hover:text-text-base"
                 }`}
                 title={t("knowledgeView.listView")}
               >
-                <FontAwesomeIcon icon={["fas", "list"]} />
+                <FontAwesomeIcon icon={["fas", "list"]} className="text-[11px]" />
                 {t("knowledgeView.listView")}
               </button>
             </div>
 
-            <div className="flex items-center bg-gray-50 border border-border-theme rounded-full px-3 py-1.5 w-56 focus-within:border-gray-300 focus-within:bg-white transition-all">
-              <FontAwesomeIcon icon={["fas", "magnifying-glass"]} className="text-text-secondary text-sm mr-2" />
+            <div className="flex h-8 min-w-[14rem] w-56 items-center rounded-lg bg-ui-tint transition-colors duration-150 ease-out focus-within:bg-ui-tint-strong">
+              <FontAwesomeIcon
+                icon={["fas", "magnifying-glass"]}
+                className="ml-3 shrink-0 text-[12px] text-text-secondary"
+              />
               <input
-                type="text"
+                type="search"
                 placeholder={t("knowledgeView.searchPlaceholder")}
-                className="bg-transparent outline-none w-full text-sm text-text-base"
+                className="h-full min-w-0 flex-1 border-0 bg-transparent pl-2 pr-3 text-[12px] text-text-base outline-none placeholder:text-text-secondary"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
@@ -264,10 +274,10 @@ export function KnowledgeView() {
             {/* drafts bell */}
             <button
               onClick={() => setShowDrafts((s) => !s)}
-              className={`relative ${iconBtn} ${showDrafts ? "bg-amber-50 border-amber-200 text-amber-600" : ""}`}
+              className={`relative ${iconBtn} ${showDrafts ? "bg-amber-50 text-amber-600 hover:bg-amber-50" : ""}`}
               title={t("knowledgeView.draftsTitle", { count: drafts.length })}
             >
-              <FontAwesomeIcon icon={["fas", "inbox"]} className="text-sm" />
+              <FontAwesomeIcon icon={["fas", "inbox"]} className="text-[12px]" />
               {drafts.length > 0 && (
                 <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-white text-[10px] leading-4 text-center">
                   {drafts.length}
@@ -276,52 +286,46 @@ export function KnowledgeView() {
             </button>
 
             <button onClick={() => refresh(true)} className={iconBtn} title={t("knowledgeView.refresh")}>
-              <FontAwesomeIcon icon={["fas", "rotate-right"]} className={`text-sm ${loading ? "animate-spin" : ""}`} />
+              <FontAwesomeIcon icon={["fas", "rotate-right"]} className={`text-[12px] ${loading ? "animate-spin" : ""}`} />
             </button>
             <button onClick={openNew} className={iconBtn} title={t("knowledgeView.new")}>
-              <FontAwesomeIcon icon={["fas", "plus"]} className="text-sm" />
+              <FontAwesomeIcon icon={["fas", "plus"]} className="text-[12px]" />
             </button>
           </div>
         </div>
 
         {/* Secondary bar: toggles + legend */}
-        <div className="flex items-center justify-between px-6 py-2 border-b border-border-theme flex-shrink-0 bg-gray-50/40">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={onTogglePassive}
-              className={`flex items-center text-xs cursor-pointer transition-colors ${
-                passive ? "text-green-600 hover:text-green-700" : "text-text-secondary hover:text-text-base"
-              }`}
-              title={t("knowledgeView.passiveHint")}
-            >
-              <FontAwesomeIcon icon={["fas", passive ? "toggle-on" : "toggle-off"]} className="mr-1.5 text-sm" />
-              {t("knowledgeView.passive")}
-            </button>
-            <button
-              onClick={onToggleAutoCapture}
-              className={`flex items-center text-xs cursor-pointer transition-colors ${
-                autoCapture ? "text-green-600 hover:text-green-700" : "text-text-secondary hover:text-text-base"
-              }`}
-              title={t("knowledgeView.autoCaptureHint")}
-            >
-              <FontAwesomeIcon icon={["fas", autoCapture ? "toggle-on" : "toggle-off"]} className="mr-1.5 text-sm" />
-              {t("knowledgeView.autoCapture")}
-            </button>
-            <span className="text-xs text-text-secondary">
+        <div className="flex items-center justify-between px-6 py-3 border-b border-border-theme flex-shrink-0 bg-gray-50/40">
+          <div className="flex items-center gap-5">
+            <ToggleSwitchRow
+              checked={passive}
+              onChange={onTogglePassive}
+              label={t("knowledgeView.passive")}
+              hint={t("knowledgeView.passiveHint")}
+              size="sm"
+            />
+            <ToggleSwitchRow
+              checked={autoCapture}
+              onChange={onToggleAutoCapture}
+              label={t("knowledgeView.autoCapture")}
+              hint={t("knowledgeView.autoCaptureHint")}
+              size="sm"
+            />
+            <span className="text-[13px] text-text-secondary">
               {t("knowledgeView.count", { count: filtered.length })}
             </span>
           </div>
 
           {mode === "graph" && presentKinds.length > 0 && (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-4">
               {presentKinds.map((k) => (
-                <span key={k} className="flex items-center text-[11px] text-text-secondary">
-                  <span className={`w-2.5 h-2.5 rounded-full mr-1.5 ${KIND_DOT[k]}`} />
+                <span key={k} className="flex items-center text-[13px] text-text-secondary">
+                  <span className={`mr-2 h-3 w-3 rounded-full ${KIND_DOT[k]}`} />
                   {t(`knowledgeView.kind.${k}`)}
                 </span>
               ))}
-              <span className="flex items-center text-[11px] text-text-secondary">
-                <span className="w-2.5 h-2.5 rounded-full mr-1.5 border border-slate-400 bg-white" />
+              <span className="flex items-center text-[13px] text-text-secondary">
+                <span className="mr-2 h-3 w-3 rounded-full border border-slate-400 bg-white" />
                 {t("knowledgeView.tagNode")}
               </span>
             </div>

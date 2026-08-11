@@ -43,6 +43,7 @@ import {
 import { Input } from "./shadcn/input";
 import { Label } from "./shadcn/label";
 import { Textarea } from "./shadcn/textarea";
+import { ToggleSwitch } from "./ui/ToggleSwitch";
 
 type OriginFilter = "all" | "builtin" | "workspace" | "personal" | "marketplace";
 
@@ -509,20 +510,23 @@ export function PluginsView() {
               </div>
             )}
 
-            <div className="mb-6 flex flex-wrap items-center gap-3">
+            <div className="mb-6 flex flex-wrap items-center gap-2">
               <div className="relative min-w-[260px] flex-1">
-                <FontAwesomeIcon
-                  icon={["fas", "magnifying-glass"]}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[12px] text-text-secondary"
-                />
-                <Input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="搜索插件、能力或来源"
-                  className="pl-9"
-                />
+                <div className="flex h-8 items-center rounded-lg bg-ui-tint transition-colors duration-150 ease-out focus-within:bg-ui-tint-strong">
+                  <FontAwesomeIcon
+                    icon={["fas", "magnifying-glass"]}
+                    className="ml-3 shrink-0 text-[12px] text-text-secondary"
+                  />
+                  <input
+                    type="search"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="搜索插件、能力或来源"
+                    className="h-full min-w-0 flex-1 border-0 bg-transparent pl-2 pr-3 text-[12px] text-text-base outline-none placeholder:text-text-secondary"
+                  />
+                </div>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {originTabs.map((tab) => (
                   <Button
                     key={tab.id}
@@ -680,19 +684,15 @@ function PluginRow({
           </div>
         </div>
       </Button>
-      <Button
-        disabled={busy || !plugin.available}
-        onClick={() => onToggle(!plugin.enabled)}
-        variant="secondary"
+      <ToggleSwitch
+        checked={plugin.enabled}
+        onChange={() => onToggle(!plugin.enabled)}
         size="sm"
-        className={
-          plugin.enabled
-            ? "rounded-full bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-            : "rounded-full"
-        }
-      >
-        {busy ? "处理中" : plugin.enabled ? "已启用" : "已禁用"}
-      </Button>
+        tone="success"
+        disabled={busy || !plugin.available}
+        aria-label={`${plugin.enabled ? "禁用" : "启用"} ${plugin.display_name}`}
+        title={busy ? "处理中" : plugin.enabled ? "禁用插件" : "启用插件"}
+      />
     </div>
   );
 }

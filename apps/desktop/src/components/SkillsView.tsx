@@ -255,6 +255,9 @@ export function SkillsView() {
   }
 
   // ---------------- render ----------------
+  const toolbarIconBtn =
+    "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ui-tint text-text-secondary transition-colors duration-150 ease-out hover:bg-ui-tint-strong hover:text-text-base disabled:cursor-not-allowed disabled:opacity-40";
+
   return (
     <div className="w-full h-full flex bg-white overflow-hidden">
       <div className="flex-1 flex flex-col overflow-y-auto px-12 py-10">
@@ -297,62 +300,57 @@ export function SkillsView() {
             </button>
           </div>
 
-          <div className="flex items-center gap-2 ml-auto">
-            {/* Shared search box */}
-            <div className="flex items-center bg-gray-50 border border-border-theme rounded-full px-3 py-1.5 w-64 focus-within:border-gray-300 focus-within:bg-white transition-all">
+          <div className="ml-auto flex items-center gap-2">
+            <div className="flex h-8 w-64 min-w-[12rem] items-center rounded-lg bg-ui-tint transition-colors duration-150 ease-out focus-within:bg-ui-tint-strong">
               <FontAwesomeIcon
                 icon={["fas", "magnifying-glass"]}
-                className="text-text-secondary text-sm mr-2"
+                className="ml-3 shrink-0 text-[12px] text-text-secondary"
               />
               <input
-                type="text"
+                type="search"
                 placeholder={t("skillsView.market_search_placeholder")}
-                className="bg-transparent outline-none w-full text-sm text-text-base"
+                className="h-full min-w-0 flex-1 border-0 bg-transparent pl-2 pr-3 text-[12px] text-text-base outline-none placeholder:text-text-secondary"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
 
-            {/* Installed-only: refresh */}
             {marketTab === "installed" && (
               <button
+                type="button"
                 onClick={() => refresh(true)}
                 title={t("skillsView.refresh")}
-                className="flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-black/5 transition-colors"
+                className={toolbarIconBtn}
               >
                 <FontAwesomeIcon
                   icon={["fas", "rotate-right"]}
-                  className={`text-sm ${loading ? "animate-spin" : ""}`}
+                  className={`text-[12px] ${loading ? "animate-spin" : ""}`}
                 />
               </button>
             )}
 
-            {/* Installed-only: upload zip */}
             {marketTab === "installed" && (
               <button
+                type="button"
                 onClick={handleInstallZip}
-                className="flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-black/5 transition-colors"
+                className={toolbarIconBtn}
                 title="Upload ZIP Skill"
               >
-                <FontAwesomeIcon icon={["fas", "upload"]} className="text-sm" />
+                <FontAwesomeIcon icon={["fas", "file-zipper"]} className="text-[12px]" />
               </button>
             )}
 
-            {/* Market-only: provider config gear (R9.2, R9.4-R9.6). The
-                popover hangs off the button via `absolute right-0 top-full`,
-                so we wrap both in a `relative` container. */}
             {marketTab === "market" && (
               <div className="relative">
                 <button
+                  type="button"
                   onClick={handleProviderConfig}
-                  className={`flex items-center justify-center w-8 h-8 rounded border border-border-theme text-text-secondary hover:text-text-base hover:bg-black/5 transition-colors ${
-                    providerConfigOpen ? "bg-black/5 text-text-base" : ""
-                  }`}
+                  className={`${toolbarIconBtn} ${providerConfigOpen ? "bg-ui-tint-strong text-text-base" : ""}`}
                   title={t("skillsView.market_provider_config")}
                   aria-haspopup="dialog"
                   aria-expanded={providerConfigOpen}
                 >
-                  <FontAwesomeIcon icon={["fas", "gear"]} className="text-sm" />
+                  <FontAwesomeIcon icon={["fas", "gear"]} className="text-[12px]" />
                 </button>
                 <SkillsMarketProviderConfig
                   open={providerConfigOpen}
