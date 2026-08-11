@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { cn } from "../shadcn/utils";
 import { MOTION } from "./motion";
 
@@ -18,34 +18,37 @@ import { MOTION } from "./motion";
  *   );
  *
  * 注意：容器内按钮必须 `relative z-[1]`（在药丸 z-0 之上），否则药丸会遮住文字。
+ *
+ * 测量用布局坐标（offsetTop/offsetHeight）而非 getBoundingClientRect：
+ * morph 形变中容器被 framer-motion 以 transform: scale 变换，rect 返回被
+ * 缩放的视口坐标（实测行高被压缩数倍），offset* 不受 transform 影响，
+ * 任何时刻都返回真实布局值，因此药丸在面板打开瞬间即可正确显示。
  */
 export function useSlidingIndicator({
   hoverSelector,
   activeSelector,
-  layoutAnimating = false,
-  hoverOnly = false,
 }: {
   hoverSelector: string;
   activeSelector: string;
-  /** Morph 面板展开中：每帧重测，药丸跟随行位（不隐藏） */
-  layoutAnimating?: boolean;
-  /** 无固定激活项（activeId=__none__）：形变期间不显示药丸，避免 scale 测量错位 */
-  hoverOnly?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const hoveredRef = useRef<Element | null>(null);
-  const [hovering, setHovering] = useState(false);
   const [pill, setPill] = useState<{ top: number; height: number } | null>(null);
+  /* 首帧禁用过渡：面板打开时滑块直接以最终形态出现（跳过 height 0→67 的过渡），
+     下一帧后恢复 class 过渡，hover 跟随/切换行仍平滑 */
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setSettled(true), 0);
+    return () => clearTimeout(t);
+  }, []);
 
   const positionPillOn = useCallback((el: Element | null | undefined) => {
     if (!(el instanceof HTMLElement)) return;
     const container = containerRef.current;
     if (!container) return;
-    const containerRect = container.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
     setPill({
-      top: elRect.top - containerRect.top + container.scrollTop,
-      height: elRect.height,
+      top: el.offsetTop + container.scrollTop,
+      height: el.offsetHeight,
     });
   }, []);
 
@@ -68,37 +71,14 @@ export function useSlidingIndicator({
     }
   }, [positionOnActive, positionPillOn]);
 
-  /* 纯 hover 菜单：无 hover 时形变开始清药丸 */
-  useEffect(() => {
-    if (layoutAnimating && hoverOnly && !hovering) {
-      hoveredRef.current = null;
-      setPill(null);
-    }
-  }, [layoutAnimating, hoverOnly, hovering]);
-
-  /* 纯 hover + 形变中 + 有 hover：每帧跟鼠标行（scale 期间测量准确） */
-  useEffect(() => {
-    if (!layoutAnimating || !hoverOnly || !hovering) return;
-    let rafId = 0;
-    const start = performance.now();
-    const tick = () => {
-      if (hoveredRef.current) {
-        positionPillOn(hoveredRef.current);
-      }
-      if (performance.now() - start < 700) {
-        rafId = requestAnimationFrame(tick);
-      }
-    };
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-  }, [layoutAnimating, hoverOnly, hovering, positionPillOn]);
-
-  /* 挂载 & 激活项变化时，药丸滑到激活项 */
-  useEffect(() => {
+  /* 挂载 & 激活项变化时，药丸滑到激活项。
+     useLayoutEffect：面板打开的首帧（paint 前）就同步测好位置，
+     滑块直接以最终形态出现，不会先渲染空状态再过渡 */
+  useLayoutEffect(() => {
     positionOnActive();
   }, [positionOnActive]);
 
-  /* morph / 面板尺寸变化时重新测量（hover 时跟 hover 行） */
+  /* 容器尺寸变化时重新测量（hover 时跟 hover 行） */
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -107,43 +87,11 @@ export function useSlidingIndicator({
     return () => ro.disconnect();
   }, [repositionPill]);
 
-  /* 形变结束：等 layout 稳定后再重测（双 rAF） */
-  useEffect(() => {
-    if (layoutAnimating) return;
-    let outer = 0;
-    let inner = 0;
-    outer = requestAnimationFrame(() => {
-      inner = requestAnimationFrame(() => repositionPill());
-    });
-    return () => {
-      cancelAnimationFrame(outer);
-      cancelAnimationFrame(inner);
-    };
-  }, [layoutAnimating, repositionPill]);
-
-  /* 形变期间且无 hover：每帧跟激活项；有 hover 时交给 CSS transition + ResizeObserver */
-  useEffect(() => {
-    if (!layoutAnimating) return;
-    let rafId = 0;
-    const start = performance.now();
-    const tick = () => {
-      if (!hoveredRef.current) {
-        positionOnActive();
-      }
-      if (performance.now() - start < 700) {
-        rafId = requestAnimationFrame(tick);
-      }
-    };
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-  }, [layoutAnimating, positionOnActive]);
-
   const handleMouseOver = useCallback(
     (e: MouseEvent<HTMLDivElement>) => {
       const btn = (e.target as HTMLElement).closest(hoverSelector);
       if (btn) {
         hoveredRef.current = btn;
-        setHovering(true);
         positionPillOn(btn);
       }
     },
@@ -152,7 +100,6 @@ export function useSlidingIndicator({
 
   const handleMouseLeave = useCallback(() => {
     hoveredRef.current = null;
-    setHovering(false);
     positionOnActive();
   }, [positionOnActive]);
 
@@ -162,9 +109,9 @@ export function useSlidingIndicator({
     indicatorStyle: {
       top: pill?.top ?? 0,
       height: pill?.height ?? 0,
-      opacity: pill && !(hoverOnly && layoutAnimating && !hovering) ? 1 : 0,
-      /* 形变期间跟 hover/激活项时用 rAF，关闭 CSS 过渡避免滞后 */
-      transition: layoutAnimating ? "none" : undefined,
+      opacity: pill ? 1 : 0,
+      /* 首帧无过渡（直接显示最终形态），settled 后走 class 的 transition-all */
+      transition: settled ? undefined : "none",
     } as CSSProperties,
   };
 }
