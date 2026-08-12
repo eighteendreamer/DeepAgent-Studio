@@ -1373,11 +1373,6 @@ export function ChatView({
           className="stable-scrollbar-gutter flex-1 min-h-0 overflow-y-auto px-6 py-4"
           style={{ paddingBottom: composerBottomPadding }}
         >
-          {messages.length === 0 && (
-            <div className="w-full max-w-4xl mx-auto text-text-secondary text-[15px] pl-2">
-              {t("chatView.startConversation")}
-            </div>
-          )}
           <ChatTimeline
             messages={messages}
             busy={busy}

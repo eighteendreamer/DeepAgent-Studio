@@ -91,11 +91,6 @@ export function SideChatPlugin() {
       {/* Chat Flow */}
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 pb-32">
-          {messages.length === 0 && (
-            <div className="w-full max-w-4xl mx-auto text-text-secondary text-[15px] pl-2">
-              {t("chatView.startConversation")}
-            </div>
-          )}
           {messages.map((m, i) =>
             m.role === "user" ? (
               <div key={i} className="flex flex-col items-end mb-8 w-full max-w-4xl mx-auto">
