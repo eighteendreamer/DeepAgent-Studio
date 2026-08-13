@@ -257,7 +257,7 @@ fn skeptic_reason(text: &str) -> String {
 }
 
 /// Production skeptic spawner: runs one read-only skeptic turn against the live
-/// model (DeepSeek). Each skeptic is a single stateless chat completion with
+/// model (DeepSeek). Each skeptic is a single stateless Responses call with
 /// the adversarial [`SKEPTIC_SYSTEM_PROMPT`]; the panel spawns several
 /// concurrently. Low temperature keeps verdicts stable.
 pub struct ModelSkepticSpawner {

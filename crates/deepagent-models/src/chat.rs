@@ -342,8 +342,10 @@ pub struct Usage {
 /// A fully assembled (non-streaming, or post-accumulation) response.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Response {
-    /// The assistant message (content + reasoning_content + tool_calls).
-    pub message: Message,
+    /// Legacy UI/runtime compatibility projection. Prefer the item-native
+    /// accessors (`output_items`, `output_text_projection`,
+    /// `assistant_message_projection`) in new code.
+    message: Message,
     /// Provider-native Responses output items. Runtime/UI may still use
     /// `message` as a compatibility projection, but persistence and recovery
     /// can retain exact item semantics.
@@ -358,6 +360,22 @@ pub struct Response {
 }
 
 impl Response {
+    pub(crate) fn from_parts(
+        message: Message,
+        output_items: Vec<ResponseOutputItem>,
+        finish_reason: Option<FinishReason>,
+        usage: Option<Usage>,
+        raw_usage: Option<serde_json::Value>,
+    ) -> Self {
+        Self {
+            message,
+            output_items,
+            finish_reason,
+            usage,
+            raw_usage,
+        }
+    }
+
     /// Project the assistant's visible text from native Responses output items.
     ///
     /// This is the preferred helper for one-shot classification, title,

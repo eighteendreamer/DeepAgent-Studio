@@ -250,9 +250,11 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(resp.message.content, "Hello there");
+        assert_eq!(resp.output_text_projection(), "Hello there");
         assert_eq!(
-            resp.message.reasoning_content.as_deref(),
+            resp.assistant_message_projection()
+                .reasoning_content
+                .as_deref(),
             Some("thinking hard")
         );
     }
@@ -334,10 +336,13 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(resp.message.tool_calls.len(), 1);
-        assert_eq!(resp.message.tool_calls[0].name, "search");
+        assert_eq!(resp.assistant_message_projection().tool_calls.len(), 1);
         assert_eq!(
-            resp.message.tool_calls[0].arguments,
+            resp.assistant_message_projection().tool_calls[0].name,
+            "search"
+        );
+        assert_eq!(
+            resp.assistant_message_projection().tool_calls[0].arguments,
             serde_json::json!({"q": "rust"})
         );
     }

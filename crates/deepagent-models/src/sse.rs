@@ -1,6 +1,6 @@
 //! Minimal Server-Sent Events framing.
 //!
-//! We only need the subset of the SSE spec that chat-completion providers use:
+//! We only need the subset of the SSE spec that Responses providers use:
 //! lines beginning with `data:` carry a payload; a blank line dispatches the
 //! event. This parser is byte-oriented and incremental so it can be fed
 //! arbitrary network chunks (which may split a line mid-way) without losing

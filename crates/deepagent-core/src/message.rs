@@ -23,7 +23,7 @@ pub enum Role {
 }
 
 impl Role {
-    /// The wire string used by chat-completions style APIs.
+    /// The role string used in provider message/input-item payloads.
     pub const fn as_str(&self) -> &'static str {
         match self {
             Role::System => "system",

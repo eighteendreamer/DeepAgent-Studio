@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "DeepSeek-native model client: chat types, SSE streaming, delta/tool_call merge, and Thinking Mode reasoning persistence."
+description = "DeepSeek-native Responses client: input/output items, semantic SSE streaming, tool calls, usage, and reasoning persistence."
 
 [features]
 default = []
