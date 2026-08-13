@@ -1599,10 +1599,14 @@ impl ModelAgent {
                             self.usage.prompt_cache_hit_tokens += usage.prompt_cache_hit_tokens;
                             self.usage.prompt_cache_miss_tokens += usage.prompt_cache_miss_tokens;
                         }
+                        if let Some(raw_usage) = response.raw_usage.clone() {
+                            self.pending_raw_usage.push(raw_usage);
+                        }
                         let mut partial =
                             Message::text(Role::Assistant, response_projection.content.clone());
                         partial.reasoning_content = response_projection.reasoning_content.clone();
-                        self.push_message(partial);
+                        self.response_items.extend(response.output_items.iter().cloned());
+                        self.messages.push(partial);
                         self.push_message(Message::user(MAX_OUTPUT_RECOVERY_PROMPT));
                         request = self
                             .request_for_current_history()
@@ -2033,12 +2037,41 @@ mod tests {
             .to_string()
     }
 
+    fn response_incomplete_with_usage(input: u32, output: u32, reasoning: u32) -> String {
+        serde_json::json!({
+            "type":"response.incomplete",
+            "response":{
+                "status":"incomplete",
+                "usage":{
+                    "input_tokens": input,
+                    "input_tokens_details": {"cached_tokens": 1},
+                    "output_tokens": output,
+                    "output_tokens_details": {"reasoning_tokens": reasoning},
+                    "total_tokens": input + output
+                }
+            }
+        })
+        .to_string()
+    }
+
     fn response_text_completed(text: &str) -> Vec<String> {
         vec![response_text_delta(text), response_completed()]
     }
 
     fn response_text_incomplete(text: &str) -> Vec<String> {
         vec![response_text_delta(text), response_incomplete()]
+    }
+
+    fn response_text_incomplete_with_usage(
+        text: &str,
+        input: u32,
+        output: u32,
+        reasoning: u32,
+    ) -> Vec<String> {
+        vec![
+            response_text_delta(text),
+            response_incomplete_with_usage(input, output, reasoning),
+        ]
     }
 
     fn response_function_call_done(call_id: &str, name: &str, arguments: &str) -> Vec<String> {
@@ -2843,7 +2876,7 @@ mod tests {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 response_text_incomplete("part one"),
-                response_text_incomplete(" part two"),
+                response_text_incomplete_with_usage(" part two", 11, 7, 3),
                 response_text_completed(" done"),
             ])),
             requests: Mutex::new(Vec::new()),
@@ -2870,11 +2903,23 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Output token limit hit"));
+        assert!(third.iter().any(|item| {
+            item["type"] == "message"
+                && item["role"] == "assistant"
+                && item["content"].as_str().is_some_and(|text| text == " part two")
+        }));
         // Partial output is preserved (not discarded) in the conversation.
         assert!(agent
             .conversation()
             .iter()
             .any(|m| m.content.contains("part two")));
+        let raw_usage = agent.take_pending_raw_usage();
+        assert_eq!(raw_usage.len(), 1);
+        assert_eq!(raw_usage[0]["input_tokens"], 11);
+        assert_eq!(
+            raw_usage[0]["output_tokens_details"]["reasoning_tokens"],
+            3
+        );
     }
 
     #[tokio::test]
