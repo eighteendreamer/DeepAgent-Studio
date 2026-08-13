@@ -52,6 +52,17 @@ pub enum AgentDecision {
     /// The task is finished; carry the full final assistant message, including
     /// provider-specific metadata such as DeepSeek `reasoning_content`.
     CompleteMessage(Message),
+    /// The task is finished; carry the provider-native Responses output items
+    /// plus the UI/verification text projection. Model-backed agents use this
+    /// so the runtime loop can persist exact `ResponseOutputItem` semantics at
+    /// the completion boundary instead of relying on the legacy `Message`
+    /// projection as the source of truth.
+    CompleteItems {
+        /// UI/verification projection derived from `items`.
+        message: Message,
+        /// Provider-native Responses output items for this final turn.
+        items: Vec<ResponseOutputItem>,
+    },
     /// The agent cannot proceed and needs human input / approval.
     NeedsApproval(String),
 }

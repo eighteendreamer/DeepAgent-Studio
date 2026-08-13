@@ -670,9 +670,17 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 }
             }
             tracing::debug!(step, ?decision, "agent decision");
-            let provider_items_persisted =
+            let mut provider_items_persisted =
                 persist_response_items(session, agent.take_pending_response_items())?;
             raw_responses_usage.extend(agent.take_pending_raw_usage());
+            let decision = match decision {
+                AgentDecision::CompleteItems { message, items } => {
+                    provider_items_persisted =
+                        persist_response_items(session, items)? || provider_items_persisted;
+                    AgentDecision::CompleteMessage(message)
+                }
+                other => other,
+            };
 
             match decision {
                 AgentDecision::Complete(msg) => {
@@ -874,6 +882,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     outcome = RunOutcome::Completed(content);
                     finished = true;
                     break;
+                }
+
+                AgentDecision::CompleteItems { .. } => {
+                    unreachable!("CompleteItems is normalized before decision dispatch")
                 }
 
                 AgentDecision::NeedsApproval(msg) => {
@@ -2492,6 +2504,7 @@ mod tests {
 
     struct NativeResponseItemAgent {
         items: Vec<ResponseOutputItem>,
+        final_items: Vec<ResponseOutputItem>,
     }
 
     struct RawUsageAgent {
@@ -2508,7 +2521,10 @@ mod tests {
                         .with_id("native-call"),
                 ))
             } else {
-                Ok(AgentDecision::CompleteMessage(Message::assistant("done")))
+                Ok(AgentDecision::CompleteItems {
+                    message: Message::assistant("done"),
+                    items: std::mem::take(&mut self.final_items),
+                })
             }
         }
 
@@ -2860,6 +2876,10 @@ mod tests {
                     arguments: r#"{"path":"native.txt"}"#.into(),
                 },
             ],
+            final_items: vec![ResponseOutputItem::Message {
+                role: "assistant".into(),
+                content: "done".into(),
+            }],
         };
         let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default());
 
@@ -2889,6 +2909,11 @@ mod tests {
         assert!(response_items.iter().any(|item| matches!(
             item,
             ResponseOutputItem::FunctionCallOutput { call_id, .. } if call_id == "native-call"
+        )));
+        assert!(response_items.iter().any(|item| matches!(
+            item,
+            ResponseOutputItem::Message { role, content }
+                if role == "assistant" && content == "done"
         )));
     }
 

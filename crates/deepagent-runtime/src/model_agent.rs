@@ -1862,9 +1862,10 @@ impl ModelAgent {
                     self.push_message(Message::user(nudge));
                     return Box::pin(self.think_inner(step, &[], cancel, tools)).await;
                 }
-                Ok(AgentDecision::CompleteMessage(
-                    response.assistant_message_projection(),
-                ))
+                Ok(AgentDecision::CompleteItems {
+                    message: response.assistant_message_projection(),
+                    items: response.output_items.clone(),
+                })
             }
         }
     }
@@ -2150,6 +2151,13 @@ mod tests {
         ]
     }
 
+    fn complete_items(decision: AgentDecision) -> (Message, Vec<ResponseOutputItem>) {
+        match decision {
+            AgentDecision::CompleteItems { message, items } => (message, items),
+            other => panic!("expected CompleteItems, got {other:?}"),
+        }
+    }
+
     struct AttemptTransport {
         attempts: Mutex<VecDeque<Vec<String>>>,
         requests: Mutex<Vec<serde_json::Value>>,
@@ -2214,13 +2222,14 @@ mod tests {
         let mut agent =
             ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "do it", vec![]);
         let decision = agent.think(0, &[]).await.unwrap();
-        match decision {
-            AgentDecision::CompleteMessage(message) => {
-                assert_eq!(message.content, "All done.");
-                assert!(message.reasoning_content.is_none());
-            }
-            other => panic!("expected CompleteMessage, got {other:?}"),
-        }
+        let (message, items) = complete_items(decision);
+        assert_eq!(message.content, "All done.");
+        assert!(message.reasoning_content.is_none());
+        assert!(matches!(
+            &items[0],
+            ResponseOutputItem::Message { role, content }
+                if role == "assistant" && content == "All done."
+        ));
         // System + user + assistant.
         assert_eq!(agent.conversation().len(), 3);
     }
@@ -2239,7 +2248,7 @@ mod tests {
 
         let decision = agent.think(0, &[]).await.unwrap();
 
-        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let _ = complete_items(decision);
         let requests = transport.requests.lock().unwrap();
         let body = &requests[0];
         assert_eq!(body["instructions"], "sys");
@@ -2344,12 +2353,13 @@ mod tests {
 
         let decision = agent.think(0, &[]).await.unwrap();
         // Re-entry produced the second answer, not the flagged first one.
-        match decision {
-            AgentDecision::CompleteMessage(message) => {
-                assert_eq!(message.content, "Here is the real result.")
-            }
-            other => panic!("expected CompleteMessage, got {other:?}"),
-        }
+        let (message, items) = complete_items(decision);
+        assert_eq!(message.content, "Here is the real result.");
+        assert!(matches!(
+            &items[0],
+            ResponseOutputItem::Message { role, content }
+                if role == "assistant" && content == "Here is the real result."
+        ));
         // Classifier consulted once; both model turns consumed.
         assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
         assert!(transport.attempts.lock().unwrap().is_empty());
@@ -2387,7 +2397,7 @@ mod tests {
                 calls: calls.clone(),
             }));
         let decision = agent.think(0, &[]).await.unwrap();
-        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let _ = complete_items(decision);
         // Classifier ran once; no re-entry, no nudge.
         assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
         assert_eq!(agent.conversation().len(), 3);
@@ -2417,10 +2427,8 @@ mod tests {
                 calls: calls.clone(),
             }));
         let decision = agent.think(0, &[]).await.unwrap();
-        match decision {
-            AgentDecision::CompleteMessage(message) => assert_eq!(message.content, "done 2"),
-            other => panic!("expected CompleteMessage, got {other:?}"),
-        }
+        let (message, _) = complete_items(decision);
+        assert_eq!(message.content, "done 2");
         // Classifier consulted exactly once (second final answer is capped out,
         // proving no runaway loop). Both attempts consumed, no more requested.
         assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
@@ -2445,10 +2453,8 @@ mod tests {
         let mut agent = ModelAgent::new(client(events), "model", "system", "prompt", vec![])
             .with_stall_classifier(Arc::new(FailOpenClassifier));
         let decision = agent.think(0, &[]).await.unwrap();
-        match decision {
-            AgentDecision::CompleteMessage(message) => assert_eq!(message.content, "All done."),
-            other => panic!("expected CompleteMessage, got {other:?}"),
-        }
+        let (message, _) = complete_items(decision);
+        assert_eq!(message.content, "All done.");
         assert_eq!(agent.conversation().len(), 3);
     }
 
@@ -2469,7 +2475,7 @@ mod tests {
             ModelAgent::new(client, "model", "system", "prompt", vec![]).with_max_model_attempts(2);
 
         let decision = agent.think(0, &[]).await.unwrap();
-        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let _ = complete_items(decision);
         assert_eq!(agent.conversation().len(), 3);
         assert!(transport.attempts.lock().unwrap().len() <= 1);
     }
@@ -2490,7 +2496,7 @@ mod tests {
             .with_max_model_attempts(2);
 
         let decision = agent.think(0, &[]).await.unwrap();
-        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let _ = complete_items(decision);
         let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(events.iter().any(|event| matches!(
             event,
@@ -2558,7 +2564,7 @@ mod tests {
 
         let decision = agent.think(0, &[]).await.unwrap();
 
-        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let _ = complete_items(decision);
         assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
         let requests = transport.requests.lock().unwrap();
         assert!(requests[0]["input"].as_array().unwrap().len() > 3);
@@ -2627,7 +2633,7 @@ mod tests {
 
         let decision = agent.think(0, &[]).await.unwrap();
 
-        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let _ = complete_items(decision);
         // Compaction ran once, before the single model request.
         assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
         let requests = transport.requests.lock().unwrap();
@@ -2794,7 +2800,7 @@ mod tests {
 
         let decision = agent.think(0, &[]).await.unwrap();
 
-        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let _ = complete_items(decision);
         // Both attempts hit the SAME model (429 is retry, not fallback).
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
@@ -2846,7 +2852,9 @@ mod tests {
             AgentDecision::CallTools(invocations) => {
                 assert_eq!(invocations.len(), 1);
             }
-            AgentDecision::Complete(_) | AgentDecision::CompleteMessage(_) => {}
+            AgentDecision::Complete(_)
+            | AgentDecision::CompleteMessage(_)
+            | AgentDecision::CompleteItems { .. } => {}
             other => panic!("unexpected decision for malformed arguments: {other:?}"),
         }
     }
@@ -2869,7 +2877,7 @@ mod tests {
 
         let decision = agent.think(0, &[]).await.unwrap();
 
-        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let _ = complete_items(decision);
         let models = transport
             .requests
             .lock()
@@ -2901,7 +2909,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let _ = complete_items(decision);
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[1]["max_output_tokens"], 65_536);
@@ -2943,7 +2951,7 @@ mod tests {
 
         let decision = agent.think(0, &[]).await.unwrap();
 
-        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let _ = complete_items(decision);
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 3, "escalate, then continue, then finish");
         // Second attempt escalated max_tokens; third carries the resume prompt.
@@ -3057,16 +3065,17 @@ mod tests {
             vec![],
         );
         let decision = agent.think(0, &[]).await.unwrap();
-        match decision {
-            AgentDecision::CompleteMessage(message) => {
-                assert_eq!(message.content, "It shows a compile error.");
-                assert_eq!(
-                    message.reasoning_content.as_deref(),
-                    Some("I should inspect the image. ")
-                );
-            }
-            other => panic!("expected CompleteMessage, got {other:?}"),
-        }
+        let (message, items) = complete_items(decision);
+        assert_eq!(message.content, "It shows a compile error.");
+        assert_eq!(
+            message.reasoning_content.as_deref(),
+            Some("I should inspect the image. ")
+        );
+        assert!(matches!(
+            &items[0],
+            ResponseOutputItem::Reasoning { content, .. }
+                if content == "I should inspect the image. "
+        ));
 
         let assistant = agent
             .conversation()
