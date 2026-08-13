@@ -295,7 +295,7 @@ impl AppHookActionExecutor {
         .with_max_output_tokens(512)
         .with_thinking_depth(ThinkingDepth::Simple);
         let response = self.client.stream_response(request).await?;
-        parse_model_hook_decision(&response.message.content)
+        parse_model_hook_decision(&response.output_text_projection())
     }
 
     pub(crate) async fn execute_agent(

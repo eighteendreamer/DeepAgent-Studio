@@ -90,11 +90,13 @@ mod tests {
     fn maps_tool_roundtrip_to_responses_items() {
         let messages = vec![
             Message::system("rules"),
-            Message::assistant("").with_reasoning("thinking").with_tool_calls(vec![ToolCall {
-                id: "call-1".into(),
-                name: "weather".into(),
-                arguments: serde_json::json!({"city":"Beijing"}),
-            }]),
+            Message::assistant("")
+                .with_reasoning("thinking")
+                .with_tool_calls(vec![ToolCall {
+                    id: "call-1".into(),
+                    name: "weather".into(),
+                    arguments: serde_json::json!({"city":"Beijing"}),
+                }]),
             Message::tool_result("call-1", r#"{"ok":true}"#),
         ];
         let (instructions, items) = response_items_from_messages(&messages);

@@ -480,7 +480,7 @@ mod tests {
         .with_temperature(0.0)
         .with_max_output_tokens(200);
         let response = client.stream_response(request).await.expect("live call");
-        let answer = response.message.content;
+        let answer = response.output_text_projection();
         eprintln!("[real-model] answer: {answer}");
         assert!(
             answer.to_ascii_uppercase().contains("YES"),

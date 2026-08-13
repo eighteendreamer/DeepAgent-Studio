@@ -735,10 +735,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
 
                     let message = Message::assistant(&content);
                     if provider_items_persisted {
-                        session
-                            .append_without_response_projection(EventPayload::MessageAppended {
-                                message,
-                            })?;
+                        session.append_without_response_projection(
+                            EventPayload::MessageAppended { message },
+                        )?;
                     } else {
                         session.append(EventPayload::MessageAppended { message })?;
                     }
@@ -862,10 +861,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     }
 
                     if provider_items_persisted {
-                        session
-                            .append_without_response_projection(EventPayload::MessageAppended {
-                                message,
-                            })?;
+                        session.append_without_response_projection(
+                            EventPayload::MessageAppended { message },
+                        )?;
                     } else {
                         session.append(EventPayload::MessageAppended { message })?;
                     }
@@ -1168,7 +1166,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             Some(early),
                             provider_tool_calls_persisted,
                         )
-                            .await?
+                        .await?
                     }
                     None => {
                         self.execute_tool(session, session_id, inv, provider_tool_calls_persisted)
@@ -1421,7 +1419,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         preflight.remove(&i),
                         provider_tool_calls_persisted,
                     )
-                        .await?,
+                    .await?,
                 );
             }
         }
@@ -1607,7 +1605,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             None,
             provider_tool_calls_persisted,
         )
-            .await
+        .await
     }
 
     async fn execute_tool_with_speculative(

@@ -300,7 +300,7 @@ impl SkepticSpawner for ModelSkepticSpawner {
         .with_temperature(0.2)
         .with_max_output_tokens(1024);
         let response = self.client.stream_response(request).await?;
-        Ok(response.message.content)
+        Ok(response.output_text_projection())
     }
 }
 

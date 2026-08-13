@@ -88,12 +88,13 @@ impl StallClassifier for ModelStallClassifier {
                 return None;
             }
         };
-        match parse_stall_verdict(&response.message.content) {
+        let output_text = response.output_text_projection();
+        match parse_stall_verdict(&output_text) {
             Ok(verdict) => Some(verdict),
             Err(error) => {
                 tracing::warn!(
                     error = ?error,
-                    raw_len = response.message.content.len(),
+                    raw_len = output_text.len(),
                     "stall classifier output unparseable; failing open"
                 );
                 None

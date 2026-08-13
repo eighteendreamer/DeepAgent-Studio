@@ -2848,9 +2848,7 @@ mod tests {
     async fn max_tokens_recovery_gives_up_after_limit_and_surfaces_error() {
         // Escalation once, then MAX_OUTPUT_TOKENS_RECOVERY_LIMIT (3) continues,
         // all still truncated -> terminal max_tokens error (no infinite loop).
-        let truncated = || {
-            response_text_incomplete("x")
-        };
+        let truncated = || response_text_incomplete("x");
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 truncated(),
@@ -3003,7 +3001,8 @@ mod tests {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 {
-                    let mut events = response_function_call_done("stale", "add", r#"{"a":1,"b":2}"#);
+                    let mut events =
+                        response_function_call_done("stale", "add", r#"{"a":1,"b":2}"#);
                     events.pop();
                     events.push("__ERROR_EOF__".to_string());
                     events
@@ -3092,7 +3091,9 @@ mod tests {
         assert!(input.iter().any(|item| {
             item["type"] == "function_call_output"
                 && item["call_id"] == "c1"
-                && item["output"].as_str().is_some_and(|text| text.contains("\"sum\":3"))
+                && item["output"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("\"sum\":3"))
         }));
     }
 

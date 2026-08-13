@@ -108,10 +108,10 @@ fn response_items_for_payload(
                     if call.id == *call_id && call.name == "apply_patch")
             });
             let output = if *ok {
-                    serde_json::json!({"status":"ok","result":output}).to_string()
-                } else {
-                    serde_json::json!({"status":"error","error":output}).to_string()
-                };
+                serde_json::json!({"status":"ok","result":output}).to_string()
+            } else {
+                serde_json::json!({"status":"error","error":output}).to_string()
+            };
             if custom {
                 items.push(ResponseItem::CustomToolCallOutput {
                     call_id: call_id.clone(),

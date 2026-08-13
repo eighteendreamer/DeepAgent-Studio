@@ -697,7 +697,10 @@ mod tests {
         assert_eq!(convo[1].tool_calls[0].id, "call-1");
         assert_eq!(convo[2].role, Role::Tool);
         assert_eq!(convo[3].content, "done");
-        assert_eq!(convo[3].reasoning_content.as_deref(), Some("need a file read"));
+        assert_eq!(
+            convo[3].reasoning_content.as_deref(),
+            Some("need a file read")
+        );
     }
 
     #[test]

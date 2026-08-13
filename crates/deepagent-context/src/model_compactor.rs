@@ -104,7 +104,7 @@ impl ModelCompactor {
         .with_max_output_tokens(self.max_tokens);
 
         let response = self.client.stream_response(request).await.ok()?;
-        let content = response.message.content;
+        let content = response.output_text_projection();
         let parsed = parse_summary_json(&content)?;
         Some(merge_into_prior(prior, parsed, goal))
     }

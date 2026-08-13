@@ -122,7 +122,7 @@ impl CommandClassifier for ModelCommandClassifier {
                 return CommandVerdict::Safe;
             }
         };
-        parse_verdict(&response.message.content)
+        parse_verdict(&response.output_text_projection())
     }
 }
 

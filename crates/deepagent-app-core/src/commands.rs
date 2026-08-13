@@ -444,7 +444,7 @@ mod tests {
         .with_temperature(0.2)
         .with_max_output_tokens(2048);
         let response = client.stream_response(request).await.expect("live review");
-        let text = response.message.content;
+        let text = response.output_text_projection();
         eprintln!("[real-model] review output:\n{text}");
 
         // Contract: at least one prioritized finding tag and a verdict.

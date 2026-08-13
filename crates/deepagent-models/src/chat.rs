@@ -358,18 +358,41 @@ pub struct Response {
 }
 
 impl Response {
+    /// Project the assistant's visible text from native Responses output items.
+    ///
+    /// This is the preferred helper for one-shot classification, title,
+    /// compaction and review calls that only need text. It falls back to the
+    /// legacy `message` projection for mocked/older tests that do not provide
+    /// native output items.
+    pub fn output_text_projection(&self) -> String {
+        let mut content = String::new();
+        for item in &self.output_items {
+            if let ResponseOutputItem::Message {
+                role,
+                content: text,
+            } = item
+            {
+                if role == "assistant" {
+                    content.push_str(text);
+                }
+            }
+        }
+        if content.is_empty() {
+            self.message.content.clone()
+        } else {
+            content
+        }
+    }
+
     /// Build the UI/runtime compatibility projection from native Responses
     /// output items. Model execution should prefer this centralized item
     /// projection over reading `message.tool_calls` directly.
     pub fn assistant_message_projection(&self) -> Message {
-        let mut content = String::new();
+        let content = self.output_text_projection();
         let mut reasoning: Option<String> = None;
         let mut tool_calls = Vec::new();
         for item in &self.output_items {
             match item {
-                ResponseOutputItem::Message { role, content: text } if role == "assistant" => {
-                    content.push_str(text);
-                }
                 ResponseOutputItem::Reasoning { content: text, .. } if !text.is_empty() => {
                     reasoning = Some(match reasoning.take() {
                         Some(mut existing) => {
@@ -400,9 +423,6 @@ impl Response {
                 _ => {}
             }
         }
-        if content.is_empty() {
-            content = self.message.content.clone();
-        }
         if reasoning.is_none() {
             reasoning = self.message.reasoning_content.clone();
         }
@@ -426,7 +446,11 @@ impl Response {
 }
 
 fn parse_function_arguments(raw: &str) -> serde_json::Value {
-    let args = if raw.trim().is_empty() { "{}" } else { raw.trim() };
+    let args = if raw.trim().is_empty() {
+        "{}"
+    } else {
+        raw.trim()
+    };
     serde_json::from_str(args).unwrap_or_else(|error| {
         serde_json::json!({
             "__invalid_tool_arguments__": true,

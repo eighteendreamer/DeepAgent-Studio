@@ -326,8 +326,8 @@ impl ResponseAccumulator {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("assistant")
                     .to_string();
-                let content = output_text_from_message_item(item)
-                    .unwrap_or_else(|| self.content.clone());
+                let content =
+                    output_text_from_message_item(item).unwrap_or_else(|| self.content.clone());
                 Some(ResponseOutputItem::Message { role, content })
             }
             "reasoning" => Some(ResponseOutputItem::Reasoning {
@@ -786,8 +786,7 @@ mod tests {
         for frag in ["Hel", "lo, ", "world"] {
             event(
                 &mut acc,
-                &serde_json::json!({"type":"response.output_text.delta","delta":frag})
-                    .to_string(),
+                &serde_json::json!({"type":"response.output_text.delta","delta":frag}).to_string(),
             );
         }
         complete(&mut acc);

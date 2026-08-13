@@ -502,7 +502,7 @@ async fn summarize_recovery(
         }
     };
 
-    let reply = parse_capture_reply(&response.message.content)?;
+    let reply = parse_capture_reply(&response.output_text_projection())?;
     if !reply.worth_saving || reply.title.trim().is_empty() || reply.body.trim().is_empty() {
         return None;
     }
@@ -580,7 +580,7 @@ async fn summarize_session_digest(
         }
     };
 
-    let reply = parse_capture_reply(&response.message.content)?;
+    let reply = parse_capture_reply(&response.output_text_projection())?;
     if !reply.worth_saving || reply.title.trim().is_empty() || reply.body.trim().is_empty() {
         return None;
     }

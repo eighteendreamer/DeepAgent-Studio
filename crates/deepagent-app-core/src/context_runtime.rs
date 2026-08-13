@@ -1313,22 +1313,23 @@ mod tests {
             )
             .await
             .expect("first (truncated) call");
+        let truncated_projection = truncated.assistant_message_projection();
         eprintln!(
             "[real-model] first finish_reason={:?}, content_len={}",
             truncated.finish_reason,
-            truncated.message.content.len()
+            truncated_projection.content.len()
         );
         assert_eq!(
             truncated.finish_reason,
             Some(FinishReason::Length),
             "tiny max_tokens must truncate the answer"
         );
-        assert!(!truncated.message.content.trim().is_empty());
+        assert!(!truncated_projection.content.trim().is_empty());
 
         // Continuation: partial output + the exact recovery prompt the runtime
         // injects, at a larger budget — the model must resume, not restart.
-        let mut partial = Message::assistant(&truncated.message.content);
-        partial.reasoning_content = truncated.message.reasoning_content.clone();
+        let mut partial = Message::assistant(&truncated_projection.content);
+        partial.reasoning_content = truncated_projection.reasoning_content.clone();
         let resumed = client
             .stream_response(
                 ResponseRequest::new(
@@ -1348,15 +1349,16 @@ mod tests {
             )
             .await
             .expect("continuation call");
+        let resumed_text = resumed.output_text_projection();
         eprintln!(
             "[real-model] continuation finish_reason={:?}, content_len={}",
             resumed.finish_reason,
-            resumed.message.content.len()
+            resumed_text.len()
         );
         // The continuation produced further output (the run resumed rather than
         // dead-ending on the truncation).
         assert!(
-            !resumed.message.content.trim().is_empty(),
+            !resumed_text.trim().is_empty(),
             "continuation must produce further output"
         );
         eprintln!("[real-model] max-tokens truncation + continue resumed OK");

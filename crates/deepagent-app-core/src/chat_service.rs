@@ -2009,7 +2009,7 @@ impl ChatService {
         let response = client
             .stream_response_observed(request, &mut observer)
             .await?;
-        Ok(response.message.content)
+        Ok(response.output_text_projection())
     }
 
     /// Specialized one-shot streaming variant for the **AI skill review** path.
@@ -2108,7 +2108,7 @@ impl ChatService {
         let response = client
             .stream_response_observed(request, &mut observer)
             .await?;
-        Ok(response.message.content)
+        Ok(response.output_text_projection())
     }
 
     /// Generate and persist an AI title for a session when it is still
@@ -2205,7 +2205,8 @@ impl ChatService {
         .with_max_output_tokens(48)
         .with_thinking_depth(ThinkingDepth::Simple);
         let response = client.stream_response(request).await?;
-        let Some(title) = normalize_generated_session_title(&response.message.content) else {
+        let Some(title) = normalize_generated_session_title(&response.output_text_projection())
+        else {
             return Ok(None);
         };
 
