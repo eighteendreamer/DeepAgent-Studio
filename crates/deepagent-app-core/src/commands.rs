@@ -434,12 +434,10 @@ mod tests {
             Arc::new(ReqwestTransport::new()),
             ModelConfig::deepseek(key),
         );
-        let request = deepagent_models::chat::ResponseRequest::new(
+        let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
             "deepseek-chat".to_string(),
-            vec![
-                deepagent_core::message::Message::system(&skill_body),
-                deepagent_core::message::Message::user(&user_prompt),
-            ],
+            &skill_body,
+            &user_prompt,
         )
         .with_temperature(0.2)
         .with_max_output_tokens(2048);
@@ -532,33 +530,26 @@ mod tests {
             Arc::new(ReqwestTransport::new()),
             ModelConfig::deepseek(key),
         );
-        let request = deepagent_models::chat::ResponseRequest::new(
+        let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
             "deepseek-chat".to_string(),
-            vec![
-                deepagent_core::message::Message::system(
-                    "You are a coding agent. Use the provided tools when appropriate.",
-                ),
-                deepagent_core::message::Message::user(
-                    "请在一个隔离的 worktree 中开始开发 feature-login 功能（用户明确要求使用 \
-                     worktree）。先创建 worktree。",
-                ),
-            ],
+            "You are a coding agent. Use the provided tools when appropriate.",
+            "请在一个隔离的 worktree 中开始开发 feature-login 功能（用户明确要求使用 \
+             worktree）。先创建 worktree。",
         )
         .with_tools(schemas)
         .with_temperature(0.0)
         .with_max_output_tokens(512);
         let response = client.stream_response(request).await.expect("live call");
         let call = response
-            .message
-            .tool_calls
-            .iter()
-            .find(|c| c.name == ENTER_WORKTREE_TOOL_NAME)
+            .tool_invocations_from_items()
+            .into_iter()
+            .find(|(_, name, _)| name == ENTER_WORKTREE_TOOL_NAME)
             .expect("model must call enter_worktree for an explicit worktree request")
-            .clone();
-        eprintln!("[real-model] tool call args: {}", call.arguments);
+            .2;
+        eprintln!("[real-model] tool call args: {}", call);
 
         // Execute the model-produced call against the real repo.
-        let out = enter.invoke(call.arguments).await.unwrap();
+        let out = enter.invoke(call).await.unwrap();
         assert!(
             out.ok,
             "model-produced enter_worktree failed: {}",

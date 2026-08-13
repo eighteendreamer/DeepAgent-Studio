@@ -14,7 +14,6 @@
 
 use std::sync::Arc;
 
-use deepagent_core::message::Message;
 use deepagent_models::{ModelClient, ResponseRequest};
 
 use crate::compaction::{HeuristicSummarizer, Summarizer, TaskSummary};
@@ -96,9 +95,10 @@ impl ModelCompactor {
             return Some(prior.clone());
         }
         let user = build_user_prompt(goal, prior, older_turns);
-        let request = ResponseRequest::new(
+        let request = ResponseRequest::with_instructions_and_user_input(
             self.model.clone(),
-            vec![Message::system(COMPACT_SYSTEM), Message::user(user)],
+            COMPACT_SYSTEM,
+            user,
         )
         .with_temperature(self.temperature)
         .with_max_output_tokens(self.max_tokens);

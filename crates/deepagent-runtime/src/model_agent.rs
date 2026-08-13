@@ -1605,7 +1605,8 @@ impl ModelAgent {
                         let mut partial =
                             Message::text(Role::Assistant, response_projection.content.clone());
                         partial.reasoning_content = response_projection.reasoning_content.clone();
-                        self.response_items.extend(response.output_items.iter().cloned());
+                        self.response_items
+                            .extend(response.output_items.iter().cloned());
                         self.messages.push(partial);
                         self.push_message(Message::user(MAX_OUTPUT_RECOVERY_PROMPT));
                         request = self
@@ -2906,7 +2907,9 @@ mod tests {
         assert!(third.iter().any(|item| {
             item["type"] == "message"
                 && item["role"] == "assistant"
-                && item["content"].as_str().is_some_and(|text| text == " part two")
+                && item["content"]
+                    .as_str()
+                    .is_some_and(|text| text == " part two")
         }));
         // Partial output is preserved (not discarded) in the conversation.
         assert!(agent
@@ -2916,10 +2919,7 @@ mod tests {
         let raw_usage = agent.take_pending_raw_usage();
         assert_eq!(raw_usage.len(), 1);
         assert_eq!(raw_usage[0]["input_tokens"], 11);
-        assert_eq!(
-            raw_usage[0]["output_tokens_details"]["reasoning_tokens"],
-            3
-        );
+        assert_eq!(raw_usage[0]["output_tokens_details"]["reasoning_tokens"], 3);
     }
 
     #[tokio::test]
@@ -3193,8 +3193,7 @@ mod tests {
             transport.clone(),
             ModelConfig::deepseek("test"),
         ));
-        let mut agent =
-            ModelAgent::new(client, "deepseek-v4-flash", "sys", "patch", vec![]);
+        let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "patch", vec![]);
         let obs = Observation {
             tool: "apply_patch".to_string(),
             ok: true,
@@ -3215,8 +3214,7 @@ mod tests {
         }));
         assert!(
             !input.iter().any(|item| {
-                item["type"] == "function_call_output"
-                    && item["call_id"] == "call-patch"
+                item["type"] == "function_call_output" && item["call_id"] == "call-patch"
             }),
             "apply_patch must stay on Responses custom tool output path"
         );

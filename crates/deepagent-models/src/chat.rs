@@ -201,18 +201,29 @@ impl Serialize for ResponseRequest {
     }
 }
 
-/// Streaming options (OpenAI/DeepSeek-compatible).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct StreamOptions {
-    /// Ask the provider to emit a final chunk carrying token usage.
-    pub include_usage: bool,
-}
-
 impl ResponseRequest {
     /// Build a non-streaming request for `model` with `messages`.
     pub fn new(model: impl Into<String>, messages: Vec<Message>) -> Self {
         let (instructions, input) = crate::responses::response_items_from_messages(&messages);
         Self::from_response_items(model, instructions, input)
+    }
+
+    /// Build a request from a system/developer instruction string and a single
+    /// user input item, without routing through the legacy chat `Message`
+    /// projection.
+    pub fn with_instructions_and_user_input(
+        model: impl Into<String>,
+        instructions: impl Into<String>,
+        user_input: impl Into<String>,
+    ) -> Self {
+        Self::from_response_items(
+            model,
+            Some(instructions.into()),
+            vec![ResponseInputItem::Message {
+                role: "user".to_string(),
+                content: user_input.into(),
+            }],
+        )
     }
 
     /// Build a request from already-normalized Responses input items.
@@ -554,6 +565,20 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("reasoning").is_none());
         assert_eq!(json["max_output_tokens"], 8_192);
+    }
+
+    #[test]
+    fn request_builder_accepts_native_instruction_and_user_item() {
+        let req = ResponseRequest::with_instructions_and_user_input(
+            "deepseek-v4-flash",
+            "Classify safely.",
+            "rm -rf /tmp",
+        );
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["instructions"], "Classify safely.");
+        assert_eq!(json["input"][0]["type"], "message");
+        assert_eq!(json["input"][0]["role"], "user");
+        assert_eq!(json["input"][0]["content"], "rm -rf /tmp");
     }
 
     #[test]

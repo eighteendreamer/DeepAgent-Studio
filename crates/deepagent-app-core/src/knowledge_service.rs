@@ -487,12 +487,10 @@ async fn summarize_recovery(
         signal.transcript_digest,
         signal.failed_tools.join(", ")
     );
-    let request = ResponseRequest::new(
-        model,
-        vec![Message::system(CAPTURE_SYSTEM_PROMPT), Message::user(&user)],
-    )
-    .with_temperature(0.2)
-    .with_max_output_tokens(600);
+    let request =
+        ResponseRequest::with_instructions_and_user_input(model, CAPTURE_SYSTEM_PROMPT, &user)
+            .with_temperature(0.2)
+            .with_max_output_tokens(600);
 
     let response = match client.stream_response(request).await {
         Ok(r) => r,
@@ -565,12 +563,10 @@ async fn summarize_session_digest(
         "Here is the session digest:\n\n{}\n\nReturn the JSON now.",
         digest.transcript_digest
     );
-    let request = ResponseRequest::new(
-        model,
-        vec![Message::system(DIGEST_SYSTEM_PROMPT), Message::user(&user)],
-    )
-    .with_temperature(0.2)
-    .with_max_output_tokens(600);
+    let request =
+        ResponseRequest::with_instructions_and_user_input(model, DIGEST_SYSTEM_PROMPT, &user)
+            .with_temperature(0.2)
+            .with_max_output_tokens(600);
 
     let response = match client.stream_response(request).await {
         Ok(r) => r,

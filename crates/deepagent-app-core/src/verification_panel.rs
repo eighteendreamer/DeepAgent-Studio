@@ -290,12 +290,10 @@ impl ModelSkepticSpawner {
 #[async_trait]
 impl SkepticSpawner for ModelSkepticSpawner {
     async fn spawn(&self, _index: u32, prompt: &str) -> Result<String> {
-        let request = deepagent_models::chat::ResponseRequest::new(
+        let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
             self.model.clone(),
-            vec![
-                deepagent_core::message::Message::system(&self.system_prompt),
-                deepagent_core::message::Message::user(prompt),
-            ],
+            &self.system_prompt,
+            prompt,
         )
         .with_temperature(0.2)
         .with_max_output_tokens(1024);

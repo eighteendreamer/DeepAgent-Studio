@@ -336,14 +336,9 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(resp.assistant_message_projection().tool_calls.len(), 1);
-        assert_eq!(
-            resp.assistant_message_projection().tool_calls[0].name,
-            "search"
-        );
-        assert_eq!(
-            resp.assistant_message_projection().tool_calls[0].arguments,
-            serde_json::json!({"q": "rust"})
-        );
+        let calls = resp.tool_invocations_from_items();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "search");
+        assert_eq!(calls[0].2, serde_json::json!({"q": "rust"}));
     }
 }

@@ -284,12 +284,10 @@ impl AppHookActionExecutor {
             .map(str::trim)
             .filter(|model| !model.is_empty())
             .unwrap_or(&self.model);
-        let request = ResponseRequest::new(
+        let request = ResponseRequest::with_instructions_and_user_input(
             model,
-            vec![
-                deepagent_core::message::Message::system(model_hook_system_prompt(false)),
-                deepagent_core::message::Message::user(prompt),
-            ],
+            model_hook_system_prompt(false),
+            prompt,
         )
         .with_temperature(0.0)
         .with_max_output_tokens(512)

@@ -853,11 +853,11 @@ mod tests {
 
         let resp = acc.finish().unwrap();
         assert_eq!(resp.finish_reason, Some(FinishReason::Stop));
-        assert_eq!(resp.assistant_message_projection().tool_calls.len(), 1);
-        let call = &resp.assistant_message_projection().tool_calls[0];
-        assert_eq!(call.id, "call_abc");
-        assert_eq!(call.name, "add");
-        assert_eq!(call.arguments, serde_json::json!({"a": 2, "b": 3}));
+        let calls = resp.tool_invocations_from_items();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "call_abc");
+        assert_eq!(calls[0].1, "add");
+        assert_eq!(calls[0].2, serde_json::json!({"a": 2, "b": 3}));
     }
 
     #[test]
@@ -881,12 +881,10 @@ mod tests {
         );
         complete(&mut acc);
         let resp = acc.finish().unwrap();
-        assert_eq!(resp.assistant_message_projection().tool_calls.len(), 2);
-        assert_eq!(resp.assistant_message_projection().tool_calls[0].name, "f0");
-        assert_eq!(
-            resp.assistant_message_projection().tool_calls[1].arguments,
-            serde_json::json!({"x": 1})
-        );
+        let calls = resp.tool_invocations_from_items();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, "f0");
+        assert_eq!(calls[1].2, serde_json::json!({"x": 1}));
     }
 
     #[test]
@@ -927,7 +925,7 @@ mod tests {
         complete(&mut acc);
         let resp = acc.finish().unwrap();
         assert_eq!(
-            resp.assistant_message_projection().tool_calls[0].arguments,
+            resp.tool_invocations_from_items()[0].2,
             serde_json::json!({})
         );
     }
@@ -945,7 +943,8 @@ mod tests {
         );
         complete(&mut acc);
         let resp = acc.finish().unwrap();
-        let arguments = &resp.assistant_message_projection().tool_calls[0].arguments;
+        let calls = resp.tool_invocations_from_items();
+        let arguments = &calls[0].2;
         assert_eq!(arguments["__invalid_tool_arguments__"], true);
         assert_eq!(arguments["raw"], "{not json");
         assert!(arguments["parse_error"].as_str().is_some());
@@ -1058,14 +1057,9 @@ mod tests {
             &mut NoopObserver,
         ).unwrap();
         let response = acc.finish().unwrap();
-        assert_eq!(
-            response.assistant_message_projection().tool_calls[0].id,
-            "call_1"
-        );
-        assert_eq!(
-            response.assistant_message_projection().tool_calls[0].arguments["patch"],
-            "*** Begin Patch\n*** End Patch"
-        );
+        let calls = response.tool_invocations_from_items();
+        assert_eq!(calls[0].0, "call_1");
+        assert_eq!(calls[0].2["patch"], "*** Begin Patch\n*** End Patch");
         assert_eq!(response.usage.unwrap().reasoning_tokens, 1);
     }
 
@@ -1090,7 +1084,7 @@ mod tests {
 
         let response = acc.finish().unwrap();
         assert_eq!(
-            response.assistant_message_projection().tool_calls[0].arguments["patch"],
+            response.tool_invocations_from_items()[0].2["patch"],
             "*** Begin Patch\n*** End Patch"
         );
         assert!(matches!(

@@ -31,7 +31,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use deepagent_core::error::Result;
-use deepagent_core::message::Message;
 use deepagent_hooks::{DecisionSource, Hook, HookContext, HookData, HookOutcome};
 use deepagent_models::chat::ResponseRequest;
 use deepagent_models::ModelClient;
@@ -97,12 +96,10 @@ impl ModelCommandClassifier {
 #[async_trait]
 impl CommandClassifier for ModelCommandClassifier {
     async fn classify(&self, command: &str) -> CommandVerdict {
-        let request = ResponseRequest::new(
+        let request = ResponseRequest::with_instructions_and_user_input(
             self.model.clone(),
-            vec![
-                Message::system(CLASSIFIER_SYSTEM_PROMPT),
-                Message::user(command),
-            ],
+            CLASSIFIER_SYSTEM_PROMPT,
+            command,
         )
         .with_temperature(0.0)
         .with_max_output_tokens(120);

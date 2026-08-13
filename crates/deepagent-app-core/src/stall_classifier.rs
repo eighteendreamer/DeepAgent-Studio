@@ -21,7 +21,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use deepagent_core::message::Message;
 use deepagent_models::chat::ResponseRequest;
 use deepagent_models::ModelClient;
 use deepagent_runtime::stall_detector::{
@@ -63,12 +62,10 @@ impl ModelStallClassifier {
 #[async_trait]
 impl StallClassifier for ModelStallClassifier {
     async fn classify(&self, transcript: &str) -> Option<StallVerdict> {
-        let request = ResponseRequest::new(
+        let request = ResponseRequest::with_instructions_and_user_input(
             self.model.clone(),
-            vec![
-                Message::system(STALL_CLASSIFIER_PROMPT),
-                Message::user(transcript),
-            ],
+            STALL_CLASSIFIER_PROMPT,
+            transcript,
         )
         .with_temperature(0.0)
         .with_max_output_tokens(300);

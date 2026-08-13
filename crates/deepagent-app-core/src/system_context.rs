@@ -428,7 +428,6 @@ mod tests {
     #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
     async fn real_deepseek_sees_injected_project_structure() {
         use crate::secret_store::{KeychainStore, SecretStore};
-        use deepagent_core::message::Message;
         use deepagent_models::chat::ResponseRequest;
         use deepagent_models::{ModelClient, ModelConfig, ReqwestTransport};
         use std::sync::Arc;
@@ -466,16 +465,12 @@ mod tests {
             Arc::new(ReqwestTransport::new()),
             ModelConfig::deepseek(key),
         ));
-        let request = ResponseRequest::new(
+        let request = ResponseRequest::with_instructions_and_user_input(
             "deepseek-chat".to_string(),
-            vec![
-                Message::system(system_prompt),
-                Message::user(
-                    "Using ONLY the workspace/project-structure information already in your \
-                     context (do not call any tools), is there a source file whose name contains \
-                     `zqx_marker_widget`? Answer strictly `YES` or `NO` on the first line.",
-                ),
-            ],
+            system_prompt,
+            "Using ONLY the workspace/project-structure information already in your \
+             context (do not call any tools), is there a source file whose name contains \
+             `zqx_marker_widget`? Answer strictly `YES` or `NO` on the first line.",
         )
         .with_temperature(0.0)
         .with_max_output_tokens(200);

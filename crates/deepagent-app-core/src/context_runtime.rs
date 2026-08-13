@@ -1299,51 +1299,61 @@ mod tests {
             ModelConfig::deepseek(key),
         );
         let model = "deepseek-chat";
-        let system = Message::system("You are a helpful assistant. Answer directly.");
-        let user = Message::user(
-            "List the numbers from 1 to 40, one per line, as \"N. <english word>\" \
-             (e.g. \"1. one\"). Output only the list.",
-        );
+        let system = "You are a helpful assistant. Answer directly.";
+        let user = "List the numbers from 1 to 40, one per line, as \"N. <english word>\" \
+             (e.g. \"1. one\"). Output only the list.";
 
         // Tiny max_tokens forces truncation → finish_reason = Length.
         let truncated = client
             .stream_response(
-                ResponseRequest::new(model.to_string(), vec![system.clone(), user.clone()])
+                ResponseRequest::with_instructions_and_user_input(model.to_string(), system, user)
                     .with_max_output_tokens(48),
             )
             .await
             .expect("first (truncated) call");
-        let truncated_projection = truncated.assistant_message_projection();
+        let truncated_text = truncated.output_text_projection();
         eprintln!(
             "[real-model] first finish_reason={:?}, content_len={}",
             truncated.finish_reason,
-            truncated_projection.content.len()
+            truncated_text.len()
         );
         assert_eq!(
             truncated.finish_reason,
             Some(FinishReason::Length),
             "tiny max_tokens must truncate the answer"
         );
-        assert!(!truncated_projection.content.trim().is_empty());
+        assert!(!truncated_text.trim().is_empty());
 
         // Continuation: partial output + the exact recovery prompt the runtime
         // injects, at a larger budget — the model must resume, not restart.
-        let mut partial = Message::assistant(&truncated_projection.content);
-        partial.reasoning_content = truncated_projection.reasoning_content.clone();
+        let mut continuation_input = vec![
+            deepagent_core::response_item::ResponseInputItem::Message {
+                role: "user".to_string(),
+                content: user.to_string(),
+            },
+            deepagent_core::response_item::ResponseInputItem::Message {
+                role: "assistant".to_string(),
+                content: truncated_text,
+            },
+        ];
+        for item in truncated.output_items.iter() {
+            if let deepagent_core::response_item::ResponseOutputItem::Reasoning { .. } = item {
+                continuation_input.push(item.clone());
+            }
+        }
+        continuation_input.push(deepagent_core::response_item::ResponseInputItem::Message {
+            role: "user".to_string(),
+            content: "Output token limit hit. Resume directly — no apology, no recap of \
+                      what you were doing. Pick up mid-thought if that is where the cut \
+                      happened. Break remaining work into smaller pieces."
+                .to_string(),
+        });
         let resumed = client
             .stream_response(
-                ResponseRequest::new(
+                ResponseRequest::from_response_items(
                     model.to_string(),
-                    vec![
-                        system,
-                        user,
-                        partial,
-                        Message::user(
-                            "Output token limit hit. Resume directly — no apology, no recap of \
-                             what you were doing. Pick up mid-thought if that is where the cut \
-                             happened. Break remaining work into smaller pieces.",
-                        ),
-                    ],
+                    Some(system.to_string()),
+                    continuation_input,
                 )
                 .with_max_output_tokens(512),
             )

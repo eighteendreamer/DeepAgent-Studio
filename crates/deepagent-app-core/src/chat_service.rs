@@ -1988,13 +1988,13 @@ impl ChatService {
         F: FnMut(&str) + Send + 'static,
     {
         let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
-        let messages = vec![
-            deepagent_core::message::Message::system(system_prompt),
-            deepagent_core::message::Message::user(user_prompt),
-        ];
-        let request = deepagent_models::chat::ResponseRequest::new(model, messages)
-            .streaming()
-            .with_thinking_depth(thinking_depth);
+        let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
+            model,
+            system_prompt,
+            user_prompt,
+        )
+        .streaming()
+        .with_thinking_depth(thinking_depth);
 
         struct CallbackObserver<F: FnMut(&str) + Send> {
             on_token: F,
@@ -2083,17 +2083,17 @@ impl ChatService {
             });
         let client = Arc::new(ModelClient::new(self.transport.clone(), config));
 
-        let messages = vec![
-            deepagent_core::message::Message::system(system_prompt),
-            deepagent_core::message::Message::user(user_prompt),
-        ];
         // Order matters: `with_max_output_tokens` must come BEFORE
         // `with_thinking_depth` so the explicit cap survives. The depth
         // helper only fills `max_tokens` when it's still `None`.
-        let request = deepagent_models::chat::ResponseRequest::new(review_model, messages)
-            .streaming()
-            .with_max_output_tokens(max_output_tokens)
-            .with_thinking_depth(thinking_depth);
+        let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
+            review_model,
+            system_prompt,
+            user_prompt,
+        )
+        .streaming()
+        .with_max_output_tokens(max_output_tokens)
+        .with_thinking_depth(thinking_depth);
 
         struct CallbackObserver<F: FnMut(&str) + Send> {
             on_token: F,
@@ -2191,15 +2191,13 @@ impl ChatService {
             });
         let client = Arc::new(ModelClient::new(self.transport.clone(), config));
 
-        let request = deepagent_models::chat::ResponseRequest::new(
+        let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
             model,
-            vec![
-                deepagent_core::message::Message::system(SESSION_TITLE_SYSTEM_PROMPT),
-                deepagent_core::message::Message::user(format!(
-                    "Create a short conversation title from this transcript:\n\n{}",
-                    lines.join("\n")
-                )),
-            ],
+            SESSION_TITLE_SYSTEM_PROMPT,
+            format!(
+                "Create a short conversation title from this transcript:\n\n{}",
+                lines.join("\n")
+            ),
         )
         .streaming()
         .with_max_output_tokens(48)

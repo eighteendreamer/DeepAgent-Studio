@@ -38,8 +38,8 @@ pub mod reqwest_transport;
 pub use balance::{fetch_balance, BalanceInfo, BalanceResponse, BALANCE_PATH};
 pub use capability::{CapabilitySource, ModelCapability, ModelCapabilityResolver};
 pub use chat::{
-    FinishReason, FunctionSchema, Response, ResponseRequest, StreamOptions, ThinkingConfig,
-    ThinkingDepth, ThinkingToggle, ToolSchema, Usage,
+    FinishReason, FunctionSchema, Response, ResponseRequest, ThinkingConfig, ThinkingDepth,
+    ThinkingToggle, ToolSchema, Usage,
 };
 pub use client::{ModelClient, ModelConfig, ResponseDefaults};
 pub use discovery::{ModelCatalog, ModelDiscovery, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
