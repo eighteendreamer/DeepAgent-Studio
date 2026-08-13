@@ -373,8 +373,8 @@ impl ModelAgent {
     }
 
     fn push_message(&mut self, message: Message) {
+        self.append_response_items_for_message(&message);
         self.messages.push(message);
-        self.sync_response_history_from_messages();
     }
 
     fn replace_messages(&mut self, messages: Vec<Message>) {
@@ -388,6 +388,88 @@ impl ModelAgent {
             self.response_instructions.clone(),
             self.response_items.clone(),
         )
+    }
+
+    fn append_response_items_for_message(&mut self, message: &Message) {
+        match message.role {
+            Role::System => {
+                self.response_instructions = Some(match self.response_instructions.take() {
+                    Some(existing) if !existing.is_empty() => {
+                        format!("{existing}\n\n{}", message.content)
+                    }
+                    _ => message.content.clone(),
+                });
+            }
+            Role::Tool => {
+                let call_id = message.tool_call_id.clone().unwrap_or_default();
+                let is_custom = self.response_items.iter().any(|item| {
+                    matches!(
+                        item,
+                        ResponseInputItem::CustomToolCall {
+                            call_id: existing,
+                            ..
+                        } if existing == &call_id
+                    )
+                });
+                if is_custom {
+                    self.response_items
+                        .push(ResponseInputItem::CustomToolCallOutput {
+                            call_id,
+                            output: message.content.clone(),
+                        });
+                } else {
+                    self.response_items
+                        .push(ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: message.content.clone(),
+                        });
+                }
+            }
+            _ => {
+                if let Some(reasoning) = message
+                    .reasoning_content
+                    .as_deref()
+                    .filter(|text| !text.is_empty())
+                {
+                    self.response_items.push(ResponseInputItem::Reasoning {
+                        id: None,
+                        content: reasoning.to_string(),
+                    });
+                }
+                for call in &message.tool_calls {
+                    if call.name == "apply_patch" {
+                        self.response_items.push(ResponseInputItem::CustomToolCall {
+                            call_id: call.id.clone(),
+                            name: call.name.clone(),
+                            input: call
+                                .arguments
+                                .get("patch")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                        });
+                    } else {
+                        self.response_items.push(ResponseInputItem::FunctionCall {
+                            call_id: call.id.clone(),
+                            name: call.name.clone(),
+                            arguments: serde_json::to_string(&call.arguments)
+                                .unwrap_or_else(|_| "{}".to_string()),
+                        });
+                    }
+                }
+                if !message.content.is_empty() || message.tool_calls.is_empty() {
+                    self.response_items.push(ResponseInputItem::Message {
+                        role: message.role.as_str().to_string(),
+                        content: message.content.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn push_provider_output_items(&mut self, assistant: Message, items: &[ResponseOutputItem]) {
+        self.response_items.extend(items.iter().cloned());
+        self.messages.push(assistant);
     }
 
     /// Attach a live event sink so token/reasoning deltas stream out as
@@ -490,7 +572,21 @@ impl ModelAgent {
                 }
             }
         }
-        self.sync_response_history_from_messages();
+        let mut next_item_id = 0usize;
+        for item in &mut self.response_items {
+            let ResponseInputItem::Message { role, content } = item else {
+                continue;
+            };
+            if role == "user"
+                && !content.starts_with('[')
+                && !content.starts_with("<system-reminder>")
+            {
+                next_item_id += 1;
+                if !content.contains("[id:u") {
+                    content.push_str(&format!("\n[id:u{next_item_id}]"));
+                }
+            }
+        }
         self
     }
 
@@ -506,6 +602,37 @@ impl ModelAgent {
             self.messages.extend(history);
             self.messages.push(goal);
             self.sync_response_history_from_messages();
+        }
+        self
+    }
+
+    /// Seed provider-native Responses items for **session continuation**.
+    ///
+    /// This keeps resumed model input item-native (`function_call_output`,
+    /// `custom_tool_call_output`, `web_search_call`, reasoning, etc.) instead
+    /// of forcing the event log through the legacy chat `Message` projection.
+    /// The current live user goal remains sourced from `self.messages` so
+    /// per-run prompt decorations and history-snip tags stay visible.
+    pub fn with_response_history(mut self, history: Vec<ResponseInputItem>) -> Self {
+        if history.is_empty() {
+            return self;
+        }
+        let system_messages: Vec<Message> = self
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::System)
+            .cloned()
+            .collect();
+        let live_goal = self
+            .messages
+            .last()
+            .filter(|message| message.role == Role::User)
+            .cloned();
+        let (instructions, _) = deepagent_models::response_items_from_messages(&system_messages);
+        self.response_instructions = instructions;
+        self.response_items = history;
+        if let Some(goal) = live_goal {
+            self.append_response_items_for_message(&goal);
         }
         self
     }
@@ -1619,7 +1746,7 @@ impl ModelAgent {
         // Thinking Mode reasoning is preserved for both tool-call and final
         // turns so the outer session log can replay it after refresh.
         let assistant = response.assistant_message_projection();
-        self.push_message(assistant);
+        self.push_provider_output_items(assistant, &response.output_items);
 
         // Decide the next action. The model may emit several tool calls in one
         // turn (parallel tool calling) — carry all of them, each tagged with its
@@ -1897,6 +2024,21 @@ mod tests {
         ]
     }
 
+    fn response_web_search_then_text(id: &str, status: &str, text: &str) -> Vec<String> {
+        let item = serde_json::json!({
+            "type": "web_search_call",
+            "id": id,
+            "status": status,
+            "action": {"type": "search", "query": "rust"}
+        });
+        vec![
+            serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
+            serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+            response_text_delta(text),
+            response_completed(),
+        ]
+    }
+
     fn response_function_call_incomplete(
         call_id: &str,
         name: &str,
@@ -1990,6 +2132,45 @@ mod tests {
         }
         // System + user + assistant.
         assert_eq!(agent.conversation().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn provider_native_items_remain_in_followup_request_history() {
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                response_web_search_then_text("ws_1", "completed", "found it"),
+                response_text_completed("done"),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "look up", vec![]);
+
+        let obs = Observation {
+            tool: "adversarial_verification".to_string(),
+            ok: false,
+            output: serde_json::json!({"retry": true}),
+            call_id: None,
+        };
+
+        agent.think(0, &[]).await.unwrap();
+        agent.think(1, &[obs]).await.unwrap();
+
+        let requests = transport.requests.lock().unwrap();
+        let input = requests[1]["input"].as_array().unwrap();
+        assert!(input.iter().any(|item| {
+            item["type"] == "web_search_call"
+                && item["id"] == "ws_1"
+                && item["status"] == "completed"
+        }));
+        assert!(input.iter().any(|item| {
+            item["type"] == "message"
+                && item["role"] == "assistant"
+                && item["content"] == "found it"
+        }));
     }
 
     // --- §2.3 stall/laziness detector integration ---------------------------

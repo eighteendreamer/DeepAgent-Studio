@@ -7,7 +7,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::{Event, EventPayload};
 use deepagent_core::id::SessionId;
 use deepagent_core::message::{Message, Role};
-use deepagent_core::response_item::ResponseItem;
+use deepagent_core::response_item::{ResponseInputItem, ResponseItem};
 use deepagent_persistence::runtime_log_store::{NewRuntimeLogEntry, RuntimeLogStore};
 use deepagent_persistence::Database;
 use deepagent_runtime::{InputEnvelope, InputLeaseRegistry, LeaseDecision};
@@ -24,6 +24,7 @@ pub(crate) struct InputLeaseGuard {
 pub(crate) struct AcceptedInputTurn<'db, C: Clock> {
     pub(crate) session: Session<'db, C>,
     pub(crate) history: Vec<Message>,
+    pub(crate) response_history: Vec<ResponseInputItem>,
     pub(crate) prior_events: Vec<Event>,
     pub(crate) session_id: String,
     pub(crate) lease: InputLeaseGuard,
@@ -131,6 +132,7 @@ where
 
     Ok(AcceptedInputTurn {
         session,
+        response_history: response_items_from_events(&prior_events),
         history,
         prior_events,
         session_id,
@@ -328,6 +330,24 @@ pub(crate) fn conversation_with_tool_pairs_from_events(events: &[Event]) -> Vec<
     flush_batch(&mut out, &mut open_batch, &mut unresolved);
     close_orphans(&mut out, &mut unresolved);
     out
+}
+
+pub(crate) fn response_items_from_events(events: &[Event]) -> Vec<ResponseInputItem> {
+    if events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ResponseItemAppended { .. }))
+    {
+        return events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::ResponseItemAppended { item } => Some(item.clone()),
+                _ => None,
+            })
+            .collect();
+    }
+    let history = conversation_with_tool_pairs_from_events(events);
+    let (_, items) = deepagent_models::response_items_from_messages(&history);
+    items
 }
 
 fn conversation_from_response_items(events: &[Event]) -> Vec<Message> {
@@ -681,6 +701,61 @@ mod tests {
     }
 
     #[test]
+    fn response_history_replay_keeps_non_message_items_native() {
+        let sid = SessionId::nil();
+        let events = vec![
+            event(
+                sid,
+                0,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::Message {
+                        role: "user".into(),
+                        content: "search".into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                1,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::WebSearchCall {
+                        id: "ws_1".into(),
+                        status: "completed".into(),
+                        action: Some(serde_json::json!({
+                            "type": "search",
+                            "query": "DeepSeek Responses"
+                        })),
+                    },
+                },
+            ),
+            event(
+                sid,
+                2,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::Message {
+                        role: "assistant".into(),
+                        content: "found".into(),
+                    },
+                },
+            ),
+        ];
+
+        let items = response_items_from_events(&events);
+
+        assert_eq!(items.len(), 3);
+        assert!(matches!(
+            &items[1],
+            ResponseItem::WebSearchCall {
+                id,
+                status,
+                action: Some(action),
+            } if id == "ws_1"
+                && status == "completed"
+                && action["query"] == "DeepSeek Responses"
+        ));
+    }
+
+    #[test]
     fn collect_discovered_unions_across_events_preserving_order() {
         let sid = SessionId::nil();
         let events = vec![
@@ -741,6 +816,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(accepted.history.len(), 0);
+        assert_eq!(accepted.response_history.len(), 0);
         assert_eq!(accepted.prior_events.len(), 0);
         assert_eq!(
             accepted.session.state().mode,

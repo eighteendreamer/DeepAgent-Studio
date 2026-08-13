@@ -2391,6 +2391,7 @@ impl ChatService {
         .await?;
         let mut session = accepted_turn.session;
         let history = accepted_turn.history;
+        let response_history = accepted_turn.response_history;
         let prior_events = accepted_turn.prior_events;
         let session_id_str = accepted_turn.session_id;
         let _input_lease = accepted_turn.lease;
@@ -2752,6 +2753,11 @@ impl ChatService {
                 &hooks,
             )
             .await;
+        let response_history = if context_compacted {
+            Vec::new()
+        } else {
+            response_history
+        };
         let session_id = session.id().to_string();
         {
             let mut map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
@@ -2948,6 +2954,7 @@ impl ChatService {
             .with_fallback_model(fallback_model)
             .with_reactive_compactor(reactive_compactor)
             .with_history(history)
+            .with_response_history(response_history)
             .with_proactive_compaction(proactive_threshold)
             .with_prefire(prefire_start)
             .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME)

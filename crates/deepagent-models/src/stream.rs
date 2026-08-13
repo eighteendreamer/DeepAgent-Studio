@@ -454,17 +454,105 @@ impl ResponseAccumulator {
                 content: message.content.clone(),
             });
         }
+        let mut output_items = self.output_items;
+        for item in fallback_items {
+            if !response_item_already_present(&output_items, &item) {
+                output_items.push(item);
+            }
+        }
         Ok(Response {
             message,
-            output_items: if self.output_items.is_empty() {
-                fallback_items
-            } else {
-                self.output_items
-            },
+            output_items,
             finish_reason: self.terminal,
             usage: self.usage,
             raw_usage: self.raw_usage,
         })
+    }
+}
+
+fn response_item_already_present(
+    items: &[ResponseOutputItem],
+    candidate: &ResponseOutputItem,
+) -> bool {
+    match candidate {
+        ResponseOutputItem::Message { role, content } => items.iter().any(|item| {
+            matches!(
+                item,
+                ResponseOutputItem::Message {
+                    role: existing_role,
+                    content: existing_content,
+                } if existing_role == role && existing_content == content
+            )
+        }),
+        ResponseOutputItem::Reasoning { id, content } => items.iter().any(|item| {
+            matches!(
+                item,
+                ResponseOutputItem::Reasoning {
+                    id: existing_id,
+                    content: existing_content,
+                } if existing_id == id && existing_content == content
+            )
+        }),
+        ResponseOutputItem::FunctionCall {
+            call_id,
+            name,
+            arguments,
+        } => items.iter().any(|item| {
+            matches!(
+                item,
+                ResponseOutputItem::FunctionCall {
+                    call_id: existing_call_id,
+                    name: existing_name,
+                    arguments: existing_arguments,
+                } if existing_call_id == call_id
+                    && existing_name == name
+                    && existing_arguments == arguments
+            )
+        }),
+        ResponseOutputItem::CustomToolCall {
+            call_id,
+            name,
+            input,
+        } => items.iter().any(|item| {
+            matches!(
+                item,
+                ResponseOutputItem::CustomToolCall {
+                    call_id: existing_call_id,
+                    name: existing_name,
+                    input: existing_input,
+                } if existing_call_id == call_id
+                    && existing_name == name
+                    && existing_input == input
+            )
+        }),
+        ResponseOutputItem::FunctionCallOutput { call_id, output } => items.iter().any(|item| {
+            matches!(
+                item,
+                ResponseOutputItem::FunctionCallOutput {
+                    call_id: existing_call_id,
+                    output: existing_output,
+                } if existing_call_id == call_id && existing_output == output
+            )
+        }),
+        ResponseOutputItem::CustomToolCallOutput { call_id, output } => items.iter().any(|item| {
+            matches!(
+                item,
+                ResponseOutputItem::CustomToolCallOutput {
+                    call_id: existing_call_id,
+                    output: existing_output,
+                } if existing_call_id == call_id && existing_output == output
+            )
+        }),
+        ResponseOutputItem::WebSearchCall { id, status, action } => items.iter().any(|item| {
+            matches!(
+                item,
+                ResponseOutputItem::WebSearchCall {
+                    id: existing_id,
+                    status: existing_status,
+                    action: existing_action,
+                } if existing_id == id && existing_status == status && existing_action == action
+            )
+        }),
     }
 }
 
@@ -929,6 +1017,33 @@ mod tests {
             ModelStreamEvent::WebSearchCall { id, status, action: Some(action) }
                 if id == "ws_1" && status == "completed"
                     && action["queries"].as_array().map_or(0, Vec::len) == 1
+        )));
+    }
+
+    #[test]
+    fn output_item_events_do_not_drop_delta_text_projection() {
+        let mut acc = ResponseAccumulator::new();
+        event(
+            &mut acc,
+            r#"{"type":"response.output_item.done","item":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"query":"rust"}}}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.output_text.delta","delta":"found it"}"#,
+        );
+        complete(&mut acc);
+
+        let response = acc.finish().unwrap();
+
+        assert!(response.output_items.iter().any(|item| matches!(
+            item,
+            ResponseOutputItem::WebSearchCall { id, status, .. }
+                if id == "ws_1" && status == "completed"
+        )));
+        assert!(response.output_items.iter().any(|item| matches!(
+            item,
+            ResponseOutputItem::Message { role, content }
+                if role == "assistant" && content == "found it"
         )));
     }
 
