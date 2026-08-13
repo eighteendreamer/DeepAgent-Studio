@@ -208,8 +208,9 @@ fn settings_default() -> AppSettings {
 
 /// One scripted assistant response: either a tool call against the `skill`
 /// tool, or plain content (terminating the turn). The real DeepSeek
-/// transport emits these as SSE chunks with `tool_calls` deltas; here we
-/// pre-shape them so the test stays focused on the catalog + tool wiring.
+/// transport emits these as Responses SSE events carrying semantic
+/// `function_call` output items; here we pre-shape them so the test stays
+/// focused on the catalog + tool wiring.
 #[derive(Debug, Clone)]
 enum CannedAssistant {
     /// Model called the `skill` tool with the given JSON arguments.
