@@ -436,11 +436,35 @@ impl Response {
 
     /// Extract local tool invocations from native Responses output items.
     pub fn tool_invocations_from_items(&self) -> Vec<(String, String, serde_json::Value)> {
-        self.assistant_message_projection()
-            .tool_calls
-            .into_iter()
-            .map(|call| (call.id, call.name, call.arguments))
-            .collect()
+        let mut invocations = Vec::new();
+        for item in &self.output_items {
+            match item {
+                ResponseOutputItem::FunctionCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => {
+                    invocations.push((
+                        call_id.clone(),
+                        name.clone(),
+                        parse_function_arguments(arguments),
+                    ));
+                }
+                ResponseOutputItem::CustomToolCall {
+                    call_id,
+                    name,
+                    input,
+                } => {
+                    invocations.push((
+                        call_id.clone(),
+                        name.clone(),
+                        serde_json::json!({ "patch": input }),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        invocations
     }
 }
 
@@ -536,5 +560,47 @@ mod tests {
     fn usage_defaults_to_zero() {
         let u: Usage = serde_json::from_str("{}").unwrap();
         assert_eq!(u, Usage::default());
+    }
+
+    #[test]
+    fn tool_invocations_are_derived_directly_from_response_items() {
+        let response = Response::from_parts(
+            vec![
+                ResponseOutputItem::Message {
+                    role: "assistant".into(),
+                    content: "working".into(),
+                },
+                ResponseOutputItem::FunctionCall {
+                    call_id: "call-1".into(),
+                    name: "read_file".into(),
+                    arguments: r#"{"path":"README.md"}"#.into(),
+                },
+                ResponseOutputItem::CustomToolCall {
+                    call_id: "call-2".into(),
+                    name: "apply_patch".into(),
+                    input: "*** Begin Patch\n*** End Patch".into(),
+                },
+            ],
+            None,
+            None,
+            None,
+        );
+
+        let invocations = response.tool_invocations_from_items();
+        assert_eq!(invocations.len(), 2);
+        assert_eq!(
+            invocations[0],
+            (
+                "call-1".into(),
+                "read_file".into(),
+                serde_json::json!({"path": "README.md"})
+            )
+        );
+        assert_eq!(invocations[1].0, "call-2");
+        assert_eq!(invocations[1].1, "apply_patch");
+        assert_eq!(
+            invocations[1].2,
+            serde_json::json!({"patch": "*** Begin Patch\n*** End Patch"})
+        );
     }
 }
