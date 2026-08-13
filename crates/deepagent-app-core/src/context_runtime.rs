@@ -10,6 +10,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::{Event, EventPayload};
 use deepagent_core::id::SessionId;
 use deepagent_core::message::Message;
+use deepagent_core::response_item::ResponseInputItem;
 use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry};
 use deepagent_models::{ModelClient, ToolSchema};
 use deepagent_runtime::{
@@ -97,17 +98,12 @@ impl HookedReactiveContextCompactor {
     /// structured block via the model compactor, appending the working-set
     /// re-injection (modified files, failed checks, invoked skills). Shared by
     /// the synchronous stage-2 compaction and the prefire pass-1.
-    async fn summarize_zone(&self, zone: &[Message]) -> String {
+    async fn summarize_response_item_zone(&self, zone: &[ResponseInputItem]) -> String {
         let rendered = zone
             .iter()
-            .map(render_message_for_compaction)
+            .map(render_response_item_for_compaction)
             .collect::<Vec<_>>();
-        let goal = zone
-            .iter()
-            .rev()
-            .find(|message| message.role == deepagent_core::message::Role::User)
-            .map(|message| message.content.clone())
-            .unwrap_or_default();
+        let goal = latest_user_content_from_response_items(zone).unwrap_or_default();
         let summary =
             deepagent_context::ModelCompactor::new(self.client.clone(), self.model.clone())
                 .summarize(&goal, &deepagent_context::TaskSummary::default(), &rendered)
@@ -116,11 +112,16 @@ impl HookedReactiveContextCompactor {
         // Post-compaction re-injection (Phase E): modified files, failed checks
         // and invoked skills from the compacted zone survive the summary so the
         // model keeps its working set.
-        if let Some(reinjection) = compaction_reinjection_block(zone) {
+        if let Some(reinjection) = compaction_reinjection_block_from_items(zone) {
             summary_block.push_str("\n\n");
             summary_block.push_str(&reinjection);
         }
         summary_block
+    }
+
+    async fn summarize_zone(&self, zone: &[Message]) -> String {
+        let (_, items) = deepagent_models::response_items_from_messages(zone);
+        self.summarize_response_item_zone(&items).await
     }
 }
 
@@ -141,6 +142,16 @@ fn fingerprint_prefix(items: &[Message]) -> u64 {
         };
         tag.hash(&mut hasher);
         render_message_for_compaction(message).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn fingerprint_response_item_prefix(items: &[ResponseInputItem]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    items.len().hash(&mut hasher);
+    for item in items {
+        render_response_item_for_compaction(item).hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -236,6 +247,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                     .await?;
                 return Ok(Some(ReactiveCompaction {
                     messages: micro_messages,
+                    response_items: None,
                     tokens_before,
                     tokens_after,
                     summary: boundary,
@@ -279,6 +291,148 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
 
         Ok(Some(ReactiveCompaction {
             messages: compacted,
+            response_items: None,
+            tokens_before,
+            tokens_after,
+            summary: summary_block,
+        }))
+    }
+
+    async fn compact_response_items(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        trigger: CompactionTrigger,
+    ) -> Result<Option<ReactiveCompaction>> {
+        const KEEP_RECENT_ITEMS: usize = 8;
+
+        if !self
+            .breaker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .admit()
+        {
+            return Ok(None);
+        }
+
+        if items.len() <= KEEP_RECENT_ITEMS {
+            return Ok(None);
+        }
+
+        let Some(split) = pairing_safe_response_item_compaction_split(items, KEEP_RECENT_ITEMS)
+        else {
+            return Ok(None);
+        };
+
+        let before = self
+            .hooks
+            .dispatch(&HookContext::new(
+                self.session_id,
+                HookPoint::BeforeCompact,
+                HookData::Compact {
+                    trigger: trigger.as_str().to_string(),
+                    summary: None,
+                },
+            ))
+            .await?;
+        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
+            return Ok(None);
+        }
+
+        let counter = HeuristicTokenizer::new();
+        let count = |items: &[ResponseInputItem]| {
+            items
+                .iter()
+                .map(|item| {
+                    deepagent_context::TokenCounter::count(
+                        &counter,
+                        &render_response_item_for_compaction(item),
+                    )
+                })
+                .sum::<usize>() as u64
+        };
+        let tokens_before = instructions
+            .map(|text| deepagent_context::TokenCounter::count(&counter, text) as u64)
+            .unwrap_or(0)
+            + count(items);
+
+        if let Some((micro_items, cleared)) = micro_compact_response_item_outputs(items, split) {
+            let tokens_after = instructions
+                .map(|text| deepagent_context::TokenCounter::count(&counter, text) as u64)
+                .unwrap_or(0)
+                + count(&micro_items);
+            if tokens_after.saturating_mul(10) <= tokens_before.saturating_mul(8) {
+                let boundary =
+                    format!("[micro-compact] cleared {cleared} historical tool result(s)");
+                self.breaker
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .record_success();
+                self.hooks
+                    .dispatch(&HookContext::new(
+                        self.session_id,
+                        HookPoint::PostCompact,
+                        HookData::Compact {
+                            trigger: "micro_compact".to_string(),
+                            summary: Some(boundary.clone()),
+                        },
+                    ))
+                    .await?;
+                let messages =
+                    deepagent_models::messages_from_response_items(instructions, &micro_items);
+                return Ok(Some(ReactiveCompaction {
+                    messages,
+                    response_items: Some(micro_items),
+                    tokens_before,
+                    tokens_after,
+                    summary: boundary,
+                }));
+            }
+        }
+
+        let summary_block = self.summarize_response_item_zone(&items[..split]).await;
+
+        let mut compacted_items = Vec::with_capacity(1 + items.len() - split);
+        compacted_items.push(ResponseInputItem::Message {
+            role: "user".to_string(),
+            content: format!(
+                "[Earlier conversation compacted after context overflow]\n{summary_block}"
+            ),
+        });
+        compacted_items.extend_from_slice(&items[split..]);
+
+        let tokens_after = instructions
+            .map(|text| deepagent_context::TokenCounter::count(&counter, text) as u64)
+            .unwrap_or(0)
+            + count(&compacted_items);
+        if tokens_after >= tokens_before {
+            self.breaker
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .record_ineffective();
+            return Ok(None);
+        }
+        self.breaker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .record_success();
+
+        self.hooks
+            .dispatch(&HookContext::new(
+                self.session_id,
+                HookPoint::PostCompact,
+                HookData::Compact {
+                    trigger: trigger.as_str().to_string(),
+                    summary: Some(summary_block.clone()),
+                },
+            ))
+            .await?;
+
+        let messages =
+            deepagent_models::messages_from_response_items(instructions, &compacted_items);
+        Ok(Some(ReactiveCompaction {
+            messages,
+            response_items: Some(compacted_items),
             tokens_before,
             tokens_after,
             summary: summary_block,
@@ -306,6 +460,27 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             note: summary_block,
             prefix_end,
             fingerprint: fingerprint_prefix(&messages[..prefix_end]),
+        }))
+    }
+
+    async fn prefire_pass1_response_items(
+        &self,
+        _instructions: Option<&str>,
+        items: &[ResponseInputItem],
+    ) -> Result<Option<PrefireNote>> {
+        const KEEP_RECENT_ITEMS: usize = 8;
+        if items.len() <= KEEP_RECENT_ITEMS {
+            return Ok(None);
+        }
+        let Some(split) = pairing_safe_response_item_compaction_split(items, KEEP_RECENT_ITEMS)
+        else {
+            return Ok(None);
+        };
+        let summary_block = self.summarize_response_item_zone(&items[..split]).await;
+        Ok(Some(PrefireNote {
+            note: summary_block,
+            prefix_end: split,
+            fingerprint: fingerprint_response_item_prefix(&items[..split]),
         }))
     }
 
@@ -385,6 +560,90 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             .await?;
         Ok(Some(ReactiveCompaction {
             messages: compacted,
+            response_items: None,
+            tokens_before,
+            tokens_after,
+            summary: note.note.clone(),
+        }))
+    }
+
+    async fn apply_prefire_response_items(
+        &self,
+        note: &PrefireNote,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+    ) -> Result<Option<ReactiveCompaction>> {
+        if note.prefix_end == 0 || note.prefix_end > items.len() {
+            return Ok(None);
+        }
+        if fingerprint_response_item_prefix(&items[..note.prefix_end]) != note.fingerprint {
+            return Ok(None);
+        }
+        let before = self
+            .hooks
+            .dispatch(&HookContext::new(
+                self.session_id,
+                HookPoint::BeforeCompact,
+                HookData::Compact {
+                    trigger: CompactionTrigger::AutoCompactThreshold.as_str().to_string(),
+                    summary: None,
+                },
+            ))
+            .await?;
+        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
+            return Ok(None);
+        }
+
+        let counter = HeuristicTokenizer::new();
+        let count = |items: &[ResponseInputItem]| {
+            items
+                .iter()
+                .map(|item| {
+                    deepagent_context::TokenCounter::count(
+                        &counter,
+                        &render_response_item_for_compaction(item),
+                    )
+                })
+                .sum::<usize>() as u64
+        };
+        let tokens_before = instructions
+            .map(|text| deepagent_context::TokenCounter::count(&counter, text) as u64)
+            .unwrap_or(0)
+            + count(items);
+
+        let tail = &items[note.prefix_end..];
+        let mut compacted_items = Vec::with_capacity(1 + tail.len());
+        compacted_items.push(ResponseInputItem::Message {
+            role: "user".to_string(),
+            content: format!(
+                "[Earlier conversation compacted after context overflow]\n{}",
+                note.note
+            ),
+        });
+        compacted_items.extend_from_slice(tail);
+
+        let tokens_after = instructions
+            .map(|text| deepagent_context::TokenCounter::count(&counter, text) as u64)
+            .unwrap_or(0)
+            + count(&compacted_items);
+        if tokens_after >= tokens_before {
+            return Ok(None);
+        }
+        self.hooks
+            .dispatch(&HookContext::new(
+                self.session_id,
+                HookPoint::PostCompact,
+                HookData::Compact {
+                    trigger: CompactionTrigger::AutoCompactThreshold.as_str().to_string(),
+                    summary: Some(note.note.clone()),
+                },
+            ))
+            .await?;
+        let messages =
+            deepagent_models::messages_from_response_items(instructions, &compacted_items);
+        Ok(Some(ReactiveCompaction {
+            messages,
+            response_items: Some(compacted_items),
             tokens_before,
             tokens_after,
             summary: note.note.clone(),
@@ -416,6 +675,89 @@ fn micro_compact_tool_results(
         }
     }
     (cleared > 0).then_some((out, cleared))
+}
+
+fn pairing_safe_response_item_compaction_split(
+    items: &[ResponseInputItem],
+    keep_recent: usize,
+) -> Option<usize> {
+    if items.len() <= keep_recent {
+        return None;
+    }
+    let mut split = items.len() - keep_recent;
+    while split > 0 && is_tool_output_item(&items[split]) {
+        split -= 1;
+    }
+    (split > 0).then_some(split)
+}
+
+fn is_tool_output_item(item: &ResponseInputItem) -> bool {
+    matches!(
+        item,
+        ResponseInputItem::FunctionCallOutput { .. }
+            | ResponseInputItem::CustomToolCallOutput { .. }
+    )
+}
+
+fn micro_compact_response_item_outputs(
+    items: &[ResponseInputItem],
+    split: usize,
+) -> Option<(Vec<ResponseInputItem>, usize)> {
+    const MIN_CLEAR_CHARS: usize = 240;
+    const CLEARED_STUB: &str = r#"{"status":"cleared","note":"tool result cleared by micro-compact to free context; re-run the tool if this data is needed again"}"#;
+
+    let mut cleared = 0usize;
+    let mut out = items.to_vec();
+    for item in out.iter_mut().take(split) {
+        match item {
+            ResponseInputItem::FunctionCallOutput { output, .. }
+            | ResponseInputItem::CustomToolCallOutput { output, .. }
+                if output.chars().count() > MIN_CLEAR_CHARS =>
+            {
+                *output = CLEARED_STUB.to_string();
+                cleared += 1;
+            }
+            _ => {}
+        }
+    }
+    (cleared > 0).then_some((out, cleared))
+}
+
+fn render_response_item_for_compaction(item: &ResponseInputItem) -> String {
+    match item {
+        ResponseInputItem::Message { role, content } => format!("{role}: {content}"),
+        ResponseInputItem::Reasoning { content, .. } => format!("reasoning: {content}"),
+        ResponseInputItem::FunctionCall {
+            call_id,
+            name,
+            arguments,
+        } => format!("function_call call_id={call_id} name={name} arguments={arguments}"),
+        ResponseInputItem::FunctionCallOutput { call_id, output } => {
+            format!("function_call_output call_id={call_id} output={output}")
+        }
+        ResponseInputItem::CustomToolCall {
+            call_id,
+            name,
+            input,
+        } => format!("custom_tool_call call_id={call_id} name={name} input={input}"),
+        ResponseInputItem::CustomToolCallOutput { call_id, output } => {
+            format!("custom_tool_call_output call_id={call_id} output={output}")
+        }
+        ResponseInputItem::WebSearchCall { id, status, action } => {
+            let action = action
+                .as_ref()
+                .map(serde_json::Value::to_string)
+                .unwrap_or_default();
+            format!("web_search_call id={id} status={status} action={action}")
+        }
+    }
+}
+
+fn latest_user_content_from_response_items(items: &[ResponseInputItem]) -> Option<String> {
+    items.iter().rev().find_map(|item| match item {
+        ResponseInputItem::Message { role, content } if role == "user" => Some(content.clone()),
+        _ => None,
+    })
 }
 
 /// Tools whose successful calls in the compacted zone identify "files the
@@ -476,6 +818,81 @@ fn compaction_reinjection_block(compacted_zone: &[Message]) -> Option<String> {
                 .unwrap_or_else(|| "tool".to_string());
             let preview: String = message.content.chars().take(160).collect();
             failures.push(format!("{tool}: {preview}"));
+        }
+    }
+
+    if files.is_empty() && failures.is_empty() && skills.is_empty() {
+        return None;
+    }
+    let mut out = String::from("# Working-set carried across compaction\n");
+    let mut section = |title: &str, items: &[String]| {
+        if !items.is_empty() {
+            out.push_str(&format!("\n{title}:\n"));
+            for item in items {
+                out.push_str(&format!("- {item}\n"));
+            }
+        }
+    };
+    section("Files already modified", &files);
+    section("Failed checks/tools to remember", &failures);
+    section("Skills already invoked", &skills);
+    Some(out.trim_end().to_string())
+}
+
+fn compaction_reinjection_block_from_items(compacted_zone: &[ResponseInputItem]) -> Option<String> {
+    const MAX_ITEMS: usize = 8;
+    let mut files: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    let mut skills: Vec<String> = Vec::new();
+    let mut call_names: HashMap<String, String> = HashMap::new();
+
+    for item in compacted_zone {
+        match item {
+            ResponseInputItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => {
+                call_names.insert(call_id.clone(), name.clone());
+                let parsed =
+                    serde_json::from_str::<serde_json::Value>(arguments).unwrap_or_default();
+                if REINJECTION_WRITE_TOOLS.contains(&name.as_str()) {
+                    if let Some(path) = parsed
+                        .get("path")
+                        .or_else(|| parsed.get("file_path"))
+                        .or_else(|| parsed.get("destination"))
+                        .and_then(|value| value.as_str())
+                    {
+                        let rendered = path.to_string();
+                        if !files.contains(&rendered) && files.len() < MAX_ITEMS {
+                            files.push(rendered);
+                        }
+                    }
+                }
+                if name == deepagent_builtins::SKILL_TOOL_NAME {
+                    if let Some(id) = parsed.get("id").and_then(|value| value.as_str()) {
+                        let rendered = id.to_string();
+                        if !skills.contains(&rendered) && skills.len() < MAX_ITEMS {
+                            skills.push(rendered);
+                        }
+                    }
+                }
+            }
+            ResponseInputItem::CustomToolCall { call_id, name, .. } => {
+                call_names.insert(call_id.clone(), name.clone());
+            }
+            ResponseInputItem::FunctionCallOutput { call_id, output }
+            | ResponseInputItem::CustomToolCallOutput { call_id, output }
+                if output.contains("\"status\":\"error\"") && failures.len() < MAX_ITEMS =>
+            {
+                let tool = call_names
+                    .get(call_id)
+                    .cloned()
+                    .unwrap_or_else(|| "tool".to_string());
+                let preview: String = output.chars().take(160).collect();
+                failures.push(format!("{tool}: {preview}"));
+            }
+            _ => {}
         }
     }
 
@@ -1036,6 +1453,91 @@ mod tests {
     #[test]
     fn reinjection_block_empty_zone_returns_none() {
         assert!(compaction_reinjection_block(&[Message::user("hello")]).is_none());
+    }
+
+    #[test]
+    fn response_item_split_keeps_tool_output_with_request() {
+        let items = vec![
+            ResponseInputItem::Message {
+                role: "user".into(),
+                content: "older".into(),
+            },
+            ResponseInputItem::FunctionCall {
+                call_id: "c1".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "c1".into(),
+                output: "result".into(),
+            },
+            ResponseInputItem::Message {
+                role: "user".into(),
+                content: "tail".into(),
+            },
+        ];
+
+        assert_eq!(
+            pairing_safe_response_item_compaction_split(&items, 2),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn response_item_micro_compact_keeps_output_item_native() {
+        let big = "x".repeat(1_000);
+        let items = vec![
+            ResponseInputItem::FunctionCall {
+                call_id: "c1".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "c1".into(),
+                output: big,
+            },
+        ];
+
+        let (out, cleared) = micro_compact_response_item_outputs(&items, 2).unwrap();
+
+        assert_eq!(cleared, 1);
+        assert!(matches!(
+            &out[1],
+            ResponseInputItem::FunctionCallOutput { call_id, output }
+                if call_id == "c1" && output.contains("cleared by micro-compact")
+        ));
+    }
+
+    #[test]
+    fn response_item_reinjection_reads_raw_arguments_and_failures() {
+        let zone = vec![
+            ResponseInputItem::FunctionCall {
+                call_id: "c1".into(),
+                name: "write_file".into(),
+                arguments: r#"{"path":"src/lib.rs"}"#.into(),
+            },
+            ResponseInputItem::FunctionCall {
+                call_id: "c2".into(),
+                name: "skill".into(),
+                arguments: r#"{"id":"docx"}"#.into(),
+            },
+            ResponseInputItem::FunctionCall {
+                call_id: "c3".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"cargo test"}"#.into(),
+            },
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "c3".into(),
+                output: r#"{"status":"error","error":"2 tests failed"}"#.into(),
+            },
+        ];
+
+        let block = compaction_reinjection_block_from_items(&zone).unwrap();
+
+        assert!(block.contains("src/lib.rs"));
+        assert!(block.contains("docx"));
+        assert!(block.contains("bash"));
+        assert!(block.contains("2 tests failed"));
     }
 
     #[test]

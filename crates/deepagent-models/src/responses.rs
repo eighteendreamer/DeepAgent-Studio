@@ -81,6 +81,84 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
     (instructions, items)
 }
 
+/// Project Responses items back to the legacy [`Message`] view used by UI DTOs
+/// and compatibility-only runtime paths.
+///
+/// The provider-native `ResponseItem` sequence remains the source of truth for
+/// model input. This projection is intentionally lossy for provider-only items
+/// such as `web_search_call`, mirroring the pre-existing frontend text
+/// transcript boundary while keeping tool call/output pairing intact.
+pub fn messages_from_response_items(
+    instructions: Option<&str>,
+    items: &[ResponseItem],
+) -> Vec<Message> {
+    let mut out = Vec::new();
+    if let Some(instructions) = instructions.filter(|text| !text.is_empty()) {
+        out.push(Message::system(instructions.to_string()));
+    }
+
+    let mut pending_reasoning: Option<String> = None;
+    for item in items {
+        match item {
+            ResponseItem::Reasoning { content, .. } => {
+                pending_reasoning = (!content.is_empty()).then(|| content.clone());
+            }
+            ResponseItem::Message { role, content } => {
+                let role = match role.as_str() {
+                    "system" => Role::System,
+                    "assistant" => Role::Assistant,
+                    "tool" => Role::Tool,
+                    _ => Role::User,
+                };
+                let mut message = Message::text(role, content.clone());
+                if role == Role::Assistant {
+                    message.reasoning_content = pending_reasoning.take();
+                }
+                out.push(message);
+            }
+            ResponseItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => {
+                let arguments = serde_json::from_str(arguments).unwrap_or_else(|error| {
+                    serde_json::json!({
+                        "__invalid_tool_arguments__": true,
+                        "raw": arguments,
+                        "parse_error": error.to_string()
+                    })
+                });
+                out.push(Message::assistant("").with_tool_calls(vec![
+                    deepagent_core::message::ToolCall {
+                        id: call_id.clone(),
+                        name: name.clone(),
+                        arguments,
+                    },
+                ]));
+            }
+            ResponseItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+            } => {
+                out.push(Message::assistant("").with_tool_calls(vec![
+                    deepagent_core::message::ToolCall {
+                        id: call_id.clone(),
+                        name: name.clone(),
+                        arguments: serde_json::json!({ "patch": input }),
+                    },
+                ]));
+            }
+            ResponseItem::FunctionCallOutput { call_id, output }
+            | ResponseItem::CustomToolCallOutput { call_id, output } => {
+                out.push(Message::tool_result(call_id.clone(), output.clone()));
+            }
+            ResponseItem::WebSearchCall { .. } => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +217,36 @@ mod tests {
             ResponseItem::CustomToolCallOutput { call_id, output }
                 if call_id == "call-patch" && output == "patch applied"
         ));
+    }
+
+    #[test]
+    fn projects_response_items_back_to_messages_for_compatibility() {
+        let items = vec![
+            ResponseItem::Reasoning {
+                id: Some("r1".into()),
+                content: "thinking".into(),
+            },
+            ResponseItem::FunctionCall {
+                call_id: "call-1".into(),
+                name: "weather".into(),
+                arguments: r#"{"city":"Beijing"}"#.into(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-1".into(),
+                output: r#"{"ok":true}"#.into(),
+            },
+            ResponseItem::Message {
+                role: "assistant".into(),
+                content: "done".into(),
+            },
+        ];
+
+        let messages = messages_from_response_items(Some("rules"), &items);
+
+        assert_eq!(messages[0].role, Role::System);
+        assert_eq!(messages[1].tool_calls[0].id, "call-1");
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(messages[3].content, "done");
+        assert_eq!(messages[3].reasoning_content.as_deref(), Some("thinking"));
     }
 }

@@ -34,6 +34,11 @@ use crate::stall_detector::{
 #[derive(Debug, Clone)]
 pub struct ReactiveCompaction {
     pub messages: Vec<Message>,
+    /// Provider-native replacement history. `None` is allowed only for legacy
+    /// compactors; production Responses compaction fills this so the next
+    /// provider request does not have to re-derive item semantics from
+    /// Chat-style message projections.
+    pub response_items: Option<Vec<ResponseInputItem>>,
     pub tokens_before: u64,
     pub tokens_after: u64,
     pub summary: String,
@@ -89,12 +94,36 @@ pub trait ReactiveContextCompactor: Send + Sync {
         trigger: CompactionTrigger,
     ) -> Result<Option<ReactiveCompaction>>;
 
+    /// Production Responses entry point. The default bridge keeps older
+    /// compactors/tests compatible; provider-native implementations override
+    /// this and return `ReactiveCompaction::response_items`.
+    async fn compact_response_items(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        trigger: CompactionTrigger,
+    ) -> Result<Option<ReactiveCompaction>> {
+        let messages = deepagent_models::messages_from_response_items(instructions, items);
+        self.compact(&messages, trigger).await
+    }
+
     /// Prefire pass-1 (Grok two-pass): summarize the stable prefix of
     /// `messages` into a cacheable [`PrefireNote`], run off the critical path.
     /// Default: no prefire support (`None`) — keeps non-model compactors and
     /// tests unaffected.
     async fn prefire_pass1(&self, _messages: &[Message]) -> Result<Option<PrefireNote>> {
         Ok(None)
+    }
+
+    /// Production Responses prefire pass-1. Default bridges through the
+    /// compatibility projection.
+    async fn prefire_pass1_response_items(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+    ) -> Result<Option<PrefireNote>> {
+        let messages = deepagent_models::messages_from_response_items(instructions, items);
+        self.prefire_pass1(&messages).await
     }
 
     /// Prefire pass-2 apply: if `note` still matches the current conversation
@@ -107,6 +136,18 @@ pub trait ReactiveContextCompactor: Send + Sync {
         _messages: &[Message],
     ) -> Result<Option<ReactiveCompaction>> {
         Ok(None)
+    }
+
+    /// Production Responses prefire pass-2. Default bridges through the
+    /// compatibility projection.
+    async fn apply_prefire_response_items(
+        &self,
+        note: &PrefireNote,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+    ) -> Result<Option<ReactiveCompaction>> {
+        let messages = deepagent_models::messages_from_response_items(instructions, items);
+        self.apply_prefire(note, &messages).await
     }
 }
 
@@ -516,6 +557,20 @@ impl ModelAgent {
         self.response_history.replace_from_messages(&self.messages);
     }
 
+    fn adopt_compacted_history(&mut self, compacted: &ReactiveCompaction) {
+        if let Some(items) = compacted.response_items.clone() {
+            let instructions = self.response_history.instructions.clone();
+            self.messages =
+                deepagent_models::messages_from_response_items(instructions.as_deref(), &items);
+            self.response_history = ResponseHistory {
+                instructions,
+                items,
+            };
+        } else {
+            self.replace_messages(compacted.messages.clone());
+        }
+    }
+
     fn request_for_current_history(&self) -> ResponseRequest {
         self.response_history.request(self.model.clone())
     }
@@ -845,7 +900,14 @@ impl ModelAgent {
             self.collect_prefire_result().await;
         }
         if let Some(note) = self.prefire_cache.take() {
-            match compactor.apply_prefire(&note, &self.messages).await {
+            match compactor
+                .apply_prefire_response_items(
+                    &note,
+                    self.response_history.instructions.as_deref(),
+                    &self.response_history.items,
+                )
+                .await
+            {
                 Ok(Some(compacted)) => {
                     tracing::info!(step, "prefire pass-2 applied cached note (prefire hit)");
                     self.adopt_compaction(compacted, "prefire_pass2");
@@ -864,7 +926,11 @@ impl ModelAgent {
         }
 
         match compactor
-            .compact(&self.messages, CompactionTrigger::AutoCompactThreshold)
+            .compact_response_items(
+                self.response_history.instructions.as_deref(),
+                &self.response_history.items,
+                CompactionTrigger::AutoCompactThreshold,
+            )
             .await
         {
             Ok(Some(compacted)) => self.adopt_compaction(compacted, "proactive_threshold"),
@@ -879,7 +945,7 @@ impl ModelAgent {
     /// dependent estimates/counters, drop any prefire cache, and emit the
     /// `ContextCompacted` event under `strategy`.
     fn adopt_compaction(&mut self, compacted: ReactiveCompaction, strategy: &str) {
-        self.replace_messages(compacted.messages);
+        self.adopt_compacted_history(&compacted);
         self.autocompact_consecutive_failures = 0;
         self.snip_tokens_freed_unreflected = 0;
         self.snip_nudge_baseline_tokens = None;
@@ -956,9 +1022,12 @@ impl ModelAgent {
             threshold_tokens = threshold,
             "scheduling prefire pass-1 (background)"
         );
-        let snapshot = self.messages.clone();
+        let instructions = self.response_history.instructions.clone();
+        let snapshot = self.response_history.items.clone();
         self.prefire_handle = Some(tokio::spawn(async move {
-            compactor.prefire_pass1(&snapshot).await
+            compactor
+                .prefire_pass1_response_items(instructions.as_deref(), &snapshot)
+                .await
         }));
     }
 
@@ -1670,11 +1739,15 @@ impl ModelAgent {
                         reactive_compaction_attempted = true;
                         if let Some(compactor) = self.reactive_compactor.as_ref() {
                             match compactor
-                                .compact(&self.messages, CompactionTrigger::ContextOverflow)
+                                .compact_response_items(
+                                    self.response_history.instructions.as_deref(),
+                                    &self.response_history.items,
+                                    CompactionTrigger::ContextOverflow,
+                                )
                                 .await
                             {
                                 Ok(Some(compacted)) => {
-                                    self.replace_messages(compacted.messages);
+                                    self.adopt_compacted_history(&compacted);
                                     request = self
                                         .request_for_current_history()
                                         .with_thinking_depth(self.thinking_depth)
@@ -2002,6 +2075,7 @@ mod tests {
                     Message::user("[compacted summary] prior work"),
                     latest,
                 ],
+                response_items: None,
                 tokens_before: 100,
                 tokens_after: 20,
                 summary: "prior work".into(),
