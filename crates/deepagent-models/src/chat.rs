@@ -339,16 +339,12 @@ pub struct Usage {
     pub prompt_cache_miss_tokens: u32,
 }
 
-/// A fully assembled (non-streaming, or post-accumulation) response.
+/// A fully assembled (non-streaming, or post-accumulation) Responses result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Response {
-    /// Legacy UI/runtime compatibility projection. Prefer the item-native
-    /// accessors (`output_items`, `output_text_projection`,
-    /// `assistant_message_projection`) in new code.
-    message: Message,
-    /// Provider-native Responses output items. Runtime/UI may still use
-    /// `message` as a compatibility projection, but persistence and recovery
-    /// can retain exact item semantics.
+    /// Provider-native Responses output items. Persistence and recovery retain
+    /// these exact item semantics; text/tool projections are derived from this
+    /// vector at the compatibility boundary.
     pub output_items: Vec<ResponseOutputItem>,
     /// Why generation finished, if reported.
     pub finish_reason: Option<FinishReason>,
@@ -361,14 +357,12 @@ pub struct Response {
 
 impl Response {
     pub(crate) fn from_parts(
-        message: Message,
         output_items: Vec<ResponseOutputItem>,
         finish_reason: Option<FinishReason>,
         usage: Option<Usage>,
         raw_usage: Option<serde_json::Value>,
     ) -> Self {
         Self {
-            message,
             output_items,
             finish_reason,
             usage,
@@ -379,9 +373,7 @@ impl Response {
     /// Project the assistant's visible text from native Responses output items.
     ///
     /// This is the preferred helper for one-shot classification, title,
-    /// compaction and review calls that only need text. It falls back to the
-    /// legacy `message` projection for mocked/older tests that do not provide
-    /// native output items.
+    /// compaction and review calls that only need text.
     pub fn output_text_projection(&self) -> String {
         let mut content = String::new();
         for item in &self.output_items {
@@ -395,16 +387,11 @@ impl Response {
                 }
             }
         }
-        if content.is_empty() {
-            self.message.content.clone()
-        } else {
-            content
-        }
+        content
     }
 
     /// Build the UI/runtime compatibility projection from native Responses
-    /// output items. Model execution should prefer this centralized item
-    /// projection over reading `message.tool_calls` directly.
+    /// output items.
     pub fn assistant_message_projection(&self) -> Message {
         let content = self.output_text_projection();
         let mut reasoning: Option<String> = None;
@@ -440,12 +427,6 @@ impl Response {
                 }),
                 _ => {}
             }
-        }
-        if reasoning.is_none() {
-            reasoning = self.message.reasoning_content.clone();
-        }
-        if tool_calls.is_empty() {
-            tool_calls = self.message.tool_calls.clone();
         }
         let mut message = Message::text(Role::Assistant, content);
         message.reasoning_content = reasoning;

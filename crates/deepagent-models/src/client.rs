@@ -87,7 +87,7 @@ impl ModelClient {
         Self { transport, config }
     }
 
-    /// Send a chat request and assemble the streamed response.
+    /// Send a Responses request and assemble the streamed response.
     ///
     /// The request is forced into streaming mode. Each SSE payload is parsed and
     /// folded by a [`ResponseAccumulator`]; the final assembled [`Response`]

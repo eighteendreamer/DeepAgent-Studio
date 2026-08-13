@@ -7,7 +7,6 @@
 use serde::{Deserialize, Serialize};
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_core::message::{Message, Role, ToolCall};
 use deepagent_core::response_item::ResponseOutputItem;
 
 use crate::chat::{FinishReason, Response, Usage};
@@ -404,10 +403,6 @@ impl ResponseAccumulator {
                 "Responses stream ended without a terminal response event",
             ));
         }
-        let mut message = Message::text(Role::Assistant, self.content);
-        if !self.reasoning.is_empty() {
-            message.reasoning_content = Some(self.reasoning.clone());
-        }
         let mut fallback_items = Vec::new();
         if !self.reasoning.is_empty() {
             fallback_items.push(ResponseOutputItem::Reasoning {
@@ -424,16 +419,6 @@ impl ResponseAccumulator {
             } else {
                 builder.arguments.trim()
             };
-            let arguments = if builder.custom {
-                serde_json::json!({"patch": args})
-            } else {
-                serde_json::from_str(args).unwrap_or_else(|e| serde_json::json!({"__invalid_tool_arguments__":true,"raw":args,"parse_error":e.to_string()}))
-            };
-            message.tool_calls.push(ToolCall {
-                id: id.clone(),
-                name: builder.name.clone().unwrap_or_else(|| "tool".into()),
-                arguments: arguments.clone(),
-            });
             if builder.custom {
                 fallback_items.push(ResponseOutputItem::CustomToolCall {
                     call_id: id,
@@ -448,10 +433,10 @@ impl ResponseAccumulator {
                 });
             }
         }
-        if !message.content.is_empty() || fallback_items.is_empty() {
+        if !self.content.is_empty() || fallback_items.is_empty() {
             fallback_items.push(ResponseOutputItem::Message {
                 role: "assistant".into(),
-                content: message.content.clone(),
+                content: self.content.clone(),
             });
         }
         let mut output_items = self.output_items;
@@ -461,7 +446,6 @@ impl ResponseAccumulator {
             }
         }
         Ok(Response::from_parts(
-            message,
             output_items,
             self.terminal,
             self.usage,

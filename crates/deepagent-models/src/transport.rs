@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
 
-/// An outbound chat request at the transport level (already serialized).
+/// An outbound Responses request at the transport level (already serialized).
 #[derive(Debug, Clone)]
 pub struct TransportRequest {
     /// Full endpoint URL.
