@@ -138,7 +138,7 @@ export function ShortcutsSettings() {
                         <FontAwesomeIcon icon={["fas", "pen"]} className="text-[11px]" />
                       </button>
                       <button className="hover:text-red-500 transition-colors">
-                        <FontAwesomeIcon icon={["fas", "trash-alt"]} className="text-[12px]" />
+                        <FontAwesomeIcon icon={["fas", "trash"]} className="text-[12px]" />
                       </button>
                     </div>
                   </div>
