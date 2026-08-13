@@ -377,6 +377,37 @@ impl ModelAgent {
         self.messages.push(message);
     }
 
+    fn push_tool_observation(&mut self, call_id: String, tool_name: &str, content: String) {
+        let is_custom = tool_name == "apply_patch"
+            || self.response_items.iter().any(|item| {
+                matches!(
+                    item,
+                    ResponseInputItem::CustomToolCall {
+                        call_id: existing,
+                        ..
+                    } if existing == &call_id
+                )
+            });
+        if is_custom {
+            self.response_items
+                .push(ResponseInputItem::CustomToolCallOutput {
+                    call_id: call_id.clone(),
+                    output: content.clone(),
+                });
+        } else {
+            self.response_items
+                .push(ResponseInputItem::FunctionCallOutput {
+                    call_id: call_id.clone(),
+                    output: content.clone(),
+                });
+        }
+        // Keep the provider input item-native while maintaining the
+        // compatibility projection used by UI rendering, compaction, and stall
+        // transcripts. Do not route this through `push_message`, or it would
+        // re-derive a second Responses output item from the tool-role message.
+        self.messages.push(Message::tool_result(call_id, content));
+    }
+
     fn replace_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
         self.sync_response_history_from_messages();
@@ -719,7 +750,7 @@ impl ModelAgent {
         };
         let content = serde_json::to_string(&envelope).unwrap_or_else(|_| obs.output.to_string());
         if let Some(call_id) = call_id {
-            self.push_message(Message::tool_result(call_id, content));
+            self.push_tool_observation(call_id, &obs.tool, content);
         } else {
             // Verification, Stop-hook and CompletionGate feedback is generated
             // by the kernel, not by a model tool_use block. Sending it as a
@@ -1773,7 +1804,9 @@ impl ModelAgent {
             if invocations.iter().any(|inv| inv.name == "todo_write") {
                 self.turns_since_todo_write = 0;
             }
-            // Track the last id for the legacy single-call fallback path.
+            // Track the last id for observations from callers that cannot
+            // attach a call_id yet. Normal tool feedback carries the explicit
+            // Responses `call_id`.
             self.pending_tool_call_id = item_calls.last().map(|(id, _, _)| id.clone());
             if invocations.len() == 1 {
                 return Ok(AgentDecision::CallTool(
@@ -3043,7 +3076,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn feeds_observation_back_as_tool_message() {
+    async fn feeds_observation_back_as_response_item_and_projection() {
         let events = response_text_completed("sum is 3");
         let mut agent = ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "add", vec![]);
         let obs = Observation {
@@ -3053,7 +3086,15 @@ mod tests {
             call_id: Some("c1".to_string()),
         };
         agent.think(1, std::slice::from_ref(&obs)).await.unwrap();
-        // A tool-role message correlated to c1 was inserted.
+        assert!(agent.response_items.iter().any(|item| {
+            matches!(
+                item,
+                ResponseInputItem::FunctionCallOutput { call_id, output }
+                    if call_id == "c1" && output.contains("\"sum\":3")
+            )
+        }));
+        // A tool-role compatibility projection correlated to c1 is still kept
+        // for UI, compaction, and stall transcripts.
         let tool_msg = agent
             .conversation()
             .iter()
@@ -3095,6 +3136,45 @@ mod tests {
                     .as_str()
                     .is_some_and(|text| text.contains("\"sum\":3"))
         }));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_observation_feedback_enters_request_as_custom_tool_output() {
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([response_text_completed("patched")])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let mut agent =
+            ModelAgent::new(client, "deepseek-v4-flash", "sys", "patch", vec![]);
+        let obs = Observation {
+            tool: "apply_patch".to_string(),
+            ok: true,
+            output: serde_json::json!({"status": "ok"}),
+            call_id: Some("call-patch".to_string()),
+        };
+
+        agent.think(1, &[obs]).await.unwrap();
+
+        let requests = transport.requests.lock().unwrap();
+        let input = requests[0]["input"].as_array().unwrap();
+        assert!(input.iter().any(|item| {
+            item["type"] == "custom_tool_call_output"
+                && item["call_id"] == "call-patch"
+                && item["output"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("\"status\":\"ok\""))
+        }));
+        assert!(
+            !input.iter().any(|item| {
+                item["type"] == "function_call_output"
+                    && item["call_id"] == "call-patch"
+            }),
+            "apply_patch must stay on Responses custom tool output path"
+        );
     }
 
     #[tokio::test]
