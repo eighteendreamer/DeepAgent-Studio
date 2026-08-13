@@ -13,6 +13,7 @@ use deepagent_core::error::Result;
 use deepagent_core::event::EventPayload;
 use deepagent_core::id::TaskId;
 use deepagent_core::message::{Message, ToolCall};
+use deepagent_core::response_item::ResponseOutputItem;
 use deepagent_core::task::TaskState;
 use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry, ToolBatchItem};
 use deepagent_session::Session;
@@ -85,6 +86,19 @@ pub enum RunOutcome {
     BudgetExceeded(String),
     /// Factual completion requirements repeatedly failed.
     CompletionFailed(String),
+}
+
+fn persist_response_items<C: Clock>(
+    session: &mut Session<'_, C>,
+    items: Vec<ResponseOutputItem>,
+) -> Result<bool> {
+    if items.is_empty() {
+        return Ok(false);
+    }
+    for item in items {
+        session.append_response_item(item)?;
+    }
+    Ok(true)
 }
 
 /// The result of the `UserPromptSubmit` gate (复刻规范 P1).
@@ -567,6 +581,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let mut finished = false;
         let mut completion_failures = 0usize;
         let mut adversarial_refutes = 0usize;
+        let mut raw_responses_usage: Vec<serde_json::Value> = Vec::new();
 
         // Verification state persists across attempts (tracks loop detection).
         let mut reflection_engine = self
@@ -655,6 +670,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 }
             }
             tracing::debug!(step, ?decision, "agent decision");
+            let provider_items_persisted =
+                persist_response_items(session, agent.take_pending_response_items())?;
+            raw_responses_usage.extend(agent.take_pending_raw_usage());
 
             match decision {
                 AgentDecision::Complete(msg) => {
@@ -716,7 +734,14 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     }
 
                     let message = Message::assistant(&content);
-                    session.append(EventPayload::MessageAppended { message })?;
+                    if provider_items_persisted {
+                        session
+                            .append_without_response_projection(EventPayload::MessageAppended {
+                                message,
+                            })?;
+                    } else {
+                        session.append(EventPayload::MessageAppended { message })?;
+                    }
                     session.transition_task(task, TaskState::Completed)?;
                     self.emit(RuntimeEvent::RunCompleted {
                         message: content.clone(),
@@ -836,7 +861,14 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         }
                     }
 
-                    session.append(EventPayload::MessageAppended { message })?;
+                    if provider_items_persisted {
+                        session
+                            .append_without_response_projection(EventPayload::MessageAppended {
+                                message,
+                            })?;
+                    } else {
+                        session.append(EventPayload::MessageAppended { message })?;
+                    }
                     session.transition_task(task, TaskState::Completed)?;
                     self.emit(RuntimeEvent::RunCompleted {
                         message: content.clone(),
@@ -868,10 +900,19 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                                 session_id,
                                 invocation,
                                 Some(speculative),
+                                provider_items_persisted,
                             )
                             .await?
                         }
-                        None => self.execute_tool(session, session_id, invocation).await?,
+                        None => {
+                            self.execute_tool(
+                                session,
+                                session_id,
+                                invocation,
+                                provider_items_persisted,
+                            )
+                            .await?
+                        }
                     };
                     last_observations = vec![observation];
                 }
@@ -879,7 +920,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 AgentDecision::CallTools(invocations) => {
                     let speculative = streaming_tools.take_speculative_batch(&invocations);
                     last_observations = self
-                        .execute_tools(session, session_id, invocations, speculative)
+                        .execute_tools(
+                            session,
+                            session_id,
+                            invocations,
+                            speculative,
+                            provider_items_persisted,
+                        )
                         .await?;
                 }
             }
@@ -907,6 +954,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 prompt_cache_hit_tokens: u.prompt_cache_hit_tokens,
                 prompt_cache_miss_tokens: u.prompt_cache_miss_tokens,
                 duration_ms,
+                raw_responses_usage: (!raw_responses_usage.is_empty())
+                    .then(|| serde_json::Value::Array(raw_responses_usage)),
             })?;
         }
 
@@ -1101,6 +1150,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         session_id: deepagent_core::id::SessionId,
         mut invocations: Vec<deepagent_tools::ToolInvocation>,
         mut speculative: std::collections::HashMap<String, SpeculativeToolExecution>,
+        provider_tool_calls_persisted: bool,
     ) -> Result<Vec<Observation>> {
         if invocations.len() <= 1 {
             let mut out = Vec::with_capacity(invocations.len());
@@ -1111,10 +1161,19 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     .and_then(|call_id| speculative.remove(call_id));
                 out.push(match early {
                     Some(early) => {
-                        self.execute_tool_with_speculative(session, session_id, inv, Some(early))
+                        self.execute_tool_with_speculative(
+                            session,
+                            session_id,
+                            inv,
+                            Some(early),
+                            provider_tool_calls_persisted,
+                        )
                             .await?
                     }
-                    None => self.execute_tool(session, session_id, inv).await?,
+                    None => {
+                        self.execute_tool(session, session_id, inv, provider_tool_calls_persisted)
+                            .await?
+                    }
                 });
             }
             return Ok(out);
@@ -1185,7 +1244,12 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     .and_then(|call_id| speculative.remove(call_id));
                 out.push(
                     self.execute_tool_with_before_and_speculative(
-                        session, session_id, inv, outcome, early,
+                        session,
+                        session_id,
+                        inv,
+                        outcome,
+                        early,
+                        provider_tool_calls_persisted,
                     )
                     .await?,
                 );
@@ -1344,12 +1408,19 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             result,
                             duration_ms,
                         },
+                        provider_tool_calls_persisted,
                     )
                     .await?,
                 );
             } else {
                 observations.push(
-                    self.execute_tool_with_before(session, session_id, inv, preflight.remove(&i))
+                    self.execute_tool_with_before(
+                        session,
+                        session_id,
+                        inv,
+                        preflight.remove(&i),
+                        provider_tool_calls_persisted,
+                    )
                         .await?,
                 );
             }
@@ -1465,6 +1536,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         session: &mut Session<'a, C>,
         session_id: deepagent_core::id::SessionId,
         completed: CompletedToolCall,
+        provider_tool_calls_persisted: bool,
     ) -> Result<Observation> {
         let CompletedToolCall {
             call_id,
@@ -1474,13 +1546,18 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             duration_ms,
         } = completed;
         self.metrics.incr(names::TOOL_CALLS, 1);
-        session.append(EventPayload::ToolCallRequested {
+        let requested = EventPayload::ToolCallRequested {
             call: ToolCall {
                 id: call_id.clone(),
                 name: tool_name.clone(),
                 arguments: arguments.clone(),
             },
-        })?;
+        };
+        if provider_tool_calls_persisted {
+            session.append_without_response_projection(requested)?;
+        } else {
+            session.append(requested)?;
+        }
 
         let (ok, value) = match result {
             Ok(out) => (out.ok, out.value),
@@ -1520,8 +1597,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         session: &mut Session<'a, C>,
         session_id: deepagent_core::id::SessionId,
         invocation: deepagent_tools::ToolInvocation,
+        provider_tool_calls_persisted: bool,
     ) -> Result<Observation> {
-        self.execute_tool_with_before_and_speculative(session, session_id, invocation, None, None)
+        self.execute_tool_with_before_and_speculative(
+            session,
+            session_id,
+            invocation,
+            None,
+            None,
+            provider_tool_calls_persisted,
+        )
             .await
     }
 
@@ -1531,6 +1616,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         session_id: deepagent_core::id::SessionId,
         invocation: deepagent_tools::ToolInvocation,
         speculative: Option<SpeculativeToolExecution>,
+        provider_tool_calls_persisted: bool,
     ) -> Result<Observation> {
         self.execute_tool_with_before_and_speculative(
             session,
@@ -1538,6 +1624,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             invocation,
             None,
             speculative,
+            provider_tool_calls_persisted,
         )
         .await
     }
@@ -1548,6 +1635,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         session_id: deepagent_core::id::SessionId,
         invocation: deepagent_tools::ToolInvocation,
         before_override: Option<HookOutcome>,
+        provider_tool_calls_persisted: bool,
     ) -> Result<Observation> {
         self.execute_tool_with_before_and_speculative(
             session,
@@ -1555,6 +1643,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             invocation,
             before_override,
             None,
+            provider_tool_calls_persisted,
         )
         .await
     }
@@ -1566,6 +1655,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         invocation: deepagent_tools::ToolInvocation,
         before_override: Option<HookOutcome>,
         speculative: Option<SpeculativeToolExecution>,
+        provider_tool_calls_persisted: bool,
     ) -> Result<Observation> {
         let cancel = self
             .cancel
@@ -1592,13 +1682,18 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let prepared = pipeline.prepare(invocation, before_override).await?;
         let result = match prepared {
             crate::tool_pipeline::ToolPreparation::Ready(prepared) => {
-                session.append(EventPayload::ToolCallRequested {
+                let requested = EventPayload::ToolCallRequested {
                     call: ToolCall {
                         id: prepared.call_id.clone(),
                         name: prepared.name.clone(),
                         arguments: prepared.arguments.clone(),
                     },
-                })?;
+                };
+                if provider_tool_calls_persisted {
+                    session.append_without_response_projection(requested)?;
+                } else {
+                    session.append(requested)?;
+                }
                 self.metrics.incr(names::TOOL_CALLS, 1);
                 match speculative {
                     Some(speculative) => match speculative.handle.await {
@@ -1626,13 +1721,18 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         .store(true, std::sync::atomic::Ordering::Release);
                     speculative.handle.abort();
                 }
-                session.append(EventPayload::ToolCallRequested {
+                let requested = EventPayload::ToolCallRequested {
                     call: ToolCall {
                         id: blocked.call_id.clone(),
                         name: blocked.name.clone(),
                         arguments: blocked.arguments.clone(),
                     },
-                })?;
+                };
+                if provider_tool_calls_persisted {
+                    session.append_without_response_projection(requested)?;
+                } else {
+                    session.append(requested)?;
+                }
                 blocked
             }
         };
@@ -2285,7 +2385,7 @@ mod tests {
     use deepagent_hooks::{
         Hook, HookContext, HookData, HookOutcome, HookPoint, HookRegistry, ToolAllowlistHook,
     };
-    use deepagent_persistence::Database;
+    use deepagent_persistence::{event_store::EventStore, Database};
     use deepagent_tools::permission::{PermissionSet, RiskLevel};
     use deepagent_tools::{Tool, ToolDescriptor, ToolInvocation, ToolOutput};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2390,6 +2490,48 @@ mod tests {
 
     struct StreamingBatchReadAgent {
         calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct NativeResponseItemAgent {
+        items: Vec<ResponseOutputItem>,
+    }
+
+    struct RawUsageAgent {
+        usage: crate::agent::RunUsage,
+        raw_usage: Vec<serde_json::Value>,
+    }
+
+    #[async_trait]
+    impl Agent for NativeResponseItemAgent {
+        async fn think(&mut self, step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            if step == 0 {
+                Ok(AgentDecision::CallTool(
+                    ToolInvocation::new("counting_read", serde_json::json!({"path": "native.txt"}))
+                        .with_id("native-call"),
+                ))
+            } else {
+                Ok(AgentDecision::CompleteMessage(Message::assistant("done")))
+            }
+        }
+
+        fn take_pending_response_items(&mut self) -> Vec<ResponseOutputItem> {
+            std::mem::take(&mut self.items)
+        }
+    }
+
+    #[async_trait]
+    impl Agent for RawUsageAgent {
+        async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            Ok(AgentDecision::Complete("done".into()))
+        }
+
+        fn cumulative_usage(&self) -> Option<crate::agent::RunUsage> {
+            Some(self.usage)
+        }
+
+        fn take_pending_raw_usage(&mut self) -> Vec<serde_json::Value> {
+            std::mem::take(&mut self.raw_usage)
+        }
     }
 
     #[async_trait]
@@ -2693,6 +2835,107 @@ mod tests {
             completed, 1,
             "commit must publish exactly one paired result"
         );
+    }
+
+    #[tokio::test]
+    async fn native_response_items_suppress_synthetic_assistant_projection() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("native items")).unwrap();
+        let task = session.create_task("read fixture").unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(CountingReadTool {
+                calls: calls.clone(),
+            }))
+            .unwrap();
+        let mut agent = NativeResponseItemAgent {
+            items: vec![
+                ResponseOutputItem::Reasoning {
+                    id: Some("rs_1".into()),
+                    content: "checking".into(),
+                },
+                ResponseOutputItem::FunctionCall {
+                    call_id: "native-call".into(),
+                    name: "counting_read".into(),
+                    arguments: r#"{"path":"native.txt"}"#.into(),
+                },
+            ],
+        };
+        let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default());
+
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+
+        assert_eq!(outcome, RunOutcome::Completed("done".into()));
+        let response_items: Vec<_> = EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::ResponseItemAppended { item } => Some(item),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            response_items
+                .iter()
+                .filter(|item| matches!(
+                    item,
+                    ResponseOutputItem::FunctionCall { call_id, .. } if call_id == "native-call"
+                ))
+                .count(),
+            1,
+            "provider function_call must not be duplicated by ToolCallRequested projection"
+        );
+        assert!(response_items.iter().any(|item| matches!(
+            item,
+            ResponseOutputItem::FunctionCallOutput { call_id, .. } if call_id == "native-call"
+        )));
+    }
+
+    #[tokio::test]
+    async fn usage_recorded_persists_raw_responses_usage() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("usage")).unwrap();
+        let task = session.create_task("finish").unwrap();
+        let mut agent = RawUsageAgent {
+            usage: crate::agent::RunUsage {
+                prompt_tokens: 4,
+                completion_tokens: 5,
+                reasoning_tokens: 3,
+                total_tokens: 9,
+                prompt_cache_hit_tokens: 2,
+                prompt_cache_miss_tokens: 0,
+            },
+            raw_usage: vec![serde_json::json!({
+                "input_tokens": 4,
+                "input_tokens_details": {"cached_tokens": 2},
+                "output_tokens": 5,
+                "output_tokens_details": {"reasoning_tokens": 3},
+                "total_tokens": 9
+            })],
+        };
+        let registry = registry();
+        let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default());
+
+        engine.run(&mut session, task, &mut agent).await.unwrap();
+
+        let usage = EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match event.payload {
+                EventPayload::UsageRecorded {
+                    raw_responses_usage,
+                    ..
+                } => raw_responses_usage,
+                _ => None,
+            })
+            .expect("raw usage persisted");
+        assert_eq!(usage[0]["input_tokens"], 4);
+        assert_eq!(usage[0]["output_tokens_details"]["reasoning_tokens"], 3);
     }
 
     #[tokio::test]

@@ -6,50 +6,7 @@
 //! metadata use these item semantics.
 
 use deepagent_core::message::{Message, Role};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ResponseItem {
-    Message {
-        role: String,
-        content: String,
-    },
-    Reasoning {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        content: String,
-    },
-    FunctionCall {
-        call_id: String,
-        name: String,
-        /// Responses requires the raw JSON string, not a JSON object.
-        arguments: String,
-    },
-    FunctionCallOutput {
-        call_id: String,
-        output: String,
-    },
-    CustomToolCall {
-        call_id: String,
-        name: String,
-        input: String,
-    },
-    CustomToolCallOutput {
-        call_id: String,
-        output: String,
-    },
-    WebSearchCall {
-        id: String,
-        status: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        action: Option<serde_json::Value>,
-    },
-}
-
-pub type ResponseInputItem = ResponseItem;
-pub type ResponseOutputItem = ResponseItem;
+pub use deepagent_core::response_item::{ResponseInputItem, ResponseItem, ResponseOutputItem};
 
 /// Convert the context projection into ordered Responses input items.
 pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Vec<ResponseItem>) {
@@ -79,9 +36,16 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
                 }
             }
             _ => {
-                // DeepSeek Responses rejects `reasoning` as an input item
-                // (verified against the live API on 2026-08-13). Preserve it
-                // in internal/persisted items, but never replay it on the wire.
+                if let Some(reasoning) = message
+                    .reasoning_content
+                    .as_deref()
+                    .filter(|text| !text.is_empty())
+                {
+                    items.push(ResponseItem::Reasoning {
+                        id: None,
+                        content: reasoning.to_string(),
+                    });
+                }
                 for call in &message.tool_calls {
                     if call.name == "apply_patch" {
                         items.push(ResponseItem::CustomToolCall {
@@ -126,7 +90,7 @@ mod tests {
     fn maps_tool_roundtrip_to_responses_items() {
         let messages = vec![
             Message::system("rules"),
-            Message::assistant("").with_tool_calls(vec![ToolCall {
+            Message::assistant("").with_reasoning("thinking").with_tool_calls(vec![ToolCall {
                 id: "call-1".into(),
                 name: "weather".into(),
                 arguments: serde_json::json!({"city":"Beijing"}),
@@ -136,10 +100,13 @@ mod tests {
         let (instructions, items) = response_items_from_messages(&messages);
         assert_eq!(instructions.as_deref(), Some("rules"));
         assert!(
-            matches!(&items[0], ResponseItem::FunctionCall { call_id, arguments, .. } if call_id == "call-1" && arguments.contains("Beijing"))
+            matches!(&items[0], ResponseItem::Reasoning { content, .. } if content == "thinking")
         );
         assert!(
-            matches!(&items[1], ResponseItem::FunctionCallOutput { call_id, .. } if call_id == "call-1")
+            matches!(&items[1], ResponseItem::FunctionCall { call_id, arguments, .. } if call_id == "call-1" && arguments.contains("Beijing"))
+        );
+        assert!(
+            matches!(&items[2], ResponseItem::FunctionCallOutput { call_id, .. } if call_id == "call-1")
         );
     }
 

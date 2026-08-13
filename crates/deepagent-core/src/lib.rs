@@ -21,6 +21,7 @@ pub mod error;
 pub mod event;
 pub mod id;
 pub mod message;
+pub mod response_item;
 pub mod session_mode;
 pub mod task;
 

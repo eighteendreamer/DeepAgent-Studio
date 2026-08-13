@@ -7,6 +7,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::{Event, EventPayload};
 use deepagent_core::id::SessionId;
 use deepagent_core::message::{Message, Role};
+use deepagent_core::response_item::ResponseItem;
 use deepagent_persistence::runtime_log_store::{NewRuntimeLogEntry, RuntimeLogStore};
 use deepagent_persistence::Database;
 use deepagent_runtime::{InputEnvelope, InputLeaseRegistry, LeaseDecision};
@@ -336,71 +337,56 @@ fn conversation_from_response_items(events: &[Event]) -> Vec<Message> {
         let EventPayload::ResponseItemAppended { item } = &event.payload else {
             continue;
         };
-        match item
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-        {
-            "reasoning" => {
-                pending_reasoning = item
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
+        match item {
+            ResponseItem::Reasoning { content, .. } => {
+                pending_reasoning = (!content.is_empty()).then(|| content.clone());
             }
-            "message" => {
-                let role = match item.get("role").and_then(serde_json::Value::as_str) {
-                    Some("assistant") => Role::Assistant,
-                    Some("system") => Role::System,
+            ResponseItem::Message { role, content } => {
+                let role = match role.as_str() {
+                    "assistant" => Role::Assistant,
+                    "system" => Role::System,
                     _ => Role::User,
                 };
-                let mut message = Message::text(
-                    role,
-                    item.get("content")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default(),
-                );
+                let mut message = Message::text(role, content.clone());
                 if role == Role::Assistant {
                     message.reasoning_content = pending_reasoning.take();
                 }
                 out.push(message);
             }
-            "function_call" | "custom_tool_call" => {
-                let raw = item
-                    .get("arguments")
-                    .or_else(|| item.get("input"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("{}");
-                let arguments = if item["type"] == "custom_tool_call" {
-                    serde_json::json!({"patch":raw})
-                } else {
+            ResponseItem::FunctionCall {
+                call_id,
+                name,
+                arguments: raw,
+            } => {
+                let arguments =
                     serde_json::from_str(raw).unwrap_or_else(|error| serde_json::json!({
                         "__invalid_tool_arguments__": true, "raw": raw, "parse_error": error.to_string()
-                    }))
-                };
+                    }));
                 out.push(Message::assistant("").with_tool_calls(vec![
-                        deepagent_core::message::ToolCall {
-                            id: item
-                                .get("call_id")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                            name: item
-                                .get("name")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("tool")
-                                .to_string(),
-                            arguments,
-                        },
-                    ]));
+                    deepagent_core::message::ToolCall {
+                        id: call_id.clone(),
+                        name: name.clone(),
+                        arguments,
+                    },
+                ]));
             }
-            "function_call_output" | "custom_tool_call_output" => out.push(Message::tool_result(
-                item.get("call_id")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default(),
-                item.get("output")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default(),
-            )),
+            ResponseItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+            } => {
+                out.push(Message::assistant("").with_tool_calls(vec![
+                    deepagent_core::message::ToolCall {
+                        id: call_id.clone(),
+                        name: name.clone(),
+                        arguments: serde_json::json!({"patch": input}),
+                    },
+                ]));
+            }
+            ResponseItem::FunctionCallOutput { call_id, output }
+            | ResponseItem::CustomToolCallOutput { call_id, output } => {
+                out.push(Message::tool_result(call_id.clone(), output.clone()));
+            }
             _ => {}
         }
     }
@@ -625,6 +611,73 @@ mod tests {
         let convo = conversation_with_tool_pairs_from_events(&events);
         assert!(convo[1].content.contains("tool output truncated"));
         assert!(convo[1].content.chars().count() < REPLAY_TOOL_RESULT_MAX_CHARS + 300);
+    }
+
+    #[test]
+    fn responses_item_replay_preserves_reasoning_and_tool_pairs() {
+        let sid = SessionId::nil();
+        let events = vec![
+            event(
+                sid,
+                0,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::Message {
+                        role: "user".into(),
+                        content: "do it".into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                1,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::Reasoning {
+                        id: None,
+                        content: "need a file read".into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                2,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::FunctionCall {
+                        call_id: "call-1".into(),
+                        name: "read_file".into(),
+                        arguments: r#"{"path":"a.txt"}"#.into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                3,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::FunctionCallOutput {
+                        call_id: "call-1".into(),
+                        output: r#"{"status":"ok"}"#.into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                4,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::Message {
+                        role: "assistant".into(),
+                        content: "done".into(),
+                    },
+                },
+            ),
+        ];
+
+        let convo = conversation_with_tool_pairs_from_events(&events);
+
+        assert_eq!(convo.len(), 4);
+        assert_eq!(convo[0].role, Role::User);
+        assert_eq!(convo[1].tool_calls[0].id, "call-1");
+        assert_eq!(convo[2].role, Role::Tool);
+        assert_eq!(convo[3].content, "done");
+        assert_eq!(convo[3].reasoning_content.as_deref(), Some("need a file read"));
     }
 
     #[test]

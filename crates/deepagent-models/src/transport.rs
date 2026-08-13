@@ -26,7 +26,7 @@ pub struct TransportRequest {
 ///
 /// Implementations push each decoded SSE `data:` payload to `on_event`. The
 /// boxed closure returns `Ok(true)` to signal the caller wants to stop early
-/// (e.g. `[DONE]` was seen).
+/// (e.g. a Responses terminal event was seen).
 #[async_trait]
 pub trait HttpTransport: Send + Sync {
     /// Perform the request and drive `sink` with each SSE payload string.
@@ -140,12 +140,13 @@ mod tests {
 
     #[tokio::test]
     async fn mock_transport_replays_events() {
-        let transport =
-            MockTransport::new(["a".to_string(), "b".to_string(), "[DONE]".to_string()]);
+        let terminal =
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string();
+        let transport = MockTransport::new(["a".to_string(), "b".to_string(), terminal.clone()]);
         let mut seen = Vec::new();
         let mut sink = |data: &str| {
             seen.push(data.to_string());
-            Ok(data == "[DONE]")
+            Ok(data.contains(r#""type":"response.completed""#))
         };
         transport
             .stream(
@@ -158,6 +159,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(seen, vec!["a", "b", "[DONE]"]);
+        assert_eq!(seen, vec!["a", "b", terminal.as_str()]);
     }
 }

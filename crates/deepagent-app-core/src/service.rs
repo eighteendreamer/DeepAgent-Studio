@@ -429,6 +429,7 @@ impl AppService {
                     prompt_cache_hit_tokens,
                     prompt_cache_miss_tokens,
                     duration_ms,
+                    raw_responses_usage,
                 } => {
                     // Attach the run's persisted usage to the current (last)
                     // assistant turn so the replayed footer matches the live one.
@@ -441,6 +442,7 @@ impl AppService {
                         prompt_cache_hit_tokens: *prompt_cache_hit_tokens,
                         prompt_cache_miss_tokens: *prompt_cache_miss_tokens,
                         duration_ms: *duration_ms,
+                        raw_responses_usage: raw_responses_usage.clone(),
                         cost_yuan: recorded_costs.next(),
                     });
                 }

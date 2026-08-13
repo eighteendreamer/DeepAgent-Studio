@@ -41,6 +41,8 @@ C_YELLOW = "\033[33m"
 C_RED = "\033[31m"
 C_BOLD = "\033[1m"
 
+TERMINAL_EVENTS = {"response.completed", "response.incomplete", "response.failed"}
+
 
 def hr(title: str) -> None:
     print(f"\n{C_BOLD}{C_CYAN}{'=' * 70}{C_RESET}")
@@ -183,7 +185,7 @@ def probe_chat_stream(key: str, model: str) -> None:
     hr("3. POST /responses（语义 SSE）—— 每个 event 形态")
     payload = {
         "model": model,
-        "input": [{"role": "user", "content": "从 1 数到 3。"}],
+        "input": [{"type": "message", "role": "user", "content": "从 1 数到 3。"}],
         "stream": True,
     }
     pretty("request", payload)
@@ -198,15 +200,23 @@ def probe_chat_stream(key: str, model: str) -> None:
                     print(f"{C_YELLOW}非 data 行: {line}{C_RESET}")
                     continue
                 data = line[len("data:"):].strip()
-                if data == "[DONE]":
-                    print(f"{C_DIM}[DONE]{C_RESET}")
-                    break
                 count += 1
+                event_type = None
                 if count <= 8:  # 只详细打印前几个
                     try:
-                        pretty(f"chunk #{count}", json.loads(data))
+                        event = json.loads(data)
+                        event_type = event.get("type")
+                        pretty(f"chunk #{count}", event)
                     except Exception:  # noqa: BLE001
                         print(f"chunk #{count}: {data}")
+                else:
+                    try:
+                        event_type = json.loads(data).get("type")
+                    except Exception:  # noqa: BLE001
+                        event_type = None
+                if event_type in TERMINAL_EVENTS:
+                    print(f"{C_GREEN}终态事件: {event_type}{C_RESET}")
+                    break
             print(f"{C_GREEN}共收到 {count} 个 data chunk{C_RESET}")
     except urllib.error.HTTPError as exc:
         read_error(exc)
@@ -229,7 +239,7 @@ def probe_tool_request(key: str, model: str):
     hr("4. function calling —— Responses function_call 精确结构")
     payload = {
         "model": model,
-        "input": [{"role": "user", "content": "北京今天天气怎么样？"}],
+        "input": [{"type": "message", "role": "user", "content": "北京今天天气怎么样？"}],
         "tools": [_weather_tool()],
         "stream": False,
     }
@@ -302,7 +312,7 @@ def probe_custom_apply_patch(key: str, model: str) -> None:
     hr("6. custom apply_patch —— 验证 custom tool SSE")
     payload = {
         "model": model,
-        "input": [{"role": "user", "content": "You must use apply_patch to propose adding one newline to demo.txt; do not answer in prose."}],
+        "input": [{"type": "message", "role": "user", "content": "You must use apply_patch to propose adding one newline to demo.txt; do not answer in prose."}],
         "tools": [{
             "type": "custom", "name": "apply_patch",
             "description": "Return a patch as plain text", "format": {"type": "text"},
@@ -317,10 +327,12 @@ def probe_custom_apply_patch(key: str, model: str) -> None:
                 if not line.startswith("data:"):
                     continue
                 data = line[len("data:"):].strip()
-                if not data or data == "[DONE]":
+                if not data:
                     continue
                 event = json.loads(data)
                 seen.append(event.get("type"))
+                if event.get("type") in TERMINAL_EVENTS:
+                    break
         required = {"response.custom_tool_call_input.delta", "response.custom_tool_call_input.done", "response.completed"}
         print(f"{C_GREEN}custom tool 事件齐全: {required.issubset(set(seen))}{C_RESET}")
     except urllib.error.HTTPError as exc:
@@ -330,7 +342,7 @@ def probe_native_web_search(key: str, model: str) -> None:
     hr("7. native web_search —— 验证 item_id 生命周期")
     payload = {
         "model": model,
-        "input": [{"role": "user", "content": "Search for today's date and answer briefly."}],
+        "input": [{"type": "message", "role": "user", "content": "Search for today's date and answer briefly."}],
         "tools": [{"type": "web_search"}],
         "stream": True,
     }
@@ -342,11 +354,13 @@ def probe_native_web_search(key: str, model: str) -> None:
                 if not line.startswith("data:"):
                     continue
                 data = line[len("data:"):].strip()
-                if not data or data == "[DONE]":
+                if not data:
                     continue
                 event = json.loads(data)
                 if event.get("type", "").startswith("response.web_search_call."):
                     lifecycle.append((event.get("type"), bool(event.get("item_id"))))
+                if event.get("type") in TERMINAL_EVENTS:
+                    break
         print(f"{C_GREEN}web_search 生命周期: {lifecycle}{C_RESET}")
     except urllib.error.HTTPError as exc:
         read_error(exc)

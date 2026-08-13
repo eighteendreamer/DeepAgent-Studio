@@ -482,7 +482,7 @@ pub struct ConversationMessageDto {
 }
 
 /// Persisted per-turn token usage + duration (mirrors `UsageRecorded`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationUsageDto {
     /// Prompt (input) tokens.
     pub prompt_tokens: u32,
@@ -499,6 +499,9 @@ pub struct ConversationUsageDto {
     pub prompt_cache_miss_tokens: u32,
     /// Wall-clock run duration in milliseconds.
     pub duration_ms: u64,
+    /// Raw Responses usage object(s) returned by the provider, if present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_responses_usage: Option<serde_json::Value>,
     /// Backend-computed RMB cost for this assistant turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_yuan: Option<f64>,

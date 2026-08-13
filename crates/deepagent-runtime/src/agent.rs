@@ -9,6 +9,7 @@ use async_trait::async_trait;
 
 use deepagent_core::error::Result;
 use deepagent_core::message::Message;
+use deepagent_core::response_item::ResponseOutputItem;
 use deepagent_tools::ToolInvocation;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -149,6 +150,20 @@ pub trait Agent: Send + Sync {
     /// agents that don't track it); model-backed agents sum each call's usage.
     fn cumulative_usage(&self) -> Option<RunUsage> {
         None
+    }
+
+    /// Drain provider-native Responses output items produced by the most
+    /// recent model turn. Non-model agents return nothing; model-backed
+    /// agents use this to persist exact item semantics alongside the legacy
+    /// UI `Message` projection.
+    fn take_pending_response_items(&mut self) -> Vec<ResponseOutputItem> {
+        Vec::new()
+    }
+
+    /// Drain raw provider Responses usage objects reported since the previous
+    /// runtime checkpoint. Default empty for non-model agents.
+    fn take_pending_raw_usage(&mut self) -> Vec<serde_json::Value> {
+        Vec::new()
     }
 }
 

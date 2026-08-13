@@ -15,6 +15,7 @@ use deepagent_core::clock::{Clock, Timestamp};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::{Event, EventPayload};
 use deepagent_core::id::{SessionId, TaskId};
+use deepagent_core::response_item::ResponseItem;
 use deepagent_persistence::event_store::{EventStore, SessionRecord};
 use deepagent_persistence::Database;
 
@@ -33,7 +34,7 @@ fn response_items_for_payload(
     store: &EventStore<'_>,
     session_id: SessionId,
     payload: &EventPayload,
-) -> Result<Vec<serde_json::Value>> {
+) -> Result<Vec<ResponseItem>> {
     let mut items = Vec::new();
     match payload {
         EventPayload::MessageAppended { message } => {
@@ -42,48 +43,58 @@ fn response_items_for_payload(
                 .as_deref()
                 .filter(|text| !text.is_empty())
             {
-                items.push(serde_json::json!({ "type": "reasoning", "content": reasoning }));
+                items.push(ResponseItem::Reasoning {
+                    id: None,
+                    content: reasoning.to_string(),
+                });
             }
             for call in &message.tool_calls {
                 if call.name == "apply_patch" {
-                    items.push(serde_json::json!({
-                        "type": "custom_tool_call",
-                        "call_id": call.id,
-                        "name": call.name,
-                        "input": call.arguments.get("patch").and_then(serde_json::Value::as_str).unwrap_or_default(),
-                    }));
+                    items.push(ResponseItem::CustomToolCall {
+                        call_id: call.id.clone(),
+                        name: call.name.clone(),
+                        input: call
+                            .arguments
+                            .get("patch")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    });
                 } else {
-                    items.push(serde_json::json!({
-                        "type": "function_call",
-                        "call_id": call.id,
-                        "name": call.name,
-                        "arguments": serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string()),
-                    }));
+                    items.push(ResponseItem::FunctionCall {
+                        call_id: call.id.clone(),
+                        name: call.name.clone(),
+                        arguments: serde_json::to_string(&call.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    });
                 }
             }
             if !message.content.is_empty() || message.tool_calls.is_empty() {
-                items.push(serde_json::json!({
-                    "type": "message",
-                    "role": message.role.as_str(),
-                    "content": message.content,
-                }));
+                items.push(ResponseItem::Message {
+                    role: message.role.as_str().to_string(),
+                    content: message.content.clone(),
+                });
             }
         }
         EventPayload::ToolCallRequested { call } => {
             if call.name == "apply_patch" {
-                items.push(serde_json::json!({
-                    "type": "custom_tool_call",
-                    "call_id": call.id,
-                    "name": call.name,
-                    "input": call.arguments.get("patch").and_then(serde_json::Value::as_str).unwrap_or_default(),
-                }));
+                items.push(ResponseItem::CustomToolCall {
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    input: call
+                        .arguments
+                        .get("patch")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                });
             } else {
-                items.push(serde_json::json!({
-                    "type": "function_call",
-                    "call_id": call.id,
-                    "name": call.name,
-                    "arguments": serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string()),
-                }));
+                items.push(ResponseItem::FunctionCall {
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: serde_json::to_string(&call.arguments)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                });
             }
         }
         EventPayload::ToolCallCompleted {
@@ -96,15 +107,22 @@ fn response_items_for_payload(
                 matches!(&event.payload, EventPayload::ToolCallRequested { call }
                     if call.id == *call_id && call.name == "apply_patch")
             });
-            items.push(serde_json::json!({
-                "type": if custom { "custom_tool_call_output" } else { "function_call_output" },
-                "call_id": call_id,
-                "output": if *ok {
+            let output = if *ok {
                     serde_json::json!({"status":"ok","result":output}).to_string()
                 } else {
                     serde_json::json!({"status":"error","error":output}).to_string()
-                },
-            }));
+                };
+            if custom {
+                items.push(ResponseItem::CustomToolCallOutput {
+                    call_id: call_id.clone(),
+                    output,
+                });
+            } else {
+                items.push(ResponseItem::FunctionCallOutput {
+                    call_id: call_id.clone(),
+                    output,
+                });
+            }
         }
         _ => {}
     }
@@ -234,9 +252,37 @@ impl<'db, C: Clock> Session<'db, C> {
     /// Append a payload to the stream and update the projection. Returns the
     /// persisted [`Event`].
     pub fn append(&mut self, payload: EventPayload) -> Result<Event> {
+        self.append_with_response_projection(payload, true)
+    }
+
+    /// Append a payload without deriving synthetic Responses items.
+    ///
+    /// Model-backed runtime turns call this after they have already persisted
+    /// provider-native `response.output` items. Keeping this path explicit
+    /// prevents duplicate model-history items while preserving the legacy
+    /// `append` behavior for tests and non-model embedders.
+    pub fn append_without_response_projection(&mut self, payload: EventPayload) -> Result<Event> {
+        self.append_with_response_projection(payload, false)
+    }
+
+    /// Persist one provider-native Responses item exactly as returned by the
+    /// model stream.
+    pub fn append_response_item(&mut self, item: ResponseItem) -> Result<Event> {
+        self.append_with_response_projection(EventPayload::ResponseItemAppended { item }, false)
+    }
+
+    fn append_with_response_projection(
+        &mut self,
+        payload: EventPayload,
+        project_response_items: bool,
+    ) -> Result<Event> {
         let now = self.clock.now();
         let store = EventStore::new(self.db);
-        let response_items = response_items_for_payload(&store, self.id, &payload)?;
+        let response_items = if project_response_items {
+            response_items_for_payload(&store, self.id, &payload)?
+        } else {
+            Vec::new()
+        };
         let event = store.append(self.id, payload, now)?;
         self.state.apply(&event.payload);
         for item in response_items {
@@ -493,10 +539,18 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(items[0]["type"], "function_call");
-        assert_eq!(items[0]["arguments"], r#"{"path":"a.txt"}"#);
-        assert_eq!(items[1]["type"], "function_call_output");
-        assert_eq!(items[1]["call_id"], "call-1");
+        assert!(matches!(
+            &items[0],
+            ResponseItem::FunctionCall {
+                call_id,
+                arguments,
+                ..
+            } if call_id == "call-1" && arguments == r#"{"path":"a.txt"}"#
+        ));
+        assert!(matches!(
+            &items[1],
+            ResponseItem::FunctionCallOutput { call_id, .. } if call_id == "call-1"
+        ));
     }
 
     #[test]

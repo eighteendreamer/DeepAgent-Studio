@@ -5,7 +5,8 @@
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use deepagent_core::message::Message;
+use deepagent_core::message::{Message, Role, ToolCall};
+use deepagent_core::response_item::{ResponseInputItem, ResponseOutputItem};
 
 /// DeepSeek Thinking Mode depth exposed to users.
 ///
@@ -123,9 +124,11 @@ pub struct FunctionSchema {
 pub struct ResponseRequest {
     /// Target model id (e.g. `"deepseek-v4-flash"` / `"deepseek-v4-pro"`).
     pub model: String,
-    /// Conversation so far. Serialization projects it to ordered Responses
-    /// message, function/custom call, and paired output items.
-    pub messages: Vec<Message>,
+    /// System/developer instructions. Serialized as Responses `instructions`.
+    pub instructions: Option<String>,
+    /// Ordered Responses input items (`message`, `reasoning`, function/custom
+    /// tool calls and paired outputs, web search calls).
+    pub input: Vec<ResponseInputItem>,
     /// Whether to stream the response as SSE.
     pub stream: bool,
     /// Sampling temperature.
@@ -156,11 +159,10 @@ impl Serialize for ResponseRequest {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("model", &self.model)?;
-        let (instructions, input) = crate::responses::response_items_from_messages(&self.messages);
-        if let Some(value) = instructions {
+        if let Some(value) = &self.instructions {
             map.serialize_entry("instructions", &value)?;
         }
-        map.serialize_entry("input", &input)?;
+        map.serialize_entry("input", &self.input)?;
         map.serialize_entry("stream", &self.stream)?;
         if let Some(value) = self.temperature {
             map.serialize_entry("temperature", &value)?;
@@ -209,9 +211,20 @@ pub struct StreamOptions {
 impl ResponseRequest {
     /// Build a non-streaming request for `model` with `messages`.
     pub fn new(model: impl Into<String>, messages: Vec<Message>) -> Self {
+        let (instructions, input) = crate::responses::response_items_from_messages(&messages);
+        Self::from_response_items(model, instructions, input)
+    }
+
+    /// Build a request from already-normalized Responses input items.
+    pub fn from_response_items(
+        model: impl Into<String>,
+        instructions: Option<String>,
+        input: Vec<ResponseInputItem>,
+    ) -> Self {
         Self {
             model: model.into(),
-            messages,
+            instructions,
+            input,
             stream: false,
             temperature: None,
             max_output_tokens: None,
@@ -235,6 +248,15 @@ impl ResponseRequest {
     pub fn with_tools(mut self, tools: Vec<ToolSchema>) -> Self {
         self.tools = tools;
         self
+    }
+
+    /// Refresh the Responses `instructions`/`input` projection after the
+    /// runtime mutates its provider-neutral conversation state. This keeps
+    /// retry-time changes such as `max_output_tokens` escalation intact.
+    pub fn replace_messages(&mut self, messages: &[Message]) {
+        let (instructions, input) = crate::responses::response_items_from_messages(messages);
+        self.instructions = instructions;
+        self.input = input;
     }
 
     /// Set temperature (builder style).
@@ -322,10 +344,96 @@ pub struct Usage {
 pub struct Response {
     /// The assistant message (content + reasoning_content + tool_calls).
     pub message: Message,
+    /// Provider-native Responses output items. Runtime/UI may still use
+    /// `message` as a compatibility projection, but persistence and recovery
+    /// can retain exact item semantics.
+    pub output_items: Vec<ResponseOutputItem>,
     /// Why generation finished, if reported.
     pub finish_reason: Option<FinishReason>,
     /// Token usage, if reported.
     pub usage: Option<Usage>,
+    /// Raw provider Responses usage object, preserved for diagnostics and
+    /// future billing fields without changing the existing UI projection.
+    pub raw_usage: Option<serde_json::Value>,
+}
+
+impl Response {
+    /// Build the UI/runtime compatibility projection from native Responses
+    /// output items. Model execution should prefer this centralized item
+    /// projection over reading `message.tool_calls` directly.
+    pub fn assistant_message_projection(&self) -> Message {
+        let mut content = String::new();
+        let mut reasoning: Option<String> = None;
+        let mut tool_calls = Vec::new();
+        for item in &self.output_items {
+            match item {
+                ResponseOutputItem::Message { role, content: text } if role == "assistant" => {
+                    content.push_str(text);
+                }
+                ResponseOutputItem::Reasoning { content: text, .. } if !text.is_empty() => {
+                    reasoning = Some(match reasoning.take() {
+                        Some(mut existing) => {
+                            existing.push_str(text);
+                            existing
+                        }
+                        None => text.clone(),
+                    });
+                }
+                ResponseOutputItem::FunctionCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => tool_calls.push(ToolCall {
+                    id: call_id.clone(),
+                    name: name.clone(),
+                    arguments: parse_function_arguments(arguments),
+                }),
+                ResponseOutputItem::CustomToolCall {
+                    call_id,
+                    name,
+                    input,
+                } => tool_calls.push(ToolCall {
+                    id: call_id.clone(),
+                    name: name.clone(),
+                    arguments: serde_json::json!({ "patch": input }),
+                }),
+                _ => {}
+            }
+        }
+        if content.is_empty() {
+            content = self.message.content.clone();
+        }
+        if reasoning.is_none() {
+            reasoning = self.message.reasoning_content.clone();
+        }
+        if tool_calls.is_empty() {
+            tool_calls = self.message.tool_calls.clone();
+        }
+        let mut message = Message::text(Role::Assistant, content);
+        message.reasoning_content = reasoning;
+        message.tool_calls = tool_calls;
+        message
+    }
+
+    /// Extract local tool invocations from native Responses output items.
+    pub fn tool_invocations_from_items(&self) -> Vec<(String, String, serde_json::Value)> {
+        self.assistant_message_projection()
+            .tool_calls
+            .into_iter()
+            .map(|call| (call.id, call.name, call.arguments))
+            .collect()
+    }
+}
+
+fn parse_function_arguments(raw: &str) -> serde_json::Value {
+    let args = if raw.trim().is_empty() { "{}" } else { raw.trim() };
+    serde_json::from_str(args).unwrap_or_else(|error| {
+        serde_json::json!({
+            "__invalid_tool_arguments__": true,
+            "raw": args,
+            "parse_error": error.to_string(),
+        })
+    })
 }
 
 #[cfg(test)]

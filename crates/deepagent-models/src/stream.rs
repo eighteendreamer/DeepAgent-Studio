@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::{Message, Role, ToolCall};
+use deepagent_core::response_item::ResponseOutputItem;
 
 use crate::chat::{FinishReason, Response, Usage};
 
@@ -18,7 +19,9 @@ pub struct ResponseAccumulator {
     content: String,
     reasoning: String,
     tool_calls: Vec<ToolCallBuilder>,
+    output_items: Vec<ResponseOutputItem>,
     usage: Option<Usage>,
+    raw_usage: Option<serde_json::Value>,
     terminal: Option<FinishReason>,
     saw_terminal: bool,
 }
@@ -123,6 +126,7 @@ impl ResponseAccumulator {
             "response.output_item.done" => {
                 if let Some(item) = value.get("item") {
                     self.add_item(item, observer);
+                    self.record_output_item(item);
                     if let Some(call_id) = item.get("call_id").and_then(serde_json::Value::as_str) {
                         if let Some(builder) = self
                             .tool_calls
@@ -170,6 +174,7 @@ impl ResponseAccumulator {
                 if let Some(usage) =
                     parse_response_usage(value.get("response").and_then(|v| v.get("usage")))
                 {
+                    self.raw_usage = value.get("response").and_then(|v| v.get("usage")).cloned();
                     self.usage = Some(usage);
                     observer.on_event(ModelStreamEvent::Usage { usage });
                 }
@@ -184,6 +189,7 @@ impl ResponseAccumulator {
                 if let Some(usage) =
                     parse_response_usage(value.get("response").and_then(|v| v.get("usage")))
                 {
+                    self.raw_usage = value.get("response").and_then(|v| v.get("usage")).cloned();
                     self.usage = Some(usage);
                     observer.on_event(ModelStreamEvent::Usage { usage });
                 }
@@ -309,6 +315,89 @@ impl ResponseAccumulator {
         });
     }
 
+    fn record_output_item(&mut self, item: &serde_json::Value) {
+        let Some(kind) = item.get("type").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        let parsed = match kind {
+            "message" => {
+                let role = item
+                    .get("role")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("assistant")
+                    .to_string();
+                let content = output_text_from_message_item(item)
+                    .unwrap_or_else(|| self.content.clone());
+                Some(ResponseOutputItem::Message { role, content })
+            }
+            "reasoning" => Some(ResponseOutputItem::Reasoning {
+                id: item
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                content: item
+                    .get("content")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            }),
+            "function_call" => Some(ResponseOutputItem::FunctionCall {
+                call_id: item
+                    .get("call_id")
+                    .or_else(|| item.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name: item
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("tool")
+                    .to_string(),
+                arguments: item
+                    .get("arguments")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            }),
+            "custom_tool_call" => Some(ResponseOutputItem::CustomToolCall {
+                call_id: item
+                    .get("call_id")
+                    .or_else(|| item.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name: item
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("apply_patch")
+                    .to_string(),
+                input: item
+                    .get("input")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            }),
+            "web_search_call" => Some(ResponseOutputItem::WebSearchCall {
+                id: item
+                    .get("id")
+                    .or_else(|| item.get("call_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                status: item
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("completed")
+                    .to_string(),
+                action: item.get("action").cloned(),
+            }),
+            _ => None,
+        };
+        if let Some(parsed) = parsed {
+            self.output_items.push(parsed);
+        }
+    }
+
     pub fn finish(mut self) -> Result<Response> {
         if !self.saw_terminal {
             return Err(CoreError::other(
@@ -317,7 +406,14 @@ impl ResponseAccumulator {
         }
         let mut message = Message::text(Role::Assistant, self.content);
         if !self.reasoning.is_empty() {
-            message.reasoning_content = Some(self.reasoning);
+            message.reasoning_content = Some(self.reasoning.clone());
+        }
+        let mut fallback_items = Vec::new();
+        if !self.reasoning.is_empty() {
+            fallback_items.push(ResponseOutputItem::Reasoning {
+                id: None,
+                content: self.reasoning.clone(),
+            });
         }
         for builder in self.tool_calls.drain(..) {
             let id = builder
@@ -334,17 +430,54 @@ impl ResponseAccumulator {
                 serde_json::from_str(args).unwrap_or_else(|e| serde_json::json!({"__invalid_tool_arguments__":true,"raw":args,"parse_error":e.to_string()}))
             };
             message.tool_calls.push(ToolCall {
-                id,
-                name: builder.name.unwrap_or_else(|| "tool".into()),
-                arguments,
+                id: id.clone(),
+                name: builder.name.clone().unwrap_or_else(|| "tool".into()),
+                arguments: arguments.clone(),
+            });
+            if builder.custom {
+                fallback_items.push(ResponseOutputItem::CustomToolCall {
+                    call_id: id,
+                    name: builder.name.unwrap_or_else(|| "apply_patch".into()),
+                    input: args.to_string(),
+                });
+            } else {
+                fallback_items.push(ResponseOutputItem::FunctionCall {
+                    call_id: id,
+                    name: builder.name.unwrap_or_else(|| "tool".into()),
+                    arguments: args.to_string(),
+                });
+            }
+        }
+        if !message.content.is_empty() || fallback_items.is_empty() {
+            fallback_items.push(ResponseOutputItem::Message {
+                role: "assistant".into(),
+                content: message.content.clone(),
             });
         }
         Ok(Response {
             message,
+            output_items: if self.output_items.is_empty() {
+                fallback_items
+            } else {
+                self.output_items
+            },
             finish_reason: self.terminal,
             usage: self.usage,
+            raw_usage: self.raw_usage,
         })
     }
+}
+
+fn output_text_from_message_item(item: &serde_json::Value) -> Option<String> {
+    let mut out = String::new();
+    for part in item.get("content")?.as_array()? {
+        if part.get("type").and_then(serde_json::Value::as_str) == Some("output_text") {
+            if let Some(text) = part.get("text").and_then(serde_json::Value::as_str) {
+                out.push_str(text);
+            }
+        }
+    }
+    Some(out)
 }
 
 fn parse_response_usage(value: Option<&serde_json::Value>) -> Option<Usage> {
@@ -374,58 +507,6 @@ fn parse_response_usage(value: Option<&serde_json::Value>) -> Option<Usage> {
             .unwrap_or(0) as u32,
         prompt_cache_miss_tokens: 0,
     })
-}
-
-// Kept test-only to exercise compatibility expectations against captured
-// pre-migration failure samples. Production code only compiles and exports
-// `ResponseAccumulator`.
-#[cfg(test)]
-#[derive(Debug, Clone, Deserialize)]
-struct ChatChunk {
-    #[serde(default)]
-    choices: Vec<ChunkChoice>,
-    #[serde(default)]
-    usage: Option<Usage>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Deserialize)]
-struct ChunkChoice {
-    #[serde(default)]
-    delta: Delta,
-    #[serde(default)]
-    finish_reason: Option<FinishReason>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Default, Deserialize)]
-struct Delta {
-    #[serde(default)]
-    content: Option<String>,
-    #[serde(default)]
-    reasoning_content: Option<String>,
-    #[serde(default)]
-    tool_calls: Vec<ToolCallDelta>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Default, Deserialize)]
-struct ToolCallDelta {
-    #[serde(default)]
-    index: usize,
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    function: Option<FunctionDelta>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Default, Deserialize)]
-struct FunctionDelta {
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    arguments: Option<String>,
 }
 
 /// Provider-neutral semantic model stream used by Agent Kernel v2.
@@ -514,16 +595,6 @@ pub trait DeltaObserver: Send {
 pub struct NoopObserver;
 impl DeltaObserver for NoopObserver {}
 
-#[cfg(test)]
-#[derive(Debug, Default)]
-struct DeltaAccumulator {
-    content: String,
-    reasoning: String,
-    tool_calls: Vec<ToolCallBuilder>,
-    finish_reason: Option<FinishReason>,
-    usage: Option<Usage>,
-}
-
 #[derive(Debug, Default)]
 struct ToolCallBuilder {
     index: usize,
@@ -536,262 +607,18 @@ struct ToolCallBuilder {
 }
 
 #[cfg(test)]
-impl DeltaAccumulator {
-    /// New empty accumulator.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Fold one chunk into the accumulator.
-    pub fn push_chunk(&mut self, chunk: &ChatChunk) {
-        self.push_chunk_observed(chunk, &mut NoopObserver);
-    }
-
-    /// Fold one chunk and notify `observer` of the semantic fragments it carried
-    /// (content / reasoning / new tool-call names).
-    pub fn push_chunk_observed(&mut self, chunk: &ChatChunk, observer: &mut dyn DeltaObserver) {
-        if let Some(usage) = chunk.usage {
-            self.usage = Some(usage);
-            observer.on_event(ModelStreamEvent::Usage { usage });
-        }
-        let Some(choice) = chunk.choices.first() else {
-            return;
-        };
-        if let Some(reason) = choice.finish_reason {
-            self.finish_reason = Some(reason);
-            observer.on_event(ModelStreamEvent::Finished {
-                reason: Some(reason),
-            });
-        }
-        let delta = &choice.delta;
-        if let Some(c) = &delta.content {
-            self.content.push_str(c);
-            if !c.is_empty() {
-                observer.on_event(ModelStreamEvent::ContentDelta { text: c.clone() });
-            }
-        }
-        if let Some(r) = &delta.reasoning_content {
-            self.reasoning.push_str(r);
-            if !r.is_empty() {
-                observer.on_event(ModelStreamEvent::ReasoningDelta { text: r.clone() });
-            }
-        }
-        for tc in &delta.tool_calls {
-            // Detect a tool-call name becoming known for the first time.
-            let known = self
-                .tool_calls
-                .iter()
-                .find(|b| b.index == tc.index)
-                .map(|b| b.name.is_some())
-                .unwrap_or(false);
-            self.merge_tool_call(tc);
-            if !known {
-                if let Some(name) = self
-                    .tool_calls
-                    .iter()
-                    .find(|b| b.index == tc.index)
-                    .and_then(|b| b.name.clone())
-                {
-                    observer.on_event(ModelStreamEvent::ToolCallStarted {
-                        index: tc.index,
-                        id: tc.id.clone(),
-                        name,
-                    });
-                }
-            }
-            if let Some(arguments) = tc
-                .function
-                .as_ref()
-                .and_then(|function| function.arguments.as_ref())
-                .filter(|arguments| !arguments.is_empty())
-            {
-                observer.on_event(ModelStreamEvent::ToolArgumentsDelta {
-                    index: tc.index,
-                    delta: arguments.clone(),
-                });
-            }
-            if let Some(event) = self.take_completed_event(tc.index) {
-                observer.on_event(event);
-            }
-        }
-    }
-
-    /// Parse a single SSE `data:` payload and fold it. Returns `Ok(true)` if the
-    /// payload was the `[DONE]` sentinel (stream finished).
-    pub fn push_sse_data(&mut self, data: &str) -> Result<bool> {
-        self.push_sse_data_observed(data, &mut NoopObserver)
-    }
-
-    /// Like [`DeltaAccumulator::push_sse_data`] but notifies `observer` of
-    /// semantic fragments.
-    pub fn push_sse_data_observed(
-        &mut self,
-        data: &str,
-        observer: &mut dyn DeltaObserver,
-    ) -> Result<bool> {
-        let trimmed = data.trim();
-        if trimmed == "[DONE]" {
-            return Ok(true);
-        }
-        if trimmed.is_empty() {
-            return Ok(false);
-        }
-        let chunk: ChatChunk = serde_json::from_str(trimmed)
-            .map_err(|e| CoreError::Serialization(format!("bad chunk: {e}")))?;
-        self.push_chunk_observed(&chunk, observer);
-        Ok(false)
-    }
-
-    fn merge_tool_call(&mut self, delta: &ToolCallDelta) {
-        // Find or create the builder for this index.
-        let builder = match self.tool_calls.iter_mut().find(|b| b.index == delta.index) {
-            Some(b) => b,
-            None => {
-                self.tool_calls.push(ToolCallBuilder {
-                    index: delta.index,
-                    item_id: None,
-                    custom: false,
-                    ..Default::default()
-                });
-                self.tool_calls.last_mut().expect("just pushed a builder")
-            }
-        };
-        if let Some(id) = &delta.id {
-            // Once a synthetic id has been observed it must stay stable so a
-            // later provider fragment cannot orphan the UI/tool result pair.
-            if builder.id.is_none() {
-                builder.id = Some(id.clone());
-            }
-        }
-        if let Some(func) = &delta.function {
-            if let Some(name) = &func.name {
-                builder.name = Some(name.clone());
-            }
-            if let Some(args) = &func.arguments {
-                builder.arguments.push_str(args);
-            }
-        }
-        if builder.name.is_some() && builder.id.is_none() {
-            builder.id = Some(format!("call_stream_{}", builder.index));
-        }
-    }
-
-    fn take_completed_event(&mut self, index: usize) -> Option<ModelStreamEvent> {
-        let builder = self.tool_calls.iter_mut().find(|b| b.index == index)?;
-        if builder.completed_emitted {
-            return None;
-        }
-        let name = builder.name.as_ref()?.trim();
-        if name.is_empty() {
-            return None;
-        }
-        // An empty fragment is commonly the provider's tool-call preamble,
-        // not proof that the call takes no arguments. Wait for actual JSON;
-        // truly empty arguments are normalized to `{}` only at stream finish.
-        if builder.arguments.trim().is_empty() {
-            return None;
-        }
-        let arguments = serde_json::from_str::<serde_json::Value>(builder.arguments.trim()).ok()?;
-        if !arguments.is_object() {
-            return None;
-        }
-        let id = builder.id.clone()?;
-        builder.completed_emitted = true;
-        Some(ModelStreamEvent::ToolCallCompleted {
-            index,
-            id,
-            name: name.to_string(),
-            arguments,
-        })
-    }
-
-    /// Whether any tool calls were accumulated.
-    pub fn has_tool_calls(&self) -> bool {
-        !self.tool_calls.is_empty()
-    }
-
-    /// Finalize into a [`Response`]. Tool-call argument strings are parsed
-    /// as JSON; an empty/blank argument string becomes `{}`.
-    pub fn finish(mut self) -> Result<Response> {
-        if self.content.trim().is_empty()
-            && self.reasoning.trim().is_empty()
-            && self.tool_calls.is_empty()
-        {
-            return Err(CoreError::other(
-                "empty model stream: provider returned no content, reasoning, or tool calls",
-            ));
-        }
-        self.tool_calls.sort_by_key(|b| b.index);
-
-        let mut tool_calls = Vec::with_capacity(self.tool_calls.len());
-        let mut call_ids = std::collections::HashSet::with_capacity(self.tool_calls.len());
-        for b in &self.tool_calls {
-            let args_str = if b.arguments.trim().is_empty() {
-                "{}"
-            } else {
-                b.arguments.trim()
-            };
-            // Malformed argument JSON must NOT abort the whole turn: killing
-            // the run for one bad provider fragment orphans every other tool
-            // call in the batch. Degrade to a sentinel object the pipeline's
-            // validation gate rejects deterministically — the model gets a
-            // paired failure result and can retry (Claude Code parity).
-            let arguments: serde_json::Value = match serde_json::from_str(args_str) {
-                Ok(value) => value,
-                Err(error) => serde_json::json!({
-                    "__invalid_tool_arguments__": true,
-                    "raw": args_str,
-                    "parse_error": error.to_string(),
-                }),
-            };
-            if !arguments.is_object() {
-                return Err(CoreError::Serialization(format!(
-                    "tool call {} arguments must be a JSON object",
-                    b.index
-                )));
-            }
-            let name = b.name.as_deref().unwrap_or_default().trim();
-            if name.is_empty() {
-                return Err(CoreError::Serialization(format!(
-                    "tool call {} is missing a function name",
-                    b.index
-                )));
-            }
-            let id =
-                b.id.clone()
-                    .unwrap_or_else(|| format!("call_stream_{}", b.index));
-            if !call_ids.insert(id.clone()) {
-                return Err(CoreError::Serialization(format!(
-                    "duplicate tool call id: {id}"
-                )));
-            }
-            tool_calls.push(ToolCall {
-                id,
-                name: name.to_string(),
-                arguments,
-            });
-        }
-
-        let mut message = Message::text(Role::Assistant, self.content);
-        if !self.reasoning.is_empty() {
-            message.reasoning_content = Some(self.reasoning);
-        }
-        message.tool_calls = tool_calls;
-
-        Ok(Response {
-            message,
-            finish_reason: self.finish_reason,
-            usage: self.usage,
-        })
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn chunk(json: serde_json::Value) -> ChatChunk {
-        serde_json::from_value(json).unwrap()
+    fn event(acc: &mut ResponseAccumulator, json: &str) {
+        acc.push_sse_data_observed(json, &mut NoopObserver).unwrap();
+    }
+
+    fn complete(acc: &mut ResponseAccumulator) {
+        event(
+            acc,
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+        );
     }
 
     #[test]
@@ -826,29 +653,35 @@ mod tests {
             }
         }
 
-        let mut acc = DeltaAccumulator::new();
+        let mut acc = ResponseAccumulator::new();
         let mut rec = Rec::default();
-        acc.push_chunk_observed(
-            &chunk(serde_json::json!({"choices":[{"delta":{"reasoning_content":"think "}}]})),
+        acc.push_sse_data_observed(
+            r#"{"type":"response.reasoning_text.delta","delta":"think "}"#,
             &mut rec,
-        );
-        acc.push_chunk_observed(
-            &chunk(serde_json::json!({"choices":[{"delta":{"content":"Hi"}}]})),
+        )
+        .unwrap();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.output_text.delta","delta":"Hi"}"#,
             &mut rec,
-        );
-        acc.push_chunk_observed(
-            &chunk(serde_json::json!({"choices":[{"delta":{"tool_calls":[
-                {"index":0,"id":"c0","function":{"name":"search","arguments":""}}
-            ]}}]})),
+        )
+        .unwrap();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_0","call_id":"c0","name":"search","arguments":""}}"#,
             &mut rec,
-        );
-        // A second arguments fragment for the same call must NOT re-fire on_tool_call.
-        acc.push_chunk_observed(
-            &chunk(serde_json::json!({"choices":[{"delta":{"tool_calls":[
-                {"index":0,"function":{"arguments":"{}"}}
-            ]}}]})),
+        )
+        .unwrap();
+        // Argument deltas for the same item must NOT re-fire on_tool_call.
+        acc.push_sse_data_observed(
+            r#"{"type":"response.function_call_arguments.delta","item_id":"fc_0","delta":"{}"}"#,
             &mut rec,
-        );
+        )
+        .unwrap();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.function_call_arguments.done","item_id":"fc_0","arguments":"{}"}"#,
+            &mut rec,
+        )
+        .unwrap();
+        complete(&mut acc);
 
         assert_eq!(rec.content, "Hi");
         assert_eq!(rec.reasoning, "think ");
@@ -861,12 +694,15 @@ mod tests {
 
     #[test]
     fn merges_content_fragments_in_order() {
-        let mut acc = DeltaAccumulator::new();
+        let mut acc = ResponseAccumulator::new();
         for frag in ["Hel", "lo, ", "world"] {
-            acc.push_chunk(&chunk(serde_json::json!({
-                "choices": [{ "delta": { "content": frag } }]
-            })));
+            event(
+                &mut acc,
+                &serde_json::json!({"type":"response.output_text.delta","delta":frag})
+                    .to_string(),
+            );
         }
+        complete(&mut acc);
         let resp = acc.finish().unwrap();
         assert_eq!(resp.message.content, "Hello, world");
         assert!(resp.message.reasoning_content.is_none());
@@ -874,13 +710,15 @@ mod tests {
 
     #[test]
     fn preserves_markdown_latex_and_chart_characters() {
-        let mut acc = DeltaAccumulator::new();
+        let mut acc = ResponseAccumulator::new();
         let delta = r#"```echarts
 {"title":{"text":"$E=mc^2$ \ce{H2O}"}}
 ```"#;
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "content": delta } }]
-        })));
+        event(
+            &mut acc,
+            &serde_json::json!({"type":"response.output_text.delta","delta":delta}).to_string(),
+        );
+        complete(&mut acc);
 
         let resp = acc.finish().unwrap();
         assert_eq!(resp.message.content, delta);
@@ -891,16 +729,20 @@ mod tests {
 
     #[test]
     fn preserves_reasoning_content() {
-        let mut acc = DeltaAccumulator::new();
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "reasoning_content": "Let me think... " } }]
-        })));
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "reasoning_content": "the answer is 4." } }]
-        })));
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "content": "4" } }]
-        })));
+        let mut acc = ResponseAccumulator::new();
+        event(
+            &mut acc,
+            r#"{"type":"response.reasoning_text.delta","delta":"Let me think... "}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.reasoning_text.delta","delta":"the answer is 4."}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.output_text.delta","delta":"4"}"#,
+        );
+        complete(&mut acc);
         let resp = acc.finish().unwrap();
         assert_eq!(
             resp.message.reasoning_content.as_deref(),
@@ -911,29 +753,30 @@ mod tests {
 
     #[test]
     fn merges_fragmented_tool_call_arguments() {
-        // Simulates DeepSeek streaming: name in the first fragment, arguments
-        // streamed char-by-char across subsequent fragments.
-        let mut acc = DeltaAccumulator::new();
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "tool_calls": [
-                { "index": 0, "id": "call_abc",
-                  "function": { "name": "add", "arguments": "" } }
-            ]}}]
-        })));
+        let mut acc = ResponseAccumulator::new();
+        event(
+            &mut acc,
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_abc","call_id":"call_abc","name":"add","arguments":""}}"#,
+        );
         for frag in ["{\"a\"", ": 2, ", "\"b\": 3}"] {
-            acc.push_chunk(&chunk(serde_json::json!({
-                "choices": [{ "delta": { "tool_calls": [
-                    { "index": 0, "function": { "arguments": frag } }
-                ]}}]
-            })));
+            event(
+                &mut acc,
+                &serde_json::json!({
+                    "type":"response.function_call_arguments.delta",
+                    "item_id":"fc_abc",
+                    "delta": frag
+                })
+                .to_string(),
+            );
         }
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": {}, "finish_reason": "tool_calls" }]
-        })));
+        event(
+            &mut acc,
+            r#"{"type":"response.function_call_arguments.done","item_id":"fc_abc","arguments":"{\"a\": 2, \"b\": 3}"}"#,
+        );
+        complete(&mut acc);
 
-        assert!(acc.has_tool_calls());
         let resp = acc.finish().unwrap();
-        assert_eq!(resp.finish_reason, Some(FinishReason::ToolCalls));
+        assert_eq!(resp.finish_reason, Some(FinishReason::Stop));
         assert_eq!(resp.message.tool_calls.len(), 1);
         let call = &resp.message.tool_calls[0];
         assert_eq!(call.id, "call_abc");
@@ -943,19 +786,24 @@ mod tests {
 
     #[test]
     fn merges_multiple_parallel_tool_calls() {
-        let mut acc = DeltaAccumulator::new();
-        // Two calls interleaved by index.
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "tool_calls": [
-                { "index": 0, "id": "c0", "function": { "name": "f0", "arguments": "{}" } },
-                { "index": 1, "id": "c1", "function": { "name": "f1", "arguments": "{" } }
-            ]}}]
-        })));
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "tool_calls": [
-                { "index": 1, "function": { "arguments": "\"x\": 1}" } }
-            ]}}]
-        })));
+        let mut acc = ResponseAccumulator::new();
+        event(
+            &mut acc,
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_0","call_id":"c0","name":"f0","arguments":"{}"}}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"c1","name":"f1","arguments":"{"}}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"\"x\": 1}"}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{\"x\": 1}"}"#,
+        );
+        complete(&mut acc);
         let resp = acc.finish().unwrap();
         assert_eq!(resp.message.tool_calls.len(), 2);
         assert_eq!(resp.message.tool_calls[0].name, "f0");
@@ -966,31 +814,41 @@ mod tests {
     }
 
     #[test]
-    fn sse_done_sentinel_detected() {
-        let mut acc = DeltaAccumulator::new();
+    fn completed_terminal_event_finishes_stream() {
+        let mut acc = ResponseAccumulator::new();
         assert!(!acc
-            .push_sse_data("{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}")
+            .push_sse_data_observed(
+                r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                &mut NoopObserver,
+            )
             .unwrap());
-        assert!(acc.push_sse_data("[DONE]").unwrap());
+        assert!(acc
+            .push_sse_data_observed(
+                r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+                &mut NoopObserver,
+            )
+            .unwrap());
         let resp = acc.finish().unwrap();
         assert_eq!(resp.message.content, "hi");
     }
 
     #[test]
     fn empty_sse_line_is_noop() {
-        let mut acc = DeltaAccumulator::new();
-        assert!(!acc.push_sse_data("").unwrap());
-        assert!(!acc.push_sse_data("   ").unwrap());
+        let mut acc = ResponseAccumulator::new();
+        assert!(acc.push_sse_data_observed("", &mut NoopObserver).is_err());
+        assert!(acc
+            .push_sse_data_observed("   ", &mut NoopObserver)
+            .is_err());
     }
 
     #[test]
     fn blank_tool_arguments_become_empty_object() {
-        let mut acc = DeltaAccumulator::new();
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "tool_calls": [
-                { "index": 0, "id": "c", "function": { "name": "noargs", "arguments": "" } }
-            ]}}]
-        })));
+        let mut acc = ResponseAccumulator::new();
+        event(
+            &mut acc,
+            r#"{"type":"response.output_item.done","item":{"type":"function_call","id":"fc","call_id":"c","name":"noargs","arguments":""}}"#,
+        );
+        complete(&mut acc);
         let resp = acc.finish().unwrap();
         assert_eq!(resp.message.tool_calls[0].arguments, serde_json::json!({}));
     }
@@ -1001,12 +859,12 @@ mod tests {
         // whole turn (which would orphan sibling tool calls). They become a
         // sentinel object the pipeline's validation gate rejects with a
         // paired failure result.
-        let mut acc = DeltaAccumulator::new();
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "tool_calls": [
-                { "index": 0, "function": { "name": "bad", "arguments": "{not json" } }
-            ]}}]
-        })));
+        let mut acc = ResponseAccumulator::new();
+        event(
+            &mut acc,
+            r#"{"type":"response.output_item.done","item":{"type":"function_call","id":"fc","call_id":"bad-call","name":"bad","arguments":"{not json"}}"#,
+        );
+        complete(&mut acc);
         let resp = acc.finish().unwrap();
         let arguments = &resp.message.tool_calls[0].arguments;
         assert_eq!(arguments["__invalid_tool_arguments__"], true);
@@ -1015,46 +873,30 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_tool_call_ids_are_rejected() {
-        let mut acc = DeltaAccumulator::new();
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "tool_calls": [
-                { "index": 0, "id": "same", "function": { "name": "first", "arguments": "{}" } },
-                { "index": 1, "id": "same", "function": { "name": "second", "arguments": "{}" } }
-            ]}}]
-        })));
+    fn stream_without_terminal_event_is_rejected() {
+        let mut acc = ResponseAccumulator::new();
+        event(
+            &mut acc,
+            r#"{"type":"response.output_text.delta","delta":"partial"}"#,
+        );
         assert!(acc
             .finish()
             .unwrap_err()
             .to_string()
-            .contains("duplicate tool call id"));
-    }
-
-    #[test]
-    fn tool_call_without_name_is_rejected() {
-        let mut acc = DeltaAccumulator::new();
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "tool_calls": [
-                { "index": 0, "id": "c0", "function": { "arguments": "{}" } }
-            ]}}]
-        })));
-        assert!(acc
-            .finish()
-            .unwrap_err()
-            .to_string()
-            .contains("missing a function name"));
+            .contains("terminal response event"));
     }
 
     #[test]
     fn captures_usage_from_final_chunk() {
-        let mut acc = DeltaAccumulator::new();
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [{ "delta": { "content": "hi" } }]
-        })));
-        acc.push_chunk(&chunk(serde_json::json!({
-            "choices": [],
-            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
-        })));
+        let mut acc = ResponseAccumulator::new();
+        event(
+            &mut acc,
+            r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
+        );
         let resp = acc.finish().unwrap();
         assert_eq!(resp.usage.unwrap().total_tokens, 15);
     }
@@ -1142,6 +984,11 @@ mod tests {
             response.message.tool_calls[0].arguments["patch"],
             "*** Begin Patch\n*** End Patch"
         );
+        assert!(matches!(
+            &response.output_items[0],
+            ResponseOutputItem::CustomToolCall { call_id, input, .. }
+                if call_id == "call_1" && input == "*** Begin Patch\n*** End Patch"
+        ));
     }
 
     #[test]
@@ -1171,5 +1018,37 @@ mod tests {
         let response = acc.finish().unwrap();
         assert_eq!(response.finish_reason, Some(FinishReason::Length));
         assert_eq!(response.usage.unwrap().total_tokens, 9);
+        assert_eq!(
+            response
+                .raw_usage
+                .as_ref()
+                .and_then(|usage| usage.get("input_tokens"))
+                .and_then(serde_json::Value::as_u64),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn responses_output_item_done_persists_message_item() {
+        let mut acc = ResponseAccumulator::new();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}}"#,
+            &mut NoopObserver,
+        )
+        .unwrap();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#,
+            &mut NoopObserver,
+        )
+        .unwrap();
+
+        let response = acc.finish().unwrap();
+
+        assert!(matches!(
+            &response.output_items[0],
+            ResponseOutputItem::Message { role, content }
+                if role == "assistant" && content == "Hello"
+        ));
+        assert_eq!(response.raw_usage.as_ref().unwrap()["total_tokens"], 2);
     }
 }

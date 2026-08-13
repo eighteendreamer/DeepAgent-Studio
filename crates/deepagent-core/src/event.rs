@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::Timestamp;
 use crate::id::{EventId, SessionId, TaskId};
 use crate::message::{Message, ToolCall};
+use crate::response_item::ResponseItem;
 use crate::session_mode::SessionMode;
 use crate::task::TaskState;
 
@@ -93,7 +94,7 @@ pub enum EventPayload {
 
     /// Provider-neutral Responses item persisted for exact model-context
     /// recovery. UI projections continue to use `MessageAppended`.
-    ResponseItemAppended { item: serde_json::Value },
+    ResponseItemAppended { item: ResponseItem },
 
     /// The model requested a tool invocation.
     ToolCallRequested {
@@ -147,6 +148,11 @@ pub enum EventPayload {
         prompt_cache_miss_tokens: u32,
         /// Wall-clock duration of the run in milliseconds.
         duration_ms: u64,
+        /// Raw provider Responses usage object(s), one per model call that
+        /// returned usage. Persisted for diagnostics/future billing without
+        /// exposing prompt text or credentials.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_responses_usage: Option<serde_json::Value>,
     },
 
     /// One or more deferred tools were discovered via the `tool_search`

@@ -509,6 +509,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                         prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
                         prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
                         duration_ms: 0,
+                        raw_responses_usage: None,
                     });
                 }
                 KernelTerminal {

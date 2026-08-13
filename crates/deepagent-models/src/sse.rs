@@ -63,8 +63,17 @@ mod tests {
     #[test]
     fn parses_complete_lines() {
         let mut p = SseParser::new();
-        let out = p.feed("data: {\"a\":1}\ndata: [DONE]\n");
-        assert_eq!(out, vec!["{\"a\":1}".to_string(), "[DONE]".to_string()]);
+        let out = p.feed(
+            "data: {\"a\":1}\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n",
+        );
+        assert_eq!(
+            out,
+            vec![
+                "{\"a\":1}".to_string(),
+                "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]

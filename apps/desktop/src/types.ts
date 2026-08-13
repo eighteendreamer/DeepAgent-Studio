@@ -164,6 +164,7 @@ export interface ConversationUsage {
   prompt_cache_hit_tokens: number;
   prompt_cache_miss_tokens: number;
   duration_ms: number;
+  raw_responses_usage?: unknown;
   cost_yuan?: number;
 }
 

@@ -16,6 +16,7 @@ use async_trait::async_trait;
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::{Message, Role};
+use deepagent_core::response_item::ResponseOutputItem;
 use deepagent_models::chat::{FinishReason, ThinkingDepth};
 use deepagent_models::{
     classify_model_error, DeltaObserver, ModelClient, ModelFailureKind, ModelStreamEvent, Response,
@@ -220,6 +221,10 @@ pub struct ModelAgent {
     events: Option<Arc<dyn RuntimeEventSink>>,
     /// Cumulative token usage summed across every model call this run.
     usage: crate::agent::RunUsage,
+    /// Provider-native Responses output items from the latest completed model
+    /// turn, drained by the runtime loop into the append-only session log.
+    pending_response_items: Vec<ResponseOutputItem>,
+    pending_raw_usage: Vec<serde_json::Value>,
     /// DeepSeek Thinking Mode depth applied to every request.
     thinking_depth: ThinkingDepth,
     /// Provider attempts per turn for transient/empty-stream failures.
@@ -315,6 +320,8 @@ impl ModelAgent {
             pending_tool_call_id: None,
             events: None,
             usage: crate::agent::RunUsage::default(),
+            pending_response_items: Vec::new(),
+            pending_raw_usage: Vec::new(),
             thinking_depth: ThinkingDepth::default(),
             max_model_attempts: 3,
             fallback_model: None,
@@ -1267,6 +1274,14 @@ impl Agent for ModelAgent {
             Some(self.usage)
         }
     }
+
+    fn take_pending_response_items(&mut self) -> Vec<ResponseOutputItem> {
+        std::mem::take(&mut self.pending_response_items)
+    }
+
+    fn take_pending_raw_usage(&mut self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut self.pending_raw_usage)
+    }
 }
 
 impl ModelAgent {
@@ -1302,7 +1317,7 @@ impl ModelAgent {
         let mut request = ResponseRequest::new(self.model.clone(), self.messages.clone())
             .with_thinking_depth(self.thinking_depth)
             .with_tools(self.tools.clone());
-        let message_count = request.messages.len();
+        let message_count = self.messages.len();
         let tool_count = request.tools.len();
         let request_started_at = std::time::Instant::now();
         if let Some(sink) = &self.events {
@@ -1372,8 +1387,9 @@ impl ModelAgent {
                     // usable tool calls. Keep the partial output in the
                     // conversation and inject the resume prompt instead of
                     // failing the turn and discarding the partial work.
+                    let response_projection = response.assistant_message_projection();
                     if response.finish_reason == Some(FinishReason::Length)
-                        && response.message.tool_calls.is_empty()
+                        && response_projection.tool_calls.is_empty()
                         && max_output_recoveries < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT
                     {
                         if let Some(tools) = tools.as_deref_mut() {
@@ -1388,12 +1404,12 @@ impl ModelAgent {
                             self.usage.prompt_cache_miss_tokens += usage.prompt_cache_miss_tokens;
                         }
                         let mut partial =
-                            Message::text(Role::Assistant, response.message.content.clone());
-                        partial.reasoning_content = response.message.reasoning_content.clone();
+                            Message::text(Role::Assistant, response_projection.content.clone());
+                        partial.reasoning_content = response_projection.reasoning_content.clone();
                         self.messages.push(partial);
                         self.messages
                             .push(Message::user(MAX_OUTPUT_RECOVERY_PROMPT));
-                        request.messages = self.messages.clone();
+                        request.replace_messages(&self.messages);
                         max_output_recoveries += 1;
                         emit_attempt_reset(
                             self.events.as_ref(),
@@ -1432,7 +1448,7 @@ impl ModelAgent {
                             {
                                 Ok(Some(compacted)) => {
                                     self.messages = compacted.messages;
-                                    request.messages = self.messages.clone();
+                                    request.replace_messages(&self.messages);
                                     emit_attempt_reset(
                                         self.events.as_ref(),
                                         step,
@@ -1551,24 +1567,26 @@ impl ModelAgent {
                 });
             }
         }
+        if let Some(raw_usage) = response.raw_usage.clone() {
+            self.pending_raw_usage.push(raw_usage);
+        }
+        self.pending_response_items = response.output_items.clone();
 
         // Persist the assistant turn in the agent's running conversation.
         // Thinking Mode reasoning is preserved for both tool-call and final
         // turns so the outer session log can replay it after refresh.
-        let mut assistant = Message::text(Role::Assistant, response.message.content.clone());
-        assistant.tool_calls = response.message.tool_calls.clone();
-        assistant.reasoning_content = response.message.reasoning_content.clone();
+        let assistant = response.assistant_message_projection();
         self.messages.push(assistant);
 
         // Decide the next action. The model may emit several tool calls in one
         // turn (parallel tool calling) — carry all of them, each tagged with its
         // own id so results correlate back correctly.
-        let calls = &response.message.tool_calls;
-        if !calls.is_empty() {
-            let invocations: Vec<ToolInvocation> = calls
+        let item_calls = response.tool_invocations_from_items();
+        if !item_calls.is_empty() {
+            let invocations: Vec<ToolInvocation> = item_calls
                 .iter()
-                .map(|c| {
-                    ToolInvocation::new(c.name.clone(), c.arguments.clone()).with_id(c.id.clone())
+                .map(|(id, name, arguments)| {
+                    ToolInvocation::new(name.clone(), arguments.clone()).with_id(id.clone())
                 })
                 .collect();
             // Record this turn's call signature for the client-side doom-loop
@@ -1586,7 +1604,7 @@ impl ModelAgent {
                 self.turns_since_todo_write = 0;
             }
             // Track the last id for the legacy single-call fallback path.
-            self.pending_tool_call_id = calls.last().map(|c| c.id.clone());
+            self.pending_tool_call_id = item_calls.last().map(|(id, _, _)| id.clone());
             if invocations.len() == 1 {
                 return Ok(AgentDecision::CallTool(
                     invocations.into_iter().next().unwrap(),
@@ -1612,7 +1630,9 @@ impl ModelAgent {
                     self.messages.push(Message::user(nudge));
                     return Box::pin(self.think_inner(step, &[], cancel, tools)).await;
                 }
-                Ok(AgentDecision::CompleteMessage(response.message))
+                Ok(AgentDecision::CompleteMessage(
+                    response.assistant_message_projection(),
+                ))
             }
         }
     }
@@ -1788,82 +1808,70 @@ mod tests {
     }
 
     fn client(events: Vec<String>) -> Arc<ModelClient> {
-        let transport = Arc::new(MockTransport::new(responses_test_events(events)));
+        let transport = Arc::new(MockTransport::new(events));
         Arc::new(ModelClient::new(transport, ModelConfig::deepseek("test")))
     }
 
-    fn responses_test_events(events: Vec<String>) -> Vec<String> {
-        let mut converted = Vec::new();
-        for event in events {
-            if event == "[DONE]" || event.starts_with("__ERROR_") {
-                if event != "[DONE]" {
-                    converted.push(event);
-                }
-                continue;
-            }
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&event) else {
-                converted.push(event);
-                continue;
-            };
-            let Some(choice) = value
-                .get("choices")
-                .and_then(|v| v.as_array())
-                .and_then(|v| v.first())
-            else {
-                converted.push(event);
-                continue;
-            };
-            let delta = choice.get("delta").cloned().unwrap_or_default();
-            if let Some(text) = delta
-                .get("reasoning_content")
-                .and_then(serde_json::Value::as_str)
-            {
-                converted.push(
-                    serde_json::json!({"type":"response.reasoning_text.delta","delta":text})
-                        .to_string(),
-                );
-            }
-            if let Some(text) = delta.get("content").and_then(serde_json::Value::as_str) {
-                converted.push(
-                    serde_json::json!({"type":"response.output_text.delta","delta":text})
-                        .to_string(),
-                );
-            }
-            if let Some(calls) = delta
-                .get("tool_calls")
-                .and_then(serde_json::Value::as_array)
-            {
-                for (index, call) in calls.iter().enumerate() {
-                    let function = call.get("function").cloned().unwrap_or_default();
-                    let call_id = call
-                        .get("id")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("call_test");
-                    let item_id = format!("item_{call_id}_{index}");
-                    let item = serde_json::json!({
-                        "type":"function_call",
-                        "id":item_id,
-                        "call_id":call_id,
-                        "name":function.get("name").and_then(serde_json::Value::as_str).unwrap_or("tool"),
-                        "arguments":function.get("arguments").and_then(serde_json::Value::as_str).unwrap_or("")
-                    });
-                    converted.push(
-                        serde_json::json!({"type":"response.output_item.added","item":item})
-                            .to_string(),
-                    );
-                    converted.push(
-                        serde_json::json!({"type":"response.output_item.done","item":item})
-                            .to_string(),
-                    );
-                }
-            }
-            match choice.get("finish_reason").and_then(serde_json::Value::as_str) {
-                Some("length") => converted.push(serde_json::json!({"type":"response.incomplete","response":{"status":"incomplete"}}).to_string()),
-                Some(_) => converted.push(serde_json::json!({"type":"response.completed","response":{"status":"completed"}}).to_string()),
-                None => {}
-            }
-        }
-        converted
+    fn response_text_delta(text: &str) -> String {
+        serde_json::json!({"type":"response.output_text.delta","delta":text}).to_string()
+    }
+
+    fn response_reasoning_delta(text: &str) -> String {
+        serde_json::json!({"type":"response.reasoning_text.delta","delta":text}).to_string()
+    }
+
+    fn response_completed() -> String {
+        serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+            .to_string()
+    }
+
+    fn response_incomplete() -> String {
+        serde_json::json!({"type":"response.incomplete","response":{"status":"incomplete"}})
+            .to_string()
+    }
+
+    fn response_text_completed(text: &str) -> Vec<String> {
+        vec![response_text_delta(text), response_completed()]
+    }
+
+    fn response_text_incomplete(text: &str) -> Vec<String> {
+        vec![response_text_delta(text), response_incomplete()]
+    }
+
+    fn response_function_call_done(call_id: &str, name: &str, arguments: &str) -> Vec<String> {
+        let item_id = format!("item_{call_id}");
+        let item = serde_json::json!({
+            "type":"function_call",
+            "id":item_id,
+            "call_id":call_id,
+            "name":name,
+            "arguments":arguments,
+        });
+        vec![
+            serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
+            serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+            response_completed(),
+        ]
+    }
+
+    fn response_function_call_incomplete(
+        call_id: &str,
+        name: &str,
+        arguments: &str,
+    ) -> Vec<String> {
+        let item_id = format!("item_{call_id}");
+        let item = serde_json::json!({
+            "type":"function_call",
+            "id":item_id,
+            "call_id":call_id,
+            "name":name,
+            "arguments":arguments,
+        });
+        vec![
+            serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
+            serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+            response_incomplete(),
+        ]
     }
 
     struct AttemptTransport {
@@ -1878,13 +1886,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(serde_json::from_str(&request.body)?);
-            let events = responses_test_events(
-                self.attempts
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .ok_or_else(|| CoreError::other("no attempt"))?,
-            );
+            let events = self
+                .attempts
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| CoreError::other("no attempt"))?;
             for event in events {
                 if event == "__ERROR_EOF__" {
                     return Err(CoreError::other("unexpected EOF in provider stream"));
@@ -1927,10 +1934,7 @@ mod tests {
 
     #[tokio::test]
     async fn completes_when_model_returns_text() {
-        let events = vec![
-            r#"{"choices":[{"delta":{"content":"All done."},"finish_reason":"stop"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ];
+        let events = response_text_completed("All done.");
         let mut agent =
             ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "do it", vec![]);
         let decision = agent.think(0, &[]).await.unwrap();
@@ -1978,14 +1982,8 @@ mod tests {
         // the model actually finishes.
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec![
-                    r#"{"choices":[{"delta":{"content":"All done, tests pass."},"finish_reason":"stop"}]}"#.to_string(),
-                    "[DONE]".to_string(),
-                ],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"Here is the real result."},"finish_reason":"stop"}]}"#.to_string(),
-                    "[DONE]".to_string(),
-                ],
+                response_text_completed("All done, tests pass."),
+                response_text_completed("Here is the real result."),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2033,11 +2031,7 @@ mod tests {
     async fn not_stalled_verdict_completes_without_nudge() {
         use crate::stall_detector::StallCategory;
         let transport = Arc::new(AttemptTransport {
-            attempts: Mutex::new(VecDeque::from([vec![
-                r#"{"choices":[{"delta":{"content":"Genuinely done."},"finish_reason":"stop"}]}"#
-                    .to_string(),
-                "[DONE]".to_string(),
-            ]])),
+            attempts: Mutex::new(VecDeque::from([response_text_completed("Genuinely done.")])),
             requests: Mutex::new(Vec::new()),
         });
         let client = Arc::new(ModelClient::new(
@@ -2065,16 +2059,8 @@ mod tests {
         // answer passes through (budget pre-check skips the classifier).
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec![
-                    r#"{"choices":[{"delta":{"content":"done 1"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"done 2"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                response_text_completed("done 1"),
+                response_text_completed("done 2"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2113,10 +2099,7 @@ mod tests {
                 None
             }
         }
-        let events = vec![
-            r#"{"choices":[{"delta":{"content":"All done."},"finish_reason":"stop"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ];
+        let events = response_text_completed("All done.");
         let mut agent = ModelAgent::new(client(events), "model", "system", "prompt", vec![])
             .with_stall_classifier(Arc::new(FailOpenClassifier));
         let decision = agent.think(0, &[]).await.unwrap();
@@ -2131,12 +2114,8 @@ mod tests {
     async fn retries_empty_200_stream_without_recording_failed_turn() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec!["[DONE]".to_string()],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"recovered"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                vec![response_text_delta("")],
+                response_text_completed("recovered"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2157,15 +2136,8 @@ mod tests {
     async fn retry_resets_visible_deltas_from_failed_attempt() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec![
-                    r#"{"choices":[{"delta":{"content":"partial"}}]}"#.to_string(),
-                    "__ERROR_EOF__".to_string(),
-                ],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"final"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                vec![response_text_delta("partial"), "__ERROR_EOF__".to_string()],
+                response_text_completed("final"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2193,11 +2165,7 @@ mod tests {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 vec!["__ERROR_CONTEXT__".to_string()],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"must not run"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                response_text_completed("must not run"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2222,11 +2190,7 @@ mod tests {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 vec!["__ERROR_CONTEXT__".to_string()],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"after compact"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                response_text_completed("after compact"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2265,10 +2229,7 @@ mod tests {
             attempts: Mutex::new(VecDeque::from([
                 vec!["__ERROR_CONTEXT__".to_string()],
                 vec!["__ERROR_CONTEXT__".to_string()],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"must not run"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                ],
+                response_text_completed("must not run"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2298,10 +2259,7 @@ mod tests {
         // A tiny threshold guarantees the pre-request estimate crosses it on
         // step 0, so proactive compaction runs before the (only) model call.
         let transport = Arc::new(AttemptTransport {
-            attempts: Mutex::new(VecDeque::from([vec![
-                r#"{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]])),
+            attempts: Mutex::new(VecDeque::from([response_text_completed("done")])),
             requests: Mutex::new(Vec::new()),
         });
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2339,10 +2297,7 @@ mod tests {
     #[tokio::test]
     async fn proactive_compaction_skipped_below_threshold() {
         let transport = Arc::new(AttemptTransport {
-            attempts: Mutex::new(VecDeque::from([vec![
-                r#"{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]])),
+            attempts: Mutex::new(VecDeque::from([response_text_completed("done")])),
             requests: Mutex::new(Vec::new()),
         });
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2484,11 +2439,7 @@ mod tests {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 vec!["__ERROR_429__".to_string()],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"after backoff"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                response_text_completed("after backoff"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2539,10 +2490,7 @@ mod tests {
         // surface the call (the pipeline's schema gate rejects it and pairs a
         // failure result) or degrade to a message — both are acceptable, a
         // crash is not.
-        let events = vec![
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"bad","function":{"name":"read_file","arguments":"{not valid json"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ];
+        let events = response_function_call_done("bad", "read_file", "{not valid json");
         let mut agent = ModelAgent::new(client(events), "model", "system", "go", vec![]);
 
         let decision = agent.think(0, &[]).await.unwrap();
@@ -2566,11 +2514,7 @@ mod tests {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
                 vec!["__ERROR_OVERLOADED__".to_string()],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"fallback ok"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                response_text_completed("fallback ok"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2598,15 +2542,8 @@ mod tests {
     async fn max_output_retries_same_turn_with_larger_limit_and_aborts_old_tools() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec![
-                    r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"stale","function":{"name":"read_file","arguments":"{\"path\":\"a.txt\"}"}}]},"finish_reason":"length"}]}"#.to_string(),
-                    "[DONE]".to_string(),
-                ],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"recovered"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                response_function_call_incomplete("stale", "read_file", r#"{"path":"a.txt"}"#),
+                response_text_completed("recovered"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2648,21 +2585,9 @@ mod tests {
         // Attempt 3: completes normally.
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec![
-                    r#"{"choices":[{"delta":{"content":"part one"},"finish_reason":"length"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
-                vec![
-                    r#"{"choices":[{"delta":{"content":" part two"},"finish_reason":"length"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
-                vec![
-                    r#"{"choices":[{"delta":{"content":" done"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                response_text_incomplete("part one"),
+                response_text_incomplete(" part two"),
+                response_text_completed(" done"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2700,10 +2625,7 @@ mod tests {
         // Escalation once, then MAX_OUTPUT_TOKENS_RECOVERY_LIMIT (3) continues,
         // all still truncated -> terminal max_tokens error (no infinite loop).
         let truncated = || {
-            vec![
-                r#"{"choices":[{"delta":{"content":"x"},"finish_reason":"length"}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]
+            response_text_incomplete("x")
         };
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
@@ -2737,11 +2659,7 @@ mod tests {
             attempts: Mutex::new(VecDeque::from([
                 vec!["__ERROR_429__".to_string()],
                 vec!["__ERROR_429__".to_string()],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"unreached"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                response_text_completed("unreached"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2776,11 +2694,9 @@ mod tests {
     #[tokio::test]
     async fn final_answer_preserves_reasoning_for_replay() {
         let events = vec![
-            r#"{"choices":[{"delta":{"reasoning_content":"I should inspect the image. "}}]}"#
-                .to_string(),
-            r#"{"choices":[{"delta":{"content":"It shows a compile error."},"finish_reason":"stop"}]}"#
-                .to_string(),
-            "[DONE]".to_string(),
+            response_reasoning_delta("I should inspect the image. "),
+            response_text_delta("It shows a compile error."),
+            response_completed(),
         ];
         let mut agent = ModelAgent::new(
             client(events),
@@ -2814,11 +2730,8 @@ mod tests {
 
     #[tokio::test]
     async fn requests_tool_then_persists_reasoning() {
-        let events = vec![
-            r#"{"choices":[{"delta":{"reasoning_content":"I should add."}}]}"#.to_string(),
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"add","arguments":"{\"a\":1,\"b\":2}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ];
+        let mut events = vec![response_reasoning_delta("I should add.")];
+        events.extend(response_function_call_done("c1", "add", r#"{"a":1,"b":2}"#));
         let mut agent = ModelAgent::new(client(events), "deepseek-v4-pro", "sys", "add", vec![]);
         let decision = agent.think(0, &[]).await.unwrap();
         match decision {
@@ -2844,11 +2757,7 @@ mod tests {
 
     #[tokio::test]
     async fn prepares_complete_tool_call_before_committing_stream_attempt() {
-        let events = vec![
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"add","arguments":"{\"a\":1,\"b\":2}"}}]}}]}"#.to_string(),
-            r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ];
+        let events = response_function_call_done("c1", "add", r#"{"a":1,"b":2}"#);
         let mut agent = ModelAgent::new(client(events), "model", "system", "add", vec![]);
         let mut attempt = RecordingToolAttempt::default();
 
@@ -2869,14 +2778,13 @@ mod tests {
     async fn aborts_failed_tool_attempt_and_commits_only_retry_calls() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec![
-                    r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"stale","function":{"name":"add","arguments":"{\"a\":1,\"b\":2}"}}]}}]}"#.to_string(),
-                    "__ERROR_EOF__".to_string(),
-                ],
-                vec![
-                    r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"fresh","function":{"name":"add","arguments":"{\"a\":2,\"b\":3}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-                    "[DONE]".to_string(),
-                ],
+                {
+                    let mut events = response_function_call_done("stale", "add", r#"{"a":1,"b":2}"#);
+                    events.pop();
+                    events.push("__ERROR_EOF__".to_string());
+                    events
+                },
+                response_function_call_done("fresh", "add", r#"{"a":2,"b":3}"#),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -2913,10 +2821,7 @@ mod tests {
 
     #[tokio::test]
     async fn feeds_observation_back_as_tool_message() {
-        let events = vec![
-            r#"{"choices":[{"delta":{"content":"sum is 3"},"finish_reason":"stop"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ];
+        let events = response_text_completed("sum is 3");
         let mut agent = ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "add", vec![]);
         let obs = Observation {
             tool: "add".to_string(),
@@ -2940,11 +2845,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_observation_is_fed_back_with_recovery_hint() {
-        let events = vec![
-            r#"{"choices":[{"delta":{"content":"ok let me retry"},"finish_reason":"stop"}]}"#
-                .to_string(),
-            "[DONE]".to_string(),
-        ];
+        let events = response_text_completed("ok let me retry");
         let mut agent =
             ModelAgent::new(client(events), "deepseek-v4-flash", "sys", "search", vec![]);
         let obs = Observation {
@@ -3035,11 +2936,7 @@ mod tests {
 
     #[tokio::test]
     async fn kernel_feedback_without_call_id_is_not_an_orphan_tool_result() {
-        let events = vec![
-            r#"{"choices":[{"delta":{"content":"retry complete"},"finish_reason":"stop"}]}"#
-                .to_string(),
-            "[DONE]".to_string(),
-        ];
+        let events = response_text_completed("retry complete");
         let mut agent = ModelAgent::new(client(events), "model", "system", "goal", vec![]);
         let feedback = Observation {
             tool: "completion_gate".to_string(),
@@ -3089,15 +2986,8 @@ mod tests {
         // prefetch scheduled in turn 0 must be injected before turn 1's request.
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
-                vec![
-                    r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":"{\"path\":\"a.txt\"}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-                    "[DONE]".to_string(),
-                ],
-                vec![
-                    r#"{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}"#
-                        .to_string(),
-                    "[DONE]".to_string(),
-                ],
+                response_function_call_done("c1", "read_file", r#"{"path":"a.txt"}"#),
+                response_text_completed("done"),
             ])),
             requests: Mutex::new(Vec::new()),
         });
@@ -3147,10 +3037,7 @@ mod tests {
     #[tokio::test]
     async fn relevant_memory_prefetch_skips_single_word_query() {
         let transport = Arc::new(AttemptTransport {
-            attempts: Mutex::new(VecDeque::from([vec![
-                r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]])),
+            attempts: Mutex::new(VecDeque::from([response_text_completed("ok")])),
             requests: Mutex::new(Vec::new()),
         });
         let client = Arc::new(ModelClient::new(
