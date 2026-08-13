@@ -29,6 +29,88 @@ pub struct Session<'db, C: Clock> {
     state: SessionState,
 }
 
+fn response_items_for_payload(
+    store: &EventStore<'_>,
+    session_id: SessionId,
+    payload: &EventPayload,
+) -> Result<Vec<serde_json::Value>> {
+    let mut items = Vec::new();
+    match payload {
+        EventPayload::MessageAppended { message } => {
+            if let Some(reasoning) = message
+                .reasoning_content
+                .as_deref()
+                .filter(|text| !text.is_empty())
+            {
+                items.push(serde_json::json!({ "type": "reasoning", "content": reasoning }));
+            }
+            for call in &message.tool_calls {
+                if call.name == "apply_patch" {
+                    items.push(serde_json::json!({
+                        "type": "custom_tool_call",
+                        "call_id": call.id,
+                        "name": call.name,
+                        "input": call.arguments.get("patch").and_then(serde_json::Value::as_str).unwrap_or_default(),
+                    }));
+                } else {
+                    items.push(serde_json::json!({
+                        "type": "function_call",
+                        "call_id": call.id,
+                        "name": call.name,
+                        "arguments": serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string()),
+                    }));
+                }
+            }
+            if !message.content.is_empty() || message.tool_calls.is_empty() {
+                items.push(serde_json::json!({
+                    "type": "message",
+                    "role": message.role.as_str(),
+                    "content": message.content,
+                }));
+            }
+        }
+        EventPayload::ToolCallRequested { call } => {
+            if call.name == "apply_patch" {
+                items.push(serde_json::json!({
+                    "type": "custom_tool_call",
+                    "call_id": call.id,
+                    "name": call.name,
+                    "input": call.arguments.get("patch").and_then(serde_json::Value::as_str).unwrap_or_default(),
+                }));
+            } else {
+                items.push(serde_json::json!({
+                    "type": "function_call",
+                    "call_id": call.id,
+                    "name": call.name,
+                    "arguments": serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string()),
+                }));
+            }
+        }
+        EventPayload::ToolCallCompleted {
+            call_id,
+            ok,
+            output,
+            ..
+        } => {
+            let custom = store.load_session(session_id)?.iter().rev().any(|event| {
+                matches!(&event.payload, EventPayload::ToolCallRequested { call }
+                    if call.id == *call_id && call.name == "apply_patch")
+            });
+            items.push(serde_json::json!({
+                "type": if custom { "custom_tool_call_output" } else { "function_call_output" },
+                "call_id": call_id,
+                "output": if *ok {
+                    serde_json::json!({"status":"ok","result":output}).to_string()
+                } else {
+                    serde_json::json!({"status":"error","error":output}).to_string()
+                },
+            }));
+        }
+        _ => {}
+    }
+    Ok(items)
+}
+
 impl<'db, C: Clock> Session<'db, C> {
     /// Start a brand new session in [`SessionMode::Normal`].
     pub fn create(db: &'db Database, clock: &'db C, title: Option<&str>) -> Result<Self> {
@@ -154,8 +236,17 @@ impl<'db, C: Clock> Session<'db, C> {
     pub fn append(&mut self, payload: EventPayload) -> Result<Event> {
         let now = self.clock.now();
         let store = EventStore::new(self.db);
+        let response_items = response_items_for_payload(&store, self.id, &payload)?;
         let event = store.append(self.id, payload, now)?;
         self.state.apply(&event.payload);
+        for item in response_items {
+            let item_event = store.append(
+                self.id,
+                EventPayload::ResponseItemAppended { item },
+                self.clock.now(),
+            )?;
+            self.state.apply(&item_event.payload);
+        }
         Ok(event)
     }
 
@@ -357,10 +448,11 @@ mod tests {
         assert!(s.state().ended);
         assert_eq!(s.state().message_count, 4);
 
-        // Rewind to seq 2 (SessionStarted=0, m0=1, m1=2). Keep 3 events.
-        // Stream was: 0=Started,1=m0,2=m1,3=m2,4=m3,5=Ended → remove 3,4,5.
-        let removed = s.rewind(2).unwrap();
-        assert_eq!(removed, 3);
+        // Responses item events follow each message. Keep through m1's item.
+        // Stream is: 0=Started,1=m0,2=item,3=m1,4=item,5=m2,6=item,7=m3,
+        // 8=item,9=Ended; truncating at 4 removes the final five events.
+        let removed = s.rewind(4).unwrap();
+        assert_eq!(removed, 5);
         assert_eq!(s.state().message_count, 2);
         assert!(!s.state().ended);
 
@@ -368,6 +460,43 @@ mod tests {
         let recovered = Session::recover(&db, &clock, sid).unwrap();
         assert_eq!(recovered.state().message_count, 2);
         assert!(!recovered.state().ended);
+    }
+
+    #[test]
+    fn appending_tool_trajectory_persists_responses_items() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("items")).unwrap();
+        session
+            .append(EventPayload::ToolCallRequested {
+                call: deepagent_core::message::ToolCall {
+                    id: "call-1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path":"a.txt"}),
+                },
+            })
+            .unwrap();
+        session
+            .append(EventPayload::ToolCallCompleted {
+                call_id: "call-1".into(),
+                ok: true,
+                output: serde_json::json!({"content":"ok"}),
+                duration_ms: 1,
+            })
+            .unwrap();
+        let items: Vec<_> = EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::ResponseItemAppended { item } => Some(item),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(items[0]["type"], "function_call");
+        assert_eq!(items[0]["arguments"], r#"{"path":"a.txt"}"#);
+        assert_eq!(items[1]["type"], "function_call_output");
+        assert_eq!(items[1]["call_id"], "call-1");
     }
 
     #[test]

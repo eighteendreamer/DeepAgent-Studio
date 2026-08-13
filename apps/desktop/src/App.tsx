@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { useTranslation } from "react-i18next";
 import "./icons";
 import {
   ARCHIVE_CHANGED_EVENT,
@@ -207,6 +208,7 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
         ? {
             promptTokens: m.usage.prompt_tokens,
             completionTokens: m.usage.completion_tokens,
+            reasoningTokens: m.usage.reasoning_tokens,
             totalTokens: m.usage.total_tokens,
             cacheHitTokens: m.usage.prompt_cache_hit_tokens,
             cacheMissTokens: m.usage.prompt_cache_miss_tokens,
@@ -410,6 +412,7 @@ async function recognizeImageAttachmentsOnSend(
 }
 
 export function App() {
+  const { t } = useTranslation();
   const requestedSessionIdRef = useRef<string | null>(null);
   if (requestedSessionIdRef.current === null && typeof window !== "undefined") {
     const raw = window.location.hash.startsWith("#")
@@ -1151,6 +1154,7 @@ export function App() {
       const addUsage = (u: {
         prompt: number;
         completion: number;
+        reasoning: number;
         total: number;
         cacheHit: number;
         cacheMiss: number;
@@ -1164,6 +1168,7 @@ export function App() {
           const cur = msg.usage ?? {
             promptTokens: 0,
             completionTokens: 0,
+            reasoningTokens: 0,
             totalTokens: 0,
             cacheHitTokens: 0,
             cacheMissTokens: 0,
@@ -1173,6 +1178,7 @@ export function App() {
             usage: {
               promptTokens: cur.promptTokens + u.prompt,
               completionTokens: cur.completionTokens + u.completion,
+              reasoningTokens: cur.reasoningTokens + u.reasoning,
               totalTokens: cur.totalTokens + u.total,
               cacheHitTokens: cur.cacheHitTokens + u.cacheHit,
               cacheMissTokens: cur.cacheMissTokens + u.cacheMiss,
@@ -1364,6 +1370,31 @@ export function App() {
             // Live visible content (token-by-token).
             appendDelta("text", String(event.text ?? ""));
             break;
+          case "responses_web_search_call": {
+            const callId = String(event.call_id ?? "web_search");
+            const status = String(event.status ?? "in_progress");
+            const completed = status === "completed";
+            upsertTool(callId, {
+              name: "web_search",
+              status: completed ? "ok" : "running",
+              toolKind: "search",
+              summary: completed
+                ? t("chat.nativeWebSearchCompleted", { count: Number(event.queries_count ?? 0) })
+                : t("chat.nativeWebSearchStatus", { status }),
+              detail: completed ? String(event.action_type ?? "search") : status,
+              meta: {
+                provider: "deepseek",
+                native: true,
+                actionType: event.action_type,
+                queriesCount: Number(event.queries_count ?? 0),
+              },
+            });
+            break;
+          }
+          case "responses_stream_event":
+            // Diagnostics-only metadata; visible text/reasoning/search states
+            // arrive through their dedicated projections above.
+            break;
           case "tool_started":
             upsertTool(String(event.call_id ?? ""), {
               name: String(event.name ?? "tool"),
@@ -1469,6 +1500,7 @@ export function App() {
             addUsage({
               prompt: Number(event.prompt_tokens ?? 0),
               completion: Number(event.completion_tokens ?? 0),
+              reasoning: Number(event.reasoning_tokens ?? 0),
               total: Number(event.total_tokens ?? 0),
               cacheHit: Number(event.prompt_cache_hit_tokens ?? 0),
               cacheMiss: Number(event.prompt_cache_miss_tokens ?? 0),

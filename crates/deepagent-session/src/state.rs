@@ -97,6 +97,7 @@ impl SessionState {
             EventPayload::MessageAppended { .. } => {
                 self.message_count += 1;
             }
+            EventPayload::ResponseItemAppended { .. } => {}
             EventPayload::ToolCallRequested { .. } => {
                 self.tool_calls_requested += 1;
             }

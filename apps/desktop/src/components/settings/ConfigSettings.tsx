@@ -1,6 +1,7 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   getSettings,
   setSandboxMode,
@@ -33,6 +34,9 @@ import {
   runtimeRoots,
   runtimeProgressSubscribe,
   runtimeUninstall,
+  getResponsesSettings,
+  setResponsesSettings,
+  setResponsesDeveloperJson,
 } from "../../api";
 import type {
   RuntimeProgress,
@@ -41,9 +45,13 @@ import type {
   VisionSettings,
   WebSearchProvider,
   WebSearchSettings,
+  ResponsesApiSettings,
 } from "../../types";
 import packageJson from "../../../package.json";
 import { message } from "../message";
+import { Panel } from "../ui/Panel";
+import { Slider } from "../ui/Slider";
+import { TintButton } from "../ui/TintButton";
 
 // Sentinel "default model" option for the AI review model dropdown. Maps to
 // `null` on the backend (R10.4: "default = follow chat model").
@@ -606,7 +614,64 @@ function VisionResourceSettings() {
   );
 }
 
-import { useTranslation } from "react-i18next";
+function ResponsesSettingsPanel() {
+  const { t } = useTranslation();
+  const [settings, setSettings] = useState<ResponsesApiSettings>({
+    creativity: null, scene: null,
+    temperature: null, top_p: null, max_output_tokens: null, top_logprobs: null,
+    reasoning_effort: null, text: null, tool_choice: null, user: null, developer: {}, ineffective: {},
+  });
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [developerOpen, setDeveloperOpen] = useState(false);
+  const [developerJson, setDeveloperJson] = useState("{}");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    getResponsesSettings().then((v) => {
+      setSettings(v);
+      setDeveloperJson(JSON.stringify(v.developer ?? {}, null, 2));
+    }).catch((e) => console.error("get_responses_settings failed:", e)).finally(() => setLoading(false));
+  }, []);
+
+  const persist = async (next: ResponsesApiSettings) => {
+    const previous = settings;
+    setSettings(next);
+    try { setSettings((await setResponsesSettings(next)).responses); }
+    catch (e) { setSettings(previous); message.error(t("settings.config.responses.saveFailed", { error: String(e) })); }
+  };
+  const setNumber = (key: "temperature" | "top_p" | "max_output_tokens" | "top_logprobs", raw: string) => {
+    const value = raw.trim() === "" ? null : Number(raw);
+    if (value !== null && !Number.isFinite(value)) return;
+    void persist({ ...settings, [key]: value });
+  };
+  const applyScene = (scene: "code" | "email" | "analysis" | "creative") => {
+    void persist({ ...settings, scene, temperature: null });
+  };
+  const creativityStops = [0, 25, 50, 75, 100].map((value) => ({
+    value: String(value),
+    label: String(value),
+  }));
+  const numericFields = [
+    ["temperature", "temperature", 0, 2, 0.1],
+    ["top_p", "topP", 0, 1, 0.05],
+    ["max_output_tokens", "maxOutputTokens", 1, 131072, 1],
+    ["top_logprobs", "topLogprobs", 0, 20, 1],
+  ] as const;
+  return <div className="mb-12 max-w-[700px]">
+    <div className="mb-4"><h2 className="text-[15px] font-medium text-text-base mb-1">{t("settings.config.responses.title")}</h2>
+      <div className="text-[12px] text-text-secondary">{t("settings.config.responses.desc")}</div></div>
+    <Panel menu={false} className={loading ? "opacity-60" : ""}>
+      <div className="m-1 rounded-lg bg-black/[0.025] p-4"><div className="flex justify-between"><div><div className="text-[14px] font-medium">{t("settings.config.responses.creativity")}</div><div className="text-[12px] text-text-secondary">{t("settings.config.responses.creativityDesc")}</div></div></div>
+        <div className="mt-3"><Slider stops={creativityStops} value={String(settings.creativity ?? 50)} onChange={(value) => void persist({...settings, creativity:Number(value), scene:null})} ariaLabel={t("settings.config.responses.creativity")} /></div>
+        <div className="mt-3 flex flex-wrap gap-2">{(["code","email","analysis","creative"] as const).map((id) => <TintButton key={id} type="button" onClick={() => applyScene(id)} className={settings.scene === id ? "bg-ui-tint-strong" : undefined}>{t(`settings.config.responses.scenes.${id}`)}</TintButton>)}</div>
+      </div>
+      <button type="button" onClick={() => setAdvancedOpen(!advancedOpen)} className="m-1 w-[calc(100%-0.5rem)] rounded-lg p-4 text-left hover:bg-black/5"><span className="text-[14px] font-medium">{t("settings.config.responses.advanced")} {advancedOpen ? "⌃" : "⌄"}</span><span className="ml-2 text-[12px] text-text-secondary">{t("settings.config.responses.advancedDesc")}</span></button>
+      {advancedOpen && <div className="mx-1 grid grid-cols-2 gap-3 rounded-lg bg-black/[0.025] p-4">{numericFields.map(([key,label,min,max,step]) => <label key={key} className="text-[12px] text-text-secondary">{t(`settings.config.responses.${label}`)}<input type="number" min={min} max={max} step={step} value={settings[key] ?? ""} onChange={(e) => setNumber(key,e.target.value)} className="mt-1 w-full rounded-md bg-ui-tint px-2 py-1.5 text-text-base" /></label>)}<label className="text-[12px] text-text-secondary">{t("settings.config.responses.reasoningEffort")}<select value={settings.reasoning_effort ?? ""} onChange={(e) => void persist({...settings, reasoning_effort:e.target.value || null})} className="mt-1 w-full rounded-md bg-ui-tint px-2 py-1.5 text-text-base"><option value="">{t("settings.config.responses.providerDefault")}</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="max">max</option></select></label><label className="text-[12px] text-text-secondary">{t("settings.config.responses.textFormat")}<select value={(settings.text as {format?:{type?:string}} | null)?.format?.type ?? ""} onChange={(e) => void persist({...settings, text:e.target.value ? {format:{type:e.target.value}} : null})} className="mt-1 w-full rounded-md bg-ui-tint px-2 py-1.5 text-text-base"><option value="">{t("settings.config.responses.providerDefault")}</option><option value="text">text</option><option value="json_object">json_object</option></select></label></div>}
+      <button type="button" onClick={() => setDeveloperOpen(!developerOpen)} className="m-1 w-[calc(100%-0.5rem)] rounded-lg p-4 text-left hover:bg-black/5"><span className="text-[14px] font-medium">{t("settings.config.responses.developer")} {developerOpen ? "⌃" : "⌄"}</span><span className="ml-2 text-[12px] text-text-secondary">{t("settings.config.responses.developerDesc")}</span></button>
+      {developerOpen && <div className="px-4 pb-4"><textarea value={developerJson} onChange={(e) => setDeveloperJson(e.target.value)} rows={8} spellCheck={false} className="w-full rounded-md bg-ui-tint p-3 font-mono text-[12px]" /><TintButton type="button" onClick={async () => { try { const view=await setResponsesDeveloperJson(developerJson); setSettings(view.responses); message.success(t("settings.config.responses.saved")); } catch(e) { message.error(t("settings.config.responses.saveFailed", { error: String(e) })); } }} className="mt-2">{t("settings.config.responses.validateSave")}</TintButton>{Object.keys(settings.ineffective ?? {}).length > 0 && <div className="mt-2 text-[12px] text-amber-600">{t("settings.config.responses.ineffective", { fields: Object.keys(settings.ineffective).join(", ") })}</div>}</div>}
+    </Panel>
+  </div>;
+}
 
 export function ConfigSettings() {
   const { t } = useTranslation();
@@ -1325,6 +1390,7 @@ export function ConfigSettings() {
       </div>
 
       <RuntimeResourceSettings />
+      <ResponsesSettingsPanel />
       <VisionResourceSettings />
 
       {/* Section: 工作空间依赖项 */}

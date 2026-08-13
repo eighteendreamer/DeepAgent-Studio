@@ -238,6 +238,12 @@ const REPLAY_TOOL_RESULT_MAX_CHARS: usize = 2_000;
 /// mid-flight — get a synthesized failure result so the transcript NEVER
 /// contains a dangling `tool_use` (strict providers reject those).
 pub(crate) fn conversation_with_tool_pairs_from_events(events: &[Event]) -> Vec<Message> {
+    if events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ResponseItemAppended { .. }))
+    {
+        return conversation_from_response_items(events);
+    }
     let mut out: Vec<Message> = Vec::new();
     // Requests not yet flushed into an assistant message, in arrival order.
     let mut open_batch: Vec<deepagent_core::message::ToolCall> = Vec::new();
@@ -320,6 +326,84 @@ pub(crate) fn conversation_with_tool_pairs_from_events(events: &[Event]) -> Vec<
     }
     flush_batch(&mut out, &mut open_batch, &mut unresolved);
     close_orphans(&mut out, &mut unresolved);
+    out
+}
+
+fn conversation_from_response_items(events: &[Event]) -> Vec<Message> {
+    let mut out = Vec::new();
+    let mut pending_reasoning: Option<String> = None;
+    for event in events {
+        let EventPayload::ResponseItemAppended { item } = &event.payload else {
+            continue;
+        };
+        match item
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+        {
+            "reasoning" => {
+                pending_reasoning = item
+                    .get("content")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+            }
+            "message" => {
+                let role = match item.get("role").and_then(serde_json::Value::as_str) {
+                    Some("assistant") => Role::Assistant,
+                    Some("system") => Role::System,
+                    _ => Role::User,
+                };
+                let mut message = Message::text(
+                    role,
+                    item.get("content")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default(),
+                );
+                if role == Role::Assistant {
+                    message.reasoning_content = pending_reasoning.take();
+                }
+                out.push(message);
+            }
+            "function_call" | "custom_tool_call" => {
+                let raw = item
+                    .get("arguments")
+                    .or_else(|| item.get("input"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("{}");
+                let arguments = if item["type"] == "custom_tool_call" {
+                    serde_json::json!({"patch":raw})
+                } else {
+                    serde_json::from_str(raw).unwrap_or_else(|error| serde_json::json!({
+                        "__invalid_tool_arguments__": true, "raw": raw, "parse_error": error.to_string()
+                    }))
+                };
+                out.push(Message::assistant("").with_tool_calls(vec![
+                        deepagent_core::message::ToolCall {
+                            id: item
+                                .get("call_id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            name: item
+                                .get("name")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("tool")
+                                .to_string(),
+                            arguments,
+                        },
+                    ]));
+            }
+            "function_call_output" | "custom_tool_call_output" => out.push(Message::tool_result(
+                item.get("call_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                item.get("output")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+            )),
+            _ => {}
+        }
+    }
     out
 }
 

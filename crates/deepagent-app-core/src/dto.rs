@@ -488,6 +488,9 @@ pub struct ConversationUsageDto {
     pub prompt_tokens: u32,
     /// Completion (output) tokens.
     pub completion_tokens: u32,
+    /// Reasoning tokens already included in completion tokens.
+    #[serde(default)]
+    pub reasoning_tokens: u32,
     /// Total tokens.
     pub total_tokens: u32,
     /// Prompt tokens served from the context cache.

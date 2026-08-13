@@ -429,7 +429,7 @@ mod tests {
     async fn real_deepseek_sees_injected_project_structure() {
         use crate::secret_store::{KeychainStore, SecretStore};
         use deepagent_core::message::Message;
-        use deepagent_models::chat::ChatRequest;
+        use deepagent_models::chat::ResponseRequest;
         use deepagent_models::{ModelClient, ModelConfig, ReqwestTransport};
         use std::sync::Arc;
 
@@ -466,7 +466,7 @@ mod tests {
             Arc::new(ReqwestTransport::new()),
             ModelConfig::deepseek(key),
         ));
-        let request = ChatRequest::new(
+        let request = ResponseRequest::new(
             "deepseek-chat".to_string(),
             vec![
                 Message::system(system_prompt),
@@ -478,8 +478,8 @@ mod tests {
             ],
         )
         .with_temperature(0.0)
-        .with_max_tokens(200);
-        let response = client.stream_chat(request).await.expect("live call");
+        .with_max_output_tokens(200);
+        let response = client.stream_response(request).await.expect("live call");
         let answer = response.message.content;
         eprintln!("[real-model] answer: {answer}");
         assert!(

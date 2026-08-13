@@ -160,7 +160,7 @@ fn runtime_event_log_entry(
 ) -> NewRuntimeLogEntry {
     let category = runtime_event_category(event);
     let level = runtime_event_level(event).to_string();
-    let mut entry = NewRuntimeLogEntry::info(category, event.label())
+    let mut entry = NewRuntimeLogEntry::info(category, responses_diagnostic_event(event))
         .with_run_id(run_id)
         .with_session_id(session_id)
         .with_source("deepagent-runtime")
@@ -179,6 +179,37 @@ fn runtime_event_log_entry(
         entry = entry.with_correlation_id(correlation_id);
     }
     entry
+}
+
+fn responses_diagnostic_event(event: &RuntimeEvent) -> &str {
+    match event {
+        RuntimeEvent::ModelRequestStarted { .. } => "responses_request_started",
+        RuntimeEvent::ModelRequestCompleted { .. } => "responses_completed",
+        RuntimeEvent::Usage { .. } => "responses_usage_received",
+        RuntimeEvent::ResponsesStreamEvent {
+            event_type,
+            item_type,
+            ..
+        } => match event_type.as_str() {
+            "response.output_item.added" => "responses_output_item_added",
+            "response.function_call_arguments.done" | "response.custom_tool_call_input.done" => {
+                "responses_function_call_completed"
+            }
+            "response.output_item.done"
+                if matches!(
+                    item_type.as_deref(),
+                    Some("function_call" | "custom_tool_call")
+                ) =>
+            {
+                "responses_function_call_completed"
+            }
+            "response.completed" => "responses_completed",
+            "response.incomplete" => "responses_incomplete",
+            "response.failed" => "responses_failed",
+            _ => "responses_stream_event",
+        },
+        _ => event.label(),
+    }
 }
 
 #[derive(Default)]
@@ -237,6 +268,8 @@ fn runtime_event_category(event: &RuntimeEvent) -> &'static str {
         | RuntimeEvent::ModelAttemptReset { .. }
         | RuntimeEvent::ReasoningDelta { .. }
         | RuntimeEvent::ContentDelta { .. }
+        | RuntimeEvent::ResponsesStreamEvent { .. }
+        | RuntimeEvent::ResponsesWebSearchCall { .. }
         | RuntimeEvent::Usage { .. } => "model",
         RuntimeEvent::ToolStarted { .. }
         | RuntimeEvent::ToolCompleted { .. }
@@ -349,6 +382,26 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
         RuntimeEvent::ContentDelta { text } => {
             format!("content delta {} chars", text.chars().count())
         }
+        RuntimeEvent::ResponsesStreamEvent {
+            event_type,
+            item_id,
+            item_type,
+            delta_chars,
+        } => format!(
+            "responses stream event type={event_type} item_id={} item_type={} delta_chars={}",
+            item_id.as_deref().unwrap_or("none"),
+            item_type.as_deref().unwrap_or("none"),
+            delta_chars.map_or_else(|| "none".to_string(), |value| value.to_string()),
+        ),
+        RuntimeEvent::ResponsesWebSearchCall {
+            call_id,
+            status,
+            action_type,
+            queries_count,
+        } => format!(
+            "native web search call={call_id} status={status} action_type={} queries_count={queries_count}",
+            action_type.as_deref().unwrap_or("none"),
+        ),
         RuntimeEvent::ToolStarted { name, call_id, .. } => {
             format!("tool {name} started ({call_id})")
         }

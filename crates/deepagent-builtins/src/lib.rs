@@ -146,7 +146,7 @@ pub use worktree_tools::{
 };
 
 #[cfg(feature = "http")]
-pub use reqwest_web::{AnySearchConfig, DeepSeekWebSearchConfig, ReqwestWebClient};
+pub use reqwest_web::{AnySearchConfig, ReqwestWebClient};
 
 // Re-export the permission vocabulary callers need to grant access.
 pub use deepagent_tools::permission::{Permission, PermissionSet, RiskLevel};

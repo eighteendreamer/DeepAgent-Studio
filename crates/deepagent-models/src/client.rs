@@ -1,17 +1,17 @@
 //! The DeepSeek model client.
 //!
 //! Wires together request building, a pluggable [`HttpTransport`], the
-//! [`SseParser`] framing, and the [`DeltaAccumulator`] streaming assembly into
-//! a single [`ModelClient::stream_chat`] call that returns a complete
-//! [`ChatResponse`] with `reasoning_content` preserved.
+//! [`SseParser`] framing, and the [`ResponseAccumulator`] streaming assembly into
+//! a single [`ModelClient::stream_response`] call that returns a complete
+//! [`Response`] with `reasoning_content` preserved.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use deepagent_core::error::Result;
 
-use crate::chat::{ChatRequest, ChatResponse};
-use crate::stream::DeltaAccumulator;
+use crate::chat::{Response, ResponseRequest};
+use crate::stream::ResponseAccumulator;
 use crate::transport::{HttpTransport, TransportRequest};
 
 /// Connection / endpoint configuration.
@@ -19,10 +19,23 @@ use crate::transport::{HttpTransport, TransportRequest};
 pub struct ModelConfig {
     /// Base URL (without the trailing path).
     pub base_url: String,
-    /// Chat-completions path appended to `base_url`.
-    pub chat_path: String,
     /// API key (bearer token).
     pub api_key: String,
+    /// Global provider-level overrides applied to every request built by this client.
+    pub defaults: ResponseDefaults,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResponseDefaults {
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub max_output_tokens: Option<u32>,
+    pub top_logprobs: Option<u8>,
+    pub reasoning_effort: Option<String>,
+    pub text: Option<serde_json::Value>,
+    pub tool_choice: Option<serde_json::Value>,
+    pub user: Option<String>,
+    pub native_web_search: bool,
 }
 
 impl ModelConfig {
@@ -30,8 +43,8 @@ impl ModelConfig {
     pub fn deepseek(api_key: impl Into<String>) -> Self {
         Self {
             base_url: crate::discovery::DEEPSEEK_BASE_URL.to_string(),
-            chat_path: "/chat/completions".to_string(),
             api_key: api_key.into(),
+            defaults: ResponseDefaults::default(),
         }
     }
 
@@ -46,18 +59,19 @@ impl ModelConfig {
         let _ = catalog.model_for(role); // role resolution lives in the catalog
         Self {
             base_url: catalog.base_url.clone(),
-            chat_path: "/chat/completions".to_string(),
             api_key: api_key.into(),
+            defaults: ResponseDefaults::default(),
         }
     }
 
-    /// The fully-qualified chat-completions endpoint.
+    /// The fully-qualified DeepSeek Responses endpoint.
     pub fn endpoint(&self) -> String {
-        format!(
-            "{}/{}",
-            self.base_url.trim_end_matches('/'),
-            self.chat_path.trim_start_matches('/')
-        )
+        format!("{}/responses", self.base_url.trim_end_matches('/'))
+    }
+
+    pub fn with_defaults(mut self, defaults: ResponseDefaults) -> Self {
+        self.defaults = defaults;
+        self
     }
 }
 
@@ -76,36 +90,34 @@ impl ModelClient {
     /// Send a chat request and assemble the streamed response.
     ///
     /// The request is forced into streaming mode. Each SSE payload is parsed and
-    /// folded by a [`DeltaAccumulator`]; the final assembled [`ChatResponse`]
+    /// folded by a [`ResponseAccumulator`]; the final assembled [`Response`]
     /// retains `reasoning_content` for Thinking Mode persistence.
-    pub async fn stream_chat(&self, request: ChatRequest) -> Result<ChatResponse> {
-        self.stream_chat_observed(request, &mut crate::stream::NoopObserver)
+    pub async fn stream_response(&self, request: ResponseRequest) -> Result<Response> {
+        self.stream_response_observed(request, &mut crate::stream::NoopObserver)
             .await
     }
 
-    /// Cancel-aware variant of [`ModelClient::stream_chat`].
-    pub async fn stream_chat_cancelled(
+    /// Responses API name for the cancel-aware streaming entrypoint.
+    pub async fn stream_response_cancelled(
         &self,
-        request: ChatRequest,
+        request: ResponseRequest,
         cancel: Arc<AtomicBool>,
-    ) -> Result<ChatResponse> {
-        self.stream_chat_observed_cancelled(request, &mut crate::stream::NoopObserver, cancel)
+    ) -> Result<Response> {
+        self.stream_response_observed_cancelled(request, &mut crate::stream::NoopObserver, cancel)
             .await
     }
 
-    /// Like [`ModelClient::stream_chat`] but forwards each semantic delta
+    /// Like [`ModelClient::stream_response`] but forwards each semantic delta
     /// (content / reasoning / tool-call start) to `observer` as it arrives, for
     /// live token streaming to a UI or event bus.
-    pub async fn stream_chat_observed(
+    pub async fn stream_response_observed(
         &self,
-        mut request: ChatRequest,
+        mut request: ResponseRequest,
         observer: &mut dyn crate::stream::DeltaObserver,
-    ) -> Result<ChatResponse> {
+    ) -> Result<Response> {
         request.stream = true;
+        self.apply_defaults(&mut request);
         // Ask the provider to include a final usage chunk in the stream.
-        request.stream_options = Some(crate::chat::StreamOptions {
-            include_usage: true,
-        });
         let body = serde_json::to_string(&request)?;
         let transport_req = TransportRequest {
             url: self.config.endpoint(),
@@ -113,7 +125,7 @@ impl ModelClient {
             body,
         };
 
-        let mut accumulator = DeltaAccumulator::new();
+        let mut accumulator = ResponseAccumulator::new();
 
         // The transport's contract is to deliver already-de-framed SSE payloads
         // (the reqwest transport runs the SseParser; the mock yields payloads
@@ -129,20 +141,18 @@ impl ModelClient {
         accumulator.finish()
     }
 
-    /// Like [`ModelClient::stream_chat_observed`], but aborts promptly when
+    /// Like [`ModelClient::stream_response_observed`], but aborts promptly when
     /// `cancel` is set. The real reqwest transport uses this to stop an
     /// in-flight SSE body read; mock/default transports still preserve the old
     /// behavior unless they opt in.
-    pub async fn stream_chat_observed_cancelled(
+    pub async fn stream_response_observed_cancelled(
         &self,
-        mut request: ChatRequest,
+        mut request: ResponseRequest,
         observer: &mut dyn crate::stream::DeltaObserver,
         cancel: Arc<AtomicBool>,
-    ) -> Result<ChatResponse> {
+    ) -> Result<Response> {
         request.stream = true;
-        request.stream_options = Some(crate::chat::StreamOptions {
-            include_usage: true,
-        });
+        self.apply_defaults(&mut request);
         let body = serde_json::to_string(&request)?;
         let transport_req = TransportRequest {
             url: self.config.endpoint(),
@@ -150,7 +160,7 @@ impl ModelClient {
             body,
         };
 
-        let mut accumulator = DeltaAccumulator::new();
+        let mut accumulator = ResponseAccumulator::new();
         {
             let acc = &mut accumulator;
             let mut sink =
@@ -161,6 +171,45 @@ impl ModelClient {
         }
 
         accumulator.finish()
+    }
+
+    fn apply_defaults(&self, request: &mut ResponseRequest) {
+        if request.temperature.is_none() {
+            request.temperature = self.config.defaults.temperature;
+        }
+        if request.top_p.is_none() {
+            request.top_p = self.config.defaults.top_p;
+        }
+        if request.max_output_tokens.is_none() {
+            request.max_output_tokens = self.config.defaults.max_output_tokens;
+        }
+        if request.top_logprobs.is_none() {
+            request.top_logprobs = self.config.defaults.top_logprobs;
+        }
+        if request.reasoning_effort.is_none() {
+            request.reasoning_effort = self.config.defaults.reasoning_effort.clone();
+        }
+        if request.text.is_none() {
+            request.text = self.config.defaults.text.clone();
+        }
+        if request.tool_choice.is_none() {
+            request.tool_choice = self.config.defaults.tool_choice.clone();
+        }
+        if request.user.is_none() {
+            request.user = self.config.defaults.user.clone();
+        }
+        if self.config.defaults.native_web_search {
+            for tool in &mut request.tools {
+                if tool.function.name == "web_search" {
+                    tool.kind = "web_search".to_string();
+                }
+            }
+        }
+        for tool in &mut request.tools {
+            if tool.function.name == "apply_patch" {
+                tool.kind = "custom".to_string();
+            }
+        }
     }
 }
 
@@ -180,22 +229,22 @@ mod tests {
     #[test]
     fn endpoint_is_well_formed() {
         let cfg = ModelConfig::deepseek("k");
-        assert_eq!(cfg.endpoint(), "https://api.deepseek.com/chat/completions");
+        assert_eq!(cfg.endpoint(), "https://api.deepseek.com/responses");
     }
 
     #[tokio::test]
     async fn streams_and_assembles_content() {
         let events = vec![
-            r#"{"choices":[{"delta":{"reasoning_content":"thinking "}}]}"#.to_string(),
-            r#"{"choices":[{"delta":{"reasoning_content":"hard"}}]}"#.to_string(),
-            r#"{"choices":[{"delta":{"content":"Hello"}}]}"#.to_string(),
-            r#"{"choices":[{"delta":{"content":" there"}}]}"#.to_string(),
-            r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#.to_string(),
-            "[DONE]".to_string(),
+            r#"{"type":"response.created","response":{"id":"r1","status":"in_progress"}}"#.to_string(),
+            r#"{"type":"response.reasoning_text.delta","delta":"thinking "}"#.to_string(),
+            r#"{"type":"response.reasoning_text.delta","delta":"hard"}"#.to_string(),
+            r#"{"type":"response.output_text.delta","delta":"Hello"}"#.to_string(),
+            r#"{"type":"response.output_text.delta","delta":" there"}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#.to_string(),
         ];
         let client = client_with(events);
         let resp = client
-            .stream_chat(ChatRequest::new(
+            .stream_response(ResponseRequest::new(
                 "deepseek-v4-pro",
                 vec![Message::user("hi")],
             ))
@@ -239,16 +288,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_chat_cancelled_interrupts_transport() {
+    async fn stream_response_cancelled_interrupts_transport() {
         let entered = Arc::new(tokio::sync::Notify::new());
         let cancel = Arc::new(AtomicBool::new(false));
         let transport = Arc::new(WaitingTransport {
             entered: entered.clone(),
         });
         let client = ModelClient::new(transport, ModelConfig::deepseek("test-key"));
-        let request = ChatRequest::new("deepseek-v4-flash", vec![Message::user("hi")]);
+        let request = ResponseRequest::new("deepseek-v4-flash", vec![Message::user("hi")]);
 
-        let run = client.stream_chat_cancelled(request, cancel.clone());
+        let run = client.stream_response_cancelled(request, cancel.clone());
         tokio::pin!(run);
         tokio::select! {
             result = &mut run => {
@@ -271,14 +320,15 @@ mod tests {
     #[tokio::test]
     async fn streams_tool_calls_end_to_end() {
         let events = vec![
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"search","arguments":"{\"q\":"}}]}}]}"#.to_string(),
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"rust\"}"}}]}}]}"#.to_string(),
-            r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.to_string(),
-            "[DONE]".to_string(),
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"item1","call_id":"c1","name":"search","arguments":""}}"#.to_string(),
+            r#"{"type":"response.function_call_arguments.delta","item_id":"item1","delta":"{\"q\":"}"#.to_string(),
+            r#"{"type":"response.function_call_arguments.delta","item_id":"item1","delta":"\"rust\"}"}"#.to_string(),
+            r#"{"type":"response.function_call_arguments.done","item_id":"item1","arguments":"{\"q\":\"rust\"}"}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#.to_string(),
         ];
         let client = client_with(events);
         let resp = client
-            .stream_chat(ChatRequest::new(
+            .stream_response(ResponseRequest::new(
                 "deepseek-v4-flash",
                 vec![Message::user("find rust")],
             ))

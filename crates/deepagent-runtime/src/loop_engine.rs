@@ -902,6 +902,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             session.append(EventPayload::UsageRecorded {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
+                reasoning_tokens: u.reasoning_tokens,
                 total_tokens: u.total_tokens,
                 prompt_cache_hit_tokens: u.prompt_cache_hit_tokens,
                 prompt_cache_miss_tokens: u.prompt_cache_miss_tokens,

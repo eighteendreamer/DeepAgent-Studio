@@ -150,6 +150,9 @@ impl AppService {
         Ok(records
             .into_iter()
             .filter(|r| !archived.contains(&r.id.to_string()))
+            // V11 Responses cutover clears legacy transcript sessions while
+            // retaining their rows for cost foreign keys.
+            .filter(|r| !(r.ended_at.is_some() && r.title.is_none()))
             .filter(|r| {
                 r.project
                     .as_deref()
@@ -421,6 +424,7 @@ impl AppService {
                 EventPayload::UsageRecorded {
                     prompt_tokens,
                     completion_tokens,
+                    reasoning_tokens,
                     total_tokens,
                     prompt_cache_hit_tokens,
                     prompt_cache_miss_tokens,
@@ -432,6 +436,7 @@ impl AppService {
                     messages[idx].usage = Some(ConversationUsageDto {
                         prompt_tokens: *prompt_tokens,
                         completion_tokens: *completion_tokens,
+                        reasoning_tokens: *reasoning_tokens,
                         total_tokens: *total_tokens,
                         prompt_cache_hit_tokens: *prompt_cache_hit_tokens,
                         prompt_cache_miss_tokens: *prompt_cache_miss_tokens,

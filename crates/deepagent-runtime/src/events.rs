@@ -114,6 +114,26 @@ pub enum RuntimeEvent {
         /// Incremental visible text.
         text: String,
     },
+    /// Sanitized metadata for one DeepSeek Responses SSE event.
+    ResponsesStreamEvent {
+        event_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delta_chars: Option<usize>,
+    },
+    /// Provider-owned native web-search lifecycle, projected separately from
+    /// local tools so it cannot accidentally enter approval/execution.
+    ResponsesWebSearchCall {
+        call_id: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action_type: Option<String>,
+        #[serde(default)]
+        queries_count: usize,
+    },
     /// A tool call is about to run (after the BeforeToolUse gate allowed it).
     ToolStarted {
         /// Tool name.
@@ -316,6 +336,8 @@ pub enum RuntimeEvent {
         prompt_tokens: u32,
         /// Completion (output) tokens for this call.
         completion_tokens: u32,
+        /// Reasoning tokens already included in `completion_tokens`.
+        reasoning_tokens: u32,
         /// Total tokens for this call.
         total_tokens: u32,
         /// Prompt tokens served from the context cache (a "hit").
@@ -533,6 +555,8 @@ impl RuntimeEvent {
             RuntimeEvent::ModelAttemptReset { .. } => "model_attempt_reset",
             RuntimeEvent::ReasoningDelta { .. } => "reasoning_delta",
             RuntimeEvent::ContentDelta { .. } => "content_delta",
+            RuntimeEvent::ResponsesStreamEvent { .. } => "responses_stream_event",
+            RuntimeEvent::ResponsesWebSearchCall { .. } => "responses_web_search_call",
             RuntimeEvent::ToolStarted { .. } => "tool_started",
             RuntimeEvent::ToolCompleted { .. } => "tool_completed",
             RuntimeEvent::ToolBlocked { .. } => "tool_blocked",

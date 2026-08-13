@@ -348,7 +348,7 @@ impl ReviewDepth {
     }
 
     /// Hard ceiling on the model's combined reasoning + reply tokens for
-    /// this tier. Set explicitly on [`deepagent_models::ChatRequest::with_max_tokens`]
+    /// this tier. Set explicitly on [`deepagent_models::ResponseRequest::with_max_output_tokens`]
     /// so the model exits early once the verdict has landed instead of
     /// rambling through the full thinking budget the depth would otherwise
     /// allow.

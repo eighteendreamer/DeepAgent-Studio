@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use deepagent_core::message::Message;
-use deepagent_models::{ChatRequest, ModelClient};
+use deepagent_models::{ModelClient, ResponseRequest};
 
 use crate::compaction::{HeuristicSummarizer, Summarizer, TaskSummary};
 
@@ -62,7 +62,7 @@ impl ModelCompactor {
     }
 
     /// Override the max output tokens (builder style).
-    pub fn with_max_tokens(mut self, n: u32) -> Self {
+    pub fn with_max_output_tokens(mut self, n: u32) -> Self {
         self.max_tokens = n;
         self
     }
@@ -96,14 +96,14 @@ impl ModelCompactor {
             return Some(prior.clone());
         }
         let user = build_user_prompt(goal, prior, older_turns);
-        let request = ChatRequest::new(
+        let request = ResponseRequest::new(
             self.model.clone(),
             vec![Message::system(COMPACT_SYSTEM), Message::user(user)],
         )
         .with_temperature(self.temperature)
-        .with_max_tokens(self.max_tokens);
+        .with_max_output_tokens(self.max_tokens);
 
-        let response = self.client.stream_chat(request).await.ok()?;
+        let response = self.client.stream_response(request).await.ok()?;
         let content = response.message.content;
         let parsed = parse_summary_json(&content)?;
         Some(merge_into_prior(prior, parsed, goal))
@@ -240,10 +240,9 @@ mod tests {
 
     #[tokio::test]
     async fn model_summary_parses_response() {
-        // A single non-streaming chunk carrying the JSON object as content.
         let events = vec![
-            r#"{"choices":[{"delta":{"content":"{\"goal\":\"ship feature\",\"completed\":[\"wrote code\"],\"pending\":[\"tests\"],\"decisions\":[\"chose sqlite\"],\"failures\":[\"migration bug\"]}"},"finish_reason":"stop"}]}"#.to_string(),
-            "[DONE]".to_string(),
+            r#"{"type":"response.output_text.delta","delta":"{\"goal\":\"ship feature\",\"completed\":[\"wrote code\"],\"pending\":[\"tests\"],\"decisions\":[\"chose sqlite\"],\"failures\":[\"migration bug\"]}"}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
         ];
         let compactor = ModelCompactor::new(client(events), "deepseek-v4-flash");
         let summary = compactor
@@ -273,9 +272,8 @@ mod tests {
     async fn falls_back_to_heuristic_on_bad_output() {
         // Model returns non-JSON prose → fall back to heuristic extraction.
         let events = vec![
-            r#"{"choices":[{"delta":{"content":"I cannot do that."},"finish_reason":"stop"}]}"#
-                .to_string(),
-            "[DONE]".to_string(),
+            r#"{"type":"response.output_text.delta","delta":"I cannot do that."}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
         ];
         let compactor = ModelCompactor::new(client(events), "deepseek-v4-flash");
         let summary = compactor

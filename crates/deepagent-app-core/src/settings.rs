@@ -397,6 +397,442 @@ fn normalize_anysearch_base_url(base_url: &str) -> String {
     }
 }
 
+/// Global DeepSeek Responses controls. Unknown or provider-managed fields are
+/// rejected before persistence; ineffective fields are retained with warnings
+/// by the UI but never silently dropped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ResponsesApiSettings {
+    /// User-level creativity control. `None` preserves the provider/runtime
+    /// default until the user explicitly moves the control.
+    #[serde(default)]
+    pub creativity: Option<u8>,
+    /// Application-level scene preset. This is never accepted from developer
+    /// JSON because it is a product policy, not an upstream Responses field.
+    #[serde(default)]
+    pub scene: Option<ResponseScenePreset>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub top_logprobs: Option<u8>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub text: Option<serde_json::Value>,
+    #[serde(default)]
+    pub tool_choice: Option<serde_json::Value>,
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Strictly validated developer JSON, kept separate so editing it never
+    /// destroys ordinary/advanced product-layer settings.
+    #[serde(default)]
+    pub developer: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub ineffective: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ResponsesApiSettings {
+    pub fn effective_temperature(&self) -> Option<f32> {
+        self.developer_number("temperature")
+            .or(self.temperature)
+            .or_else(|| self.scene.map(ResponseScenePreset::temperature))
+            .or_else(|| self.creativity.map(|value| f32::from(value) / 50.0))
+    }
+
+    pub fn effective_top_p(&self) -> Option<f32> {
+        self.developer_number("top_p").or(self.top_p)
+    }
+
+    pub fn effective_max_output_tokens(&self) -> Option<u32> {
+        self.developer
+            .get("max_output_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .or(self.max_output_tokens)
+    }
+
+    pub fn effective_top_logprobs(&self) -> Option<u8> {
+        self.developer
+            .get("top_logprobs")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u8::try_from(value).ok())
+            .or(self.top_logprobs)
+    }
+
+    pub fn effective_reasoning_effort(&self) -> Option<String> {
+        self.developer
+            .get("reasoning")
+            .and_then(|value| value.get("effort"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| self.reasoning_effort.clone())
+    }
+
+    pub fn effective_text(&self) -> Option<serde_json::Value> {
+        self.developer
+            .get("text")
+            .cloned()
+            .or_else(|| self.text.clone())
+    }
+
+    pub fn effective_tool_choice(&self) -> Option<serde_json::Value> {
+        self.developer
+            .get("tool_choice")
+            .cloned()
+            .or_else(|| self.tool_choice.clone())
+    }
+
+    pub fn effective_user(&self) -> Option<String> {
+        self.developer
+            .get("user")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| self.user.clone())
+    }
+
+    fn developer_number(&self, key: &str) -> Option<f32> {
+        self.developer
+            .get(key)
+            .and_then(serde_json::Value::as_f64)
+            .map(|value| value as f32)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.creativity.is_some_and(|value| value > 100) {
+            return Err(CoreError::invalid(
+                "Responses creativity must be between 0 and 100",
+            ));
+        }
+        if let Some(value) = self.temperature {
+            if !(0.0..=2.0).contains(&value) {
+                return Err(CoreError::invalid(
+                    "Responses temperature must be between 0 and 2",
+                ));
+            }
+        }
+        if let Some(value) = self.top_p {
+            if !(0.0..=1.0).contains(&value) {
+                return Err(CoreError::invalid(
+                    "Responses top_p must be between 0 and 1",
+                ));
+            }
+        }
+        if let Some(value) = self.top_logprobs {
+            if value > 20 {
+                return Err(CoreError::invalid(
+                    "Responses top_logprobs must be between 0 and 20",
+                ));
+            }
+        }
+        if let Some(value) = &self.reasoning_effort {
+            if !matches!(value.as_str(), "low" | "medium" | "high" | "max") {
+                return Err(CoreError::invalid(
+                    "Responses reasoning_effort must be low, medium, high, or max",
+                ));
+            }
+        }
+        if let Some(text) = &self.text {
+            validate_developer_responses_fields(&serde_json::Map::from_iter([(
+                "text".to_string(),
+                text.clone(),
+            )]))?;
+        }
+        if let Some(tool_choice) = &self.tool_choice {
+            validate_developer_responses_fields(&serde_json::Map::from_iter([(
+                "tool_choice".to_string(),
+                tool_choice.clone(),
+            )]))?;
+        }
+        if self.user.as_deref().is_some_and(str::is_empty) {
+            return Err(CoreError::invalid("Responses user must not be empty"));
+        }
+        if !self.developer.is_empty() {
+            let raw = serde_json::Value::Object(self.developer.clone()).to_string();
+            Self::from_developer_json(&raw)?;
+        }
+        Ok(())
+    }
+
+    pub fn from_developer_json(raw: &str) -> Result<Self> {
+        let value: serde_json::Value = serde_json::from_str(raw)
+            .map_err(|e| CoreError::invalid(format!("invalid Responses JSON: {e}")))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| CoreError::invalid("Responses JSON must be an object"))?
+            .clone();
+        let allowed = [
+            "temperature",
+            "top_p",
+            "max_output_tokens",
+            "top_logprobs",
+            "reasoning",
+            "text",
+            "tool_choice",
+            "user",
+            "verbosity",
+            "parallel_tool_calls",
+            "max_tool_calls",
+            "store",
+        ];
+        let rejected = [
+            "model",
+            "input",
+            "instructions",
+            "tools",
+            "stream",
+            "previous_response_id",
+            "conversation",
+            "background",
+            "metadata",
+            "include",
+            "prompt",
+            "truncation",
+            "service_tier",
+            "safety_identifier",
+            "prompt_cache_key",
+            "prompt_cache_retention",
+            "context_management",
+            "stream_options",
+            "stop",
+        ];
+        for key in object.keys() {
+            if rejected.contains(&key.as_str()) {
+                return Err(CoreError::invalid(format!(
+                    "Responses field `{key}` is system-managed or unsupported by DeepSeek"
+                )));
+            }
+            if !allowed.contains(&key.as_str()) {
+                return Err(CoreError::invalid(format!(
+                    "unknown Responses field `{key}`"
+                )));
+            }
+        }
+        validate_developer_responses_fields(&object)?;
+        let mut settings = Self::default();
+        settings.developer = object.clone();
+        for key in [
+            "verbosity",
+            "parallel_tool_calls",
+            "max_tool_calls",
+            "store",
+        ] {
+            if let Some(v) = object.get(key) {
+                settings.ineffective.insert(key.to_string(), v.clone());
+            }
+        }
+        Ok(settings)
+    }
+}
+
+fn validate_developer_responses_fields(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    if let Some(value) = object.get("temperature") {
+        if value
+            .as_f64()
+            .is_none_or(|value| !(0.0..=2.0).contains(&value))
+        {
+            return Err(CoreError::invalid(
+                "Responses temperature must be a number between 0 and 2",
+            ));
+        }
+    }
+    if let Some(value) = object.get("top_p") {
+        if value
+            .as_f64()
+            .is_none_or(|value| !(0.0..=1.0).contains(&value))
+        {
+            return Err(CoreError::invalid(
+                "Responses top_p must be a number between 0 and 1",
+            ));
+        }
+    }
+    if object.get("max_output_tokens").is_some_and(|value| {
+        value
+            .as_u64()
+            .is_none_or(|tokens| tokens == 0 || tokens > u64::from(u32::MAX))
+    }) {
+        return Err(CoreError::invalid(
+            "Responses max_output_tokens must be a positive integer",
+        ));
+    }
+    if object
+        .get("top_logprobs")
+        .is_some_and(|value| value.as_u64().is_none_or(|count| count > 20))
+    {
+        return Err(CoreError::invalid(
+            "Responses top_logprobs must be an integer between 0 and 20",
+        ));
+    }
+    if let Some(reasoning) = object.get("reasoning") {
+        let Some(reasoning) = reasoning.as_object() else {
+            return Err(CoreError::invalid("Responses reasoning must be an object"));
+        };
+        if reasoning.keys().any(|key| key != "effort") {
+            return Err(CoreError::invalid(
+                "DeepSeek Responses reasoning only supports `effort`",
+            ));
+        }
+        if !matches!(
+            reasoning.get("effort").and_then(serde_json::Value::as_str),
+            Some("low" | "medium" | "high" | "max")
+        ) {
+            return Err(CoreError::invalid(
+                "Responses reasoning.effort must be low, medium, high, or max",
+            ));
+        }
+    }
+    if let Some(text) = object.get("text") {
+        let Some(text) = text.as_object() else {
+            return Err(CoreError::invalid("Responses text must be an object"));
+        };
+        if text.keys().any(|key| key != "format") {
+            return Err(CoreError::invalid(
+                "DeepSeek Responses text only supports `format`",
+            ));
+        }
+        let Some(format) = text.get("format").and_then(serde_json::Value::as_object) else {
+            return Err(CoreError::invalid(
+                "Responses text.format must be an object",
+            ));
+        };
+        let format_type = format
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::invalid("Responses text.format.type is required"))?;
+        match format_type {
+            "text" | "json_object" => {
+                if format.keys().any(|key| key != "type") {
+                    return Err(CoreError::invalid(format!(
+                        "Responses text.format `{format_type}` has unknown fields"
+                    )));
+                }
+            }
+            "json_schema" => {
+                if format.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "type" | "name" | "description" | "schema" | "strict"
+                    )
+                }) {
+                    return Err(CoreError::invalid(
+                        "Responses text.format json_schema has unknown fields",
+                    ));
+                }
+                if format
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(str::is_empty)
+                    || format.get("schema").is_none_or(|value| !value.is_object())
+                {
+                    return Err(CoreError::invalid(
+                        "Responses text.format json_schema requires a non-empty name and object schema",
+                    ));
+                }
+                if format
+                    .get("strict")
+                    .is_some_and(|value| !value.is_boolean())
+                {
+                    return Err(CoreError::invalid(
+                        "Responses text.format.strict must be boolean",
+                    ));
+                }
+            }
+            _ => {
+                return Err(CoreError::invalid(
+                    "Responses text.format.type must be text, json_object, or json_schema",
+                ));
+            }
+        }
+    }
+    if let Some(choice) = object.get("tool_choice") {
+        let valid = choice
+            .as_str()
+            .is_some_and(|value| matches!(value, "auto" | "none" | "required"))
+            || choice.as_object().is_some_and(|choice| {
+                choice
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "type" | "name"))
+                    && matches!(
+                        choice.get("type").and_then(serde_json::Value::as_str),
+                        Some("function" | "custom" | "web_search")
+                    )
+                    && (choice.get("type").and_then(serde_json::Value::as_str)
+                        == Some("web_search")
+                        || choice
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|name| !name.is_empty()))
+            });
+        if !valid {
+            return Err(CoreError::invalid(
+                "Responses tool_choice must use the supported string or typed object shape",
+            ));
+        }
+    }
+    if object
+        .get("user")
+        .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+    {
+        return Err(CoreError::invalid(
+            "Responses user must be a non-empty string",
+        ));
+    }
+    if object
+        .get("verbosity")
+        .is_some_and(|value| !matches!(value.as_str(), Some("low" | "medium" | "high")))
+    {
+        return Err(CoreError::invalid(
+            "Responses verbosity must be low, medium, or high",
+        ));
+    }
+    if object
+        .get("parallel_tool_calls")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(CoreError::invalid(
+            "Responses parallel_tool_calls must be boolean",
+        ));
+    }
+    if object
+        .get("max_tool_calls")
+        .is_some_and(|value| value.as_u64().is_none_or(|count| count == 0))
+    {
+        return Err(CoreError::invalid(
+            "Responses max_tool_calls must be a positive integer",
+        ));
+    }
+    if object.get("store").is_some_and(|value| !value.is_boolean()) {
+        return Err(CoreError::invalid("Responses store must be boolean"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseScenePreset {
+    Code,
+    Email,
+    Analysis,
+    Creative,
+}
+
+impl ResponseScenePreset {
+    pub const fn temperature(self) -> f32 {
+        // No upstream counterpart (checked: DeepSeek Responses docs / Codex):
+        // application-level scene preset, chosen to preserve current behavior.
+        match self {
+            Self::Code => 0.4,
+            Self::Email => 0.8,
+            Self::Analysis => 0.5,
+            Self::Creative => 1.5,
+        }
+    }
+}
+
 /// How pasted/dropped images are converted into model-readable context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -512,7 +948,7 @@ fn normalize_vision_settings(mut settings: VisionSettings) -> VisionSettings {
 
 /// Persisted, **non-secret** application settings (safe to store on disk).
 /// The API key is intentionally absent — it lives in the [`SecretStore`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     /// The discovered + auto-selected model configuration.
     pub catalog: ModelCatalog,
@@ -537,6 +973,10 @@ pub struct AppSettings {
     /// User-selected DeepSeek Thinking Mode depth.
     #[serde(default)]
     pub thinking_depth: ThinkingDepth,
+    /// Global Responses API controls; system-managed request fields are never
+    /// accepted from this object.
+    #[serde(default)]
+    pub responses: ResponsesApiSettings,
     /// Post-edit verification policy (Phase 4C of coding-amplifier spec).
     /// Controls whether failed verifications stay informative reminders or
     /// flip the tool result's `ok` flag to drive automatic retry.
@@ -690,7 +1130,7 @@ fn default_skill_install_ai_review_enabled() -> bool {
 }
 
 /// A redacted view of settings safe to send to the UI (no secret material).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingsView {
     /// Masked key (e.g. `"sk-…last4"`), or `"(not set)"`. Never the full secret.
     pub api_key_masked: String,
@@ -712,6 +1152,8 @@ pub struct SettingsView {
     pub terminal_shell: String,
     /// Current DeepSeek Thinking Mode depth (simple / medium / deep).
     pub thinking_depth: String,
+    #[serde(default)]
+    pub responses: ResponsesApiSettings,
     /// Current web-search settings.
     pub web_search: WebSearchSettings,
     /// Current image-analysis settings.
@@ -836,6 +1278,10 @@ impl SettingsService {
                 .map(|s| s.hooks_json.clone())
                 .unwrap_or_default(),
             thinking_depth: prior.as_ref().map(|s| s.thinking_depth).unwrap_or_default(),
+            responses: prior
+                .as_ref()
+                .map(|s| s.responses.clone())
+                .unwrap_or_default(),
             verification_policy: prior
                 .as_ref()
                 .map(|s| s.verification_policy)
@@ -1455,6 +1901,41 @@ impl SettingsService {
         self.view_with_key(key.as_deref(), &settings)
     }
 
+    pub fn responses_settings(&self) -> Result<ResponsesApiSettings> {
+        Ok(self.load()?.map(|s| s.responses).unwrap_or_default())
+    }
+
+    pub fn set_responses_settings(
+        &self,
+        mut settings_next: ResponsesApiSettings,
+    ) -> Result<SettingsView> {
+        settings_next.validate()?;
+        let canonical_developer = ResponsesApiSettings::from_developer_json(
+            &serde_json::Value::Object(settings_next.developer.clone()).to_string(),
+        )?;
+        settings_next.developer = canonical_developer.developer;
+        settings_next.ineffective = canonical_developer.ineffective;
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.responses = settings_next;
+        self.save(&settings)?;
+        let key = self.secrets.get(API_KEY_NAME)?;
+        self.view_with_key(key.as_deref(), &settings)
+    }
+
+    pub fn set_responses_developer_json(&self, raw: &str) -> Result<SettingsView> {
+        let developer = ResponsesApiSettings::from_developer_json(raw)?;
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        settings.responses.developer = developer.developer;
+        settings.responses.ineffective = developer.ineffective;
+        self.save(&settings)?;
+        let key = self.secrets.get(API_KEY_NAME)?;
+        self.view_with_key(key.as_deref(), &settings)
+    }
+
     /// Set the approval policy, persisting it. Returns the redacted view.
     pub fn set_approval_policy(&self, policy: ApprovalPolicy) -> Result<SettingsView> {
         let mut settings = self
@@ -1563,6 +2044,7 @@ impl SettingsService {
             sandbox_mode: settings.sandbox_mode.label().to_string(),
             terminal_shell: settings.terminal_shell.label().to_string(),
             thinking_depth: settings.thinking_depth.label().to_string(),
+            responses: settings.responses.clone(),
             web_search: self.web_search_settings_view(normalize_web_search_settings(
                 settings.web_search.clone(),
             ))?,
@@ -2081,6 +2563,7 @@ mod tests {
             sandbox_mode: SandboxMode::WorkspaceWrite,
             terminal_shell: TerminalShell::default(),
             thinking_depth: ThinkingDepth::Medium,
+            responses: ResponsesApiSettings::default(),
             permission_rules: PermissionRules::default(),
             hooks_json: String::new(),
             verification_policy: VerificationPolicy::default(),
@@ -2110,4 +2593,92 @@ mod tests {
         assert_eq!(info.granted_balance, "2.50");
         assert_eq!(info.topped_up_balance, "40.00");
     }
+}
+#[test]
+fn responses_developer_json_rejects_system_fields_and_unknowns() {
+    assert!(ResponsesApiSettings::from_developer_json(r#"{"model":"x"}"#).is_err());
+    assert!(ResponsesApiSettings::from_developer_json(r#"{"unknown":true}"#).is_err());
+}
+
+#[test]
+fn responses_developer_json_preserves_ineffective_fields() {
+    let settings = ResponsesApiSettings::from_developer_json(
+        r#"{"temperature":0.4,"reasoning":{"effort":"high"},"user":"account-1","parallel_tool_calls":false,"store":true}"#,
+    )
+    .unwrap();
+    assert_eq!(settings.temperature, None);
+    assert_eq!(settings.effective_temperature(), Some(0.4));
+    assert_eq!(settings.developer["temperature"], 0.4);
+    assert_eq!(
+        settings.effective_reasoning_effort().as_deref(),
+        Some("high")
+    );
+    assert_eq!(settings.effective_user().as_deref(), Some("account-1"));
+    assert!(settings.ineffective.contains_key("parallel_tool_calls"));
+    assert!(settings.ineffective.contains_key("store"));
+}
+
+#[test]
+fn responses_developer_json_uses_official_nested_reasoning_shape() {
+    assert!(ResponsesApiSettings::from_developer_json(r#"{"reasoning_effort":"high"}"#).is_err());
+    assert!(
+        ResponsesApiSettings::from_developer_json(r#"{"reasoning":{"effort":"extreme"}}"#).is_err()
+    );
+    assert!(ResponsesApiSettings::from_developer_json(
+        r#"{"reasoning":{"effort":"high","summary":"auto"}}"#
+    )
+    .is_err());
+}
+
+#[test]
+fn responses_developer_json_validates_numeric_ranges() {
+    assert!(ResponsesApiSettings::from_developer_json(r#"{"temperature":2.1}"#).is_err());
+    assert!(ResponsesApiSettings::from_developer_json(r#"{"temperature":"high"}"#).is_err());
+    assert!(ResponsesApiSettings::from_developer_json(r#"{"top_p":1.1}"#).is_err());
+    assert!(ResponsesApiSettings::from_developer_json(r#"{"top_p":true}"#).is_err());
+    assert!(ResponsesApiSettings::from_developer_json(r#"{"max_output_tokens":0}"#).is_err());
+    assert!(ResponsesApiSettings::from_developer_json(r#"{"top_logprobs":21}"#).is_err());
+}
+
+#[test]
+fn responses_developer_json_rejects_nested_unknowns() {
+    assert!(ResponsesApiSettings::from_developer_json(
+        r#"{"text":{"format":{"type":"json_schema","name":"answer","schema":{},"unknown":true}}}"#
+    )
+    .is_err());
+    assert!(ResponsesApiSettings::from_developer_json(
+        r#"{"tool_choice":{"type":"function","name":"read_file","unknown":true}}"#
+    )
+    .is_err());
+}
+
+#[test]
+fn responses_parameter_layers_follow_documented_priority() {
+    let settings = ResponsesApiSettings {
+        creativity: Some(90),
+        scene: Some(ResponseScenePreset::Creative),
+        temperature: Some(0.7),
+        developer: serde_json::Map::from_iter([(
+            "temperature".to_string(),
+            serde_json::json!(0.2),
+        )]),
+        ..ResponsesApiSettings::default()
+    };
+    assert_eq!(settings.effective_temperature(), Some(0.2));
+
+    let panel = ResponsesApiSettings {
+        developer: serde_json::Map::new(),
+        ..settings.clone()
+    };
+    assert_eq!(panel.effective_temperature(), Some(0.7));
+    let scene = ResponsesApiSettings {
+        temperature: None,
+        ..panel.clone()
+    };
+    assert_eq!(scene.effective_temperature(), Some(1.5));
+    let creativity = ResponsesApiSettings {
+        scene: None,
+        ..scene
+    };
+    assert_eq!(creativity.effective_temperature(), Some(1.8));
 }

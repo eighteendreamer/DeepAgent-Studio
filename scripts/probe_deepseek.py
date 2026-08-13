@@ -4,11 +4,12 @@
 
 调用真实 DeepSeek API，把完整的请求 / 响应原样打印出来，用来确认：
   1. /models           —— 账号能用哪些模型
-  2. chat（非流式）     —— 完整响应 JSON 的字段（含 reasoning_content）
-  3. chat（流式 SSE）   —— 每个 data: chunk 的形态（delta / tool_calls 分片）
-  4. function calling   —— DeepSeek 返回的 tool_calls **精确结构**
-  5. tool_calls 回传    —— 把带 tool_calls 的 assistant 消息 + tool 结果消息发回去，
-                           验证 DeepSeek 要求的精确 wire 格式（这步直接对应 400 报错）
+  2. Responses（非流式） —— 完整响应 JSON 的字段
+  3. Responses（流式 SSE） —— 语义事件形态
+  4. function calling —— DeepSeek 返回的 function_call 精确结构
+  5. function_call_output 回传 —— 验证 Responses item wire 格式
+  6. custom apply_patch —— 验证 custom tool 与语义 SSE
+  7. native web_search —— 验证 DeepSeek 原生搜索生命周期
 
 只用 Python 标准库（urllib），无需 pip install。
 
@@ -72,6 +73,37 @@ def resolve_key(cli_key: str | None) -> str:
             return val.strip()
     except Exception as exc:  # noqa: BLE001
         print(f"{C_DIM}（python keyring 读取失败，忽略：{exc}）{C_RESET}")
+    # keyring v3 on Windows stores a Generic Credential whose target is
+    # `<name>.<service>`. Read it directly through the documented Win32 API;
+    # the secret remains in memory and is never printed or written to disk.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class CREDENTIAL(ctypes.Structure):
+                _fields_ = [
+                    ("Flags", wintypes.DWORD), ("Type", wintypes.DWORD),
+                    ("TargetName", wintypes.LPWSTR), ("Comment", wintypes.LPWSTR),
+                    ("LastWritten", wintypes.FILETIME), ("CredentialBlobSize", wintypes.DWORD),
+                    ("CredentialBlob", ctypes.c_void_p), ("Persist", wintypes.DWORD),
+                    ("AttributeCount", wintypes.DWORD), ("Attributes", ctypes.c_void_p),
+                    ("TargetAlias", wintypes.LPWSTR), ("UserName", wintypes.LPWSTR),
+                ]
+            pcred = ctypes.POINTER(CREDENTIAL)()
+            target = f"{KEYCHAIN_NAME}.{KEYCHAIN_SERVICE}"
+            if ctypes.windll.advapi32.CredReadW(target, 1, 0, ctypes.byref(pcred)):
+                try:
+                    item = pcred.contents
+                    raw = ctypes.string_at(item.CredentialBlob, item.CredentialBlobSize)
+                    val = raw.decode("utf-16-le").rstrip("\x00")
+                    if val.strip():
+                        print(f"{C_DIM}从 Windows Credential Manager 读到 key{C_RESET}")
+                        return val.strip()
+                finally:
+                    ctypes.windll.advapi32.CredFree(pcred)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{C_DIM}（Win32 凭据读取失败，忽略：{exc}）{C_RESET}")
     print(
         f"{C_RED}未找到 API Key。请用 --key sk-xxx 传入，"
         f"或设置环境变量 DEEPSEEK_API_KEY。{C_RESET}"
@@ -129,38 +161,34 @@ def probe_models(key: str) -> str:
 
 
 def probe_chat_nonstream(key: str, model: str) -> None:
-    hr("2. POST /chat/completions（非流式）—— 完整响应 JSON")
+    hr("2. POST /responses（非流式）—— 完整响应 JSON")
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": "你是一个简洁的助手。"},
-            {"role": "user", "content": "用一句话介绍你自己。"},
-        ],
+        "instructions": "你是一个简洁的助手。",
+        "input": [{"role": "user", "content": "用一句话介绍你自己。"}],
         "stream": False,
     }
     pretty("request", payload)
     try:
-        with post("/chat/completions", key, payload) as resp:
+        with post("/responses", key, payload) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         pretty("response", body)
-        msg = body["choices"][0]["message"]
-        print(f"{C_GREEN}message 字段: {list(msg.keys())}{C_RESET}")
-        if "reasoning_content" in msg:
-            print(f"{C_GREEN}存在 reasoning_content 字段{C_RESET}")
+        print(f"{C_GREEN}response 字段: {list(body.keys())}{C_RESET}")
+        print(f"{C_GREEN}output items: {len(body.get('output', []))}{C_RESET}")
     except urllib.error.HTTPError as exc:
         read_error(exc)
 
 
 def probe_chat_stream(key: str, model: str) -> None:
-    hr("3. POST /chat/completions（流式 SSE）—— 每个 chunk 形态")
+    hr("3. POST /responses（语义 SSE）—— 每个 event 形态")
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": "从 1 数到 3。"}],
+        "input": [{"role": "user", "content": "从 1 数到 3。"}],
         "stream": True,
     }
     pretty("request", payload)
     try:
-        with post("/chat/completions", key, payload, stream=True) as resp:
+        with post("/responses", key, payload, stream=True) as resp:
             count = 0
             for raw in resp:
                 line = raw.decode("utf-8", errors="replace").rstrip("\n")
@@ -187,128 +215,141 @@ def probe_chat_stream(key: str, model: str) -> None:
 def _weather_tool() -> dict:
     return {
         "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "查询某地天气",
-            "parameters": {
-                "type": "object",
-                "properties": {"city": {"type": "string", "description": "城市名"}},
-                "required": ["city"],
-            },
+        "name": "get_weather",
+        "description": "查询某地天气",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string", "description": "城市名"}},
+            "required": ["city"],
         },
     }
 
 
 def probe_tool_request(key: str, model: str):
-    hr("4. function calling —— DeepSeek 返回的 tool_calls 精确结构")
+    hr("4. function calling —— Responses function_call 精确结构")
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": "北京今天天气怎么样？"}],
+        "input": [{"role": "user", "content": "北京今天天气怎么样？"}],
         "tools": [_weather_tool()],
         "stream": False,
     }
     pretty("request", payload)
     try:
-        with post("/chat/completions", key, payload) as resp:
+        with post("/responses", key, payload) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         pretty("response", body)
-        msg = body["choices"][0]["message"]
-        calls = msg.get("tool_calls")
+        calls = [item for item in body.get("output", []) if item.get("type") == "function_call"]
         if calls:
-            print(f"{C_GREEN}{C_BOLD}DeepSeek 返回的 tool_call 结构（注意 type/function 嵌套）:{C_RESET}")
-            pretty("tool_calls[0]", calls[0])
-            print(
-                f"{C_YELLOW}=> 顶层字段: {list(calls[0].keys())}  "
-                f"function 字段: {list(calls[0].get('function', {}).keys())}{C_RESET}"
-            )
-        return msg
+            print(f"{C_GREEN}{C_BOLD}DeepSeek 返回的 Responses function_call 结构:{C_RESET}")
+            pretty("output[function_call]", calls[0])
+            print(f"{C_YELLOW}=> 顶层字段: {list(calls[0].keys())}{C_RESET}")
+        return {"output": calls}
     except urllib.error.HTTPError as exc:
         read_error(exc)
         return None
 
 
 def probe_tool_roundtrip(key: str, model: str, assistant_msg: dict | None) -> None:
-    hr("5. tool_calls 回传 —— 验证 400 报错的精确 wire 格式")
+    hr("5. function_call_output 回传 —— 验证 Responses item 格式")
     # 若上一步没拿到，就手工构造一个标准 assistant tool_calls 消息
-    if not assistant_msg or not assistant_msg.get("tool_calls"):
+    if not assistant_msg or not assistant_msg.get("output"):
         print(f"{C_DIM}（无上一步结果，使用标准构造的 assistant 消息）{C_RESET}")
-        assistant_msg = {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_demo_1",
-                    "type": "function",
-                    "function": {
-                        "name": "get_weather",
-                        "arguments": '{"city": "北京"}',
-                    },
-                }
-            ],
-        }
-    call_id = assistant_msg["tool_calls"][0]["id"]
+        assistant_msg = {"output": [{"type": "function_call", "call_id": "call_demo_1", "name": "get_weather", "arguments": '{"city": "北京"}'}]}
+    call_id = assistant_msg["output"][0]["call_id"]
 
     # --- 5a. 正确格式：tool_call 含 type + function{name, arguments(字符串)} ---
     print(f"\n{C_BOLD}5a. 正确格式（含 type:function）{C_RESET}")
     ok_payload = {
         "model": model,
-        "messages": [
-            {"role": "user", "content": "北京今天天气怎么样？"},
-            assistant_msg,
-            {
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": '{"city": "北京", "weather": "晴", "temp": 25}',
-            },
-        ],
+        "input": assistant_msg["output"] + [{"type": "function_call_output", "call_id": call_id, "output": '{"city": "北京", "weather": "晴", "temp": 25}'}],
         "tools": [_weather_tool()],
         "stream": False,
     }
     pretty("request", ok_payload)
     try:
-        with post("/chat/completions", key, ok_payload) as resp:
+        with post("/responses", key, ok_payload) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         print(f"{C_GREEN}成功！最终回复:{C_RESET}")
-        print(body["choices"][0]["message"].get("content"))
+        # Non-streaming Responses puts final text inside output[] message
+        # content parts; there is no top-level `output_text` field (that is an
+        # OpenAI SDK convenience). Extract it the wire-accurate way.
+        final = None
+        for item in body.get("output", []):
+            if item.get("type") == "message":
+                for part in item.get("content", []):
+                    if part.get("type") == "output_text":
+                        final = (final or "") + part.get("text", "")
+        print(final if final is not None else body.get("output_text"))
     except urllib.error.HTTPError as exc:
         read_error(exc)
 
-    # --- 5b. 错误格式：扁平 tool_call {id, name, arguments(对象)}（复现 400）---
-    print(f"\n{C_BOLD}5b. 错误格式（扁平，缺 type/function）—— 复现我们当前的 400{C_RESET}")
+    # --- 5b. 错误格式：arguments 对象（Responses 要求 JSON 字符串）---
+    print(f"\n{C_BOLD}5b. 错误格式（arguments 对象）—— 验证 400{C_RESET}")
     bad_payload = {
         "model": model,
-        "messages": [
-            {"role": "user", "content": "北京今天天气怎么样？"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": call_id,
-                        "name": "get_weather",
-                        "arguments": {"city": "北京"},
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": '{"weather": "晴"}',
-            },
-        ],
+        "input": [{"type": "function_call", "call_id": call_id, "name": "get_weather", "arguments": {"city": "北京"}}, {"type": "function_call_output", "call_id": call_id, "output": '{"weather": "晴"}'}],
         "tools": [_weather_tool()],
         "stream": False,
     }
-    pretty("request", bad_payload)
     try:
-        with post("/chat/completions", key, bad_payload) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-        print(f"{C_YELLOW}意外成功了？{C_RESET}")
-        print(body["choices"][0]["message"].get("content"))
+        with post("/responses", key, bad_payload):
+            print(f"{C_YELLOW}意外成功：provider 行为可能已变化{C_RESET}")
     except urllib.error.HTTPError as exc:
-        print(f"{C_GREEN}如预期失败（这正是我们要修的 bug）:{C_RESET}")
+        print(f"{C_GREEN}如预期失败：HTTP {exc.code}{C_RESET}")
+
+
+def probe_custom_apply_patch(key: str, model: str) -> None:
+    hr("6. custom apply_patch —— 验证 custom tool SSE")
+    payload = {
+        "model": model,
+        "input": [{"role": "user", "content": "You must use apply_patch to propose adding one newline to demo.txt; do not answer in prose."}],
+        "tools": [{
+            "type": "custom", "name": "apply_patch",
+            "description": "Return a patch as plain text", "format": {"type": "text"},
+        }],
+        "stream": True,
+    }
+    try:
+        seen = []
+        with post("/responses", key, payload, stream=True) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if not data or data == "[DONE]":
+                    continue
+                event = json.loads(data)
+                seen.append(event.get("type"))
+        required = {"response.custom_tool_call_input.delta", "response.custom_tool_call_input.done", "response.completed"}
+        print(f"{C_GREEN}custom tool 事件齐全: {required.issubset(set(seen))}{C_RESET}")
+    except urllib.error.HTTPError as exc:
         read_error(exc)
 
+def probe_native_web_search(key: str, model: str) -> None:
+    hr("7. native web_search —— 验证 item_id 生命周期")
+    payload = {
+        "model": model,
+        "input": [{"role": "user", "content": "Search for today's date and answer briefly."}],
+        "tools": [{"type": "web_search"}],
+        "stream": True,
+    }
+    try:
+        lifecycle = []
+        with post("/responses", key, payload, stream=True) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if not data or data == "[DONE]":
+                    continue
+                event = json.loads(data)
+                if event.get("type", "").startswith("response.web_search_call."):
+                    lifecycle.append((event.get("type"), bool(event.get("item_id"))))
+        print(f"{C_GREEN}web_search 生命周期: {lifecycle}{C_RESET}")
+    except urllib.error.HTTPError as exc:
+        read_error(exc)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="DeepSeek API 协议探测")
@@ -316,8 +357,8 @@ def main() -> None:
     parser.add_argument(
         "--only",
         type=int,
-        choices=[1, 2, 3, 4, 5],
-        help="只运行指定步骤（1=models 2=chat 3=stream 4=tools 5=roundtrip）",
+        choices=[1, 2, 3, 4, 5, 6, 7],
+        help="只运行指定步骤（1=models 2=responses 3=stream 4=tools 5=roundtrip 6=custom 7=web_search）",
     )
     args = parser.parse_args()
 
@@ -325,7 +366,7 @@ def main() -> None:
     print(f"{C_DIM}Base URL: {BASE_URL}{C_RESET}")
 
     model = "deepseek-chat"
-    steps = [args.only] if args.only else [1, 2, 3, 4, 5]
+    steps = [args.only] if args.only else [1, 2, 3, 4, 5, 6, 7]
 
     assistant_msg = None
     if 1 in steps:
@@ -338,6 +379,10 @@ def main() -> None:
         assistant_msg = probe_tool_request(key, model)
     if 5 in steps:
         probe_tool_roundtrip(key, model, assistant_msg)
+    if 6 in steps:
+        probe_custom_apply_patch(key, model)
+    if 7 in steps:
+        probe_native_web_search(key, model)
 
     print(f"\n{C_GREEN}{C_BOLD}探测完成。{C_RESET}")
 

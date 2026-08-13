@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_models::transport::HttpTransport;
-use deepagent_models::{ModelClient, ModelConfig, ModelRole, ThinkingDepth};
+use deepagent_models::{ModelClient, ModelConfig, ModelRole, ResponseDefaults, ThinkingDepth};
 
 use crate::settings::SettingsService;
 
@@ -26,7 +26,22 @@ pub(crate) fn build_model_client(
         .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
     let thinking_depth = loaded.thinking_depth;
     let model = loaded.catalog.model_for(role).to_string();
-    let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role);
+    let defaults = ResponseDefaults {
+        temperature: loaded.responses.effective_temperature(),
+        top_p: loaded.responses.effective_top_p(),
+        max_output_tokens: loaded.responses.effective_max_output_tokens(),
+        top_logprobs: loaded.responses.effective_top_logprobs(),
+        reasoning_effort: loaded.responses.effective_reasoning_effort(),
+        text: loaded.responses.effective_text(),
+        tool_choice: loaded.responses.effective_tool_choice(),
+        user: loaded.responses.effective_user(),
+        native_web_search: loaded.web_search.enabled
+            && matches!(
+                loaded.web_search.provider,
+                crate::settings::WebSearchProvider::DeepSeekFirst
+            ),
+    };
+    let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role).with_defaults(defaults);
     let client = Arc::new(ModelClient::new(transport, config));
     Ok((client, model, thinking_depth))
 }
@@ -66,7 +81,22 @@ pub(crate) fn select_run_model(
         .unwrap_or_else(|| loaded.catalog.model_for(role).to_string());
     let fallback_model = Some(loaded.catalog.model_for(fallback_role).to_string())
         .filter(|fallback| fallback != &model);
-    let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role);
+    let defaults = ResponseDefaults {
+        temperature: loaded.responses.effective_temperature(),
+        top_p: loaded.responses.effective_top_p(),
+        max_output_tokens: loaded.responses.effective_max_output_tokens(),
+        top_logprobs: loaded.responses.effective_top_logprobs(),
+        reasoning_effort: loaded.responses.effective_reasoning_effort(),
+        text: loaded.responses.effective_text(),
+        tool_choice: loaded.responses.effective_tool_choice(),
+        user: loaded.responses.effective_user(),
+        native_web_search: loaded.web_search.enabled
+            && matches!(
+                loaded.web_search.provider,
+                crate::settings::WebSearchProvider::DeepSeekFirst
+            ),
+    };
+    let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role).with_defaults(defaults);
     let client = Arc::new(ModelClient::new(transport, config));
     Ok(RunModelSelection {
         client,

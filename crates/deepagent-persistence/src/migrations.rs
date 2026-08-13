@@ -187,6 +187,27 @@ const MIGRATIONS: &[&str] = &[
     r#"
     CREATE INDEX idx_sessions_updated_at_desc ON sessions(updated_at DESC);
     "#,
+    // V11: Chat Completions -> Responses cutover. Old conversation payloads
+    // cannot be replayed as Responses items without inventing lost item
+    // metadata. Remove conversation/run history while retaining session rows
+    // as cost-ledger foreign-key owners. Empty legacy sessions are hidden by
+    // the application projection.
+    r#"
+    DELETE FROM events;
+    DELETE FROM tasks;
+    DELETE FROM runs;
+    UPDATE sessions SET ended_at = COALESCE(ended_at, updated_at), title = NULL;
+    "#,
+    // V12: bridge the already-applied V11 reset into the separate runtime log
+    // database exactly once. Keeping this as a new migration also covers dev
+    // databases that reached V11 before the diagnostic event was introduced.
+    r#"
+    CREATE TABLE IF NOT EXISTS migration_notices (
+        key TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000)
+    );
+    INSERT OR IGNORE INTO migration_notices(key) VALUES ('responses_history_reset_completed');
+    "#,
 ];
 
 /// The highest schema version defined by this build.

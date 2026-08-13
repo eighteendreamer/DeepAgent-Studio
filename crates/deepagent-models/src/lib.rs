@@ -5,18 +5,16 @@
 //! Implements the four Phase 2 model requirements:
 //! - **SSE streaming** — [`sse::SseParser`] incrementally de-frames the byte
 //!   stream with no data loss across split network chunks.
-//! - **delta merge** — [`stream::DeltaAccumulator`] folds content /
-//!   reasoning_content fragments into a coherent message.
-//! - **tool_calls merge** — fragmented, index-addressed tool-call arguments are
-//!   reassembled and JSON-parsed.
-//! - **Thinking Mode** — `reasoning_content` is preserved through assembly so it
-//!   can be persisted & replayed (see `deepagent_core::message`).
+//! - **semantic delta merge** — [`stream::ResponseAccumulator`] folds Responses
+//!   text, reasoning, output items, and tool argument events coherently.
+//! - **Reasoning** — Responses reasoning deltas are projected to the internal
+//!   message model for persistence and UI display.
 //!
 //! ## Layering
 //!
 //! ```text
-//! ChatRequest --serialize--> TransportRequest --HttpTransport--> SSE bytes
-//!     SSE bytes --SseParser--> data: payloads --DeltaAccumulator--> ChatResponse
+//! ResponseRequest --serialize--> TransportRequest --HttpTransport--> SSE bytes
+//!     SSE bytes --SseParser--> semantic events --ResponseAccumulator--> Response
 //! ```
 //!
 //! The transport is abstracted ([`transport::HttpTransport`]) so all assembly
@@ -29,10 +27,10 @@ pub mod chat;
 pub mod client;
 pub mod discovery;
 pub mod failure;
+pub mod responses;
 pub mod sse;
 pub mod stream;
 pub mod transport;
-pub mod wire;
 
 #[cfg(feature = "http")]
 pub mod reqwest_transport;
@@ -40,13 +38,16 @@ pub mod reqwest_transport;
 pub use balance::{fetch_balance, BalanceInfo, BalanceResponse, BALANCE_PATH};
 pub use capability::{CapabilitySource, ModelCapability, ModelCapabilityResolver};
 pub use chat::{
-    ChatRequest, ChatResponse, FinishReason, FunctionSchema, StreamOptions, ThinkingConfig,
+    FinishReason, FunctionSchema, Response, ResponseRequest, StreamOptions, ThinkingConfig,
     ThinkingDepth, ThinkingToggle, ToolSchema, Usage,
 };
-pub use client::{ModelClient, ModelConfig};
+pub use client::{ModelClient, ModelConfig, ResponseDefaults};
 pub use discovery::{ModelCatalog, ModelDiscovery, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
 pub use failure::{classify_model_error, ModelFailureKind};
-pub use stream::{DeltaAccumulator, DeltaObserver, ModelStreamEvent, NoopObserver};
+pub use responses::{
+    response_items_from_messages, ResponseInputItem, ResponseItem, ResponseOutputItem,
+};
+pub use stream::{DeltaObserver, ModelStreamEvent, NoopObserver, ResponseAccumulator};
 pub use transport::{HttpTransport, MockTransport, TransportRequest};
 
 #[cfg(feature = "http")]

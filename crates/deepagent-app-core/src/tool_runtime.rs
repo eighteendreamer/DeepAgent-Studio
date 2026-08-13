@@ -466,16 +466,16 @@ fn register_web_tools(registry: &mut ToolRegistry, settings: &SettingsService) -
     } else {
         None
     };
-    let (deepseek, searxng_url) = match web_settings.provider {
-        WebSearchProvider::DeepSeekFirst => (
-            deepseek_web_search_config(settings),
-            configured_searxng_url(web_settings.searxng_url),
-        ),
-        WebSearchProvider::Searxng => (None, configured_searxng_url(web_settings.searxng_url)),
-        WebSearchProvider::DuckDuckGo => (None, None),
+    let searxng_url = match web_settings.provider {
+        // DeepSeekFirst is executed by the model provider's native Responses
+        // `web_search` tool. Keep a local descriptor registered so the runtime
+        // advertises the capability, but never call the legacy Anthropic route.
+        WebSearchProvider::DeepSeekFirst => configured_searxng_url(web_settings.searxng_url),
+        WebSearchProvider::Searxng => configured_searxng_url(web_settings.searxng_url),
+        WebSearchProvider::DuckDuckGo => None,
     };
     registry.register(Arc::new(WebSearchTool::new(
-        ReqwestWebClient::with_search_chain(anysearch, deepseek, searxng_url),
+        ReqwestWebClient::with_search_chain(anysearch, searxng_url),
     )))?;
     Ok(())
 }
@@ -509,33 +509,6 @@ fn anysearch_config(
         Some(api_key),
         base_url.unwrap_or_else(|| "https://api.anysearch.com".to_string()),
     ))
-}
-
-#[cfg(feature = "web")]
-fn deepseek_web_search_config(
-    settings: &SettingsService,
-) -> Option<deepagent_builtins::DeepSeekWebSearchConfig> {
-    use deepagent_builtins::DeepSeekWebSearchConfig;
-
-    let api_key = settings.api_key().ok().flatten()?;
-    if api_key.trim().is_empty() {
-        return None;
-    }
-    let loaded = settings.load().ok().flatten();
-    let base_url = loaded
-        .as_ref()
-        .map(|s| s.catalog.base_url.clone())
-        .unwrap_or_else(|| "https://api.deepseek.com".to_string());
-    let model = std::env::var("DEEPAGENT_DEEPSEEK_WEB_SEARCH_MODEL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            loaded
-                .as_ref()
-                .map(|s| s.catalog.chat_model.clone())
-                .filter(|s| !s.trim().is_empty())
-        })?;
-    Some(DeepSeekWebSearchConfig::new(api_key, base_url, model))
 }
 
 #[derive(Clone)]

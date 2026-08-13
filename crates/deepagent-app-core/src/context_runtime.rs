@@ -1276,7 +1276,7 @@ mod tests {
     #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
     async fn real_deepseek_max_tokens_truncation_then_continue_resumes() {
         use crate::secret_store::{KeychainStore, SecretStore};
-        use deepagent_models::chat::{ChatRequest, FinishReason};
+        use deepagent_models::chat::{FinishReason, ResponseRequest};
         use deepagent_models::{ModelClient, ModelConfig, ReqwestTransport};
 
         let key = std::env::var("DEEPSEEK_API_KEY")
@@ -1307,9 +1307,9 @@ mod tests {
 
         // Tiny max_tokens forces truncation → finish_reason = Length.
         let truncated = client
-            .stream_chat(
-                ChatRequest::new(model.to_string(), vec![system.clone(), user.clone()])
-                    .with_max_tokens(48),
+            .stream_response(
+                ResponseRequest::new(model.to_string(), vec![system.clone(), user.clone()])
+                    .with_max_output_tokens(48),
             )
             .await
             .expect("first (truncated) call");
@@ -1330,8 +1330,8 @@ mod tests {
         let mut partial = Message::assistant(&truncated.message.content);
         partial.reasoning_content = truncated.message.reasoning_content.clone();
         let resumed = client
-            .stream_chat(
-                ChatRequest::new(
+            .stream_response(
+                ResponseRequest::new(
                     model.to_string(),
                     vec![
                         system,
@@ -1344,7 +1344,7 @@ mod tests {
                         ),
                     ],
                 )
-                .with_max_tokens(512),
+                .with_max_output_tokens(512),
             )
             .await
             .expect("continuation call");

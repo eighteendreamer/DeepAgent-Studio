@@ -434,7 +434,7 @@ mod tests {
             Arc::new(ReqwestTransport::new()),
             ModelConfig::deepseek(key),
         );
-        let request = deepagent_models::chat::ChatRequest::new(
+        let request = deepagent_models::chat::ResponseRequest::new(
             "deepseek-chat".to_string(),
             vec![
                 deepagent_core::message::Message::system(&skill_body),
@@ -442,8 +442,8 @@ mod tests {
             ],
         )
         .with_temperature(0.2)
-        .with_max_tokens(2048);
-        let response = client.stream_chat(request).await.expect("live review");
+        .with_max_output_tokens(2048);
+        let response = client.stream_response(request).await.expect("live review");
         let text = response.message.content;
         eprintln!("[real-model] review output:\n{text}");
 
@@ -532,7 +532,7 @@ mod tests {
             Arc::new(ReqwestTransport::new()),
             ModelConfig::deepseek(key),
         );
-        let request = deepagent_models::chat::ChatRequest::new(
+        let request = deepagent_models::chat::ResponseRequest::new(
             "deepseek-chat".to_string(),
             vec![
                 deepagent_core::message::Message::system(
@@ -546,8 +546,8 @@ mod tests {
         )
         .with_tools(schemas)
         .with_temperature(0.0)
-        .with_max_tokens(512);
-        let response = client.stream_chat(request).await.expect("live call");
+        .with_max_output_tokens(512);
+        let response = client.stream_response(request).await.expect("live call");
         let call = response
             .message
             .tool_calls

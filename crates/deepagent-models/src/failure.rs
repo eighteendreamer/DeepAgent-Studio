@@ -117,6 +117,7 @@ fn classify_unstructured(message: &str) -> ModelFailureKind {
         || message.contains("incomplete message")
         || message.contains("empty stream")
         || message.contains("empty model stream")
+        || message.contains("without a terminal response event")
         || message.contains("no choices")
     {
         ModelFailureKind::Transport

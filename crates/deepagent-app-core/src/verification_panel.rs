@@ -290,7 +290,7 @@ impl ModelSkepticSpawner {
 #[async_trait]
 impl SkepticSpawner for ModelSkepticSpawner {
     async fn spawn(&self, _index: u32, prompt: &str) -> Result<String> {
-        let request = deepagent_models::chat::ChatRequest::new(
+        let request = deepagent_models::chat::ResponseRequest::new(
             self.model.clone(),
             vec![
                 deepagent_core::message::Message::system(&self.system_prompt),
@@ -298,8 +298,8 @@ impl SkepticSpawner for ModelSkepticSpawner {
             ],
         )
         .with_temperature(0.2)
-        .with_max_tokens(1024);
-        let response = self.client.stream_chat(request).await?;
+        .with_max_output_tokens(1024);
+        let response = self.client.stream_response(request).await?;
         Ok(response.message.content)
     }
 }

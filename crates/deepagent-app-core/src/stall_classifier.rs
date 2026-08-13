@@ -22,7 +22,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use deepagent_core::message::Message;
-use deepagent_models::chat::ChatRequest;
+use deepagent_models::chat::ResponseRequest;
 use deepagent_models::ModelClient;
 use deepagent_runtime::stall_detector::{
     parse_stall_verdict, StallClassifier, StallVerdict, STALL_CLASSIFIER_PROMPT,
@@ -63,7 +63,7 @@ impl ModelStallClassifier {
 #[async_trait]
 impl StallClassifier for ModelStallClassifier {
     async fn classify(&self, transcript: &str) -> Option<StallVerdict> {
-        let request = ChatRequest::new(
+        let request = ResponseRequest::new(
             self.model.clone(),
             vec![
                 Message::system(STALL_CLASSIFIER_PROMPT),
@@ -71,19 +71,23 @@ impl StallClassifier for ModelStallClassifier {
             ],
         )
         .with_temperature(0.0)
-        .with_max_tokens(300);
-        let response =
-            match tokio::time::timeout(CLASSIFY_TIMEOUT, self.client.stream_chat(request)).await {
-                Ok(Ok(response)) => response,
-                Ok(Err(error)) => {
-                    tracing::warn!(error = %error, "stall classifier call failed; failing open");
-                    return None;
-                }
-                Err(_) => {
-                    tracing::warn!("stall classifier timed out; failing open");
-                    return None;
-                }
-            };
+        .with_max_output_tokens(300);
+        let response = match tokio::time::timeout(
+            CLASSIFY_TIMEOUT,
+            self.client.stream_response(request),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "stall classifier call failed; failing open");
+                return None;
+            }
+            Err(_) => {
+                tracing::warn!("stall classifier timed out; failing open");
+                return None;
+            }
+        };
         match parse_stall_verdict(&response.message.content) {
             Ok(verdict) => Some(verdict),
             Err(error) => {

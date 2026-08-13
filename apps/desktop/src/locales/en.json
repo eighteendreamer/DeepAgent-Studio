@@ -533,6 +533,33 @@
           "duckduckgo": "DuckDuckGo",
           "duckduckgoDesc": "Use keyless DuckDuckGo HTML as the final fallback"
         }
+      },
+      "responses": {
+        "title": "DeepSeek Responses parameters",
+        "desc": "All generation requests use the Responses API; parameters are validated and their effective status is recorded centrally.",
+        "creativity": "Creativity",
+        "creativityDesc": "Controls the default temperature; internal code and classification calls keep backend output limits.",
+        "scenes": {
+          "code": "Write code",
+          "email": "Write email",
+          "analysis": "Analyze",
+          "creative": "Creative writing"
+        },
+          "advanced": "Advanced parameters",
+          "advancedDesc": "temperature · top_p · output limit · reasoning · text.format",
+          "temperature": "Temperature",
+          "topP": "Top P",
+          "maxOutputTokens": "Max output tokens",
+          "topLogprobs": "Top logprobs",
+          "reasoningEffort": "Reasoning effort",
+          "textFormat": "Text format",
+          "providerDefault": "Provider default",
+        "developer": "Developer Responses JSON",
+        "developerDesc": "Strict validation rejects unknown and system-managed fields and warns about ineffective fields.",
+        "validateSave": "Validate and save",
+        "saved": "Responses JSON saved",
+        "saveFailed": "Unable to save Responses settings: {{error}}",
+        "ineffective": "Saved but ineffective for DeepSeek: {{fields}}"
       }
     },
     "git": {
@@ -1414,6 +1441,10 @@
   "commandPalette": {
     "placeholder": "Type a command…",
     "noMatch": "No matching commands"
+  },
+  "chat": {
+    "nativeWebSearchCompleted": "DeepSeek web search completed ({{count}} queries)",
+    "nativeWebSearchStatus": "DeepSeek web search: {{status}}"
   },
   "general": {
     "languages": {

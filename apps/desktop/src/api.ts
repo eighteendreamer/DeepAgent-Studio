@@ -93,6 +93,7 @@ import type {
   Transcript,
   WorkspaceInfo,
   WebSearchSettings,
+  ResponsesApiSettings,
 } from "./types";
 
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
@@ -109,6 +110,7 @@ export type SettingsChangedReason =
   | "models"
   | "chat_model"
   | "thinking_depth"
+  | "responses_settings"
   | "terminal_shell"
   | "skill_catalog"
   | "skill_ai_review"
@@ -355,6 +357,29 @@ export async function setThinkingDepth(
     return view;
   }
   throw new Error("changing thinking depth requires the desktop app");
+}
+
+/** Validate and persist the global DeepSeek Responses developer JSON. */
+export async function setResponsesDeveloperJson(json: string): Promise<SettingsView> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("Responses developer settings require the desktop app");
+  const view = await invoke<SettingsView>("set_responses_developer_json", { json });
+  emitSettingsChanged({ reason: "responses_settings" });
+  return view;
+}
+
+export async function getResponsesSettings(): Promise<ResponsesApiSettings> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("Responses settings require the desktop app");
+  return await invoke<ResponsesApiSettings>("get_responses_settings");
+}
+
+export async function setResponsesSettings(settings: ResponsesApiSettings): Promise<SettingsView> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("Responses settings require the desktop app");
+  const view = await invoke<SettingsView>("set_responses_settings", { settings });
+  emitSettingsChanged({ reason: "responses_settings" });
+  return view;
 }
 
 /** Persist the preferred integrated-terminal shell. */
@@ -1185,6 +1210,8 @@ export interface RuntimeEvent {
     | "model_attempt_reset"
     | "reasoning_delta"
     | "content_delta"
+    | "responses_stream_event"
+    | "responses_web_search_call"
     | "tool_started"
     | "tool_completed"
     | "tool_blocked"

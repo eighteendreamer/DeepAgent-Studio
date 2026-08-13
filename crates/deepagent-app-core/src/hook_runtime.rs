@@ -12,7 +12,7 @@ use deepagent_hooks::{
     HookCommandResult, HookCommandRunner, HookCommandShell, HookContext, HookData, HookDefinitions,
     HookEvent, HookOutcome, HookRegistry, SystemHookRunner, ToolBatchItem,
 };
-use deepagent_models::{ChatRequest, ModelClient, ThinkingDepth, ToolSchema};
+use deepagent_models::{ModelClient, ResponseRequest, ThinkingDepth, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent, RuntimeEventSink};
 use deepagent_session::Session;
@@ -284,7 +284,7 @@ impl AppHookActionExecutor {
             .map(str::trim)
             .filter(|model| !model.is_empty())
             .unwrap_or(&self.model);
-        let request = ChatRequest::new(
+        let request = ResponseRequest::new(
             model,
             vec![
                 deepagent_core::message::Message::system(model_hook_system_prompt(false)),
@@ -292,9 +292,9 @@ impl AppHookActionExecutor {
             ],
         )
         .with_temperature(0.0)
-        .with_max_tokens(512)
+        .with_max_output_tokens(512)
         .with_thinking_depth(ThinkingDepth::Simple);
-        let response = self.client.stream_chat(request).await?;
+        let response = self.client.stream_response(request).await?;
         parse_model_hook_decision(&response.message.content)
     }
 

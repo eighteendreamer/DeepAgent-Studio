@@ -23,6 +23,50 @@ impl ReplayTransport {
     }
 }
 
+fn response_text(text: &str) -> Vec<String> {
+    vec![
+        serde_json::json!({"type":"response.output_text.delta","delta":text}).to_string(),
+        serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+            .to_string(),
+    ]
+}
+
+fn response_function_call(call_id: &str, name: &str, arguments: serde_json::Value) -> Vec<String> {
+    let item = serde_json::json!({
+        "type":"function_call",
+        "id":format!("item_{call_id}"),
+        "call_id":call_id,
+        "name":name,
+        "arguments":serde_json::to_string(&arguments).unwrap()
+    });
+    vec![
+        serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
+        serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+        serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+            .to_string(),
+    ]
+}
+
+fn emit_responses_events(sink: &mut dyn EventSink, events: &[String]) -> Result<()> {
+    for event in events {
+        if sink.on_event(event)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn request_contains_user_input(body: &serde_json::Value, expected: &str) -> bool {
+    body.get("input")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("role").and_then(serde_json::Value::as_str) == Some("user")
+                    && item.get("content").and_then(serde_json::Value::as_str) == Some(expected)
+            })
+        })
+}
+
 #[async_trait]
 impl HttpTransport for ReplayTransport {
     async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
@@ -32,12 +76,7 @@ impl HttpTransport for ReplayTransport {
             .unwrap_or_else(|poison| poison.into_inner())
             .pop_front()
             .ok_or_else(|| CoreError::other("fake model has no remaining turn"))?;
-        for event in events {
-            if sink.on_event(&event)? {
-                break;
-            }
-        }
-        Ok(())
+        emit_responses_events(sink, &events)
     }
 }
 
@@ -62,30 +101,17 @@ struct ResumeRoutingTransport {
 impl HttpTransport for ResumeRoutingTransport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         let call = self.calls.fetch_add(1, Ordering::AcqRel);
-        let event = match call {
-            0 => serde_json::json!({
-                "choices": [{
-                    "delta": {"tool_calls": [{
-                        "index": 0,
-                        "id": "call-initial-child",
-                        "type": "function",
-                        "function": {
-                            "name": "task",
-                            "arguments": serde_json::to_string(&serde_json::json!({
-                                "description": "initial child",
-                                "prompt": "produce-initial-result"
-                            })).unwrap()
-                        }
-                    }]},
-                    "finish_reason": "tool_calls"
-                }]
-            }),
-            1 => serde_json::json!({
-                "choices": [{"delta": {"content": "initial-result"}, "finish_reason": "stop"}]
-            }),
-            2 => serde_json::json!({
-                "choices": [{"delta": {"content": "Initial child completed."}, "finish_reason": "stop"}]
-            }),
+        let events = match call {
+            0 => response_function_call(
+                "call-initial-child",
+                "task",
+                serde_json::json!({
+                    "description": "initial child",
+                    "prompt": "produce-initial-result"
+                }),
+            ),
+            1 => response_text("initial-result"),
+            2 => response_text("Initial child completed."),
             3 => {
                 let id = self
                     .resume_id
@@ -93,29 +119,20 @@ impl HttpTransport for ResumeRoutingTransport {
                     .unwrap_or_else(|poison| poison.into_inner())
                     .clone()
                     .ok_or_else(|| CoreError::other("resume id was not installed"))?;
-                serde_json::json!({
-                    "choices": [{
-                        "delta": {"tool_calls": [{
-                            "index": 0,
-                            "id": "call-resume-child",
-                            "type": "function",
-                            "function": {
-                                "name": "task",
-                                "arguments": serde_json::to_string(&serde_json::json!({
-                                    "operation": "resume",
-                                    "subagent_id": id,
-                                    "prompt": "add-more"
-                                })).unwrap()
-                            }
-                        }]},
-                        "finish_reason": "tool_calls"
-                    }]
-                })
+                response_function_call(
+                    "call-resume-child",
+                    "task",
+                    serde_json::json!({
+                        "operation": "resume",
+                        "subagent_id": id,
+                        "prompt": "add-more"
+                    }),
+                )
             }
             4 => {
                 let body: serde_json::Value = serde_json::from_str(&request.body)
                     .map_err(|error| CoreError::other(error.to_string()))?;
-                let prompt = body["messages"]
+                let prompt = body["input"]
                     .as_array()
                     .and_then(|messages| messages.last())
                     .and_then(|message| message["content"].as_str())
@@ -127,19 +144,12 @@ impl HttpTransport for ResumeRoutingTransport {
                         "resume context was not reconstructed: {prompt}"
                     )));
                 }
-                serde_json::json!({
-                    "choices": [{"delta": {"content": "resumed-result"}, "finish_reason": "stop"}]
-                })
+                response_text("resumed-result")
             }
-            5 => serde_json::json!({
-                "choices": [{"delta": {"content": "Resumed child completed."}, "finish_reason": "stop"}]
-            }),
+            5 => response_text("Resumed child completed."),
             _ => return Err(CoreError::other("unexpected resume test model call")),
         };
-        if !sink.on_event(&event.to_string())? {
-            let _ = sink.on_event("[DONE]")?;
-        }
-        Ok(())
+        emit_responses_events(sink, &events)
     }
 }
 
@@ -159,11 +169,7 @@ impl HttpTransport for BackgroundRoutingTransport {
     ) -> Result<()> {
         let is_child = serde_json::from_str::<serde_json::Value>(&request.body)
             .ok()
-            .and_then(|body| body["messages"].as_array().cloned())
-            .and_then(|messages| messages.last().cloned())
-            .is_some_and(|message| {
-                message["role"] == "user" && message["content"] == "wait-child-until-cancelled"
-            });
+            .is_some_and(|body| request_contains_user_input(&body, "wait-child-until-cancelled"));
         if is_child {
             self.child_started.notify_one();
             while !cancel.load(Ordering::Acquire) {
@@ -173,22 +179,19 @@ impl HttpTransport for BackgroundRoutingTransport {
         }
         let call = self.parent_calls.fetch_add(1, Ordering::AcqRel);
         let events = if call == 0 {
-            vec![
-                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-background","type":"function","function":{"name":"task","arguments":"{\"description\":\"background wait\",\"prompt\":\"wait-child-until-cancelled\",\"background\":true}"}}]},"finish_reason":"tool_calls"}]}"#,
-                "[DONE]",
-            ]
+            response_function_call(
+                "call-background",
+                "task",
+                serde_json::json!({
+                    "description": "background wait",
+                    "prompt": "wait-child-until-cancelled",
+                    "background": true
+                }),
+            )
         } else {
-            vec![
-                r#"{"choices":[{"delta":{"content":"Background child started."},"finish_reason":"stop"}]}"#,
-                "[DONE]",
-            ]
+            response_text("Background child started.")
         };
-        for event in events {
-            if sink.on_event(event)? {
-                break;
-            }
-        }
-        Ok(())
+        emit_responses_events(sink, &events)
     }
 }
 
@@ -249,14 +252,12 @@ async fn write_turn_reaches_terminal_with_checkpoint_and_real_side_effect() {
     ));
     settings.initialize("sk-e2e-test").await.unwrap();
 
-    let tool_turn = vec![
-        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-write","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"result.txt\",\"content\":\"kernel-v2-ok\"}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ];
-    let final_turn = vec![
-        r#"{"choices":[{"delta":{"content":"Created and verified result.txt."},"finish_reason":"stop"}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ];
+    let tool_turn = response_function_call(
+        "call-write",
+        "write_file",
+        serde_json::json!({"path":"result.txt","content":"kernel-v2-ok"}),
+    );
+    let final_turn = response_text("Created and verified result.txt.");
     let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([tool_turn, final_turn]));
     let chat = ChatService::new(db.clone(), settings, transport, &root);
 
@@ -390,18 +391,18 @@ async fn native_move_and_delete_are_verified_and_recorded_as_completion_evidence
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();
 
-    let move_turn = vec![
-        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-move","type":"function","function":{"name":"move_path","arguments":"{\"source\":\"before.txt\",\"destination\":\"after.txt\"}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ];
-    let delete_turn = vec![
-        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-delete","type":"function","function":{"name":"delete_path","arguments":"{\"path\":\"remove-me\",\"recursive\":true}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ];
-    let final_turn = vec![
-        r#"{"choices":[{"delta":{"content":"Moved before.txt and deleted remove-me; filesystem checks passed."},"finish_reason":"stop"}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ];
+    let move_turn = response_function_call(
+        "call-move",
+        "move_path",
+        serde_json::json!({"source":"before.txt","destination":"after.txt"}),
+    );
+    let delete_turn = response_function_call(
+        "call-delete",
+        "delete_path",
+        serde_json::json!({"path":"remove-me","recursive":true}),
+    );
+    let final_turn =
+        response_text("Moved before.txt and deleted remove-me; filesystem checks passed.");
     let transport: Arc<dyn HttpTransport> =
         Arc::new(ReplayTransport::new([move_turn, delete_turn, final_turn]));
     let chat = ChatService::new(db, settings, transport, &root);
@@ -475,10 +476,9 @@ async fn completion_is_not_gated_by_prompt_keyword_extraction() {
         Arc::new(MemorySecretStore::new()),
     ));
     settings.initialize("sk-e2e-test").await.unwrap();
-    let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([vec![
-        r#"{"choices":[{"delta":{"content":"Deleted target-dir successfully."},"finish_reason":"stop"}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ]]));
+    let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([response_text(
+        "Deleted target-dir successfully.",
+    )]));
     let chat = ChatService::new(db, settings, transport, &root);
 
     let result = chat
@@ -540,18 +540,16 @@ async fn subagent_run_persists_terminal_state_and_independent_transcript() {
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();
 
-    let parent_task_turn = vec![
-        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-subagent","type":"function","function":{"name":"task","arguments":"{\"description\":\"inspect fixture\",\"prompt\":\"Return exactly: subagent-ok\"}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ];
-    let subagent_turn = vec![
-        r#"{"choices":[{"delta":{"content":"subagent-ok"},"finish_reason":"stop"}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ];
-    let parent_final_turn = vec![
-        r#"{"choices":[{"delta":{"content":"Sub-agent returned subagent-ok."},"finish_reason":"stop"}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ];
+    let parent_task_turn = response_function_call(
+        "call-subagent",
+        "task",
+        serde_json::json!({
+            "description":"inspect fixture",
+            "prompt":"Return exactly: subagent-ok"
+        }),
+    );
+    let subagent_turn = response_text("subagent-ok");
+    let parent_final_turn = response_text("Sub-agent returned subagent-ok.");
     let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([
         parent_task_turn,
         subagent_turn,
@@ -824,22 +822,22 @@ async fn worktree_subagent_rebinds_file_tools_without_touching_main_checkout() {
         .set_active_permission_preset(PermissionPreset::FullAccess)
         .unwrap();
     let turns = [
-        vec![
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-worktree-child","type":"function","function":{"name":"task","arguments":"{\"description\":\"isolated write\",\"prompt\":\"Create isolated.txt containing worktree-ok.\",\"isolation\":\"worktree\"}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ],
-        vec![
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-isolated-write","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"isolated.txt\",\"content\":\"worktree-ok\"}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ],
-        vec![
-            r#"{"choices":[{"delta":{"content":"Created isolated.txt in the worktree."},"finish_reason":"stop"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ],
-        vec![
-            r#"{"choices":[{"delta":{"content":"The isolated child completed successfully."},"finish_reason":"stop"}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ],
+        response_function_call(
+            "call-worktree-child",
+            "task",
+            serde_json::json!({
+                "description":"isolated write",
+                "prompt":"Create isolated.txt containing worktree-ok.",
+                "isolation":"worktree"
+            }),
+        ),
+        response_function_call(
+            "call-isolated-write",
+            "write_file",
+            serde_json::json!({"path":"isolated.txt","content":"worktree-ok"}),
+        ),
+        response_text("Created isolated.txt in the worktree."),
+        response_text("The isolated child completed successfully."),
     ];
     let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new(turns));
     let chat = ChatService::new(db, settings, transport, &root);
@@ -921,11 +919,7 @@ impl HttpTransport for FailingChildTransport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         let is_child = serde_json::from_str::<serde_json::Value>(&request.body)
             .ok()
-            .and_then(|body| body["messages"].as_array().cloned())
-            .and_then(|messages| messages.last().cloned())
-            .is_some_and(|message| {
-                message["role"] == "user" && message["content"] == "child-must-fail"
-            });
+            .is_some_and(|body| request_contains_user_input(&body, "child-must-fail"));
         if is_child {
             return Err(CoreError::provider(
                 Some(503),
@@ -935,22 +929,18 @@ impl HttpTransport for FailingChildTransport {
         }
         let call = self.parent_calls.fetch_add(1, Ordering::AcqRel);
         let events = if call == 0 {
-            vec![
-                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-failing-child","type":"function","function":{"name":"task","arguments":"{\"description\":\"doomed child\",\"prompt\":\"child-must-fail\"}"}}]},"finish_reason":"tool_calls"}]}"#,
-                "[DONE]",
-            ]
+            response_function_call(
+                "call-failing-child",
+                "task",
+                serde_json::json!({
+                    "description":"doomed child",
+                    "prompt":"child-must-fail"
+                }),
+            )
         } else {
-            vec![
-                r#"{"choices":[{"delta":{"content":"The delegated child failed; reporting the error."},"finish_reason":"stop"}]}"#,
-                "[DONE]",
-            ]
+            response_text("The delegated child failed; reporting the error.")
         };
-        for event in events {
-            if sink.on_event(event)? {
-                break;
-            }
-        }
-        Ok(())
+        emit_responses_events(sink, &events)
     }
 }
 

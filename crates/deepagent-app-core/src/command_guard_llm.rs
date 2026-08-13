@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use deepagent_core::error::Result;
 use deepagent_core::message::Message;
 use deepagent_hooks::{DecisionSource, Hook, HookContext, HookData, HookOutcome};
-use deepagent_models::chat::ChatRequest;
+use deepagent_models::chat::ResponseRequest;
 use deepagent_models::ModelClient;
 
 /// The environment flag that enables the LLM command guard.
@@ -97,7 +97,7 @@ impl ModelCommandClassifier {
 #[async_trait]
 impl CommandClassifier for ModelCommandClassifier {
     async fn classify(&self, command: &str) -> CommandVerdict {
-        let request = ChatRequest::new(
+        let request = ResponseRequest::new(
             self.model.clone(),
             vec![
                 Message::system(CLASSIFIER_SYSTEM_PROMPT),
@@ -105,10 +105,10 @@ impl CommandClassifier for ModelCommandClassifier {
             ],
         )
         .with_temperature(0.0)
-        .with_max_tokens(120);
+        .with_max_output_tokens(120);
         let response = match tokio::time::timeout(
             CLASSIFY_TIMEOUT,
-            self.client.stream_chat(request),
+            self.client.stream_response(request),
         )
         .await
         {

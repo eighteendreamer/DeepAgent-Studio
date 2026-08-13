@@ -19,7 +19,7 @@ use deepagent_knowledge::{
     capture, EntryKind, HashingEmbedder, KnowledgeBase, KnowledgeConfig, KnowledgeDraft,
     KnowledgeEntry, Scope, Vault,
 };
-use deepagent_models::chat::ChatRequest;
+use deepagent_models::chat::ResponseRequest;
 use deepagent_models::ModelClient;
 use serde::{Deserialize, Serialize};
 
@@ -487,14 +487,14 @@ async fn summarize_recovery(
         signal.transcript_digest,
         signal.failed_tools.join(", ")
     );
-    let request = ChatRequest::new(
+    let request = ResponseRequest::new(
         model,
         vec![Message::system(CAPTURE_SYSTEM_PROMPT), Message::user(&user)],
     )
     .with_temperature(0.2)
-    .with_max_tokens(600);
+    .with_max_output_tokens(600);
 
-    let response = match client.stream_chat(request).await {
+    let response = match client.stream_response(request).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "auto-capture summarization call failed");
@@ -565,14 +565,14 @@ async fn summarize_session_digest(
         "Here is the session digest:\n\n{}\n\nReturn the JSON now.",
         digest.transcript_digest
     );
-    let request = ChatRequest::new(
+    let request = ResponseRequest::new(
         model,
         vec![Message::system(DIGEST_SYSTEM_PROMPT), Message::user(&user)],
     )
     .with_temperature(0.2)
-    .with_max_tokens(600);
+    .with_max_output_tokens(600);
 
-    let response = match client.stream_chat(request).await {
+    let response = match client.stream_response(request).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "session-digest summarization call failed");
@@ -918,12 +918,14 @@ mod tests {
     }
 
     fn client_streaming(content_json: &str) -> Arc<ModelClient> {
-        // Stream the JSON reply as one content delta then [DONE].
         let payload = serde_json::json!({
-            "choices": [{"delta": {"content": content_json}, "finish_reason": "stop"}]
+            "type": "response.output_text.delta", "delta": content_json
         })
         .to_string();
-        let transport = Arc::new(MockTransport::new([payload, "[DONE]".to_string()]));
+        let transport = Arc::new(MockTransport::new([
+            payload,
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+        ]));
         Arc::new(ModelClient::new(
             transport,
             ModelConfig::deepseek("sk-test"),

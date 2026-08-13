@@ -272,6 +272,8 @@ fn phase_for_event(event: &RuntimeEvent) -> (RunPhase, &'static str) {
         | RuntimeEvent::ModelFirstToken { .. }
         | RuntimeEvent::ModelRequestCompleted { .. }
         | RuntimeEvent::ModelAttemptReset { .. }
+        | RuntimeEvent::ResponsesStreamEvent { .. }
+        | RuntimeEvent::ResponsesWebSearchCall { .. }
         | RuntimeEvent::Usage { .. }
         | RuntimeEvent::ContextUsage { .. }
         | RuntimeEvent::ContextCompacted { .. }
@@ -502,6 +504,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                     let _ = session.append(deepagent_core::event::EventPayload::UsageRecorded {
                         prompt_tokens: usage.prompt_tokens,
                         completion_tokens: usage.completion_tokens,
+                        reasoning_tokens: usage.reasoning_tokens,
                         total_tokens: usage.total_tokens,
                         prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
                         prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,

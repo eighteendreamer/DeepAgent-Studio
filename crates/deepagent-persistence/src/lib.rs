@@ -85,6 +85,17 @@ impl Database {
     pub fn schema_version(&self) -> Result<i64> {
         self.with_conn(migrations::current_version)
     }
+
+    /// Atomically consume a one-shot migration notice. The desktop uses this
+    /// to bridge a main-database migration into the separate diagnostic log.
+    pub fn take_migration_notice(&self, key: &str) -> Result<bool> {
+        self.with_conn(|conn| {
+            let changed = conn
+                .execute("DELETE FROM migration_notices WHERE key = ?1", [key])
+                .map_err(map_sqlite)?;
+            Ok(changed > 0)
+        })
+    }
 }
 
 fn configure_pragmas(conn: &Connection) -> Result<()> {

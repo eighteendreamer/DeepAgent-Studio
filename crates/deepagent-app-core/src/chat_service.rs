@@ -1992,7 +1992,7 @@ impl ChatService {
             deepagent_core::message::Message::system(system_prompt),
             deepagent_core::message::Message::user(user_prompt),
         ];
-        let request = deepagent_models::chat::ChatRequest::new(model, messages)
+        let request = deepagent_models::chat::ResponseRequest::new(model, messages)
             .streaming()
             .with_thinking_depth(thinking_depth);
 
@@ -2006,7 +2006,9 @@ impl ChatService {
         }
 
         let mut observer = CallbackObserver { on_token };
-        let response = client.stream_chat_observed(request, &mut observer).await?;
+        let response = client
+            .stream_response_observed(request, &mut observer)
+            .await?;
         Ok(response.message.content)
     }
 
@@ -2030,7 +2032,7 @@ impl ChatService {
     ///    explicit re-review). The user's persisted global thinking depth
     ///    is intentionally NOT consulted.
     /// 3. **Output token ceiling is set explicitly** via `max_output_tokens`
-    ///    BEFORE [`with_thinking_depth`][deepagent_models::ChatRequest::with_thinking_depth]
+    ///    BEFORE [`with_thinking_depth`][deepagent_models::ResponseRequest::with_thinking_depth]
     ///    is applied — that helper only fills `max_tokens` when it's still
     ///    `None`, so the explicit ceiling survives and acts as a hard cap
     ///    on the model's combined reasoning + reply budget.
@@ -2063,19 +2065,34 @@ impl ChatService {
             .filter(|m| !m.trim().is_empty())
             .unwrap_or(chat_model);
 
-        let config = ModelConfig::from_catalog(api_key, &settings.catalog, ModelRole::Chat);
+        let config = ModelConfig::from_catalog(api_key, &settings.catalog, ModelRole::Chat)
+            .with_defaults(deepagent_models::ResponseDefaults {
+                temperature: settings.responses.effective_temperature(),
+                top_p: settings.responses.effective_top_p(),
+                max_output_tokens: settings.responses.effective_max_output_tokens(),
+                top_logprobs: settings.responses.effective_top_logprobs(),
+                reasoning_effort: settings.responses.effective_reasoning_effort(),
+                text: settings.responses.effective_text(),
+                tool_choice: settings.responses.effective_tool_choice(),
+                user: settings.responses.effective_user(),
+                native_web_search: settings.web_search.enabled
+                    && matches!(
+                        settings.web_search.provider,
+                        crate::settings::WebSearchProvider::DeepSeekFirst
+                    ),
+            });
         let client = Arc::new(ModelClient::new(self.transport.clone(), config));
 
         let messages = vec![
             deepagent_core::message::Message::system(system_prompt),
             deepagent_core::message::Message::user(user_prompt),
         ];
-        // Order matters: `with_max_tokens` must come BEFORE
+        // Order matters: `with_max_output_tokens` must come BEFORE
         // `with_thinking_depth` so the explicit cap survives. The depth
         // helper only fills `max_tokens` when it's still `None`.
-        let request = deepagent_models::chat::ChatRequest::new(review_model, messages)
+        let request = deepagent_models::chat::ResponseRequest::new(review_model, messages)
             .streaming()
-            .with_max_tokens(max_output_tokens)
+            .with_max_output_tokens(max_output_tokens)
             .with_thinking_depth(thinking_depth);
 
         struct CallbackObserver<F: FnMut(&str) + Send> {
@@ -2088,7 +2105,9 @@ impl ChatService {
         }
 
         let mut observer = CallbackObserver { on_token };
-        let response = client.stream_chat_observed(request, &mut observer).await?;
+        let response = client
+            .stream_response_observed(request, &mut observer)
+            .await?;
         Ok(response.message.content)
     }
 
@@ -2154,10 +2173,25 @@ impl ChatService {
             .api_key()?
             .ok_or_else(|| CoreError::invalid("API key not set: initialize the project first"))?;
         let model = settings.catalog.model_for(ModelRole::Chat).to_string();
-        let config = ModelConfig::from_catalog(api_key, &settings.catalog, ModelRole::Chat);
+        let config = ModelConfig::from_catalog(api_key, &settings.catalog, ModelRole::Chat)
+            .with_defaults(deepagent_models::ResponseDefaults {
+                temperature: settings.responses.effective_temperature(),
+                top_p: settings.responses.effective_top_p(),
+                max_output_tokens: settings.responses.effective_max_output_tokens(),
+                top_logprobs: settings.responses.effective_top_logprobs(),
+                reasoning_effort: settings.responses.effective_reasoning_effort(),
+                text: settings.responses.effective_text(),
+                tool_choice: settings.responses.effective_tool_choice(),
+                user: settings.responses.effective_user(),
+                native_web_search: settings.web_search.enabled
+                    && matches!(
+                        settings.web_search.provider,
+                        crate::settings::WebSearchProvider::DeepSeekFirst
+                    ),
+            });
         let client = Arc::new(ModelClient::new(self.transport.clone(), config));
 
-        let request = deepagent_models::chat::ChatRequest::new(
+        let request = deepagent_models::chat::ResponseRequest::new(
             model,
             vec![
                 deepagent_core::message::Message::system(SESSION_TITLE_SYSTEM_PROMPT),
@@ -2168,9 +2202,9 @@ impl ChatService {
             ],
         )
         .streaming()
-        .with_max_tokens(48)
+        .with_max_output_tokens(48)
         .with_thinking_depth(ThinkingDepth::Simple);
-        let response = client.stream_chat(request).await?;
+        let response = client.stream_response(request).await?;
         let Some(title) = normalize_generated_session_title(&response.message.content) else {
             return Ok(None);
         };
@@ -3305,9 +3339,8 @@ mod tests {
         // for discovery. We only need streaming here (settings are seeded
         // separately), so build one that completes immediately.
         Arc::new(MockTransport::new([
-            r#"{"choices":[{"delta":{"content":"Hello from the agent."},"finish_reason":"stop"}]}"#
-                .to_string(),
-            "[DONE]".to_string(),
+            r#"{"type":"response.output_text.delta","delta":"Hello from the agent."}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
         ]))
     }
 
@@ -3320,10 +3353,8 @@ mod tests {
     impl HttpTransport for RecordingTransport {
         async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
             *self.last_body.lock().unwrap() = Some(request.body);
-            sink.on_event(
-                r#"{"choices":[{"delta":{"content":"dynamic reply"},"finish_reason":"stop"}]}"#,
-            )?;
-            sink.on_event("[DONE]")?;
+            sink.on_event(r#"{"type":"response.output_text.delta","delta":"dynamic reply"}"#)?;
+            sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
             Ok(())
         }
     }
@@ -3430,8 +3461,8 @@ mod tests {
             )
             .unwrap();
         let transport = Arc::new(MockTransport::new([
-            r#"{"choices":[{"delta":{"content":"{\"ok\":false,\"reason\":\"destructive request\"}"},"finish_reason":"stop"}]}"#.to_string(),
-            "[DONE]".to_string(),
+            r#"{"type":"response.output_text.delta","delta":"{\"ok\":false,\"reason\":\"destructive request\"}"}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
         ]));
         let chat = ChatService::new(db, settings, transport, dir.path());
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -3510,8 +3541,8 @@ mod tests {
     #[tokio::test]
     async fn agent_hook_runs_isolated_runtime_and_honors_decision() {
         let transport = Arc::new(MockTransport::new([
-            r#"{"choices":[{"delta":{"content":"{\"ok\":false,\"reason\":\"agent review denied\"}"},"finish_reason":"stop"}]}"#.to_string(),
-            "[DONE]".to_string(),
+            r#"{"type":"response.output_text.delta","delta":"{\"ok\":false,\"reason\":\"agent review denied\"}"}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
         ]));
         let executor = hook_executor_with(transport, None);
         let action = HookAction {
@@ -3924,9 +3955,10 @@ mod tests {
         let body = last_body.lock().unwrap().clone().unwrap();
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json["model"], "deepseek-v4-flash");
-        assert_eq!(json["thinking"]["type"], "enabled");
-        assert_eq!(json["reasoning_effort"], "max");
-        assert_eq!(json["max_tokens"], 32_768);
+        assert_eq!(json["reasoning"]["effort"], "max");
+        assert!(json.get("thinking").is_none());
+        assert!(json.get("reasoning_effort").is_none());
+        assert_eq!(json["max_output_tokens"], 32_768);
     }
 
     #[tokio::test]
@@ -3950,12 +3982,10 @@ mod tests {
         let (db, settings, dir) = seeded().await;
         // A transport that can serve two streamed turns back to back.
         let transport = Arc::new(MockTransport::new([
-            r#"{"choices":[{"delta":{"content":"first reply"},"finish_reason":"stop"}]}"#
-                .to_string(),
-            "[DONE]".to_string(),
-            r#"{"choices":[{"delta":{"content":"second reply"},"finish_reason":"stop"}]}"#
-                .to_string(),
-            "[DONE]".to_string(),
+            r#"{"type":"response.output_text.delta","delta":"first reply"}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+            r#"{"type":"response.output_text.delta","delta":"second reply"}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
         ]));
         let chat = ChatService::new(db.clone(), settings, transport, dir.path());
 

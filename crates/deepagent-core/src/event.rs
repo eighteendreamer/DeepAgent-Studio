@@ -91,6 +91,10 @@ pub enum EventPayload {
         message: Message,
     },
 
+    /// Provider-neutral Responses item persisted for exact model-context
+    /// recovery. UI projections continue to use `MessageAppended`.
+    ResponseItemAppended { item: serde_json::Value },
+
     /// The model requested a tool invocation.
     ToolCallRequested {
         /// The requested call.
@@ -132,6 +136,9 @@ pub enum EventPayload {
         prompt_tokens: u32,
         /// Completion (output) tokens.
         completion_tokens: u32,
+        /// Reasoning output tokens (already included in completion tokens).
+        #[serde(default)]
+        reasoning_tokens: u32,
         /// Total tokens.
         total_tokens: u32,
         /// Prompt tokens served from the context cache (a "hit").
@@ -166,6 +173,7 @@ impl EventPayload {
             EventPayload::TaskCreated { .. } => "task_created",
             EventPayload::TaskStateChanged { .. } => "task_state_changed",
             EventPayload::MessageAppended { .. } => "message_appended",
+            EventPayload::ResponseItemAppended { .. } => "response_item_appended",
             EventPayload::ToolCallRequested { .. } => "tool_call_requested",
             EventPayload::ToolCallCompleted { .. } => "tool_call_completed",
             EventPayload::ContextCompacted { .. } => "context_compacted",

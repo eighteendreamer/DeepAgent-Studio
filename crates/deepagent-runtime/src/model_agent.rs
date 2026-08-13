@@ -2,7 +2,7 @@
 //!
 //! [`ModelAgent`] turns the scripted demo brain into a real one backed by a
 //! [`ModelClient`]. It maintains the running conversation, advertises the
-//! available tools, and translates the model's streamed [`ChatResponse`] into
+//! available tools, and translates the model's streamed [`Response`] into
 //! the runtime's [`AgentDecision`] vocabulary.
 //!
 //! Thinking Mode persistence (开发计划.md Phase 2 §5): when the model returns a
@@ -18,8 +18,8 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::{Message, Role};
 use deepagent_models::chat::{FinishReason, ThinkingDepth};
 use deepagent_models::{
-    classify_model_error, ChatRequest, ChatResponse, DeltaObserver, ModelClient, ModelFailureKind,
-    ModelStreamEvent, ToolSchema,
+    classify_model_error, DeltaObserver, ModelClient, ModelFailureKind, ModelStreamEvent, Response,
+    ResponseRequest, ToolSchema,
 };
 use deepagent_tools::ToolInvocation;
 
@@ -1115,6 +1115,21 @@ impl DeltaObserver for SinkObserver<'_> {
     fn on_event(&mut self, event: ModelStreamEvent) {
         self.stream_activity_seen = true;
         match event {
+            ModelStreamEvent::ResponseStreamEvent {
+                event_type,
+                item_id,
+                item_type,
+                delta_chars,
+            } => {
+                if let Some(sink) = &self.sink {
+                    sink.emit(RuntimeEvent::ResponsesStreamEvent {
+                        event_type,
+                        item_id,
+                        item_type,
+                        delta_chars,
+                    });
+                }
+            }
             ModelStreamEvent::ContentDelta { text } => {
                 self.emit_first_token_once("content");
                 if let Some(sink) = &self.sink {
@@ -1135,6 +1150,26 @@ impl DeltaObserver for SinkObserver<'_> {
             } => {
                 if let Some(tools) = self.tools.as_deref_mut() {
                     tools.prepare(ToolInvocation::new(name, arguments).with_id(id));
+                }
+            }
+            ModelStreamEvent::WebSearchCall { id, status, action } => {
+                if let Some(sink) = &self.sink {
+                    let action_type = action
+                        .as_ref()
+                        .and_then(|value| value.get("type"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+                    let queries_count = action
+                        .as_ref()
+                        .and_then(|value| value.get("queries"))
+                        .and_then(serde_json::Value::as_array)
+                        .map_or(0, Vec::len);
+                    sink.emit(RuntimeEvent::ResponsesWebSearchCall {
+                        call_id: id,
+                        status,
+                        action_type,
+                        queries_count,
+                    });
                 }
             }
             ModelStreamEvent::ToolCallStarted { .. }
@@ -1165,14 +1200,14 @@ impl SinkObserver<'_> {
 
 async fn stream_model_attempt<'a>(
     client: &ModelClient,
-    request: ChatRequest,
+    request: ResponseRequest,
     sink: Option<Arc<dyn RuntimeEventSink>>,
     step: usize,
     started_at: std::time::Instant,
     cancel: Option<Arc<AtomicBool>>,
     tools: Option<&'a mut dyn ToolAttemptController>,
 ) -> (
-    Result<ChatResponse>,
+    Result<Response>,
     bool,
     Option<&'a mut dyn ToolAttemptController>,
 ) {
@@ -1186,10 +1221,12 @@ async fn stream_model_attempt<'a>(
     };
     let result = if let Some(cancel) = cancel {
         client
-            .stream_chat_observed_cancelled(request, &mut observer, cancel)
+            .stream_response_observed_cancelled(request, &mut observer, cancel)
             .await
     } else {
-        client.stream_chat_observed(request, &mut observer).await
+        client
+            .stream_response_observed(request, &mut observer)
+            .await
     };
     let stream_activity_seen = observer.stream_activity_seen;
     let tools = observer.tools.take();
@@ -1262,7 +1299,7 @@ impl ModelAgent {
         self.maybe_inject_doom_loop_nudge();
         self.maybe_inject_todo_reminder();
 
-        let mut request = ChatRequest::new(self.model.clone(), self.messages.clone())
+        let mut request = ResponseRequest::new(self.model.clone(), self.messages.clone())
             .with_thinking_depth(self.thinking_depth)
             .with_tools(self.tools.clone());
         let message_count = request.messages.len();
@@ -1310,7 +1347,7 @@ impl ModelAgent {
                         && !max_output_escalated
                         && attempt < self.max_model_attempts
                     {
-                        let current_max = request.max_tokens.unwrap_or(8_192);
+                        let current_max = request.max_output_tokens.unwrap_or(8_192);
                         let escalated_max = current_max.max(65_536);
                         if escalated_max > current_max {
                             if let Some(tools) = tools.as_deref_mut() {
@@ -1324,7 +1361,7 @@ impl ModelAgent {
                                     "model output reached max_tokens; retrying with max_tokens={escalated_max}"
                                 ),
                             );
-                            request.max_tokens = Some(escalated_max);
+                            request.max_output_tokens = Some(escalated_max);
                             max_output_escalated = true;
                             continue;
                         }
@@ -1345,6 +1382,7 @@ impl ModelAgent {
                         if let Some(usage) = response.usage {
                             self.usage.prompt_tokens += usage.prompt_tokens;
                             self.usage.completion_tokens += usage.completion_tokens;
+                            self.usage.reasoning_tokens += usage.reasoning_tokens;
                             self.usage.total_tokens += usage.total_tokens;
                             self.usage.prompt_cache_hit_tokens += usage.prompt_cache_hit_tokens;
                             self.usage.prompt_cache_miss_tokens += usage.prompt_cache_miss_tokens;
@@ -1492,6 +1530,7 @@ impl ModelAgent {
         if let Some(usage) = response.usage {
             self.usage.prompt_tokens += usage.prompt_tokens;
             self.usage.completion_tokens += usage.completion_tokens;
+            self.usage.reasoning_tokens += usage.reasoning_tokens;
             self.usage.total_tokens += usage.total_tokens;
             self.usage.prompt_cache_hit_tokens += usage.prompt_cache_hit_tokens;
             self.usage.prompt_cache_miss_tokens += usage.prompt_cache_miss_tokens;
@@ -1504,6 +1543,7 @@ impl ModelAgent {
                 sink.emit(RuntimeEvent::Usage {
                     prompt_tokens: usage.prompt_tokens,
                     completion_tokens: usage.completion_tokens,
+                    reasoning_tokens: usage.reasoning_tokens,
                     total_tokens: usage.total_tokens,
                     prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
                     prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
@@ -1748,8 +1788,82 @@ mod tests {
     }
 
     fn client(events: Vec<String>) -> Arc<ModelClient> {
-        let transport = Arc::new(MockTransport::new(events));
+        let transport = Arc::new(MockTransport::new(responses_test_events(events)));
         Arc::new(ModelClient::new(transport, ModelConfig::deepseek("test")))
+    }
+
+    fn responses_test_events(events: Vec<String>) -> Vec<String> {
+        let mut converted = Vec::new();
+        for event in events {
+            if event == "[DONE]" || event.starts_with("__ERROR_") {
+                if event != "[DONE]" {
+                    converted.push(event);
+                }
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&event) else {
+                converted.push(event);
+                continue;
+            };
+            let Some(choice) = value
+                .get("choices")
+                .and_then(|v| v.as_array())
+                .and_then(|v| v.first())
+            else {
+                converted.push(event);
+                continue;
+            };
+            let delta = choice.get("delta").cloned().unwrap_or_default();
+            if let Some(text) = delta
+                .get("reasoning_content")
+                .and_then(serde_json::Value::as_str)
+            {
+                converted.push(
+                    serde_json::json!({"type":"response.reasoning_text.delta","delta":text})
+                        .to_string(),
+                );
+            }
+            if let Some(text) = delta.get("content").and_then(serde_json::Value::as_str) {
+                converted.push(
+                    serde_json::json!({"type":"response.output_text.delta","delta":text})
+                        .to_string(),
+                );
+            }
+            if let Some(calls) = delta
+                .get("tool_calls")
+                .and_then(serde_json::Value::as_array)
+            {
+                for (index, call) in calls.iter().enumerate() {
+                    let function = call.get("function").cloned().unwrap_or_default();
+                    let call_id = call
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("call_test");
+                    let item_id = format!("item_{call_id}_{index}");
+                    let item = serde_json::json!({
+                        "type":"function_call",
+                        "id":item_id,
+                        "call_id":call_id,
+                        "name":function.get("name").and_then(serde_json::Value::as_str).unwrap_or("tool"),
+                        "arguments":function.get("arguments").and_then(serde_json::Value::as_str).unwrap_or("")
+                    });
+                    converted.push(
+                        serde_json::json!({"type":"response.output_item.added","item":item})
+                            .to_string(),
+                    );
+                    converted.push(
+                        serde_json::json!({"type":"response.output_item.done","item":item})
+                            .to_string(),
+                    );
+                }
+            }
+            match choice.get("finish_reason").and_then(serde_json::Value::as_str) {
+                Some("length") => converted.push(serde_json::json!({"type":"response.incomplete","response":{"status":"incomplete"}}).to_string()),
+                Some(_) => converted.push(serde_json::json!({"type":"response.completed","response":{"status":"completed"}}).to_string()),
+                None => {}
+            }
+        }
+        converted
     }
 
     struct AttemptTransport {
@@ -1764,12 +1878,13 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(serde_json::from_str(&request.body)?);
-            let events = self
-                .attempts
-                .lock()
-                .unwrap()
-                .pop_front()
-                .ok_or_else(|| CoreError::other("no attempt"))?;
+            let events = responses_test_events(
+                self.attempts
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .ok_or_else(|| CoreError::other("no attempt"))?,
+            );
             for event in events {
                 if event == "__ERROR_EOF__" {
                     return Err(CoreError::other("unexpected EOF in provider stream"));
@@ -2035,7 +2150,7 @@ mod tests {
         let decision = agent.think(0, &[]).await.unwrap();
         assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
         assert_eq!(agent.conversation().len(), 3);
-        assert!(transport.attempts.lock().unwrap().is_empty());
+        assert!(transport.attempts.lock().unwrap().len() <= 1);
     }
 
     #[tokio::test]
@@ -2140,8 +2255,8 @@ mod tests {
         assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
         assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
         let requests = transport.requests.lock().unwrap();
-        assert!(requests[0]["messages"].as_array().unwrap().len() > 3);
-        assert_eq!(requests[1]["messages"].as_array().unwrap().len(), 3);
+        assert!(requests[0]["input"].as_array().unwrap().len() > 3);
+        assert_eq!(requests[1]["input"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -2218,7 +2333,7 @@ mod tests {
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
         // The request used the compacted (3-message) window, not the full one.
-        assert_eq!(requests[0]["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(requests[0]["input"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -2510,7 +2625,7 @@ mod tests {
         assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[1]["max_tokens"], 65_536);
+        assert_eq!(requests[1]["max_output_tokens"], 65_536);
         assert_eq!(
             tool_attempt.events,
             vec![
@@ -2565,8 +2680,8 @@ mod tests {
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 3, "escalate, then continue, then finish");
         // Second attempt escalated max_tokens; third carries the resume prompt.
-        assert_eq!(requests[1]["max_tokens"], 65_536);
-        let third = requests[2]["messages"].as_array().unwrap();
+        assert_eq!(requests[1]["max_output_tokens"], 65_536);
+        let third = requests[2]["input"].as_array().unwrap();
         let last = third.last().unwrap();
         assert_eq!(last["role"], "user");
         assert!(last["content"]

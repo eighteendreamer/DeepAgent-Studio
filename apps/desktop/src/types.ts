@@ -159,6 +159,7 @@ export interface ConversationMessage {
 export interface ConversationUsage {
   prompt_tokens: number;
   completion_tokens: number;
+  reasoning_tokens: number;
   total_tokens: number;
   prompt_cache_hit_tokens: number;
   prompt_cache_miss_tokens: number;
@@ -170,6 +171,7 @@ export interface ConversationUsage {
 export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
+  reasoningTokens: number;
   totalTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
@@ -622,6 +624,7 @@ export interface SettingsView {
   sandbox_mode: "read_only" | "workspace_write" | "full_access";
   terminal_shell: "powershell" | "command_prompt" | "git_bash" | "wsl";
   thinking_depth: "simple" | "medium" | "deep";
+  responses: ResponsesApiSettings;
   web_search: WebSearchSettings;
   vision: VisionSettings;
   execution_features: ExecutionFeatures;
@@ -653,6 +656,21 @@ export interface WebSearchSettings {
   anysearch_enabled: boolean;
   anysearch_base_url: string | null;
   anysearch_api_key_configured: boolean;
+}
+
+export interface ResponsesApiSettings {
+  creativity: number | null;
+  scene: "code" | "email" | "analysis" | "creative" | null;
+  temperature: number | null;
+  top_p: number | null;
+  max_output_tokens: number | null;
+  top_logprobs: number | null;
+  reasoning_effort: string | null;
+  text: unknown | null;
+  tool_choice: unknown | null;
+  user: string | null;
+  developer: Record<string, unknown>;
+  ineffective: Record<string, unknown>;
 }
 
 export interface AnySearchApiKeyInfo {

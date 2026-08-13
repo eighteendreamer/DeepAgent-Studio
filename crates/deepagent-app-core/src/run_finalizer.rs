@@ -133,6 +133,7 @@ impl AppRunFinalizer {
                 sink.emit(RuntimeEvent::Usage {
                     prompt_tokens: 0,
                     completion_tokens: 0,
+                    reasoning_tokens: 0,
                     total_tokens: 0,
                     prompt_cache_hit_tokens: 0,
                     prompt_cache_miss_tokens: 0,
@@ -249,7 +250,10 @@ mod tests {
                     sink: &NullEventSink,
                     run_succeeded: false,
                     capture_client: Arc::new(ModelClient::new(
-                        Arc::new(deepagent_models::MockTransport::new(["[DONE]".to_string()])),
+                        Arc::new(deepagent_models::MockTransport::new([
+                            r#"{"type":"response.completed","response":{"status":"completed"}}"#
+                                .to_string(),
+                        ])),
                         deepagent_models::ModelConfig::deepseek("test"),
                     )),
                     capture_model: "model".to_string(),

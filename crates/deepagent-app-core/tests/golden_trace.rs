@@ -188,8 +188,8 @@ async fn golden_trace_simple_answer_matches_fixture() {
     let root = e2e_root(&run_id);
     std::fs::create_dir_all(&root).unwrap();
     let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([vec![
-        r#"{"choices":[{"delta":{"content":"Paris."},"finish_reason":"stop"}]}"#.to_string(),
-        "[DONE]".to_string(),
+        r#"{"type":"response.output_text.delta","delta":"Paris."}"#.to_string(),
+        r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
     ]]));
     let chat = chat_with(transport, &root).await;
 
@@ -243,13 +243,13 @@ async fn golden_trace_tool_call_run_holds_invariants() {
     std::fs::write(root.join("hello.txt"), "hi").unwrap();
     let transport: Arc<dyn HttpTransport> = Arc::new(ReplayTransport::new([
         vec![
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"hello.txt\"}"}}]},"finish_reason":"tool_calls"}]}"#.to_string(),
-            "[DONE]".to_string(),
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"item-read","call_id":"call-read","name":"read_file","arguments":"{\"path\":\"hello.txt\"}"}}"#.to_string(),
+            r#"{"type":"response.output_item.done","item":{"type":"function_call","id":"item-read","call_id":"call-read","name":"read_file","arguments":"{\"path\":\"hello.txt\"}"}}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
         ],
         vec![
-            r#"{"choices":[{"delta":{"content":"The file says hi."},"finish_reason":"stop"}]}"#
-                .to_string(),
-            "[DONE]".to_string(),
+            r#"{"type":"response.output_text.delta","delta":"The file says hi."}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
         ],
     ]));
     let chat = chat_with(transport, &root).await;

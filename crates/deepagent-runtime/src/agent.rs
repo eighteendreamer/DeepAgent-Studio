@@ -95,6 +95,8 @@ pub struct RunUsage {
     pub prompt_tokens: u32,
     /// Completion (output) tokens.
     pub completion_tokens: u32,
+    /// Reasoning output tokens (a subset of completion tokens).
+    pub reasoning_tokens: u32,
     /// Total tokens.
     pub total_tokens: u32,
     /// Prompt tokens served from the context cache (a "hit").

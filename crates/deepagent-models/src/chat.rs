@@ -1,11 +1,9 @@
-//! Chat-completion request/response types (DeepSeek-compatible).
+//! Provider-facing DeepSeek Responses request/response types.
 //!
-//! These mirror the OpenAI-style chat-completions schema that DeepSeek exposes,
-//! plus the DeepSeek-specific `reasoning_content` field used by Thinking Mode.
-//! The types are provider-agnostic enough to target other OpenAI-compatible
-//! backends, but the defaults and the [`ThinkingConfig`] are tuned for DeepSeek.
+//! The internal `Message` projection remains provider-neutral for the runtime
+//! and UI, while request serialization emits Responses input items.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 use deepagent_core::message::Message;
 
@@ -120,38 +118,85 @@ pub struct FunctionSchema {
     pub parameters: serde_json::Value,
 }
 
-/// A chat-completion request.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct ChatRequest {
+/// A DeepSeek Responses API request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResponseRequest {
     /// Target model id (e.g. `"deepseek-v4-flash"` / `"deepseek-v4-pro"`).
     pub model: String,
-    /// Conversation so far. Serialized through [`crate::wire::serialize_messages`]
-    /// so assistant tool calls take the API's required
-    /// `{id, type:"function", function:{name, arguments}}` shape (with
-    /// `arguments` JSON-stringified) rather than the kernel's internal flat form.
-    #[serde(serialize_with = "crate::wire::serialize_messages")]
+    /// Conversation so far. Serialization projects it to ordered Responses
+    /// message, function/custom call, and paired output items.
     pub messages: Vec<Message>,
     /// Whether to stream the response as SSE.
     pub stream: bool,
-    /// Streaming options. When streaming, set `{include_usage: true}` so the
-    /// provider (DeepSeek) emits a final usage chunk; omitted when not streaming.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream_options: Option<StreamOptions>,
     /// Sampling temperature.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     /// Max output tokens.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
-    /// DeepSeek Thinking Mode toggle.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<ThinkingToggle>,
-    /// DeepSeek Thinking effort (`high` / `max`).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    /// Responses API reasoning effort (`high` / `max`).
     pub reasoning_effort: Option<String>,
     /// Advertised tools.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolSchema>,
+    /// Responses API tool choice. Omitted means provider default (`auto`).
+    pub tool_choice: Option<serde_json::Value>,
+    /// Responses API nucleus sampling.
+    pub top_p: Option<f32>,
+    /// Responses API top logprobs.
+    pub top_logprobs: Option<u8>,
+    /// Responses API text configuration, e.g. json_schema.
+    pub text: Option<serde_json::Value>,
+    /// Optional end-user identifier.
+    pub user: Option<String>,
+}
+
+impl Serialize for ResponseRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("model", &self.model)?;
+        let (instructions, input) = crate::responses::response_items_from_messages(&self.messages);
+        if let Some(value) = instructions {
+            map.serialize_entry("instructions", &value)?;
+        }
+        map.serialize_entry("input", &input)?;
+        map.serialize_entry("stream", &self.stream)?;
+        if let Some(value) = self.temperature {
+            map.serialize_entry("temperature", &value)?;
+        }
+        if let Some(value) = self.top_p {
+            map.serialize_entry("top_p", &value)?;
+        }
+        if let Some(value) = self.max_output_tokens {
+            map.serialize_entry("max_output_tokens", &value)?;
+        }
+        if let Some(value) = self.top_logprobs {
+            map.serialize_entry("top_logprobs", &value)?;
+        }
+        if let Some(value) = &self.reasoning_effort {
+            map.serialize_entry("reasoning", &serde_json::json!({"effort": value}))?;
+        }
+        if !self.tools.is_empty() {
+            let tools: Vec<serde_json::Value> = self.tools.iter().map(|tool| match tool.kind.as_str() {
+                "function" => serde_json::json!({"type":"function","name":tool.function.name,"description":tool.function.description,"parameters":tool.function.parameters}),
+                "custom" => serde_json::json!({"type":"custom","name":tool.function.name,"description":tool.function.description,"format":{"type":"text"}}),
+                "web_search" => serde_json::json!({"type":"web_search"}),
+                _ => serde_json::json!({"type": tool.kind}),
+            }).collect();
+            map.serialize_entry("tools", &tools)?;
+        }
+        if let Some(value) = &self.tool_choice {
+            map.serialize_entry("tool_choice", value)?;
+        }
+        if let Some(value) = &self.text {
+            map.serialize_entry("text", value)?;
+        }
+        if let Some(value) = &self.user {
+            map.serialize_entry("user", value)?;
+        }
+        map.end()
+    }
 }
 
 /// Streaming options (OpenAI/DeepSeek-compatible).
@@ -161,28 +206,28 @@ pub struct StreamOptions {
     pub include_usage: bool,
 }
 
-impl ChatRequest {
+impl ResponseRequest {
     /// Build a non-streaming request for `model` with `messages`.
     pub fn new(model: impl Into<String>, messages: Vec<Message>) -> Self {
         Self {
             model: model.into(),
             messages,
             stream: false,
-            stream_options: None,
             temperature: None,
-            max_tokens: None,
-            thinking: None,
+            max_output_tokens: None,
             reasoning_effort: None,
             tools: Vec::new(),
+            tool_choice: None,
+            top_p: None,
+            top_logprobs: None,
+            text: None,
+            user: None,
         }
     }
 
     /// Enable streaming (builder style). Also requests usage in the stream.
     pub fn streaming(mut self) -> Self {
         self.stream = true;
-        self.stream_options = Some(StreamOptions {
-            include_usage: true,
-        });
         self
     }
 
@@ -198,21 +243,37 @@ impl ChatRequest {
         self
     }
 
-    /// Set max tokens (builder style).
-    pub fn with_max_tokens(mut self, n: u32) -> Self {
-        self.max_tokens = Some(n);
+    pub fn with_top_p(mut self, value: f32) -> Self {
+        self.top_p = Some(value);
+        self
+    }
+
+    pub fn with_top_logprobs(mut self, value: u8) -> Self {
+        self.top_logprobs = Some(value);
+        self
+    }
+
+    pub fn with_text(mut self, value: serde_json::Value) -> Self {
+        self.text = Some(value);
+        self
+    }
+
+    pub fn with_tool_choice(mut self, value: serde_json::Value) -> Self {
+        self.tool_choice = Some(value);
+        self
+    }
+
+    pub fn with_max_output_tokens(mut self, n: u32) -> Self {
+        self.max_output_tokens = Some(n);
         self
     }
 
     /// Apply a DeepSeek Thinking Mode profile to this request.
     pub fn with_thinking_depth(mut self, depth: ThinkingDepth) -> Self {
         let cfg = ThinkingConfig::for_depth(depth);
-        self.thinking = Some(ThinkingToggle {
-            kind: if cfg.enabled { "enabled" } else { "disabled" }.to_string(),
-        });
         self.reasoning_effort = cfg.effort;
-        if self.max_tokens.is_none() {
-            self.max_tokens = cfg.max_tokens;
+        if self.max_output_tokens.is_none() {
+            self.max_output_tokens = cfg.max_tokens;
         }
         self
     }
@@ -241,6 +302,10 @@ pub struct Usage {
     /// Completion tokens.
     #[serde(default)]
     pub completion_tokens: u32,
+    /// Reasoning tokens included in `completion_tokens` by Responses.
+    /// Kept separately for diagnostics and UI; never added again for billing.
+    #[serde(default)]
+    pub reasoning_tokens: u32,
     /// Total tokens.
     #[serde(default)]
     pub total_tokens: u32,
@@ -254,7 +319,7 @@ pub struct Usage {
 
 /// A fully assembled (non-streaming, or post-accumulation) response.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ChatResponse {
+pub struct Response {
     /// The assistant message (content + reasoning_content + tool_calls).
     pub message: Message,
     /// Why generation finished, if reported.
@@ -309,7 +374,7 @@ mod tests {
 
     #[test]
     fn request_builder_and_serialization() {
-        let req = ChatRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
+        let req = ResponseRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
             .streaming()
             .with_thinking_depth(ThinkingDepth::Medium)
             .with_temperature(0.2)
@@ -321,21 +386,19 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["model"], "deepseek-v4-flash");
         assert_eq!(json["stream"], true);
-        assert_eq!(json["thinking"]["type"], "enabled");
-        assert_eq!(json["reasoning_effort"], "high");
-        assert_eq!(json["max_tokens"], 16_384);
+        assert_eq!(json["reasoning"]["effort"], "high");
+        assert_eq!(json["max_output_tokens"], 16_384);
         assert!((json["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
-        assert_eq!(json["tools"][0]["function"]["name"], "reverse");
+        assert_eq!(json["tools"][0]["name"], "reverse");
     }
 
     #[test]
     fn simple_thinking_disables_reasoning() {
-        let req = ChatRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
+        let req = ResponseRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
             .with_thinking_depth(ThinkingDepth::Simple);
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["thinking"]["type"], "disabled");
-        assert!(json.get("reasoning_effort").is_none());
-        assert_eq!(json["max_tokens"], 8_192);
+        assert!(json.get("reasoning").is_none());
+        assert_eq!(json["max_output_tokens"], 8_192);
     }
 
     #[test]

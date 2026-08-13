@@ -535,6 +535,33 @@
           "duckduckgo": "DuckDuckGo",
           "duckduckgoDesc": "使用无需 key 的 DuckDuckGo HTML 作为最终回退"
         }
+      },
+      "responses": {
+        "title": "DeepSeek Responses 参数",
+        "desc": "所有生成请求使用 Responses API；系统统一校验参数并记录生效状态。",
+        "creativity": "创意程度",
+        "creativityDesc": "影响默认 temperature；代码、分类等内部调用仍受后端硬上限保护。",
+        "scenes": {
+          "code": "写代码",
+          "email": "写邮件",
+          "analysis": "分析",
+          "creative": "创意写作"
+        },
+          "advanced": "高级参数",
+          "advancedDesc": "temperature · top_p · 输出上限 · reasoning · text.format",
+          "temperature": "温度",
+          "topP": "Top P",
+          "maxOutputTokens": "最大输出 Token",
+          "topLogprobs": "Top logprobs",
+          "reasoningEffort": "推理强度",
+          "textFormat": "文本格式",
+          "providerDefault": "提供方默认",
+        "developer": "开发者 Responses JSON",
+        "developerDesc": "严格校验；未知和系统管理字段会拒绝，无效果字段会警告。",
+        "validateSave": "校验并保存",
+        "saved": "Responses JSON 已保存",
+        "saveFailed": "Responses 设置保存失败：{{error}}",
+        "ineffective": "已保存但 DeepSeek 不产生实际效果：{{fields}}"
       }
     },
     "git": {
@@ -1416,6 +1443,10 @@
   "commandPalette": {
     "placeholder": "输入命令…",
     "noMatch": "没有匹配的命令"
+  },
+  "chat": {
+    "nativeWebSearchCompleted": "DeepSeek 网页搜索完成（{{count}} 个查询）",
+    "nativeWebSearchStatus": "DeepSeek 网页搜索：{{status}}"
   },
   "general": {
     "languages": {

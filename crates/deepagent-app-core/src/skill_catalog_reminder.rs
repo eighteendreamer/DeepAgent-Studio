@@ -202,6 +202,7 @@ mod tests {
             permission_rules: deepagent_hooks::PermissionRules::default(),
             hooks_json: String::new(),
             thinking_depth: deepagent_models::ThinkingDepth::default(),
+            responses: crate::settings::ResponsesApiSettings::default(),
             verification_policy: crate::settings::VerificationPolicy::default(),
             web_search: crate::settings::WebSearchSettings::default(),
             vision: crate::settings::VisionSettings::default(),

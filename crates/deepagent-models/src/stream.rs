@@ -1,92 +1,445 @@
-//! Streaming response assembly (开发计划.md Phase 2 §4–§5).
+//! DeepSeek Responses API semantic SSE assembly.
 //!
-//! DeepSeek streams chat completions as Server-Sent Events. Each `data:` line
-//! carries a [`ChatChunk`] with a *delta*: an incremental fragment of the
-//! assistant message. The challenge (and the explicit acceptance criteria
-//! "无 chunk 丢失" / "tool_calls merge") is that:
-//!
-//! - `content` and `reasoning_content` arrive as concatenated text fragments,
-//! - `tool_calls` arrive as fragments **indexed by position**, where the `name`
-//!   appears once and the `arguments` JSON string is streamed character-by-
-//!   character across many chunks.
-//!
-//! [`DeltaAccumulator`] folds these chunks into a single, coherent
-//! [`ChatResponse`], preserving the DeepSeek Thinking Mode `reasoning_content`
-//! so it can be persisted and replayed.
+//! The accumulator consumes typed Responses events, preserves visible and
+//! reasoning deltas, correlates tool fragments by provider item/call id, and
+//! requires an explicit completed, incomplete, or failed terminal event.
 
 use serde::{Deserialize, Serialize};
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::{Message, Role, ToolCall};
 
-use crate::chat::{ChatResponse, FinishReason, Usage};
+use crate::chat::{FinishReason, Response, Usage};
 
-/// One streamed chunk (the JSON object after `data:` in an SSE line).
+/// Responses API semantic SSE accumulator. DeepSeek sends an event object in
+/// each `data:` payload; the event's `type` selects the semantic delta.
+#[derive(Debug, Default)]
+pub struct ResponseAccumulator {
+    content: String,
+    reasoning: String,
+    tool_calls: Vec<ToolCallBuilder>,
+    usage: Option<Usage>,
+    terminal: Option<FinishReason>,
+    saw_terminal: bool,
+}
+
+impl ResponseAccumulator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push_sse_data_observed(
+        &mut self,
+        data: &str,
+        observer: &mut dyn DeltaObserver,
+    ) -> Result<bool> {
+        let value: serde_json::Value = serde_json::from_str(data.trim())
+            .map_err(|e| CoreError::Serialization(format!("bad Responses event: {e}")))?;
+        let kind = value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        observer.on_event(ModelStreamEvent::ResponseStreamEvent {
+            event_type: kind.to_string(),
+            item_id: value
+                .get("item_id")
+                .or_else(|| value.get("call_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            item_type: value
+                .get("item")
+                .and_then(|item| item.get("type"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            delta_chars: value
+                .get("delta")
+                .and_then(serde_json::Value::as_str)
+                .map(|delta| delta.chars().count()),
+        });
+        match kind {
+            "response.output_text.delta" => {
+                if let Some(text) = value.get("delta").and_then(serde_json::Value::as_str) {
+                    self.content.push_str(text);
+                    observer.on_event(ModelStreamEvent::ContentDelta {
+                        text: text.to_string(),
+                    });
+                }
+            }
+            "response.reasoning_text.delta" => {
+                if let Some(text) = value.get("delta").and_then(serde_json::Value::as_str) {
+                    self.reasoning.push_str(text);
+                    observer.on_event(ModelStreamEvent::ReasoningDelta {
+                        text: text.to_string(),
+                    });
+                }
+            }
+            "response.function_call_arguments.delta" | "response.custom_tool_call_input.delta" => {
+                let item_id = value
+                    .get("item_id")
+                    .or_else(|| value.get("call_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let delta = value
+                    .get("delta")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let builder = self.tool_calls.iter_mut().find(|b| {
+                    b.item_id.as_deref() == Some(item_id) || b.id.as_deref() == Some(item_id)
+                });
+                if let Some(builder) = builder {
+                    builder.arguments.push_str(delta);
+                    observer.on_event(ModelStreamEvent::ToolArgumentsDelta {
+                        index: builder.index,
+                        delta: delta.to_string(),
+                    });
+                }
+            }
+            "response.output_item.added" => {
+                if let Some(item) = value.get("item") {
+                    self.add_item(item, observer);
+                }
+            }
+            "response.web_search_call.in_progress"
+            | "response.web_search_call.searching"
+            | "response.web_search_call.completed" => {
+                // Native web-search lifecycle is intentionally provider-owned;
+                // retain it in the structured runtime stream without exposing
+                // search prompt/result text to diagnostics.
+                if let Some(item_id) = value
+                    .get("item_id")
+                    .or_else(|| value.get("call_id"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    let status = kind
+                        .strip_prefix("response.web_search_call.")
+                        .unwrap_or(kind);
+                    observer.on_event(ModelStreamEvent::WebSearchCall {
+                        id: item_id.to_string(),
+                        status: status.to_string(),
+                        action: None,
+                    });
+                }
+            }
+            "response.output_item.done" => {
+                if let Some(item) = value.get("item") {
+                    self.add_item(item, observer);
+                    if let Some(call_id) = item.get("call_id").and_then(serde_json::Value::as_str) {
+                        if let Some(builder) = self
+                            .tool_calls
+                            .iter_mut()
+                            .find(|b| b.id.as_deref() == Some(call_id))
+                        {
+                            if let Some(args) = item
+                                .get("arguments")
+                                .or_else(|| item.get("input"))
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                builder.arguments = args.to_string();
+                            }
+                            let index = builder.index;
+                            let _ = builder;
+                            self.emit_tool_completed(index, observer);
+                        }
+                    }
+                }
+            }
+            "response.function_call_arguments.done" | "response.custom_tool_call_input.done" => {
+                let item_id = value
+                    .get("item_id")
+                    .or_else(|| value.get("call_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if let Some(builder) = self.tool_calls.iter_mut().find(|b| {
+                    b.item_id.as_deref() == Some(item_id) || b.id.as_deref() == Some(item_id)
+                }) {
+                    if let Some(args) = value
+                        .get("arguments")
+                        .or_else(|| value.get("input"))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        builder.arguments = args.to_string();
+                    }
+                    let index = builder.index;
+                    let _ = builder;
+                    self.emit_tool_completed(index, observer);
+                }
+            }
+            "response.completed" => {
+                self.terminal = Some(FinishReason::Stop);
+                self.saw_terminal = true;
+                if let Some(usage) =
+                    parse_response_usage(value.get("response").and_then(|v| v.get("usage")))
+                {
+                    self.usage = Some(usage);
+                    observer.on_event(ModelStreamEvent::Usage { usage });
+                }
+                observer.on_event(ModelStreamEvent::Finished {
+                    reason: self.terminal,
+                });
+                return Ok(true);
+            }
+            "response.incomplete" => {
+                self.terminal = Some(FinishReason::Length);
+                self.saw_terminal = true;
+                if let Some(usage) =
+                    parse_response_usage(value.get("response").and_then(|v| v.get("usage")))
+                {
+                    self.usage = Some(usage);
+                    observer.on_event(ModelStreamEvent::Usage { usage });
+                }
+                observer.on_event(ModelStreamEvent::Finished {
+                    reason: self.terminal,
+                });
+                return Ok(true);
+            }
+            "response.failed" => {
+                self.saw_terminal = true;
+                return Err(CoreError::provider(
+                    None,
+                    Some("response_failed".into()),
+                    value
+                        .get("response")
+                        .and_then(|v| v.get("error"))
+                        .and_then(|v| v.get("message"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Responses API response failed")
+                        .to_string(),
+                ));
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn add_item(&mut self, item: &serde_json::Value, observer: &mut dyn DeltaObserver) {
+        let kind = item
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if kind == "web_search_call" {
+            if let Some(id) = item
+                .get("id")
+                .or_else(|| item.get("call_id"))
+                .and_then(serde_json::Value::as_str)
+            {
+                observer.on_event(ModelStreamEvent::WebSearchCall {
+                    id: id.to_string(),
+                    status: item
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("in_progress")
+                        .to_string(),
+                    action: item.get("action").cloned(),
+                });
+            }
+            return;
+        }
+        if kind != "function_call" && kind != "custom_tool_call" {
+            return;
+        }
+        let index = self.tool_calls.len();
+        let item_id = item
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let id = item
+            .get("call_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                item.get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            });
+        let name = item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("tool")
+            .to_string();
+        if self.tool_calls.iter().any(|b| b.id == id) {
+            return;
+        }
+        self.tool_calls.push(ToolCallBuilder {
+            index,
+            item_id,
+            id: id.clone(),
+            name: Some(name.clone()),
+            arguments: item
+                .get("arguments")
+                .or_else(|| item.get("input"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            custom: kind == "custom_tool_call",
+            completed_emitted: false,
+        });
+        observer.on_event(ModelStreamEvent::ToolCallStarted { index, id, name });
+    }
+
+    fn emit_tool_completed(&mut self, index: usize, observer: &mut dyn DeltaObserver) {
+        let Some(builder) = self.tool_calls.iter_mut().find(|b| b.index == index) else {
+            return;
+        };
+        if builder.completed_emitted {
+            return;
+        }
+        let Some(name) = builder.name.clone() else {
+            return;
+        };
+        let args = if builder.arguments.trim().is_empty() {
+            "{}"
+        } else {
+            builder.arguments.trim()
+        };
+        let arguments = if builder.custom {
+            serde_json::json!({"patch": args})
+        } else {
+            serde_json::from_str(args).unwrap_or_else(|e| serde_json::json!({"__invalid_tool_arguments__":true,"raw":args,"parse_error":e.to_string()}))
+        };
+        let id = builder
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("call_stream_{}", index));
+        builder.completed_emitted = true;
+        observer.on_event(ModelStreamEvent::ToolCallCompleted {
+            index,
+            id,
+            name,
+            arguments,
+        });
+    }
+
+    pub fn finish(mut self) -> Result<Response> {
+        if !self.saw_terminal {
+            return Err(CoreError::other(
+                "Responses stream ended without a terminal response event",
+            ));
+        }
+        let mut message = Message::text(Role::Assistant, self.content);
+        if !self.reasoning.is_empty() {
+            message.reasoning_content = Some(self.reasoning);
+        }
+        for builder in self.tool_calls.drain(..) {
+            let id = builder
+                .id
+                .unwrap_or_else(|| format!("call_stream_{}", builder.index));
+            let args = if builder.arguments.trim().is_empty() {
+                "{}"
+            } else {
+                builder.arguments.trim()
+            };
+            let arguments = if builder.custom {
+                serde_json::json!({"patch": args})
+            } else {
+                serde_json::from_str(args).unwrap_or_else(|e| serde_json::json!({"__invalid_tool_arguments__":true,"raw":args,"parse_error":e.to_string()}))
+            };
+            message.tool_calls.push(ToolCall {
+                id,
+                name: builder.name.unwrap_or_else(|| "tool".into()),
+                arguments,
+            });
+        }
+        Ok(Response {
+            message,
+            finish_reason: self.terminal,
+            usage: self.usage,
+        })
+    }
+}
+
+fn parse_response_usage(value: Option<&serde_json::Value>) -> Option<Usage> {
+    let value = value?;
+    Some(Usage {
+        prompt_tokens: value
+            .get("input_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32,
+        completion_tokens: value
+            .get("output_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32,
+        reasoning_tokens: value
+            .get("output_tokens_details")
+            .and_then(|v| v.get("reasoning_tokens"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32,
+        total_tokens: value
+            .get("total_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32,
+        prompt_cache_hit_tokens: value
+            .get("input_tokens_details")
+            .and_then(|v| v.get("cached_tokens"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32,
+        prompt_cache_miss_tokens: 0,
+    })
+}
+
+// Kept test-only to exercise compatibility expectations against captured
+// pre-migration failure samples. Production code only compiles and exports
+// `ResponseAccumulator`.
+#[cfg(test)]
 #[derive(Debug, Clone, Deserialize)]
-pub struct ChatChunk {
-    /// Choices array; we only consume index 0 (single-completion requests).
+struct ChatChunk {
     #[serde(default)]
-    pub choices: Vec<ChunkChoice>,
-    /// Usage, typically only present on the final chunk.
+    choices: Vec<ChunkChoice>,
     #[serde(default)]
-    pub usage: Option<Usage>,
+    usage: Option<Usage>,
 }
 
-/// A single choice within a chunk.
+#[cfg(test)]
 #[derive(Debug, Clone, Deserialize)]
-pub struct ChunkChoice {
-    /// The incremental delta for this choice.
+struct ChunkChoice {
     #[serde(default)]
-    pub delta: Delta,
-    /// Finish reason, present on the terminal chunk.
+    delta: Delta,
     #[serde(default)]
-    pub finish_reason: Option<FinishReason>,
+    finish_reason: Option<FinishReason>,
 }
 
-/// The incremental delta carried by a chunk.
+#[cfg(test)]
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct Delta {
-    /// Visible content fragment.
+struct Delta {
     #[serde(default)]
-    pub content: Option<String>,
-    /// DeepSeek Thinking Mode reasoning fragment.
+    content: Option<String>,
     #[serde(default)]
-    pub reasoning_content: Option<String>,
-    /// Tool-call fragments (indexed).
+    reasoning_content: Option<String>,
     #[serde(default)]
-    pub tool_calls: Vec<ToolCallDelta>,
+    tool_calls: Vec<ToolCallDelta>,
 }
 
-/// A fragment of a tool call. `index` identifies which call this fragment
-/// belongs to; `function.arguments` is a partial JSON string to be concatenated.
+#[cfg(test)]
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct ToolCallDelta {
-    /// Position of this tool call within the message.
+struct ToolCallDelta {
     #[serde(default)]
-    pub index: usize,
-    /// Provider call id (usually only on the first fragment).
+    index: usize,
     #[serde(default)]
-    pub id: Option<String>,
-    /// Function fragment.
+    id: Option<String>,
     #[serde(default)]
-    pub function: Option<FunctionDelta>,
+    function: Option<FunctionDelta>,
 }
 
-/// A fragment of a function call.
+#[cfg(test)]
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct FunctionDelta {
-    /// Function name (usually only on the first fragment).
+struct FunctionDelta {
     #[serde(default)]
-    pub name: Option<String>,
-    /// Partial arguments JSON, to be concatenated across fragments.
+    name: Option<String>,
     #[serde(default)]
-    pub arguments: Option<String>,
+    arguments: Option<String>,
 }
 
 /// Provider-neutral semantic model stream used by Agent Kernel v2.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelStreamEvent {
+    /// Sanitized metadata for every semantic Responses SSE event. No prompt,
+    /// output text, reasoning text, or search query is included.
+    ResponseStreamEvent {
+        event_type: String,
+        item_id: Option<String>,
+        item_type: Option<String>,
+        delta_chars: Option<usize>,
+    },
     ContentDelta {
         text: String,
     },
@@ -112,6 +465,13 @@ pub enum ModelStreamEvent {
         name: String,
         arguments: serde_json::Value,
     },
+    /// Provider-owned DeepSeek web-search lifecycle. This is not a local
+    /// function call and must never enter the local execution pipeline.
+    WebSearchCall {
+        id: String,
+        status: String,
+        action: Option<serde_json::Value>,
+    },
     Usage {
         usage: Usage,
     },
@@ -131,11 +491,13 @@ pub trait DeltaObserver: Send {
     /// callbacks continue to work through this default dispatcher.
     fn on_event(&mut self, event: ModelStreamEvent) {
         match event {
+            ModelStreamEvent::ResponseStreamEvent { .. } => {}
             ModelStreamEvent::ContentDelta { text } => self.on_content(&text),
             ModelStreamEvent::ReasoningDelta { text } => self.on_reasoning(&text),
             ModelStreamEvent::ToolCallStarted { name, .. } => self.on_tool_call(&name),
             ModelStreamEvent::ToolArgumentsDelta { .. }
             | ModelStreamEvent::ToolCallCompleted { .. }
+            | ModelStreamEvent::WebSearchCall { .. }
             | ModelStreamEvent::Usage { .. }
             | ModelStreamEvent::Finished { .. } => {}
         }
@@ -148,17 +510,15 @@ pub trait DeltaObserver: Send {
     fn on_tool_call(&mut self, _name: &str) {}
 }
 
-/// A `DeltaObserver` that ignores everything (the default for `stream_chat`).
+/// A `DeltaObserver` that ignores everything (the default for `stream_response`).
 pub struct NoopObserver;
 impl DeltaObserver for NoopObserver {}
 
-/// Accumulates streamed deltas into a final message.
+#[cfg(test)]
 #[derive(Debug, Default)]
-pub struct DeltaAccumulator {
+struct DeltaAccumulator {
     content: String,
     reasoning: String,
-    /// Tool calls under construction, keyed by their stream index. Kept in a
-    /// Vec of (index, builder) so iteration order is stable / by-index.
     tool_calls: Vec<ToolCallBuilder>,
     finish_reason: Option<FinishReason>,
     usage: Option<Usage>,
@@ -167,12 +527,15 @@ pub struct DeltaAccumulator {
 #[derive(Debug, Default)]
 struct ToolCallBuilder {
     index: usize,
+    item_id: Option<String>,
     id: Option<String>,
     name: Option<String>,
     arguments: String,
+    custom: bool,
     completed_emitted: bool,
 }
 
+#[cfg(test)]
 impl DeltaAccumulator {
     /// New empty accumulator.
     pub fn new() -> Self {
@@ -286,6 +649,8 @@ impl DeltaAccumulator {
             None => {
                 self.tool_calls.push(ToolCallBuilder {
                     index: delta.index,
+                    item_id: None,
+                    custom: false,
                     ..Default::default()
                 });
                 self.tool_calls.last_mut().expect("just pushed a builder")
@@ -345,9 +710,9 @@ impl DeltaAccumulator {
         !self.tool_calls.is_empty()
     }
 
-    /// Finalize into a [`ChatResponse`]. Tool-call argument strings are parsed
+    /// Finalize into a [`Response`]. Tool-call argument strings are parsed
     /// as JSON; an empty/blank argument string becomes `{}`.
-    pub fn finish(mut self) -> Result<ChatResponse> {
+    pub fn finish(mut self) -> Result<Response> {
         if self.content.trim().is_empty()
             && self.reasoning.trim().is_empty()
             && self.tool_calls.is_empty()
@@ -413,7 +778,7 @@ impl DeltaAccumulator {
         }
         message.tool_calls = tool_calls;
 
-        Ok(ChatResponse {
+        Ok(Response {
             message,
             finish_reason: self.finish_reason,
             usage: self.usage,
@@ -692,5 +1057,119 @@ mod tests {
         })));
         let resp = acc.finish().unwrap();
         assert_eq!(resp.usage.unwrap().total_tokens, 15);
+    }
+
+    #[test]
+    fn responses_web_search_uses_item_id_and_keeps_action_metadata() {
+        #[derive(Default)]
+        struct Rec(Vec<ModelStreamEvent>);
+        impl DeltaObserver for Rec {
+            fn on_event(&mut self, event: ModelStreamEvent) {
+                self.0.push(event);
+            }
+        }
+        let mut acc = ResponseAccumulator::new();
+        let mut rec = Rec::default();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.web_search_call.searching","item_id":"ws_1"}"#,
+            &mut rec,
+        )
+        .unwrap();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.output_item.done","item":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","queries":["redacted"]}}}"#,
+            &mut rec,
+        ).unwrap();
+        assert!(rec.0.iter().any(|event| matches!(event,
+            ModelStreamEvent::WebSearchCall { id, status, .. }
+                if id == "ws_1" && status == "searching"
+        )));
+        assert!(rec.0.iter().any(|event| matches!(event,
+            ModelStreamEvent::WebSearchCall { id, status, action: Some(action) }
+                if id == "ws_1" && status == "completed"
+                    && action["queries"].as_array().map_or(0, Vec::len) == 1
+        )));
+    }
+
+    #[test]
+    fn responses_custom_tool_deltas_correlate_by_item_id() {
+        let mut acc = ResponseAccumulator::new();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.output_item.added","item":{"type":"custom_tool_call","id":"item_1","call_id":"call_1","name":"apply_patch","input":""}}"#,
+            &mut NoopObserver,
+        ).unwrap();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.custom_tool_call_input.delta","item_id":"item_1","delta":"*** Begin Patch"}"#,
+            &mut NoopObserver,
+        ).unwrap();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.custom_tool_call_input.done","item_id":"item_1","input":"*** Begin Patch\n*** End Patch"}"#,
+            &mut NoopObserver,
+        ).unwrap();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":5}}}"#,
+            &mut NoopObserver,
+        ).unwrap();
+        let response = acc.finish().unwrap();
+        assert_eq!(response.message.tool_calls[0].id, "call_1");
+        assert_eq!(
+            response.message.tool_calls[0].arguments["patch"],
+            "*** Begin Patch\n*** End Patch"
+        );
+        assert_eq!(response.usage.unwrap().reasoning_tokens, 1);
+    }
+
+    #[test]
+    fn responses_custom_tool_done_item_supplies_final_input() {
+        let mut acc = ResponseAccumulator::new();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.output_item.added","item":{"type":"custom_tool_call","id":"item_1","call_id":"call_1","name":"apply_patch","input":""}}"#,
+            &mut NoopObserver,
+        )
+        .unwrap();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.output_item.done","item":{"type":"custom_tool_call","id":"item_1","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}}"#,
+            &mut NoopObserver,
+        )
+        .unwrap();
+        acc.push_sse_data_observed(
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            &mut NoopObserver,
+        )
+        .unwrap();
+
+        let response = acc.finish().unwrap();
+        assert_eq!(
+            response.message.tool_calls[0].arguments["patch"],
+            "*** Begin Patch\n*** End Patch"
+        );
+    }
+
+    #[test]
+    fn responses_incomplete_emits_usage_and_length_terminal() {
+        #[derive(Default)]
+        struct Rec(Vec<ModelStreamEvent>);
+        impl DeltaObserver for Rec {
+            fn on_event(&mut self, event: ModelStreamEvent) {
+                self.0.push(event);
+            }
+        }
+
+        let mut acc = ResponseAccumulator::new();
+        let mut rec = Rec::default();
+        assert!(acc
+            .push_sse_data_observed(
+                r#"{"type":"response.incomplete","response":{"status":"incomplete","usage":{"input_tokens":4,"output_tokens":5,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":3},"total_tokens":9}}}"#,
+                &mut rec,
+            )
+            .unwrap());
+
+        assert!(rec.0.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::Usage { usage }
+                if usage.prompt_cache_hit_tokens == 2 && usage.reasoning_tokens == 3
+        )));
+        let response = acc.finish().unwrap();
+        assert_eq!(response.finish_reason, Some(FinishReason::Length));
+        assert_eq!(response.usage.unwrap().total_tokens, 9);
     }
 }
