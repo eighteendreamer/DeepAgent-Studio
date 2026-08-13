@@ -16,7 +16,7 @@ use async_trait::async_trait;
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::{Message, Role};
-use deepagent_core::response_item::ResponseOutputItem;
+use deepagent_core::response_item::{ResponseInputItem, ResponseOutputItem};
 use deepagent_models::chat::{FinishReason, ThinkingDepth};
 use deepagent_models::{
     classify_model_error, DeltaObserver, ModelClient, ModelFailureKind, ModelStreamEvent, Response,
@@ -212,6 +212,9 @@ pub struct ModelAgent {
     model: String,
     /// Running conversation, seeded with system + user messages.
     messages: Vec<Message>,
+    /// Provider-native Responses history used for every model request.
+    response_instructions: Option<String>,
+    response_items: Vec<ResponseInputItem>,
     /// Tool schemas advertised to the model each turn.
     tools: Vec<ToolSchema>,
     /// Most recent tool call id, used to correlate the next tool result.
@@ -316,6 +319,8 @@ impl ModelAgent {
             client,
             model: model.into(),
             messages: vec![Message::system(system), Message::user(goal)],
+            response_instructions: None,
+            response_items: Vec::new(),
             tools,
             pending_tool_call_id: None,
             events: None,
@@ -353,6 +358,36 @@ impl ModelAgent {
             tool_calls_made: 0,
             run_started_at: std::time::Instant::now(),
         }
+        .with_synced_response_history()
+    }
+
+    fn with_synced_response_history(mut self) -> Self {
+        self.sync_response_history_from_messages();
+        self
+    }
+
+    fn sync_response_history_from_messages(&mut self) {
+        let (instructions, items) = deepagent_models::response_items_from_messages(&self.messages);
+        self.response_instructions = instructions;
+        self.response_items = items;
+    }
+
+    fn push_message(&mut self, message: Message) {
+        self.messages.push(message);
+        self.sync_response_history_from_messages();
+    }
+
+    fn replace_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+        self.sync_response_history_from_messages();
+    }
+
+    fn request_for_current_history(&self) -> ResponseRequest {
+        ResponseRequest::from_response_items(
+            self.model.clone(),
+            self.response_instructions.clone(),
+            self.response_items.clone(),
+        )
     }
 
     /// Attach a live event sink so token/reasoning deltas stream out as
@@ -455,6 +490,7 @@ impl ModelAgent {
                 }
             }
         }
+        self.sync_response_history_from_messages();
         self
     }
 
@@ -469,6 +505,7 @@ impl ModelAgent {
             let goal = self.messages.pop().expect("seeded with system + goal");
             self.messages.extend(history);
             self.messages.push(goal);
+            self.sync_response_history_from_messages();
         }
         self
     }
@@ -555,13 +592,13 @@ impl ModelAgent {
         };
         let content = serde_json::to_string(&envelope).unwrap_or_else(|_| obs.output.to_string());
         if let Some(call_id) = call_id {
-            self.messages.push(Message::tool_result(call_id, content));
+            self.push_message(Message::tool_result(call_id, content));
         } else {
             // Verification, Stop-hook and CompletionGate feedback is generated
             // by the kernel, not by a model tool_use block. Sending it as a
             // tool role would create an orphan tool result rejected by strict
             // providers. Keep it structured but feed it back as a user turn.
-            self.messages.push(Message::user(content));
+            self.push_message(Message::user(content));
         }
         // History snip (Claude Code HISTORY_SNIP, query.ts L400-410): a
         // successful snip tool call removes the referenced earlier segments
@@ -660,7 +697,7 @@ impl ModelAgent {
     /// dependent estimates/counters, drop any prefire cache, and emit the
     /// `ContextCompacted` event under `strategy`.
     fn adopt_compaction(&mut self, compacted: ReactiveCompaction, strategy: &str) {
-        self.messages = compacted.messages;
+        self.replace_messages(compacted.messages);
         self.autocompact_consecutive_failures = 0;
         self.snip_tokens_freed_unreflected = 0;
         self.snip_nudge_baseline_tokens = None;
@@ -846,7 +883,7 @@ impl ModelAgent {
             block.push('\n');
         }
         block.push_str("</system-reminder>");
-        self.messages.push(Message::user(block));
+        self.push_message(Message::user(block));
 
         let count = fresh.len();
         let latency_ms = started_at
@@ -892,7 +929,7 @@ impl ModelAgent {
         // No upstream counterpart recoverable (snipCompact.ts::SNIP_NUDGE_TEXT
         // was not restored): wording self-written, kept advisory per the
         // "attachments are reference, not commands" baseline.
-        self.messages.push(Message::user(
+        self.push_message(Message::user(
             "<system-reminder>Context is growing. If earlier conversation segments are clearly \
              no longer needed for the remaining work, you may call the history-snip tool with \
              their [id:uN] tags to free context space. Only snip segments you are confident \
@@ -931,7 +968,7 @@ impl ModelAgent {
             repeats = self.recent_call_signatures.len(),
             "doom-loop: repeated identical tool call detected; injecting nudge"
         );
-        self.messages.push(Message::user(
+        self.push_message(Message::user(
             "<system-reminder>You have issued the same tool call with identical arguments \
              several times in a row with no new result — this is a stall (doom-loop). STOP \
              repeating it. Do NOT run the identical call again. Instead: (1) change the \
@@ -974,7 +1011,7 @@ impl ModelAgent {
             body.push_str(snapshot.rendered.trim());
         }
         body.push_str("</system-reminder>");
-        self.messages.push(Message::user(body));
+        self.push_message(Message::user(body));
         tracing::info!(
             turns_since_write = self.turns_since_todo_write,
             has_items = snapshot.has_items,
@@ -1054,7 +1091,7 @@ impl ModelAgent {
                 kept.push(message);
             }
         }
-        self.messages = kept;
+        self.replace_messages(kept);
         let tokens_after: u64 = self
             .messages
             .iter()
@@ -1314,7 +1351,8 @@ impl ModelAgent {
         self.maybe_inject_doom_loop_nudge();
         self.maybe_inject_todo_reminder();
 
-        let mut request = ResponseRequest::new(self.model.clone(), self.messages.clone())
+        let mut request = self
+            .request_for_current_history()
             .with_thinking_depth(self.thinking_depth)
             .with_tools(self.tools.clone());
         let message_count = self.messages.len();
@@ -1406,10 +1444,12 @@ impl ModelAgent {
                         let mut partial =
                             Message::text(Role::Assistant, response_projection.content.clone());
                         partial.reasoning_content = response_projection.reasoning_content.clone();
-                        self.messages.push(partial);
-                        self.messages
-                            .push(Message::user(MAX_OUTPUT_RECOVERY_PROMPT));
-                        request.replace_messages(&self.messages);
+                        self.push_message(partial);
+                        self.push_message(Message::user(MAX_OUTPUT_RECOVERY_PROMPT));
+                        request = self
+                            .request_for_current_history()
+                            .with_thinking_depth(self.thinking_depth)
+                            .with_tools(self.tools.clone());
                         max_output_recoveries += 1;
                         emit_attempt_reset(
                             self.events.as_ref(),
@@ -1447,8 +1487,11 @@ impl ModelAgent {
                                 .await
                             {
                                 Ok(Some(compacted)) => {
-                                    self.messages = compacted.messages;
-                                    request.replace_messages(&self.messages);
+                                    self.replace_messages(compacted.messages);
+                                    request = self
+                                        .request_for_current_history()
+                                        .with_thinking_depth(self.thinking_depth)
+                                        .with_tools(self.tools.clone());
                                     emit_attempt_reset(
                                         self.events.as_ref(),
                                         step,
@@ -1576,7 +1619,7 @@ impl ModelAgent {
         // Thinking Mode reasoning is preserved for both tool-call and final
         // turns so the outer session log can replay it after refresh.
         let assistant = response.assistant_message_projection();
-        self.messages.push(assistant);
+        self.push_message(assistant);
 
         // Decide the next action. The model may emit several tool calls in one
         // turn (parallel tool calling) — carry all of them, each tagged with its
@@ -1627,7 +1670,7 @@ impl ModelAgent {
                 // model turn (bounded by MAX_STALL_NUDGES_PER_RUN); everything
                 // else — including classifier failure — completes normally.
                 if let Some(nudge) = self.maybe_stall_nudge(step).await {
-                    self.messages.push(Message::user(nudge));
+                    self.push_message(Message::user(nudge));
                     return Box::pin(self.think_inner(step, &[], cancel, tools)).await;
                 }
                 Ok(AgentDecision::CompleteMessage(
@@ -2841,6 +2884,35 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&tool_msg.content).unwrap();
         assert_eq!(v["status"], "ok");
         assert_eq!(v["result"]["sum"], 3);
+    }
+
+    #[tokio::test]
+    async fn observation_feedback_enters_request_as_response_item() {
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([response_text_completed("sum is 3")])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "add", vec![]);
+        let obs = Observation {
+            tool: "add".to_string(),
+            ok: true,
+            output: serde_json::json!({"sum": 3}),
+            call_id: Some("c1".to_string()),
+        };
+
+        agent.think(1, &[obs]).await.unwrap();
+
+        let requests = transport.requests.lock().unwrap();
+        let input = requests[0]["input"].as_array().unwrap();
+        assert!(input.iter().any(|item| {
+            item["type"] == "function_call_output"
+                && item["call_id"] == "c1"
+                && item["output"].as_str().is_some_and(|text| text.contains("\"sum\":3"))
+        }));
     }
 
     #[tokio::test]
