@@ -206,6 +206,129 @@ const SNIP_PROTECTED_RECENT_MESSAGES: usize = 8;
 /// calls / outputs), grounded in Grok's `progress_signature` stall idea.
 const DOOM_LOOP_REPEAT_THRESHOLD: usize = 3;
 
+/// Provider-native Responses conversation state.
+///
+/// `ModelAgent` still keeps `messages` as a UI/compaction/stall transcript
+/// projection, but every provider request is built from this structure. This
+/// mirrors Codex's item-native Responses history model and prevents new tool
+/// turns from being re-derived through the old chat `Message.tool_calls`
+/// projection.
+#[derive(Debug, Clone, Default)]
+struct ResponseHistory {
+    instructions: Option<String>,
+    items: Vec<ResponseInputItem>,
+}
+
+impl ResponseHistory {
+    fn from_seed(system: String, goal: String) -> Self {
+        Self {
+            instructions: Some(system),
+            items: vec![ResponseInputItem::Message {
+                role: "user".to_string(),
+                content: goal,
+            }],
+        }
+    }
+
+    fn from_messages(messages: &[Message]) -> Self {
+        let (instructions, items) = deepagent_models::response_items_from_messages(messages);
+        Self {
+            instructions,
+            items,
+        }
+    }
+
+    fn request(&self, model: impl Into<String>) -> ResponseRequest {
+        ResponseRequest::from_response_items(model, self.instructions.clone(), self.items.clone())
+    }
+
+    fn replace_from_messages(&mut self, messages: &[Message]) {
+        *self = Self::from_messages(messages);
+    }
+
+    fn push_message_projection(&mut self, message: &Message) {
+        match message.role {
+            Role::System => {
+                self.instructions = Some(match self.instructions.take() {
+                    Some(existing) if !existing.is_empty() => {
+                        format!("{existing}\n\n{}", message.content)
+                    }
+                    _ => message.content.clone(),
+                });
+            }
+            Role::Tool => {
+                let call_id = message.tool_call_id.clone().unwrap_or_default();
+                self.push_tool_output(call_id, message.content.clone());
+            }
+            _ => {
+                if let Some(reasoning) = message
+                    .reasoning_content
+                    .as_deref()
+                    .filter(|text| !text.is_empty())
+                {
+                    self.items.push(ResponseInputItem::Reasoning {
+                        id: None,
+                        content: reasoning.to_string(),
+                    });
+                }
+                for call in &message.tool_calls {
+                    if call.name == "apply_patch" {
+                        self.items.push(ResponseInputItem::CustomToolCall {
+                            call_id: call.id.clone(),
+                            name: call.name.clone(),
+                            input: call
+                                .arguments
+                                .get("patch")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                        });
+                    } else {
+                        self.items.push(ResponseInputItem::FunctionCall {
+                            call_id: call.id.clone(),
+                            name: call.name.clone(),
+                            arguments: serde_json::to_string(&call.arguments)
+                                .unwrap_or_else(|_| "{}".to_string()),
+                        });
+                    }
+                }
+                if !message.content.is_empty() || message.tool_calls.is_empty() {
+                    self.items.push(ResponseInputItem::Message {
+                        role: message.role.as_str().to_string(),
+                        content: message.content.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn push_tool_output(&mut self, call_id: String, output: String) {
+        if self.is_custom_call(&call_id) {
+            self.items
+                .push(ResponseInputItem::CustomToolCallOutput { call_id, output });
+        } else {
+            self.items
+                .push(ResponseInputItem::FunctionCallOutput { call_id, output });
+        }
+    }
+
+    fn is_custom_call(&self, call_id: &str) -> bool {
+        self.items.iter().any(|item| {
+            matches!(
+                item,
+                ResponseInputItem::CustomToolCall {
+                    call_id: existing,
+                    ..
+                } if existing == call_id
+            )
+        })
+    }
+
+    fn extend_output_items(&mut self, items: &[ResponseOutputItem]) {
+        self.items.extend(items.iter().cloned());
+    }
+}
+
 /// An [`Agent`] that delegates decision-making to a model.
 pub struct ModelAgent {
     client: Arc<ModelClient>,
@@ -213,8 +336,7 @@ pub struct ModelAgent {
     /// Running conversation, seeded with system + user messages.
     messages: Vec<Message>,
     /// Provider-native Responses history used for every model request.
-    response_instructions: Option<String>,
-    response_items: Vec<ResponseInputItem>,
+    response_history: ResponseHistory,
     /// Tool schemas advertised to the model each turn.
     tools: Vec<ToolSchema>,
     /// Most recent tool call id, used to correlate the next tool result.
@@ -315,12 +437,13 @@ impl ModelAgent {
         goal: impl Into<String>,
         tools: Vec<ToolSchema>,
     ) -> Self {
+        let system = system.into();
+        let goal = goal.into();
         Self {
             client,
             model: model.into(),
-            messages: vec![Message::system(system), Message::user(goal)],
-            response_instructions: None,
-            response_items: Vec::new(),
+            messages: vec![Message::system(system.clone()), Message::user(goal.clone())],
+            response_history: ResponseHistory::from_seed(system, goal),
             tools,
             pending_tool_call_id: None,
             events: None,
@@ -358,48 +481,28 @@ impl ModelAgent {
             tool_calls_made: 0,
             run_started_at: std::time::Instant::now(),
         }
-        .with_synced_response_history()
-    }
-
-    fn with_synced_response_history(mut self) -> Self {
-        self.sync_response_history_from_messages();
-        self
-    }
-
-    fn sync_response_history_from_messages(&mut self) {
-        let (instructions, items) = deepagent_models::response_items_from_messages(&self.messages);
-        self.response_instructions = instructions;
-        self.response_items = items;
     }
 
     fn push_message(&mut self, message: Message) {
-        self.append_response_items_for_message(&message);
+        self.response_history.push_message_projection(&message);
         self.messages.push(message);
     }
 
     fn push_tool_observation(&mut self, call_id: String, tool_name: &str, content: String) {
-        let is_custom = tool_name == "apply_patch"
-            || self.response_items.iter().any(|item| {
-                matches!(
-                    item,
-                    ResponseInputItem::CustomToolCall {
-                        call_id: existing,
-                        ..
-                    } if existing == &call_id
-                )
-            });
-        if is_custom {
-            self.response_items
+        if tool_name == "apply_patch" && !self.response_history.is_custom_call(&call_id) {
+            tracing::warn!(
+                call_id = call_id.as_str(),
+                "apply_patch observation did not find a matching custom_tool_call; preserving call_id on custom output"
+            );
+            self.response_history
+                .items
                 .push(ResponseInputItem::CustomToolCallOutput {
                     call_id: call_id.clone(),
                     output: content.clone(),
                 });
         } else {
-            self.response_items
-                .push(ResponseInputItem::FunctionCallOutput {
-                    call_id: call_id.clone(),
-                    output: content.clone(),
-                });
+            self.response_history
+                .push_tool_output(call_id.clone(), content.clone());
         }
         // Keep the provider input item-native while maintaining the
         // compatibility projection used by UI rendering, compaction, and stall
@@ -410,96 +513,15 @@ impl ModelAgent {
 
     fn replace_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
-        self.sync_response_history_from_messages();
+        self.response_history.replace_from_messages(&self.messages);
     }
 
     fn request_for_current_history(&self) -> ResponseRequest {
-        ResponseRequest::from_response_items(
-            self.model.clone(),
-            self.response_instructions.clone(),
-            self.response_items.clone(),
-        )
-    }
-
-    fn append_response_items_for_message(&mut self, message: &Message) {
-        match message.role {
-            Role::System => {
-                self.response_instructions = Some(match self.response_instructions.take() {
-                    Some(existing) if !existing.is_empty() => {
-                        format!("{existing}\n\n{}", message.content)
-                    }
-                    _ => message.content.clone(),
-                });
-            }
-            Role::Tool => {
-                let call_id = message.tool_call_id.clone().unwrap_or_default();
-                let is_custom = self.response_items.iter().any(|item| {
-                    matches!(
-                        item,
-                        ResponseInputItem::CustomToolCall {
-                            call_id: existing,
-                            ..
-                        } if existing == &call_id
-                    )
-                });
-                if is_custom {
-                    self.response_items
-                        .push(ResponseInputItem::CustomToolCallOutput {
-                            call_id,
-                            output: message.content.clone(),
-                        });
-                } else {
-                    self.response_items
-                        .push(ResponseInputItem::FunctionCallOutput {
-                            call_id,
-                            output: message.content.clone(),
-                        });
-                }
-            }
-            _ => {
-                if let Some(reasoning) = message
-                    .reasoning_content
-                    .as_deref()
-                    .filter(|text| !text.is_empty())
-                {
-                    self.response_items.push(ResponseInputItem::Reasoning {
-                        id: None,
-                        content: reasoning.to_string(),
-                    });
-                }
-                for call in &message.tool_calls {
-                    if call.name == "apply_patch" {
-                        self.response_items.push(ResponseInputItem::CustomToolCall {
-                            call_id: call.id.clone(),
-                            name: call.name.clone(),
-                            input: call
-                                .arguments
-                                .get("patch")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                        });
-                    } else {
-                        self.response_items.push(ResponseInputItem::FunctionCall {
-                            call_id: call.id.clone(),
-                            name: call.name.clone(),
-                            arguments: serde_json::to_string(&call.arguments)
-                                .unwrap_or_else(|_| "{}".to_string()),
-                        });
-                    }
-                }
-                if !message.content.is_empty() || message.tool_calls.is_empty() {
-                    self.response_items.push(ResponseInputItem::Message {
-                        role: message.role.as_str().to_string(),
-                        content: message.content.clone(),
-                    });
-                }
-            }
-        }
+        self.response_history.request(self.model.clone())
     }
 
     fn push_provider_output_items(&mut self, assistant: Message, items: &[ResponseOutputItem]) {
-        self.response_items.extend(items.iter().cloned());
+        self.response_history.extend_output_items(items);
         self.messages.push(assistant);
     }
 
@@ -604,7 +626,7 @@ impl ModelAgent {
             }
         }
         let mut next_item_id = 0usize;
-        for item in &mut self.response_items {
+        for item in &mut self.response_history.items {
             let ResponseInputItem::Message { role, content } = item else {
                 continue;
             };
@@ -632,7 +654,7 @@ impl ModelAgent {
             let goal = self.messages.pop().expect("seeded with system + goal");
             self.messages.extend(history);
             self.messages.push(goal);
-            self.sync_response_history_from_messages();
+            self.response_history.replace_from_messages(&self.messages);
         }
         self
     }
@@ -660,10 +682,12 @@ impl ModelAgent {
             .filter(|message| message.role == Role::User)
             .cloned();
         let (instructions, _) = deepagent_models::response_items_from_messages(&system_messages);
-        self.response_instructions = instructions;
-        self.response_items = history;
+        self.response_history = ResponseHistory {
+            instructions,
+            items: history,
+        };
         if let Some(goal) = live_goal {
-            self.append_response_items_for_message(&goal);
+            self.response_history.push_message_projection(&goal);
         }
         self
     }
@@ -1605,8 +1629,8 @@ impl ModelAgent {
                         let mut partial =
                             Message::text(Role::Assistant, response_projection.content.clone());
                         partial.reasoning_content = response_projection.reasoning_content.clone();
-                        self.response_items
-                            .extend(response.output_items.iter().cloned());
+                        self.response_history
+                            .extend_output_items(&response.output_items);
                         self.messages.push(partial);
                         self.push_message(Message::user(MAX_OUTPUT_RECOVERY_PROMPT));
                         request = self
@@ -2199,6 +2223,33 @@ mod tests {
         }
         // System + user + assistant.
         assert_eq!(agent.conversation().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn initial_request_is_built_from_response_history_items() {
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([response_text_completed("done")])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "goal", vec![]);
+
+        let decision = agent.think(0, &[]).await.unwrap();
+
+        assert!(matches!(decision, AgentDecision::CompleteMessage(_)));
+        let requests = transport.requests.lock().unwrap();
+        let body = &requests[0];
+        assert_eq!(body["instructions"], "sys");
+        assert_eq!(body["input"][0]["type"], "message");
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"], "goal");
+        assert!(
+            body.get("messages").is_none(),
+            "provider request must not serialize Chat Completions messages"
+        );
     }
 
     #[tokio::test]
@@ -3131,7 +3182,7 @@ mod tests {
             call_id: Some("c1".to_string()),
         };
         agent.think(1, std::slice::from_ref(&obs)).await.unwrap();
-        assert!(agent.response_items.iter().any(|item| {
+        assert!(agent.response_history.items.iter().any(|item| {
             matches!(
                 item,
                 ResponseInputItem::FunctionCallOutput { call_id, output }
