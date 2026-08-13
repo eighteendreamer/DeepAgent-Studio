@@ -500,6 +500,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             },
             Err(error) => {
                 force_fail_active_task(session, task);
+                let raw_responses_usage = agent.take_pending_raw_usage();
                 if let Some(usage) = agent.cumulative_usage() {
                     let _ = session.append(deepagent_core::event::EventPayload::UsageRecorded {
                         prompt_tokens: usage.prompt_tokens,
@@ -509,7 +510,8 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                         prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
                         prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
                         duration_ms: 0,
-                        raw_responses_usage: None,
+                        raw_responses_usage: (!raw_responses_usage.is_empty())
+                            .then(|| serde_json::Value::Array(raw_responses_usage)),
                     });
                 }
                 KernelTerminal {
@@ -600,6 +602,32 @@ mod tests {
     struct OverBudgetAgent;
 
     struct ContextOverflowAgent;
+
+    struct ErrorAfterUsageAgent {
+        raw_usage: Vec<serde_json::Value>,
+    }
+
+    #[async_trait]
+    impl crate::agent::Agent for ErrorAfterUsageAgent {
+        async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            Err(CoreError::other("boom after provider usage"))
+        }
+
+        fn cumulative_usage(&self) -> Option<RunUsage> {
+            Some(RunUsage {
+                prompt_tokens: 4,
+                completion_tokens: 5,
+                reasoning_tokens: 3,
+                total_tokens: 9,
+                prompt_cache_hit_tokens: 2,
+                ..RunUsage::default()
+            })
+        }
+
+        fn take_pending_raw_usage(&mut self) -> Vec<serde_json::Value> {
+            std::mem::take(&mut self.raw_usage)
+        }
+    }
 
     #[async_trait]
     impl crate::agent::Agent for ContextOverflowAgent {
@@ -802,5 +830,51 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(record.terminal_kind.as_deref(), Some("context_exhausted"));
+    }
+
+    #[tokio::test]
+    async fn error_path_persists_raw_responses_usage() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("usage error")).unwrap();
+        let task = session.create_task("fail after usage").unwrap();
+        let registry = ToolRegistry::new();
+        let mut agent = ErrorAfterUsageAgent {
+            raw_usage: vec![serde_json::json!({
+                "input_tokens": 4,
+                "input_tokens_details": {"cached_tokens": 2},
+                "output_tokens": 5,
+                "output_tokens_details": {"reasoning_tokens": 3},
+                "total_tokens": 9
+            })],
+        };
+        let kernel = AgentKernel::<FixedClock>::new(
+            db.clone(),
+            &registry,
+            Metrics::new(),
+            RuntimeConfig::default(),
+            "run-usage-error",
+        );
+
+        let terminal = kernel
+            .start(RunRequest::new(&mut session, task, &mut agent))
+            .await
+            .unwrap();
+
+        assert_eq!(terminal.kind, TerminalKind::Failed);
+        let usage = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match event.payload {
+                deepagent_core::event::EventPayload::UsageRecorded {
+                    raw_responses_usage,
+                    ..
+                } => raw_responses_usage,
+                _ => None,
+            })
+            .expect("usage event should carry raw responses usage");
+        assert_eq!(usage[0]["input_tokens"], 4);
+        assert_eq!(usage[0]["output_tokens_details"]["reasoning_tokens"], 3);
     }
 }
