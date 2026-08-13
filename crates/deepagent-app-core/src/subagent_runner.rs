@@ -168,15 +168,15 @@ impl ChatSubagentRunner {
     /// unpersisted parent (ephemeral/test run) or a load failure yields an
     /// empty history, so a fork degrades gracefully to a fresh child rather
     /// than failing.
-    fn parent_conversation(&self) -> Vec<deepagent_core::message::Message> {
+    fn parent_response_history(&self) -> Vec<deepagent_models::ResponseInputItem> {
         let Ok(session_id) = self.parent_session_id() else {
             return Vec::new();
         };
         let store = deepagent_persistence::event_store::EventStore::new(&self.db);
         match store.load_session(session_id) {
-            Ok(events) => crate::input_runtime::conversation_from_events(&events),
+            Ok(events) => crate::input_runtime::response_items_from_events(&events),
             Err(error) => {
-                tracing::warn!(%error, "fork: failed to load parent conversation; starting fresh");
+                tracing::warn!(%error, "fork: failed to load parent Responses history; starting fresh");
                 Vec::new()
             }
         }
@@ -529,8 +529,8 @@ impl ChatSubagentRunner {
         // Fork inherits the parent's COMPLETE conversation (byte-similar prefix
         // so the child continues from the exact current state). Best-effort:
         // reconstruct from the parent session's event log.
-        let fork_history = if request.fork {
-            self.parent_conversation()
+        let fork_response_history = if request.fork {
+            self.parent_response_history()
         } else {
             Vec::new()
         };
@@ -547,7 +547,7 @@ impl ChatSubagentRunner {
             &request.prompt,
             tools,
         )
-        .with_history(fork_history)
+        .with_response_history(fork_response_history)
         .with_thinking_depth(subagent_thinking_depth(
             request.effort.as_deref(),
             self.thinking_depth,

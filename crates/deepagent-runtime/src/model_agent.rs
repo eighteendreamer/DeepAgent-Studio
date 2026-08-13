@@ -744,6 +744,10 @@ impl ModelAgent {
         if let Some(goal) = live_goal {
             self.response_history.push_message_projection(&goal);
         }
+        self.messages = deepagent_models::messages_from_response_items(
+            self.response_history.instructions.as_deref(),
+            &self.response_history.items,
+        );
         self
     }
 
@@ -2372,6 +2376,72 @@ mod tests {
                 && item["role"] == "assistant"
                 && item["content"] == "found it"
         }));
+    }
+
+    #[tokio::test]
+    async fn response_history_seed_updates_runtime_projection() {
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([response_text_completed("child done")])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let history = vec![
+            ResponseInputItem::Reasoning {
+                id: Some("r1".into()),
+                content: "parent reasoning".into(),
+            },
+            ResponseInputItem::FunctionCall {
+                call_id: "call-parent".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"src/lib.rs"}"#.into(),
+            },
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "call-parent".into(),
+                output: r#"{"status":"ok","result":"body"}"#.into(),
+            },
+            ResponseInputItem::Message {
+                role: "assistant".into(),
+                content: "parent answer".into(),
+            },
+        ];
+        let mut agent = ModelAgent::new(
+            client,
+            "deepseek-v4-flash",
+            "child sys",
+            "child goal",
+            vec![],
+        )
+        .with_response_history(history);
+
+        assert!(agent
+            .conversation()
+            .iter()
+            .any(|message| message.tool_call_id.as_deref() == Some("call-parent")));
+        assert!(agent.conversation().iter().any(|message| {
+            message.content == "parent answer"
+                && message.reasoning_content.as_deref() == Some("parent reasoning")
+        }));
+
+        let decision = agent.think(0, &[]).await.unwrap();
+
+        let _ = complete_items(decision);
+        let requests = transport.requests.lock().unwrap();
+        let input = requests[0]["input"].as_array().unwrap();
+        assert!(input
+            .iter()
+            .any(|item| item["type"] == "function_call" && item["call_id"] == "call-parent"));
+        assert!(
+            input
+                .iter()
+                .any(|item| item["type"] == "function_call_output"
+                    && item["call_id"] == "call-parent")
+        );
+        assert!(input
+            .iter()
+            .any(|item| item["type"] == "message" && item["content"] == "child goal"));
     }
 
     // --- §2.3 stall/laziness detector integration ---------------------------
