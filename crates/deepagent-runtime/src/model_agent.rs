@@ -27,8 +27,8 @@ use deepagent_tools::ToolInvocation;
 use crate::agent::{Agent, AgentDecision, Observation, ToolAttemptController};
 use crate::events::{RuntimeEvent, RuntimeEventSink};
 use crate::stall_detector::{
-    build_stall_nudge, evaluate_stall, render_stall_transcript, StallClassifier, StallDecision,
-    MAX_STALL_NUDGES_PER_RUN,
+    build_stall_nudge, evaluate_stall, render_stall_transcript_from_response_items,
+    StallClassifier, StallDecision, MAX_STALL_NUDGES_PER_RUN,
 };
 
 #[derive(Debug, Clone)]
@@ -1881,8 +1881,8 @@ impl ModelAgent {
         if self.stall_nudges_used >= MAX_STALL_NUDGES_PER_RUN {
             return None;
         }
-        let transcript = render_stall_transcript(
-            &self.messages,
+        let transcript = render_stall_transcript_from_response_items(
+            &self.response_history.items,
             self.tool_calls_made,
             Some(self.run_started_at.elapsed().as_secs()),
         );

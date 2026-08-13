@@ -44,7 +44,8 @@ use serde::Deserialize;
 
 use async_trait::async_trait;
 
-use deepagent_core::message::{Message, Role};
+use deepagent_core::message::Message;
+use deepagent_core::response_item::ResponseInputItem;
 
 /// Grok `LAZINESS_DEFAULT_MIN_CONFIDENCE`: verdicts below this confidence
 /// never nudge.
@@ -380,6 +381,24 @@ pub fn render_stall_transcript(
     tool_calls_made: usize,
     turn_elapsed_seconds: Option<u64>,
 ) -> String {
+    let (_, items) = deepagent_models::response_items_from_messages(messages);
+    render_stall_transcript_from_response_items(&items, tool_calls_made, turn_elapsed_seconds)
+}
+
+/// Flatten the provider-native Responses item tail into the classifier wire
+/// format (Grok transcript lines + the tamper-proof `[runtime_state]`
+/// header).
+///
+/// This is the runtime path. Tool-call evidence is rendered from
+/// `function_call` / `custom_tool_call` items and paired outputs from
+/// `function_call_output` / `custom_tool_call_output`, preserving Responses
+/// `call_id` correlation instead of reconstructing evidence from the legacy
+/// chat `Message.tool_calls` projection.
+pub fn render_stall_transcript_from_response_items(
+    items: &[ResponseInputItem],
+    tool_calls_made: usize,
+    turn_elapsed_seconds: Option<u64>,
+) -> String {
     let mut out = String::new();
     match turn_elapsed_seconds {
         Some(secs) => out.push_str(&format!(
@@ -389,34 +408,66 @@ pub fn render_stall_transcript(
             "[runtime_state] tool_calls_made={tool_calls_made}\n"
         )),
     }
-    let tail_start = messages.len().saturating_sub(TRANSCRIPT_TAIL_MESSAGES);
-    for message in &messages[tail_start..] {
-        match message.role {
-            Role::System => continue, // system prompt is not stall evidence
-            Role::User => {
+    let tail_start = items.len().saturating_sub(TRANSCRIPT_TAIL_MESSAGES);
+    for item in &items[tail_start..] {
+        match item {
+            ResponseInputItem::Message { role, content } if role == "user" => {
                 out.push_str("[user] ");
-                out.push_str(&truncate_snippet(&message.content));
+                out.push_str(&truncate_snippet(content));
                 out.push('\n');
             }
-            Role::Assistant => {
-                if !message.content.trim().is_empty() {
+            ResponseInputItem::Message { role, content } if role == "assistant" => {
+                if !content.trim().is_empty() {
                     out.push_str("[assistant] ");
-                    out.push_str(&truncate_snippet(&message.content));
+                    out.push_str(&truncate_snippet(content));
                     out.push('\n');
                 }
-                for call in &message.tool_calls {
-                    out.push_str(&format!(
-                        "[assistant tool_call] {}({})\n",
-                        call.name,
-                        truncate_snippet(&call.arguments.to_string())
-                    ));
-                }
             }
-            Role::Tool => {
-                out.push_str("[tool_result] ");
-                out.push_str(&truncate_snippet(&message.content));
-                out.push('\n');
+            ResponseInputItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => {
+                out.push_str(&format!(
+                    "[assistant tool_call] call_id={} {}({})\n",
+                    call_id,
+                    name,
+                    truncate_snippet(arguments)
+                ));
             }
+            ResponseInputItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+            } => {
+                out.push_str(&format!(
+                    "[assistant custom_tool_call] call_id={} {}({})\n",
+                    call_id,
+                    name,
+                    truncate_snippet(input)
+                ));
+            }
+            ResponseInputItem::FunctionCallOutput { call_id, output }
+            | ResponseInputItem::CustomToolCallOutput { call_id, output } => {
+                out.push_str(&format!(
+                    "[tool_result for {}] {}\n",
+                    call_id,
+                    truncate_snippet(output)
+                ));
+            }
+            ResponseInputItem::WebSearchCall { id, status, action } => {
+                let action = action
+                    .as_ref()
+                    .map(|value| value.to_string())
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "[assistant web_search_call] id={} status={} {}\n",
+                    id,
+                    status,
+                    truncate_snippet(&action)
+                ));
+            }
+            ResponseInputItem::Reasoning { .. } | ResponseInputItem::Message { .. } => {}
         }
     }
     out
@@ -519,12 +570,10 @@ mod tests {
 
     #[test]
     fn transcript_renders_runtime_state_and_tail() {
-        let mut assistant = Message::text(Role::Assistant, "I ran all the tests successfully.");
-        assistant.tool_calls = vec![];
         let messages = vec![
             Message::system("system prompt (must not appear)"),
             Message::user("run the tests"),
-            assistant,
+            Message::assistant("I ran all the tests successfully."),
         ];
         let transcript = render_stall_transcript(&messages, 0, Some(42));
         assert!(
@@ -533,6 +582,47 @@ mod tests {
         assert!(transcript.contains("[user] run the tests"));
         assert!(transcript.contains("[assistant] I ran all the tests successfully."));
         assert!(!transcript.contains("must not appear"));
+    }
+
+    #[test]
+    fn response_item_transcript_renders_tool_evidence_with_call_ids() {
+        let items = vec![
+            ResponseInputItem::Message {
+                role: "user".to_string(),
+                content: "edit the file".to_string(),
+            },
+            ResponseInputItem::FunctionCall {
+                call_id: "call_bash".to_string(),
+                name: "bash".to_string(),
+                arguments: r#"{"command":"cargo test"}"#.to_string(),
+            },
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "call_bash".to_string(),
+                output: r#"{"status":"ok"}"#.to_string(),
+            },
+            ResponseInputItem::CustomToolCall {
+                call_id: "call_patch".to_string(),
+                name: "apply_patch".to_string(),
+                input: "*** Begin Patch".to_string(),
+            },
+            ResponseInputItem::CustomToolCallOutput {
+                call_id: "call_patch".to_string(),
+                output: "patch applied".to_string(),
+            },
+            ResponseInputItem::WebSearchCall {
+                id: "ws_1".to_string(),
+                status: "completed".to_string(),
+                action: Some(serde_json::json!({"query":"rust"})),
+            },
+        ];
+
+        let transcript = render_stall_transcript_from_response_items(&items, 2, None);
+
+        assert!(transcript.contains("[assistant tool_call] call_id=call_bash bash("));
+        assert!(transcript.contains("[tool_result for call_bash]"));
+        assert!(transcript.contains("[assistant custom_tool_call] call_id=call_patch apply_patch("));
+        assert!(transcript.contains("[tool_result for call_patch]"));
+        assert!(transcript.contains("[assistant web_search_call] id=ws_1 status=completed"));
     }
 
     #[test]
