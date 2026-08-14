@@ -53,6 +53,15 @@ import { Panel } from "../ui/Panel";
 import { InputSurface } from "../ui/InputSurface";
 import { Slider } from "../ui/Slider";
 import { TintButton } from "../ui/TintButton";
+import { Input } from "../shadcn/input";
+import { Label } from "../shadcn/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../shadcn/select";
 
 // Sentinel "default model" option for the AI review model dropdown. Maps to
 // `null` on the backend (R10.4: "default = follow chat model").
@@ -830,55 +839,80 @@ function ResponsesSettingsPanel() {
               <div className="rounded-2xl bg-black/[0.025] p-4">
                 <div className="grid grid-cols-2 gap-3">
                   {numericFields.map(([key, label, min, max, step]) => (
-                    <label key={key} className="text-[12px] text-text-secondary">
-                      {t(`settings.config.responses.${label}`)}
-                      <input
+                    <div key={key} className="space-y-1">
+                      <Label htmlFor={`responses-${key}`}>
+                        {t(`settings.config.responses.${label}`)}
+                      </Label>
+                      <Input
+                        id={`responses-${key}`}
                         type="number"
                         min={min}
                         max={max}
                         step={step}
                         value={settings[key] ?? ""}
                         onChange={(e) => setNumber(key, e.target.value)}
-                        className="mt-1 w-full rounded-xl bg-ui-tint px-3 py-2 text-text-base outline-none"
+                        className="h-10 rounded-xl border-0 bg-ui-tint px-3 py-2 text-[13px] shadow-none focus:bg-ui-tint-strong focus:ring-2 focus:ring-primary/10"
                       />
-                    </label>
+                    </div>
                   ))}
-                  <label className="text-[12px] text-text-secondary">
-                    {t("settings.config.responses.reasoningEffort")}
-                    <select
-                      value={settings.reasoning_effort ?? ""}
-                      onChange={(e) =>
+                  <div className="space-y-1">
+                    <Label htmlFor="responses-reasoning-effort">
+                      {t("settings.config.responses.reasoningEffort")}
+                    </Label>
+                    <Select
+                      value={settings.reasoning_effort ?? "provider-default"}
+                      onValueChange={(value) =>
                         void persist({
                           ...settings,
-                          reasoning_effort: e.target.value || null,
+                          reasoning_effort: value === "provider-default" ? null : value,
                         })
                       }
-                      className="mt-1 w-full rounded-xl bg-ui-tint px-3 py-2 text-text-base outline-none"
                     >
-                      <option value="">{t("settings.config.responses.providerDefault")}</option>
-                      <option value="low">low</option>
-                      <option value="medium">medium</option>
-                      <option value="high">high</option>
-                      <option value="max">max</option>
-                    </select>
-                  </label>
-                  <label className="text-[12px] text-text-secondary">
-                    {t("settings.config.responses.textFormat")}
-                    <select
-                      value={(settings.text as { format?: { type?: string } } | null)?.format?.type ?? ""}
-                      onChange={(e) =>
+                      <SelectTrigger id="responses-reasoning-effort">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="provider-default">
+                          {t("settings.config.responses.providerDefault")}
+                        </SelectItem>
+                        <SelectItem value="low">low</SelectItem>
+                        <SelectItem value="medium">medium</SelectItem>
+                        <SelectItem value="high">high</SelectItem>
+                        <SelectItem value="max">max</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="responses-text-format">
+                      {t("settings.config.responses.textFormat")}
+                    </Label>
+                    <Select
+                      value={
+                        (settings.text as { format?: { type?: string } } | null)?.format?.type ??
+                        "provider-default"
+                      }
+                      onValueChange={(value) =>
                         void persist({
                           ...settings,
-                          text: e.target.value ? { format: { type: e.target.value } } : null,
+                          text:
+                            value === "provider-default"
+                              ? null
+                              : { format: { type: value } },
                         })
                       }
-                      className="mt-1 w-full rounded-xl bg-ui-tint px-3 py-2 text-text-base outline-none"
                     >
-                      <option value="">{t("settings.config.responses.providerDefault")}</option>
-                      <option value="text">text</option>
-                      <option value="json_object">json_object</option>
-                    </select>
-                  </label>
+                      <SelectTrigger id="responses-text-format">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="provider-default">
+                          {t("settings.config.responses.providerDefault")}
+                        </SelectItem>
+                        <SelectItem value="text">text</SelectItem>
+                        <SelectItem value="json_object">json_object</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </div>
             )}

@@ -33,6 +33,7 @@
 - 优先在现有架构内做最小、完整的修复。
 - 没有必要不要新增 command、DTO、UI、协议或额外抽象。
 - 修改跨层契约时，必须同步更新所有消费方，包括前端类型、command、事件和测试。
+- 所有涉及前端 UI 组件的改动，优先使用 `apps/desktop/src/components/shadcn/` 中与 `G:\Code_UZIP\ui` 或 `https://ui.shadcn.com/` 对齐的组件；不要在业务组件中直接使用原生或自己设计组件，除非文件上传等语义确实要求原生控件。
 - Rust 代码按 `rustfmt.toml` 统一格式（`max_width = 100`）。
 - Rust 命名用 `snake_case`，React 组件用 `CamelCase`。
 - 不要提交密钥、API Key、机器专属配置，也不要提交应脱敏的日志或提示词内容。
