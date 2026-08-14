@@ -126,7 +126,7 @@ function AttachmentPreviews({ block }: { block: Extract<ChatBlock, { kind: "user
               key={attachment.id}
               src={imageSrc}
               alt={attachment.name}
-              className="max-h-40 max-w-[240px] rounded-xl border border-border-theme object-contain shadow-sm"
+              className="max-h-20 max-w-[120px] rounded-xl border border-border-theme object-contain shadow-sm"
             />
           );
         }
