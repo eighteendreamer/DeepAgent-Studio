@@ -6,6 +6,7 @@ import type { PreviewResult } from "../../types";
 import { pickPreviewFile, previewOpenFile, previewReadDataUrl, sendToChat } from "../../api";
 import type { PluginDefinition } from "./pluginTypes";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import officePreset from "@file-viewer/preset-office";
 
 /** Human-readable size. */
 function formatSize(bytes: number): string {
@@ -229,6 +230,7 @@ function PreviewBody({
           console.log("FileViewer event:", event.type, event.payload);
         }}
         options={{
+          preset: officePreset,
           theme: "light",
           rendererMode: "replace",
           styleIsolation: "shadow",

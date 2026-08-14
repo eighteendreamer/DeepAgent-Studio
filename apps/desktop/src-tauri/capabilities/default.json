@@ -21,7 +21,6 @@
     "core:webview:allow-webview-show",
     "dialog:allow-open",
     "dialog:allow-save",
-    "fs:allow-read-file",
     "opener:default",
     "updater:default"
   ]
