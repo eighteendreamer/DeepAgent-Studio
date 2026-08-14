@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use deepagent_core::message::{Message, Role, ToolCall};
+use deepagent_core::message::Message;
 use deepagent_core::response_item::{ResponseInputItem, ResponseOutputItem};
 
 /// DeepSeek Thinking Mode depth exposed to users.
@@ -419,41 +419,6 @@ impl Response {
             }
         }
         reasoning
-    }
-
-    /// Build the UI/runtime compatibility projection from native Responses
-    /// output items.
-    pub fn assistant_message_projection(&self) -> Message {
-        let content = self.output_text_projection();
-        let reasoning = self.reasoning_text_projection();
-        let mut tool_calls = Vec::new();
-        for item in &self.output_items {
-            match item {
-                ResponseOutputItem::FunctionCall {
-                    call_id,
-                    name,
-                    arguments,
-                } => tool_calls.push(ToolCall {
-                    id: call_id.clone(),
-                    name: name.clone(),
-                    arguments: parse_function_arguments(arguments),
-                }),
-                ResponseOutputItem::CustomToolCall {
-                    call_id,
-                    name,
-                    input,
-                } => tool_calls.push(ToolCall {
-                    id: call_id.clone(),
-                    name: name.clone(),
-                    arguments: serde_json::json!({ "patch": input }),
-                }),
-                _ => {}
-            }
-        }
-        let mut message = Message::text(Role::Assistant, content);
-        message.reasoning_content = reasoning;
-        message.tool_calls = tool_calls;
-        message
     }
 
     /// Extract local tool invocations from native Responses output items.
