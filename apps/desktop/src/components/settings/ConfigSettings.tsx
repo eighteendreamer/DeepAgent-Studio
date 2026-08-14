@@ -49,7 +49,6 @@ import type {
 } from "../../types";
 import packageJson from "../../../package.json";
 import { message } from "../message";
-import { Panel } from "../ui/Panel";
 import { InputSurface } from "../ui/InputSurface";
 import { Slider } from "../ui/Slider";
 import { TintButton } from "../ui/TintButton";
@@ -781,15 +780,19 @@ function ResponsesSettingsPanel() {
   const advancedSummary = t("settings.config.responses.advancedDesc");
   const developerSummary = t("settings.config.responses.developerDesc");
   return (
-    <div className="mb-12 max-w-[980px]">
+    <div className="mb-12 max-w-[700px]">
       <div className="mb-4">
         <h2 className="mb-1 text-[15px] font-medium text-text-base">{t("settings.config.responses.title")}</h2>
         <div className="text-[12px] text-text-secondary">{t("settings.config.responses.desc")}</div>
       </div>
-      <Panel menu={false} className={loading ? "opacity-60" : ""}>
-        <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
-          <div className="space-y-4">
-            <div className="rounded-2xl bg-black/[0.025] p-4">
+      <div
+        className={`overflow-hidden rounded-xl border border-border-theme bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)] ${
+          loading ? "opacity-60" : ""
+        }`}
+      >
+        <div className="divide-y divide-border-theme">
+          <div className="min-w-0 divide-y divide-border-theme">
+            <div className="p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[14px] font-medium text-text-base">
@@ -824,7 +827,7 @@ function ResponsesSettingsPanel() {
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-border-theme bg-elevated-bg">
+            <div className="overflow-hidden bg-white">
               <ResponsesDisclosureRow
                 title={t("settings.config.responses.advanced")}
                 summary={advancedSummary}
@@ -833,7 +836,7 @@ function ResponsesSettingsPanel() {
                 onClick={() => setAdvancedOpen(!advancedOpen)}
               />
               {advancedOpen && (
-                <div className="border-t border-border-theme/70 bg-black/[0.015] px-4 pb-4 pt-3">
+                <div className="border-t border-border-theme bg-black/[0.02] px-4 pb-4 pt-3">
                   <div className="grid grid-cols-2 gap-3">
                     {numericFields.map(([key, label, min, max, step]) => (
                       <div key={key} className="space-y-1">
@@ -923,7 +926,7 @@ function ResponsesSettingsPanel() {
                 separated
               />
               {developerOpen && (
-                <div className="border-t border-border-theme/70 bg-black/[0.015] px-4 pb-4 pt-3">
+                <div className="border-t border-border-theme bg-black/[0.02] px-4 pb-4 pt-3">
                   <textarea
                     value={developerJson}
                     onChange={(e) => setDeveloperJson(e.target.value)}
@@ -958,63 +961,66 @@ function ResponsesSettingsPanel() {
             </div>
           </div>
 
-          <div className="xl:sticky xl:top-4">
-            <div className="rounded-2xl bg-black/[0.025] p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-[14px] font-medium text-text-base">
-                    {t("settings.config.responses.previewTitle")}
-                  </div>
-                  <div className="text-[12px] text-text-secondary">
-                    {t("settings.config.responses.previewDesc")}
-                  </div>
+          <div className="min-w-0 bg-white p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[14px] font-medium text-text-base">
+                  {t("settings.config.responses.previewTitle")}
                 </div>
-                <div className="rounded-full bg-ui-tint px-2 py-1 text-[11px] text-text-secondary">
-                  {t("settings.config.responses.previewReady")}
+                <div className="text-[12px] text-text-secondary">
+                  {t("settings.config.responses.previewDesc")}
                 </div>
               </div>
-
-              <div className="mt-4 space-y-2">
-                {preview.resolved.map((entry) => (
-                  <div key={entry.key} className="flex items-start justify-between gap-3 rounded-xl bg-ui-tint px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="text-[12px] font-medium text-text-base">{entry.key}</div>
-                      <div className="text-[11px] text-text-secondary">{entry.source}</div>
-                    </div>
-                    <div className="max-w-[55%] truncate text-right text-[12px] text-text-base">
-                      {formatPreviewValue(entry.value)}
-                    </div>
-                  </div>
-                ))}
+              <div className="rounded-md bg-ui-tint px-2 py-1 text-[11px] text-text-secondary">
+                {t("settings.config.responses.previewReady")}
               </div>
+            </div>
 
-              <div className="mt-4 rounded-2xl bg-elevated-bg p-4 shadow-[0_2px_12px_rgba(0,0,0,0.07)]">
+            <div className="mt-4 overflow-hidden rounded-xl border border-border-theme bg-white">
+              {preview.resolved.map((entry, index) => (
+                <div
+                  key={entry.key}
+                  className={`flex items-start justify-between gap-3 px-3 py-2.5 ${
+                    index === preview.resolved.length - 1 ? "" : "border-b border-border-theme"
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-medium text-text-base">{entry.key}</div>
+                    <div className="text-[11px] text-text-secondary">{entry.source}</div>
+                  </div>
+                  <div className="max-w-[55%] truncate text-right text-[12px] text-text-base">
+                    {formatPreviewValue(entry.value)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="min-w-0 bg-white p-4">
+            <div className="mb-2 text-[12px] font-medium text-text-base">
+              {t("settings.config.responses.requestTitle")}
+            </div>
+            <InputSurface className="overflow-hidden rounded-xl shadow-none ring-1 ring-border-theme">
+              <pre className="max-h-[360px] overflow-auto p-4 font-mono text-[11px] leading-relaxed text-text-base">
+                {JSON.stringify(preview.request, null, 2)}
+              </pre>
+            </InputSurface>
+
+            {Object.keys(settings.developer ?? {}).length > 0 && (
+              <div className="mt-4 border-t border-border-theme pt-4">
                 <div className="mb-2 text-[12px] font-medium text-text-base">
-                  {t("settings.config.responses.requestTitle")}
+                  {t("settings.config.responses.developer")}
                 </div>
-                <InputSurface className="overflow-hidden">
-                  <pre className="max-h-[360px] overflow-auto p-4 font-mono text-[11px] leading-relaxed text-text-base">
-                    {JSON.stringify(preview.request, null, 2)}
+                <InputSurface className="overflow-hidden rounded-xl shadow-none ring-1 ring-border-theme">
+                  <pre className="max-h-[220px] overflow-auto p-4 font-mono text-[11px] leading-relaxed text-text-base">
+                    {JSON.stringify(settings.developer, null, 2)}
                   </pre>
                 </InputSurface>
               </div>
-
-              {Object.keys(settings.developer ?? {}).length > 0 && (
-                <div className="mt-4 rounded-2xl bg-elevated-bg p-4 shadow-[0_2px_12px_rgba(0,0,0,0.07)]">
-                  <div className="mb-2 text-[12px] font-medium text-text-base">
-                    {t("settings.config.responses.developer")}
-                  </div>
-                  <InputSurface className="overflow-hidden">
-                    <pre className="max-h-[220px] overflow-auto p-4 font-mono text-[11px] leading-relaxed text-text-base">
-                      {JSON.stringify(settings.developer, null, 2)}
-                    </pre>
-                  </InputSurface>
-                </div>
-              )}
-            </div>
+            )}
           </div>
         </div>
-      </Panel>
+      </div>
     </div>
   );
 }
