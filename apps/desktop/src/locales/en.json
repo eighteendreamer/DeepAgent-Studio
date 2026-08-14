@@ -166,6 +166,24 @@
         "description": "DeepAgent Studio is more than a chat app: it is a verifiable, replayable Agent runtime platform with context engineering, tool execution, permissions, MCP extensions, and desktop workflows."
       },
       "stack": { "title": "Technology Stack" },
+      "copyright": {
+        "title": "Registration",
+        "heading": "Computer Software Copyright Registration Certificate",
+        "description": "DeepAgent-Studio Desktop Agent Development Platform has completed computer software copyright registration as a product credential for continued development and maintenance.",
+        "software": "DeepAgent-Studio Desktop Agent Development Platform",
+        "registration": "2026SR0824531",
+        "version": "V0.0.1",
+        "date": "August 11, 2026",
+        "previewCaption": "View certificate",
+        "dialogTitle": "Software Copyright Registration Certificate",
+        "imageAlt": "DeepAgent-Studio computer software copyright registration certificate",
+        "fields": {
+          "software": "Software",
+          "registration": "Registration No.",
+          "version": "Version",
+          "date": "Registration Date"
+        }
+      },
       "developer": {
         "title": "Developer",
         "name": "Eighteen",
