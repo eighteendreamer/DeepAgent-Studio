@@ -347,6 +347,10 @@ pub enum RuntimeEvent {
         /// Backend-computed RMB cost for the completed run, when available.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cost_yuan: Option<f64>,
+        /// Raw provider Responses usage object for this call, preserved as
+        /// returned by DeepSeek / OpenAI-compatible Responses endpoints.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_responses_usage: Option<serde_json::Value>,
     },
     /// The run finished.
     RunCompleted {

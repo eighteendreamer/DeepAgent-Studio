@@ -401,15 +401,13 @@ impl Response {
         content
     }
 
-    /// Build the UI/runtime compatibility projection from native Responses
-    /// output items.
-    pub fn assistant_message_projection(&self) -> Message {
-        let content = self.output_text_projection();
+    /// Project the assistant's reasoning text from native Responses output
+    /// items.
+    pub fn reasoning_text_projection(&self) -> Option<String> {
         let mut reasoning: Option<String> = None;
-        let mut tool_calls = Vec::new();
         for item in &self.output_items {
-            match item {
-                ResponseOutputItem::Reasoning { content: text, .. } if !text.is_empty() => {
+            if let ResponseOutputItem::Reasoning { content: text, .. } = item {
+                if !text.is_empty() {
                     reasoning = Some(match reasoning.take() {
                         Some(mut existing) => {
                             existing.push_str(text);
@@ -418,6 +416,19 @@ impl Response {
                         None => text.clone(),
                     });
                 }
+            }
+        }
+        reasoning
+    }
+
+    /// Build the UI/runtime compatibility projection from native Responses
+    /// output items.
+    pub fn assistant_message_projection(&self) -> Message {
+        let content = self.output_text_projection();
+        let reasoning = self.reasoning_text_projection();
+        let mut tool_calls = Vec::new();
+        for item in &self.output_items {
+            match item {
                 ResponseOutputItem::FunctionCall {
                     call_id,
                     name,

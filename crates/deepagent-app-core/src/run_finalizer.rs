@@ -138,6 +138,7 @@ impl AppRunFinalizer {
                     prompt_cache_hit_tokens: 0,
                     prompt_cache_miss_tokens: 0,
                     cost_yuan: Some(cny),
+                    raw_responses_usage: None,
                 });
             }
             Err(error) => tracing::warn!(error = %error, "failed to record run cost"),

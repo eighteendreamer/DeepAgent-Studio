@@ -1680,9 +1680,10 @@ impl ModelAgent {
                     // usable tool calls. Keep the partial output in the
                     // conversation and inject the resume prompt instead of
                     // failing the turn and discarding the partial work.
-                    let response_projection = response.assistant_message_projection();
+                    let response_text = response.output_text_projection();
+                    let response_reasoning = response.reasoning_text_projection();
                     if response.finish_reason == Some(FinishReason::Length)
-                        && response_projection.tool_calls.is_empty()
+                        && response.tool_invocations_from_items().is_empty()
                         && max_output_recoveries < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT
                     {
                         if let Some(tools) = tools.as_deref_mut() {
@@ -1699,9 +1700,8 @@ impl ModelAgent {
                         if let Some(raw_usage) = response.raw_usage.clone() {
                             self.pending_raw_usage.push(raw_usage);
                         }
-                        let mut partial =
-                            Message::text(Role::Assistant, response_projection.content.clone());
-                        partial.reasoning_content = response_projection.reasoning_content.clone();
+                        let mut partial = Message::text(Role::Assistant, response_text.clone());
+                        partial.reasoning_content = response_reasoning.clone();
                         self.response_history
                             .extend_output_items(&response.output_items);
                         self.messages.push(partial);
@@ -1871,6 +1871,7 @@ impl ModelAgent {
                     prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
                     prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
                     cost_yuan: None,
+                    raw_responses_usage: response.raw_usage.clone(),
                 });
             }
         }
@@ -1882,7 +1883,11 @@ impl ModelAgent {
         // Persist the assistant turn in the agent's running conversation.
         // Thinking Mode reasoning is preserved for both tool-call and final
         // turns so the outer session log can replay it after refresh.
-        let assistant = response.assistant_message_projection();
+        let assistant = {
+            let mut message = Message::text(Role::Assistant, response.output_text_projection());
+            message.reasoning_content = response.reasoning_text_projection();
+            message
+        };
         self.push_provider_output_items(assistant, &response.output_items);
 
         // Decide the next action. The model may emit several tool calls in one
@@ -1939,8 +1944,11 @@ impl ModelAgent {
                     self.push_message(Message::user(nudge));
                     return Box::pin(self.think_inner(step, &[], cancel, tools)).await;
                 }
+                let mut final_message =
+                    Message::text(Role::Assistant, response.output_text_projection());
+                final_message.reasoning_content = response.reasoning_text_projection();
                 Ok(AgentDecision::CompleteItems {
-                    message: response.assistant_message_projection(),
+                    message: final_message,
                     items: response.output_items.clone(),
                 })
             }

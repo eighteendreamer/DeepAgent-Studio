@@ -1,6 +1,6 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { getVersion } from "@tauri-apps/api/app";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   getSettings,
@@ -50,6 +50,7 @@ import type {
 import packageJson from "../../../package.json";
 import { message } from "../message";
 import { Panel } from "../ui/Panel";
+import { InputSurface } from "../ui/InputSurface";
 import { Slider } from "../ui/Slider";
 import { TintButton } from "../ui/TintButton";
 
@@ -59,6 +60,116 @@ const SKILL_REVIEW_MODEL_DEFAULT = "__default__";
 // Hard cap on the catalog reminder character budget input (R10.2 / task 21).
 const SKILL_CATALOG_BUDGET_MAX = 32000;
 const ANYSEARCH_DEFAULT_BASE_URL = "https://api.anysearch.com";
+const RESPONSE_SCENE_TEMPERATURES = {
+  code: 0.4,
+  email: 0.8,
+  analysis: 0.5,
+  creative: 1.5,
+} as const;
+
+function compactObject<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== null && v !== undefined));
+}
+
+function formatPreviewValue(value: unknown): string {
+  if (value === null || value === undefined) return "provider default";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value, null, 2);
+}
+
+function resolveResponsesPreview(settings: ResponsesApiSettings) {
+  const effectiveTemperature =
+    settings.developer.temperature ??
+    settings.temperature ??
+    (settings.scene ? RESPONSE_SCENE_TEMPERATURES[settings.scene] : null) ??
+    (settings.creativity !== null ? settings.creativity / 50 : null);
+  const temperatureSource = settings.developer.temperature != null
+    ? "developer JSON"
+    : settings.temperature !== null
+      ? "advanced panel"
+      : settings.scene !== null
+        ? "scene preset"
+        : settings.creativity !== null
+          ? "creativity slider"
+          : "provider default";
+  const effectiveTopP = settings.developer.top_p ?? settings.top_p;
+  const topPSource = settings.developer.top_p != null
+    ? "developer JSON"
+    : settings.top_p !== null
+      ? "advanced panel"
+      : "provider default";
+  const effectiveMaxOutputTokens = settings.developer.max_output_tokens ?? settings.max_output_tokens;
+  const maxOutputSource = settings.developer.max_output_tokens != null
+    ? "developer JSON"
+    : settings.max_output_tokens !== null
+      ? "advanced panel"
+      : "provider default";
+  const effectiveTopLogprobs = settings.developer.top_logprobs ?? settings.top_logprobs;
+  const topLogprobsSource = settings.developer.top_logprobs != null
+    ? "developer JSON"
+    : settings.top_logprobs !== null
+      ? "advanced panel"
+      : "provider default";
+  const effectiveReasoningEffort =
+    settings.developer.reasoning && typeof settings.developer.reasoning === "object"
+      ? (settings.developer.reasoning as { effort?: unknown }).effort
+      : undefined;
+  const reasoningSource = effectiveReasoningEffort !== undefined
+    ? "developer JSON"
+    : settings.reasoning_effort !== null
+      ? "advanced panel"
+      : "provider default";
+  const effectiveText = settings.developer.text ?? settings.text;
+  const textSource = settings.developer.text != null
+    ? "developer JSON"
+    : settings.text !== null
+      ? "advanced panel"
+      : "provider default";
+  const effectiveToolChoice = settings.developer.tool_choice ?? settings.tool_choice;
+  const toolChoiceSource = settings.developer.tool_choice != null
+    ? "developer JSON"
+    : settings.tool_choice !== null
+      ? "advanced panel"
+      : "provider default";
+  const effectiveUser = settings.developer.user ?? settings.user;
+  const userSource = settings.developer.user != null
+    ? "developer JSON"
+    : settings.user !== null
+      ? "advanced panel"
+      : "provider default";
+
+  const request = compactObject({
+    endpoint: "POST /responses",
+    model: "<runtime-selected>",
+    stream: true,
+    store: false,
+    input: ["<Responses input items from runtime>"],
+    instructions: "<system + project + agent instructions>",
+    temperature: effectiveTemperature,
+    top_p: effectiveTopP,
+    max_output_tokens: effectiveMaxOutputTokens,
+    top_logprobs: effectiveTopLogprobs,
+    reasoning: effectiveReasoningEffort !== undefined ? { effort: effectiveReasoningEffort } : undefined,
+    text: effectiveText,
+    tool_choice: effectiveToolChoice,
+    user: effectiveUser,
+  });
+
+  return {
+    request,
+    resolved: [
+      { key: "temperature", value: effectiveTemperature, source: temperatureSource },
+      { key: "top_p", value: effectiveTopP, source: topPSource },
+      { key: "max_output_tokens", value: effectiveMaxOutputTokens, source: maxOutputSource },
+      { key: "top_logprobs", value: effectiveTopLogprobs, source: topLogprobsSource },
+      { key: "reasoning.effort", value: effectiveReasoningEffort, source: reasoningSource },
+      { key: "text.format", value: effectiveText, source: textSource },
+      { key: "tool_choice", value: effectiveToolChoice, source: toolChoiceSource },
+      { key: "user", value: effectiveUser, source: userSource },
+    ],
+  };
+}
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
@@ -651,26 +762,234 @@ function ResponsesSettingsPanel() {
     value: String(value),
     label: String(value),
   }));
+  const preview = useMemo(() => resolveResponsesPreview(settings), [settings]);
   const numericFields = [
     ["temperature", "temperature", 0, 2, 0.1],
     ["top_p", "topP", 0, 1, 0.05],
     ["max_output_tokens", "maxOutputTokens", 1, 131072, 1],
     ["top_logprobs", "topLogprobs", 0, 20, 1],
   ] as const;
-  return <div className="mb-12 max-w-[700px]">
-    <div className="mb-4"><h2 className="text-[15px] font-medium text-text-base mb-1">{t("settings.config.responses.title")}</h2>
-      <div className="text-[12px] text-text-secondary">{t("settings.config.responses.desc")}</div></div>
-    <Panel menu={false} className={loading ? "opacity-60" : ""}>
-      <div className="m-1 rounded-lg bg-black/[0.025] p-4"><div className="flex justify-between"><div><div className="text-[14px] font-medium">{t("settings.config.responses.creativity")}</div><div className="text-[12px] text-text-secondary">{t("settings.config.responses.creativityDesc")}</div></div></div>
-        <div className="mt-3"><Slider stops={creativityStops} value={String(settings.creativity ?? 50)} onChange={(value) => void persist({...settings, creativity:Number(value), scene:null})} ariaLabel={t("settings.config.responses.creativity")} /></div>
-        <div className="mt-3 flex flex-wrap gap-2">{(["code","email","analysis","creative"] as const).map((id) => <TintButton key={id} type="button" onClick={() => applyScene(id)} className={settings.scene === id ? "bg-ui-tint-strong" : undefined}>{t(`settings.config.responses.scenes.${id}`)}</TintButton>)}</div>
+  return (
+    <div className="mb-12 max-w-[980px]">
+      <div className="mb-4">
+        <h2 className="mb-1 text-[15px] font-medium text-text-base">{t("settings.config.responses.title")}</h2>
+        <div className="text-[12px] text-text-secondary">{t("settings.config.responses.desc")}</div>
       </div>
-      <button type="button" onClick={() => setAdvancedOpen(!advancedOpen)} className="m-1 w-[calc(100%-0.5rem)] rounded-lg p-4 text-left hover:bg-black/5"><span className="text-[14px] font-medium">{t("settings.config.responses.advanced")} {advancedOpen ? "⌃" : "⌄"}</span><span className="ml-2 text-[12px] text-text-secondary">{t("settings.config.responses.advancedDesc")}</span></button>
-      {advancedOpen && <div className="mx-1 grid grid-cols-2 gap-3 rounded-lg bg-black/[0.025] p-4">{numericFields.map(([key,label,min,max,step]) => <label key={key} className="text-[12px] text-text-secondary">{t(`settings.config.responses.${label}`)}<input type="number" min={min} max={max} step={step} value={settings[key] ?? ""} onChange={(e) => setNumber(key,e.target.value)} className="mt-1 w-full rounded-md bg-ui-tint px-2 py-1.5 text-text-base" /></label>)}<label className="text-[12px] text-text-secondary">{t("settings.config.responses.reasoningEffort")}<select value={settings.reasoning_effort ?? ""} onChange={(e) => void persist({...settings, reasoning_effort:e.target.value || null})} className="mt-1 w-full rounded-md bg-ui-tint px-2 py-1.5 text-text-base"><option value="">{t("settings.config.responses.providerDefault")}</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="max">max</option></select></label><label className="text-[12px] text-text-secondary">{t("settings.config.responses.textFormat")}<select value={(settings.text as {format?:{type?:string}} | null)?.format?.type ?? ""} onChange={(e) => void persist({...settings, text:e.target.value ? {format:{type:e.target.value}} : null})} className="mt-1 w-full rounded-md bg-ui-tint px-2 py-1.5 text-text-base"><option value="">{t("settings.config.responses.providerDefault")}</option><option value="text">text</option><option value="json_object">json_object</option></select></label></div>}
-      <button type="button" onClick={() => setDeveloperOpen(!developerOpen)} className="m-1 w-[calc(100%-0.5rem)] rounded-lg p-4 text-left hover:bg-black/5"><span className="text-[14px] font-medium">{t("settings.config.responses.developer")} {developerOpen ? "⌃" : "⌄"}</span><span className="ml-2 text-[12px] text-text-secondary">{t("settings.config.responses.developerDesc")}</span></button>
-      {developerOpen && <div className="px-4 pb-4"><textarea value={developerJson} onChange={(e) => setDeveloperJson(e.target.value)} rows={8} spellCheck={false} className="w-full rounded-md bg-ui-tint p-3 font-mono text-[12px]" /><TintButton type="button" onClick={async () => { try { const view=await setResponsesDeveloperJson(developerJson); setSettings(view.responses); message.success(t("settings.config.responses.saved")); } catch(e) { message.error(t("settings.config.responses.saveFailed", { error: String(e) })); } }} className="mt-2">{t("settings.config.responses.validateSave")}</TintButton>{Object.keys(settings.ineffective ?? {}).length > 0 && <div className="mt-2 text-[12px] text-amber-600">{t("settings.config.responses.ineffective", { fields: Object.keys(settings.ineffective).join(", ") })}</div>}</div>}
-    </Panel>
-  </div>;
+      <Panel menu={false} className={loading ? "opacity-60" : ""}>
+        <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+          <div className="space-y-4">
+            <div className="rounded-2xl bg-black/[0.025] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[14px] font-medium text-text-base">
+                    {t("settings.config.responses.creativity")}
+                  </div>
+                  <div className="text-[12px] text-text-secondary">
+                    {t("settings.config.responses.creativityDesc")}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3">
+                <Slider
+                  stops={creativityStops}
+                  value={String(settings.creativity ?? 50)}
+                  onChange={(value) =>
+                    void persist({ ...settings, creativity: Number(value), scene: null })
+                  }
+                  ariaLabel={t("settings.config.responses.creativity")}
+                />
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(["code", "email", "analysis", "creative"] as const).map((id) => (
+                  <TintButton
+                    key={id}
+                    type="button"
+                    onClick={() => applyScene(id)}
+                    className={settings.scene === id ? "bg-ui-tint-strong" : undefined}
+                  >
+                    {t(`settings.config.responses.scenes.${id}`)}
+                  </TintButton>
+                ))}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen(!advancedOpen)}
+              className="w-full rounded-2xl bg-black/[0.025] p-4 text-left hover:bg-black/5"
+            >
+              <span className="text-[14px] font-medium text-text-base">
+                {t("settings.config.responses.advanced")} {advancedOpen ? "⌃" : "⌄"}
+              </span>
+              <span className="ml-2 text-[12px] text-text-secondary">
+                {t("settings.config.responses.advancedDesc")}
+              </span>
+            </button>
+
+            {advancedOpen && (
+              <div className="rounded-2xl bg-black/[0.025] p-4">
+                <div className="grid grid-cols-2 gap-3">
+                  {numericFields.map(([key, label, min, max, step]) => (
+                    <label key={key} className="text-[12px] text-text-secondary">
+                      {t(`settings.config.responses.${label}`)}
+                      <input
+                        type="number"
+                        min={min}
+                        max={max}
+                        step={step}
+                        value={settings[key] ?? ""}
+                        onChange={(e) => setNumber(key, e.target.value)}
+                        className="mt-1 w-full rounded-xl bg-ui-tint px-3 py-2 text-text-base outline-none"
+                      />
+                    </label>
+                  ))}
+                  <label className="text-[12px] text-text-secondary">
+                    {t("settings.config.responses.reasoningEffort")}
+                    <select
+                      value={settings.reasoning_effort ?? ""}
+                      onChange={(e) =>
+                        void persist({
+                          ...settings,
+                          reasoning_effort: e.target.value || null,
+                        })
+                      }
+                      className="mt-1 w-full rounded-xl bg-ui-tint px-3 py-2 text-text-base outline-none"
+                    >
+                      <option value="">{t("settings.config.responses.providerDefault")}</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                      <option value="max">max</option>
+                    </select>
+                  </label>
+                  <label className="text-[12px] text-text-secondary">
+                    {t("settings.config.responses.textFormat")}
+                    <select
+                      value={(settings.text as { format?: { type?: string } } | null)?.format?.type ?? ""}
+                      onChange={(e) =>
+                        void persist({
+                          ...settings,
+                          text: e.target.value ? { format: { type: e.target.value } } : null,
+                        })
+                      }
+                      className="mt-1 w-full rounded-xl bg-ui-tint px-3 py-2 text-text-base outline-none"
+                    >
+                      <option value="">{t("settings.config.responses.providerDefault")}</option>
+                      <option value="text">text</option>
+                      <option value="json_object">json_object</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setDeveloperOpen(!developerOpen)}
+              className="w-full rounded-2xl bg-black/[0.025] p-4 text-left hover:bg-black/5"
+            >
+              <span className="text-[14px] font-medium text-text-base">
+                {t("settings.config.responses.developer")} {developerOpen ? "⌃" : "⌄"}
+              </span>
+              <span className="ml-2 text-[12px] text-text-secondary">
+                {t("settings.config.responses.developerDesc")}
+              </span>
+            </button>
+
+            {developerOpen && (
+              <div className="rounded-2xl bg-black/[0.025] p-4">
+                <textarea
+                  value={developerJson}
+                  onChange={(e) => setDeveloperJson(e.target.value)}
+                  rows={10}
+                  spellCheck={false}
+                  className="w-full rounded-2xl bg-ui-tint p-3 font-mono text-[12px] text-text-base outline-none"
+                />
+                <TintButton
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const view = await setResponsesDeveloperJson(developerJson);
+                      setSettings(view.responses);
+                      message.success(t("settings.config.responses.saved"));
+                    } catch (e) {
+                      message.error(t("settings.config.responses.saveFailed", { error: String(e) }));
+                    }
+                  }}
+                  className="mt-3"
+                >
+                  {t("settings.config.responses.validateSave")}
+                </TintButton>
+                {Object.keys(settings.ineffective ?? {}).length > 0 && (
+                  <div className="mt-2 text-[12px] text-amber-600">
+                    {t("settings.config.responses.ineffective", {
+                      fields: Object.keys(settings.ineffective).join(", "),
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="xl:sticky xl:top-4">
+            <div className="rounded-2xl bg-black/[0.025] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[14px] font-medium text-text-base">
+                    {t("settings.config.responses.previewTitle")}
+                  </div>
+                  <div className="text-[12px] text-text-secondary">
+                    {t("settings.config.responses.previewDesc")}
+                  </div>
+                </div>
+                <div className="rounded-full bg-ui-tint px-2 py-1 text-[11px] text-text-secondary">
+                  {t("settings.config.responses.previewReady")}
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {preview.resolved.map((entry) => (
+                  <div key={entry.key} className="flex items-start justify-between gap-3 rounded-xl bg-ui-tint px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-medium text-text-base">{entry.key}</div>
+                      <div className="text-[11px] text-text-secondary">{entry.source}</div>
+                    </div>
+                    <div className="max-w-[55%] truncate text-right text-[12px] text-text-base">
+                      {formatPreviewValue(entry.value)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-2xl bg-elevated-bg p-4 shadow-[0_2px_12px_rgba(0,0,0,0.07)]">
+                <div className="mb-2 text-[12px] font-medium text-text-base">
+                  {t("settings.config.responses.requestTitle")}
+                </div>
+                <InputSurface className="overflow-hidden">
+                  <pre className="max-h-[360px] overflow-auto p-4 font-mono text-[11px] leading-relaxed text-text-base">
+                    {JSON.stringify(preview.request, null, 2)}
+                  </pre>
+                </InputSurface>
+              </div>
+
+              {Object.keys(settings.developer ?? {}).length > 0 && (
+                <div className="mt-4 rounded-2xl bg-elevated-bg p-4 shadow-[0_2px_12px_rgba(0,0,0,0.07)]">
+                  <div className="mb-2 text-[12px] font-medium text-text-base">
+                    {t("settings.config.responses.developer")}
+                  </div>
+                  <InputSurface className="overflow-hidden">
+                    <pre className="max-h-[220px] overflow-auto p-4 font-mono text-[11px] leading-relaxed text-text-base">
+                      {JSON.stringify(settings.developer, null, 2)}
+                    </pre>
+                  </InputSurface>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </Panel>
+    </div>
+  );
 }
 
 export function ConfigSettings() {
