@@ -467,6 +467,8 @@ export function App() {
     history: [] as { activeId: string | null; view: View }[],
     index: -1,
   });
+  // 聊天页外层 key 只在真实导航时切换，避免 pending 会话注册为真实 id 时整页重挂载。
+  const [chatFrameKey, setChatFrameKey] = useState("chat:initial");
 
   // Load projects + sessions + the active project on startup.
   useEffect(() => {
@@ -480,6 +482,9 @@ export function App() {
           const requestedMatch = s.find((session) => session.id === requested) ?? null;
           const initialId = requestedMatch?.id ?? s[0].id;
           setActiveId(initialId);
+          if (requestedMatch) {
+            setChatFrameKey(`chat:${initialId}`);
+          }
           setNavState({
             history: [{ activeId: initialId, view: requestedMatch ? "chat" : "start" }],
             index: 0,
@@ -607,6 +612,9 @@ export function App() {
       activeIdRef.current = newActiveId;
       setActiveId(newActiveId);
       setView(newView);
+      if (newView === "chat") {
+        setChatFrameKey(`chat:${newActiveId ?? "pending"}`);
+      }
       setMessages([]);
       activePendingRunKeyRef.current = null;
       setActivePendingRunKey(null);
@@ -628,6 +636,9 @@ export function App() {
           activeIdRef.current = item.activeId;
           setActiveId(item.activeId);
           setView(item.view);
+          if (item.view === "chat") {
+            setChatFrameKey(`chat:${item.activeId ?? "pending"}`);
+          }
           setMessages([]);
           return { ...prev, index: prev.index - 1 };
         }
@@ -652,6 +663,9 @@ export function App() {
           activeIdRef.current = item.activeId;
           setActiveId(item.activeId);
           setView(item.view);
+          if (item.view === "chat") {
+            setChatFrameKey(`chat:${item.activeId ?? "pending"}`);
+          }
           setMessages([]);
           return { ...prev, index: prev.index + 1 };
         }
@@ -992,6 +1006,7 @@ export function App() {
       } else {
         activePendingRunKeyRef.current = pendingKey;
         setActivePendingRunKey(pendingKey);
+        setChatFrameKey(`chat:${pendingKey}`);
       }
 
       // Seed the transcript: continuations append to the existing one; a fresh
@@ -1931,7 +1946,7 @@ export function App() {
   );
   const viewFrameKey =
     view === "chat"
-      ? `chat:${activeId ?? activePendingRunKey ?? "pending"}`
+      ? chatFrameKey
       : view === "settings"
         ? `settings:${activeSettingsCategory}`
         : view;
