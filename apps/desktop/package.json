@@ -10,7 +10,6 @@
     "prebundle-skills": "node scripts/prebundle-skills.cjs",
     "build": "npm run prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
-    "pretauri": "file-viewer-copy-assets ./public/file-viewer",
     "tauri": "tauri",
     "review": "ocr"
   },
