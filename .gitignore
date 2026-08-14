@@ -82,4 +82,5 @@ choice-preview-*.html
 temp_*.mp4
 video_frames*/
 assets/
+/apps/desktop/public/file-viewer/
 deepseek-harness/

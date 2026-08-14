@@ -5,10 +5,12 @@
   "type": "module",
   "description": "DeepAgent Studio desktop UI (Codex-style) built on Tauri v2 + React.",
   "scripts": {
+    "predev": "file-viewer-copy-assets ./public/file-viewer",
     "dev": "vite",
     "prebundle-skills": "node scripts/prebundle-skills.cjs",
     "build": "npm run prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
+    "pretauri": "file-viewer-copy-assets ./public/file-viewer",
     "tauri": "tauri",
     "review": "ocr"
   },
