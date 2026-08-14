@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { PreviewResult } from "../../types";
 import { pickPreviewFile, previewOpenFile, previewReadDataUrl, sendToChat } from "../../api";
 import type { PluginDefinition } from "./pluginTypes";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 /** Human-readable size. */
 function formatSize(bytes: number): string {
@@ -58,12 +59,28 @@ export function FilePreviewPlugin() {
       setPreview(result);
       setFileName(result.metadata.name);
 
-      // 2. 使用后端 API 读取文件为 base64 data URL，然后转换为 Blob
-      const dataUrl = await previewReadDataUrl(path);
+      // 2. 读取文件二进制数据
+      let blob: Blob;
       
-      // 将 data URL 转换为 Blob
-      const response = await fetch(dataUrl);
-      const blob = await response.blob();
+      // 对于图片文件，优先使用 previewReadDataUrl（支持更多格式）
+      if (result.metadata.kind === "image") {
+        try {
+          const dataUrl = await previewReadDataUrl(path);
+          const response = await fetch(dataUrl);
+          blob = await response.blob();
+        } catch (imgError) {
+          // 如果失败，降级到使用 asset 协议
+          const assetUrl = convertFileSrc(path);
+          const response = await fetch(assetUrl);
+          blob = await response.blob();
+        }
+      } else {
+        // 对于非图片文件，使用 Tauri asset 协议读取
+        const assetUrl = convertFileSrc(path);
+        const response = await fetch(assetUrl);
+        blob = await response.blob();
+      }
+      
       setFileBlob(blob);
     } catch (e) {
       setError(String(e));
