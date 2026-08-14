@@ -3,9 +3,8 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
 import type { PreviewResult } from "../../types";
-import { pickPreviewFile, previewOpenFile, sendToChat } from "../../api";
+import { pickPreviewFile, previewOpenFile, previewReadDataUrl, sendToChat } from "../../api";
 import type { PluginDefinition } from "./pluginTypes";
-import { convertFileSrc } from "@tauri-apps/api/core";
 
 /** Human-readable size. */
 function formatSize(bytes: number): string {
@@ -59,12 +58,11 @@ export function FilePreviewPlugin() {
       setPreview(result);
       setFileName(result.metadata.name);
 
-      // 2. 将文件路径转换为 Tauri asset URL，然后 fetch 为 Blob
-      const assetUrl = convertFileSrc(path);
-      const response = await fetch(assetUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to load file: ${response.statusText}`);
-      }
+      // 2. 使用后端 API 读取文件为 base64 data URL，然后转换为 Blob
+      const dataUrl = await previewReadDataUrl(path);
+      
+      // 将 data URL 转换为 Blob
+      const response = await fetch(dataUrl);
       const blob = await response.blob();
       setFileBlob(blob);
     } catch (e) {
