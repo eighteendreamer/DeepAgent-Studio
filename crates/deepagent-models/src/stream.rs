@@ -776,10 +776,7 @@ mod tests {
         complete(&mut acc);
         let resp = acc.finish().unwrap();
         assert_eq!(resp.output_text_projection(), "Hello, world");
-        assert!(resp
-            .assistant_message_projection()
-            .reasoning_content
-            .is_none());
+        assert!(resp.reasoning_text_projection().is_none());
     }
 
     #[test]
@@ -819,9 +816,7 @@ mod tests {
         complete(&mut acc);
         let resp = acc.finish().unwrap();
         assert_eq!(
-            resp.assistant_message_projection()
-                .reasoning_content
-                .as_deref(),
+            resp.reasoning_text_projection().as_deref(),
             Some("Let me think... the answer is 4.")
         );
         assert_eq!(resp.output_text_projection(), "4");

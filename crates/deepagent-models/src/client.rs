@@ -252,9 +252,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.output_text_projection(), "Hello there");
         assert_eq!(
-            resp.assistant_message_projection()
-                .reasoning_content
-                .as_deref(),
+            resp.reasoning_text_projection().as_deref(),
             Some("thinking hard")
         );
     }
