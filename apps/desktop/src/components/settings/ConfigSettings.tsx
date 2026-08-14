@@ -778,6 +778,8 @@ function ResponsesSettingsPanel() {
     ["max_output_tokens", "maxOutputTokens", 1, 131072, 1],
     ["top_logprobs", "topLogprobs", 0, 20, 1],
   ] as const;
+  const advancedSummary = t("settings.config.responses.advancedDesc");
+  const developerSummary = t("settings.config.responses.developerDesc");
   return (
     <div className="mb-12 max-w-[980px]">
       <div className="mb-4">
@@ -822,147 +824,138 @@ function ResponsesSettingsPanel() {
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen(!advancedOpen)}
-              className="w-full rounded-2xl bg-black/[0.025] p-4 text-left hover:bg-black/5"
-            >
-              <span className="text-[14px] font-medium text-text-base">
-                {t("settings.config.responses.advanced")} {advancedOpen ? "⌃" : "⌄"}
-              </span>
-              <span className="ml-2 text-[12px] text-text-secondary">
-                {t("settings.config.responses.advancedDesc")}
-              </span>
-            </button>
-
-            {advancedOpen && (
-              <div className="rounded-2xl bg-black/[0.025] p-4">
-                <div className="grid grid-cols-2 gap-3">
-                  {numericFields.map(([key, label, min, max, step]) => (
-                    <div key={key} className="space-y-1">
-                      <Label htmlFor={`responses-${key}`}>
-                        {t(`settings.config.responses.${label}`)}
+            <div className="overflow-hidden rounded-xl border border-border-theme bg-elevated-bg">
+              <ResponsesDisclosureRow
+                title={t("settings.config.responses.advanced")}
+                summary={advancedSummary}
+                meta={t("settings.config.responses.advancedMeta")}
+                open={advancedOpen}
+                onClick={() => setAdvancedOpen(!advancedOpen)}
+              />
+              {advancedOpen && (
+                <div className="border-t border-border-theme/70 bg-black/[0.015] px-4 pb-4 pt-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    {numericFields.map(([key, label, min, max, step]) => (
+                      <div key={key} className="space-y-1">
+                        <Label htmlFor={`responses-${key}`}>
+                          {t(`settings.config.responses.${label}`)}
+                        </Label>
+                        <Input
+                          id={`responses-${key}`}
+                          type="number"
+                          min={min}
+                          max={max}
+                          step={step}
+                          value={settings[key] ?? ""}
+                          onChange={(e) => setNumber(key, e.target.value)}
+                          className="h-10 rounded-xl border-0 bg-ui-tint px-3 py-2 text-[13px] shadow-none focus:bg-ui-tint-strong focus:ring-2 focus:ring-primary/10"
+                        />
+                      </div>
+                    ))}
+                    <div className="space-y-1">
+                      <Label htmlFor="responses-reasoning-effort">
+                        {t("settings.config.responses.reasoningEffort")}
                       </Label>
-                      <Input
-                        id={`responses-${key}`}
-                        type="number"
-                        min={min}
-                        max={max}
-                        step={step}
-                        value={settings[key] ?? ""}
-                        onChange={(e) => setNumber(key, e.target.value)}
-                        className="h-10 rounded-xl border-0 bg-ui-tint px-3 py-2 text-[13px] shadow-none focus:bg-ui-tint-strong focus:ring-2 focus:ring-primary/10"
-                      />
+                      <Select
+                        value={settings.reasoning_effort ?? "provider-default"}
+                        onValueChange={(value) =>
+                          void persist({
+                            ...settings,
+                            reasoning_effort: value === "provider-default" ? null : value,
+                          })
+                        }
+                      >
+                        <SelectTrigger id="responses-reasoning-effort">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="provider-default">
+                            {t("settings.config.responses.providerDefault")}
+                          </SelectItem>
+                          <SelectItem value="low">low</SelectItem>
+                          <SelectItem value="medium">medium</SelectItem>
+                          <SelectItem value="high">high</SelectItem>
+                          <SelectItem value="max">max</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </div>
-                  ))}
-                  <div className="space-y-1">
-                    <Label htmlFor="responses-reasoning-effort">
-                      {t("settings.config.responses.reasoningEffort")}
-                    </Label>
-                    <Select
-                      value={settings.reasoning_effort ?? "provider-default"}
-                      onValueChange={(value) =>
-                        void persist({
-                          ...settings,
-                          reasoning_effort: value === "provider-default" ? null : value,
-                        })
-                      }
-                    >
-                      <SelectTrigger id="responses-reasoning-effort">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="provider-default">
-                          {t("settings.config.responses.providerDefault")}
-                        </SelectItem>
-                        <SelectItem value="low">low</SelectItem>
-                        <SelectItem value="medium">medium</SelectItem>
-                        <SelectItem value="high">high</SelectItem>
-                        <SelectItem value="max">max</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="responses-text-format">
-                      {t("settings.config.responses.textFormat")}
-                    </Label>
-                    <Select
-                      value={
-                        (settings.text as { format?: { type?: string } } | null)?.format?.type ??
-                        "provider-default"
-                      }
-                      onValueChange={(value) =>
-                        void persist({
-                          ...settings,
-                          text:
-                            value === "provider-default"
-                              ? null
-                              : { format: { type: value } },
-                        })
-                      }
-                    >
-                      <SelectTrigger id="responses-text-format">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="provider-default">
-                          {t("settings.config.responses.providerDefault")}
-                        </SelectItem>
-                        <SelectItem value="text">text</SelectItem>
-                        <SelectItem value="json_object">json_object</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div className="space-y-1">
+                      <Label htmlFor="responses-text-format">
+                        {t("settings.config.responses.textFormat")}
+                      </Label>
+                      <Select
+                        value={
+                          (settings.text as { format?: { type?: string } } | null)?.format?.type ??
+                          "provider-default"
+                        }
+                        onValueChange={(value) =>
+                          void persist({
+                            ...settings,
+                            text:
+                              value === "provider-default"
+                                ? null
+                                : { format: { type: value } },
+                          })
+                        }
+                      >
+                        <SelectTrigger id="responses-text-format">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="provider-default">
+                            {t("settings.config.responses.providerDefault")}
+                          </SelectItem>
+                          <SelectItem value="text">text</SelectItem>
+                          <SelectItem value="json_object">json_object</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            <button
-              type="button"
-              onClick={() => setDeveloperOpen(!developerOpen)}
-              className="w-full rounded-2xl bg-black/[0.025] p-4 text-left hover:bg-black/5"
-            >
-              <span className="text-[14px] font-medium text-text-base">
-                {t("settings.config.responses.developer")} {developerOpen ? "⌃" : "⌄"}
-              </span>
-              <span className="ml-2 text-[12px] text-text-secondary">
-                {t("settings.config.responses.developerDesc")}
-              </span>
-            </button>
-
-            {developerOpen && (
-              <div className="rounded-2xl bg-black/[0.025] p-4">
-                <textarea
-                  value={developerJson}
-                  onChange={(e) => setDeveloperJson(e.target.value)}
-                  rows={10}
-                  spellCheck={false}
-                  className="w-full rounded-2xl bg-ui-tint p-3 font-mono text-[12px] text-text-base outline-none"
-                />
-                <TintButton
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      const view = await setResponsesDeveloperJson(developerJson);
-                      setSettings(view.responses);
-                      message.success(t("settings.config.responses.saved"));
-                    } catch (e) {
-                      message.error(t("settings.config.responses.saveFailed", { error: String(e) }));
-                    }
-                  }}
-                  className="mt-3"
-                >
-                  {t("settings.config.responses.validateSave")}
-                </TintButton>
-                {Object.keys(settings.ineffective ?? {}).length > 0 && (
-                  <div className="mt-2 text-[12px] text-amber-600">
-                    {t("settings.config.responses.ineffective", {
-                      fields: Object.keys(settings.ineffective).join(", "),
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
+              <ResponsesDisclosureRow
+                title={t("settings.config.responses.developer")}
+                summary={developerSummary}
+                meta={t("settings.config.responses.developerMeta")}
+                open={developerOpen}
+                onClick={() => setDeveloperOpen(!developerOpen)}
+                separated
+              />
+              {developerOpen && (
+                <div className="border-t border-border-theme/70 bg-black/[0.015] px-4 pb-4 pt-3">
+                  <textarea
+                    value={developerJson}
+                    onChange={(e) => setDeveloperJson(e.target.value)}
+                    rows={10}
+                    spellCheck={false}
+                    className="w-full rounded-xl bg-ui-tint p-3 font-mono text-[12px] text-text-base outline-none focus:bg-ui-tint-strong focus:ring-2 focus:ring-primary/10"
+                  />
+                  <TintButton
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const view = await setResponsesDeveloperJson(developerJson);
+                        setSettings(view.responses);
+                        message.success(t("settings.config.responses.saved"));
+                      } catch (e) {
+                        message.error(t("settings.config.responses.saveFailed", { error: String(e) }));
+                      }
+                    }}
+                    className="mt-3"
+                  >
+                    {t("settings.config.responses.validateSave")}
+                  </TintButton>
+                  {Object.keys(settings.ineffective ?? {}).length > 0 && (
+                    <div className="mt-2 text-[12px] text-amber-600">
+                      {t("settings.config.responses.ineffective", {
+                        fields: Object.keys(settings.ineffective).join(", "),
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="xl:sticky xl:top-4">
@@ -1023,6 +1016,53 @@ function ResponsesSettingsPanel() {
         </div>
       </Panel>
     </div>
+  );
+}
+
+function ResponsesDisclosureRow({
+  title,
+  summary,
+  meta,
+  open,
+  onClick,
+  separated = false,
+}: {
+  title: string;
+  summary: string;
+  meta: string;
+  open: boolean;
+  onClick: () => void;
+  separated?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      onClick={onClick}
+      className={`group flex w-full items-center justify-between gap-4 px-4 py-3.5 text-left transition-colors duration-150 ${
+        separated ? "border-t border-border-theme/70" : ""
+      } ${
+        open ? "bg-ui-tint" : "bg-elevated-bg hover:bg-ui-tint"
+      }`}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-[14px] font-medium text-text-base">{title}</span>
+        <span className="mt-1 block max-w-[430px] text-[12px] leading-relaxed text-text-secondary">
+          {summary}
+        </span>
+      </span>
+      <span className="flex shrink-0 items-center gap-2">
+        <span className="rounded-md bg-ui-tint px-2 py-1 text-[11px] font-medium text-text-secondary transition-colors duration-150 group-hover:bg-ui-tint-strong">
+          {meta}
+        </span>
+        <span className="flex h-7 w-7 items-center justify-center rounded-lg text-text-secondary transition-colors duration-150 group-hover:bg-ui-tint-strong group-hover:text-text-base">
+          <FontAwesomeIcon
+            icon={["fas", "chevron-down"]}
+            className={`text-[10px] transition-transform duration-150 ${open ? "rotate-180" : ""}`}
+          />
+        </span>
+      </span>
+    </button>
   );
 }
 
