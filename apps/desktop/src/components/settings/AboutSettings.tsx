@@ -244,7 +244,7 @@ function CopyrightCertificateSection() {
               </figcaption>
             </figure>
           </DialogTrigger>
-          <DialogContent className="max-w-[860px]">
+          <DialogContent className="w-fit max-w-[calc(100vw-2rem)]">
             <DialogHeader>
               <div>
                 <DialogTitle>{t("settings.about.copyright.dialogTitle")}</DialogTitle>
@@ -254,11 +254,11 @@ function CopyrightCertificateSection() {
                 <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[14px]" />
               </DialogCloseIcon>
             </DialogHeader>
-            <div className="min-h-0 overflow-auto bg-sidebar-bg px-6 py-6">
+            <div className="min-h-0 overflow-auto bg-sidebar-bg px-4 py-4">
               <img
                 src={COPYRIGHT_CERTIFICATE_SRC}
                 alt={t("settings.about.copyright.imageAlt")}
-                className="mx-auto block max-h-[72vh] w-auto max-w-full rounded-md border border-border-theme bg-white shadow-sm"
+                className="block max-h-[72vh] w-auto max-w-[calc(100vw-4rem)] rounded-md border border-border-theme bg-white shadow-sm sm:max-w-[520px]"
               />
             </div>
           </DialogContent>
