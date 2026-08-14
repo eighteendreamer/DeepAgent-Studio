@@ -424,16 +424,9 @@ export function SkillsView() {
             <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">
               {t("skillsView.triggerPhrases", { count: selected.triggers.length })}
             </div>
-            <div className="flex flex-wrap gap-1.5 mb-5">
-              {selected.triggers.map((tp) => (
-                <span
-                  key={tp}
-                  className="text-[11px] bg-white border border-border-theme rounded-full px-2 py-0.5 text-text-secondary"
-                >
-                  {tp}
-                </span>
-              ))}
-            </div>
+            <pre className="mb-5 text-[12px] text-text-base whitespace-pre-wrap font-mono leading-relaxed bg-white border border-border-theme rounded-lg p-3">
+              {selected.triggers.join("\n")}
+            </pre>
             <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">
               {t("skillsView.body")}
             </div>
