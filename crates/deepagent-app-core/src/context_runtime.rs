@@ -773,6 +773,7 @@ const REINJECTION_WRITE_TOOLS: &[&str] = &[
 /// Build the post-compaction re-injection block from the zone being
 /// summarized: modified files, failed tool checks, and invoked skills. Every
 /// list is bounded so the block cannot regrow the context.
+#[cfg(test)]
 fn compaction_reinjection_block(compacted_zone: &[Message]) -> Option<String> {
     const MAX_ITEMS: usize = 8;
     let mut files: Vec<String> = Vec::new();

@@ -14,7 +14,6 @@ use std::sync::{Arc, Mutex};
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::Event;
-use deepagent_core::message::Message;
 use deepagent_knowledge::{
     capture, EntryKind, HashingEmbedder, KnowledgeBase, KnowledgeConfig, KnowledgeDraft,
     KnowledgeEntry, Scope, Vault,
@@ -704,6 +703,7 @@ impl deepagent_runtime::RelevantMemoryProvider for KnowledgeMemoryProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deepagent_core::message::Message;
 
     fn service(tmp: &Path) -> KnowledgeService {
         KnowledgeService::open(&tmp.join("proj"), &tmp.join("glob")).unwrap()
