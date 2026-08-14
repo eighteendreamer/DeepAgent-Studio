@@ -3,7 +3,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
 import type { PreviewResult } from "../../types";
-import { pickPreviewFile, previewOpenFile, previewReadDataUrl, sendToChat } from "../../api";
+import { pickPreviewFile, previewOpenFile, previewReadDataUrl } from "../../api";
 import type { PluginDefinition } from "./pluginTypes";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
@@ -54,7 +54,7 @@ export function FilePreviewPlugin() {
     setFileBlob(null);
     setFileName("");
     try {
-      // 1. 获取文件元数据和文本提取（用于"发送到聊天"功能）
+      // 1. 获取文件元数据和文本提取。
       const result = await previewOpenFile(path);
       setPreview(result);
       setFileName(result.metadata.name);
@@ -89,26 +89,8 @@ export function FilePreviewPlugin() {
     }
   };
 
-  const sendToChatContext = () => {
-    if (!preview) return;
-    const { name, kind, path } = preview.metadata;
-    let summary = "";
-    if (preview.text) {
-      summary = preview.text.slice(0, 2000);
-    } else if (preview.sheets && preview.sheets.length > 0) {
-      summary = preview.sheets
-        .map((s) => `# ${s.name}\n` + s.rows.slice(0, 20).map((r) => r.join("\t")).join("\n"))
-        .join("\n\n")
-        .slice(0, 2000);
-    }
-    sendToChat(
-      `<office-context>\n当前预览文件: ${name}\n文件类型: ${kind}\n路径: ${path}\n提取内容摘要:\n${summary}\n</office-context>\n\n这是我正在预览的文件，请帮我摘要、修改、转换或生成新版本。`
-    );
-  };
-
   return (
     <div className="w-full h-full flex flex-col bg-white">
-      {/* Toolbar */}
       <div className="flex items-center justify-between border-b border-border-theme px-4 py-2 flex-shrink-0">
         <button
           type="button"
@@ -128,28 +110,20 @@ export function FilePreviewPlugin() {
               <span className="ml-2 flex-shrink-0">· {formatSize(preview.metadata.size_bytes)}</span>
               <span className="ml-2 flex-shrink-0 uppercase">{preview.metadata.ext || "?"}</span>
             </div>
-            <button
-              type="button"
-              onClick={sendToChatContext}
-              className="ml-3 flex-shrink-0 text-[12px] text-primary hover:underline whitespace-nowrap"
-            >
-              {t("plugins.filePreview.sendToChat")}
-            </button>
           </div>
         )}
       </div>
 
-      {/* Body */}
-      <div className="flex-1 overflow-auto p-4">
+      <div className="flex-1 min-h-0 overflow-hidden bg-white">
         {loading && (
-          <div className="flex items-center text-text-secondary text-[14px]">
+          <div className="flex h-full items-center justify-center text-text-secondary text-[14px]">
             <FontAwesomeIcon icon={["fas", "circle-notch"]} className="animate-spin mr-2" />
             {t("plugins.filePreview.loading")}
           </div>
         )}
 
         {!loading && error && (
-          <div className="text-[13px] text-red-500 whitespace-pre-wrap">{error}</div>
+          <div className="h-full p-4 text-[13px] text-red-500 whitespace-pre-wrap">{error}</div>
         )}
 
         {!loading && !error && !preview && (
@@ -221,23 +195,33 @@ function PreviewBody({
   }
 
   return (
-    <div className="w-full h-full">
+    <div className="w-full h-full min-h-0 overflow-hidden bg-white">
       <FileViewer
+        className="block h-full w-full"
         file={fileBlob}
         name={fileName}
-        onEvent={(event: any) => {
-          console.log("FileViewer event:", event.type, event.payload);
-        }}
+        style={{ width: "100%", height: "100%", minHeight: 0, background: "transparent" }}
         options={{
           theme: "light",
           rendererMode: "replace",
           styleIsolation: "shadow",
-          toolbar: {
-            position: "bottom-right",
+          toolbar: false,
+          search: false,
+          watermark: false,
+          fit: {
+            mode: "width",
+            resize: "always",
+            padding: 0,
           },
-          watermark: {
-            text: "DeepAgent Studio",
-            opacity: 0.08,
+          pdf: {
+            toolbar: false,
+            navigation: false,
+            defaultNavigationVisible: false,
+          },
+          archive: {
+            entryActions: {
+              download: false,
+            },
           },
         }}
       />
