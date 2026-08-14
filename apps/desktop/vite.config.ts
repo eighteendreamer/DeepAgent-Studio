@@ -1,9 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileViewerRenderers } from "@file-viewer/vite-plugin";
 
 // Tauri expects a fixed dev port and a relative base for the bundled assets.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), fileViewerRenderers({ copyAssets: true })],
   base: "./",
   clearScreen: false,
   server: {

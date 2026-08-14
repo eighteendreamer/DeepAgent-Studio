@@ -6,7 +6,6 @@ import type { PreviewResult } from "../../types";
 import { pickPreviewFile, previewOpenFile, previewReadDataUrl, sendToChat } from "../../api";
 import type { PluginDefinition } from "./pluginTypes";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import officePreset from "@file-viewer/preset-office";
 
 /** Human-readable size. */
 function formatSize(bytes: number): string {
@@ -193,14 +192,14 @@ function PreviewBody({
   const [viewerError, setViewerError] = useState<string | null>(null);
 
   useEffect(() => {
-    // 动态导入 @file-viewer/react，避免构建时缺少依赖报错
-    import("@file-viewer/react")
+    // 动态导入 full 包，避免构建时缺少依赖报错并直接获得 208+ 格式矩阵。
+    import("@file-viewer/react-full")
       .then((mod) => {
         setFileViewer(() => mod.default);
       })
       .catch((err) => {
-        console.error("Failed to load @file-viewer/react:", err);
-        setViewerError("文件预览组件加载失败，请确保已安装 @file-viewer/react");
+        console.error("Failed to load @file-viewer/react-full:", err);
+        setViewerError("文件预览组件加载失败，请确保已安装 @file-viewer/react-full");
       });
   }, []);
 
@@ -230,7 +229,6 @@ function PreviewBody({
           console.log("FileViewer event:", event.type, event.payload);
         }}
         options={{
-          preset: officePreset,
           theme: "light",
           rendererMode: "replace",
           styleIsolation: "shadow",

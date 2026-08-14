@@ -14,8 +14,7 @@
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
-    "@file-viewer/preset-office": "^2.2.9",
-    "@file-viewer/react": "^2.2.9",
+    "@file-viewer/react-full": "^2.2.9",
     "@fortawesome/fontawesome-svg-core": "^6.6.0",
     "@fortawesome/free-brands-svg-icons": "^6.7.2",
     "@fortawesome/free-regular-svg-icons": "^6.6.0",
@@ -53,6 +52,7 @@
   },
   "devDependencies": {
     "@alibaba-group/open-code-review": "^1.8.0",
+    "@file-viewer/vite-plugin": "^2.2.9",
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
