@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
 import type { PreviewResult } from "../../types";
-import { pickPreviewFile, previewOpenFile, previewReadDataUrl, previewRenderPages, sendToChat } from "../../api";
+import { pickPreviewFile, previewOpenFile, sendToChat } from "../../api";
 import type { PluginDefinition } from "./pluginTypes";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 /** Human-readable size. */
 function formatSize(bytes: number): string {
@@ -33,22 +34,13 @@ function kindIcon(kind: string): IconProp {
   }
 }
 
-/** Split CSV/TSV text into a row/column matrix for tabular rendering. */
-function parseDelimited(text: string, sep: string): string[][] {
-  return text
-    .split(/\r?\n/)
-    .filter((line) => line.length > 0)
-    .slice(0, 200)
-    .map((line) => line.split(sep));
-}
-
 export function FilePreviewPlugin() {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [pdfPages, setPdfPages] = useState<string[] | null>(null);
+  const [fileBlob, setFileBlob] = useState<Blob | null>(null);
+  const [fileName, setFileName] = useState<string>("");
 
   const choose = async () => {
     setError(null);
@@ -59,24 +51,22 @@ export function FilePreviewPlugin() {
     if (!path) return;
     setLoading(true);
     setPreview(null);
-    setImageUrl(null);
-    setPdfPages(null);
+    setFileBlob(null);
+    setFileName("");
     try {
+      // 1. 获取文件元数据和文本提取（用于"发送到聊天"功能）
       const result = await previewOpenFile(path);
       setPreview(result);
-      if (result.metadata.kind === "image") {
-        const url = await previewReadDataUrl(path).catch(() => null);
-        setImageUrl(url);
-      } else if (result.metadata.kind === "pdf") {
-        // Try Tier R page rendering; load each page PNG as a data URL.
-        const r = await previewRenderPages(path).catch(() => null);
-        if (r && r.rendered && r.pages.length > 0) {
-          const urls = await Promise.all(
-            r.pages.map((p) => previewReadDataUrl(p).catch(() => null))
-          );
-          setPdfPages(urls.filter((u): u is string => !!u));
-        }
+      setFileName(result.metadata.name);
+
+      // 2. 将文件路径转换为 Tauri asset URL，然后 fetch 为 Blob
+      const assetUrl = convertFileSrc(path);
+      const response = await fetch(assetUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to load file: ${response.statusText}`);
       }
+      const blob = await response.blob();
+      setFileBlob(blob);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -154,7 +144,9 @@ export function FilePreviewPlugin() {
           </div>
         )}
 
-        {!loading && !error && preview && <PreviewBody preview={preview} imageUrl={imageUrl} pdfPages={pdfPages} />}
+        {!loading && !error && preview && fileBlob && (
+          <PreviewBody preview={preview} fileBlob={fileBlob} fileName={fileName} />
+        )}
       </div>
     </div>
   );
@@ -174,118 +166,66 @@ export const filePreviewPluginDefinition: PluginDefinition = {
 };
 
 function PreviewBody({
-  preview,
-  imageUrl,
-  pdfPages,
+  fileBlob,
+  fileName,
 }: {
   preview: PreviewResult;
-  imageUrl: string | null;
-  pdfPages: string[] | null;
+  fileBlob: Blob;
+  fileName: string;
 }) {
-  const { t } = useTranslation();
-  const { kind, ext } = preview.metadata;
+  const [FileViewer, setFileViewer] = useState<any>(null);
+  const [viewerError, setViewerError] = useState<string | null>(null);
 
-  if (kind === "image") {
-    if (!imageUrl) {
-      return <div className="text-[13px] text-text-secondary">{t("plugins.filePreview.imageUnavailable")}</div>;
-    }
+  useEffect(() => {
+    // 动态导入 @file-viewer/react，避免构建时缺少依赖报错
+    import("@file-viewer/react")
+      .then((mod) => {
+        setFileViewer(() => mod.default);
+      })
+      .catch((err) => {
+        console.error("Failed to load @file-viewer/react:", err);
+        setViewerError("文件预览组件加载失败，请确保已安装 @file-viewer/react");
+      });
+  }, []);
+
+  if (viewerError) {
     return (
-      <div className="flex items-center justify-center">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={imageUrl} alt={preview.metadata.name} className="max-w-full max-h-full object-contain" />
+      <div className="text-[13px] text-red-500 whitespace-pre-wrap">
+        {viewerError}
       </div>
     );
   }
 
-  if (kind === "xlsx") {
-    const sheets = preview.sheets ?? [];
-    if (sheets.length === 0) {
-      return <div className="text-[13px] text-text-secondary">{t("plugins.filePreview.noSheets")}</div>;
-    }
+  if (!FileViewer) {
     return (
-      <div className="space-y-6">
-        {sheets.map((sheet) => (
-          <div key={sheet.name}>
-            <div className="text-[13px] font-semibold text-text-base mb-2 flex items-center">
-              <FontAwesomeIcon icon={["fas", "table"]} className="mr-2 text-text-secondary" />
-              {sheet.name}
-              {sheet.truncated && (
-                <span className="ml-2 text-[11px] text-text-secondary font-normal">
-                  {t("plugins.filePreview.truncatedRows")}
-                </span>
-              )}
-            </div>
-            <div className="overflow-auto border border-border-theme rounded-lg">
-              <table className="text-[12px] border-collapse">
-                <tbody>
-                  {sheet.rows.map((row, ri) => (
-                    <tr key={ri} className={ri === 0 ? "bg-gray-50 font-medium" : ""}>
-                      {row.map((cell, ci) => (
-                        <td key={ci} className="border border-border-theme px-2 py-1 whitespace-nowrap">
-                          {cell}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ))}
+      <div className="flex items-center justify-center h-full">
+        <FontAwesomeIcon icon={["fas", "circle-notch"]} className="animate-spin mr-2 text-text-secondary" />
+        <span className="text-[13px] text-text-secondary">加载预览组件...</span>
       </div>
-    );
-  }
-
-  if (kind === "csv") {
-    const sep = ext === "tsv" ? "\t" : ",";
-    const rows = parseDelimited(preview.text ?? "", sep);
-    return (
-      <div className="overflow-auto border border-border-theme rounded-lg">
-        <table className="text-[12px] border-collapse">
-          <tbody>
-            {rows.map((row, ri) => (
-              <tr key={ri} className={ri === 0 ? "bg-gray-50 font-medium" : ""}>
-                {row.map((cell, ci) => (
-                  <td key={ci} className="border border-border-theme px-2 py-1 whitespace-nowrap">
-                    {cell}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
-  // text / docx / pptx / pdf-text / unknown-with-message
-  if (kind === "pdf" && pdfPages && pdfPages.length > 0) {
-    return (
-      <div className="space-y-3">
-        {pdfPages.map((src, i) => (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img key={i} src={src} alt={`page ${i + 1}`} className="max-w-full border border-border-theme rounded" />
-        ))}
-      </div>
-    );
-  }
-
-  if (preview.text != null) {
-    return (
-      <>
-        {preview.truncated && (
-          <div className="text-[11px] text-amber-600 mb-2">{t("plugins.filePreview.truncated")}</div>
-        )}
-        <pre className="text-[13px] text-text-base whitespace-pre-wrap font-mono leading-relaxed">
-          {preview.text}
-        </pre>
-      </>
     );
   }
 
   return (
-    <div className="text-[13px] text-text-secondary">
-      {preview.message ?? t("plugins.filePreview.unsupported")}
+    <div className="w-full h-full">
+      <FileViewer
+        file={fileBlob}
+        name={fileName}
+        onEvent={(event: any) => {
+          console.log("FileViewer event:", event.type, event.payload);
+        }}
+        options={{
+          theme: "light",
+          rendererMode: "replace",
+          styleIsolation: "shadow",
+          toolbar: {
+            position: "bottom-right",
+          },
+          watermark: {
+            text: "DeepAgent Studio",
+            opacity: 0.08,
+          },
+        }}
+      />
     </div>
   );
 }
