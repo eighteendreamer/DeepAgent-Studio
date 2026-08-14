@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { memo, useState, useEffect } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
@@ -33,6 +33,72 @@ function kindIcon(kind: string): IconProp {
       return ["far", "file-lines"];
   }
 }
+
+// 预览器配置保持引用稳定，避免工作区拖拽导致 file-viewer React wrapper
+// 反复调用 controller.update()，从而重建 renderer 并产生闪烁。
+const FILE_PREVIEW_VIEWER_OPTIONS = {
+  theme: "light",
+  rendererMode: "replace",
+  // 使用宿主样式覆盖 renderer 的默认卡片版式。
+  styleIsolation: "none",
+  toolbar: false,
+  search: false,
+  watermark: false,
+  fit: {
+    mode: "width",
+    resize: "always",
+    padding: 0,
+  },
+  text: {
+    toolbar: false,
+    lineNumbers: false,
+  },
+  pdf: {
+    toolbar: false,
+    navigation: false,
+    defaultNavigationVisible: false,
+  },
+  archive: {
+    entryActions: {
+      download: false,
+    },
+  },
+} as const;
+
+const FILE_PREVIEW_VIEWER_STYLE = {
+  width: "100%",
+  height: "100%",
+  minHeight: 0,
+  background: "transparent",
+} as const;
+
+// file-viewer 的 Markdown renderer 默认使用“文档卡片”布局；预览插件只
+// 需要内容，不需要卡片、阴影和大块留白，因此在 renderer 之外统一收紧。
+const FILE_PREVIEW_RENDERER_CSS = `
+.file-preview-viewer .markdown-viewer {
+  padding: 0 !important;
+  background: transparent !important;
+}
+.file-preview-viewer .markdown-body {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 18px 24px 28px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+.file-preview-viewer .code-viewer {
+  background: transparent !important;
+}
+.file-preview-viewer .code-toolbar {
+  display: none !important;
+}
+.file-preview-viewer .code-area {
+  padding: 16px 24px 24px !important;
+}
+`;
 
 export function FilePreviewPlugin() {
   const { t } = useTranslation();
@@ -134,7 +200,7 @@ export function FilePreviewPlugin() {
         )}
 
         {!loading && !error && preview && fileBlob && (
-          <PreviewBody preview={preview} fileBlob={fileBlob} fileName={fileName} />
+          <PreviewBody fileBlob={fileBlob} fileName={fileName} />
         )}
       </div>
     </div>
@@ -154,11 +220,10 @@ export const filePreviewPluginDefinition: PluginDefinition = {
   render: () => <FilePreviewPlugin />,
 };
 
-function PreviewBody({
+const PreviewBody = memo(function PreviewBody({
   fileBlob,
   fileName,
 }: {
-  preview: PreviewResult;
   fileBlob: Blob;
   fileName: string;
 }) {
@@ -197,34 +262,13 @@ function PreviewBody({
   return (
     <div className="w-full h-full min-h-0 overflow-hidden bg-white">
       <FileViewer
-        className="block h-full w-full"
+        className="file-preview-viewer block h-full w-full"
         file={fileBlob}
         name={fileName}
-        style={{ width: "100%", height: "100%", minHeight: 0, background: "transparent" }}
-        options={{
-          theme: "light",
-          rendererMode: "replace",
-          styleIsolation: "shadow",
-          toolbar: false,
-          search: false,
-          watermark: false,
-          fit: {
-            mode: "width",
-            resize: "always",
-            padding: 0,
-          },
-          pdf: {
-            toolbar: false,
-            navigation: false,
-            defaultNavigationVisible: false,
-          },
-          archive: {
-            entryActions: {
-              download: false,
-            },
-          },
-        }}
+        style={FILE_PREVIEW_VIEWER_STYLE}
+        options={FILE_PREVIEW_VIEWER_OPTIONS}
       />
+      <style>{FILE_PREVIEW_RENDERER_CSS}</style>
     </div>
   );
-}
+});
