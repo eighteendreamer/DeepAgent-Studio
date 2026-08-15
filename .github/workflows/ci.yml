@@ -124,5 +124,10 @@ jobs:
       - name: Install deps
         run: pnpm install --frozen-lockfile
 
+      # Runs before the build: a bundled third-party plugin missing its license
+      # is a distribution problem, and failing fast keeps it out of an artifact.
+      - name: Check bundled plugin licenses
+        run: node scripts/check-plugin-licenses.cjs
+
       - name: Type-check + build
         run: pnpm build

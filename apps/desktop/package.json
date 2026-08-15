@@ -8,7 +8,8 @@
     "predev": "file-viewer-copy-assets ./public/file-viewer",
     "dev": "vite",
     "prebundle-skills": "node scripts/prebundle-skills.cjs",
-    "build": "pnpm prebundle-skills && tsc --noEmit && vite build",
+    "check-plugin-licenses": "node scripts/check-plugin-licenses.cjs",
+    "build": "pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "review": "ocr"

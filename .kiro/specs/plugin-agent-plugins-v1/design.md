@@ -125,19 +125,48 @@ pub struct McpComponent {
     pub servers: Vec<PluginMcpServer>,      // 只含通过校验的
 }
 
-/// §11.3 三级失败的类型化载体。取代现有 Vec<PluginLoadError> 的粗粒度表达。
+/// §11.3 三级失败的类型化构造器（实现见 plugin/model.rs）。
 pub enum PluginDiagnostic {
     UnknownManifestField { field: String },
     ExtensionsNotObject,
-    SkillSkipped { dir: PathBuf, reason: SkipReason },
+    SkillSkipped { path: PathBuf, reason: String },
     McpDisabled { reason: String },
-    McpServerSkipped { server: String, reason: SkipReason },
-    ExtendedComponentSkipped { kind: ComponentKind, path: Option<PathBuf>, reason: SkipReason },
+    McpServerSkipped { server: String, reason: String },
+    ComponentInvalid { component: ComponentKind, path: Option<PathBuf>, reason: String },
     HookEventUnmapped { event: String },
 }
+
+/// 附到现有 PluginLoadError 上的分级。Default 取 Error（保守）。
+pub enum DiagnosticSeverity { Info, Warning, Error }
 ```
 
-`PluginDiagnostic` 的 severity 分两级：`Warning`（组件被跳过，插件仍可用）与 `Info`（未知字段之类）。插件级致命错误不进诊断，走 `Result::Err` 拒绝整个插件。
+### 诊断通道：扩展 `PluginLoadError` 而非新增并行数组
+
+初版设计写的是"新增 `diagnostics` 取代粗粒度 `errors`"。实现时改成**给 `PluginLoadError` 加 `severity` 字段**，理由如下，这也是最终形态：
+
+现有 `errors` 通道已经同时承载两个层级，只是没有区分：`manifest-parse-error` 让插件不可用，而 `path-not-found` 只是声明的路径缺失、插件照常可用。前端 `ErrorSection` 把两者一律渲染成"加载错误"，高估了后者。新增一个并行数组只会把同一份数据复制一遍，并不修正这个既有缺陷。
+
+所以：
+
+- `PluginLoadError` 增加 `severity: DiagnosticSeverity`，`#[serde(default)]` 取 `Error`（旧载荷不会被静默降级为提示）。
+- `PluginDiagnostic` 保留为**类型安全构造器**：变体一次性绑定 `kind`、`component`、`severity` 三者，调用点无法拼出不一致组合；`into_load_error()` 投影到既有通道。
+- 前端按 severity 排序与配色，全部非致命时标题改为"加载诊断"。
+
+一个附带收益：加显式字段（而非给结构体实现 `Default`）让编译器把所有构造点列出来。实际有 7 处，其中 `plugin_dependency.rs` 的 2 处是初次盘点时漏掉的：
+
+| 构造点 | kind | severity |
+|---|---|---|
+| `plugin_loader.rs` | `manifest-not-found` | Error |
+| `plugin_loader.rs` | `manifest-parse-error` | Error |
+| `plugin_loader.rs` | `reserved-name` | Error |
+| `plugin_loader.rs` | `blocklist` | Error |
+| `plugin_loader.rs` | `path-not-found` | Warning（§6.2 组件位置缺失不算错误） |
+| `plugin_dependency.rs` | `dependency-cycle` | Error |
+| `plugin_dependency.rs` | `dependency-unsatisfied` | Error |
+
+`ResolvedPlugin.diagnostics` 仍然保留：加载期内部用它累积，投影到 DTO 时并入 `errors`。
+
+`PluginDiagnostic` 自身的变体只产生两级：`Warning`（组件或条目被跳过，插件仍可用）与 `Info`（未知字段、`extensions` 非对象）。插件级致命错误不走诊断，而是 `Result::Err` 拒绝整个插件——§11.3 禁止发现被拒插件的任何组件。`Error` 级别只出现在既有的 policy 与 manifest 失败路径上。
 
 ## 关键流程
 
