@@ -7640,6 +7640,21 @@ mod tests {
         .unwrap()
     }
 
+    fn assert_marketplace_staging_empty(roots: &PluginRoots) {
+        let staging_root = roots.marketplace_cache.join(".staging");
+        if !staging_root.exists() {
+            return;
+        }
+        let leftovers = std::fs::read_dir(&staging_root)
+            .unwrap()
+            .flatten()
+            .collect::<Vec<_>>();
+        assert!(
+            leftovers.is_empty(),
+            "plugin install failure must clean staging entries: {leftovers:?}"
+        );
+    }
+
     fn write_git_plugin_repo(root: &Path) -> (String, String) {
         std::fs::create_dir_all(root).unwrap();
         run_git(root, &["init"]);
@@ -9879,6 +9894,139 @@ rl.on('line', (line) => {
             .join(".codex-plugin")
             .join("plugin.json")
             .is_file());
+    }
+
+    #[test]
+    fn prepared_marketplace_prepare_reports_missing_manifest_stage_and_cleans_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("demo");
+        std::fs::create_dir_all(&plugin_source).unwrap();
+        std::fs::write(plugin_source.join("README.md"), "not a plugin").unwrap();
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.1.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let err = svc
+            .prepare_plugin_install("team", "demo", false)
+            .unwrap_err();
+        let err = err.to_string();
+
+        assert!(err.contains("stage=prepare.scan"));
+        assert!(err.contains("package"));
+        assert!(err.contains("plugin manifest not found"));
+        assert_marketplace_staging_empty(&roots);
+        assert!(svc.read("demo@team").unwrap().is_none());
+    }
+
+    #[test]
+    fn prepared_marketplace_prepare_reports_metadata_mismatch_stage_and_cleans_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("demo");
+        write_plugin_with_version(&plugin_source, "other", "0.1.0");
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.1.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let err = svc
+            .prepare_plugin_install("team", "demo", false)
+            .unwrap_err();
+        let err = err.to_string();
+
+        assert!(err.contains("stage=prepare.validate_metadata"));
+        assert!(err.contains(".codex-plugin"));
+        assert!(err.contains("marketplace entry 'demo' points to plugin manifest 'other'"));
+        assert_marketplace_staging_empty(&roots);
+        assert!(svc.read("demo@team").unwrap().is_none());
+    }
+
+    #[test]
+    fn prepared_marketplace_prepare_reports_scan_stage_and_cleans_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("builtin");
+        write_plugin_with_version(&plugin_source, "builtin", "0.1.0");
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "builtin",
+                  "version": "0.1.0",
+                  "description": "Reserved-name marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/builtin" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let err = svc
+            .prepare_plugin_install("team", "builtin", false)
+            .unwrap_err();
+        let err = err.to_string();
+
+        assert!(err.contains("stage=prepare.scan"));
+        assert!(err.contains("package"));
+        assert!(err.contains("reserved by DeepAgent"));
+        assert_marketplace_staging_empty(&roots);
+        assert!(svc.read("builtin@team").unwrap().is_none());
     }
 
     #[test]
