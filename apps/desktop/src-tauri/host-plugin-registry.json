@@ -1,0 +1,21 @@
+{
+  "$comment": [
+    "Host-rendered plugin capabilities available in the desktop shell.",
+    "Keep builtinComponents aligned with apps/desktop/src/components/plugins/pluginRegistry.tsx.",
+    "This registry validates plugin .app.json component references without hardcoding plugin ids."
+  ],
+  "builtinComponents": [
+    "browser",
+    "chat",
+    "file-preview",
+    "file_preview",
+    "files",
+    "project-map",
+    "project_map",
+    "recording",
+    "side-chat",
+    "side_chat",
+    "terminal"
+  ],
+  "tauriComponents": []
+}

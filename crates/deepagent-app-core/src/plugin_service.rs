@@ -1358,7 +1358,12 @@ impl PluginService {
     }
 
     pub fn list_apps(&self) -> Result<Vec<crate::plugin_runtime::PluginAppEntry>> {
-        Ok(self.runtime_projection()?.app_entries)
+        Ok(self
+            .runtime_projection()?
+            .app_entries
+            .into_iter()
+            .filter(|app| host_app_component_is_renderable(&app.component))
+            .collect())
     }
 
     pub fn list_output_styles(&self) -> Result<Vec<crate::plugin_runtime::PluginOutputStyleEntry>> {
@@ -1633,19 +1638,31 @@ impl PluginService {
         if has_fatal_plugin_errors(plugin) {
             return PluginHealthStatus::Failed;
         }
+        let execution_kind = manifest
+            .map(|manifest| {
+                self.plugin_execution_kind(
+                    plugin,
+                    Some(manifest),
+                    counts,
+                    plugin.root.join("runtime.zip").is_file(),
+                )
+            })
+            .unwrap_or(PluginExecutionKind::SkillOnly);
         if runtime_requirements.requires_runtime() && !runtime_available {
             return PluginHealthStatus::RuntimeUnavailable;
         }
 
-        if manifest.is_some_and(|manifest| {
-            self.plugin_execution_kind(
-                plugin,
-                Some(manifest),
-                counts,
-                plugin.root.join("runtime.zip").is_file(),
-            ) == PluginExecutionKind::HostBacked
-        }) {
-            return PluginHealthStatus::Incomplete;
+        if execution_kind == PluginExecutionKind::HostBacked {
+            if let Some(manifest) = manifest {
+                if !self
+                    .host_backed_validation_errors(plugin, manifest, counts)
+                    .is_empty()
+                {
+                    return PluginHealthStatus::Incomplete;
+                }
+            } else {
+                return PluginHealthStatus::Incomplete;
+            }
         }
 
         if manifest.is_some_and(manifest_has_oauth_mcp) {
@@ -1702,8 +1719,13 @@ impl PluginService {
                         plugin.root.join("runtime.zip").is_file(),
                     ) == PluginExecutionKind::HostBacked
                     {
-                        "host-backed plugin still needs host registry and command binding validation"
-                            .to_string()
+                        let errors = self.host_backed_validation_errors(plugin, manifest, counts);
+                        if errors.is_empty() {
+                            "host-backed plugin is missing one or more validated host bindings"
+                                .to_string()
+                        } else {
+                            errors.join("; ")
+                        }
                     } else {
                         "plugin is missing one or more required entrypoints".to_string()
                     }
@@ -1723,6 +1745,36 @@ impl PluginService {
             PluginHealthStatus::Ready | PluginHealthStatus::Unknown => return None,
         };
         Some(message)
+    }
+
+    fn host_backed_validation_errors(
+        &self,
+        _plugin: &LoadedPlugin,
+        manifest: &PluginManifest,
+        counts: PluginComponentCounts,
+    ) -> Vec<String> {
+        let mut errors = Vec::new();
+        let app_components = host_app_components(manifest);
+        for component in &app_components {
+            if !host_app_component_is_renderable(component) {
+                errors.push(format!(
+                    "host app component '{component}' is not registered in the desktop host registry"
+                ));
+            }
+        }
+        if counts.apps > 0 && app_components.is_empty() {
+            errors.push(
+                "host-backed plugin declares app config but no renderable component was found"
+                    .to_string(),
+            );
+        }
+        if counts.commands > 0 {
+            errors.push(format!(
+                "host-backed plugin command binding validation is still pending for {} command(s)",
+                counts.commands
+            ));
+        }
+        errors
     }
 
     fn plugin_lifecycle_state(
@@ -3485,6 +3537,14 @@ struct BundledPluginCatalogEntry {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct HostPluginRegistry {
+    #[serde(default, rename = "builtinComponents")]
+    builtin_components: Vec<String>,
+    #[serde(default, rename = "tauriComponents")]
+    tauri_components: Vec<String>,
+}
+
 impl BundledPluginCatalog {
     fn bucket_for(&self, name: &str) -> Option<BundledPluginBucket> {
         if self.first_party.iter().any(|item| item == name) {
@@ -3517,6 +3577,72 @@ fn bundled_plugin_catalog() -> &'static BundledPluginCatalog {
             marketplace_only: Vec::new(),
         })
     })
+}
+
+fn host_plugin_registry() -> &'static HostPluginRegistry {
+    static REGISTRY: OnceLock<HostPluginRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let json = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/desktop/src-tauri/host-plugin-registry.json"
+        ));
+        serde_json::from_str(json).unwrap_or_else(|_| HostPluginRegistry {
+            builtin_components: Vec::new(),
+            tauri_components: Vec::new(),
+        })
+    })
+}
+
+fn host_app_component_is_renderable(component: &str) -> bool {
+    let component = component.trim().to_ascii_lowercase();
+    if let Some(name) = component.strip_prefix("builtin:") {
+        return host_plugin_registry()
+            .builtin_components
+            .iter()
+            .any(|registered| registered == name);
+    }
+    if let Some(name) = component.strip_prefix("tauri:") {
+        return host_plugin_registry()
+            .tauri_components
+            .iter()
+            .any(|registered| registered == name);
+    }
+    true
+}
+
+fn host_app_components(manifest: &PluginManifest) -> Vec<String> {
+    let mut components = Vec::new();
+    for value in manifest.paths.app_paths.iter().filter_map(read_json_file) {
+        collect_host_app_components(&value, &mut components);
+    }
+    components.sort();
+    components.dedup();
+    components
+}
+
+fn collect_host_app_components(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if key == "component" {
+                    if let Some(component) = value.as_str() {
+                        let component = component.trim();
+                        if component.starts_with("builtin:") || component.starts_with("tauri:") {
+                            out.push(component.to_string());
+                        }
+                    }
+                    continue;
+                }
+                collect_host_app_components(value, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for value in items {
+                collect_host_app_components(value, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn scan_runtime_script_dirs(root: &Path, needs: &mut PluginRuntimeNeeds) {
@@ -4550,6 +4676,10 @@ mod tests {
     }
 
     fn write_plugin_with_app_and_output_style(root: &Path, name: &str) {
+        write_plugin_with_app_component_and_output_style(root, name, &format!("builtin:{name}"));
+    }
+
+    fn write_plugin_with_app_component_and_output_style(root: &Path, name: &str, component: &str) {
         write_plugin_with_version_and_dependencies(root, name, "0.1.0", &[]);
         std::fs::write(
             root.join(".app.json"),
@@ -4560,7 +4690,7 @@ mod tests {
                         "title": name,
                         "description": format!("Open the {name} panel"),
                         "placement": "right-sidebar",
-                        "component": format!("builtin:{name}"),
+                        "component": component,
                         "icon": "folder",
                         "category": "Developer Tools"
                     }
@@ -4628,7 +4758,7 @@ mod tests {
     }
 
     #[test]
-    fn host_backed_plugin_stays_incomplete_without_registry_validation() {
+    fn host_backed_plugin_reports_missing_host_component() {
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
         write_plugin_with_app_and_output_style(&roots.builtin.join("host-demo"), "host-demo");
@@ -4643,7 +4773,60 @@ mod tests {
             .health_error
             .as_deref()
             .unwrap_or_default()
-            .contains("host registry"));
+            .contains("builtin:host-demo"));
+    }
+
+    #[test]
+    fn host_backed_plugin_with_registered_app_component_can_be_verified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin_with_app_component_and_output_style(
+            &roots.builtin.join("host-demo"),
+            "host-demo",
+            "builtin:browser",
+        );
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("host-demo@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.execution_kind, PluginExecutionKind::HostBacked);
+        assert_eq!(plugin.health_status, PluginHealthStatus::Ready);
+        assert_eq!(plugin.state, PluginLifecycleState::Verified);
+        assert!(plugin.health_error.is_none());
+    }
+
+    #[test]
+    fn host_backed_plugin_with_unvalidated_commands_stays_incomplete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("host-command-demo");
+        write_plugin_with_command(&root, "host-command-demo");
+        std::fs::write(
+            root.join(".app.json"),
+            serde_json::json!({
+                "apps": [
+                    {
+                        "id": "browser-panel",
+                        "title": "Browser",
+                        "placement": "right-sidebar",
+                        "component": "builtin:browser"
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("host-command-demo@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.execution_kind, PluginExecutionKind::HostBacked);
+        assert_eq!(plugin.health_status, PluginHealthStatus::Incomplete);
+        assert!(plugin
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("command binding validation"));
     }
 
     #[test]
@@ -4953,7 +5136,11 @@ mod tests {
     fn runtime_projection_projects_apps_and_output_styles() {
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
-        write_plugin_with_app_and_output_style(&roots.builtin.join("demo"), "demo");
+        write_plugin_with_app_component_and_output_style(
+            &roots.builtin.join("demo"),
+            "demo",
+            "builtin:browser",
+        );
         let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
 
         let plugin = svc.read("demo@builtin").unwrap().unwrap();
@@ -4963,12 +5150,41 @@ mod tests {
         let apps = svc.list_apps().unwrap();
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].plugin_id, "demo@builtin");
-        assert_eq!(apps[0].component, "builtin:demo");
+        assert_eq!(apps[0].component, "builtin:browser");
 
         let styles = svc.list_output_styles().unwrap();
         assert_eq!(styles.len(), 1);
         assert_eq!(styles[0].plugin_id, "demo@builtin");
         assert_eq!(styles[0].name, "demo:concise");
+    }
+
+    #[test]
+    fn list_apps_filters_unregistered_builtin_components() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin_with_app_component_and_output_style(
+            &roots.builtin.join("known"),
+            "known",
+            "builtin:browser",
+        );
+        write_plugin_with_app_component_and_output_style(
+            &roots.builtin.join("unknown"),
+            "unknown",
+            "builtin:computer-use",
+        );
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let apps = svc.list_apps().unwrap();
+
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].plugin_id, "known@builtin");
+        let unknown = svc.read("unknown@builtin").unwrap().unwrap();
+        assert_eq!(unknown.health_status, PluginHealthStatus::Incomplete);
+        assert!(unknown
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("builtin:computer-use"));
     }
 
     #[test]
