@@ -933,6 +933,18 @@ impl PluginService {
                 continue;
             };
             let data_dir = self.data_root.join(sanitize_file_name(&plugin.id));
+            // Agent Plugins §9.1: PLUGIN_DATA is handed to plugin subprocesses,
+            // and the client must create that directory and make it writable
+            // before launching them. `prepare_runtime_payload` below only
+            // creates it for plugins shipping a `runtime.zip`, so without this
+            // the directory would be missing for every other plugin and any
+            // write from the subprocess would fail.
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                CoreError::Persistence(format!(
+                    "create plugin data dir {}: {e}",
+                    data_dir.display()
+                ))
+            })?;
             prepare_runtime_payload(&plugin.root, &data_dir)?;
             inputs.push(EnabledPluginRuntimeInput {
                 id: &plugin.id,
@@ -3236,6 +3248,50 @@ mod tests {
 
         let refreshed = svc.read("demo@builtin").unwrap().unwrap();
         assert_eq!(refreshed.version.as_deref(), Some("0.2.0"));
+    }
+
+    /// Agent Plugins §9.1 puts two obligations on `PLUGIN_DATA`: the client must
+    /// create the directory before launching a plugin subprocess, and must
+    /// preserve its contents across plugin updates.
+    ///
+    /// The creation half regressed silently before this test existed:
+    /// `prepare_runtime_payload` only creates the directory for plugins shipping
+    /// a `runtime.zip`, so every other plugin was handed a `PLUGIN_DATA` path
+    /// that did not exist.
+    #[test]
+    fn plugin_data_dir_is_created_and_survives_updates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let source = tmp.path().join("source").join("demo");
+        write_plugin_with_version(&source, "demo", "0.1.0");
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+
+        let installed = svc.install_from_dir(&source).unwrap();
+        let data_dir = svc.data_root.join(sanitize_file_name(&installed.id));
+
+        // The projection is what hands PLUGIN_DATA to subprocesses, so the
+        // directory must exist once it has run — with no runtime.zip involved.
+        svc.runtime_projection().unwrap();
+        assert!(
+            data_dir.is_dir(),
+            "PLUGIN_DATA must exist before a subprocess is launched: {}",
+            data_dir.display()
+        );
+
+        // Plugin state that must outlive an update.
+        std::fs::write(data_dir.join("state.json"), r#"{"runs":7}"#).unwrap();
+
+        write_plugin_with_version(&source, "demo", "0.2.0");
+        let updated = svc.install_from_dir(&source).unwrap();
+        assert_eq!(updated.version.as_deref(), Some("0.2.0"));
+        assert_eq!(updated.id, installed.id, "the id must be stable");
+
+        svc.runtime_projection().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(data_dir.join("state.json")).unwrap(),
+            r#"{"runs":7}"#,
+            "§9.1 requires PLUGIN_DATA contents to survive a plugin update"
+        );
     }
 
     #[test]

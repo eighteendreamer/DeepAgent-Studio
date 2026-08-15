@@ -12,6 +12,7 @@ use deepagent_hooks::HookDefinitions;
 use deepagent_mcp::config::{McpConfig, McpServerConfig};
 use serde::{Deserialize, Serialize};
 
+use crate::plugin::spec::placeholder::{PLUGIN_DATA_VAR, PLUGIN_ROOT_VAR};
 use crate::plugin_manifest::PluginManifest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -649,8 +650,18 @@ fn inject_hook_env(
     action
         .env
         .insert("DEEPAGENT_PLUGIN_DATA".to_string(), data.clone());
-    action.env.insert("CLAUDE_PLUGIN_ROOT".to_string(), root);
-    action.env.insert("CLAUDE_PLUGIN_DATA".to_string(), data);
+    action
+        .env
+        .insert("CLAUDE_PLUGIN_ROOT".to_string(), root.clone());
+    action
+        .env
+        .insert("CLAUDE_PLUGIN_DATA".to_string(), data.clone());
+    // Agent Plugins §9.1 requires the unprefixed names, and requires the client
+    // to set them *after* applying configured env so they replace any same-named
+    // entry. The prefixed variants above stay for the plugins that already use
+    // them.
+    action.env.insert(PLUGIN_ROOT_VAR.to_string(), root);
+    action.env.insert(PLUGIN_DATA_VAR.to_string(), data);
 }
 
 fn inject_plugin_env(
@@ -680,7 +691,13 @@ fn inject_plugin_env(
     server
         .env
         .entry("CLAUDE_PLUGIN_DATA".to_string())
-        .or_insert(data);
+        .or_insert_with(|| data.clone());
+    // §9.1: the client supplies PLUGIN_ROOT / PLUGIN_DATA and sets them after
+    // the configured env, "replacing any entries with equivalent names". So
+    // these two use `insert` rather than the `or_insert_with` the prefixed
+    // variants use — a plugin must not be able to shadow them.
+    server.env.insert(PLUGIN_ROOT_VAR.to_string(), root);
+    server.env.insert(PLUGIN_DATA_VAR.to_string(), data);
 }
 
 fn inject_plugin_runtime_requirement(
@@ -730,8 +747,16 @@ fn plugin_env(
 ) -> Option<String> {
     match var {
         "DEEPAGENT_PLUGIN_ID" => Some(plugin_id.to_string()),
-        "DEEPAGENT_PLUGIN_ROOT" | "CLAUDE_PLUGIN_ROOT" => Some(plugin_root.display().to_string()),
-        "DEEPAGENT_PLUGIN_DATA" | "CLAUDE_PLUGIN_DATA" => Some(plugin_data.display().to_string()),
+        // `PLUGIN_ROOT` / `PLUGIN_DATA` are the portable names from Agent
+        // Plugins §9.1. Without them here the shared expander would fall through
+        // to `std::env::var`, find nothing, and expand a spec-conformant
+        // `${PLUGIN_ROOT}` to an empty string.
+        PLUGIN_ROOT_VAR | "DEEPAGENT_PLUGIN_ROOT" | "CLAUDE_PLUGIN_ROOT" => {
+            Some(plugin_root.display().to_string())
+        }
+        PLUGIN_DATA_VAR | "DEEPAGENT_PLUGIN_DATA" | "CLAUDE_PLUGIN_DATA" => {
+            Some(plugin_data.display().to_string())
+        }
         "DEEPAGENT_NODE"
         | "DEEPAGENT_PYTHON"
         | "DEEPAGENT_JAVA"
@@ -968,7 +993,129 @@ mod tests {
             hook_env["CLAUDE_PLUGIN_DATA"],
             data_dir.display().to_string()
         );
+        // §9.1: the portable names must reach the subprocess too, not only our
+        // prefixed variants.
+        assert_eq!(hook_env[PLUGIN_ROOT_VAR], root.display().to_string());
+        assert_eq!(hook_env[PLUGIN_DATA_VAR], data_dir.display().to_string());
         assert!(projection.errors.is_empty());
+    }
+
+    /// Agent Plugins §9.1 requires `PLUGIN_ROOT` and `PLUGIN_DATA` in every
+    /// plugin subprocess environment, set *after* the configured `env` so they
+    /// replace a same-named entry. A plugin must not be able to point them
+    /// elsewhere.
+    #[test]
+    fn portable_plugin_variables_override_plugin_declared_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("env-plugin");
+        let data_dir = tmp.path().join("data").join("env-plugin");
+        write(
+            &root.join(".mcp.json"),
+            &serde_json::json!({
+                "mcpServers": {
+                    "svc": {
+                        "command": "node",
+                        "env": {
+                            // Both a hijack attempt and an ordinary variable:
+                            // the first must be replaced, the second preserved.
+                            "PLUGIN_ROOT": "/tmp/attacker",
+                            "PLUGIN_DATA": "/tmp/attacker-data",
+                            "KEEP_ME": "untouched"
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        );
+        write(
+            &root.join(".codex-plugin").join("plugin.json"),
+            r#"{"name": "env-plugin", "mcpServers": ".mcp.json"}"#,
+        );
+        let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+
+        let projection =
+            PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
+                id: "env-plugin@personal",
+                name: "env-plugin",
+                source_priority: 30,
+                root: &root,
+                data_dir: data_dir.clone(),
+                manifest: &manifest,
+            }]);
+
+        let server = projection
+            .mcp_config
+            .servers
+            .get("plugin__env_plugin__svc")
+            .expect("namespaced plugin MCP server");
+
+        assert_eq!(
+            server.env[PLUGIN_ROOT_VAR],
+            root.display().to_string(),
+            "the client must replace a plugin-declared PLUGIN_ROOT"
+        );
+        assert_eq!(
+            server.env[PLUGIN_DATA_VAR],
+            data_dir.display().to_string(),
+            "the client must replace a plugin-declared PLUGIN_DATA"
+        );
+        assert_eq!(
+            server.env["KEEP_ME"], "untouched",
+            "unrelated configured env must survive"
+        );
+    }
+
+    /// The portable `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` spellings must resolve on
+    /// the dialect path too. Before they were added to the lookup they fell
+    /// through to `std::env::var`, found nothing, and expanded to an empty
+    /// string — silently producing a broken command line.
+    #[test]
+    fn portable_placeholders_resolve_in_dialect_sourced_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("ph-plugin");
+        let data_dir = tmp.path().join("data").join("ph-plugin");
+        write(
+            &root.join(".mcp.json"),
+            &serde_json::json!({
+                "mcpServers": {
+                    "svc": {
+                        "command": "node",
+                        "args": ["${PLUGIN_ROOT}/server.js", "--data", "${PLUGIN_DATA}/cache"]
+                    }
+                }
+            })
+            .to_string(),
+        );
+        write(
+            &root.join(".codex-plugin").join("plugin.json"),
+            r#"{"name": "ph-plugin", "mcpServers": ".mcp.json"}"#,
+        );
+        let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+
+        let projection =
+            PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
+                id: "ph-plugin@personal",
+                name: "ph-plugin",
+                source_priority: 30,
+                root: &root,
+                data_dir: data_dir.clone(),
+                manifest: &manifest,
+            }]);
+
+        let server = projection
+            .mcp_config
+            .servers
+            .get("plugin__ph_plugin__svc")
+            .expect("namespaced plugin MCP server");
+
+        assert_eq!(
+            server.args,
+            vec![
+                format!("{}/server.js", root.display()),
+                "--data".to_string(),
+                format!("{}/cache", data_dir.display()),
+            ]
+        );
     }
 
     #[test]
