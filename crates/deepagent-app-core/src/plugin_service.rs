@@ -3276,6 +3276,7 @@ fn materialize_git_plugin(
             &["checkout".to_string(), sha.to_string()],
             Some(&repo_dir),
         )?;
+        verify_git_head_matches_sha(&repo_dir, sha)?;
     }
 
     let root = match subdir {
@@ -3283,6 +3284,22 @@ fn materialize_git_plugin(
         None => repo_dir,
     };
     resolve_plugin_root(&root)
+}
+
+fn verify_git_head_matches_sha(repo_dir: &Path, expected_sha: &str) -> Result<()> {
+    let actual = run_external_output(
+        "git",
+        &["rev-parse".to_string(), "HEAD".to_string()],
+        Some(repo_dir),
+    )?;
+    let actual = actual.trim().to_ascii_lowercase();
+    let expected = expected_sha.trim().to_ascii_lowercase();
+    if !expected.is_empty() && actual.starts_with(&expected) {
+        return Ok(());
+    }
+    Err(CoreError::invalid(format!(
+        "git checkout verification failed: expected HEAD to match {expected_sha}, got {actual}"
+    )))
 }
 
 fn materialize_github_plugin(
@@ -3921,6 +3938,10 @@ fn push_base64_chunk(out: &mut Vec<u8>, chunk: [u8; 4]) -> Result<()> {
 }
 
 fn run_external(program: &str, args: &[String], cwd: Option<&Path>) -> Result<()> {
+    run_external_output(program, args, cwd).map(|_| ())
+}
+
+fn run_external_output(program: &str, args: &[String], cwd: Option<&Path>) -> Result<String> {
     let mut command = Command::new(program);
     command.args(args);
     if let Some(cwd) = cwd {
@@ -3933,7 +3954,7 @@ fn run_external(program: &str, args: &[String], cwd: Option<&Path>) -> Result<()
         ))
     })?;
     if output.status.success() {
-        return Ok(());
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -5640,6 +5661,37 @@ mod tests {
         out
     }
 
+    fn git_available() -> bool {
+        run_external("git", &["--version".to_string()], None).is_ok()
+    }
+
+    fn run_git(cwd: &Path, args: &[&str]) -> String {
+        run_external_output(
+            "git",
+            &args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>(),
+            Some(cwd),
+        )
+        .unwrap()
+    }
+
+    fn write_git_plugin_repo(root: &Path) -> (String, String) {
+        std::fs::create_dir_all(root).unwrap();
+        run_git(root, &["init"]);
+        run_git(root, &["config", "user.email", "plugin-test@example.com"]);
+        run_git(root, &["config", "user.name", "Plugin Test"]);
+        run_git(root, &["checkout", "-b", "main"]);
+        write_plugin_with_version(root, "git-demo", "0.1.0");
+        run_git(root, &["add", "."]);
+        run_git(root, &["commit", "-m", "v1"]);
+        let first = run_git(root, &["rev-parse", "HEAD"]).trim().to_string();
+
+        write_plugin_with_version(root, "git-demo", "0.2.0");
+        run_git(root, &["add", "."]);
+        run_git(root, &["commit", "-m", "v2"]);
+        let second = run_git(root, &["rev-parse", "HEAD"]).trim().to_string();
+        (first, second)
+    }
+
     fn write_plugin_with_version_and_dependencies(
         root: &Path,
         name: &str,
@@ -7331,6 +7383,50 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.name == "zip-plugin" && entry.source_kind == "zip-url"));
+    }
+
+    #[test]
+    fn git_materialization_verifies_pinned_head_commit() {
+        if !git_available() {
+            eprintln!("skipping: git is not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let staging = tmp.path().join("staging");
+        let (first, _second) = write_git_plugin_repo(&source);
+
+        let plugin_root = materialize_git_plugin(
+            &source.display().to_string(),
+            None,
+            Some("main"),
+            Some(&first[..12]),
+            &staging,
+        )
+        .unwrap();
+
+        let manifest = load_plugin_manifest(&plugin_root).unwrap().unwrap();
+        assert_eq!(manifest.name, "git-demo");
+        assert_eq!(manifest.version.as_deref(), Some("0.1.0"));
+        let head = run_git(&staging.join("repo"), &["rev-parse", "HEAD"]);
+        assert!(head.trim().starts_with(&first));
+    }
+
+    #[test]
+    fn git_head_verification_rejects_unexpected_commit() {
+        if !git_available() {
+            eprintln!("skipping: git is not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let (first, second) = write_git_plugin_repo(&source);
+        assert_ne!(first, second);
+
+        let err = verify_git_head_matches_sha(&source, &first[..12]).unwrap_err();
+
+        assert!(err.to_string().contains("checkout verification failed"));
+        assert!(err.to_string().contains(&second[..12]));
     }
 
     #[test]
