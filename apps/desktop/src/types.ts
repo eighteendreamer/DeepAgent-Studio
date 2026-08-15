@@ -491,6 +491,22 @@ export interface PluginMarketplace {
   last_updated?: string | null;
 }
 
+export interface PluginMarketplaceComponentSummary {
+  skills: number;
+  commands: number;
+  agents: number;
+  hooks: number;
+  mcp: number;
+  apps: number;
+  outputStyles: number;
+}
+
+export interface PluginMarketplaceRuntimeSummary {
+  required: boolean;
+  requirements: string[];
+  hasRuntimePayload: boolean;
+}
+
 export interface PluginMarketplaceEntry {
   marketplace: string;
   name: string;
@@ -499,6 +515,8 @@ export interface PluginMarketplaceEntry {
   version?: string | null;
   category?: string | null;
   license?: string | null;
+  content_hash?: string | null;
+  components: PluginMarketplaceComponentSummary;
   skill_count: number;
   command_count: number;
   agent_count: number;
@@ -506,6 +524,7 @@ export interface PluginMarketplaceEntry {
   mcp_count: number;
   app_count: number;
   output_style_count: number;
+  runtime: PluginMarketplaceRuntimeSummary;
   runtime_required: boolean;
   runtime_requirements: string[];
   has_runtime_payload: boolean;

@@ -50,6 +50,9 @@ pub struct PluginMarketplaceEntryDto {
     pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    pub components: PluginMarketplaceComponentSummary,
     pub skill_count: u32,
     pub command_count: u32,
     pub agent_count: u32,
@@ -57,6 +60,7 @@ pub struct PluginMarketplaceEntryDto {
     pub mcp_count: u32,
     pub app_count: u32,
     pub output_style_count: u32,
+    pub runtime: PluginMarketplaceRuntimeSummary,
     pub runtime_required: bool,
     #[serde(default)]
     pub runtime_requirements: Vec<String>,
@@ -98,6 +102,7 @@ pub struct PluginMarketplaceEntry {
     pub version: Option<String>,
     pub category: Option<String>,
     pub license: Option<String>,
+    pub content_hash: Option<String>,
     /// The curator's attribution for this entry.
     ///
     /// A Claude plugin's own manifest often has no `author` while the catalog
@@ -111,7 +116,7 @@ pub struct PluginMarketplaceEntry {
     pub policy_authentication: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginMarketplaceComponentSummary {
     pub skills: u32,
     pub commands: u32,
@@ -119,13 +124,16 @@ pub struct PluginMarketplaceComponentSummary {
     pub hooks: u32,
     pub mcp: u32,
     pub apps: u32,
+    #[serde(rename = "outputStyles", alias = "output_style_count")]
     pub output_styles: u32,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginMarketplaceRuntimeSummary {
     pub required: bool,
+    #[serde(default)]
     pub requirements: Vec<String>,
+    #[serde(rename = "hasRuntimePayload", alias = "has_runtime_payload")]
     pub has_runtime_payload: bool,
 }
 
@@ -221,6 +229,22 @@ impl PluginMarketplaceSource {
             | Self::Unsupported { .. } => None,
         }
     }
+
+    pub fn content_hash(&self) -> Option<String> {
+        match self {
+            Self::ZipUrl {
+                sha256: Some(sha256),
+                ..
+            } => Some(format!("sha256:{sha256}")),
+            Self::Local { .. }
+            | Self::Git { .. }
+            | Self::GitHub { .. }
+            | Self::GitSubdir { .. }
+            | Self::ZipUrl { sha256: None, .. }
+            | Self::Npm { .. }
+            | Self::Unsupported { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -252,6 +276,8 @@ struct RawMarketplaceEntry {
     category: Option<String>,
     #[serde(default)]
     license: Option<String>,
+    #[serde(default, rename = "contentHash", alias = "content_hash")]
+    content_hash: Option<String>,
     #[serde(default)]
     author: Option<RawMarketplaceAuthor>,
     #[serde(default)]
@@ -455,6 +481,7 @@ fn normalize_entry(root: &Path, raw: RawMarketplaceEntry) -> Result<PluginMarket
         version: raw.version.and_then(trimmed_string),
         category: raw.category.and_then(trimmed_string),
         license: raw.license.and_then(trimmed_string),
+        content_hash: raw.content_hash.and_then(trimmed_string),
         author_name: raw.author.and_then(RawMarketplaceAuthor::into_name),
         component_summary: raw.components.map(Into::into).unwrap_or_default(),
         runtime_summary: raw.runtime.map(Into::into).unwrap_or_default(),
@@ -1203,6 +1230,21 @@ mod tests {
                 {
                   "name": "github-plugin",
                   "license": "Apache-2.0",
+                  "contentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "components": {
+                    "skills": 2,
+                    "commands": 1,
+                    "agents": 1,
+                    "hooks": 1,
+                    "mcp": 1,
+                    "apps": 1,
+                    "outputStyles": 1
+                  },
+                  "runtime": {
+                    "required": true,
+                    "requirements": ["node >=20"],
+                    "hasRuntimePayload": true
+                  },
                   "source": {
                     "source": "github",
                     "repo": "owner/repo",
@@ -1262,10 +1304,27 @@ mod tests {
             )
         );
         assert_eq!(catalog.entries[1].license.as_deref(), Some("Apache-2.0"));
+        assert_eq!(
+            catalog.entries[1].content_hash.as_deref(),
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert_eq!(catalog.entries[1].component_summary.skills, 2);
+        assert_eq!(catalog.entries[1].component_summary.commands, 1);
+        assert_eq!(catalog.entries[1].component_summary.output_styles, 1);
+        assert!(catalog.entries[1].runtime_summary.required);
+        assert_eq!(
+            catalog.entries[1].runtime_summary.requirements,
+            vec!["node >=20".to_string()]
+        );
+        assert!(catalog.entries[1].runtime_summary.has_runtime_payload);
         assert_eq!(sources[2], ("npm-plugin", "npm", "@scope/plugin@1.2.3"));
         assert_eq!(
             sources[3],
             ("zip-plugin", "zip-url", "https://example.com/plugin.zip")
+        );
+        assert_eq!(
+            catalog.entries[3].source.content_hash().as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         assert!(catalog
             .entries

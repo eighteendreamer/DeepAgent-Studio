@@ -1029,6 +1029,11 @@ impl PluginService {
                     version: entry.version.clone(),
                     category: entry.category.clone(),
                     license: entry.license.clone(),
+                    content_hash: entry
+                        .content_hash
+                        .clone()
+                        .or_else(|| entry.source.content_hash()),
+                    components: entry.component_summary,
                     skill_count: entry.component_summary.skills,
                     command_count: entry.component_summary.commands,
                     agent_count: entry.component_summary.agents,
@@ -1036,6 +1041,7 @@ impl PluginService {
                     mcp_count: entry.component_summary.mcp,
                     app_count: entry.component_summary.apps,
                     output_style_count: entry.component_summary.output_styles,
+                    runtime: entry.runtime_summary.clone(),
                     runtime_required: entry.runtime_summary.required,
                     runtime_requirements: entry.runtime_summary.requirements.clone(),
                     has_runtime_payload: entry.runtime_summary.has_runtime_payload,
@@ -11336,6 +11342,20 @@ deepagent-definitely-missing-runtime-cli --version
                 {
                   "name": "zip-plugin",
                   "version": "0.1.0",
+                  "components": {
+                    "skills": 3,
+                    "commands": 2,
+                    "agents": 1,
+                    "hooks": 1,
+                    "mcp": 1,
+                    "apps": 1,
+                    "outputStyles": 1
+                  },
+                  "runtime": {
+                    "required": true,
+                    "requirements": ["python >=3.11"],
+                    "hasRuntimePayload": true
+                  },
                   "source": {
                     "source": "zip-url",
                     "url": "https://example.com/zip-plugin.zip",
@@ -11355,6 +11375,29 @@ deepagent-definitely-missing-runtime-cli --version
             sparse_path: None,
         })
         .unwrap();
+
+        let entries = svc.list_marketplace_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].content_hash.as_deref(),
+            Some("sha256:0000000000000000000000000000000000000000000000000000000000000000")
+        );
+        assert_eq!(entries[0].components.skills, 3);
+        assert_eq!(entries[0].components.commands, 2);
+        assert_eq!(entries[0].components.output_styles, 1);
+        assert_eq!(entries[0].skill_count, entries[0].components.skills);
+        assert!(entries[0].runtime.required);
+        assert_eq!(entries[0].runtime.requirements, vec!["python >=3.11"]);
+        assert!(entries[0].runtime.has_runtime_payload);
+        assert_eq!(entries[0].runtime_required, entries[0].runtime.required);
+        assert_eq!(
+            entries[0].runtime_requirements,
+            entries[0].runtime.requirements
+        );
+        assert_eq!(
+            entries[0].has_runtime_payload,
+            entries[0].runtime.has_runtime_payload
+        );
 
         let err = svc
             .prepare_plugin_install("remote", "zip-plugin", false)
