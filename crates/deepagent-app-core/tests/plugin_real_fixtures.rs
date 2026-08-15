@@ -174,6 +174,28 @@ fn complete_bundled_plugins_are_real_resources() {
         );
     }
 
+    let superpowers_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/desktop/src-tauri/resources/plugins/superpowers");
+    assert!(superpowers_root.join("README.md").is_file());
+    assert!(superpowers_root.join("LICENSE").is_file());
+    assert!(superpowers_root.join("assets").is_dir());
+    assert!(superpowers_root.join("skills").is_dir());
+    assert!(superpowers_root
+        .join("skills")
+        .join("writing-plans")
+        .join("SKILL.md")
+        .is_file());
+    assert!(superpowers_root
+        .join("skills")
+        .join("using-superpowers")
+        .join("references")
+        .is_dir());
+    assert!(superpowers_root
+        .join("skills")
+        .join("systematic-debugging")
+        .join("SKILL.md")
+        .is_file());
+
     let figma_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../apps/desktop/src-tauri/resources/plugins/figma");
     assert!(
@@ -188,6 +210,15 @@ fn complete_bundled_plugins_are_real_resources() {
         figma_root.join(".app.json").is_file(),
         "figma app config missing"
     );
+    assert!(figma_root.join(".mcp.json").is_file());
+    assert!(figma_root.join("hooks.json").is_file());
+    assert!(figma_root.join("agents").is_dir());
+    assert!(figma_root.join("skills").is_dir());
+    assert!(figma_root.join("scripts").is_dir());
+    assert!(figma_root.join("assets").is_dir());
+    assert!(figma_root.join("LICENSE.txt").is_file());
+    assert!(figma_root.join("plugin.lock.json").is_file());
+    assert!(figma_root.join("README.md").is_file());
 
     let boltz_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../apps/desktop/src-tauri/resources/plugins/boltz-api-cli");
@@ -207,6 +238,10 @@ fn complete_bundled_plugins_are_real_resources() {
             .is_file(),
         "boltz scan_sites script missing"
     );
+    assert!(boltz_root.join("assets").is_dir());
+    assert!(boltz_root.join("skills").is_dir());
+    assert!(boltz_root.join("tests").is_dir());
+    assert!(boltz_root.join("LICENSE").is_file());
 }
 
 #[test]
