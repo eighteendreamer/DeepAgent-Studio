@@ -23,6 +23,7 @@ use crate::plugin::model::ResolvedPlugin;
 use crate::plugin::spec::schema::{
     AGENT_PLUGIN_MANIFEST_RELATIVE_PATH, DISCOVERABLE_MANIFEST_PATHS,
 };
+use crate::plugin::spec::{normalize_and_expand, resolve_existing_within, resolve_plugin_relative};
 use crate::plugin_dependency::{
     find_reverse_dependents, verify_plugin_dependencies, PluginDependencyOutcome,
 };
@@ -1621,6 +1622,9 @@ impl PluginService {
             needs.node = true;
         }
         needs.merge_script_requirements(&plugin.root);
+        for script in self.plugin_hook_command_scripts(plugin, manifest).scripts {
+            needs.merge_script_path(&script);
+        }
         needs
     }
 
@@ -1669,6 +1673,12 @@ impl PluginService {
                 entrypoints.push(path.display().to_string());
             }
         }
+        for path in self
+            .plugin_hook_command_scripts(plugin, Some(manifest))
+            .scripts
+        {
+            entrypoints.push(path.display().to_string());
+        }
         for path in &manifest.paths.app_paths {
             if path.exists() {
                 entrypoints.push(path.display().to_string());
@@ -1682,6 +1692,23 @@ impl PluginService {
         entrypoints.sort();
         entrypoints.dedup();
         entrypoints
+    }
+
+    fn plugin_hook_command_scripts(
+        &self,
+        plugin: &LoadedPlugin,
+        manifest: Option<&PluginManifest>,
+    ) -> HookCommandInspection {
+        let Some(manifest) = manifest else {
+            return HookCommandInspection::default();
+        };
+        let data_dir = self.data_root.join(sanitize_file_name(&plugin.id));
+        inspect_hook_command_scripts(
+            &plugin.root,
+            &data_dir,
+            manifest.paths.hooks_inline.as_ref(),
+            &manifest.paths.hook_paths,
+        )
     }
 
     fn plugin_license_status(&self, plugin: &LoadedPlugin) -> PluginLicenseStatus {
@@ -1733,6 +1760,14 @@ impl PluginService {
             } else {
                 return PluginHealthStatus::Incomplete;
             }
+        }
+        if manifest.is_some()
+            && !self
+                .plugin_hook_command_scripts(plugin, manifest)
+                .errors
+                .is_empty()
+        {
+            return PluginHealthStatus::Incomplete;
         }
 
         if manifest.is_some_and(manifest_needs_host_authorization) {
@@ -1795,7 +1830,12 @@ impl PluginService {
                             errors.join("; ")
                         }
                     } else {
-                        "plugin is missing one or more required entrypoints".to_string()
+                        let hook_errors = self.plugin_hook_command_scripts(plugin, Some(manifest));
+                        if hook_errors.errors.is_empty() {
+                            "plugin is missing one or more required entrypoints".to_string()
+                        } else {
+                            hook_errors.errors.join("; ")
+                        }
                     }
                 } else {
                     "plugin manifest could not be resolved".to_string()
@@ -4445,6 +4485,31 @@ impl PluginRuntimeNeeds {
     fn merge_script_requirements(&mut self, root: &Path) {
         scan_runtime_script_dirs(root, self);
     }
+
+    fn merge_script_path(&mut self, path: &Path) {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some(ext)
+                if matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "js" | "cjs" | "mjs" | "ts" | "tsx" | "jsx"
+                ) =>
+            {
+                self.node = true;
+            }
+            Some(ext) if ext.eq_ignore_ascii_case("py") => {
+                self.python = true;
+            }
+            Some(ext)
+                if matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "sh" | "bash" | "zsh" | "ps1" | "cmd" | "bat"
+                ) =>
+            {
+                self.shell = true;
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4602,6 +4667,175 @@ fn host_command_ids(manifest: &PluginManifest) -> Vec<String> {
     command_ids.sort();
     command_ids.dedup();
     command_ids
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct HookCommandInspection {
+    scripts: Vec<PathBuf>,
+    errors: Vec<String>,
+}
+
+fn inspect_hook_command_scripts(
+    plugin_root: &Path,
+    data_dir: &Path,
+    hooks_inline: Option<&serde_json::Value>,
+    hook_paths: &[PathBuf],
+) -> HookCommandInspection {
+    let mut inspection = HookCommandInspection::default();
+    for value in hook_paths.iter().filter_map(read_json_file) {
+        collect_hook_command_scripts(plugin_root, data_dir, &value, &mut inspection);
+    }
+    if let Some(value) = hooks_inline {
+        collect_hook_command_scripts(plugin_root, data_dir, value, &mut inspection);
+    }
+    inspection.scripts.sort();
+    inspection.scripts.dedup();
+    inspection.errors.sort();
+    inspection.errors.dedup();
+    inspection
+}
+
+fn collect_hook_command_scripts(
+    plugin_root: &Path,
+    data_dir: &Path,
+    value: &serde_json::Value,
+    inspection: &mut HookCommandInspection,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|kind| kind == "command")
+            {
+                match map.get("command").and_then(serde_json::Value::as_str) {
+                    Some(command) if !command.trim().is_empty() => {
+                        inspect_hook_command(plugin_root, data_dir, command, inspection);
+                    }
+                    _ => inspection
+                        .errors
+                        .push("hook command entry is missing a non-empty command".to_string()),
+                }
+            }
+            for value in map.values() {
+                collect_hook_command_scripts(plugin_root, data_dir, value, inspection);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_hook_command_scripts(plugin_root, data_dir, value, inspection);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn inspect_hook_command(
+    plugin_root: &Path,
+    data_dir: &Path,
+    command: &str,
+    inspection: &mut HookCommandInspection,
+) {
+    let plugin_root =
+        std::fs::canonicalize(plugin_root).unwrap_or_else(|_| plugin_root.to_path_buf());
+    let root = plugin_root.display().to_string();
+    let data = data_dir.display().to_string();
+    let expanded = normalize_and_expand(command, &root, &data);
+    for token in shell_like_tokens(&expanded) {
+        let Some(candidate) = hook_command_script_candidate(&plugin_root, &token) else {
+            continue;
+        };
+        match candidate {
+            Ok(path) => inspection.scripts.push(path),
+            Err(error) => inspection.errors.push(format!(
+                "hook command '{command}' references invalid script: {error}"
+            )),
+        }
+    }
+}
+
+fn hook_command_script_candidate(root: &Path, token: &str) -> Option<Result<PathBuf>> {
+    let trimmed = token.trim_matches(['"', '\'', '`', ';']);
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("./") || trimmed.starts_with(".\\") {
+        let declared = resolve_plugin_relative(root, trimmed).map_err(|error| {
+            CoreError::invalid(format!("hook command path '{trimmed}' is invalid: {error}"))
+        });
+        return Some(declared.and_then(|path| resolve_hook_script_path(root, &path, trimmed)));
+    }
+
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() && path_is_under(&path, root) {
+        return Some(resolve_hook_script_path(root, &path, trimmed));
+    }
+    if token_looks_like_script_path(trimmed) {
+        return Some(Err(CoreError::invalid(format!(
+            "hook command script path '{trimmed}' must start with `./` or `${{PLUGIN_ROOT}}/` and stay inside the plugin root"
+        ))));
+    }
+    None
+}
+
+fn token_looks_like_script_path(token: &str) -> bool {
+    (token.contains('/') || token.contains('\\')) && is_script_file(&PathBuf::from(token))
+}
+
+fn resolve_hook_script_path(root: &Path, path: &Path, display: &str) -> Result<PathBuf> {
+    let path = resolve_existing_within(root, path).map_err(|error| {
+        CoreError::invalid(format!(
+            "hook command path '{display}' is unavailable: {error}"
+        ))
+    })?;
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(CoreError::invalid(format!(
+            "hook command path '{}' is not a file",
+            path.display()
+        )))
+    }
+}
+
+fn shell_like_tokens(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            current.push(ch);
+            escaped = true;
+            continue;
+        }
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' | '`' => quote = Some(ch),
+            ch if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 fn push_command_id(path: &Path, out: &mut Vec<String>) {
@@ -6440,6 +6674,133 @@ mod tests {
             .entrypoints
             .iter()
             .any(|entrypoint| entrypoint.ends_with("skills")));
+    }
+
+    #[test]
+    fn hook_command_script_is_validated_and_reported_as_entrypoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("hook-plugin");
+        write_plugin(&root, "hook-plugin");
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::write(root.join("scripts").join("post.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(
+            root.join("hooks.json"),
+            r#"{
+              "hooks": {
+                "PostToolUse": [
+                  {
+                    "matcher": "Write|Edit",
+                    "hooks": [
+                      { "type": "command", "command": "./scripts/post.sh" }
+                    ]
+                  }
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("hook-plugin@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.execution_kind, PluginExecutionKind::DshSidecar);
+        assert_eq!(plugin.health_status, PluginHealthStatus::Ready);
+        assert!(plugin.runtime_required);
+        assert!(plugin
+            .entrypoints
+            .iter()
+            .any(|entrypoint| entrypoint.ends_with("scripts\\post.sh")
+                || entrypoint.ends_with("scripts/post.sh")));
+    }
+
+    #[test]
+    fn bundled_figma_hook_command_script_resolves_without_errors() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/desktop/src-tauri/resources/plugins/figma");
+        if !root.is_dir() {
+            eprintln!("skipping: bundled figma plugin is not present");
+            return;
+        }
+        let inspection = inspect_hook_command_scripts(
+            &root,
+            &tempfile::tempdir().unwrap().path().join("plugin-data"),
+            None,
+            &[root.join("hooks.json")],
+        );
+
+        assert!(inspection.errors.is_empty(), "{inspection:?}");
+        assert!(inspection
+            .scripts
+            .iter()
+            .any(|script| script.ends_with("scripts/post_write_figma_parity_check.sh")));
+    }
+
+    #[test]
+    fn missing_hook_command_script_keeps_plugin_incomplete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("hook-plugin");
+        write_plugin(&root, "hook-plugin");
+        std::fs::write(
+            root.join("hooks.json"),
+            r#"{
+              "hooks": {
+                "PostToolUse": [
+                  {
+                    "hooks": [
+                      { "type": "command", "command": "./scripts/missing.sh" }
+                    ]
+                  }
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("hook-plugin@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.health_status, PluginHealthStatus::Incomplete);
+        assert_eq!(plugin.state, PluginLifecycleState::Incomplete);
+        assert!(plugin
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("missing.sh"));
+    }
+
+    #[test]
+    fn escaping_hook_command_script_keeps_plugin_incomplete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("hook-plugin");
+        write_plugin(&root, "hook-plugin");
+        std::fs::write(
+            root.join("hooks.json"),
+            r#"{
+              "hooks": {
+                "PostToolUse": [
+                  {
+                    "hooks": [
+                      { "type": "command", "command": "../outside.sh" }
+                    ]
+                  }
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("hook-plugin@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.health_status, PluginHealthStatus::Incomplete);
+        assert!(plugin
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("../outside.sh"));
     }
 
     #[test]
