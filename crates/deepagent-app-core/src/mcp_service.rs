@@ -1265,6 +1265,45 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn connected_registry_with_plugin_overlay_rebuilds_when_overlay_changes() {
+        let svc = service();
+        let mut overlay = McpConfig {
+            servers: BTreeMap::new(),
+        };
+        overlay.servers.insert(
+            "plugin__docs_plugin__docs".to_string(),
+            stdio_config("definitely-not-a-real-binary-xyz"),
+        );
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "plugin__docs_plugin__docs".to_string(),
+            plugin_source("plugin__docs_plugin__docs", "docs", "docs-plugin@workspace"),
+        );
+
+        let (reg1, failures1) = svc
+            .connected_registry_with_plugin_overlay(overlay, &sources)
+            .await
+            .unwrap();
+        assert_eq!(failures1.len(), 1);
+
+        let (reg2, failures2) = svc
+            .connected_registry_with_plugin_overlay(
+                McpConfig {
+                    servers: BTreeMap::new(),
+                },
+                &BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(failures2.is_empty());
+        assert!(
+            !Arc::ptr_eq(&reg1, &reg2),
+            "registry should be rebuilt when plugin overlay changes"
+        );
+    }
+
     #[test]
     fn plugin_overlay_entries_are_listed_as_read_only() {
         let svc = service();
