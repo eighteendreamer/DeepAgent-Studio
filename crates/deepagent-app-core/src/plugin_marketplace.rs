@@ -48,6 +48,19 @@ pub struct PluginMarketplaceEntryDto {
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    pub skill_count: u32,
+    pub command_count: u32,
+    pub agent_count: u32,
+    pub hook_count: u32,
+    pub mcp_count: u32,
+    pub app_count: u32,
+    pub output_style_count: u32,
+    pub runtime_required: bool,
+    #[serde(default)]
+    pub runtime_requirements: Vec<String>,
+    pub has_runtime_payload: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_commit: Option<String>,
     pub source_kind: String,
     pub source: String,
     pub installable: bool,
@@ -88,9 +101,29 @@ pub struct PluginMarketplaceEntry {
     /// entry does, which makes this the only attribution available for it. It
     /// feeds level 2 of [`crate::plugin::dialect::presentation`].
     pub author_name: Option<String>,
+    pub component_summary: PluginMarketplaceComponentSummary,
+    pub runtime_summary: PluginMarketplaceRuntimeSummary,
     pub source: PluginMarketplaceSource,
     pub policy_installation: Option<String>,
     pub policy_authentication: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PluginMarketplaceComponentSummary {
+    pub skills: u32,
+    pub commands: u32,
+    pub agents: u32,
+    pub hooks: u32,
+    pub mcp: u32,
+    pub apps: u32,
+    pub output_styles: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginMarketplaceRuntimeSummary {
+    pub required: bool,
+    pub requirements: Vec<String>,
+    pub has_runtime_payload: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +206,18 @@ impl PluginMarketplaceSource {
             | Self::Unsupported { .. } => None,
         }
     }
+
+    pub fn commit(&self) -> Option<&str> {
+        match self {
+            Self::Git { sha, .. } | Self::GitHub { sha, .. } | Self::GitSubdir { sha, .. } => {
+                sha.as_deref()
+            }
+            Self::Local { .. }
+            | Self::ZipUrl { .. }
+            | Self::Npm { .. }
+            | Self::Unsupported { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -204,6 +249,10 @@ struct RawMarketplaceEntry {
     category: Option<String>,
     #[serde(default)]
     author: Option<RawMarketplaceAuthor>,
+    #[serde(default)]
+    components: Option<RawMarketplaceComponentSummary>,
+    #[serde(default)]
+    runtime: Option<RawMarketplaceRuntimeSummary>,
     source: RawMarketplaceSource,
     #[serde(default)]
     policy: Option<RawMarketplacePolicy>,
@@ -240,6 +289,65 @@ struct RawMarketplacePolicy {
     installation: Option<String>,
     #[serde(default)]
     authentication: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawMarketplaceComponentSummary {
+    #[serde(default, alias = "skillCount", alias = "skill_count")]
+    skills: u32,
+    #[serde(default, alias = "commandCount", alias = "command_count")]
+    commands: u32,
+    #[serde(default, alias = "agentCount", alias = "agent_count")]
+    agents: u32,
+    #[serde(default, alias = "hookCount", alias = "hook_count")]
+    hooks: u32,
+    #[serde(default, alias = "mcpCount", alias = "mcp_count")]
+    mcp: u32,
+    #[serde(default, alias = "appCount", alias = "app_count")]
+    apps: u32,
+    #[serde(default, rename = "outputStyles", alias = "output_style_count")]
+    output_styles: u32,
+}
+
+impl From<RawMarketplaceComponentSummary> for PluginMarketplaceComponentSummary {
+    fn from(raw: RawMarketplaceComponentSummary) -> Self {
+        Self {
+            skills: raw.skills,
+            commands: raw.commands,
+            agents: raw.agents,
+            hooks: raw.hooks,
+            mcp: raw.mcp,
+            apps: raw.apps,
+            output_styles: raw.output_styles,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawMarketplaceRuntimeSummary {
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    requirements: Vec<String>,
+    #[serde(default, rename = "hasRuntimePayload", alias = "has_runtime_payload")]
+    has_runtime_payload: bool,
+}
+
+impl From<RawMarketplaceRuntimeSummary> for PluginMarketplaceRuntimeSummary {
+    fn from(raw: RawMarketplaceRuntimeSummary) -> Self {
+        let mut requirements = raw
+            .requirements
+            .into_iter()
+            .filter_map(trimmed_string)
+            .collect::<Vec<_>>();
+        requirements.sort();
+        requirements.dedup();
+        Self {
+            required: raw.required || !requirements.is_empty() || raw.has_runtime_payload,
+            requirements,
+            has_runtime_payload: raw.has_runtime_payload,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -342,6 +450,8 @@ fn normalize_entry(root: &Path, raw: RawMarketplaceEntry) -> Result<PluginMarket
         version: raw.version.and_then(trimmed_string),
         category: raw.category.and_then(trimmed_string),
         author_name: raw.author.and_then(RawMarketplaceAuthor::into_name),
+        component_summary: raw.components.map(Into::into).unwrap_or_default(),
+        runtime_summary: raw.runtime.map(Into::into).unwrap_or_default(),
         source,
         policy_installation: raw
             .policy

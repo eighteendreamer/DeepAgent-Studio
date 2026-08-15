@@ -498,6 +498,17 @@ export interface PluginMarketplaceEntry {
   description: string;
   version?: string | null;
   category?: string | null;
+  skill_count: number;
+  command_count: number;
+  agent_count: number;
+  hook_count: number;
+  mcp_count: number;
+  app_count: number;
+  output_style_count: number;
+  runtime_required: boolean;
+  runtime_requirements: string[];
+  has_runtime_payload: boolean;
+  source_commit?: string | null;
   source_kind: string;
   source: string;
   installable: boolean;

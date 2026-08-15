@@ -33,8 +33,9 @@ use crate::plugin_loader::{
 use crate::plugin_manifest::{find_plugin_manifest_path, load_plugin_manifest, PluginManifest};
 use crate::plugin_marketplace::{
     find_marketplace_manifest_path, load_marketplace_catalog, marketplace_root_from_manifest,
-    normalize_marketplace_name, slugify, AddPluginMarketplaceDto, PluginMarketplaceDto,
-    PluginMarketplaceEntry, PluginMarketplaceEntryDto, PluginMarketplaceSource,
+    normalize_marketplace_name, slugify, AddPluginMarketplaceDto,
+    PluginMarketplaceComponentSummary, PluginMarketplaceDto, PluginMarketplaceEntry,
+    PluginMarketplaceEntryDto, PluginMarketplaceRuntimeSummary, PluginMarketplaceSource,
 };
 use crate::plugin_runtime::{EnabledPluginRuntimeInput, PluginRuntimeProjection};
 use crate::plugin_security::{
@@ -373,6 +374,72 @@ impl PluginComponentCounts {
             output_styles: count_output_styles(manifest),
         }
     }
+}
+
+fn marketplace_component_summary_from_manifest(
+    manifest: &PluginManifest,
+) -> PluginMarketplaceComponentSummary {
+    PluginMarketplaceComponentSummary {
+        skills: manifest.paths.skills.len() as u32,
+        commands: manifest.paths.commands.len() as u32,
+        agents: manifest.paths.agents.len() as u32,
+        hooks: manifest.paths.hook_paths.len() as u32
+            + inline_object_count(manifest.paths.hooks_inline.as_ref()),
+        mcp: manifest.paths.mcp_server_paths.len() as u32
+            + inline_object_count(manifest.paths.mcp_servers_inline.as_ref()),
+        apps: manifest.paths.app_paths.len() as u32,
+        output_styles: manifest.paths.output_styles.len() as u32,
+    }
+}
+
+fn marketplace_runtime_summary_from_manifest(
+    manifest: &PluginManifest,
+) -> PluginMarketplaceRuntimeSummary {
+    let mut requirements = Vec::new();
+    if let Some(version) = non_empty_trimmed(manifest.runtime.node.as_deref()) {
+        requirements.push(format!("node {version}"));
+    }
+    if let Some(version) = non_empty_trimmed(manifest.runtime.python.as_deref()) {
+        requirements.push(format!("python {version}"));
+    }
+    if let Some(version) = non_empty_trimmed(manifest.runtime.java.as_deref()) {
+        requirements.push(format!("java {version}"));
+    }
+    requirements.sort();
+    requirements.dedup();
+    PluginMarketplaceRuntimeSummary {
+        required: !requirements.is_empty(),
+        requirements,
+        has_runtime_payload: false,
+    }
+}
+
+fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn marketplace_component_summary_json(
+    summary: PluginMarketplaceComponentSummary,
+) -> serde_json::Value {
+    serde_json::json!({
+        "skills": summary.skills,
+        "commands": summary.commands,
+        "agents": summary.agents,
+        "hooks": summary.hooks,
+        "mcp": summary.mcp,
+        "apps": summary.apps,
+        "outputStyles": summary.output_styles
+    })
+}
+
+fn marketplace_runtime_summary_json(
+    summary: &PluginMarketplaceRuntimeSummary,
+) -> serde_json::Value {
+    serde_json::json!({
+        "required": summary.required,
+        "requirements": summary.requirements,
+        "hasRuntimePayload": summary.has_runtime_payload
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -872,6 +939,17 @@ impl PluginService {
                         .unwrap_or_else(|| "Marketplace plugin".to_string()),
                     version: entry.version.clone(),
                     category: entry.category.clone(),
+                    skill_count: entry.component_summary.skills,
+                    command_count: entry.component_summary.commands,
+                    agent_count: entry.component_summary.agents,
+                    hook_count: entry.component_summary.hooks,
+                    mcp_count: entry.component_summary.mcp,
+                    app_count: entry.component_summary.apps,
+                    output_style_count: entry.component_summary.output_styles,
+                    runtime_required: entry.runtime_summary.required,
+                    runtime_requirements: entry.runtime_summary.requirements.clone(),
+                    has_runtime_payload: entry.runtime_summary.has_runtime_payload,
+                    source_commit: entry.source.commit().map(str::to_string),
                     source_kind: entry.source.kind().to_string(),
                     source: entry.source.display().to_string(),
                     installable,
@@ -3453,6 +3531,12 @@ fn materialize_github_topic_marketplace(
             let manifest = manifest_metadata
                 .as_ref()
                 .map(|metadata| &metadata.manifest);
+            let component_summary = manifest
+                .map(marketplace_component_summary_from_manifest)
+                .unwrap_or_default();
+            let runtime_summary = manifest
+                .map(marketplace_runtime_summary_from_manifest)
+                .unwrap_or_default();
             let mut plugin_name = manifest
                 .map(|manifest| manifest.name.clone())
                 .unwrap_or_else(|| slugify(&repo_name));
@@ -3521,7 +3605,9 @@ fn materialize_github_topic_marketplace(
                 "version": version,
                 "description": description,
                 "source": source,
-                "category": category
+                "category": category,
+                "components": marketplace_component_summary_json(component_summary),
+                "runtime": marketplace_runtime_summary_json(&runtime_summary)
             });
             if let Some(author_name) = author_name {
                 if let Some(object) = entry.as_object_mut() {
@@ -9588,6 +9674,14 @@ mod tests {
         assert_eq!(entry.version.as_deref(), Some("git-aaaaaaaaaaaa"));
         assert_eq!(entry.source_kind, "github");
         assert!(entry.source.contains("deepseek-ai/dsh-demo@main"));
+        assert_eq!(
+            entry.source_commit.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(entry.skill_count, 0);
+        assert_eq!(entry.command_count, 0);
+        assert!(!entry.runtime_required);
+        assert!(entry.runtime_requirements.is_empty());
         assert!(entry.installable);
         assert!(!entry.installed);
 
@@ -9658,11 +9752,24 @@ mod tests {
                 "description": "Manifest description",
                 "license": "Apache-2.0",
                 "author": { "name": "Manifest Author" },
+                "runtime": { "node": ">=20.19", "python": ">=3.11" },
                 "interface": {
                     "displayName": "Manifest Plugin",
                     "category": "Science"
                 },
-                "skills": "skills"
+                "skills": "skills",
+                "commands": "commands",
+                "agents": "agents",
+                "hooks": "hooks.json",
+                "mcpServers": {
+                    "demo": {
+                        "type": "stdio",
+                        "command": "node",
+                        "args": ["${PLUGIN_ROOT}/server.js"]
+                    }
+                },
+                "apps": ".app.json",
+                "outputStyles": "output-styles"
             }),
         );
 
@@ -9687,6 +9794,23 @@ mod tests {
         assert_eq!(entry.version.as_deref(), Some("2.3.4"));
         assert_eq!(entry.category.as_deref(), Some("Science"));
         assert_eq!(entry.source_kind, "github");
+        assert_eq!(
+            entry.source_commit.as_deref(),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert_eq!(entry.skill_count, 1);
+        assert_eq!(entry.command_count, 1);
+        assert_eq!(entry.agent_count, 1);
+        assert_eq!(entry.hook_count, 1);
+        assert_eq!(entry.mcp_count, 1);
+        assert_eq!(entry.app_count, 1);
+        assert_eq!(entry.output_style_count, 1);
+        assert!(entry.runtime_required);
+        assert_eq!(
+            entry.runtime_requirements,
+            vec!["node >=20.19".to_string(), "python >=3.11".to_string()]
+        );
+        assert!(!entry.has_runtime_payload);
         assert!(entry.installable);
 
         let snapshot =
@@ -9695,6 +9819,9 @@ mod tests {
         assert!(snapshot.contains(r#""name": "manifest-plugin""#));
         assert!(snapshot.contains(r#""manifestPath": ".codex-plugin/plugin.json""#));
         assert!(snapshot.contains(r#""sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb""#));
+        assert!(snapshot.contains(r#""components""#));
+        assert!(snapshot.contains(r#""runtime""#));
+        assert!(snapshot.contains(r#""node >=20.19""#));
         assert!(!snapshot.contains("gh.llkk.cc"));
         assert!(!snapshot.contains("gh-proxy.com"));
 
