@@ -7614,18 +7614,27 @@ mod tests {
         version: &str,
         extra_files: &[(&str, &[u8])],
     ) {
+        let manifest = serde_json::json!({
+            "name": plugin_name,
+            "version": version,
+            "skills": "skills",
+        });
+        write_plugin_zip_with_manifest(archive, root_name, manifest, extra_files);
+    }
+
+    fn write_plugin_zip_with_manifest(
+        archive: &Path,
+        root_name: &str,
+        manifest: serde_json::Value,
+        extra_files: &[(&str, &[u8])],
+    ) {
         if let Some(parent) = archive.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
         let file = File::create(archive).unwrap();
         let mut zip = zip::ZipWriter::new(file);
         let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
-        let manifest = serde_json::json!({
-            "name": plugin_name,
-            "version": version,
-            "skills": "skills",
-        })
-        .to_string();
+        let manifest = serde_json::to_string(&manifest).unwrap();
 
         zip.start_file(format!("{root_name}/.codex-plugin/plugin.json"), opts)
             .unwrap();
@@ -10833,6 +10842,131 @@ deepagent-definitely-missing-runtime-cli --version
         assert!(!snapshot.contains("gh.llkk.cc"));
         assert!(!snapshot.contains("gh-proxy.com"));
         assert!(!snapshot.contains(&archive.display().to_string()));
+
+        match old_skip_clone {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE"),
+        }
+        match old_download_source {
+            Some(path) => std::env::set_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE", path),
+            None => std::env::remove_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE"),
+        }
+    }
+
+    #[test]
+    fn github_archive_fallback_installs_dsh_sidecar_and_runs_health_probe() {
+        if !probe_runtime("node", &["--version"]) {
+            eprintln!("skipping: node runtime is not available");
+            return;
+        }
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let sha = "fedcba9876543210fedcba9876543210fedcba98";
+        let archive = tmp.path().join("fixtures").join("sidecar-plugin.zip");
+        let old_skip_clone = std::env::var_os("DEEPAGENT_TEST_GITHUB_SKIP_CLONE");
+        let old_download_source = std::env::var_os("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE");
+        std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", "1");
+        std::env::set_var(
+            "DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE",
+            archive.display().to_string(),
+        );
+
+        let mcp_config = serde_json::json!({
+            "mcpServers": {
+                "dsh-local": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": ["server.js"],
+                    "cwd": "${PLUGIN_ROOT}"
+                }
+            }
+        })
+        .to_string();
+        let manifest = serde_json::json!({
+            "name": "sidecar-demo",
+            "version": "0.1.0",
+            "skills": "skills",
+            "mcpServers": ".mcp.json",
+        });
+        write_plugin_zip_with_manifest(
+            &archive,
+            "deepseek-ai-sidecar-demo-fedcba9",
+            manifest,
+            &[
+                (".mcp.json", mcp_config.as_bytes()),
+                ("server.js", minimal_mcp_node_server().as_bytes()),
+                ("README.md", b"# Sidecar Demo\n"),
+                ("LICENSE", b"MIT\n"),
+            ],
+        );
+        let marketplace_root = tmp.path().join("remote-marketplace");
+        std::fs::create_dir_all(&marketplace_root).unwrap();
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            format!(
+                r#"{{
+                  "name": "remote",
+                  "plugins": [
+                    {{
+                      "name": "sidecar-demo",
+                      "version": "0.1.0",
+                      "source": {{
+                        "source": "github",
+                        "repo": "deepseek-ai/sidecar-demo",
+                        "sha": "{sha}"
+                      }}
+                    }}
+                  ]
+                }}"#
+            ),
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("remote".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let prepared = svc
+            .prepare_plugin_install("remote", "sidecar-demo", false)
+            .unwrap();
+        assert_eq!(
+            prepared.runtime_inspection.execution_kind,
+            PluginExecutionKind::DshSidecar
+        );
+        assert!(prepared
+            .runtime_inspection
+            .entrypoints
+            .iter()
+            .any(|entrypoint| entrypoint.ends_with(".mcp.json")));
+
+        let installed = svc.commit_plugin_install(&prepared.token).unwrap();
+
+        assert_eq!(installed.id, "sidecar-demo@remote");
+        assert_eq!(installed.execution_kind, PluginExecutionKind::DshSidecar);
+        assert_eq!(installed.health_status, PluginHealthStatus::Ready);
+        assert_eq!(installed.state, PluginLifecycleState::Executable);
+        assert!(installed.health_error.is_none());
+        assert!(svc
+            .data_root
+            .join(sanitize_file_name("sidecar-demo@remote"))
+            .is_dir());
+        assert!(roots
+            .marketplace_cache
+            .join("remote")
+            .join("sidecar-demo")
+            .join("0.1.0")
+            .join("server.js")
+            .is_file());
+        let state = svc.load_state().unwrap();
+        let health = state.health_checks.get("sidecar-demo@remote").unwrap();
+        assert_eq!(health.status, PluginHealthStatus::Ready);
+        assert!(health.error.is_none());
 
         match old_skip_clone {
             Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", value),
