@@ -1981,7 +1981,7 @@ impl PluginService {
                 name: &loaded.name,
                 source_priority: plugin_runtime_priority(loaded.origin),
                 root: &loaded.root,
-                data_dir,
+                data_dir: data_dir.clone(),
                 plugin: resolved,
             }]);
 
@@ -2029,6 +2029,15 @@ impl PluginService {
                         )),
                     ),
                 }));
+            }
+        }
+
+        if plugin.execution_kind == PluginExecutionKind::DshSidecar {
+            if let Err(error) = verify_plugin_data_writable(&data_dir) {
+                return Ok(Some((PluginHealthStatus::Incomplete, Some(error))));
+            }
+            if let Some(failure) = dsh_sidecar_health_failure(&projection.mcp_config) {
+                return Ok(Some(failure));
             }
         }
 
@@ -3047,6 +3056,329 @@ fn runtime_payload_health_error(plugin_root: &Path, data_dir: &Path) -> Option<S
         }
     }
     None
+}
+
+fn dsh_sidecar_health_failure(
+    mcp_config: &McpConfig,
+) -> Option<(PluginHealthStatus, Option<String>)> {
+    for (server_name, server) in &mcp_config.servers {
+        let transport = match server.effective_type() {
+            Ok(transport) => transport,
+            Err(error) => {
+                return Some((
+                    PluginHealthStatus::Failed,
+                    Some(format!("MCP sidecar '{server_name}' is invalid: {error}")),
+                ));
+            }
+        };
+        if transport != TransportType::Stdio {
+            continue;
+        }
+        let Some(command) = server
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return Some((
+                PluginHealthStatus::Failed,
+                Some(format!("MCP sidecar '{server_name}' is missing a command")),
+            ));
+        };
+        let cwd = server.cwd.as_deref();
+        if let Some(cwd) = cwd.filter(|path| !path.is_dir()) {
+            return Some((
+                PluginHealthStatus::Incomplete,
+                Some(format!(
+                    "MCP sidecar '{server_name}' cwd does not exist: {}",
+                    cwd.display()
+                )),
+            ));
+        }
+        let resolved_command = match resolve_sidecar_command(command, cwd) {
+            Ok(command) => command,
+            Err(failure) => {
+                return Some((
+                    failure.status,
+                    Some(format!("MCP sidecar '{server_name}' {}", failure.message)),
+                ));
+            }
+        };
+        if let Some(failure) = sidecar_script_health_failure(
+            server_name,
+            command,
+            &resolved_command,
+            &server.args,
+            cwd,
+        ) {
+            return Some(failure);
+        }
+    }
+    None
+}
+
+#[derive(Debug)]
+struct SidecarHealthFailure {
+    status: PluginHealthStatus,
+    message: String,
+}
+
+fn resolve_sidecar_command(
+    command: &str,
+    cwd: Option<&Path>,
+) -> std::result::Result<PathBuf, SidecarHealthFailure> {
+    if command_has_path_separator(command) {
+        let path = PathBuf::from(command);
+        let resolved = if path.is_absolute() {
+            path
+        } else {
+            cwd.unwrap_or_else(|| Path::new(".")).join(path)
+        };
+        if resolved.is_file() {
+            return Ok(resolved);
+        }
+        return Err(SidecarHealthFailure {
+            status: PluginHealthStatus::Incomplete,
+            message: format!("command path is missing: {}", resolved.display()),
+        });
+    }
+
+    if let Some(path) = find_command_on_path(command) {
+        return Ok(path);
+    }
+    for env_key in external_command_env_keys(command) {
+        if let Some(path) = std::env::var_os(env_key).filter(|value| !value.is_empty()) {
+            let path = PathBuf::from(path);
+            if path.is_file() {
+                return Ok(path);
+            }
+        }
+    }
+
+    Err(SidecarHealthFailure {
+        status: PluginHealthStatus::RuntimeUnavailable,
+        message: format!("command is not available on PATH: {command}"),
+    })
+}
+
+fn sidecar_script_health_failure(
+    server_name: &str,
+    command: &str,
+    resolved_command: &Path,
+    args: &[String],
+    cwd: Option<&Path>,
+) -> Option<(PluginHealthStatus, Option<String>)> {
+    let entrypoint = sidecar_script_entrypoint(command, resolved_command, args, cwd)?;
+    let entrypoint = match entrypoint {
+        Ok(entrypoint) => entrypoint,
+        Err(error) => {
+            return Some((
+                PluginHealthStatus::Incomplete,
+                Some(format!("MCP sidecar '{server_name}' {error}")),
+            ));
+        }
+    };
+    if is_node_entrypoint(&entrypoint) {
+        return node_sidecar_syntax_failure(server_name, &entrypoint, resolved_command);
+    }
+    if entrypoint
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+    {
+        return python_sidecar_syntax_failure(server_name, &entrypoint, resolved_command);
+    }
+    None
+}
+
+fn sidecar_script_entrypoint(
+    command: &str,
+    resolved_command: &Path,
+    args: &[String],
+    cwd: Option<&Path>,
+) -> Option<std::result::Result<PathBuf, String>> {
+    if is_node_program(command) || is_node_program_path(resolved_command) {
+        return Some(resolve_sidecar_arg_script(args, cwd, is_node_entrypoint));
+    }
+    if is_python_program(command) || is_python_program_path(resolved_command) {
+        return Some(resolve_sidecar_arg_script(args, cwd, |path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+        }));
+    }
+    if is_node_entrypoint(resolved_command)
+        || resolved_command
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+    {
+        return Some(Ok(resolved_command.to_path_buf()));
+    }
+    None
+}
+
+fn resolve_sidecar_arg_script(
+    args: &[String],
+    cwd: Option<&Path>,
+    predicate: impl Fn(&Path) -> bool,
+) -> std::result::Result<PathBuf, String> {
+    for arg in args {
+        if arg == "--" {
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        let path = PathBuf::from(arg);
+        if !predicate(&path) {
+            continue;
+        }
+        let resolved = if path.is_absolute() {
+            path
+        } else {
+            cwd.unwrap_or_else(|| Path::new(".")).join(path)
+        };
+        if resolved.is_file() {
+            return Ok(resolved);
+        }
+        return Err(format!(
+            "script entrypoint is missing: {}",
+            resolved.display()
+        ));
+    }
+    Err("does not declare a script entrypoint argument".to_string())
+}
+
+fn node_sidecar_syntax_failure(
+    server_name: &str,
+    entrypoint: &Path,
+    node_command: &Path,
+) -> Option<(PluginHealthStatus, Option<String>)> {
+    let output = Command::new(node_command)
+        .arg("--check")
+        .arg(entrypoint)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => None,
+        Ok(output) => Some((
+            PluginHealthStatus::Incomplete,
+            Some(format!(
+                "MCP sidecar '{server_name}' node entrypoint '{}' failed syntax check: {}",
+                entrypoint.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+        )),
+        Err(error) => Some((
+            PluginHealthStatus::RuntimeUnavailable,
+            Some(format!(
+                "MCP sidecar '{server_name}' node command could not run syntax check: {error}"
+            )),
+        )),
+    }
+}
+
+fn python_sidecar_syntax_failure(
+    server_name: &str,
+    entrypoint: &Path,
+    python_command: &Path,
+) -> Option<(PluginHealthStatus, Option<String>)> {
+    let output = Command::new(python_command)
+        .arg("-m")
+        .arg("py_compile")
+        .arg(entrypoint)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => None,
+        Ok(output) => Some((
+            PluginHealthStatus::Incomplete,
+            Some(format!(
+                "MCP sidecar '{server_name}' python entrypoint '{}' failed syntax check: {}",
+                entrypoint.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+        )),
+        Err(error) => Some((
+            PluginHealthStatus::RuntimeUnavailable,
+            Some(format!(
+                "MCP sidecar '{server_name}' python command could not run syntax check: {error}"
+            )),
+        )),
+    }
+}
+
+fn command_has_path_separator(command: &str) -> bool {
+    command.contains('/') || command.contains('\\')
+}
+
+fn find_command_on_path(command: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let candidates = command_name_candidates(command);
+    for dir in std::env::split_paths(&path) {
+        for candidate in &candidates {
+            let path = dir.join(candidate);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn command_name_candidates(command: &str) -> Vec<String> {
+    let mut candidates = vec![command.to_string()];
+    #[cfg(windows)]
+    {
+        if Path::new(command).extension().is_none() {
+            let pathext =
+                std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+            for ext in pathext.split(';').filter(|ext| !ext.trim().is_empty()) {
+                candidates.push(format!("{command}{}", ext.trim().to_ascii_lowercase()));
+                candidates.push(format!("{command}{}", ext.trim().to_ascii_uppercase()));
+            }
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn is_node_program(command: &str) -> bool {
+    matches!(
+        Path::new(command)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(|stem| stem.to_ascii_lowercase())
+            .as_deref(),
+        Some("node")
+    )
+}
+
+fn is_node_program_path(path: &Path) -> bool {
+    is_node_program(
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default(),
+    )
+}
+
+fn is_python_program(command: &str) -> bool {
+    matches!(
+        Path::new(command)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(|stem| stem.to_ascii_lowercase())
+            .as_deref(),
+        Some("python" | "python3")
+    )
+}
+
+fn is_python_program_path(path: &Path) -> bool {
+    is_python_program(
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default(),
+    )
 }
 
 fn verify_plugin_data_writable(data_dir: &Path) -> std::result::Result<(), String> {
@@ -7349,6 +7681,48 @@ mod tests {
         .unwrap();
     }
 
+    fn write_plugin_with_stdio_mcp(
+        root: &Path,
+        name: &str,
+        command: &str,
+        args: Vec<&str>,
+        cwd: Option<&str>,
+    ) {
+        write_plugin(root, name);
+        std::fs::write(
+            root.join(".codex-plugin").join("plugin.json"),
+            serde_json::json!({
+                "name": name,
+                "version": "0.1.0",
+                "skills": "skills",
+                "mcpServers": ".mcp.json",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut server = serde_json::json!({
+            "type": "stdio",
+            "command": command,
+            "args": args,
+        });
+        if let Some(cwd) = cwd {
+            server.as_object_mut().unwrap().insert(
+                "cwd".to_string(),
+                serde_json::Value::String(cwd.to_string()),
+            );
+        }
+        std::fs::write(
+            root.join(".mcp.json"),
+            serde_json::json!({
+                "mcpServers": {
+                    "local": server
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     fn write_plugin_with_command(root: &Path, name: &str) {
         write_plugin_with_version_and_dependencies(root, name, "0.1.0", &[]);
         std::fs::create_dir_all(root.join("commands")).unwrap();
@@ -7653,6 +8027,109 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("authorization"));
+    }
+
+    #[test]
+    fn check_plugin_health_verifies_dsh_stdio_mcp_sidecar_entrypoint_and_plugin_data() {
+        if !probe_runtime("node", &["--version"]) {
+            eprintln!("skipping: node runtime is not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("sidecar-plugin");
+        write_plugin_with_stdio_mcp(
+            &root,
+            "sidecar-plugin",
+            "node",
+            vec!["server.js"],
+            Some("${PLUGIN_ROOT}"),
+        );
+        std::fs::write(root.join("server.js"), "process.stdin.resume();\n").unwrap();
+        let app_data = tmp.path().join("app-data");
+        let svc = PluginService::new(roots, &app_data);
+
+        let before = svc.read("sidecar-plugin@builtin").unwrap().unwrap();
+        assert_eq!(before.execution_kind, PluginExecutionKind::DshSidecar);
+        assert_eq!(before.health_status, PluginHealthStatus::Ready);
+
+        let checked = svc
+            .check_plugin_health("sidecar-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(checked.health_status, PluginHealthStatus::Ready);
+        assert_eq!(checked.state, PluginLifecycleState::Executable);
+        assert!(checked.health_error.is_none());
+        assert!(
+            svc.data_root
+                .join(sanitize_file_name("sidecar-plugin@builtin"))
+                .is_dir(),
+            "PLUGIN_DATA should be created before a sidecar subprocess is considered healthy"
+        );
+    }
+
+    #[test]
+    fn check_plugin_health_marks_dsh_stdio_mcp_missing_script_incomplete() {
+        if !probe_runtime("node", &["--version"]) {
+            eprintln!("skipping: node runtime is not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("sidecar-plugin");
+        write_plugin_with_stdio_mcp(
+            &root,
+            "sidecar-plugin",
+            "node",
+            vec!["missing.js"],
+            Some("${PLUGIN_ROOT}"),
+        );
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let checked = svc
+            .check_plugin_health("sidecar-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(checked.health_status, PluginHealthStatus::Incomplete);
+        assert_eq!(checked.state, PluginLifecycleState::Incomplete);
+        assert!(checked
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("missing.js"));
+    }
+
+    #[test]
+    fn check_plugin_health_marks_dsh_stdio_mcp_missing_command_runtime_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("sidecar-plugin");
+        write_plugin_with_stdio_mcp(
+            &root,
+            "sidecar-plugin",
+            "deepagent-definitely-missing-sidecar",
+            Vec::new(),
+            Some("${PLUGIN_ROOT}"),
+        );
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let checked = svc
+            .check_plugin_health("sidecar-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            checked.health_status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
+        assert_eq!(checked.state, PluginLifecycleState::Incomplete);
+        assert!(checked
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deepagent-definitely-missing-sidecar"));
     }
 
     #[test]
