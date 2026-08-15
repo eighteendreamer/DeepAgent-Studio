@@ -521,10 +521,37 @@ impl PluginService {
         let Some(plugin) = self.read(id)? else {
             return Ok(None);
         };
+        let (checked_at, health_status, health_error) =
+            self.evaluate_and_persist_plugin_health(id, &plugin)?;
+        self.invalidate_plugin_caches();
+
+        let mut inspection = PluginRuntimeInspectionDto::from_plugin(&plugin);
+        inspection.last_health_check = Some(checked_at);
+        inspection.health_status = health_status;
+        inspection.health_error = health_error;
+        inspection.state = explicit_health_lifecycle_state(inspection.state, health_status);
+        Ok(Some(inspection))
+    }
+
+    fn evaluate_and_persist_plugin_health(
+        &self,
+        id: &str,
+        plugin: &PluginDto,
+    ) -> Result<(String, PluginHealthStatus, Option<String>)> {
         let checked_at = now_string();
         let (health_status, health_error) = self
-            .explicit_plugin_health_override(id, &plugin)?
+            .explicit_plugin_health_override(id, plugin)?
             .unwrap_or((plugin.health_status, plugin.health_error.clone()));
+        self.persist_plugin_health_check(id, checked_at, health_status, health_error)
+    }
+
+    fn persist_plugin_health_check(
+        &self,
+        id: &str,
+        checked_at: String,
+        health_status: PluginHealthStatus,
+        health_error: Option<String>,
+    ) -> Result<(String, PluginHealthStatus, Option<String>)> {
         let mut state = self.load_state()?;
         state.health_checks.insert(
             id.to_string(),
@@ -535,14 +562,47 @@ impl PluginService {
             },
         );
         self.save_state(&state)?;
-        self.invalidate_plugin_caches();
+        Ok((checked_at, health_status, health_error))
+    }
 
-        let mut inspection = PluginRuntimeInspectionDto::from_plugin(&plugin);
-        inspection.last_health_check = Some(checked_at);
-        inspection.health_status = health_status;
-        inspection.health_error = health_error;
-        inspection.state = explicit_health_lifecycle_state(inspection.state, health_status);
-        Ok(Some(inspection))
+    fn refresh_plugin_runtime_and_health_after_install(&self, id: &str) -> Result<()> {
+        self.invalidate_plugin_caches();
+        let data_dir = self.data_root.join(sanitize_file_name(id));
+        std::fs::create_dir_all(&data_dir).map_err(|e| {
+            CoreError::Persistence(format!(
+                "create plugin data dir {} after install: {e}",
+                data_dir.display()
+            ))
+        })?;
+
+        if let Err(error) = self.runtime_projection() {
+            self.persist_plugin_health_check(
+                id,
+                now_string(),
+                PluginHealthStatus::Failed,
+                Some(format!(
+                    "plugin runtime projection refresh failed after install: {error}"
+                )),
+            )?;
+            self.invalidate_plugin_caches();
+            return Ok(());
+        }
+
+        self.invalidate_plugin_caches();
+        let Some(plugin) = self.read(id)? else {
+            return Err(CoreError::not_found(format!("plugin {id}")));
+        };
+        let result = self.evaluate_and_persist_plugin_health(id, &plugin);
+        if let Err(error) = result {
+            self.persist_plugin_health_check(
+                id,
+                now_string(),
+                PluginHealthStatus::Failed,
+                Some(format!("plugin health check failed after install: {error}")),
+            )?;
+        }
+        self.invalidate_plugin_caches();
+        Ok(())
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<PluginDto> {
@@ -664,7 +724,13 @@ impl PluginService {
             let id = plugin_id(&name, PluginOrigin::Personal.as_str());
             let mut state = self.load_state()?;
             state.enabled.entry(id.clone()).or_insert(true);
+            let had_health_check = state.health_checks.contains_key(&id);
             self.save_state(&state)?;
+            if !had_health_check {
+                if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
+                    tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after install");
+                }
+            }
             return self
                 .read(&id)?
                 .ok_or_else(|| CoreError::not_found(format!("plugin {id}")));
@@ -676,6 +742,7 @@ impl PluginService {
         let id = plugin_id(&name, PluginOrigin::Personal.as_str());
         let mut state = self.load_state()?;
         let previous = state.installed.get(&id).cloned();
+        let had_health_check = state.health_checks.contains_key(&id);
         state.enabled.entry(id.clone()).or_insert(true);
         state.installed.insert(
             id.clone(),
@@ -691,6 +758,11 @@ impl PluginService {
             },
         );
         self.save_state(&state)?;
+        if !had_health_check {
+            if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
+                tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after install");
+            }
+        }
         self.read(&id)?
             .ok_or_else(|| CoreError::not_found(format!("plugin {id}")))
     }
@@ -1286,6 +1358,7 @@ impl PluginService {
             let id = plugin_id(&manifest.name, &metadata.marketplace);
             let mut state = self.load_state()?;
             let previous = state.installed.get(&id).cloned();
+            let had_health_check = state.health_checks.contains_key(&id);
             state.enabled.entry(id.clone()).or_insert(true);
             state.installed.insert(
                 id.clone(),
@@ -1303,6 +1376,11 @@ impl PluginService {
             self.save_state(&state).map_err(|error| {
                 plugin_install_failure("commit.write_state", Some(&self.state_path), error)
             })?;
+            if !had_health_check {
+                if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
+                    tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after marketplace commit");
+                }
+            }
             self.read(&id)?
                 .ok_or_else(|| CoreError::not_found(format!("plugin {id}")))
         })();
@@ -1500,6 +1578,7 @@ impl PluginService {
 
         let id = plugin_id(&manifest.name, marketplace_key);
         let mut state = self.load_state()?;
+        let had_health_check = state.health_checks.contains_key(&id);
         state.enabled.insert(id.clone(), true);
         state.installed.insert(
             id.clone(),
@@ -1512,6 +1591,11 @@ impl PluginService {
             },
         );
         self.save_state(&state)?;
+        if !had_health_check {
+            if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
+                tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after marketplace install");
+            }
+        }
         stack.pop();
         self.read(&id)?
             .ok_or_else(|| CoreError::not_found(format!("plugin {id}")))
@@ -9878,6 +9962,9 @@ rl.on('line', (line) => {
             Some(prepared.content_hash.as_str())
         );
         let state = svc.load_state().unwrap();
+        let health = state.health_checks.get("demo@team").unwrap();
+        assert_eq!(health.status, PluginHealthStatus::Ready);
+        assert!(health.error.is_none());
         assert_eq!(
             state
                 .installed
@@ -9885,7 +9972,86 @@ rl.on('line', (line) => {
                 .and_then(|installed| installed.content_hash.as_deref()),
             Some(prepared.content_hash.as_str())
         );
+        assert!(
+            svc.data_root.join(sanitize_file_name("demo@team")).is_dir(),
+            "commit should prepare the install-dir PLUGIN_DATA before health checks"
+        );
         assert!(!Path::new(&prepared.staging_path).exists());
+        assert!(roots
+            .marketplace_cache
+            .join("team")
+            .join("demo")
+            .join("0.1.0")
+            .join(".codex-plugin")
+            .join("plugin.json")
+            .is_file());
+    }
+
+    #[test]
+    fn prepared_marketplace_commit_records_runtime_unavailable_health() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("demo");
+        write_plugin_with_version(&plugin_source, "demo", "0.1.0");
+        std::fs::write(
+            plugin_source.join("README.md"),
+            r#"# Demo
+
+```sh
+deepagent-definitely-missing-runtime-cli --version
+```
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.1.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let prepared = svc.prepare_plugin_install("team", "demo", false).unwrap();
+        let installed = svc.commit_plugin_install(&prepared.token).unwrap();
+
+        assert_eq!(installed.id, "demo@team");
+        assert_eq!(
+            installed.health_status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
+        assert_ne!(installed.state, PluginLifecycleState::Verified);
+        assert_ne!(installed.state, PluginLifecycleState::Executable);
+        assert!(installed
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deepagent-definitely-missing-runtime-cli --version"));
+        let state = svc.load_state().unwrap();
+        let health = state.health_checks.get("demo@team").unwrap();
+        assert_eq!(health.status, PluginHealthStatus::RuntimeUnavailable);
+        assert!(health
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deepagent-definitely-missing-runtime-cli --version"));
         assert!(roots
             .marketplace_cache
             .join("team")
