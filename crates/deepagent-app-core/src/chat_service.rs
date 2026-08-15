@@ -4436,6 +4436,118 @@ mod tests {
     }
 
     #[test]
+    fn chat_service_syncs_plugin_skills_after_install_without_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_roots = crate::plugin_loader::PluginRoots {
+            session: Vec::new(),
+            builtin: tmp.path().join("plugin-builtin"),
+            workspace: None,
+            personal: tmp.path().join("plugins").join("personal"),
+            marketplace_cache: tmp.path().join("plugins").join("cache"),
+            marketplaces: tmp.path().join("plugins").join("marketplaces"),
+        };
+        let plugins = Arc::new(crate::plugin_service::PluginService::new(
+            plugin_roots,
+            tmp.path().join("app-data"),
+        ));
+        let skills = Arc::new(std::sync::Mutex::new(
+            crate::skills_service::SkillsService::open_v2(deepagent_skills::SkillsRoots {
+                builtin: tmp.path().join("skills").join("builtin"),
+                user: tmp.path().join("skills").join("user"),
+                marketplace: tmp.path().join("skills").join("marketplace"),
+                workspace: None,
+            })
+            .unwrap(),
+        ));
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let secrets = Arc::new(MemorySecretStore::new());
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            discovery_transport(),
+            secrets,
+        ));
+        let chat = ChatService::new(db, settings, chat_transport(), tmp.path())
+            .with_plugins(plugins.clone())
+            .with_skills(skills.clone());
+
+        let initial_projection = chat.sync_plugin_runtime().unwrap().unwrap();
+        assert!(initial_projection.skill_roots.is_empty());
+        assert!(!skills
+            .lock()
+            .unwrap()
+            .manager()
+            .registry()
+            .contains("plugin-planning"));
+
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("chat-live");
+        std::fs::create_dir_all(plugin_source.join(".codex-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_source.join("skills").join("plugin-planning")).unwrap();
+        std::fs::write(
+            plugin_source.join(".codex-plugin").join("plugin.json"),
+            serde_json::json!({
+                "name": "chat-live",
+                "version": "0.1.0",
+                "skills": "skills"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_source
+                .join("skills")
+                .join("plugin-planning")
+                .join("SKILL.md"),
+            "---\nname: plugin-planning\ndescription: Plan with the freshly installed plugin\n---\nUse the live plugin skill.",
+        )
+        .unwrap();
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "chat-live",
+                  "version": "0.1.0",
+                  "description": "Chat runtime sync plugin",
+                  "source": { "source": "local", "path": "./plugins/chat-live" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        plugins
+            .add_marketplace(crate::plugin_marketplace::AddPluginMarketplaceDto {
+                name: Some("team".to_string()),
+                source: marketplace_root.display().to_string(),
+                git_ref: None,
+                sparse_path: None,
+            })
+            .unwrap();
+        let prepared = plugins
+            .prepare_plugin_install("team", "chat-live", false)
+            .unwrap();
+        let installed = plugins.commit_plugin_install(&prepared.token).unwrap();
+        assert_eq!(installed.id, "chat-live@team");
+
+        let refreshed_projection = chat.sync_plugin_runtime().unwrap().unwrap();
+        assert_eq!(refreshed_projection.skill_roots.len(), 1);
+        assert!(refreshed_projection.skill_roots[0].ends_with("skills"));
+        let skills_guard = skills.lock().unwrap();
+        assert_eq!(
+            skills_guard.plugin_roots(),
+            refreshed_projection.skill_roots.as_slice()
+        );
+        assert!(
+            skills_guard
+                .manager()
+                .registry()
+                .contains("plugin-planning"),
+            "the same ChatService instance must see installed plugin skills without restart"
+        );
+    }
+
+    #[test]
     fn builtin_explore_plan_agents_are_read_only_and_overridable() {
         // With no project/plugin agents, the built-in explore/plan are present.
         let tmp = tempfile::tempdir().unwrap();
