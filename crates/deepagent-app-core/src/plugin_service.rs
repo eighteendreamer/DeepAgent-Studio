@@ -2101,7 +2101,7 @@ impl PluginService {
                 ));
             }
             for component in &binding.components {
-                if !host_app_component_is_renderable(component) {
+                if !host_command_component_target_is_registered(component) {
                     errors.push(format!(
                         "host command '{command_id}' references unregistered host app component '{component}'"
                     ));
@@ -5548,6 +5548,31 @@ fn host_app_component_is_renderable(component: &str) -> bool {
     true
 }
 
+fn host_command_component_target_is_registered(component: &str) -> bool {
+    let component = component.trim().to_ascii_lowercase();
+    if component.is_empty() {
+        return false;
+    }
+    if let Some(name) = component.strip_prefix("builtin:") {
+        return host_plugin_registry()
+            .builtin_components
+            .iter()
+            .any(|registered| registered == name);
+    }
+    if let Some(name) = component.strip_prefix("tauri:") {
+        return host_plugin_registry()
+            .tauri_components
+            .iter()
+            .any(|registered| registered == name);
+    }
+    let registry = host_plugin_registry();
+    registry
+        .builtin_components
+        .iter()
+        .chain(registry.tauri_components.iter())
+        .any(|registered| registered == &component)
+}
+
 fn host_component_name(component: &str) -> String {
     let component = component.trim().to_ascii_lowercase();
     component
@@ -7950,11 +7975,11 @@ rl.on('line', (line) => {
 
         assert_eq!(plugin.execution_kind, PluginExecutionKind::HostBacked);
         assert_eq!(plugin.health_status, PluginHealthStatus::Incomplete);
-        assert!(plugin
-            .health_error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("host app component"));
+        let health_error = plugin.health_error.as_deref().unwrap_or_default();
+        assert!(health_error.contains("host app component"));
+        assert!(health_error.contains(
+            "host command 'control' references unregistered host app component 'computer-use'"
+        ));
     }
 
     #[test]
