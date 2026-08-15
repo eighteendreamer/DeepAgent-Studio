@@ -1105,7 +1105,7 @@ impl PluginService {
             self.read(&id)?
                 .ok_or_else(|| CoreError::not_found(format!("plugin {id}")))
         })();
-        let _ = std::fs::remove_dir_all(&staging);
+        let _ = remove_dir_all_with_retry(&staging);
         result
     }
 
@@ -4479,7 +4479,7 @@ fn commit_plugin_directory(
         replace_plugin_dir(&stage, destination, install_root)
     })();
     if result.is_err() {
-        let _ = std::fs::remove_dir_all(&stage);
+        let _ = remove_dir_all_with_retry(&stage);
     }
     result
 }
@@ -4518,6 +4518,25 @@ fn unique_plugin_staging_path(install_root: &Path, label: &str) -> Result<PathBu
         "failed to allocate plugin staging dir under {}",
         base.display()
     )))
+}
+
+fn remove_dir_all_with_retry(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut last_error = None;
+    for attempt in 0..5 {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 4 {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap())
 }
 
 fn replace_plugin_dir(stage: &Path, destination: &Path, install_root: &Path) -> Result<()> {
@@ -5666,6 +5685,42 @@ mod tests {
             .map(|entries| entries.count())
             .unwrap_or_default();
         assert_eq!(staged_entries, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replace_plugin_dir_restores_previous_version_and_cleans_staging_after_lock_release() {
+        let tmp = tempfile::tempdir().unwrap();
+        let install_root = tmp.path().join("install-root");
+        let destination = install_root.join("demo");
+        let stage = install_root.join(".staging").join("demo");
+        write_plugin_with_version(&destination, "demo", "0.1.0");
+        write_plugin_with_version(&stage, "demo", "0.2.0");
+
+        let lock_path = stage.join(".codex-plugin").join("plugin.json");
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(lock);
+        });
+
+        let err = replace_plugin_dir(&stage, &destination, &install_root).unwrap_err();
+        release.join().unwrap();
+
+        assert!(err.to_string().contains("restored"));
+        assert!(destination
+            .join(".codex-plugin")
+            .join("plugin.json")
+            .is_file());
+        let manifest =
+            std::fs::read_to_string(destination.join(".codex-plugin").join("plugin.json")).unwrap();
+        assert!(manifest.contains("\"0.1.0\""));
+        assert!(!manifest.contains("\"0.2.0\""));
+        assert!(!stage.exists());
     }
 
     #[test]
