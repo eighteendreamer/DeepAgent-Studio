@@ -454,9 +454,13 @@ fn raw_manifest_to_manifest(
     match raw_paths.hooks.or(hooks) {
         Some(spec) => apply_hooks_spec(root, spec, &mut paths)?,
         None => {
-            let default_path = root.join("hooks").join("hooks.json");
-            if default_path.is_file() {
-                paths.hook_paths.push(default_path);
+            for default_path in [
+                root.join("hooks.json"),
+                root.join("hooks").join("hooks.json"),
+            ] {
+                if default_path.is_file() {
+                    paths.hook_paths.push(default_path);
+                }
             }
         }
     }
@@ -1141,6 +1145,20 @@ mod tests {
         assert_eq!(
             inline["hooks"]["PostToolUse"].as_array().map(Vec::len),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn root_hooks_json_is_a_default_hook_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(&tmp.path().join("hooks.json"), r#"{"hooks":{}}"#);
+        write(&tmp.path().join("plugin.json"), r#"{"name": "root-hooks"}"#);
+
+        let manifest = load_plugin_manifest(tmp.path()).unwrap().unwrap();
+
+        assert_eq!(
+            manifest.paths.hook_paths,
+            vec![tmp.path().join("hooks.json")]
         );
     }
 }

@@ -11,7 +11,7 @@ const EXPECTED: &[(&str, u32, u32, u32, u32, u32, u32)] = &[
     ("boltz-api-cli", 8, 0, 0, 0, 0, 0),
     ("browser", 0, 0, 0, 1, 1, 0),
     ("computer-use", 0, 0, 0, 1, 1, 0),
-    ("figma", 12, 1, 0, 4, 1, 0),
+    ("figma", 12, 1, 1, 4, 1, 0),
     ("files", 0, 0, 0, 1, 1, 0),
     ("meeting-recorder", 0, 0, 0, 1, 1, 0),
     ("office-agent", 0, 0, 0, 1, 1, 1),
