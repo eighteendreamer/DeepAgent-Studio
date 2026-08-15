@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use deepagent_app_core::plugin_loader::{load_plugins, PluginLoadError, PluginRoots};
+use deepagent_app_core::{
+    PluginExecutionKind, PluginHealthStatus, PluginLifecycleState, PluginService,
+};
 use deepagent_skills::{loader, SkillOrigin, SkillRegistry};
 
 const EXPECTED: &[(&str, u32, u32, u32, u32, u32, u32)] = &[
@@ -207,6 +210,74 @@ fn complete_bundled_plugins_are_real_resources() {
 }
 
 #[test]
+fn bundled_figma_requires_authorization_and_projects_real_runtime_entries() {
+    let root = bundled_plugins_root();
+    if !root.is_dir() {
+        eprintln!("skipping: bundled plugin resources are not present");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = PluginService::new(
+        PluginRoots {
+            session: Vec::new(),
+            builtin: root.clone(),
+            workspace: None,
+            personal: tmp.path().join("personal"),
+            marketplace_cache: tmp.path().join("cache"),
+            marketplaces: tmp.path().join("marketplaces"),
+        },
+        tmp.path().join("app-data"),
+    );
+
+    let figma = svc.read("figma@builtin").unwrap().expect("bundled figma");
+
+    assert_eq!(figma.execution_kind, PluginExecutionKind::DshSidecar);
+    assert_eq!(figma.health_status, PluginHealthStatus::NeedsAuthorization);
+    assert_eq!(figma.state, PluginLifecycleState::RuntimeReady);
+    assert_eq!(figma.skill_count, 12);
+    assert_eq!(figma.command_count, 4);
+    assert_eq!(figma.agent_count, 4);
+    assert_eq!(figma.hook_count, 1);
+    assert_eq!(figma.mcp_server_count, 1);
+    assert_eq!(figma.app_count, 1);
+    assert!(figma
+        .health_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("authorization"));
+
+    let projection = svc.runtime_projection().unwrap();
+    assert!(projection
+        .mcp_server_sources
+        .values()
+        .any(|source| source.plugin_id == "figma@builtin" && source.declared_name == "figma"));
+    assert!(projection
+        .hook_definitions
+        .hooks
+        .get("PostToolUse")
+        .into_iter()
+        .flatten()
+        .any(|group| group.matcher.as_deref() == Some("Write|Edit")
+            && group.hooks.iter().any(|hook| hook
+                .command
+                .replace('\\', "/")
+                .ends_with("figma/scripts/post_write_figma_parity_check.sh"))));
+    assert!(projection
+        .connector_entries
+        .iter()
+        .any(|connector| connector.plugin_id == "figma@builtin"
+            && connector.provider == "figma"
+            && connector.id == "connector_68df038e0ba48191908c8434991bbac2"));
+    assert!(
+        !projection
+            .app_entries
+            .iter()
+            .any(|app| app.plugin_id == "figma@builtin"),
+        "figma connector must not be exposed as a renderable builtin app"
+    );
+}
+
+#[test]
 fn superpowers_core_skills_match_and_activate_from_real_bundle() {
     let Some(registry) = superpowers_registry() else {
         eprintln!("skipping: bundled superpowers plugin resource is not present");
@@ -291,8 +362,7 @@ fn superpowers_skill_resources_are_discoverable_on_activation() {
 }
 
 fn superpowers_registry() -> Option<SkillRegistry> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/desktop/src-tauri/resources/plugins/superpowers/skills");
+    let root = bundled_plugins_root().join("superpowers/skills");
     if !root.is_dir() {
         return None;
     }
@@ -303,6 +373,10 @@ fn superpowers_registry() -> Option<SkillRegistry> {
         registry.register(skill);
     }
     Some(registry)
+}
+
+fn bundled_plugins_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop/src-tauri/resources/plugins")
 }
 
 #[test]

@@ -1665,7 +1665,7 @@ impl PluginService {
             }
         }
 
-        if manifest.is_some_and(manifest_has_oauth_mcp) {
+        if manifest.is_some_and(manifest_needs_host_authorization) {
             return PluginHealthStatus::NeedsAuthorization;
         }
         if !missing_credential_env_hints(&plugin.root).is_empty() {
@@ -3932,6 +3932,10 @@ fn manifest_has_host_backed_app(manifest: &PluginManifest) -> bool {
         })
 }
 
+fn manifest_needs_host_authorization(manifest: &PluginManifest) -> bool {
+    manifest_has_oauth_mcp(manifest) || manifest_has_connector_app(manifest)
+}
+
 fn manifest_has_oauth_mcp(manifest: &PluginManifest) -> bool {
     manifest
         .paths
@@ -3946,6 +3950,30 @@ fn manifest_has_oauth_mcp(manifest: &PluginManifest) -> bool {
             .is_some_and(|value| {
                 json_contains_key(value, |key| key.to_ascii_lowercase().contains("oauth"))
             })
+}
+
+fn manifest_has_connector_app(manifest: &PluginManifest) -> bool {
+    manifest
+        .paths
+        .app_paths
+        .iter()
+        .filter_map(read_json_file)
+        .any(|value| {
+            value
+                .get("apps")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|apps| {
+                    apps.values().any(|app| {
+                        app.as_object().is_some_and(|object| {
+                            object
+                                .get("id")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|id| !id.trim().is_empty())
+                                && !object.contains_key("component")
+                        })
+                    })
+                })
+        })
 }
 
 fn read_json_file(path: &PathBuf) -> Option<serde_json::Value> {
@@ -4996,6 +5024,55 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("host app component"));
+    }
+
+    #[test]
+    fn connector_only_app_requires_host_authorization_without_becoming_host_backed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("connector-demo");
+        write_plugin(&root, "connector-demo");
+        std::fs::write(
+            root.join(".codex-plugin").join("plugin.json"),
+            serde_json::json!({
+                "name": "connector-demo",
+                "version": "0.1.0",
+                "skills": "skills",
+                "apps": ".app.json",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".app.json"),
+            serde_json::json!({
+                "apps": {
+                    "design-provider": {
+                        "id": "connector_test_123"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("connector-demo@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.execution_kind, PluginExecutionKind::DshSidecar);
+        assert_eq!(plugin.health_status, PluginHealthStatus::NeedsAuthorization);
+        assert_eq!(plugin.state, PluginLifecycleState::RuntimeReady);
+        assert!(plugin
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("authorization"));
+
+        let projection = svc.runtime_projection().unwrap();
+        assert!(projection.app_entries.is_empty());
+        assert_eq!(projection.connector_entries.len(), 1);
+        assert_eq!(projection.connector_entries[0].provider, "design-provider");
+        assert_eq!(projection.connector_entries[0].id, "connector_test_123");
     }
 
     #[test]
