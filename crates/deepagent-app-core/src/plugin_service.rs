@@ -1630,7 +1630,8 @@ impl PluginService {
 
     fn runtime_requirements_available(&self, needs: &PluginRuntimeNeeds) -> bool {
         (!needs.node || probe_runtime("node", &["--version"]))
-            && (!needs.python || probe_runtime("python", &["--version"]))
+            && (!needs.python || python_runtime_candidate().is_some())
+            && missing_python_imports(needs).is_empty()
             && (!needs.java || probe_runtime("java", &["-version"]))
             && (!needs.shell || probe_shell())
     }
@@ -4469,13 +4470,14 @@ fn find_first_archive(dir: &Path, predicate: impl Fn(&Path) -> bool) -> Result<O
 struct PluginRuntimeNeeds {
     node: bool,
     python: bool,
+    python_imports: BTreeSet<String>,
     java: bool,
     shell: bool,
 }
 
 impl PluginRuntimeNeeds {
     fn is_empty(&self) -> bool {
-        !self.node && !self.python && !self.java && !self.shell
+        !self.node && !self.python && self.python_imports.is_empty() && !self.java && !self.shell
     }
 
     fn requires_runtime(&self) -> bool {
@@ -4508,6 +4510,16 @@ impl PluginRuntimeNeeds {
                 self.shell = true;
             }
             _ => {}
+        }
+    }
+
+    fn merge_python_requirements_file(&mut self, path: &Path) {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        for import_name in python_requirement_imports(&text) {
+            self.python = true;
+            self.python_imports.insert(import_name);
         }
     }
 }
@@ -4902,6 +4914,14 @@ fn scan_runtime_script_dirs(root: &Path, needs: &mut PluginRuntimeNeeds) {
             if !file_type.is_file() {
                 continue;
             }
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("requirements.txt"))
+            {
+                needs.merge_python_requirements_file(&path);
+                continue;
+            }
             if !is_script_file(&path) && !is_script_dir {
                 continue;
             }
@@ -4969,6 +4989,15 @@ fn probe_runtime(program: &str, args: &[&str]) -> bool {
 fn runtime_probe_candidates(program: &str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     candidates.push(PathBuf::from(program));
+    if matches!(
+        program.to_ascii_lowercase().as_str(),
+        "python" | "python.exe"
+    ) && !candidates
+        .iter()
+        .any(|candidate| candidate == &PathBuf::from("python3"))
+    {
+        candidates.push(PathBuf::from("python3"));
+    }
     if let Some(env_key) = runtime_env_key(program) {
         if let Some(path) = std::env::var_os(env_key).filter(|value| !value.is_empty()) {
             let path = PathBuf::from(path);
@@ -4978,6 +5007,41 @@ fn runtime_probe_candidates(program: &str) -> Vec<PathBuf> {
         }
     }
     candidates
+}
+
+fn python_runtime_candidate() -> Option<PathBuf> {
+    runtime_probe_candidates("python")
+        .into_iter()
+        .find(|candidate| {
+            Command::new(candidate)
+                .arg("--version")
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        })
+}
+
+fn missing_python_imports(needs: &PluginRuntimeNeeds) -> Vec<String> {
+    if needs.python_imports.is_empty() {
+        return Vec::new();
+    }
+    let Some(python) = python_runtime_candidate() else {
+        return needs.python_imports.iter().cloned().collect();
+    };
+    needs
+        .python_imports
+        .iter()
+        .filter(|import_name| {
+            let script = format!("import {import_name}");
+            !Command::new(&python)
+                .arg("-c")
+                .arg(script)
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect()
 }
 
 fn runtime_env_key(program: &str) -> Option<&'static str> {
@@ -5019,6 +5083,44 @@ fn probe_shell() -> bool {
     })
 }
 
+fn python_requirement_imports(text: &str) -> BTreeSet<String> {
+    text.lines()
+        .filter_map(python_requirement_import_name)
+        .collect()
+}
+
+fn python_requirement_import_name(line: &str) -> Option<String> {
+    let line = line.split('#').next().unwrap_or_default().trim();
+    if line.is_empty()
+        || line.starts_with('-')
+        || line.starts_with('.')
+        || line.starts_with("git+")
+        || line.starts_with("http://")
+        || line.starts_with("https://")
+    {
+        return None;
+    }
+    let package = line
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .split(['<', '>', '=', '!', '~'])
+        .next()
+        .unwrap_or_default()
+        .split('[')
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if package.is_empty()
+        || !package
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        return None;
+    }
+    Some(package.replace('-', "_"))
+}
+
 fn format_runtime_unavailable(needs: &PluginRuntimeNeeds) -> String {
     let mut parts = Vec::new();
     if needs.node {
@@ -5033,10 +5135,24 @@ fn format_runtime_unavailable(needs: &PluginRuntimeNeeds) -> String {
     if needs.shell {
         parts.push("shell");
     }
+    let missing_imports = missing_python_imports(needs);
     if parts.is_empty() {
-        "runtime is unavailable".to_string()
-    } else {
+        if missing_imports.is_empty() {
+            "runtime is unavailable".to_string()
+        } else {
+            format!(
+                "python dependency imports unavailable: {}",
+                missing_imports.join(", ")
+            )
+        }
+    } else if missing_imports.is_empty() {
         format!("runtime unavailable: {}", parts.join(", "))
+    } else {
+        format!(
+            "runtime unavailable: {}; python dependency imports unavailable: {}",
+            parts.join(", "),
+            missing_imports.join(", ")
+        )
     }
 }
 
@@ -6674,6 +6790,55 @@ mod tests {
             .entrypoints
             .iter()
             .any(|entrypoint| entrypoint.ends_with("skills")));
+    }
+
+    #[test]
+    fn python_requirements_mark_missing_imports_unavailable_without_name_hardcoding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("analysis-plugin");
+        write_plugin(&root, "analysis-plugin");
+        std::fs::create_dir_all(root.join("skills").join("demo").join("scripts")).unwrap();
+        std::fs::write(
+            root.join("skills")
+                .join("demo")
+                .join("scripts")
+                .join("requirements.txt"),
+            "deepagent-definitely-missing-python-dependency-xyz==0.0.1\n",
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("analysis-plugin@builtin").unwrap().unwrap();
+
+        assert!(plugin.runtime_required);
+        assert!(!plugin.runtime_available);
+        assert_eq!(plugin.health_status, PluginHealthStatus::RuntimeUnavailable);
+        assert!(plugin
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deepagent_definitely_missing_python_dependency_xyz"));
+    }
+
+    #[test]
+    fn python_requirements_parser_handles_versions_markers_and_comments() {
+        let imports = python_requirement_imports(
+            r#"
+            # Probe first with python -c "import gemmi, numpy"
+            gemmi==0.7.5
+            numpy==1.26.4; python_version < "3.11"
+            numpy==2.4.6; python_version >= "3.11"
+            opencv-python[headless]>=4.0 # distribution name differs from import in some packages
+            -r nested.txt
+            https://example.invalid/pkg.tar.gz
+            "#,
+        );
+
+        assert!(imports.contains("gemmi"));
+        assert!(imports.contains("numpy"));
+        assert!(imports.contains("opencv_python"));
+        assert_eq!(imports.len(), 3);
     }
 
     #[test]
