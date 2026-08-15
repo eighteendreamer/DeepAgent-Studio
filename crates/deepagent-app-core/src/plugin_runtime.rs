@@ -63,6 +63,16 @@ pub struct PluginAppEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginConnectorEntry {
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub provider: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginOutputStyleEntry {
     pub plugin_id: String,
     pub plugin_name: String,
@@ -87,6 +97,8 @@ pub struct PluginRuntimeProjection {
     pub agent_roots: Vec<PluginAgentRoot>,
     pub app_config_paths: Vec<PathBuf>,
     pub app_entries: Vec<PluginAppEntry>,
+    #[serde(default)]
+    pub connector_entries: Vec<PluginConnectorEntry>,
     pub output_styles: Vec<PluginOutputStyleEntry>,
     pub errors: Vec<PluginRuntimeError>,
 }
@@ -105,6 +117,7 @@ impl Default for PluginRuntimeProjection {
             agent_roots: Vec::new(),
             app_config_paths: Vec::new(),
             app_entries: Vec::new(),
+            connector_entries: Vec::new(),
             output_styles: Vec::new(),
             errors: Vec::new(),
         }
@@ -174,8 +187,11 @@ fn project_plugin(
     project_output_styles(plugin.id, plugin.name, manifest, projection);
     for path in manifest.paths.app_paths.iter().filter(|path| path.exists()) {
         push_unique_path(&mut projection.app_config_paths, path.clone());
-        match load_plugin_apps(plugin.id, plugin.name, path) {
-            Ok(mut apps) => projection.app_entries.append(&mut apps),
+        match load_plugin_app_config(plugin.id, plugin.name, path) {
+            Ok(mut config) => {
+                projection.app_entries.append(&mut config.apps);
+                projection.connector_entries.append(&mut config.connectors);
+            }
             Err(error) => push_error(projection, plugin.id, "apps", Some(path), error),
         }
     }
@@ -683,9 +699,20 @@ fn first_markdown_paragraph(markdown: &str) -> Option<String> {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum RawPluginAppDocument {
-    Wrapped { apps: Vec<RawPluginApp> },
+    Wrapped {
+        apps: Vec<RawPluginApp>,
+    },
+    Connectors {
+        apps: BTreeMap<String, RawPluginConnector>,
+    },
     List(Vec<RawPluginApp>),
     One(RawPluginApp),
+}
+
+#[derive(Debug, Default)]
+struct LoadedPluginAppConfig {
+    apps: Vec<PluginAppEntry>,
+    connectors: Vec<PluginConnectorEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -704,13 +731,18 @@ struct RawPluginApp {
     category: Option<String>,
 }
 
-fn load_plugin_apps(
+#[derive(Debug, Deserialize)]
+struct RawPluginConnector {
+    id: String,
+}
+
+fn load_plugin_app_config(
     plugin_id: &str,
     plugin_name: &str,
     path: &Path,
-) -> Result<Vec<PluginAppEntry>> {
+) -> Result<LoadedPluginAppConfig> {
     if !path.is_file() {
-        return Ok(Vec::new());
+        return Ok(LoadedPluginAppConfig::default());
     }
     let text = std::fs::read_to_string(path)
         .map_err(|e| CoreError::Persistence(format!("read {}: {e}", path.display())))?;
@@ -718,6 +750,23 @@ fn load_plugin_apps(
         .map_err(|e| CoreError::invalid(format!("invalid app config: {e}")))?;
     let apps = match raw {
         RawPluginAppDocument::Wrapped { apps } | RawPluginAppDocument::List(apps) => apps,
+        RawPluginAppDocument::Connectors { apps } => {
+            return Ok(LoadedPluginAppConfig {
+                apps: Vec::new(),
+                connectors: apps
+                    .into_iter()
+                    .filter_map(|(provider, connector)| {
+                        normalize_plugin_connector(
+                            plugin_id,
+                            plugin_name,
+                            path,
+                            provider,
+                            connector,
+                        )
+                    })
+                    .collect(),
+            });
+        }
         RawPluginAppDocument::One(app) => vec![app],
     };
     let mut entries = Vec::new();
@@ -726,7 +775,10 @@ fn load_plugin_apps(
             entries.push(entry?);
         }
     }
-    Ok(entries)
+    Ok(LoadedPluginAppConfig {
+        apps: entries,
+        connectors: Vec::new(),
+    })
 }
 
 fn normalize_plugin_app(
@@ -760,6 +812,24 @@ fn normalize_plugin_app(
         category: raw.category.and_then(trimmed),
         source_path: Some(path.display().to_string()),
     }))
+}
+
+fn normalize_plugin_connector(
+    plugin_id: &str,
+    plugin_name: &str,
+    path: &Path,
+    provider: String,
+    raw: RawPluginConnector,
+) -> Option<PluginConnectorEntry> {
+    let provider = trimmed(provider)?;
+    let id = trimmed(raw.id)?;
+    Some(PluginConnectorEntry {
+        plugin_id: plugin_id.to_string(),
+        plugin_name: plugin_name.to_string(),
+        provider,
+        id,
+        source_path: Some(path.display().to_string()),
+    })
 }
 
 fn trimmed(value: String) -> Option<String> {
@@ -1268,6 +1338,96 @@ mod tests {
                 .to_string()
         );
         assert!(projection.errors.is_empty());
+    }
+
+    #[test]
+    fn connector_app_config_projects_connector_without_renderable_app() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("connector-plugin");
+        let data_dir = tmp.path().join("data").join("connector-plugin-builtin");
+        write(&root.join("skills").join("SKILL.md"), "Connector skill\n");
+        write(
+            &root.join(".app.json"),
+            r#"{
+                "apps": {
+                    "figma": {
+                        "id": "connector_123"
+                    }
+                }
+            }"#,
+        );
+        write(
+            &root.join(".codex-plugin").join("plugin.json"),
+            r#"{
+                "name": "connector-plugin",
+                "skills": "skills",
+                "apps": ".app.json"
+            }"#,
+        );
+        let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+        let resolved = resolved(&root, manifest);
+
+        let projection =
+            PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
+                id: "connector-plugin@builtin",
+                name: "connector-plugin",
+                source_priority: 10,
+                root: &root,
+                data_dir,
+                plugin: &resolved,
+            }]);
+
+        assert!(projection.app_entries.is_empty());
+        assert_eq!(projection.connector_entries.len(), 1);
+        assert_eq!(
+            projection.connector_entries[0].plugin_id,
+            "connector-plugin@builtin"
+        );
+        assert_eq!(projection.connector_entries[0].provider, "figma");
+        assert_eq!(projection.connector_entries[0].id, "connector_123");
+        assert!(projection.errors.is_empty());
+    }
+
+    #[test]
+    fn bundled_figma_connector_projects_without_renderable_app_error() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/desktop/src-tauri/resources/plugins/figma");
+        if !root.is_dir() {
+            eprintln!("skipping: bundled figma plugin resource is not present");
+            return;
+        }
+        let data_dir = root.join("__test_data__").join("figma-builtin");
+        let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+        let resolved = resolved(&root, manifest);
+
+        let projection =
+            PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
+                id: "figma@builtin",
+                name: "figma",
+                source_priority: 10,
+                root: &root,
+                data_dir,
+                plugin: &resolved,
+            }]);
+
+        assert!(
+            projection.app_entries.is_empty(),
+            "connector app must not be exposed as a renderable builtin app"
+        );
+        assert_eq!(projection.connector_entries.len(), 1);
+        assert_eq!(projection.connector_entries[0].provider, "figma");
+        assert_eq!(
+            projection.connector_entries[0].id,
+            "connector_68df038e0ba48191908c8434991bbac2"
+        );
+        assert!(
+            !projection
+                .errors
+                .iter()
+                .any(|error| error.component == "apps"),
+            "figma connector .app.json should not produce app config errors: {:?}",
+            projection.errors
+        );
     }
 
     /// Agent Plugins §9.1 requires `PLUGIN_ROOT` and `PLUGIN_DATA` in every

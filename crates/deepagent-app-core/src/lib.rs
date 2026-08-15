@@ -118,8 +118,8 @@ pub use plugin_marketplace::{
     AddPluginMarketplaceDto, PluginMarketplaceDto, PluginMarketplaceEntryDto,
 };
 pub use plugin_runtime::{
-    PluginAgentRoot, PluginAppEntry, PluginCommandRoot, PluginMcpServerSource,
-    PluginOutputStyleEntry, PluginRuntimeError, PluginRuntimeProjection,
+    PluginAgentRoot, PluginAppEntry, PluginCommandRoot, PluginConnectorEntry,
+    PluginMcpServerSource, PluginOutputStyleEntry, PluginRuntimeError, PluginRuntimeProjection,
 };
 pub use plugin_security::{PluginComponentSummaryDto, PluginRiskItemDto, PluginScanReportDto};
 pub use plugin_service::{
