@@ -3,12 +3,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::net::ToSocketAddrs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_mcp::config::{McpConfig, TransportType};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -86,6 +88,7 @@ pub enum PluginHealthStatus {
     Ready,
     NeedsConfiguration,
     NeedsAuthorization,
+    ConnectionUnavailable,
     RuntimeUnavailable,
     Incomplete,
     Failed,
@@ -422,12 +425,14 @@ impl PluginService {
             return Ok(None);
         };
         let checked_at = now_string();
-        let health_error = plugin.health_error.clone();
+        let (health_status, health_error) = self
+            .explicit_plugin_health_override(id, &plugin)?
+            .unwrap_or((plugin.health_status, plugin.health_error.clone()));
         let mut state = self.load_state()?;
         state.health_checks.insert(
             id.to_string(),
             PluginHealthCheckState {
-                status: plugin.health_status,
+                status: health_status,
                 checked_at: checked_at.clone(),
                 error: health_error.clone(),
             },
@@ -437,7 +442,9 @@ impl PluginService {
 
         let mut inspection = PluginRuntimeInspectionDto::from_plugin(&plugin);
         inspection.last_health_check = Some(checked_at);
+        inspection.health_status = health_status;
         inspection.health_error = health_error;
+        inspection.state = explicit_health_lifecycle_state(inspection.state, health_status);
         Ok(Some(inspection))
     }
 
@@ -1734,6 +1741,9 @@ impl PluginService {
                 "plugin declares an OAuth-backed MCP or connector that still needs host authorization"
                     .to_string()
             }
+            PluginHealthStatus::ConnectionUnavailable => {
+                "plugin declares a hosted MCP endpoint that is not reachable".to_string()
+            }
             PluginHealthStatus::RuntimeUnavailable => {
                 format_runtime_unavailable(runtime_requirements)
             }
@@ -1772,6 +1782,63 @@ impl PluginService {
             PluginHealthStatus::Ready | PluginHealthStatus::Unknown => return None,
         };
         Some(message)
+    }
+
+    fn explicit_plugin_health_override(
+        &self,
+        id: &str,
+        plugin: &PluginDto,
+    ) -> Result<Option<(PluginHealthStatus, Option<String>)>> {
+        if plugin.health_status != PluginHealthStatus::Ready {
+            return Ok(None);
+        }
+        let Some(loaded) = load_plugins(&self.roots)
+            .into_iter()
+            .find(|loaded| loaded.id == id)
+        else {
+            return Ok(None);
+        };
+        let Some(resolved) = loaded.resolved.as_ref() else {
+            return Ok(None);
+        };
+
+        let data_dir = self.data_root.join(sanitize_file_name(&loaded.id));
+        let projection =
+            PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
+                id: &loaded.id,
+                name: &loaded.name,
+                source_priority: plugin_runtime_priority(loaded.origin),
+                root: &loaded.root,
+                data_dir,
+                plugin: resolved,
+            }]);
+
+        if let Some(error) = projection
+            .errors
+            .iter()
+            .find(|error| error.component == "mcp")
+        {
+            return Ok(Some((
+                PluginHealthStatus::Failed,
+                Some(format!(
+                    "plugin MCP runtime projection failed: {}",
+                    error.message
+                )),
+            )));
+        }
+
+        let failures = hosted_mcp_connection_failures(&projection.mcp_config);
+        if failures.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some((
+                PluginHealthStatus::ConnectionUnavailable,
+                Some(format!(
+                    "hosted MCP endpoint unavailable: {}",
+                    failures.join("; ")
+                )),
+            )))
+        }
     }
 
     fn host_backed_validation_errors(
@@ -1865,9 +1932,9 @@ impl PluginService {
             return PluginLifecycleState::Parsed;
         }
         match health_status {
-            PluginHealthStatus::NeedsConfiguration | PluginHealthStatus::NeedsAuthorization => {
-                PluginLifecycleState::RuntimeReady
-            }
+            PluginHealthStatus::NeedsConfiguration
+            | PluginHealthStatus::NeedsAuthorization
+            | PluginHealthStatus::ConnectionUnavailable => PluginLifecycleState::RuntimeReady,
             PluginHealthStatus::RuntimeUnavailable | PluginHealthStatus::Incomplete => {
                 PluginLifecycleState::Incomplete
             }
@@ -3943,6 +4010,114 @@ fn format_runtime_unavailable(needs: &PluginRuntimeNeeds) -> String {
     }
 }
 
+fn explicit_health_lifecycle_state(
+    current: PluginLifecycleState,
+    health_status: PluginHealthStatus,
+) -> PluginLifecycleState {
+    match health_status {
+        PluginHealthStatus::NeedsConfiguration
+        | PluginHealthStatus::NeedsAuthorization
+        | PluginHealthStatus::ConnectionUnavailable => PluginLifecycleState::RuntimeReady,
+        PluginHealthStatus::RuntimeUnavailable | PluginHealthStatus::Incomplete => {
+            PluginLifecycleState::Incomplete
+        }
+        PluginHealthStatus::Failed => PluginLifecycleState::Failed,
+        PluginHealthStatus::Ready | PluginHealthStatus::Unknown => current,
+    }
+}
+
+fn hosted_mcp_connection_failures(config: &McpConfig) -> Vec<String> {
+    config
+        .servers
+        .iter()
+        .filter_map(|(name, server)| hosted_mcp_url(server).map(|url| (name.as_str(), url)))
+        .filter_map(|(name, url)| probe_hosted_mcp_url(name, url).err())
+        .collect()
+}
+
+fn hosted_mcp_url(server: &deepagent_mcp::config::McpServerConfig) -> Option<&str> {
+    match server.effective_type().ok()? {
+        TransportType::Http | TransportType::Sse | TransportType::Ws => server.url.as_deref(),
+        TransportType::Stdio => None,
+    }
+}
+
+fn probe_hosted_mcp_url(name: &str, url: &str) -> std::result::Result<(), String> {
+    let (host, port) = parse_url_host_port(url).map_err(|error| format!("{name}: {error}"))?;
+    let addresses = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|error| format!("{name}: resolve {host}:{port}: {error}"))?
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err(format!("{name}: no socket addresses for {host}:{port}"));
+    }
+
+    let timeout = std::time::Duration::from_millis(250);
+    let mut last_error = None;
+    for address in addresses {
+        match std::net::TcpStream::connect_timeout(&address, timeout) {
+            Ok(_) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(format!(
+        "{name}: connect {host}:{port}: {}",
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "unreachable".to_string())
+    ))
+}
+
+fn parse_url_host_port(url: &str) -> std::result::Result<(String, u16), String> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| format!("invalid MCP url '{url}'"))?;
+    let default_port = match scheme.to_ascii_lowercase().as_str() {
+        "https" | "wss" => 443,
+        "http" | "ws" => 80,
+        other => return Err(format!("unsupported MCP url scheme '{other}'")),
+    };
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    if authority.is_empty() {
+        return Err(format!("invalid MCP url '{url}'"));
+    }
+
+    if let Some(after_bracket) = authority.strip_prefix('[') {
+        let (host, suffix) = after_bracket
+            .split_once(']')
+            .ok_or_else(|| format!("invalid bracketed host in '{url}'"))?;
+        let port = suffix
+            .strip_prefix(':')
+            .map(parse_port)
+            .transpose()?
+            .unwrap_or(default_port);
+        return Ok((host.to_string(), port));
+    }
+
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|ch| ch.is_ascii_digit()) => {
+            (host, parse_port(port)?)
+        }
+        _ => (authority, default_port),
+    };
+    if host.trim().is_empty() {
+        Err(format!("invalid MCP url host in '{url}'"))
+    } else {
+        Ok((host.to_string(), port))
+    }
+}
+
+fn parse_port(port: &str) -> std::result::Result<u16, String> {
+    port.parse::<u16>()
+        .map_err(|error| format!("invalid MCP url port '{port}': {error}"))
+}
+
 fn has_fatal_plugin_errors(plugin: &LoadedPlugin) -> bool {
     plugin
         .errors
@@ -4961,6 +5136,46 @@ mod tests {
         .unwrap();
     }
 
+    fn write_plugin_with_hosted_mcp(root: &Path, name: &str, url: &str, oauth: bool) {
+        write_plugin(root, name);
+        std::fs::write(
+            root.join(".codex-plugin").join("plugin.json"),
+            serde_json::json!({
+                "name": name,
+                "version": "0.1.0",
+                "skills": "skills",
+                "mcpServers": ".mcp.json",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".mcp.json"),
+            if oauth {
+                serde_json::json!({
+                    "mcpServers": {
+                        "hosted": {
+                            "type": "http",
+                            "url": url,
+                            "oauth_resource": url
+                        }
+                    }
+                })
+            } else {
+                serde_json::json!({
+                    "mcpServers": {
+                        "hosted": {
+                            "type": "http",
+                            "url": url
+                        }
+                    }
+                })
+            }
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     fn write_plugin_with_command(root: &Path, name: &str) {
         write_plugin_with_version_and_dependencies(root, name, "0.1.0", &[]);
         std::fs::create_dir_all(root.join("commands")).unwrap();
@@ -5199,6 +5414,72 @@ mod tests {
         assert!(checked.is_none());
         let state = svc.load_state().unwrap();
         assert!(state.health_checks.is_empty());
+    }
+
+    #[test]
+    fn check_plugin_health_marks_unreachable_hosted_mcp_without_oauth_as_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("hosted-demo");
+        write_plugin_with_hosted_mcp(&root, "hosted-demo", "https://127.0.0.1:9/mcp", false);
+        let app_data = tmp.path().join("app-data");
+        let svc = PluginService::new(roots.clone(), &app_data);
+
+        let before = svc.read("hosted-demo@builtin").unwrap().unwrap();
+        assert_eq!(before.health_status, PluginHealthStatus::Ready);
+
+        let checked = svc
+            .check_plugin_health("hosted-demo@builtin")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            checked.health_status,
+            PluginHealthStatus::ConnectionUnavailable
+        );
+        assert_eq!(checked.state, PluginLifecycleState::RuntimeReady);
+        assert!(checked
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("hosted MCP endpoint unavailable"));
+
+        let state = svc.load_state().unwrap();
+        let persisted = state.health_checks.get("hosted-demo@builtin").unwrap();
+        assert_eq!(persisted.status, PluginHealthStatus::ConnectionUnavailable);
+        assert!(persisted
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("hosted MCP endpoint unavailable"));
+
+        let reloaded = PluginService::new(roots, &app_data);
+        let after = reloaded.read("hosted-demo@builtin").unwrap().unwrap();
+        assert_eq!(after.health_status, PluginHealthStatus::Ready);
+        assert!(after.last_health_check.as_deref().is_some());
+    }
+
+    #[test]
+    fn check_plugin_health_keeps_oauth_mcp_in_needs_authorization() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("oauth-demo");
+        write_plugin_with_hosted_mcp(&root, "oauth-demo", "https://127.0.0.1:9/mcp", true);
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let checked = svc
+            .check_plugin_health("oauth-demo@builtin")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            checked.health_status,
+            PluginHealthStatus::NeedsAuthorization
+        );
+        assert_eq!(checked.state, PluginLifecycleState::RuntimeReady);
+        assert!(checked
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("authorization"));
     }
 
     #[test]
