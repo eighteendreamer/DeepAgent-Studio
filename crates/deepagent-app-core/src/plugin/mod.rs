@@ -29,7 +29,11 @@
 //! the refactor never mixes with behavior changes.
 
 pub mod component;
+pub mod dialect;
 pub mod model;
 pub mod spec;
 
+pub use dialect::{
+    discover, DiscoveredManifest, DiscoveredOverlay, DiscoveryError, ManifestDialect,
+};
 pub use model::{ComponentKind, DiagnosticSeverity, PluginDiagnostic};
