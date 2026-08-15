@@ -2352,17 +2352,19 @@ impl PluginService {
                 ref_name,
                 sha,
                 ..
-            } => {
-                let staging = self.marketplace_staging_dir(marketplace, &entry.name)?;
-                let plugin_root = materialize_git_plugin(
-                    url,
-                    path.as_deref(),
-                    ref_name.as_deref(),
-                    sha.as_deref(),
-                    &staging,
-                )?;
-                Ok(MaterializedPluginSource::staged(plugin_root, staging))
-            }
+            } => self.materialize_marketplace_plugin_in_staging(
+                marketplace,
+                &entry.name,
+                |staging| {
+                    materialize_git_plugin(
+                        url,
+                        path.as_deref(),
+                        ref_name.as_deref(),
+                        sha.as_deref(),
+                        staging,
+                    )
+                },
+            ),
             PluginMarketplaceSource::GitHub {
                 repo,
                 path,
@@ -2370,16 +2372,20 @@ impl PluginService {
                 sha,
                 ..
             } => {
-                let staging = self.marketplace_staging_dir(marketplace, &entry.name)?;
                 let url = format!("https://github.com/{repo}.git");
-                let plugin_root = materialize_git_plugin(
-                    &url,
-                    path.as_deref(),
-                    ref_name.as_deref(),
-                    sha.as_deref(),
-                    &staging,
-                )?;
-                Ok(MaterializedPluginSource::staged(plugin_root, staging))
+                self.materialize_marketplace_plugin_in_staging(
+                    marketplace,
+                    &entry.name,
+                    |staging| {
+                        materialize_git_plugin(
+                            &url,
+                            path.as_deref(),
+                            ref_name.as_deref(),
+                            sha.as_deref(),
+                            staging,
+                        )
+                    },
+                )
             }
             PluginMarketplaceSource::GitSubdir {
                 url,
@@ -2387,47 +2393,66 @@ impl PluginService {
                 ref_name,
                 sha,
                 ..
-            } => {
-                let staging = self.marketplace_staging_dir(marketplace, &entry.name)?;
-                let plugin_root = materialize_git_plugin(
-                    url,
-                    Some(path),
-                    ref_name.as_deref(),
-                    sha.as_deref(),
-                    &staging,
-                )?;
-                Ok(MaterializedPluginSource::staged(plugin_root, staging))
-            }
-            PluginMarketplaceSource::ZipUrl { url, sha256, .. } => {
-                let staging = self.marketplace_staging_dir(marketplace, &entry.name)?;
-                let archive = staging.join("plugin.zip");
-                download_file(url, &archive)?;
-                if let Some(expected) = sha256.as_deref() {
-                    verify_sha256_file(&archive, expected)?;
-                }
-                let unpacked = staging.join("unpacked");
-                extract_zip_into(&archive, &unpacked)?;
-                let plugin_root = resolve_plugin_root(&unpacked)?;
-                Ok(MaterializedPluginSource::staged(plugin_root, staging))
-            }
+            } => self.materialize_marketplace_plugin_in_staging(
+                marketplace,
+                &entry.name,
+                |staging| {
+                    materialize_git_plugin(
+                        url,
+                        Some(path),
+                        ref_name.as_deref(),
+                        sha.as_deref(),
+                        staging,
+                    )
+                },
+            ),
+            PluginMarketplaceSource::ZipUrl { url, sha256, .. } => self
+                .materialize_marketplace_plugin_in_staging(marketplace, &entry.name, |staging| {
+                    let archive = staging.join("plugin.zip");
+                    download_file(url, &archive)?;
+                    if let Some(expected) = sha256.as_deref() {
+                        verify_sha256_file(&archive, expected)?;
+                    }
+                    let unpacked = staging.join("unpacked");
+                    extract_zip_into(&archive, &unpacked)?;
+                    resolve_plugin_root(&unpacked)
+                }),
             PluginMarketplaceSource::Npm {
                 package,
                 version,
                 registry,
                 ..
-            } => {
-                let staging = self.marketplace_staging_dir(marketplace, &entry.name)?;
-                let plugin_root = materialize_npm_plugin(
-                    package,
-                    version.as_deref(),
-                    registry.as_deref(),
-                    &staging,
-                )?;
-                Ok(MaterializedPluginSource::staged(plugin_root, staging))
-            }
+            } => self.materialize_marketplace_plugin_in_staging(
+                marketplace,
+                &entry.name,
+                |staging| {
+                    materialize_npm_plugin(
+                        package,
+                        version.as_deref(),
+                        registry.as_deref(),
+                        staging,
+                    )
+                },
+            ),
             PluginMarketplaceSource::Unsupported { kind, .. } => Err(CoreError::invalid(format!(
                 "marketplace source '{kind}' is not supported"
             ))),
+        }
+    }
+
+    fn materialize_marketplace_plugin_in_staging(
+        &self,
+        marketplace: &str,
+        plugin: &str,
+        materialize: impl FnOnce(&Path) -> Result<PathBuf>,
+    ) -> Result<MaterializedPluginSource> {
+        let staging = self.marketplace_staging_dir(marketplace, plugin)?;
+        match materialize(&staging) {
+            Ok(plugin_root) => Ok(MaterializedPluginSource::staged(plugin_root, staging)),
+            Err(error) => {
+                let _ = remove_dir_all_with_retry(&staging);
+                Err(error)
+            }
         }
     }
 
@@ -3457,6 +3482,18 @@ fn download_file(url: &str, destination: &Path) -> Result<()> {
         std::fs::create_dir_all(parent).map_err(|e| {
             CoreError::Persistence(format!("create download parent {}: {e}", parent.display()))
         })?;
+    }
+    #[cfg(test)]
+    if let Some(source) =
+        std::env::var_os("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE").filter(|value| !value.is_empty())
+    {
+        std::fs::copy(PathBuf::from(source), destination).map_err(|e| {
+            CoreError::Persistence(format!(
+                "copy test plugin download fixture to {}: {e}",
+                destination.display()
+            ))
+        })?;
+        return Ok(());
     }
     let curl_args = vec![
         "-L".to_string(),
@@ -5018,6 +5055,29 @@ mod tests {
 
     fn write_plugin_with_version(root: &Path, name: &str, version: &str) {
         write_plugin_with_version_and_dependencies(root, name, version, &[]);
+    }
+
+    fn write_plugin_zip(archive: &Path, root_name: &str, plugin_name: &str, version: &str) {
+        if let Some(parent) = archive.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let file = File::create(archive).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+        let manifest = serde_json::json!({
+            "name": plugin_name,
+            "version": version,
+            "skills": "skills",
+        })
+        .to_string();
+
+        zip.start_file(format!("{root_name}/.codex-plugin/plugin.json"), opts)
+            .unwrap();
+        zip.write_all(manifest.as_bytes()).unwrap();
+        zip.start_file(format!("{root_name}/skills/SKILL.md"), opts)
+            .unwrap();
+        zip.write_all(b"---\nname: demo\n---\nDemo skill").unwrap();
+        zip.finish().unwrap();
     }
 
     fn write_plugin_with_version_and_dependencies(
@@ -6755,6 +6815,78 @@ mod tests {
             .scan_marketplace_plugin("remote", "zip-plugin")
             .unwrap_err();
         assert!(err.to_string().contains("unsupported source 'zip-url'"));
+    }
+
+    #[test]
+    fn zip_url_checksum_failure_cleans_staging_without_installing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let archive = tmp.path().join("fixtures").join("zip-plugin.zip");
+        let old_download_source = std::env::var_os("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE");
+
+        write_plugin_zip(&archive, "zip-plugin", "zip-plugin", "0.1.0");
+        std::env::set_var(
+            "DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE",
+            archive.display().to_string(),
+        );
+
+        let marketplace_root = tmp.path().join("remote-marketplace");
+        std::fs::create_dir_all(&marketplace_root).unwrap();
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "remote",
+              "plugins": [
+                {
+                  "name": "zip-plugin",
+                  "version": "0.1.0",
+                  "source": {
+                    "source": "zip-url",
+                    "url": "https://example.com/zip-plugin.zip",
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("remote".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let err = svc
+            .prepare_plugin_install("remote", "zip-plugin", false)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("checksum mismatch"));
+        assert!(!roots
+            .marketplace_cache
+            .join("remote")
+            .join("zip-plugin")
+            .join("0.1.0")
+            .exists());
+        let staging_root = roots.marketplace_cache.join(".staging");
+        assert!(
+            std::fs::read_dir(&staging_root)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(true),
+            "failed zip-url materialization must not leave staging behind"
+        );
+        let state = svc.load_state().unwrap();
+        assert!(!state.installed.contains_key("zip-plugin@remote"));
+        assert!(!state.enabled.contains_key("zip-plugin@remote"));
+
+        match old_download_source {
+            Some(path) => std::env::set_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE", path),
+            None => std::env::remove_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE"),
+        }
     }
 
     #[test]
