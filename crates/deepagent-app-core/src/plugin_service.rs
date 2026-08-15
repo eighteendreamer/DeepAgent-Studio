@@ -663,7 +663,7 @@ impl PluginService {
         if same_path(source, &destination) {
             let id = plugin_id(&name, PluginOrigin::Personal.as_str());
             let mut state = self.load_state()?;
-            state.enabled.insert(id.clone(), true);
+            state.enabled.entry(id.clone()).or_insert(true);
             self.save_state(&state)?;
             return self
                 .read(&id)?
@@ -675,14 +675,18 @@ impl PluginService {
 
         let id = plugin_id(&name, PluginOrigin::Personal.as_str());
         let mut state = self.load_state()?;
-        state.enabled.insert(id.clone(), true);
+        let previous = state.installed.get(&id).cloned();
+        state.enabled.entry(id.clone()).or_insert(true);
         state.installed.insert(
             id.clone(),
             InstalledPluginState {
                 version: manifest.version.clone(),
                 install_path: destination.display().to_string(),
-                installed_at: now_string(),
-                last_updated: None,
+                installed_at: previous
+                    .as_ref()
+                    .map(|installed| installed.installed_at.clone())
+                    .unwrap_or_else(now_string),
+                last_updated: previous.as_ref().map(|_| now_string()),
                 content_hash: Some(content_hash),
             },
         );
@@ -9148,17 +9152,44 @@ rl.on('line', (line) => {
 
         // Plugin state that must outlive an update.
         std::fs::write(data_dir.join("state.json"), r#"{"runs":7}"#).unwrap();
+        let checked = svc.check_plugin_health(&installed.id).unwrap().unwrap();
+        let checked_at = checked
+            .last_health_check
+            .clone()
+            .expect("health check must persist a timestamp");
+        svc.set_enabled(&installed.id, false).unwrap();
+        let state_before_update = svc.load_state().unwrap();
+        let installed_at = state_before_update.installed[&installed.id]
+            .installed_at
+            .clone();
 
         write_plugin_with_version(&source, "demo", "0.2.0");
         let updated = svc.install_from_dir(&source).unwrap();
         assert_eq!(updated.version.as_deref(), Some("0.2.0"));
         assert_eq!(updated.id, installed.id, "the id must be stable");
+        assert!(!updated.enabled, "updates must preserve disabled state");
+        assert_eq!(
+            updated.last_health_check.as_deref(),
+            Some(checked_at.as_str())
+        );
 
         svc.runtime_projection().unwrap();
         assert_eq!(
             std::fs::read_to_string(data_dir.join("state.json")).unwrap(),
             r#"{"runs":7}"#,
             "§9.1 requires PLUGIN_DATA contents to survive a plugin update"
+        );
+        let state_after_update = svc.load_state().unwrap();
+        let installed_state = &state_after_update.installed[&installed.id];
+        assert_eq!(installed_state.installed_at, installed_at);
+        assert!(installed_state.last_updated.is_some());
+        assert_eq!(
+            state_after_update
+                .health_checks
+                .get(&installed.id)
+                .map(|health| health.checked_at.as_str()),
+            Some(checked_at.as_str()),
+            "recent health check state must survive a plugin update"
         );
     }
 
