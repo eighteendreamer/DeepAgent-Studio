@@ -20,6 +20,9 @@ use crate::plugin::dialect::{
     PresentationSources,
 };
 use crate::plugin::model::ResolvedPlugin;
+use crate::plugin::spec::schema::{
+    AGENT_PLUGIN_MANIFEST_RELATIVE_PATH, DISCOVERABLE_MANIFEST_PATHS,
+};
 use crate::plugin_dependency::{
     find_reverse_dependents, verify_plugin_dependencies, PluginDependencyOutcome,
 };
@@ -3054,18 +3057,29 @@ fn materialize_github_topic_marketplace(
             let branch: GitHubBranchResponse = serde_json::from_str(&branch_text)
                 .map_err(|e| CoreError::invalid(format!("parse GitHub branch response: {e}")))?;
             let commit = trimmed_string(branch.commit.sha)
-            .filter(|sha| is_git_sha(sha))
-            .ok_or_else(|| {
-                CoreError::invalid(format!(
-                    "GitHub repository {full_name} default branch {default_branch} did not expose a valid commit sha"
-                ))
-            })?;
+                .filter(|sha| is_git_sha(sha))
+                .ok_or_else(|| {
+                    CoreError::invalid(format!(
+                        "GitHub repository {full_name} default branch {default_branch} did not expose a valid commit sha"
+                    ))
+                })?;
+            let manifest_metadata =
+                github_topic_manifest_metadata(&full_name, &commit, &scratch).unwrap_or(None);
             let repo_name = repo
                 .name
                 .and_then(trimmed_string)
                 .unwrap_or_else(|| full_name.rsplit('/').next().unwrap_or("plugin").to_string());
-            let mut plugin_name = slugify(&repo_name);
+            let manifest = manifest_metadata
+                .as_ref()
+                .map(|metadata| &metadata.manifest);
+            let mut plugin_name = manifest
+                .map(|manifest| manifest.name.clone())
+                .unwrap_or_else(|| slugify(&repo_name));
+            let manifest_named = manifest.is_some();
             if !used_names.insert(plugin_name.clone()) {
+                if manifest_named {
+                    continue;
+                }
                 plugin_name = slugify(&full_name.replace('/', "-"));
                 used_names.insert(plugin_name.clone());
             }
@@ -3073,26 +3087,67 @@ fn materialize_github_topic_marketplace(
                 .description
                 .and_then(trimmed_string)
                 .unwrap_or_else(|| "DSH plugin".to_string());
-            if let Some(spdx_id) = repo
-                .license
-                .and_then(|license| license.spdx_id)
+            if let Some(manifest_description) =
+                manifest.and_then(|manifest| trimmed_string(manifest.short_description()))
+            {
+                description = manifest_description;
+            }
+            let license = manifest
+                .and_then(|manifest| manifest.license.clone())
                 .and_then(trimmed_string)
+                .or_else(|| {
+                    repo.license
+                        .and_then(|license| license.spdx_id)
+                        .and_then(trimmed_string)
+                });
+            if let Some(spdx_id) = license
+                .as_deref()
+                .filter(|_| !description.contains("license:"))
             {
                 description = format!("{description} (license: {spdx_id})");
             }
-            plugins.push(serde_json::json!({
+            let display_name = manifest
+                .map(PluginManifest::display_name)
+                .unwrap_or_else(|| repo_name.clone());
+            let version = manifest
+                .and_then(|manifest| manifest.version.clone())
+                .and_then(trimmed_string)
+                .unwrap_or_else(|| format!("git-{}", &commit[..12.min(commit.len())]));
+            let category = manifest
+                .and_then(|manifest| manifest.interface.category.clone())
+                .and_then(trimmed_string)
+                .unwrap_or_else(|| "DSH Plugin".to_string());
+            let author_name = manifest.and_then(PluginManifest::developer_name);
+            let mut source = serde_json::json!({
+                "source": "github",
+                "repo": full_name,
+                "ref": default_branch,
+                "sha": commit
+            });
+            if let Some(metadata) = manifest_metadata.as_ref().filter(|metadata| {
+                metadata.manifest_relative_path != AGENT_PLUGIN_MANIFEST_RELATIVE_PATH
+            }) {
+                if let Some(object) = source.as_object_mut() {
+                    object.insert(
+                        "manifestPath".to_string(),
+                        serde_json::Value::String(metadata.manifest_relative_path.clone()),
+                    );
+                }
+            }
+            let mut entry = serde_json::json!({
                 "name": plugin_name,
-                "displayName": repo_name,
-                "version": format!("git-{}", &commit[..12.min(commit.len())]),
+                "displayName": display_name,
+                "version": version,
                 "description": description,
-                "source": {
-                    "source": "github",
-                    "repo": full_name,
-                    "ref": default_branch,
-                    "sha": commit
-                },
-                "category": "DSH Plugin"
-            }));
+                "source": source,
+                "category": category
+            });
+            if let Some(author_name) = author_name {
+                if let Some(object) = entry.as_object_mut() {
+                    object.insert("author".to_string(), serde_json::Value::String(author_name));
+                }
+            }
+            plugins.push(entry);
         }
         let catalog = serde_json::json!({
             "name": name,
@@ -3119,6 +3174,83 @@ fn materialize_github_topic_marketplace(
         let _ = std::fs::remove_file(registry_dir.join("marketplace.json"));
     }
     result
+}
+
+fn github_topic_manifest_metadata(
+    full_name: &str,
+    commit: &str,
+    scratch: &Path,
+) -> Result<Option<GitHubTopicManifestMetadata>> {
+    let mut manifest_paths = Vec::with_capacity(DISCOVERABLE_MANIFEST_PATHS.len() + 1);
+    manifest_paths.push(AGENT_PLUGIN_MANIFEST_RELATIVE_PATH);
+    manifest_paths.extend(DISCOVERABLE_MANIFEST_PATHS.iter().copied());
+    for manifest_relative_path in manifest_paths {
+        let endpoint = format!(
+            "/repos/{}/contents/{}?ref={}",
+            full_name,
+            percent_encode_content_path(manifest_relative_path),
+            percent_encode_query_value(commit)
+        );
+        let Ok(text) = download_github_api_json(
+            &endpoint,
+            scratch,
+            &format!(
+                "{}-{}",
+                full_name.replace('/', "-"),
+                manifest_relative_path.replace('/', "-")
+            ),
+        ) else {
+            continue;
+        };
+        let Ok(contents) = serde_json::from_str::<GitHubContentResponse>(&text) else {
+            continue;
+        };
+        if contents.kind.as_deref() != Some("file")
+            || contents.encoding.as_deref() != Some("base64")
+        {
+            continue;
+        }
+        let Some(encoded) = contents.content else {
+            continue;
+        };
+        let Ok(bytes) = base64_decode_standard(&encoded) else {
+            continue;
+        };
+        let Ok(manifest_text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        let root = scratch
+            .join("manifests")
+            .join(sanitize_file_name(full_name));
+        let _ = std::fs::remove_dir_all(&root);
+        let manifest_path = root.join(manifest_relative_path);
+        if let Some(parent) = manifest_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CoreError::Persistence(format!(
+                    "create GitHub manifest fixture dir {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        std::fs::write(&manifest_path, manifest_text).map_err(|e| {
+            CoreError::Persistence(format!(
+                "write GitHub manifest probe {}: {e}",
+                manifest_path.display()
+            ))
+        })?;
+        if let Some(manifest) = load_plugin_manifest(&root)? {
+            return Ok(Some(GitHubTopicManifestMetadata {
+                manifest,
+                manifest_relative_path: manifest_relative_path.to_string(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+struct GitHubTopicManifestMetadata {
+    manifest: PluginManifest,
+    manifest_relative_path: String,
 }
 
 fn materialize_git_plugin(
@@ -3585,6 +3717,16 @@ struct GitHubBranchCommit {
     sha: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubContentResponse {
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    encoding: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+}
+
 fn github_topic_from_source(source: &str) -> Option<String> {
     let source = source.trim().trim_end_matches('/');
     let raw = source
@@ -3714,6 +3856,13 @@ fn percent_encode_path_segment(input: &str) -> String {
     percent_encode_bytes(input.as_bytes(), false)
 }
 
+fn percent_encode_content_path(path: &str) -> String {
+    path.split('/')
+        .map(percent_encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn percent_encode_bytes(bytes: &[u8], encode_colon: bool) -> String {
     let mut out = String::new();
     for byte in bytes {
@@ -3728,6 +3877,47 @@ fn percent_encode_bytes(bytes: &[u8], encode_colon: bool) -> String {
         }
     }
     out
+}
+
+fn base64_decode_standard(input: &str) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut chunk = [0u8; 4];
+    let mut len = 0usize;
+    for byte in input.bytes().filter(|b| !b.is_ascii_whitespace()) {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => 64,
+            _ => return Err(CoreError::invalid("invalid base64 data")),
+        };
+        chunk[len] = value;
+        len += 1;
+        if len == 4 {
+            push_base64_chunk(&mut out, chunk)?;
+            len = 0;
+        }
+    }
+    if len != 0 {
+        return Err(CoreError::invalid("invalid base64 padding"));
+    }
+    Ok(out)
+}
+
+fn push_base64_chunk(out: &mut Vec<u8>, chunk: [u8; 4]) -> Result<()> {
+    if chunk[0] == 64 || chunk[1] == 64 {
+        return Err(CoreError::invalid("invalid base64 padding"));
+    }
+    out.push((chunk[0] << 2) | (chunk[1] >> 4));
+    if chunk[2] != 64 {
+        out.push(((chunk[1] & 0b1111) << 4) | (chunk[2] >> 2));
+    }
+    if chunk[3] != 64 {
+        out.push(((chunk[2] & 0b11) << 6) | chunk[3]);
+    }
+    Ok(())
 }
 
 fn run_external(program: &str, args: &[String], cwd: Option<&Path>) -> Result<()> {
@@ -5398,6 +5588,56 @@ mod tests {
             .unwrap();
         zip.write_all(b"---\nname: demo\n---\nDemo skill").unwrap();
         zip.finish().unwrap();
+    }
+
+    fn write_github_contents_manifest_fixture(
+        fixtures: &Path,
+        full_name: &str,
+        manifest_relative_path: &str,
+        commit: &str,
+        manifest: serde_json::Value,
+    ) {
+        let endpoint = format!(
+            "/repos/{}/contents/{}?ref={}",
+            full_name,
+            percent_encode_content_path(manifest_relative_path),
+            percent_encode_query_value(commit)
+        );
+        let encoded = base64_encode_test(serde_json::to_string(&manifest).unwrap().as_bytes());
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(&endpoint))),
+            serde_json::json!({
+                "type": "file",
+                "encoding": "base64",
+                "content": encoded,
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn base64_encode_test(bytes: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0];
+            let b1 = *chunk.get(1).unwrap_or(&0);
+            let b2 = *chunk.get(2).unwrap_or(&0);
+            out.push(TABLE[(b0 >> 2) as usize] as char);
+            out.push(TABLE[(((b0 & 0b11) << 4) | (b1 >> 4)) as usize] as char);
+            if chunk.len() > 1 {
+                out.push(TABLE[(((b1 & 0b1111) << 2) | (b2 >> 6)) as usize] as char);
+            } else {
+                out.push('=');
+            }
+            if chunk.len() > 2 {
+                out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+        out
     }
 
     fn write_plugin_with_version_and_dependencies(
@@ -7170,6 +7410,100 @@ mod tests {
             .join("dsh")
             .join("dsh-demo")
             .exists());
+
+        match old_fixtures {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
+        }
+    }
+
+    #[test]
+    fn dsh_github_topic_refresh_prefers_real_manifest_metadata() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let fixtures = tmp.path().join("github-api");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
+        std::env::set_var(
+            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
+            fixtures.display().to_string(),
+        );
+
+        let search_endpoint =
+            "/search/repositories?q=topic%3Adsh-plugin&sort=updated&order=desc&per_page=100";
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(search_endpoint))),
+            r#"{
+              "items": [
+                {
+                  "name": "repo-shell",
+                  "full_name": "deepseek-ai/repo-shell",
+                  "description": "Repo fallback description",
+                  "default_branch": "main",
+                  "license": { "spdx_id": "MIT" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let branch_endpoint = "/repos/deepseek-ai/repo-shell/branches/main";
+        let commit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(branch_endpoint))),
+            format!(r#"{{ "commit": {{ "sha": "{commit}" }} }}"#),
+        )
+        .unwrap();
+        write_github_contents_manifest_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            ".codex-plugin/plugin.json",
+            commit,
+            serde_json::json!({
+                "name": "manifest-plugin",
+                "version": "2.3.4",
+                "description": "Manifest description",
+                "license": "Apache-2.0",
+                "author": { "name": "Manifest Author" },
+                "interface": {
+                    "displayName": "Manifest Plugin",
+                    "category": "Science"
+                },
+                "skills": "skills"
+            }),
+        );
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("dsh".to_string()),
+            source: "https://github.com/topics/dsh-plugin".to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let entries = svc.list_marketplace_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.name, "manifest-plugin");
+        assert_eq!(entry.display_name, "Manifest Plugin");
+        assert_eq!(
+            entry.description,
+            "Manifest description (license: Apache-2.0)"
+        );
+        assert_eq!(entry.version.as_deref(), Some("2.3.4"));
+        assert_eq!(entry.category.as_deref(), Some("Science"));
+        assert_eq!(entry.source_kind, "github");
+        assert!(entry.installable);
+
+        let snapshot =
+            std::fs::read_to_string(roots.marketplaces.join("dsh").join("marketplace.json"))
+                .unwrap();
+        assert!(snapshot.contains(r#""name": "manifest-plugin""#));
+        assert!(snapshot.contains(r#""manifestPath": ".codex-plugin/plugin.json""#));
+        assert!(snapshot.contains(r#""sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb""#));
+        assert!(!snapshot.contains("gh.llkk.cc"));
+        assert!(!snapshot.contains("gh-proxy.com"));
 
         match old_fixtures {
             Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
