@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use deepagent_app_core::plugin_loader::{load_plugins, PluginLoadError, PluginRoots};
+use deepagent_skills::{loader, SkillOrigin, SkillRegistry};
 
 const EXPECTED: &[(&str, u32, u32, u32, u32, u32, u32)] = &[
     // name, skills, mcp, hooks, commands, apps, output styles
@@ -203,6 +204,105 @@ fn complete_bundled_plugins_are_real_resources() {
             .is_file(),
         "boltz scan_sites script missing"
     );
+}
+
+#[test]
+fn superpowers_core_skills_match_and_activate_from_real_bundle() {
+    let Some(registry) = superpowers_registry() else {
+        eprintln!("skipping: bundled superpowers plugin resource is not present");
+        return;
+    };
+
+    assert_eq!(registry.len(), 14, "superpowers skill set changed");
+    for id in [
+        "writing-plans",
+        "test-driven-development",
+        "systematic-debugging",
+        "requesting-code-review",
+    ] {
+        assert!(
+            registry.contains(id),
+            "missing superpowers core skill: {id}"
+        );
+    }
+
+    let cases = [
+        (
+            "I have a spec and requirements for a multi-step task before touching code",
+            "writing-plans",
+        ),
+        (
+            "I am implementing a feature or bugfix before writing implementation code",
+            "test-driven-development",
+        ),
+        (
+            "We are encountering a bug, test failure, or unexpected behavior before proposing fixes",
+            "systematic-debugging",
+        ),
+        (
+            "I am completing tasks, implementing major features, and before merging need to verify work meets requirements",
+            "requesting-code-review",
+        ),
+    ];
+
+    for (query, expected) in cases {
+        let best = registry
+            .best_match(query)
+            .unwrap_or_else(|| panic!("no superpowers skill matched query: {query:?}"));
+        assert_eq!(best.id, expected, "query {query:?} routed to {}", best.id);
+
+        let activated = registry
+            .body_for_invoke(&best.id, None)
+            .unwrap_or_else(|error| panic!("failed to activate {expected}: {error}"));
+        assert_eq!(activated.id, expected);
+        assert!(
+            activated.body.contains("# "),
+            "activated skill body should include real SKILL.md content for {expected}"
+        );
+        assert!(
+            activated
+                .base_dir
+                .as_deref()
+                .is_some_and(|base| base.replace('\\', "/").contains("/superpowers/skills/")),
+            "activated skill should retain its on-disk bundle path: {:?}",
+            activated.base_dir
+        );
+    }
+}
+
+#[test]
+fn superpowers_skill_resources_are_discoverable_on_activation() {
+    let Some(registry) = superpowers_registry() else {
+        eprintln!("skipping: bundled superpowers plugin resource is not present");
+        return;
+    };
+
+    let activated = registry
+        .body_for_invoke("writing-skills", None)
+        .expect("writing-skills activates from real superpowers bundle");
+
+    assert!(
+        activated
+            .resources
+            .contains(&"examples/CLAUDE_MD_TESTING.md".to_string()),
+        "writing-skills should expose bundled example resources, got {:?}",
+        activated.resources
+    );
+}
+
+fn superpowers_registry() -> Option<SkillRegistry> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/desktop/src-tauri/resources/plugins/superpowers/skills");
+    if !root.is_dir() {
+        return None;
+    }
+
+    let mut registry = SkillRegistry::new();
+    for skill in loader::discover(&root, SkillOrigin::Plugin).expect("discover superpowers skills")
+    {
+        registry.register(skill);
+    }
+    Some(registry)
 }
 
 #[test]
