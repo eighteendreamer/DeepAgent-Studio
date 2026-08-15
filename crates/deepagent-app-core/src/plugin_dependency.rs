@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::plugin::model::DiagnosticSeverity;
 use crate::plugin_loader::{plugin_id, LoadedPlugin, PluginLoadError};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -99,6 +100,9 @@ pub fn verify_plugin_dependencies(
                             path: Some(plugin.root.display().to_string()),
                             component: Some("dependencies".to_string()),
                             message: message.clone(),
+                            // The plugin is demoted out of the enabled set, so
+                            // it is unusable rather than merely degraded.
+                            severity: DiagnosticSeverity::Error,
                         });
                 }
             }
@@ -177,6 +181,8 @@ fn dependency_error(plugin: &LoadedPlugin, dependency: &str, reason: &str) -> Pl
             "dependency {dependency} is {reason}; plugin {} will not be injected into runtime",
             plugin.id
         ),
+        // Nothing from this plugin reaches the runtime, so it is unusable.
+        severity: DiagnosticSeverity::Error,
     }
 }
 

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::plugin::model::DiagnosticSeverity;
 use crate::plugin_manifest::{find_plugin_manifest_path, load_plugin_manifest, PluginManifest};
 use crate::plugin_security::{is_blocked_plugin_name, is_reserved_plugin_name};
 
@@ -48,6 +49,14 @@ pub struct PluginRoots {
     pub marketplaces: PathBuf,
 }
 
+/// A load-time finding for one plugin.
+///
+/// Despite the name this channel carries the whole spectrum Agent Plugins
+/// §11.3 defines, from "reported and ignored" up to "plugin rejected".
+/// [`PluginLoadError::severity`] is what separates them: without it a merely
+/// absent declared path reads the same as an unparseable manifest. Prefer
+/// constructing these through [`crate::plugin::model::PluginDiagnostic`], which
+/// fixes `kind`, `component`, and `severity` together.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginLoadError {
     pub kind: String,
@@ -59,6 +68,11 @@ pub struct PluginLoadError {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component: Option<String>,
     pub message: String,
+    /// How much this finding affects usability. Defaults to
+    /// [`DiagnosticSeverity::Error`] so a payload predating this field is never
+    /// silently downgraded.
+    #[serde(default)]
+    pub severity: DiagnosticSeverity,
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +308,8 @@ fn load_candidate(candidate: CandidateRoot) -> LoadedPlugin {
                     path: Some(candidate.root.display().to_string()),
                     component: Some("manifest".to_string()),
                     message: "plugin manifest not found".to_string(),
+                    // §5.1: without a manifest there is no plugin to load.
+                    severity: DiagnosticSeverity::Error,
                 }],
             }
         }
@@ -318,6 +334,9 @@ fn load_candidate(candidate: CandidateRoot) -> LoadedPlugin {
                         .map(|p| p.display().to_string()),
                     component: Some("manifest".to_string()),
                     message: error.to_string(),
+                    // §11.3 rule 2: a manifest schema violation is fatal to the
+                    // plugin — no component may be discovered or executed.
+                    severity: DiagnosticSeverity::Error,
                 }],
             }
         }
@@ -359,6 +378,9 @@ fn policy_errors(manifest: &PluginManifest, id: &str, root: &Path) -> Vec<Plugin
             path: manifest_path.clone(),
             component: Some("manifest".to_string()),
             message: format!("plugin name '{}' is reserved by DeepAgent", manifest.name),
+            // Client policy, not a spec rule: the plugin is made unavailable, so
+            // this ranks with the fatal tier.
+            severity: DiagnosticSeverity::Error,
         });
     }
     if is_blocked_plugin_name(&manifest.name) {
@@ -369,6 +391,7 @@ fn policy_errors(manifest: &PluginManifest, id: &str, root: &Path) -> Vec<Plugin
             path: manifest_path.or_else(|| Some(root.display().to_string())),
             component: Some("manifest".to_string()),
             message: format!("plugin name '{}' is blocked by policy", manifest.name),
+            severity: DiagnosticSeverity::Error,
         });
     }
     errors
@@ -397,6 +420,9 @@ fn append_missing_paths(
             path: Some(path.display().to_string()),
             component: Some(component.to_string()),
             message: format!("declared {component} path does not exist: {display}"),
+            // §6.2: an absent component location is not an error. The plugin
+            // stays usable, so this is a warning rather than a failure.
+            severity: DiagnosticSeverity::Warning,
         });
     }
 }

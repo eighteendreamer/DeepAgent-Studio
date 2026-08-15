@@ -384,6 +384,9 @@ export interface McpConnectionStatus {
   tools: McpToolInfo[];
 }
 
+/** How much a plugin load-time finding affects usability (Agent Plugins §11.3). */
+export type PluginDiagnosticSeverity = "info" | "warning" | "error";
+
 export interface PluginLoadError {
   kind: string;
   plugin?: string | null;
@@ -391,6 +394,11 @@ export interface PluginLoadError {
   path?: string | null;
   component?: string | null;
   message: string;
+  /**
+   * Absent on payloads predating this field; treat a missing value as "error"
+   * so a real failure is never presented as a note.
+   */
+  severity?: PluginDiagnosticSeverity;
 }
 
 export interface PluginSourceInfo {

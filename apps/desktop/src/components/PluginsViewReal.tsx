@@ -26,6 +26,7 @@ import type {
   AddPluginMarketplaceInput,
   CreatePluginDraft,
   Plugin,
+  PluginDiagnosticSeverity,
   PluginMarketplace,
   PluginMarketplaceEntry,
   PluginOutputStyle,
@@ -824,21 +825,63 @@ function InfoSection({ plugin }: { plugin: Plugin }) {
   );
 }
 
+// Agent Plugins §11.3 separates findings that make a plugin unusable from those
+// that only skip one component. Rendering both identically overstates the
+// second, so severity drives the styling and the section title.
+const severityStyles: Record<
+  PluginDiagnosticSeverity,
+  { container: string; label: string }
+> = {
+  error: {
+    container: "border-red-200 bg-red-50 text-red-800",
+    label: "错误",
+  },
+  warning: {
+    container: "border-amber-200 bg-amber-50 text-amber-800",
+    label: "已跳过",
+  },
+  info: {
+    container: "border-border-theme bg-ui-tint text-text-secondary",
+    label: "提示",
+  },
+};
+
+/** Missing severity means the payload predates the field; assume the worst. */
+function severityOf(error: Plugin["errors"][number]): PluginDiagnosticSeverity {
+  return error.severity ?? "error";
+}
+
 function ErrorSection({ plugin }: { plugin: Plugin }) {
+  const order: PluginDiagnosticSeverity[] = ["error", "warning", "info"];
+  const sorted = [...plugin.errors].sort(
+    (a, b) => order.indexOf(severityOf(a)) - order.indexOf(severityOf(b)),
+  );
+  const hasError = sorted.some((error) => severityOf(error) === "error");
+
   return (
     <section>
-      <h2 className="mb-4 text-[16px] font-semibold text-text-base">加载错误</h2>
+      <h2 className="mb-4 text-[16px] font-semibold text-text-base">
+        {hasError ? "加载错误" : "加载诊断"}
+      </h2>
       <div className="space-y-2">
-        {plugin.errors.map((error, index) => (
-          <div
-            key={`${error.kind}-${index}`}
-            className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800"
-          >
-            <div className="font-medium">{error.kind}</div>
-            <div className="mt-1">{error.message}</div>
-            {error.path && <div className="mt-1 font-mono text-[11px]">{error.path}</div>}
-          </div>
-        ))}
+        {sorted.map((error, index) => {
+          const severity = severityOf(error);
+          const styles = severityStyles[severity];
+          return (
+            <div
+              key={`${error.kind}-${index}`}
+              className={`rounded-lg border px-3 py-2 text-[12px] ${styles.container}`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">{error.kind}</span>
+                <MiniBadge>{styles.label}</MiniBadge>
+                {error.component && <MiniBadge>{error.component}</MiniBadge>}
+              </div>
+              <div className="mt-1">{error.message}</div>
+              {error.path && <div className="mt-1 font-mono text-[11px]">{error.path}</div>}
+            </div>
+          );
+        })}
       </div>
     </section>
   );
