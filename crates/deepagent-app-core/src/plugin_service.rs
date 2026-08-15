@@ -3310,14 +3310,104 @@ fn materialize_github_plugin(
     staging: &Path,
 ) -> Result<PathBuf> {
     let mut last_error = None;
-    for url in github_clone_url_candidates(repo) {
-        let _ = std::fs::remove_dir_all(staging.join("repo"));
-        match materialize_git_plugin(&url, subdir, ref_name, sha, staging) {
-            Ok(root) => return Ok(root),
-            Err(error) => last_error = Some(error),
+    #[cfg(test)]
+    let skip_clone = std::env::var_os("DEEPAGENT_TEST_GITHUB_SKIP_CLONE")
+        .filter(|value| !value.is_empty())
+        .is_some();
+    #[cfg(not(test))]
+    let skip_clone = false;
+
+    if !skip_clone {
+        for url in github_clone_url_candidates(repo) {
+            let _ = std::fs::remove_dir_all(staging.join("repo"));
+            match materialize_git_plugin(&url, subdir, ref_name, sha, staging) {
+                Ok(root) => return Ok(root),
+                Err(error) => last_error = Some(error),
+            }
         }
     }
-    Err(last_error.unwrap_or_else(|| CoreError::invalid("no GitHub clone URL candidates")))
+
+    match sha {
+        Some(sha) => {
+            materialize_github_archive_plugin(repo, subdir, sha, staging).map_err(|archive_error| {
+                match last_error {
+                    Some(clone_error) => CoreError::other(format!(
+                    "GitHub clone failed ({clone_error}); archive fallback failed ({archive_error})"
+                )),
+                    None => archive_error,
+                }
+            })
+        }
+        None => Err(last_error.unwrap_or_else(|| {
+            CoreError::invalid(
+                "GitHub archive fallback requires a pinned commit sha after clone failure",
+            )
+        })),
+    }
+}
+
+fn materialize_github_archive_plugin(
+    repo: &str,
+    subdir: Option<&str>,
+    sha: &str,
+    staging: &Path,
+) -> Result<PathBuf> {
+    if !is_git_sha(sha) {
+        return Err(CoreError::invalid(format!(
+            "GitHub archive fallback requires a valid commit sha, got {sha}"
+        )));
+    }
+    let archive = staging.join("github-archive.zip");
+    let url = github_archive_zip_url(repo, sha)?;
+    download_file(&url, &archive)?;
+    let unpacked = staging.join("github-archive");
+    extract_zip_into(&archive, &unpacked)?;
+    let checkout_root = github_archive_checkout_root(&unpacked)?;
+    let root = match subdir {
+        Some(subdir) => safe_join_materialized_subdir(&checkout_root, subdir)?,
+        None => checkout_root,
+    };
+    resolve_plugin_root(&root)
+}
+
+fn github_archive_zip_url(repo: &str, sha: &str) -> Result<String> {
+    if !is_git_sha(sha) {
+        return Err(CoreError::invalid(format!(
+            "GitHub archive URL requires a valid commit sha, got {sha}"
+        )));
+    }
+    Ok(format!("https://api.github.com/repos/{repo}/zipball/{sha}"))
+}
+
+fn github_archive_checkout_root(unpacked: &Path) -> Result<PathBuf> {
+    let mut directories = Vec::new();
+    let mut has_files = false;
+    for entry in std::fs::read_dir(unpacked).map_err(|e| {
+        CoreError::Persistence(format!(
+            "read GitHub archive output {}: {e}",
+            unpacked.display()
+        ))
+    })? {
+        let entry =
+            entry.map_err(|e| CoreError::Persistence(format!("read GitHub archive entry: {e}")))?;
+        let file_type = entry.file_type().map_err(|e| {
+            CoreError::Persistence(format!(
+                "stat GitHub archive entry {}: {e}",
+                entry.path().display()
+            ))
+        })?;
+        if file_type.is_dir() {
+            directories.push(entry.path());
+        } else if file_type.is_file() {
+            has_files = true;
+        }
+    }
+    if !has_files && directories.len() == 1 {
+        return directories
+            .pop()
+            .ok_or_else(|| CoreError::invalid("GitHub archive root disappeared"));
+    }
+    Ok(unpacked.to_path_buf())
 }
 
 fn materialize_git_marketplace(
@@ -5589,6 +5679,16 @@ mod tests {
     }
 
     fn write_plugin_zip(archive: &Path, root_name: &str, plugin_name: &str, version: &str) {
+        write_plugin_zip_with_payload(archive, root_name, plugin_name, version, &[]);
+    }
+
+    fn write_plugin_zip_with_payload(
+        archive: &Path,
+        root_name: &str,
+        plugin_name: &str,
+        version: &str,
+        extra_files: &[(&str, &[u8])],
+    ) {
         if let Some(parent) = archive.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -5608,6 +5708,11 @@ mod tests {
         zip.start_file(format!("{root_name}/skills/SKILL.md"), opts)
             .unwrap();
         zip.write_all(b"---\nname: demo\n---\nDemo skill").unwrap();
+        for (relative, contents) in extra_files {
+            zip.start_file(format!("{root_name}/{relative}"), opts)
+                .unwrap();
+            zip.write_all(contents).unwrap();
+        }
         zip.finish().unwrap();
     }
 
@@ -7427,6 +7532,189 @@ mod tests {
 
         assert!(err.to_string().contains("checkout verification failed"));
         assert!(err.to_string().contains(&second[..12]));
+    }
+
+    #[test]
+    fn github_archive_fallback_installs_complete_directory_payload() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let archive = tmp.path().join("fixtures").join("archive-plugin.zip");
+        let old_skip_clone = std::env::var_os("DEEPAGENT_TEST_GITHUB_SKIP_CLONE");
+        let old_download_source = std::env::var_os("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE");
+        std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", "1");
+        std::env::set_var(
+            "DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE",
+            archive.display().to_string(),
+        );
+
+        write_plugin_zip_with_payload(
+            &archive,
+            "deepseek-ai-archive-demo-0123456",
+            "archive-demo",
+            "0.1.0",
+            &[
+                ("scripts/run.sh", b"#!/usr/bin/env sh\necho ok\n"),
+                ("assets/logo.txt", b"asset payload"),
+                ("README.md", b"# Archive Demo\n"),
+                ("LICENSE", b"MIT\n"),
+                ("tests/smoke.txt", b"smoke"),
+            ],
+        );
+        let marketplace_root = tmp.path().join("remote-marketplace");
+        std::fs::create_dir_all(&marketplace_root).unwrap();
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            format!(
+                r#"{{
+                  "name": "remote",
+                  "plugins": [
+                    {{
+                      "name": "archive-demo",
+                      "version": "0.1.0",
+                      "source": {{
+                        "source": "github",
+                        "repo": "deepseek-ai/archive-demo",
+                        "sha": "{sha}"
+                      }}
+                    }}
+                  ]
+                }}"#
+            ),
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("remote".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let prepared = svc
+            .prepare_plugin_install("remote", "archive-demo", false)
+            .unwrap();
+        let prepared_root = PathBuf::from(&prepared.plugin_root);
+        assert!(prepared_root.join("scripts").join("run.sh").is_file());
+        assert!(prepared_root.join("assets").join("logo.txt").is_file());
+        assert!(prepared_root.join("README.md").is_file());
+        assert!(prepared_root.join("LICENSE").is_file());
+        assert!(prepared_root.join("tests").join("smoke.txt").is_file());
+
+        let installed = svc.commit_plugin_install(&prepared.token).unwrap();
+        assert_eq!(installed.id, "archive-demo@remote");
+        let cached = roots
+            .marketplace_cache
+            .join("remote")
+            .join("archive-demo")
+            .join("0.1.0");
+        assert!(cached.join("scripts").join("run.sh").is_file());
+        assert!(cached.join("assets").join("logo.txt").is_file());
+        assert!(cached.join("README.md").is_file());
+        assert!(cached.join("LICENSE").is_file());
+        assert!(cached.join("tests").join("smoke.txt").is_file());
+
+        let snapshot =
+            std::fs::read_to_string(roots.marketplaces.join("remote").join("marketplace.json"))
+                .unwrap();
+        assert!(snapshot.contains("deepseek-ai/archive-demo"));
+        assert!(!snapshot.contains("gh.llkk.cc"));
+        assert!(!snapshot.contains("gh-proxy.com"));
+
+        match old_skip_clone {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE"),
+        }
+        match old_download_source {
+            Some(path) => std::env::set_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE", path),
+            None => std::env::remove_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE"),
+        }
+    }
+
+    #[test]
+    fn github_archive_fallback_failure_cleans_staging_without_installing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let sha = "abcdef0123456789abcdef0123456789abcdef01";
+        let bad_archive = tmp.path().join("fixtures").join("bad-archive.zip");
+        let old_skip_clone = std::env::var_os("DEEPAGENT_TEST_GITHUB_SKIP_CLONE");
+        let old_download_source = std::env::var_os("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE");
+        if let Some(parent) = bad_archive.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&bad_archive, b"not a zip").unwrap();
+        std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", "1");
+        std::env::set_var(
+            "DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE",
+            bad_archive.display().to_string(),
+        );
+
+        let marketplace_root = tmp.path().join("remote-marketplace");
+        std::fs::create_dir_all(&marketplace_root).unwrap();
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            format!(
+                r#"{{
+                  "name": "remote",
+                  "plugins": [
+                    {{
+                      "name": "archive-demo",
+                      "version": "0.1.0",
+                      "source": {{
+                        "source": "github",
+                        "repo": "deepseek-ai/archive-demo",
+                        "sha": "{sha}"
+                      }}
+                    }}
+                  ]
+                }}"#
+            ),
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("remote".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let err = svc
+            .prepare_plugin_install("remote", "archive-demo", false)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("read zip archive"));
+        assert!(!roots
+            .marketplace_cache
+            .join("remote")
+            .join("archive-demo")
+            .join("0.1.0")
+            .exists());
+        let staging_root = roots.marketplace_cache.join(".staging");
+        assert!(
+            std::fs::read_dir(&staging_root)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(true),
+            "failed GitHub archive materialization must not leave staging behind"
+        );
+        let state = svc.load_state().unwrap();
+        assert!(!state.installed.contains_key("archive-demo@remote"));
+        assert!(!state.enabled.contains_key("archive-demo@remote"));
+
+        match old_skip_clone {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE"),
+        }
+        match old_download_source {
+            Some(path) => std::env::set_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE", path),
+            None => std::env::remove_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE"),
+        }
     }
 
     #[test]
