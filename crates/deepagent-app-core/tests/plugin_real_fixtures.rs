@@ -8,13 +8,16 @@ use deepagent_app_core::plugin_loader::{load_plugins, PluginLoadError, PluginRoo
 
 const EXPECTED: &[(&str, u32, u32, u32, u32, u32, u32)] = &[
     // name, skills, mcp, hooks, commands, apps, output styles
+    ("boltz-api-cli", 8, 0, 0, 0, 0, 0),
     ("browser", 0, 0, 0, 1, 1, 0),
     ("computer-use", 0, 0, 0, 1, 1, 0),
+    ("figma", 12, 1, 0, 4, 1, 0),
     ("files", 0, 0, 0, 1, 1, 0),
     ("meeting-recorder", 0, 0, 0, 1, 1, 0),
     ("office-agent", 0, 0, 0, 1, 1, 1),
     ("project-map", 0, 0, 0, 1, 1, 0),
     ("side-chat", 0, 0, 0, 1, 1, 0),
+    ("superpowers", 14, 0, 0, 0, 0, 0),
     ("terminal", 0, 0, 0, 1, 1, 0),
     ("wedecode", 0, 0, 0, 1, 0, 0),
 ];
@@ -147,4 +150,37 @@ fn count_markdown_path(path: &Path) -> u32 {
         .flatten()
         .map(|entry| count_markdown_path(&entry.path()))
         .sum()
+}
+
+#[test]
+fn complete_bundled_plugins_are_real_resources() {
+    for name in ["superpowers", "figma", "boltz-api-cli"] {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/desktop/src-tauri/resources/plugins")
+            .join(name);
+        assert!(root.is_dir(), "missing bundled plugin root: {name}");
+        let manifest = root.join(".codex-plugin").join("plugin.json");
+        assert!(manifest.is_file(), "missing manifest: {name}");
+        let text = std::fs::read_to_string(&manifest).expect("manifest text");
+        assert!(text.contains("\"name\""), "manifest missing name: {name}");
+        assert!(
+            root.join("skills").is_dir() || root.join("commands").is_dir(),
+            "expected real plugin content for {name}"
+        );
+    }
+
+    let figma_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/desktop/src-tauri/resources/plugins/figma");
+    assert!(
+        figma_root.join("commands").is_dir(),
+        "figma commands missing"
+    );
+    assert!(
+        figma_root.join("hooks.json").is_file(),
+        "figma hooks missing"
+    );
+    assert!(
+        figma_root.join(".app.json").is_file(),
+        "figma app config missing"
+    );
 }

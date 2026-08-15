@@ -1,0 +1,46 @@
+{
+  "name": "figma",
+  "version": "2.0.13",
+  "description": "Figma workflows for design implementation, Code Connect templates, and design system rule generation.",
+  "author": {
+    "name": "Figma",
+    "url": "https://www.figma.com"
+  },
+  "homepage": "https://www.figma.com",
+  "repository": "https://github.com/openai/plugins",
+  "license": "LicenseRef-Figma-Developer-Terms",
+  "keywords": [
+    "figma",
+    "design-to-code",
+    "ui-implementation",
+    "code-connect",
+    "design-system"
+  ],
+  "skills": "./skills/",
+  "apps": "./.app.json",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Figma",
+    "shortDescription": "Design-to-code workflows powered by the Figma integration",
+    "longDescription": "Figma workflows for implementing designs in code, creating Code Connect templates for published Figma components, and generating project-specific design system rules for repeatable Figma-to-code work.",
+    "developerName": "Figma",
+    "category": "Creativity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://www.figma.com",
+    "privacyPolicyURL": "https://www.figma.com/legal/privacy/",
+    "termsOfServiceURL": "https://www.figma.com/legal/developer-terms/",
+    "defaultPrompt": [
+      "Inspect a Figma design and implement it in code",
+      "Create Code Connect templates for my components",
+      "Build or update a screen in Figma"
+    ],
+    "brandColor": "#1ABCFE",
+    "composerIcon": "./assets/logo-padded.png",
+    "logo": "./assets/logo-padded.png",
+    "screenshots": []
+  }
+}

@@ -19,6 +19,9 @@ below. An unclassified plugin fails CI.
 
 | Plugin | Upstream | Version | License | License file |
 | --- | --- | --- | --- | --- |
+| `superpowers` | https://github.com/obra/superpowers | 5.1.3 | MIT | `resources/plugins/superpowers/LICENSE` |
+| `figma` | https://www.figma.com | 2.0.13 | LicenseRef-Figma-Developer-Terms | `resources/plugins/figma/LICENSE.txt` |
+| `boltz-api-cli` | https://boltz.bio | 0.1.1 | MIT | `resources/plugins/boltz-api-cli/LICENSE` |
 | `wedecode` | https://gitee.com/xiaoshangongzuoshi/wxapkg | 0.9.1 | GPL-3.0-or-later | `resources/plugins/wedecode/LICENSE` |
 
 ### Open compliance item: `wedecode` corresponding source

@@ -11,8 +11,9 @@
     "in, so a third-party plugin cannot slip in unrecorded.",
     "",
     "firstParty: authored by this project; no third-party license obligation.",
-    "thirdParty: vendored from upstream; must keep its license file in-tree and",
+    "bundledThirdParty: vendored from upstream and bundled in-app; must keep its license file in-tree and",
     "be recorded in THIRD_PARTY_NOTICES.md.",
+    "marketplaceOnly: not bundled; offered only as an install-from-source option.",
     "",
     "Anthropic's plugins from anthropics/claude-code must never be added here:",
     "that repository is 'All rights reserved' under Anthropic's Commercial Terms",
@@ -29,17 +30,82 @@
     "side-chat",
     "terminal"
   ],
-  "thirdParty": [
+  "bundledThirdParty": [
     {
-      "name": "wedecode",
-      "upstream": "https://gitee.com/xiaoshangongzuoshi/wxapkg",
+      "license": "MIT",
+      "licenseFile": "LICENSE",
+      "name": "superpowers",
+      "notes": [
+        "Complete plugin bundle with skills and scripts."
+      ],
+      "upstream": "https://github.com/obra/superpowers"
+    },
+    {
+      "license": "LicenseRef-Figma-Developer-Terms",
+      "licenseFile": "LICENSE.txt",
+      "name": "figma",
+      "notes": [
+        "Complete plugin bundle with skills, commands, hooks, MCP, and UI assets."
+      ],
+      "upstream": "https://www.figma.com"
+    },
+    {
+      "license": "MIT",
+      "licenseFile": "LICENSE",
+      "name": "boltz-api-cli",
+      "notes": [
+        "Complete plugin bundle with skills and scripts."
+      ],
+      "upstream": "https://boltz.bio"
+    },
+    {
       "license": "GPL-3.0-or-later",
       "licenseFile": "LICENSE",
+      "name": "wedecode",
       "notes": [
         "Ships a ~29 MB runtime.zip alongside the manifest and command.",
         "GPL-3.0 §6 requires the Corresponding Source for conveyed object code;",
         "see the open item recorded in THIRD_PARTY_NOTICES.md."
-      ]
+      ],
+      "upstream": "https://gitee.com/xiaoshangongzuoshi/wxapkg"
+    }
+  ],
+  "marketplaceOnly": [
+    {
+      "license": "Proprietary",
+      "licenseFile": "LICENSE",
+      "name": "codex-security",
+      "notes": [
+        "Keep as marketplace-only because redistribution authorization still needs review."
+      ],
+      "upstream": "https://github.com/openai/plugins"
+    },
+    {
+      "license": "MIT",
+      "licenseFile": "LICENSE",
+      "name": "zotero",
+      "notes": [
+        "Keep as marketplace-only until redistribution policy is finalized."
+      ],
+      "upstream": "https://openai.com/"
+    },
+    {
+      "license": "Proprietary",
+      "licenseFile": "LICENSE",
+      "name": "life-science-research",
+      "notes": [
+        "Keep as marketplace-only until redistribution policy is finalized."
+      ],
+      "upstream": "https://github.com/openai/openai/tree/master/plugins/life-science-research"
+    },
+    {
+      "license": "MIT",
+      "licenseFile": "LICENSE",
+      "name": "ngs-analysis",
+      "notes": [
+        "Keep as marketplace-only until redistribution policy is finalized."
+      ],
+      "upstream": "https://openai.com/"
     }
   ]
 }

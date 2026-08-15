@@ -8,15 +8,14 @@
  * third-party plugin there carries a redistribution obligation that is ours to
  * satisfy. This script enforces three rules:
  *
- *   1. Every plugin directory is classified in `bundled-plugins.json` as either
- *      first-party or third-party. An unclassified plugin fails — that is what
- *      stops a vendored plugin from slipping in unrecorded.
- *   2. Every third-party entry keeps its declared license file in-tree.
- *   3. Every third-party entry is named in `THIRD_PARTY_NOTICES.md`.
+ *   1. Every plugin directory is classified in `bundled-plugins.json` as one of
+ *      the supported buckets. An unclassified plugin fails.
+ *   2. Every bundled third-party entry keeps its declared license file in-tree.
+ *   3. Every bundled third-party entry is named in `THIRD_PARTY_NOTICES.md`.
  *
  * Classification is explicit rather than inferred from each manifest: whether a
- * plugin is ours or vendored is a distribution decision, and a manifest `author`
- * field can be edited while the obligation cannot.
+ * plugin is ours or vendored is a distribution decision, and a manifest
+ * `author` field can be edited while the obligation cannot.
  *
  * Exit code 0 on success, 1 on any violation.
  */
@@ -72,13 +71,19 @@ function main() {
   }
 
   const firstParty = Array.isArray(manifest.firstParty) ? manifest.firstParty : [];
-  const thirdParty = Array.isArray(manifest.thirdParty) ? manifest.thirdParty : [];
+  const bundledThirdParty = Array.isArray(manifest.bundledThirdParty)
+    ? manifest.bundledThirdParty
+    : [];
+  const marketplaceOnly = Array.isArray(manifest.marketplaceOnly) ? manifest.marketplaceOnly : [];
 
   if (!Array.isArray(manifest.firstParty)) {
     fail("bundled-plugins.json: `firstParty` must be an array");
   }
-  if (!Array.isArray(manifest.thirdParty)) {
-    fail("bundled-plugins.json: `thirdParty` must be an array");
+  if (!Array.isArray(manifest.bundledThirdParty)) {
+    fail("bundled-plugins.json: `bundledThirdParty` must be an array");
+  }
+  if (!Array.isArray(manifest.marketplaceOnly)) {
+    fail("bundled-plugins.json: `marketplaceOnly` must be an array");
   }
 
   const classified = new Map();
@@ -89,55 +94,26 @@ function main() {
     classified.set(name, "firstParty");
   }
 
-  for (const entry of thirdParty) {
-    if (!entry || typeof entry.name !== "string" || entry.name === "") {
-      fail("bundled-plugins.json: every `thirdParty` entry needs a non-empty `name`");
-      continue;
-    }
-    if (classified.has(entry.name)) {
-      fail(`bundled-plugins.json: '${entry.name}' is listed more than once`);
-    }
-    classified.set(entry.name, "thirdParty");
-
-    for (const field of ["upstream", "license", "licenseFile"]) {
-      if (typeof entry[field] !== "string" || entry[field] === "") {
-        fail(`bundled-plugins.json: '${entry.name}' is missing \`${field}\``);
-      }
-    }
-
-    // Rule 2: the license text must ship with the plugin.
-    if (typeof entry.licenseFile === "string" && entry.licenseFile !== "") {
-      const licensePath = path.join(pluginsDir, entry.name, entry.licenseFile);
-      if (!fs.existsSync(licensePath)) {
-        fail(
-          `'${entry.name}' is third-party (${entry.license ?? "unknown license"}) but its ` +
-            `license file is missing: ${path.relative(repoRoot, licensePath)}`,
-        );
-      } else if (fs.statSync(licensePath).size === 0) {
-        fail(`'${entry.name}': license file is empty: ${path.relative(repoRoot, licensePath)}`);
-      }
-    }
-
-    // Rule 3: it must be recorded for downstream recipients.
-    if (notices && !notices.includes(entry.name)) {
-      fail(
-        `'${entry.name}' is third-party but is not recorded in ` +
-          `${path.relative(repoRoot, noticesPath)}`,
-      );
-    }
+  for (const entry of bundledThirdParty) {
+    validateBundledEntry(entry, "bundledThirdParty", classified, notices);
   }
 
-  // Rule 1: no unclassified plugin, and no stale classification.
+  for (const entry of marketplaceOnly) {
+    validateMarketplaceOnlyEntry(entry);
+  }
+
   const present = listPluginDirs();
   for (const name of present) {
     if (!classified.has(name)) {
       fail(
         `plugin '${name}' is bundled but not classified in ` +
           `${path.relative(repoRoot, manifestPath)}. Add it to \`firstParty\` if this project ` +
-          `authored it, or to \`thirdParty\` with its upstream and license.`,
+          `authored it, or to \`bundledThirdParty\` with its upstream and license, or to ` +
+          `\`marketplaceOnly\` if it should only be installed from the marketplace.`,
       );
     }
   }
+
   for (const name of classified.keys()) {
     if (!present.includes(name)) {
       fail(
@@ -148,6 +124,48 @@ function main() {
   }
 
   report(present.length, classified);
+}
+
+function validateBundledEntry(entry, bucket, classified, notices) {
+  if (!entry || typeof entry.name !== "string" || entry.name === "") {
+    fail(`bundled-plugins.json: every \`${bucket}\` entry needs a non-empty \`name\``);
+    return;
+  }
+  if (classified.has(entry.name)) {
+    fail(`bundled-plugins.json: '${entry.name}' is listed more than once`);
+  }
+  classified.set(entry.name, bucket);
+
+  for (const field of ["upstream", "license", "licenseFile"]) {
+    if (typeof entry[field] !== "string" || entry[field] === "") {
+      fail(`bundled-plugins.json: '${entry.name}' is missing \`${field}\``);
+    }
+  }
+
+  if (typeof entry.licenseFile === "string" && entry.licenseFile !== "") {
+    const licensePath = path.join(pluginsDir, entry.name, entry.licenseFile);
+    if (!fs.existsSync(licensePath)) {
+      fail(
+        `'${entry.name}' is bundled third-party (${entry.license ?? "unknown license"}) ` +
+          `but its license file is missing: ${path.relative(repoRoot, licensePath)}`,
+      );
+    } else if (fs.statSync(licensePath).size === 0) {
+      fail(`'${entry.name}': license file is empty: ${path.relative(repoRoot, licensePath)}`);
+    }
+  }
+
+  if (notices && !notices.includes(entry.name)) {
+    fail(
+      `'${entry.name}' is bundled third-party but is not recorded in ` +
+        `${path.relative(repoRoot, noticesPath)}`,
+    );
+  }
+}
+
+function validateMarketplaceOnlyEntry(entry) {
+  if (!entry || typeof entry.name !== "string" || entry.name === "") {
+    fail("bundled-plugins.json: every `marketplaceOnly` entry needs a non-empty `name`");
+  }
 }
 
 function report(pluginCount, classified) {
@@ -164,12 +182,12 @@ function report(pluginCount, classified) {
     process.exit(1);
   }
 
-  const thirdPartyCount = classified
-    ? [...classified.values()].filter((kind) => kind === "thirdParty").length
+  const bundledThirdPartyCount = classified
+    ? [...classified.values()].filter((kind) => kind === "bundledThirdParty").length
     : 0;
   console.log(
     `[check-plugin-licenses] ${pluginCount} bundled plugins checked ` +
-      `(${thirdPartyCount} third-party, all licensed and recorded)`,
+      `(${bundledThirdPartyCount} bundled third-party, all licensed and recorded)`,
   );
 }
 
