@@ -370,8 +370,10 @@ struct PathSnapshot {
 }
 
 impl PluginService {
-    pub fn new(roots: PluginRoots, app_data_dir: impl AsRef<Path>) -> Self {
-        let plugin_data = app_data_dir.as_ref().join("plugins");
+    /// Build the plugin service with the app installation directory as the
+    /// anchor for persistent plugin state and data.
+    pub fn new(roots: PluginRoots, install_dir: impl AsRef<Path>) -> Self {
+        let plugin_data = install_dir.as_ref().join("plugins");
         Self {
             roots,
             state_path: plugin_data.join("state.json"),

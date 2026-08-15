@@ -537,6 +537,29 @@ fn preferred_runtime_resource_dir(app: &tauri::AppHandle) -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("deepagent-runtimes"))
 }
 
+fn preferred_plugin_install_dir(app: &tauri::AppHandle) -> PathBuf {
+    let resource_dir = app.path().resource_dir().ok();
+    let current_exe = std::env::current_exe().ok();
+    preferred_plugin_install_dir_from(resource_dir.as_deref(), current_exe.as_deref())
+}
+
+fn preferred_plugin_install_dir_from(
+    resource_dir: Option<&Path>,
+    current_exe: Option<&Path>,
+) -> PathBuf {
+    if let Some(resource_dir) = resource_dir {
+        if let Some(parent) = resource_dir.parent() {
+            return parent.join("plugins");
+        }
+    }
+    if let Some(current_exe) = current_exe {
+        if let Some(parent) = current_exe.parent() {
+            return parent.join("plugins");
+        }
+    }
+    std::env::temp_dir().join("deepagent-plugins")
+}
+
 fn preferred_runtime_log_path() -> Result<PathBuf, String> {
     std::env::current_exe()
         .ok()
@@ -5126,15 +5149,10 @@ pub fn run() {
                     std::env::temp_dir().join("deepagent-builtin-plugins-missing")
                 }
             };
-            let plugin_home = app
-                .path()
-                .home_dir()
-                .unwrap_or_else(|_| std::env::temp_dir())
-                .join(".deepagent")
-                .join("plugins");
-            let plugin_cache = plugin_home.join("cache");
-            let plugin_marketplaces = plugin_home.join("marketplaces");
-            let _ = std::fs::create_dir_all(&plugin_home);
+            let plugin_install_dir = preferred_plugin_install_dir(&app.handle());
+            let plugin_cache = plugin_install_dir.join("cache");
+            let plugin_marketplaces = plugin_install_dir.join("marketplaces");
+            let _ = std::fs::create_dir_all(&plugin_install_dir);
             let _ = std::fs::create_dir_all(&plugin_cache);
             let _ = std::fs::create_dir_all(&plugin_marketplaces);
             let session_plugins = session_plugin_roots_from_env();
@@ -5143,7 +5161,7 @@ pub fn run() {
                     session: session_plugins,
                     builtin: resource_plugins_dir,
                     workspace: Some(workspace_root.join(".deepagent").join("plugins")),
-                    personal: plugin_home,
+                    personal: plugin_install_dir,
                     marketplace_cache: plugin_cache,
                     marketplaces: plugin_marketplaces,
                 },
@@ -5699,6 +5717,27 @@ mod tests {
 
         let picked = locate_builtin_skills_dir(tmp.path());
         assert_eq!(picked, tmp.path().join("resources").join("skills"));
+    }
+
+    #[test]
+    fn preferred_plugin_install_dir_prefers_resource_dir_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resource_dir = tmp.path().join("DeepAgent").join("resources");
+        let current_exe = tmp.path().join("fallback").join("deepagent.exe");
+
+        let picked = preferred_plugin_install_dir_from(Some(&resource_dir), Some(&current_exe));
+
+        assert_eq!(picked, tmp.path().join("DeepAgent").join("plugins"));
+    }
+
+    #[test]
+    fn preferred_plugin_install_dir_falls_back_to_exe_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let current_exe = tmp.path().join("DeepAgent").join("bin").join("deepagent.exe");
+
+        let picked = preferred_plugin_install_dir_from(None, Some(&current_exe));
+
+        assert_eq!(picked, tmp.path().join("DeepAgent").join("bin").join("plugins"));
     }
 
     /// Production layout takes priority even when a flattened or `_up_/`
