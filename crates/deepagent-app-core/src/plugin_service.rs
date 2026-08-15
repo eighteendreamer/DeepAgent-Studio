@@ -41,6 +41,8 @@ const PLUGIN_STATE_SCHEMA_VERSION: u32 = 1;
 const PLUGIN_CACHE_ORPHAN_MARKER: &str = ".orphaned_at";
 const PLUGIN_CACHE_ORPHAN_GRACE_MILLIS: u128 = 7 * 24 * 60 * 60 * 1000;
 const PREPARED_PLUGIN_INSTALL_FILE: &str = ".prepared-install.json";
+const GITHUB_API_BASES_ENV: &str = "DEEPAGENT_PLUGIN_GITHUB_API_BASES";
+const GITHUB_TOPIC_PREFIX: &str = "https://github.com/topics/";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginSourceDto {
@@ -2371,22 +2373,19 @@ impl PluginService {
                 ref_name,
                 sha,
                 ..
-            } => {
-                let url = format!("https://github.com/{repo}.git");
-                self.materialize_marketplace_plugin_in_staging(
-                    marketplace,
-                    &entry.name,
-                    |staging| {
-                        materialize_git_plugin(
-                            &url,
-                            path.as_deref(),
-                            ref_name.as_deref(),
-                            sha.as_deref(),
-                            staging,
-                        )
-                    },
-                )
-            }
+            } => self.materialize_marketplace_plugin_in_staging(
+                marketplace,
+                &entry.name,
+                |staging| {
+                    materialize_github_plugin(
+                        repo,
+                        path.as_deref(),
+                        ref_name.as_deref(),
+                        sha.as_deref(),
+                        staging,
+                    )
+                },
+            ),
             PluginMarketplaceSource::GitSubdir {
                 url,
                 path,
@@ -2557,6 +2556,10 @@ impl PluginService {
         let source = source.trim();
         if source.is_empty() {
             return Ok(MaterializedMarketplace::default());
+        }
+
+        if let Some(topic) = github_topic_from_source(source) {
+            return materialize_github_topic_marketplace(name, &topic, &registry_dir);
         }
 
         if source.starts_with("npm:") {
@@ -3010,6 +3013,114 @@ fn marketplace_dependency_id(
     })
 }
 
+fn materialize_github_topic_marketplace(
+    name: &str,
+    topic: &str,
+    registry_dir: &Path,
+) -> Result<MaterializedMarketplace> {
+    let scratch = registry_dir.join(".github-api");
+    let snapshot_path = registry_dir.join("marketplace.json");
+    let result = (|| {
+        let search_endpoint = format!(
+            "/search/repositories?q={}&sort=updated&order=desc&per_page=100",
+            percent_encode_query_value(&format!("topic:{topic}"))
+        );
+        let search_text = download_github_api_json(&search_endpoint, &scratch, "topic-search")?;
+        let search: GitHubSearchRepositoriesResponse = serde_json::from_str(&search_text)
+            .map_err(|e| CoreError::invalid(format!("parse GitHub topic response: {e}")))?;
+        let mut used_names = BTreeSet::new();
+        let mut plugins = Vec::new();
+        for repo in search.items {
+            let Some(full_name) = trimmed_string(repo.full_name) else {
+                continue;
+            };
+            if full_name.split('/').count() != 2 {
+                continue;
+            }
+            let default_branch = repo
+                .default_branch
+                .and_then(trimmed_string)
+                .unwrap_or_else(|| "main".to_string());
+            let branch_endpoint = format!(
+                "/repos/{}/branches/{}",
+                full_name,
+                percent_encode_path_segment(&default_branch)
+            );
+            let branch_text = download_github_api_json(
+                &branch_endpoint,
+                &scratch,
+                &format!("{}-{default_branch}", full_name.replace('/', "-")),
+            )?;
+            let branch: GitHubBranchResponse = serde_json::from_str(&branch_text)
+                .map_err(|e| CoreError::invalid(format!("parse GitHub branch response: {e}")))?;
+            let commit = trimmed_string(branch.commit.sha)
+            .filter(|sha| is_git_sha(sha))
+            .ok_or_else(|| {
+                CoreError::invalid(format!(
+                    "GitHub repository {full_name} default branch {default_branch} did not expose a valid commit sha"
+                ))
+            })?;
+            let repo_name = repo
+                .name
+                .and_then(trimmed_string)
+                .unwrap_or_else(|| full_name.rsplit('/').next().unwrap_or("plugin").to_string());
+            let mut plugin_name = slugify(&repo_name);
+            if !used_names.insert(plugin_name.clone()) {
+                plugin_name = slugify(&full_name.replace('/', "-"));
+                used_names.insert(plugin_name.clone());
+            }
+            let mut description = repo
+                .description
+                .and_then(trimmed_string)
+                .unwrap_or_else(|| "DSH plugin".to_string());
+            if let Some(spdx_id) = repo
+                .license
+                .and_then(|license| license.spdx_id)
+                .and_then(trimmed_string)
+            {
+                description = format!("{description} (license: {spdx_id})");
+            }
+            plugins.push(serde_json::json!({
+                "name": plugin_name,
+                "displayName": repo_name,
+                "version": format!("git-{}", &commit[..12.min(commit.len())]),
+                "description": description,
+                "source": {
+                    "source": "github",
+                    "repo": full_name,
+                    "ref": default_branch,
+                    "sha": commit
+                },
+                "category": "DSH Plugin"
+            }));
+        }
+        let catalog = serde_json::json!({
+            "name": name,
+            "interface": {
+                "displayName": format!("GitHub topic: {topic}")
+            },
+            "plugins": plugins,
+        });
+        let bytes = serde_json::to_vec_pretty(&catalog).map_err(CoreError::from)?;
+        std::fs::write(&snapshot_path, bytes).map_err(|e| {
+            CoreError::Persistence(format!(
+                "write GitHub topic marketplace snapshot {}: {e}",
+                snapshot_path.display()
+            ))
+        })?;
+        load_marketplace_catalog(&snapshot_path)?;
+        Ok(MaterializedMarketplace {
+            manifest_path: Some(snapshot_path),
+            source_root: None,
+        })
+    })();
+    let _ = remove_dir_all_with_retry(&scratch);
+    if result.is_err() {
+        let _ = std::fs::remove_file(registry_dir.join("marketplace.json"));
+    }
+    result
+}
+
 fn materialize_git_plugin(
     url: &str,
     subdir: Option<&str>,
@@ -3040,6 +3151,24 @@ fn materialize_git_plugin(
         None => repo_dir,
     };
     resolve_plugin_root(&root)
+}
+
+fn materialize_github_plugin(
+    repo: &str,
+    subdir: Option<&str>,
+    ref_name: Option<&str>,
+    sha: Option<&str>,
+    staging: &Path,
+) -> Result<PathBuf> {
+    let mut last_error = None;
+    for url in github_clone_url_candidates(repo) {
+        let _ = std::fs::remove_dir_all(staging.join("repo"));
+        match materialize_git_plugin(&url, subdir, ref_name, sha, staging) {
+            Ok(root) => return Ok(root),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| CoreError::invalid("no GitHub clone URL candidates")))
 }
 
 fn materialize_git_marketplace(
@@ -3421,6 +3550,186 @@ fn is_github_shorthand_segment(segment: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubSearchRepositoriesResponse {
+    #[serde(default)]
+    items: Vec<GitHubRepositoryItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubRepositoryItem {
+    #[serde(default)]
+    name: Option<String>,
+    full_name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    default_branch: Option<String>,
+    #[serde(default)]
+    license: Option<GitHubRepositoryLicense>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubRepositoryLicense {
+    #[serde(default)]
+    spdx_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubBranchResponse {
+    commit: GitHubBranchCommit,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubBranchCommit {
+    sha: String,
+}
+
+fn github_topic_from_source(source: &str) -> Option<String> {
+    let source = source.trim().trim_end_matches('/');
+    let raw = source
+        .strip_prefix("github-topic:")
+        .or_else(|| source.strip_prefix(GITHUB_TOPIC_PREFIX))?;
+    let topic = raw.split(['/', '?', '#']).next().unwrap_or_default().trim();
+    is_safe_github_topic(topic).then(|| topic.to_string())
+}
+
+fn is_safe_github_topic(topic: &str) -> bool {
+    !topic.is_empty()
+        && topic.len() <= 50
+        && topic
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+        && topic
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && topic
+            .chars()
+            .last()
+            .is_some_and(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+}
+
+fn is_git_sha(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn download_github_api_json(endpoint: &str, scratch: &Path, label: &str) -> Result<String> {
+    #[cfg(test)]
+    if let Some(fixture) = github_api_fixture_path(endpoint) {
+        return std::fs::read_to_string(&fixture).map_err(|e| {
+            CoreError::Persistence(format!(
+                "read GitHub API fixture {}: {e}",
+                fixture.display()
+            ))
+        });
+    }
+
+    std::fs::create_dir_all(scratch).map_err(|e| {
+        CoreError::Persistence(format!(
+            "create GitHub API scratch dir {}: {e}",
+            scratch.display()
+        ))
+    })?;
+    let mut last_error = None;
+    for (index, base) in github_api_bases().into_iter().enumerate() {
+        let url = github_api_url(&base, endpoint)?;
+        let destination = scratch.join(format!("{}-{index}.json", sanitize_file_name(label)));
+        match download_file(&url, &destination).and_then(|_| {
+            std::fs::read_to_string(&destination).map_err(|e| {
+                CoreError::Persistence(format!(
+                    "read GitHub API response {}: {e}",
+                    destination.display()
+                ))
+            })
+        }) {
+            Ok(text) => return Ok(text),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| CoreError::other("GitHub API request had no candidates")))
+}
+
+#[cfg(test)]
+fn github_api_fixture_path(endpoint: &str) -> Option<PathBuf> {
+    std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|root| root.join(format!("{}.json", github_api_fixture_name(endpoint))))
+}
+
+#[cfg(test)]
+fn github_api_fixture_name(endpoint: &str) -> String {
+    sanitize_file_name(endpoint.trim_start_matches('/'))
+}
+
+fn github_api_bases() -> Vec<String> {
+    let configured = std::env::var(GITHUB_API_BASES_ENV)
+        .ok()
+        .map(|value| {
+            value
+                .split([';', ','])
+                .filter_map(|item| trimmed_string(item.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if configured.is_empty() {
+        vec!["https://api.github.com".to_string()]
+    } else {
+        configured
+    }
+}
+
+fn github_api_url(base: &str, endpoint: &str) -> Result<String> {
+    let base = base.trim().trim_end_matches('/');
+    if !base.starts_with("https://") {
+        return Err(CoreError::invalid("GitHub API base must use https://"));
+    }
+    let endpoint = endpoint.trim_start_matches('/');
+    Ok(format!("{base}/{endpoint}"))
+}
+
+fn github_clone_url_candidates(repo: &str) -> Vec<String> {
+    let official = format!("https://github.com/{repo}.git");
+    github_download_url_candidates(&official)
+}
+
+fn github_download_url_candidates(url: &str) -> Vec<String> {
+    let mut candidates = vec![url.to_string()];
+    if url.starts_with("https://github.com/")
+        || url.starts_with("https://raw.githubusercontent.com/")
+        || url.starts_with("https://api.github.com/repos/")
+    {
+        candidates.push(format!("https://gh.llkk.cc/{url}"));
+        candidates.push(format!("https://gh-proxy.com/{url}"));
+    }
+    candidates
+}
+
+fn percent_encode_query_value(input: &str) -> String {
+    percent_encode_bytes(input.as_bytes(), true)
+}
+
+fn percent_encode_path_segment(input: &str) -> String {
+    percent_encode_bytes(input.as_bytes(), false)
+}
+
+fn percent_encode_bytes(bytes: &[u8], encode_colon: bool) -> String {
+    let mut out = String::new();
+    for byte in bytes {
+        let ch = *byte as char;
+        if ch.is_ascii_alphanumeric()
+            || matches!(ch, '-' | '_' | '.' | '~')
+            || (!encode_colon && ch == ':')
+        {
+            out.push(ch);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 fn run_external(program: &str, args: &[String], cwd: Option<&Path>) -> Result<()> {
     let mut command = Command::new(program);
     command.args(args);
@@ -3495,6 +3804,17 @@ fn download_file(url: &str, destination: &Path) -> Result<()> {
         })?;
         return Ok(());
     }
+    let mut last_error = None;
+    for candidate in github_download_url_candidates(url) {
+        match download_file_once(&candidate, destination) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| CoreError::other("download had no URL candidates")))
+}
+
+fn download_file_once(url: &str, destination: &Path) -> Result<()> {
     let curl_args = vec![
         "-L".to_string(),
         "-f".to_string(),
@@ -6771,6 +7091,190 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.name == "zip-plugin" && entry.source_kind == "zip-url"));
+    }
+
+    #[test]
+    fn dsh_github_topic_refresh_writes_metadata_snapshot_without_plugin_download() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let fixtures = tmp.path().join("github-api");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
+        std::env::set_var(
+            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
+            fixtures.display().to_string(),
+        );
+
+        let search_endpoint =
+            "/search/repositories?q=topic%3Adsh-plugin&sort=updated&order=desc&per_page=100";
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(search_endpoint))),
+            r#"{
+              "items": [
+                {
+                  "name": "dsh-demo",
+                  "full_name": "deepseek-ai/dsh-demo",
+                  "description": "Demo DSH plugin",
+                  "default_branch": "main",
+                  "license": { "spdx_id": "MIT" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let branch_endpoint = "/repos/deepseek-ai/dsh-demo/branches/main";
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(branch_endpoint))),
+            r#"{
+              "commit": {
+                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        let marketplace = svc
+            .add_marketplace(AddPluginMarketplaceDto {
+                name: Some("dsh".to_string()),
+                source: "https://github.com/topics/dsh-plugin".to_string(),
+                git_ref: None,
+                sparse_path: None,
+            })
+            .unwrap();
+
+        assert_eq!(marketplace.name, "dsh");
+        let entries = svc.list_marketplace_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.marketplace, "dsh");
+        assert_eq!(entry.name, "dsh-demo");
+        assert_eq!(entry.display_name, "dsh-demo");
+        assert_eq!(entry.description, "Demo DSH plugin (license: MIT)");
+        assert_eq!(entry.version.as_deref(), Some("git-aaaaaaaaaaaa"));
+        assert_eq!(entry.source_kind, "github");
+        assert!(entry.source.contains("deepseek-ai/dsh-demo@main"));
+        assert!(entry.installable);
+        assert!(!entry.installed);
+
+        let snapshot =
+            std::fs::read_to_string(roots.marketplaces.join("dsh").join("marketplace.json"))
+                .unwrap();
+        assert!(snapshot.contains(r#""repo": "deepseek-ai/dsh-demo""#));
+        assert!(snapshot.contains(r#""sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa""#));
+        assert!(!snapshot.contains("gh.llkk.cc"));
+        assert!(!snapshot.contains("gh-proxy.com"));
+        assert!(!roots
+            .marketplace_cache
+            .join("dsh")
+            .join("dsh-demo")
+            .exists());
+
+        match old_fixtures {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
+        }
+    }
+
+    #[test]
+    fn dsh_github_topic_refresh_failure_cleans_scratch_and_state() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let fixtures = tmp.path().join("github-api");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
+        std::env::set_var(
+            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
+            fixtures.display().to_string(),
+        );
+
+        let search_endpoint =
+            "/search/repositories?q=topic%3Adsh-plugin&sort=updated&order=desc&per_page=100";
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(search_endpoint))),
+            r#"{
+              "items": [
+                {
+                  "name": "dsh-demo",
+                  "full_name": "deepseek-ai/dsh-demo",
+                  "default_branch": "main"
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let branch_endpoint = "/repos/deepseek-ai/dsh-demo/branches/main";
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(branch_endpoint))),
+            r#"{
+              "commit": {
+                "sha": "not-a-commit"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        let err = svc
+            .add_marketplace(AddPluginMarketplaceDto {
+                name: Some("dsh".to_string()),
+                source: "https://github.com/topics/dsh-plugin".to_string(),
+                git_ref: None,
+                sparse_path: None,
+            })
+            .unwrap_err();
+
+        assert!(err.to_string().contains("valid commit sha"));
+        assert!(svc.list_marketplaces().unwrap().is_empty());
+        assert!(!roots
+            .marketplaces
+            .join("dsh")
+            .join("marketplace.json")
+            .exists());
+        assert!(!roots.marketplaces.join("dsh").join(".github-api").exists());
+
+        match old_fixtures {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
+        }
+    }
+
+    #[test]
+    fn github_download_candidates_include_domestic_mirrors_after_official_url() {
+        let candidates = github_download_url_candidates(
+            "https://github.com/deepseek-ai/dsh-demo/archive/main.zip",
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                "https://github.com/deepseek-ai/dsh-demo/archive/main.zip",
+                "https://gh.llkk.cc/https://github.com/deepseek-ai/dsh-demo/archive/main.zip",
+                "https://gh-proxy.com/https://github.com/deepseek-ai/dsh-demo/archive/main.zip",
+            ]
+        );
+    }
+
+    #[test]
+    fn github_topic_source_rejects_unsafe_topic_names() {
+        assert_eq!(
+            github_topic_from_source("https://github.com/topics/dsh-plugin"),
+            Some("dsh-plugin".to_string())
+        );
+        assert_eq!(
+            github_topic_from_source("github-topic:dsh-plugin"),
+            Some("dsh-plugin".to_string())
+        );
+        assert_eq!(
+            github_topic_from_source("https://github.com/topics/../secret"),
+            None
+        );
+        assert_eq!(
+            github_topic_from_source("https://github.com/topics/DSH-Plugin"),
+            None
+        );
     }
 
     #[test]
