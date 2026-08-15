@@ -115,11 +115,15 @@
   - 测试：四方言各一 fixture；symlink manifest 被拒；overlay 不能改 `name`/`version`；`Unsupported` 版本被拒绝并带版本信息。
   - _Requirements: 3.1, 3.2, 3.3, 3.6, 1.3, 1.8_
 
-- [ ] 16. 实现 Claude 约定目录回退扫描（M2-2）
-  - 在 `plugin/dialect/claude.rs` 实现：manifest 未声明组件路径时回退扫 `skills/`、`commands/*.md`、`agents/*.md`、`hooks/hooks.json`、`.mcp.json`。
+- [x] 16. 实现 Claude 约定目录扫描（M2-2）
+  - 在 `plugin/dialect/claude.rs` 实现 `discover_conventions(root)`：扫 `skills/`、`commands/`、`agents/`、`hooks/hooks.json`、`.mcp.json`。
   - Claude `.mcp.json` 与 v1 `mcp.json` 并存时取 v1 并记诊断。
-  - 保留 Codex 私有超集字段识别（`commands`/`agents`/`output-styles`/`runtime`/`interface.permissions`）。
+  - 保留 Codex 私有超集字段识别（`commands`/`agents`/`output-styles`/`runtime`/`interface.permissions`）——这些是 manifest 字段，已在 `plugin_manifest.rs` 解析，本步不动。
   - 测试用真实插件目录做 fixture：`借鉴/claude-code/plugins/hookify`（agents + commands + hooks + skills 全套）与 `pr-review-toolkit`（1 command + 6 agents），目录不存在时 skip。
+  - **更正（实施时查明）：本任务原写「manifest 未声明组件路径时**回退**扫描」，这是错的。** 权威依据 `借鉴/claude-code/plugins/plugin-dev/skills/plugin-structure/SKILL.md` 明写 "Custom paths supplement defaults—they don't replace them. Components in both default directories and custom paths will load."。即约定目录**始终**扫描，manifest 声明的路径是**追加**。现有 `plugin_manifest::component_paths` 是替换语义（`if let Some(raw) = raw { return ... }`），对声明了额外目录的 Claude 插件会静默丢掉约定目录里的全部组件。故本步提供 `supplement(&mut Vec<PathBuf>, Option<&Path>)` 做并集，由任务 18 接线时调用。
+  - 同一文档另证 `commands/` **支持子目录命名空间**（`commands/utils/helper.md` → `/helper (plugin:name:utils)`），非本任务原写的 `commands/*.md` 平铺。本步只产出目录路径，逐文件枚举在下游注册器，故不受影响。
+  - `McpConventionSource{Portable,Claude}` 随路径一起返回：它决定解析契约（§7.2 禁止 `command` 含占位符，而 Claude 插件合法写 `${CLAUDE_PLUGIN_ROOT}/bin/server`），正是 design 记录的「来源区分」缺口的落点。
+  - 大小写：`SKILL.md` 因 §7.1「named exactly」严格比对；方言目录无此规范文本，且 Claude Code 自身的存在性检查继承宿主文件系统语义（`Commands/` 在 Windows/macOS 上确实能用），故接受该条目但记可移植性诊断，不拒绝上游可用的插件。
   - _Requirements: 3.4, 3.7, 7.1, 7.4, 7.5_
 
 - [ ] 17. 实现 Presentation 四级优先级回退（M2-3）

@@ -34,6 +34,7 @@ pub mod model;
 pub mod spec;
 
 pub use dialect::{
-    discover, DiscoveredManifest, DiscoveredOverlay, DiscoveryError, ManifestDialect,
+    discover, discover_conventions, supplement, ClaudeConventions, DiscoveredManifest,
+    DiscoveredOverlay, DiscoveryError, ManifestDialect, McpConvention, McpConventionSource,
 };
 pub use model::{ComponentKind, DiagnosticSeverity, PluginDiagnostic};

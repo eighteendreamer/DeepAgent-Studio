@@ -46,6 +46,12 @@ use crate::plugin::spec::schema::{
     schema_status, SchemaStatus, AGENT_PLUGIN_MANIFEST_RELATIVE_PATH, DISCOVERABLE_MANIFEST_PATHS,
 };
 
+pub mod claude;
+
+pub use claude::{
+    discover_conventions, supplement, ClaudeConventions, McpConvention, McpConventionSource,
+};
+
 /// The manifest flavor a plugin was loaded from.
 ///
 /// Kept on the resolved plugin so the UI can show provenance and so diagnostics

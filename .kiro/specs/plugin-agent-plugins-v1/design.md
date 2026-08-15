@@ -219,7 +219,19 @@ pub enum DiagnosticSeverity { Info, Warning, Error }
 
 **已确认的能力缺口：`cwd` 在共享 MCP 配置里无处安放。** `deepagent_mcp::config::McpServerConfig` 的字段是 `transport` / `command` / `args` / `env` / `url` / `headers`，**没有工作目录**。而 v1 的 stdio 允许 `cwd`，且 §7.2.1 还规定省略 `cwd` 时以插件根为工作目录。因此 `component/mcp.rs` 产出自带 `cwd` 的 `PluginMcpServer` 中间表示，不立即映射到共享配置。M2 接线时必须解决：要么给 `McpServerConfig` 加字段，要么在 spawn 处设置工作目录。**在接线处直接丢掉 `cwd` 会静默破坏合规插件**，这一点要有测试守住。
 
-**扩展组件**：Claude 方言在 manifest 未声明时回退约定目录：`commands/*.md`、`agents/*.md`、`hooks/hooks.json`、`.mcp.json`。注意 Claude 的 `.mcp.json` 与 v1 的 `mcp.json` 是**不同文件名**，两者都要认，v1 优先。
+**扩展组件**：Claude 方言扫描约定目录 `skills/`、`commands/`、`agents/`、`hooks/hooks.json`、`.mcp.json`。注意 Claude 的 `.mcp.json` 与 v1 的 `mcp.json` 是**不同文件名**，两者都要认，v1 优先。
+
+**设计更正（任务 16 实施时查明）：约定目录不是"回退"，是"并集"。** 本节原写"manifest 未声明时回退约定目录"，与上游语义相反。权威依据 `借鉴/claude-code/plugins/plugin-dev/skills/plugin-structure/SKILL.md`：
+
+> **Important**: Custom paths supplement defaults—they don't replace them. Components in both default directories and custom paths will load.
+
+即约定目录**始终**扫描，manifest 的 `commands`/`agents`/`hooks` 字段是**追加**位置。现有 `plugin_manifest::component_paths` 是替换语义（字段存在就 early return，不再看约定目录），对"声明了一个额外目录"的 Claude 插件会静默丢掉约定目录里的全部组件。`dialect::claude::supplement(&mut Vec<PathBuf>, Option<&Path>)` 是修这个的并集操作，声明位置保持在前以维持 first-wins 的下游冲突解析。
+
+同一文档另证 `commands/` **支持子目录命名空间**（`commands/utils/helper.md` → `/helper (plugin:name:utils)`），而非平铺 `commands/*.md`。本层只产出目录路径，逐文件枚举在下游注册器，故该事实不改变本层设计，但记录在案以免下游误按平铺实现。
+
+**`McpConventionSource` 是"来源区分"缺口的落点。** `discover_conventions` 返回的 MCP 路径带 `McpConventionSource{Portable, Claude}`：`mcp.json` 走 §7.2 严格语义（`component/mcp.rs` 已实现，拒绝 `command` 含占位符），`.mcp.json` 走兼容语义（Claude 插件合法写 `${CLAUDE_PLUGIN_ROOT}/bin/server`）。这样接线层不必从文件名再推一次。
+
+**大小写策略在两层刻意不同。** `SKILL.md` 因 §7.1「named exactly」严格比对（拒绝 `skill.md`）；方言约定目录无对应规范文本，且 Claude Code 自身的存在性检查继承宿主文件系统语义——`Commands/` 在 Windows/macOS 上确实能用。拒绝它会破坏一个上游可用的插件，所以接受该条目并记可移植性诊断（"在大小写敏感的文件系统上不会加载"），把隐性差异变成可见信息。
 
 ### 占位符展开（`spec::placeholder`）
 
