@@ -163,11 +163,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 cpal = "0.15"
 hound = "3.5"
 
-# In-process speech transcription engine (office-agent). Statically links
-# whisper.cpp — needs a C/C++ toolchain (+ cmake) to build, so it is gated
-# behind the app-core `whisper` feature and OFF by default.
-whisper-rs = "0.12"
-
 # Pure-Rust xlsx writer (office-agent Tier C document generation). No external
 # runtime — used by OfficeService to materialize spreadsheets.
 rust_xlsxwriter = "0.79"

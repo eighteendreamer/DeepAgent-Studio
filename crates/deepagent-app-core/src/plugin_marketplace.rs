@@ -82,6 +82,12 @@ pub struct PluginMarketplaceEntry {
     pub description: Option<String>,
     pub version: Option<String>,
     pub category: Option<String>,
+    /// The curator's attribution for this entry.
+    ///
+    /// A Claude plugin's own manifest often has no `author` while the catalog
+    /// entry does, which makes this the only attribution available for it. It
+    /// feeds level 2 of [`crate::plugin::dialect::presentation`].
+    pub author_name: Option<String>,
     pub source: PluginMarketplaceSource,
     pub policy_installation: Option<String>,
     pub policy_authentication: Option<String>,
@@ -196,9 +202,36 @@ struct RawMarketplaceEntry {
     version: Option<String>,
     #[serde(default)]
     category: Option<String>,
+    #[serde(default)]
+    author: Option<RawMarketplaceAuthor>,
     source: RawMarketplaceSource,
     #[serde(default)]
     policy: Option<RawMarketplacePolicy>,
+}
+
+/// A catalog entry's author, accepted either as a bare name or as an object.
+///
+/// Claude's `marketplace.json` uses the object form (`{"name": ..., "email":
+/// ...}`); the bare-string form appears in hand-written catalogs. This is
+/// presentation metadata, so a malformed shape must not reject the entry — hence
+/// every field is optional and unknown members are ignored.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum RawMarketplaceAuthor {
+    Name(String),
+    Object {
+        #[serde(default)]
+        name: Option<String>,
+    },
+}
+
+impl RawMarketplaceAuthor {
+    fn into_name(self) -> Option<String> {
+        match self {
+            Self::Name(name) => trimmed_string(name),
+            Self::Object { name } => name.and_then(trimmed_string),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -308,6 +341,7 @@ fn normalize_entry(root: &Path, raw: RawMarketplaceEntry) -> Result<PluginMarket
         description: raw.description.and_then(trimmed_string),
         version: raw.version.and_then(trimmed_string),
         category: raw.category.and_then(trimmed_string),
+        author_name: raw.author.and_then(RawMarketplaceAuthor::into_name),
         source,
         policy_installation: raw
             .policy
@@ -844,6 +878,106 @@ mod tests {
             catalog.entries[0].source.local_path().unwrap(),
             root.join("plugins").join("demo")
         );
+    }
+
+    /// A catalog entry's `author` is the only attribution many Claude plugins
+    /// have: their own manifest omits it while the catalog supplies it. Both the
+    /// object form Claude uses and the bare-string form hand-written catalogs use
+    /// must resolve to a name.
+    #[test]
+    fn reads_entry_author_in_both_shapes_and_tolerates_a_broken_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "object-author",
+                  "author": { "name": "Daisy Hollman", "email": "daisy@anthropic.com" },
+                  "source": { "source": "local", "path": "./plugins/a" }
+                },
+                {
+                  "name": "string-author",
+                  "author": "Anthropic",
+                  "source": { "source": "local", "path": "./plugins/b" }
+                },
+                {
+                  "name": "blank-author",
+                  "author": { "name": "   " },
+                  "source": { "source": "local", "path": "./plugins/c" }
+                },
+                {
+                  "name": "no-author",
+                  "source": { "source": "local", "path": "./plugins/d" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let path = find_marketplace_manifest_path(root).unwrap();
+        let catalog = load_marketplace_catalog(&path).unwrap();
+        let authors = catalog
+            .entries
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.author_name.as_deref()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            authors,
+            vec![
+                ("object-author", Some("Daisy Hollman")),
+                ("string-author", Some("Anthropic")),
+                // Presentation metadata must never reject an entry, and a blank
+                // name is an absent name rather than an empty one.
+                ("blank-author", None),
+                ("no-author", None),
+            ]
+        );
+    }
+
+    /// The real `anthropics/claude-code` catalog, read from the reference
+    /// checkout. That repository is not open source, so it cannot be vendored
+    /// here; the test skips when the checkout is absent.
+    #[test]
+    fn parses_the_real_claude_code_catalog() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../借鉴/claude-code/.claude-plugin/marketplace.json");
+        if !path.is_file() {
+            eprintln!("skipping: 借鉴/claude-code/.claude-plugin/marketplace.json is not present");
+            return;
+        }
+
+        let catalog = load_marketplace_catalog(&path).unwrap();
+
+        assert_eq!(catalog.name, "claude-code-plugins");
+        let hookify = catalog
+            .entries
+            .iter()
+            .find(|entry| entry.name == "hookify")
+            .expect("hookify is in the catalog");
+        assert_eq!(hookify.author_name.as_deref(), Some("Daisy Hollman"));
+        assert_eq!(hookify.category.as_deref(), Some("productivity"));
+        assert_eq!(hookify.version.as_deref(), Some("0.1.0"));
+
+        // The catalog copy is a superset of the plugin manifest's own
+        // description, which is why presentation prefers it.
+        assert!(hookify
+            .description
+            .as_deref()
+            .expect("a description")
+            .contains("Define rules via simple markdown files"));
+
+        // `agent-sdk-dev` has no `author` in the catalog, so the field must be
+        // absent rather than defaulted to the catalog owner.
+        let sdk = catalog
+            .entries
+            .iter()
+            .find(|entry| entry.name == "agent-sdk-dev")
+            .expect("agent-sdk-dev is in the catalog");
+        assert_eq!(sdk.author_name, None);
     }
 
     #[test]

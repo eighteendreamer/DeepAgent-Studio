@@ -43,6 +43,9 @@ impl StdioTransport {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null()); // MCP servers log to stderr; ignore here.
+        if let Some(cwd) = &config.cwd {
+            cmd.current_dir(cwd);
+        }
         #[cfg(windows)]
         {
             cmd.creation_flags(CREATE_NO_WINDOW);
@@ -131,6 +134,7 @@ mod tests {
             command: None,
             args: vec![],
             env: Default::default(),
+            cwd: None,
             url: None,
             headers: Default::default(),
         };

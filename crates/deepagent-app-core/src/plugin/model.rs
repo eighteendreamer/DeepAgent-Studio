@@ -30,7 +30,132 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::plugin::dialect::{
+    resolve_presentation, InterfaceSource, ManifestDialect, MarketplaceSource, PortableSource,
+    Presentation, PresentationSources,
+};
 use crate::plugin_loader::PluginLoadError;
+use crate::plugin_manifest::{PluginAuthor, PluginManifest};
+
+/// Agent Plugins v1 portable core as exposed to the rest of the loader.
+///
+/// The existing `PluginManifest` still carries DeepAgent's runtime projection
+/// details while the codebase is being migrated. This compact core is the
+/// normalized part every dialect must provide or derive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPortableCore {
+    pub name: String,
+    pub version: Option<String>,
+    pub description: Option<String>,
+    pub author: Option<PluginAuthor>,
+    pub homepage: Option<String>,
+    pub repository: Option<String>,
+    pub license: Option<String>,
+    pub keywords: Vec<String>,
+}
+
+impl ResolvedPortableCore {
+    fn from_manifest(manifest: &PluginManifest) -> Self {
+        Self {
+            name: manifest.name.clone(),
+            version: manifest.version.clone(),
+            description: manifest.description.clone(),
+            author: manifest.author.clone(),
+            homepage: manifest.homepage.clone(),
+            repository: manifest.repository.clone(),
+            license: manifest.license.clone(),
+            keywords: manifest.keywords.clone(),
+        }
+    }
+}
+
+/// The single normalized plugin object produced by the main loader.
+///
+/// `manifest` is intentionally retained as a legacy projection surface: skills,
+/// MCP, hooks, commands, apps, and runtime requirements already have stable
+/// consumers. New code should prefer the first-class fields here (`portable`,
+/// `dialect`, `presentation`, and `diagnostics`) and use `manifest` only for
+/// legacy component paths until the move-only module refactor lands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPlugin {
+    pub portable: ResolvedPortableCore,
+    pub dialect: ManifestDialect,
+    pub presentation: Presentation,
+    pub diagnostics: Vec<PluginDiagnostic>,
+    pub manifest: PluginManifest,
+}
+
+impl ResolvedPlugin {
+    /// Builds the normalized model from the compatibility manifest projection.
+    pub fn from_manifest(
+        root: &Path,
+        manifest: PluginManifest,
+        marketplace: MarketplaceSource<'_>,
+    ) -> Self {
+        let interface = InterfaceSource {
+            display_name: manifest.interface.display_name.as_deref(),
+            short_description: manifest.interface.short_description.as_deref(),
+            long_description: manifest.interface.long_description.as_deref(),
+            developer_name: manifest.interface.developer_name.as_deref(),
+            category: manifest.interface.category.as_deref(),
+        };
+        let portable_source = PortableSource {
+            name: Some(manifest.name.as_str()),
+            description: manifest.description.as_deref(),
+            author_name: manifest.author.as_ref().map(|author| author.name.as_str()),
+        };
+        let directory_name = root.file_name().and_then(|name| name.to_str());
+        let presentation = resolve_presentation(PresentationSources {
+            interface,
+            marketplace,
+            portable: portable_source,
+            directory_name,
+        });
+        let portable = ResolvedPortableCore::from_manifest(&manifest);
+        let dialect = manifest.dialect;
+        let diagnostics = manifest.diagnostics.clone();
+        Self {
+            portable,
+            dialect,
+            presentation,
+            diagnostics,
+            manifest,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.portable.name
+    }
+
+    pub fn display_name(&self) -> &str {
+        &self.presentation.display_name
+    }
+
+    pub fn short_description(&self) -> String {
+        self.presentation
+            .short_description
+            .clone()
+            .or_else(|| self.portable.description.clone())
+            .unwrap_or_else(|| "DeepAgent plugin".to_string())
+    }
+
+    pub fn long_description(&self) -> Option<String> {
+        self.presentation
+            .long_description
+            .clone()
+            .or_else(|| self.portable.description.clone())
+    }
+
+    pub fn developer_name(&self) -> Option<String> {
+        self.presentation.developer_name.clone().or_else(|| {
+            self.portable
+                .author
+                .as_ref()
+                .map(|author| author.name.clone())
+                .filter(|name| !name.trim().is_empty())
+        })
+    }
+}
 
 /// How much a load-time finding affects usability (§11.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

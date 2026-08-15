@@ -58,9 +58,6 @@ image = { workspace = true, optional = true }
 # RecordingService state machine is always compiled via an injected recorder.
 cpal = { workspace = true, optional = true }
 hound = { workspace = true, optional = true }
-# In-process Whisper transcription engine — gated, OFF by default (needs a
-# C++/cmake toolchain to build whisper.cpp).
-whisper-rs = { workspace = true, optional = true }
 # Current date/OS for the dynamic system-prompt environment block (so the model
 # never searches a stale year). Already in the workspace lock; offline-safe.
 time = { version = "0.3", default-features = false, features = ["std", "local-offset"] }
@@ -100,10 +97,6 @@ runtimes = ["dep:reqwest", "dep:image"]
 # app turns it on; without it the RecordingService state machine still compiles
 # and runs (capture returns an "audio not enabled" error).
 audio = ["dep:cpal", "dep:hound"]
-# Real in-process Whisper transcription (office-agent). OFF by default: building
-# whisper.cpp needs a C++/cmake toolchain. Enable explicitly to ship real
-# transcription; without it SpeechService returns an "engine not enabled" error.
-whisper = ["dep:whisper-rs", "dep:hound"]
 # PDF page rendering via pdfium (office-agent Tier R). OFF by default; the
 # pdfium library is loaded at runtime when installed. Without it, PDF preview
 # degrades to Tier C text extraction.

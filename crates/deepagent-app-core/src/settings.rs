@@ -611,8 +611,10 @@ impl ResponsesApiSettings {
             }
         }
         validate_developer_responses_fields(&object)?;
-        let mut settings = Self::default();
-        settings.developer = object.clone();
+        let mut settings = Self {
+            developer: object.clone(),
+            ..Self::default()
+        };
         for key in [
             "verbosity",
             "parallel_tool_calls",
@@ -633,7 +635,8 @@ fn validate_developer_responses_fields(
     if let Some(value) = object.get("temperature") {
         if value
             .as_f64()
-            .is_none_or(|value| !(0.0..=2.0).contains(&value))
+            .map(|value| !(0.0..=2.0).contains(&value))
+            .unwrap_or(true)
         {
             return Err(CoreError::invalid(
                 "Responses temperature must be a number between 0 and 2",
@@ -643,7 +646,8 @@ fn validate_developer_responses_fields(
     if let Some(value) = object.get("top_p") {
         if value
             .as_f64()
-            .is_none_or(|value| !(0.0..=1.0).contains(&value))
+            .map(|value| !(0.0..=1.0).contains(&value))
+            .unwrap_or(true)
         {
             return Err(CoreError::invalid(
                 "Responses top_p must be a number between 0 and 1",
@@ -653,7 +657,8 @@ fn validate_developer_responses_fields(
     if object.get("max_output_tokens").is_some_and(|value| {
         value
             .as_u64()
-            .is_none_or(|tokens| tokens == 0 || tokens > u64::from(u32::MAX))
+            .map(|tokens| tokens == 0 || tokens > u64::from(u32::MAX))
+            .unwrap_or(true)
     }) {
         return Err(CoreError::invalid(
             "Responses max_output_tokens must be a positive integer",
@@ -661,7 +666,7 @@ fn validate_developer_responses_fields(
     }
     if object
         .get("top_logprobs")
-        .is_some_and(|value| value.as_u64().is_none_or(|count| count > 20))
+        .is_some_and(|value| value.as_u64().map(|count| count > 20).unwrap_or(true))
     {
         return Err(CoreError::invalid(
             "Responses top_logprobs must be an integer between 0 and 20",
@@ -725,8 +730,12 @@ fn validate_developer_responses_fields(
                 if format
                     .get("name")
                     .and_then(serde_json::Value::as_str)
-                    .is_none_or(str::is_empty)
-                    || format.get("schema").is_none_or(|value| !value.is_object())
+                    .map(str::is_empty)
+                    .unwrap_or(true)
+                    || format
+                        .get("schema")
+                        .map(|value| !value.is_object())
+                        .unwrap_or(true)
                 {
                     return Err(CoreError::invalid(
                         "Responses text.format json_schema requires a non-empty name and object schema",
@@ -775,7 +784,7 @@ fn validate_developer_responses_fields(
     }
     if object
         .get("user")
-        .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        .is_some_and(|value| value.as_str().map(str::is_empty).unwrap_or(true))
     {
         return Err(CoreError::invalid(
             "Responses user must be a non-empty string",
@@ -799,7 +808,7 @@ fn validate_developer_responses_fields(
     }
     if object
         .get("max_tool_calls")
-        .is_some_and(|value| value.as_u64().is_none_or(|count| count == 0))
+        .is_some_and(|value| value.as_u64().map(|count| count == 0).unwrap_or(true))
     {
         return Err(CoreError::invalid(
             "Responses max_tool_calls must be a positive integer",

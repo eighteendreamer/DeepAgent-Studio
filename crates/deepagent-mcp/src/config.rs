@@ -12,6 +12,7 @@
 //! by the caller), matching Claude Code's behaviour.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -82,6 +83,9 @@ pub struct McpServerConfig {
     /// Environment variables for the process (stdio).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Working directory for the process (stdio).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
 
     // --- network fields (sse / http / ws) ---
     /// Endpoint URL (sse/http/ws).
@@ -173,6 +177,10 @@ impl McpServerConfig {
         for v in self.env.values_mut() {
             *v = expand(v, lookup);
         }
+        if let Some(cwd) = &mut self.cwd {
+            let expanded = expand(&cwd.to_string_lossy(), lookup);
+            *cwd = PathBuf::from(expanded);
+        }
         if let Some(u) = &mut self.url {
             *u = expand(u, lookup);
         }
@@ -238,6 +246,7 @@ mod tests {
             command: Some("node".into()),
             args: vec![],
             env: Default::default(),
+            cwd: None,
             url: None,
             headers: Default::default(),
         };
@@ -251,6 +260,7 @@ mod tests {
             command: None,
             args: vec![],
             env: Default::default(),
+            cwd: None,
             url: Some("http://evil.com/sse".into()),
             headers: Default::default(),
         };
@@ -269,6 +279,7 @@ mod tests {
             command: None,
             args: vec![],
             env: Default::default(),
+            cwd: None,
             url: Some("ws://example.com/ws".into()),
             headers: Default::default(),
         };
@@ -282,6 +293,7 @@ mod tests {
             command: None,
             args: vec![],
             env: Default::default(),
+            cwd: Some(PathBuf::from("${API_URL}/work")),
             url: Some("${API_URL}/mcp".into()),
             headers: {
                 let mut h = BTreeMap::new();
@@ -296,6 +308,10 @@ mod tests {
         };
         cfg.expand_with(&lookup);
         assert_eq!(cfg.url.as_deref(), Some("https://api.example.com/mcp"));
+        assert_eq!(
+            cfg.cwd.as_deref(),
+            Some(std::path::Path::new("https://api.example.com/work"))
+        );
         assert_eq!(cfg.headers["Authorization"], "Bearer secret123");
     }
 

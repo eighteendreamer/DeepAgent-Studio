@@ -812,12 +812,14 @@ function InfoSection({ plugin }: { plugin: Plugin }) {
       <div className="grid grid-cols-[150px_1fr] gap-x-8 gap-y-4 text-[13px]">
         <Info label="ID" value={plugin.id} mono />
         <Info label="来源" value={originLabel(plugin.origin)} />
+        <Info label="方言" value={plugin.dialect || "-"} />
         <Info label="开发者" value={plugin.developer || "-"} />
         <Info label="版本" value={plugin.version || "-"} />
         <Info label="分类" value={categoryLabel(plugin.category || "Other")} />
         <Info label="能力" value={plugin.capabilities.join(", ") || "-"} />
         <Info label="权限" value={plugin.permissions.join(", ") || "-"} />
         <Info label="路径" value={plugin.path || "-"} mono />
+        <Info label="数据目录" value={plugin.data_dir || "-"} mono />
         <Info label="Manifest" value={plugin.manifest_path || "-"} mono />
         {plugin.overridden_by && <Info label="被覆盖" value={plugin.overridden_by} mono />}
       </div>

@@ -79,6 +79,7 @@ async fn ping_probe_recovers_real_crashed_stdio_server() {
         command: Some("node".to_string()),
         args: vec![script.to_string_lossy().into_owned()],
         env,
+        cwd: None,
         url: None,
         headers: Default::default(),
     };
@@ -139,6 +140,7 @@ async fn reconnect_factory_spawns_real_ready_transport() {
         command: Some("node".to_string()),
         args: vec![script.to_string_lossy().into_owned()],
         env,
+        cwd: None,
         url: None,
         headers: Default::default(),
     };

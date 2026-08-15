@@ -31,7 +31,7 @@ pub fn verify_plugin_dependencies(
     let mut outcome = PluginDependencyOutcome::default();
     let known = plugins
         .iter()
-        .filter(|plugin| plugin.manifest.is_some())
+        .filter(|plugin| plugin.resolved().is_some())
         .map(|plugin| plugin.id.clone())
         .collect::<BTreeSet<_>>();
     let mut enabled = plugins
@@ -50,7 +50,7 @@ pub fn verify_plugin_dependencies(
             if !enabled.contains(&plugin.id) {
                 continue;
             }
-            let Some(manifest) = plugin.manifest.as_ref() else {
+            let Some(manifest) = plugin.manifest() else {
                 continue;
             };
             for raw_dep in &manifest.dependencies {
@@ -140,7 +140,7 @@ pub fn find_reverse_dependents(
         .filter(|plugin| plugin.id != target_id && is_enabled(plugin))
         .collect::<Vec<_>>();
     for plugin in enabled_plugins {
-        let Some(manifest) = plugin.manifest.as_ref() else {
+        let Some(manifest) = plugin.manifest() else {
             continue;
         };
         for dependency in manifest
@@ -226,7 +226,7 @@ fn visit(
     stack.push(id.to_string());
 
     let plugin = by_id.get(id)?;
-    if let Some(manifest) = plugin.manifest.as_ref() {
+    if let Some(manifest) = plugin.manifest() {
         for raw_dep in &manifest.dependencies {
             let Some(dep) = qualify_dependency(raw_dep, plugin) else {
                 continue;
@@ -250,34 +250,43 @@ fn visit(
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use crate::plugin::dialect::{ManifestDialect, MarketplaceSource};
+    use crate::plugin::model::ResolvedPlugin;
     use crate::plugin_loader::{LoadedPlugin, PluginOrigin};
     use crate::plugin_manifest::{PluginManifest, PluginManifestPaths};
 
     use super::*;
 
     fn plugin(id: &str, name: &str, source_key: &str, dependencies: Vec<&str>) -> LoadedPlugin {
+        let root = PathBuf::from(format!("/plugins/{name}"));
         LoadedPlugin {
             id: id.to_string(),
             name: name.to_string(),
             source_key: source_key.to_string(),
             origin: PluginOrigin::Personal,
             marketplace: None,
-            root: PathBuf::from(format!("/plugins/{name}")),
-            manifest: Some(PluginManifest {
-                name: name.to_string(),
-                version: None,
-                description: None,
-                author: None,
-                homepage: None,
-                repository: None,
-                license: None,
-                keywords: Vec::new(),
-                dependencies: dependencies.into_iter().map(str::to_string).collect(),
-                paths: PluginManifestPaths::default(),
-                interface: Default::default(),
-                runtime: Default::default(),
-                manifest_path: Path::new("/plugins").join(name).join("plugin.json"),
-            }),
+            root: root.clone(),
+            resolved: Some(ResolvedPlugin::from_manifest(
+                &root,
+                PluginManifest {
+                    name: name.to_string(),
+                    version: None,
+                    description: None,
+                    author: None,
+                    homepage: None,
+                    repository: None,
+                    license: None,
+                    keywords: Vec::new(),
+                    dependencies: dependencies.into_iter().map(str::to_string).collect(),
+                    paths: PluginManifestPaths::default(),
+                    interface: Default::default(),
+                    runtime: Default::default(),
+                    manifest_path: Path::new("/plugins").join(name).join("plugin.json"),
+                    dialect: ManifestDialect::DeepAgentLegacy,
+                    diagnostics: Vec::new(),
+                },
+                MarketplaceSource::default(),
+            )),
             available: true,
             overridden_by: None,
             errors: Vec::new(),

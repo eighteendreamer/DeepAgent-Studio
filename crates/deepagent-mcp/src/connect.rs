@@ -48,6 +48,7 @@ mod tests {
             command: None,
             args: vec![],
             env: Default::default(),
+            cwd: None,
             url: Some(url.into()),
             headers: Default::default(),
         }

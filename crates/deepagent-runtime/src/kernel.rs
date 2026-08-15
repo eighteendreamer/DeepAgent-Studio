@@ -511,7 +511,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                         prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
                         duration_ms: 0,
                         raw_responses_usage: (!raw_responses_usage.is_empty())
-                            .then(|| serde_json::Value::Array(raw_responses_usage)),
+                            .then_some(serde_json::Value::Array(raw_responses_usage)),
                     });
                 }
                 KernelTerminal {

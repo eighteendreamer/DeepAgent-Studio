@@ -149,6 +149,7 @@ mod tests {
             command: None,
             args: vec![],
             env: Default::default(),
+            cwd: None,
             url: None,
             headers: Default::default(),
         };
@@ -162,6 +163,7 @@ mod tests {
             command: None,
             args: vec![],
             env: Default::default(),
+            cwd: None,
             url: Some("http://evil.example.com/mcp".into()),
             headers: Default::default(),
         };

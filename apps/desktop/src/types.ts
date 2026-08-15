@@ -359,6 +359,7 @@ export interface McpServer {
   command: string | null;
   args: string[];
   env: Record<string, string>;
+  cwd?: string | null;
   url: string | null;
   headers: Record<string, string>;
   source: "user" | "plugin" | string;
@@ -425,7 +426,9 @@ export interface Plugin {
   developer?: string | null;
   source: PluginSourceInfo;
   origin: string;
+  dialect: string;
   path?: string | null;
+  data_dir: string;
   manifest_path?: string | null;
   installed: boolean;
   enabled: boolean;

@@ -13,6 +13,11 @@ use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::plugin::dialect::{
+    resolve_presentation, InterfaceSource, MarketplaceSource, PortableSource, Presentation,
+    PresentationSources,
+};
+use crate::plugin::model::ResolvedPlugin;
 use crate::plugin_dependency::{
     find_reverse_dependents, verify_plugin_dependencies, PluginDependencyOutcome,
 };
@@ -67,8 +72,10 @@ pub struct PluginDto {
     pub developer: Option<String>,
     pub source: PluginSourceDto,
     pub origin: String,
+    pub dialect: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    pub data_dir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_path: Option<String>,
     pub installed: bool,
@@ -619,7 +626,7 @@ impl PluginService {
                 let id = plugin_id(&entry.name, marketplace_name);
                 let loaded_plugin = loaded.iter().find(|plugin| plugin.id == id);
                 let installed = loaded_plugin
-                    .map(|plugin| plugin.manifest.is_some())
+                    .map(|plugin| plugin.resolved().is_some())
                     .unwrap_or(false);
                 let enabled = installed
                     && state.enabled.get(&id).copied().unwrap_or_else(|| {
@@ -630,7 +637,7 @@ impl PluginService {
                 let installed_version = state.installed.get(&id).and_then(|item| {
                     item.version.as_deref().or_else(|| {
                         loaded_plugin
-                            .and_then(|plugin| plugin.manifest.as_ref()?.version.as_deref())
+                            .and_then(|plugin| plugin.resolved()?.portable.version.as_deref())
                     })
                 });
                 let update_available =
@@ -929,7 +936,7 @@ impl PluginService {
         });
         let mut inputs = Vec::new();
         for plugin in enabled_plugins {
-            let Some(manifest) = plugin.manifest.as_ref() else {
+            let Some(resolved) = plugin.resolved() else {
                 continue;
             };
             let data_dir = self.data_root.join(sanitize_file_name(&plugin.id));
@@ -952,7 +959,7 @@ impl PluginService {
                 source_priority: plugin_runtime_priority(plugin.origin),
                 root: &plugin.root,
                 data_dir,
-                manifest,
+                plugin: resolved,
             });
         }
         let projection = PluginRuntimeProjection::from_enabled_plugins(inputs);
@@ -979,7 +986,7 @@ impl PluginService {
 
     fn is_effectively_enabled(&self, plugin: &LoadedPlugin, state: &PluginState) -> bool {
         plugin.available
-            && plugin.manifest.is_some()
+            && plugin.resolved().is_some()
             && state
                 .enabled
                 .get(&plugin.id)
@@ -991,7 +998,7 @@ impl PluginService {
         if plugin.origin != PluginOrigin::Marketplace {
             return false;
         }
-        let Some(manifest) = plugin.manifest.as_ref() else {
+        let Some(resolved) = plugin.resolved() else {
             return false;
         };
         let Some(marketplace) = plugin.marketplace.as_deref() else {
@@ -1011,7 +1018,10 @@ impl PluginService {
         else {
             return false;
         };
-        versions_differ(entry.version.as_deref(), manifest.version.as_deref())
+        versions_differ(
+            entry.version.as_deref(),
+            resolved.portable.version.as_deref(),
+        )
     }
 
     fn dto_from_loaded(
@@ -1021,10 +1031,14 @@ impl PluginService {
         state: &PluginState,
         dependencies: &PluginDependencyOutcome,
     ) -> PluginDto {
-        let available = plugin.available && plugin.manifest.is_some();
+        let available = plugin.available && plugin.resolved().is_some();
         let enabled = self.is_effectively_enabled(plugin, state)
             && !dependencies.demoted.contains(&plugin.id);
-        let manifest = plugin.manifest.as_ref();
+        let resolved = plugin.resolved();
+        let manifest = resolved.map(|plugin| &plugin.manifest);
+        let presentation =
+            resolved.map(|resolved| self.presentation_for_loaded(plugin, resolved, state));
+        let data_dir = self.data_root.join(sanitize_file_name(&plugin.id));
         let skill_count = manifest.map(count_skills).unwrap_or_default();
         let mcp_server_count = manifest.map(count_mcp_servers).unwrap_or_default();
         let hook_count = manifest.map(count_hooks).unwrap_or_default();
@@ -1059,16 +1073,23 @@ impl PluginService {
         PluginDto {
             id: plugin.id.clone(),
             name: plugin.name.clone(),
-            display_name: manifest
-                .map(PluginManifest::display_name)
+            display_name: presentation
+                .as_ref()
+                .map(|presentation| presentation.display_name.clone())
                 .unwrap_or_else(|| plugin.name.clone()),
-            description: manifest
-                .map(PluginManifest::short_description)
+            description: presentation
+                .as_ref()
+                .and_then(|presentation| presentation.short_description.clone())
+                .or_else(|| resolved.map(|plugin| plugin.short_description()))
                 .unwrap_or_else(|| "Plugin failed to load".to_string()),
-            long_description: manifest.and_then(PluginManifest::long_description),
+            long_description: presentation
+                .as_ref()
+                .and_then(|presentation| presentation.long_description.clone()),
             version: manifest.and_then(|m| m.version.clone()),
             local_version: manifest.and_then(|m| m.version.clone()),
-            developer: manifest.and_then(PluginManifest::developer_name),
+            developer: presentation
+                .as_ref()
+                .and_then(|presentation| presentation.developer_name.clone()),
             source: PluginSourceDto {
                 kind: plugin.origin.as_str().to_string(),
                 name: plugin.source_key.clone(),
@@ -1076,14 +1097,20 @@ impl PluginService {
                 path: Some(plugin.root.display().to_string()),
             },
             origin: plugin.origin.as_str().to_string(),
+            dialect: resolved
+                .map(|plugin| plugin.dialect.as_str().to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
             path: Some(plugin.root.display().to_string()),
+            data_dir: data_dir.display().to_string(),
             manifest_path: manifest.map(|m| m.manifest_path.display().to_string()),
             installed: manifest.is_some(),
             enabled,
             available,
             update_available: self.plugin_update_available(plugin, state),
             overridden_by: plugin.overridden_by.clone(),
-            category: manifest.and_then(|m| m.interface.category.clone()),
+            category: presentation
+                .as_ref()
+                .and_then(|presentation| presentation.category.clone()),
             keywords: manifest.map(|m| m.keywords.clone()).unwrap_or_default(),
             capabilities,
             permissions: manifest
@@ -1107,6 +1134,73 @@ impl PluginService {
         }
     }
 
+    fn presentation_for_loaded(
+        &self,
+        plugin: &LoadedPlugin,
+        resolved: &ResolvedPlugin,
+        state: &PluginState,
+    ) -> Presentation {
+        let marketplace_entry = plugin
+            .marketplace
+            .as_deref()
+            .and_then(|marketplace_name| {
+                state
+                    .marketplaces
+                    .get(marketplace_name)
+                    .map(|state| (marketplace_name, state))
+            })
+            .and_then(|(marketplace_name, marketplace_state)| {
+                self.load_registered_marketplace(marketplace_name, marketplace_state)
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|catalog| {
+                catalog
+                    .entries
+                    .into_iter()
+                    .find(|entry| entry.name == plugin.name)
+            });
+        let marketplace_display = marketplace_entry
+            .as_ref()
+            .and_then(|entry| entry.display_name.as_deref());
+        let marketplace_description = marketplace_entry
+            .as_ref()
+            .and_then(|entry| entry.description.as_deref());
+        let marketplace_author = marketplace_entry
+            .as_ref()
+            .and_then(|entry| entry.author_name.as_deref());
+        let marketplace_category = marketplace_entry
+            .as_ref()
+            .and_then(|entry| entry.category.as_deref());
+        let manifest = &resolved.manifest;
+
+        resolve_presentation(PresentationSources {
+            interface: InterfaceSource {
+                display_name: manifest.interface.display_name.as_deref(),
+                short_description: manifest.interface.short_description.as_deref(),
+                long_description: manifest.interface.long_description.as_deref(),
+                developer_name: manifest.interface.developer_name.as_deref(),
+                category: manifest.interface.category.as_deref(),
+            },
+            marketplace: MarketplaceSource {
+                display_name: marketplace_display,
+                description: marketplace_description,
+                author_name: marketplace_author,
+                category: marketplace_category,
+            },
+            portable: PortableSource {
+                name: Some(resolved.name()),
+                description: resolved.portable.description.as_deref(),
+                author_name: resolved
+                    .portable
+                    .author
+                    .as_ref()
+                    .map(|author| author.name.as_str()),
+            },
+            directory_name: plugin.root.file_name().and_then(|name| name.to_str()),
+        })
+    }
+
     fn reverse_dependents(
         &self,
         plugin: &LoadedPlugin,
@@ -1126,9 +1220,8 @@ impl PluginService {
                     id: dependent.id.clone(),
                     name: dependent.name.clone(),
                     display_name: dependent
-                        .manifest
-                        .as_ref()
-                        .map(PluginManifest::display_name)
+                        .resolved()
+                        .map(|plugin| plugin.display_name().to_string())
                         .unwrap_or_else(|| dependent.name.clone()),
                 })
             })
@@ -2892,7 +2985,7 @@ fn runtime_watch_paths(
 
     for plugin in loaded {
         push_unique_watch_path(&mut paths, plugin.root.clone());
-        if let Some(manifest) = plugin.manifest.as_ref() {
+        if let Some(manifest) = plugin.manifest() {
             push_unique_watch_path(&mut paths, manifest.manifest_path.clone());
             for path in &manifest.paths.skills {
                 push_unique_watch_path(&mut paths, path.clone());
@@ -2944,7 +3037,7 @@ fn plugin_list_watch_paths(
     }
 
     for plugin in loaded {
-        if let Some(manifest) = plugin.manifest.as_ref() {
+        if let Some(manifest) = plugin.manifest() {
             for path in &manifest.paths.skills {
                 push_runtime_tree_watch_paths(&mut paths, path);
             }
@@ -3518,14 +3611,28 @@ mod tests {
         let plugin_source = marketplace_root.join("plugins").join("demo");
         write_plugin(&plugin_source, "demo");
         std::fs::write(
+            plugin_source.join(".codex-plugin").join("plugin.json"),
+            serde_json::json!({
+                "name": "demo",
+                "version": "0.1.0",
+                "description": "Manifest description",
+                "author": { "name": "Manifest Author" },
+                "skills": "skills"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
             marketplace_root.join("marketplace.json"),
             r#"{
               "name": "team",
               "plugins": [
                 {
                   "name": "demo",
+                  "displayName": "Demo Catalog",
                   "version": "0.1.0",
                   "description": "Demo marketplace plugin",
+                  "author": "Catalog Author",
                   "source": { "source": "local", "path": "./plugins/demo" },
                   "category": "Developer Tools"
                 }
@@ -3559,6 +3666,10 @@ mod tests {
         let installed = svc.install_from_marketplace("team", "demo").unwrap();
         assert_eq!(installed.id, "demo@team");
         assert_eq!(installed.origin, "marketplace");
+        assert_eq!(installed.display_name, "Demo Catalog");
+        assert_eq!(installed.description, "Demo marketplace plugin");
+        assert_eq!(installed.developer.as_deref(), Some("Catalog Author"));
+        assert_eq!(installed.category.as_deref(), Some("Developer Tools"));
         assert!(installed.enabled);
 
         let cached = roots

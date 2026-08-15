@@ -965,7 +965,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 prompt_cache_miss_tokens: u.prompt_cache_miss_tokens,
                 duration_ms,
                 raw_responses_usage: (!raw_responses_usage.is_empty())
-                    .then(|| serde_json::Value::Array(raw_responses_usage)),
+                    .then_some(serde_json::Value::Array(raw_responses_usage)),
             })?;
         }
 

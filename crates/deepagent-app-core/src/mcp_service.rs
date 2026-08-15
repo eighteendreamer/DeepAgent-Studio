@@ -70,6 +70,9 @@ pub struct McpServerDto {
     /// Environment variables (stdio).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Working directory (stdio).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     // --- network ---
     /// Endpoint URL (sse/http/ws).
     #[serde(default)]
@@ -132,6 +135,7 @@ impl McpServerDto {
             command: cfg.command.clone(),
             args: cfg.args.clone(),
             env: cfg.env.clone(),
+            cwd: cfg.cwd.as_ref().map(|path| path.display().to_string()),
             url: cfg.url.clone(),
             headers: cfg.headers.clone(),
             source: default_mcp_server_source(),
@@ -168,6 +172,10 @@ impl McpServerDto {
             command: self.command.clone().filter(|c| !c.trim().is_empty()),
             args: self.args.clone(),
             env: self.env.clone(),
+            cwd: self.cwd.as_ref().and_then(|cwd| {
+                let trimmed = cwd.trim();
+                (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+            }),
             url: self.url.clone().filter(|u| !u.trim().is_empty()),
             headers: self.headers.clone(),
         };
@@ -946,6 +954,7 @@ mod tests {
             command: Some("npx".into()),
             args: vec!["-y".into(), "server-filesystem".into()],
             env: BTreeMap::new(),
+            cwd: None,
             url: None,
             headers: BTreeMap::new(),
             source: "user".into(),
@@ -1007,6 +1016,7 @@ mod tests {
             command: Some(command.into()),
             args: Vec::new(),
             env: BTreeMap::new(),
+            cwd: None,
             url: None,
             headers: BTreeMap::new(),
         }
@@ -1406,6 +1416,7 @@ mod tests {
                 "@modelcontextprotocol/server-everything".into(),
             ],
             env: BTreeMap::new(),
+            cwd: None,
             url: None,
             headers: BTreeMap::new(),
             source: "user".into(),

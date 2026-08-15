@@ -1,10 +1,8 @@
 //! Speech transcription + meeting-minutes generation (office-agent Phase 2).
 //!
-//! Transcription uses an **in-process** engine (no command-line sidecar): the
-//! injected [`TranscriptionEngine`] is the real `whisper-rs`-backed engine
-//! behind the `whisper` feature, or [`UnavailableEngine`] otherwise. The model
-//! file itself is a managed runtime asset resolved via [`RuntimeService`]
-//! (downloaded on demand) — never bundled.
+//! Transcription uses the managed `whisper-cli` sidecar. The model file and
+//! engine binary are runtime assets resolved via [`RuntimeService`] (downloaded
+//! on demand) — never bundled.
 //!
 //! Meeting minutes are produced by the system LLM via [`ChatService`], turning
 //! a transcript into a structured document outline.
@@ -342,153 +340,10 @@ fn parse_whisper_timestamp_ms(s: &str) -> Option<u64> {
     Some((((hours * 60 + minutes) * 60) as f64 * 1000.0 + seconds * 1000.0).round() as u64)
 }
 
-// ---- whisper-rs engine (behind the `whisper` feature) ---------------------
-
-/// The transcription engine to use for this build: the real Whisper engine when
-/// compiled with `--features whisper`, else an [`UnavailableEngine`] that
-/// guides the user (kept off by default to avoid the whisper.cpp C++ build).
-#[cfg(feature = "whisper")]
+/// Build the default speech engine over the managed whisper-cli sidecar.
 pub fn default_engine() -> Arc<dyn TranscriptionEngine> {
-    Arc::new(whisper_impl::WhisperEngine::new())
-}
-
-/// See [`default_engine`].
-#[cfg(not(feature = "whisper"))]
-pub fn default_engine() -> Arc<dyn TranscriptionEngine> {
+    // 默认走托管 sidecar，避免 all-features 门禁被本机 whisper.cpp FFI 工具链绑死。
     Arc::new(WhisperSidecarEngine::new())
-}
-
-#[cfg(feature = "whisper")]
-pub use whisper_impl::WhisperEngine;
-
-#[cfg(feature = "whisper")]
-mod whisper_impl {
-    use super::*;
-    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
-
-    /// In-process Whisper engine. Loads the ggml model and runs whisper.cpp,
-    /// converting the source WAV to the 16kHz mono f32 whisper expects.
-    pub struct WhisperEngine;
-
-    impl WhisperEngine {
-        pub fn new() -> Self {
-            Self
-        }
-    }
-
-    impl Default for WhisperEngine {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    impl TranscriptionEngine for WhisperEngine {
-        fn transcribe(
-            &self,
-            wav_path: &Path,
-            model_path: &Path,
-            _engine_dir: Option<&Path>,
-        ) -> Result<Vec<TranscriptSegmentDto>> {
-            let samples = read_wav_16k_mono(wav_path)?;
-
-            let model = model_path
-                .to_str()
-                .ok_or_else(|| CoreError::Other("model path is not valid UTF-8".to_string()))?;
-            let ctx = WhisperContext::new_with_params(model, WhisperContextParameters::default())
-                .map_err(|e| CoreError::Other(format!("load whisper model: {e}")))?;
-            let mut state = ctx
-                .create_state()
-                .map_err(|e| CoreError::Other(format!("whisper state: {e}")))?;
-
-            let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-            params.set_print_special(false);
-            params.set_print_progress(false);
-            params.set_print_realtime(false);
-            params.set_print_timestamps(false);
-
-            state
-                .full(params, &samples)
-                .map_err(|e| CoreError::Other(format!("whisper transcribe: {e}")))?;
-
-            let n = state
-                .full_n_segments()
-                .map_err(|e| CoreError::Other(format!("whisper segments: {e}")))?;
-            let mut out = Vec::with_capacity(n as usize);
-            for i in 0..n {
-                let text = state
-                    .full_get_segment_text(i)
-                    .map_err(|e| CoreError::Other(format!("segment text: {e}")))?;
-                // t0/t1 are in centiseconds → ms.
-                let t0 = state.full_get_segment_t0(i).unwrap_or(0).max(0) as u64 * 10;
-                let t1 = state.full_get_segment_t1(i).unwrap_or(0).max(0) as u64 * 10;
-                out.push(TranscriptSegmentDto {
-                    start_ms: t0,
-                    end_ms: t1,
-                    text: text.trim().to_string(),
-                    speaker: None,
-                    confidence: None,
-                });
-            }
-            Ok(out)
-        }
-    }
-
-    /// Read a WAV file and return 16kHz mono f32 samples (whisper's input).
-    fn read_wav_16k_mono(path: &Path) -> Result<Vec<f32>> {
-        let mut reader =
-            hound::WavReader::open(path).map_err(|e| CoreError::Other(format!("open wav: {e}")))?;
-        let spec = reader.spec();
-        let channels = spec.channels.max(1) as usize;
-
-        // Decode to interleaved f32 in [-1, 1], regardless of source format.
-        let raw: Vec<f32> = match spec.sample_format {
-            hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
-            hound::SampleFormat::Int => {
-                let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-                reader
-                    .samples::<i32>()
-                    .filter_map(|s| s.ok())
-                    .map(|s| s as f32 / max)
-                    .collect()
-            }
-        };
-
-        // Downmix to mono.
-        let mono: Vec<f32> = if channels == 1 {
-            raw
-        } else {
-            raw.chunks(channels)
-                .map(|f| f.iter().copied().sum::<f32>() / channels as f32)
-                .collect()
-        };
-
-        // Resample to 16kHz (naive linear) when needed.
-        let src_rate = spec.sample_rate;
-        if src_rate == 16_000 {
-            Ok(mono)
-        } else {
-            Ok(resample_linear(&mono, src_rate, 16_000))
-        }
-    }
-
-    /// Naive linear resampler — adequate for speech ASR preprocessing.
-    fn resample_linear(input: &[f32], from: u32, to: u32) -> Vec<f32> {
-        if input.is_empty() || from == 0 {
-            return Vec::new();
-        }
-        let ratio = to as f64 / from as f64;
-        let out_len = ((input.len() as f64) * ratio).round() as usize;
-        let mut out = Vec::with_capacity(out_len);
-        for i in 0..out_len {
-            let src = i as f64 / ratio;
-            let idx = src.floor() as usize;
-            let frac = (src - idx as f64) as f32;
-            let a = input.get(idx).copied().unwrap_or(0.0);
-            let b = input.get(idx + 1).copied().unwrap_or(a);
-            out.push(a + (b - a) * frac);
-        }
-        out
-    }
 }
 
 #[cfg(test)]

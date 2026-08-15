@@ -8,11 +8,15 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_hooks::HookDefinitions;
-use deepagent_mcp::config::{McpConfig, McpServerConfig};
+use deepagent_hooks::{HookDefinitions, HookEvent};
+use deepagent_mcp::config::{McpConfig, McpServerConfig, TransportType};
 use serde::{Deserialize, Serialize};
 
+use crate::plugin::component::{parse_mcp, PluginMcpTransport};
+use crate::plugin::dialect::ManifestDialect;
+use crate::plugin::model::{PluginDiagnostic, ResolvedPlugin};
 use crate::plugin::spec::placeholder::{PLUGIN_DATA_VAR, PLUGIN_ROOT_VAR};
+use crate::plugin::spec::schema::{AGENT_PLUGIN_MCP_RELATIVE_PATH, AGENT_PLUGIN_SCHEMA_URI};
 use crate::plugin_manifest::PluginManifest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,7 +125,7 @@ pub(crate) struct EnabledPluginRuntimeInput<'a> {
     pub source_priority: u8,
     pub root: &'a Path,
     pub data_dir: PathBuf,
-    pub manifest: &'a PluginManifest,
+    pub plugin: &'a ResolvedPlugin,
 }
 
 impl PluginRuntimeProjection {
@@ -148,10 +152,11 @@ fn project_plugin(
     projection: &mut PluginRuntimeProjection,
     seen_mcp_declared_names: &mut BTreeMap<String, PluginMcpServerSource>,
 ) {
-    for path in existing_dirs(&plugin.manifest.paths.skills) {
+    let manifest = &plugin.plugin.manifest;
+    for path in existing_dirs(&manifest.paths.skills) {
         push_unique_path(&mut projection.skill_roots, path);
     }
-    for path in existing_dirs(&plugin.manifest.paths.commands) {
+    for path in existing_dirs(&manifest.paths.commands) {
         projection.command_roots.push(PluginCommandRoot {
             plugin_id: plugin.id.to_string(),
             plugin_name: plugin.name.to_string(),
@@ -159,21 +164,15 @@ fn project_plugin(
             data_dir: plugin.data_dir.clone(),
         });
     }
-    for path in existing_dirs(&plugin.manifest.paths.agents) {
+    for path in existing_dirs(&manifest.paths.agents) {
         projection.agent_roots.push(PluginAgentRoot {
             plugin_id: plugin.id.to_string(),
             plugin_name: plugin.name.to_string(),
             path,
         });
     }
-    project_output_styles(plugin.id, plugin.name, plugin.manifest, projection);
-    for path in plugin
-        .manifest
-        .paths
-        .app_paths
-        .iter()
-        .filter(|path| path.exists())
-    {
+    project_output_styles(plugin.id, plugin.name, manifest, projection);
+    for path in manifest.paths.app_paths.iter().filter(|path| path.exists()) {
         push_unique_path(&mut projection.app_config_paths, path.clone());
         match load_plugin_apps(plugin.id, plugin.name, path) {
             Ok(mut apps) => projection.app_entries.append(&mut apps),
@@ -186,7 +185,7 @@ fn project_plugin(
         plugin.name,
         plugin.root,
         &plugin.data_dir,
-        plugin.manifest,
+        manifest,
         projection,
         seen_mcp_declared_names,
     );
@@ -194,7 +193,7 @@ fn project_plugin(
         plugin.id,
         plugin.root,
         &plugin.data_dir,
-        plugin.manifest,
+        manifest,
         projection,
     );
 }
@@ -232,6 +231,34 @@ fn project_mcp(
         if !path.is_file() {
             continue;
         }
+        if is_portable_mcp_path(manifest, plugin_root, path) {
+            match std::fs::read_to_string(path)
+                .map_err(|e| CoreError::Persistence(format!("read {}: {e}", path.display())))
+                .and_then(|text| {
+                    parse_mcp(&text, plugin_root, plugin_data, AGENT_PLUGIN_SCHEMA_URI)
+                        .map_err(CoreError::invalid)
+                }) {
+                Ok((servers, diagnostics)) => {
+                    for diagnostic in diagnostics {
+                        push_diagnostic(projection, plugin_id, Some(path), diagnostic);
+                    }
+                    merge_mcp_config(
+                        plugin_id,
+                        plugin_name,
+                        plugin_root,
+                        plugin_data,
+                        &manifest.runtime,
+                        plugin_mcp_servers_to_config(servers),
+                        projection,
+                        Some(path),
+                        seen_declared_names,
+                        false,
+                    );
+                }
+                Err(error) => push_error(projection, plugin_id, "mcp", Some(path), error),
+            }
+            continue;
+        }
         match std::fs::read_to_string(path)
             .map_err(|e| CoreError::Persistence(format!("read {}: {e}", path.display())))
             .and_then(|text| McpConfig::parse(&text))
@@ -246,6 +273,7 @@ fn project_mcp(
                 projection,
                 Some(path),
                 seen_declared_names,
+                true,
             ),
             Err(error) => push_error(projection, plugin_id, "mcp", Some(path), error),
         }
@@ -266,6 +294,7 @@ fn project_mcp(
                 projection,
                 None,
                 seen_declared_names,
+                true,
             ),
             Err(error) => push_error(projection, plugin_id, "mcp", None, error),
         }
@@ -283,8 +312,11 @@ fn merge_mcp_config(
     projection: &mut PluginRuntimeProjection,
     path: Option<&PathBuf>,
     seen_declared_names: &mut BTreeMap<String, PluginMcpServerSource>,
+    expand_placeholders: bool,
 ) {
-    config.expand_with(&|var| plugin_env(var, plugin_id, plugin_root, plugin_data));
+    if expand_placeholders {
+        config.expand_with(&|var| plugin_env(var, plugin_id, plugin_root, plugin_data));
+    }
     let plugin_key = safe_identifier(plugin_name);
     for (server_name, mut server) in config.servers {
         inject_plugin_env(&mut server, plugin_id, plugin_root, plugin_data);
@@ -332,6 +364,74 @@ fn merge_mcp_config(
     }
 }
 
+fn is_portable_mcp_path(manifest: &PluginManifest, plugin_root: &Path, path: &Path) -> bool {
+    manifest.dialect == ManifestDialect::AgentPluginV1
+        && path == plugin_root.join(AGENT_PLUGIN_MCP_RELATIVE_PATH)
+}
+
+fn plugin_mcp_servers_to_config(
+    servers: Vec<crate::plugin::component::PluginMcpServer>,
+) -> McpConfig {
+    let servers = servers
+        .into_iter()
+        .map(|server| {
+            let config = match server.transport {
+                PluginMcpTransport::Stdio {
+                    command,
+                    args,
+                    env,
+                    cwd,
+                } => McpServerConfig {
+                    transport: Some(TransportType::Stdio),
+                    command: Some(command),
+                    args,
+                    env,
+                    cwd: Some(cwd),
+                    url: None,
+                    headers: Default::default(),
+                },
+                PluginMcpTransport::StreamableHttp { url, headers } => McpServerConfig {
+                    transport: Some(TransportType::Http),
+                    command: None,
+                    args: Vec::new(),
+                    env: Default::default(),
+                    cwd: None,
+                    url: Some(url),
+                    headers,
+                },
+                PluginMcpTransport::Sse { url, headers } => McpServerConfig {
+                    transport: Some(TransportType::Sse),
+                    command: None,
+                    args: Vec::new(),
+                    env: Default::default(),
+                    cwd: None,
+                    url: Some(url),
+                    headers,
+                },
+            };
+            (server.name, config)
+        })
+        .collect();
+    McpConfig { servers }
+}
+
+fn push_diagnostic(
+    projection: &mut PluginRuntimeProjection,
+    plugin_id: &str,
+    path: Option<&PathBuf>,
+    diagnostic: PluginDiagnostic,
+) {
+    projection.errors.push(PluginRuntimeError {
+        plugin_id: plugin_id.to_string(),
+        component: diagnostic.component().as_str().to_string(),
+        path: diagnostic
+            .path()
+            .map(|path| path.display().to_string())
+            .or_else(|| path.map(|path| path.display().to_string())),
+        message: diagnostic.message(),
+    });
+}
+
 fn project_hooks(
     plugin_id: &str,
     plugin_root: &Path,
@@ -345,9 +445,17 @@ fn project_hooks(
         }
         match std::fs::read_to_string(path)
             .map_err(|e| CoreError::Persistence(format!("read {}: {e}", path.display())))
-            .and_then(|text| HookDefinitions::parse(&text))
+            .and_then(|text| parse_hooks_with_diagnostics(&text))
         {
-            Ok(mut defs) => {
+            Ok((mut defs, unmapped)) => {
+                for event in unmapped {
+                    projection.errors.push(PluginRuntimeError {
+                        plugin_id: plugin_id.to_string(),
+                        component: "hooks".to_string(),
+                        path: Some(path.display().to_string()),
+                        message: format!("hook event '{event}' is not supported and was skipped"),
+                    });
+                }
                 expand_hook_commands(&mut defs, plugin_id, plugin_root, plugin_data);
                 merge_hook_definitions(&mut projection.hook_definitions, defs);
                 push_unique_path(&mut projection.hook_config_paths, path.clone());
@@ -358,7 +466,15 @@ fn project_hooks(
 
     if let Some(value) = manifest.paths.hooks_inline.as_ref() {
         match parse_inline_hooks(value) {
-            Ok(mut defs) => {
+            Ok((mut defs, unmapped)) => {
+                for event in unmapped {
+                    projection.errors.push(PluginRuntimeError {
+                        plugin_id: plugin_id.to_string(),
+                        component: "hooks".to_string(),
+                        path: None,
+                        message: format!("hook event '{event}' is not supported and was skipped"),
+                    });
+                }
                 expand_hook_commands(&mut defs, plugin_id, plugin_root, plugin_data);
                 merge_hook_definitions(&mut projection.hook_definitions, defs);
             }
@@ -367,7 +483,7 @@ fn project_hooks(
     }
 }
 
-fn parse_inline_hooks(value: &serde_json::Value) -> Result<HookDefinitions> {
+fn parse_inline_hooks(value: &serde_json::Value) -> Result<(HookDefinitions, Vec<String>)> {
     let wrapped = value
         .as_object()
         .map(|object| object.contains_key("hooks"))
@@ -377,8 +493,31 @@ fn parse_inline_hooks(value: &serde_json::Value) -> Result<HookDefinitions> {
     } else {
         serde_json::json!({ "hooks": value })
     };
-    serde_json::from_value::<HookDefinitions>(value)
+    let json = serde_json::to_string(&value)
+        .map_err(|e| CoreError::invalid(format!("serialize inline hooks: {e}")))?;
+    parse_hooks_with_diagnostics(&json)
         .map_err(|e| CoreError::invalid(format!("invalid inline hooks: {e}")))
+}
+
+fn parse_hooks_with_diagnostics(
+    json: &str,
+) -> std::result::Result<(HookDefinitions, Vec<String>), CoreError> {
+    let mut value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| CoreError::invalid(format!("invalid hooks.json: {e}")))?;
+    let hooks = value
+        .get_mut("hooks")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| CoreError::invalid("hooks.json must contain an object `hooks`"))?;
+    let unmapped = hooks
+        .keys()
+        .filter(|event| HookEvent::parse(event).is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    for event in &unmapped {
+        hooks.remove(event);
+    }
+    let definitions = HookDefinitions::parse(&value.to_string())?;
+    Ok((definitions, unmapped))
 }
 
 pub fn merge_hook_definitions(target: &mut HookDefinitions, incoming: HookDefinitions) {
@@ -625,8 +764,11 @@ fn expand_hook_commands(
     for groups in defs.hooks.values_mut() {
         for group in groups {
             for action in &mut group.hooks {
-                action.command =
-                    expand_plugin_vars(&action.command, plugin_id, plugin_root, plugin_data);
+                action.command = crate::plugin::spec::placeholder::normalize_and_expand(
+                    &action.command,
+                    &plugin_root.display().to_string(),
+                    &plugin_data.display().to_string(),
+                );
                 inject_hook_env(action, plugin_id, plugin_root, plugin_data);
             }
         }
@@ -728,17 +870,6 @@ fn inject_plugin_runtime_requirement(
     }
 }
 
-fn expand_plugin_vars(
-    input: &str,
-    plugin_id: &str,
-    plugin_root: &Path,
-    plugin_data: &Path,
-) -> String {
-    deepagent_mcp::config::expand(input, &|var| {
-        plugin_env(var, plugin_id, plugin_root, plugin_data)
-    })
-}
-
 fn plugin_env(
     var: &str,
     plugin_id: &str,
@@ -836,6 +967,14 @@ mod tests {
     use super::*;
     use crate::plugin_manifest::load_plugin_manifest;
 
+    fn resolved(root: &Path, manifest: PluginManifest) -> ResolvedPlugin {
+        ResolvedPlugin::from_manifest(
+            root,
+            manifest,
+            crate::plugin::dialect::MarketplaceSource::default(),
+        )
+    }
+
     fn write(path: &Path, text: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -922,6 +1061,7 @@ mod tests {
             }"#,
         );
         let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+        let resolved = resolved(&root, manifest);
 
         let projection =
             PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
@@ -930,7 +1070,7 @@ mod tests {
                 source_priority: 10,
                 root: &root,
                 data_dir: data_dir.clone(),
-                manifest: &manifest,
+                plugin: &resolved,
             }]);
 
         assert_eq!(projection.skill_roots, vec![root.join("skills")]);
@@ -1032,6 +1172,7 @@ mod tests {
             r#"{"name": "env-plugin", "mcpServers": ".mcp.json"}"#,
         );
         let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+        let resolved = resolved(&root, manifest);
 
         let projection =
             PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
@@ -1040,7 +1181,7 @@ mod tests {
                 source_priority: 30,
                 root: &root,
                 data_dir: data_dir.clone(),
-                manifest: &manifest,
+                plugin: &resolved,
             }]);
 
         let server = projection
@@ -1091,6 +1232,7 @@ mod tests {
             r#"{"name": "ph-plugin", "mcpServers": ".mcp.json"}"#,
         );
         let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+        let resolved = resolved(&root, manifest);
 
         let projection =
             PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
@@ -1099,7 +1241,7 @@ mod tests {
                 source_priority: 30,
                 root: &root,
                 data_dir: data_dir.clone(),
-                manifest: &manifest,
+                plugin: &resolved,
             }]);
 
         let server = projection
@@ -1136,6 +1278,7 @@ mod tests {
             }"#,
         );
         let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+        let resolved = resolved(&root, manifest);
 
         let projection =
             PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
@@ -1144,7 +1287,7 @@ mod tests {
                 source_priority: 30,
                 root: &root,
                 data_dir: tmp.path().join("data"),
-                manifest: &manifest,
+                plugin: &resolved,
             }]);
 
         assert_eq!(projection.output_styles.len(), 1);
@@ -1182,6 +1325,8 @@ mod tests {
         );
         let high_manifest = load_plugin_manifest(&high).unwrap().unwrap();
         let low_manifest = load_plugin_manifest(&low).unwrap().unwrap();
+        let high_resolved = resolved(&high, high_manifest);
+        let low_resolved = resolved(&low, low_manifest);
 
         let projection = PluginRuntimeProjection::from_enabled_plugins([
             EnabledPluginRuntimeInput {
@@ -1190,7 +1335,7 @@ mod tests {
                 source_priority: 10,
                 root: &low,
                 data_dir: tmp.path().join("data").join("builtin"),
-                manifest: &low_manifest,
+                plugin: &low_resolved,
             },
             EnabledPluginRuntimeInput {
                 id: "workspace-plugin@workspace",
@@ -1198,7 +1343,7 @@ mod tests {
                 source_priority: 40,
                 root: &high,
                 data_dir: tmp.path().join("data").join("workspace"),
-                manifest: &high_manifest,
+                plugin: &high_resolved,
             },
         ]);
 
@@ -1237,6 +1382,7 @@ mod tests {
             }"#,
         );
         let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+        let resolved = resolved(&root, manifest);
 
         let projection =
             PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
@@ -1245,7 +1391,7 @@ mod tests {
                 source_priority: 30,
                 root: &root,
                 data_dir: tmp.path().join("data"),
-                manifest: &manifest,
+                plugin: &resolved,
             }]);
 
         let groups = projection

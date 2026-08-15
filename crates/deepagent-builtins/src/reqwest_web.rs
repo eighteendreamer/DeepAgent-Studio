@@ -93,7 +93,6 @@ impl ReqwestWebClient {
         Self::with_search_config(searxng_url_from_env())
     }
 
-    /// Build a client with an optional DeepSeek-first search provider.
     /// Build a client with explicit local search providers.
     pub fn with_search_config(searxng_url: Option<String>) -> Self {
         Self::with_search_chain(None, searxng_url)
@@ -749,37 +748,30 @@ mod tests {
     }
 
     #[test]
-    fn parses_deepseek_web_search_tool_results() {
+    fn parses_anysearch_nested_data_results() {
         let body = r#"
         {
-          "content": [
-            {
-              "type": "web_search_tool_result",
-              "content": [
-                {
-                  "type": "web_search_result",
-                  "title": "DeepSeek Docs",
-                  "url": "https://api-docs.deepseek.com/guides/anthropic_api",
-                  "page_age": "June 2026"
-                },
-                {
-                  "type": "web_search_result",
-                  "title": "Ignored duplicate",
-                  "url": "https://api-docs.deepseek.com/guides/anthropic_api"
-                }
-              ]
-            }
-          ]
+          "data": {
+            "results": [
+              {
+                "title": "AnySearch Docs",
+                "url": "https://www.anysearch.com/docs",
+                "snippet": "Nested response shape"
+              },
+              {
+                "title": "Ignored duplicate",
+                "url": "https://www.anysearch.com/docs"
+              }
+            ]
+          }
         }
         "#;
-        let results = parse_deepseek_web_search_results(body, 5).unwrap();
+        // AnySearch 线上响应可能包在 data.results，下游解析器必须保持兼容。
+        let results = parse_anysearch_results(body, 5).unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].title, "DeepSeek Docs");
-        assert_eq!(
-            results[0].url,
-            "https://api-docs.deepseek.com/guides/anthropic_api"
-        );
-        assert_eq!(results[0].snippet, "June 2026");
+        assert_eq!(results[0].title, "AnySearch Docs");
+        assert_eq!(results[0].url, "https://www.anysearch.com/docs");
+        assert_eq!(results[0].snippet, "Nested response shape");
     }
 
     #[test]
@@ -833,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_provider_chain_in_deepseek_first_order() {
+    fn builds_provider_chain_with_local_fallbacks() {
         let providers =
             build_search_providers(None, Some("https://search.example.com".to_string()));
         let names: Vec<&str> = providers.iter().map(SearchProvider::name).collect();

@@ -11,9 +11,13 @@ use std::path::{Component, Path, PathBuf};
 use deepagent_core::error::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 
-const CODEX_MANIFEST: &str = ".codex-plugin/plugin.json";
-const CLAUDE_MANIFEST: &str = ".claude-plugin/plugin.json";
-const ROOT_MANIFEST: &str = "plugin.json";
+use crate::plugin::component::discover_skills;
+use crate::plugin::dialect::{
+    discover as discover_manifest, discover_conventions, supplement, DiscoveryError,
+    ManifestDialect,
+};
+use crate::plugin::model::PluginDiagnostic;
+use crate::plugin::spec::{parse_portable, PortableManifest};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginAuthor {
@@ -119,6 +123,10 @@ pub struct PluginManifest {
     #[serde(default)]
     pub runtime: PluginRuntimeRequirements,
     pub manifest_path: PathBuf,
+    #[serde(default = "default_manifest_dialect")]
+    pub dialect: ManifestDialect,
+    #[serde(default, skip)]
+    pub diagnostics: Vec<PluginDiagnostic>,
 }
 
 impl PluginManifest {
@@ -348,37 +356,40 @@ enum RawPathListOrObjectItem {
 }
 
 pub fn find_plugin_manifest_path(root: &Path) -> Option<PathBuf> {
-    let codex = root.join(CODEX_MANIFEST);
-    if codex.is_file() {
-        return Some(codex);
+    match discover_manifest(root) {
+        Ok(Some(manifest)) => Some(manifest.path),
+        Err(DiscoveryError::UnsupportedSchema { path, .. })
+        | Err(DiscoveryError::Unreadable { path, .. }) => Some(path),
+        Ok(None) => None,
     }
-    let claude = root.join(CLAUDE_MANIFEST);
-    if claude.is_file() {
-        return Some(claude);
-    }
-    let root_manifest = root.join(ROOT_MANIFEST);
-    if root_manifest.is_file() {
-        return Some(root_manifest);
-    }
-    None
 }
 
 pub fn load_plugin_manifest(root: &Path) -> Result<Option<PluginManifest>> {
-    let Some(path) = find_plugin_manifest_path(root) else {
+    let Some(discovered) =
+        discover_manifest(root).map_err(|error| CoreError::invalid(error.to_string()))?
+    else {
         return Ok(None);
     };
-    let text = std::fs::read_to_string(&path).map_err(|e| {
-        CoreError::Persistence(format!("read plugin manifest {}: {e}", path.display()))
-    })?;
-    let raw: RawPluginManifest = serde_json::from_str(&text)
-        .map_err(|e| CoreError::invalid(format!("parse {}: {e}", path.display())))?;
-    raw_manifest_to_manifest(root, path, raw).map(Some)
+    let mut manifest = match discovered.dialect {
+        ManifestDialect::AgentPluginV1 => portable_to_manifest(root, &discovered)?,
+        dialect => {
+            let raw: RawPluginManifest =
+                serde_json::from_str(&discovered.contents).map_err(|e| {
+                    CoreError::invalid(format!("parse {}: {e}", discovered.path.display()))
+                })?;
+            raw_manifest_to_manifest(root, discovered.path.clone(), raw, dialect)?
+        }
+    };
+    manifest.diagnostics.extend(discovered.diagnostics);
+    apply_dialect_conventions(root, &mut manifest)?;
+    Ok(Some(manifest))
 }
 
 fn raw_manifest_to_manifest(
     root: &Path,
     manifest_path: PathBuf,
     raw: RawPluginManifest,
+    dialect: ManifestDialect,
 ) -> Result<PluginManifest> {
     let name = raw.name.trim().to_string();
     if name.is_empty() {
@@ -491,7 +502,167 @@ fn raw_manifest_to_manifest(
             })
             .unwrap_or_default(),
         manifest_path,
+        dialect,
+        diagnostics: Vec::new(),
     })
+}
+
+fn portable_to_manifest(
+    root: &Path,
+    discovered: &crate::plugin::dialect::DiscoveredManifest,
+) -> Result<PluginManifest> {
+    let (portable, diagnostics) = parse_portable(&discovered.contents).map_err(|error| {
+        CoreError::invalid(format!("parse {}: {error}", discovered.path.display()))
+    })?;
+    let overlay = discovered
+        .overlay
+        .as_ref()
+        .map(|overlay| {
+            serde_json::from_str::<RawPluginManifest>(&overlay.contents)
+                .map_err(|e| CoreError::invalid(format!("parse {}: {e}", overlay.path.display())))
+        })
+        .transpose()?;
+    let PortableManifest {
+        name,
+        version,
+        description,
+        author,
+        homepage,
+        repository,
+        license,
+        keywords,
+        ..
+    } = portable;
+
+    let mut manifest = PluginManifest {
+        name: name.as_ref().to_string(),
+        version: version.and_then(trimmed_string),
+        description: description.and_then(trimmed_string),
+        author: author.map(|author| PluginAuthor {
+            name: author.name.unwrap_or_default(),
+            email: author.email.and_then(trimmed_string),
+            url: author.url.and_then(trimmed_string),
+        }),
+        homepage: homepage.and_then(trimmed_string),
+        repository: repository.and_then(trimmed_string),
+        license: license.and_then(trimmed_string),
+        keywords: cleaned_vec(keywords),
+        dependencies: Vec::new(),
+        paths: PluginManifestPaths::default(),
+        interface: PluginInterface::default(),
+        runtime: PluginRuntimeRequirements::default(),
+        manifest_path: discovered.path.clone(),
+        dialect: ManifestDialect::AgentPluginV1,
+        diagnostics,
+    };
+
+    let (skills, mut skill_diagnostics) = discover_skills(root);
+    manifest
+        .paths
+        .skills
+        .extend(skills.into_iter().map(|skill| skill.dir));
+    manifest.diagnostics.append(&mut skill_diagnostics);
+
+    let mcp_path = root.join(crate::plugin::spec::schema::AGENT_PLUGIN_MCP_RELATIVE_PATH);
+    if mcp_path.exists() {
+        manifest.paths.mcp_server_paths.push(mcp_path);
+    }
+
+    if let Some(raw) = overlay {
+        apply_overlay_manifest(root, raw, &mut manifest)?;
+    }
+
+    Ok(manifest)
+}
+
+fn apply_overlay_manifest(
+    root: &Path,
+    raw: RawPluginManifest,
+    manifest: &mut PluginManifest,
+) -> Result<()> {
+    let RawPluginManifest {
+        paths: raw_paths,
+        commands,
+        agents,
+        output_styles,
+        hooks,
+        apps,
+        interface,
+        runtime,
+        ..
+    } = raw;
+    let raw_paths = raw_paths.unwrap_or_default();
+    push_unique_paths(
+        &mut manifest.paths.commands,
+        component_paths(
+            root,
+            prefer_path_list(raw_paths.commands, commands),
+            "commands",
+        )?,
+    );
+    push_unique_paths(
+        &mut manifest.paths.agents,
+        component_paths(root, prefer_path_list(raw_paths.agents, agents), "agents")?,
+    );
+    push_unique_paths(
+        &mut manifest.paths.output_styles,
+        component_paths(
+            root,
+            prefer_path_list(raw_paths.output_styles, output_styles),
+            "output-styles",
+        )?,
+    );
+    push_unique_paths(
+        &mut manifest.paths.app_paths,
+        component_paths(root, prefer_path_list(raw_paths.apps, apps), ".app.json")?,
+    );
+    if let Some(spec) = raw_paths.hooks.or(hooks) {
+        apply_hooks_spec(root, spec, &mut manifest.paths)?;
+    }
+    if let Some(interface) = interface {
+        manifest.interface = raw_interface_to_interface(root, interface)?;
+    }
+    if let Some(runtime) = runtime {
+        manifest.runtime = PluginRuntimeRequirements {
+            node: runtime.node.and_then(trimmed_string),
+            python: runtime.python.and_then(trimmed_string),
+            java: runtime.java.and_then(trimmed_string),
+            preference: runtime.preference.and_then(trimmed_string),
+        };
+    }
+    Ok(())
+}
+
+fn apply_dialect_conventions(root: &Path, manifest: &mut PluginManifest) -> Result<()> {
+    if matches!(
+        manifest.dialect,
+        ManifestDialect::AgentPluginV1 | ManifestDialect::Claude
+    ) {
+        let conventions = discover_conventions(root);
+        supplement(&mut manifest.paths.skills, conventions.skills.as_deref());
+        supplement(
+            &mut manifest.paths.commands,
+            conventions.commands.as_deref(),
+        );
+        supplement(&mut manifest.paths.agents, conventions.agents.as_deref());
+        supplement(&mut manifest.paths.hook_paths, conventions.hooks.as_deref());
+        if let Some(mcp) = conventions.mcp {
+            if !manifest
+                .paths
+                .mcp_server_paths
+                .iter()
+                .any(|path| path == &mcp.path)
+            {
+                manifest.paths.mcp_server_paths.push(mcp.path);
+            }
+        }
+        manifest.diagnostics.extend(conventions.diagnostics);
+    }
+    Ok(())
+}
+
+fn default_manifest_dialect() -> ManifestDialect {
+    ManifestDialect::DeepAgentLegacy
 }
 
 fn prefer_path_list(

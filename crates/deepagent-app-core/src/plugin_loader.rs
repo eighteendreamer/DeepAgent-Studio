@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::plugin::model::DiagnosticSeverity;
+use crate::plugin::dialect::MarketplaceSource;
+use crate::plugin::model::{DiagnosticSeverity, ResolvedPlugin};
 use crate::plugin_manifest::{find_plugin_manifest_path, load_plugin_manifest, PluginManifest};
 use crate::plugin_security::{is_blocked_plugin_name, is_reserved_plugin_name};
 
@@ -83,7 +84,7 @@ pub struct LoadedPlugin {
     pub origin: PluginOrigin,
     pub marketplace: Option<String>,
     pub root: PathBuf,
-    pub manifest: Option<PluginManifest>,
+    pub resolved: Option<ResolvedPlugin>,
     pub available: bool,
     pub overridden_by: Option<String>,
     pub errors: Vec<PluginLoadError>,
@@ -91,7 +92,16 @@ pub struct LoadedPlugin {
 
 impl LoadedPlugin {
     pub fn enabled_default(&self) -> bool {
-        self.origin.default_enabled() && self.available && self.manifest.is_some()
+        self.origin.default_enabled() && self.available && self.resolved.is_some()
+    }
+
+    /// Legacy component projection while consumers migrate to `ResolvedPlugin`.
+    pub fn manifest(&self) -> Option<&PluginManifest> {
+        self.resolved.as_ref().map(|plugin| &plugin.manifest)
+    }
+
+    pub fn resolved(&self) -> Option<&ResolvedPlugin> {
+        self.resolved.as_ref()
     }
 }
 
@@ -271,18 +281,30 @@ fn load_candidate(candidate: CandidateRoot) -> LoadedPlugin {
         Ok(Some(manifest)) => {
             let source_key = source_key(candidate.origin, candidate.marketplace.as_deref());
             let id = plugin_id(&manifest.name, &source_key);
-            let mut errors = component_errors(&candidate.root, &manifest, &id);
-            let blocked_by_policy = policy_errors(&manifest, &id, &candidate.root);
+            let resolved = ResolvedPlugin::from_manifest(
+                &candidate.root,
+                manifest,
+                MarketplaceSource::default(),
+            );
+            let mut errors = component_errors(&candidate.root, &resolved.manifest, &id);
+            errors.extend(
+                resolved
+                    .diagnostics
+                    .iter()
+                    .cloned()
+                    .map(|diagnostic| diagnostic.into_load_error(&id, "plugin")),
+            );
+            let blocked_by_policy = policy_errors(&resolved.manifest, &id, &candidate.root);
             let available = blocked_by_policy.is_empty();
             errors.extend(blocked_by_policy);
             LoadedPlugin {
                 id,
-                name: manifest.name.clone(),
+                name: resolved.name().to_string(),
                 source_key,
                 origin: candidate.origin,
                 marketplace: candidate.marketplace,
                 root: candidate.root,
-                manifest: Some(manifest),
+                resolved: Some(resolved),
                 available,
                 overridden_by: None,
                 errors,
@@ -298,7 +320,7 @@ fn load_candidate(candidate: CandidateRoot) -> LoadedPlugin {
                 origin: candidate.origin,
                 marketplace: candidate.marketplace,
                 root: candidate.root.clone(),
-                manifest: None,
+                resolved: None,
                 available: false,
                 overridden_by: None,
                 errors: vec![PluginLoadError {
@@ -323,7 +345,7 @@ fn load_candidate(candidate: CandidateRoot) -> LoadedPlugin {
                 origin: candidate.origin,
                 marketplace: candidate.marketplace,
                 root: candidate.root.clone(),
-                manifest: None,
+                resolved: None,
                 available: false,
                 overridden_by: None,
                 errors: vec![PluginLoadError {

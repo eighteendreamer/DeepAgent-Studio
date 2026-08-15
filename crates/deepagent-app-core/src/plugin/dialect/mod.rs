@@ -41,22 +41,30 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::plugin::model::{ComponentKind, PluginDiagnostic};
 use crate::plugin::spec::schema::{
     schema_status, SchemaStatus, AGENT_PLUGIN_MANIFEST_RELATIVE_PATH, DISCOVERABLE_MANIFEST_PATHS,
 };
 
 pub mod claude;
+pub mod presentation;
 
 pub use claude::{
     discover_conventions, supplement, ClaudeConventions, McpConvention, McpConventionSource,
+};
+pub use presentation::{
+    resolve as resolve_presentation, InterfaceSource, MarketplaceSource, PortableSource,
+    Presentation, PresentationSources, UNNAMED_PLUGIN_DISPLAY_NAME,
 };
 
 /// The manifest flavor a plugin was loaded from.
 ///
 /// Kept on the resolved plugin so the UI can show provenance and so diagnostics
 /// can explain why a field was interpreted a particular way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ManifestDialect {
     /// Portable root `plugin.json` (Agent Plugins v1).
     AgentPluginV1,
