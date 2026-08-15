@@ -10600,10 +10600,26 @@ rl.on('line', (line) => {
         })
         .unwrap();
 
+        let entries = svc.list_marketplace_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.source_kind, "github");
+        assert_eq!(entry.source, "deepseek-ai/archive-demo");
+        assert_eq!(entry.source_commit.as_deref(), Some(sha));
+        assert!(!entry.source.contains("gh.llkk.cc"));
+        assert!(!entry.source.contains("gh-proxy.com"));
+        assert!(!entry.source.contains(&archive.display().to_string()));
+
         let prepared = svc
             .prepare_plugin_install("remote", "archive-demo", false)
             .unwrap();
         let prepared_root = PathBuf::from(&prepared.plugin_root);
+        assert_eq!(prepared.source_kind, "github");
+        assert_eq!(prepared.source, "deepseek-ai/archive-demo");
+        assert!(prepared.content_hash.starts_with("sha256:"));
+        assert!(!prepared.source.contains("gh.llkk.cc"));
+        assert!(!prepared.source.contains("gh-proxy.com"));
+        assert!(!prepared.source.contains(&archive.display().to_string()));
         assert!(prepared_root.join("scripts").join("run.sh").is_file());
         assert!(prepared_root.join("assets").join("logo.txt").is_file());
         assert!(prepared_root.join("README.md").is_file());
@@ -10612,6 +10628,10 @@ rl.on('line', (line) => {
 
         let installed = svc.commit_plugin_install(&prepared.token).unwrap();
         assert_eq!(installed.id, "archive-demo@remote");
+        assert_eq!(
+            installed.content_hash.as_deref(),
+            Some(prepared.content_hash.as_str())
+        );
         let cached = roots
             .marketplace_cache
             .join("remote")
@@ -10622,13 +10642,23 @@ rl.on('line', (line) => {
         assert!(cached.join("README.md").is_file());
         assert!(cached.join("LICENSE").is_file());
         assert!(cached.join("tests").join("smoke.txt").is_file());
+        let state = svc.load_state().unwrap();
+        assert_eq!(
+            state
+                .installed
+                .get("archive-demo@remote")
+                .and_then(|installed| installed.content_hash.as_deref()),
+            Some(prepared.content_hash.as_str())
+        );
 
         let snapshot =
             std::fs::read_to_string(roots.marketplaces.join("remote").join("marketplace.json"))
                 .unwrap();
         assert!(snapshot.contains("deepseek-ai/archive-demo"));
+        assert!(snapshot.contains(sha));
         assert!(!snapshot.contains("gh.llkk.cc"));
         assert!(!snapshot.contains("gh-proxy.com"));
+        assert!(!snapshot.contains(&archive.display().to_string()));
 
         match old_skip_clone {
             Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", value),
@@ -10785,6 +10815,8 @@ rl.on('line', (line) => {
         assert_eq!(entry.version.as_deref(), Some("git-aaaaaaaaaaaa"));
         assert_eq!(entry.source_kind, "github");
         assert!(entry.source.contains("deepseek-ai/dsh-demo@main"));
+        assert!(!entry.source.contains("gh.llkk.cc"));
+        assert!(!entry.source.contains("gh-proxy.com"));
         assert_eq!(
             entry.source_commit.as_deref(),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -10801,6 +10833,7 @@ rl.on('line', (line) => {
                 .unwrap();
         assert!(snapshot.contains(r#""repo": "deepseek-ai/dsh-demo""#));
         assert!(snapshot.contains(r#""sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa""#));
+        assert!(snapshot.contains(r#""ref": "main""#));
         assert!(!snapshot.contains("gh.llkk.cc"));
         assert!(!snapshot.contains("gh-proxy.com"));
         assert!(!roots
@@ -10916,6 +10949,9 @@ rl.on('line', (line) => {
         assert_eq!(entry.version.as_deref(), Some("2.3.4"));
         assert_eq!(entry.category.as_deref(), Some("Science"));
         assert_eq!(entry.source_kind, "github");
+        assert!(entry.source.contains("deepseek-ai/repo-shell@main"));
+        assert!(!entry.source.contains("gh.llkk.cc"));
+        assert!(!entry.source.contains("gh-proxy.com"));
         assert_eq!(
             entry.source_commit.as_deref(),
             Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -10944,6 +10980,8 @@ rl.on('line', (line) => {
                 .unwrap();
         assert!(snapshot.contains(r#""name": "manifest-plugin""#));
         assert!(snapshot.contains(r#""manifestPath": ".codex-plugin/plugin.json""#));
+        assert!(snapshot.contains(r#""repo": "deepseek-ai/repo-shell""#));
+        assert!(snapshot.contains(r#""ref": "main""#));
         assert!(snapshot.contains(r#""sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb""#));
         assert!(snapshot.contains(r#""components""#));
         assert!(snapshot.contains(r#""runtime""#));
