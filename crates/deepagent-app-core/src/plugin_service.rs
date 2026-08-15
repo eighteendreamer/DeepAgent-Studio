@@ -123,6 +123,8 @@ pub struct PluginDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub developer: Option<String>,
     pub source: PluginSourceDto,
     pub origin: String,
@@ -205,6 +207,7 @@ pub struct PreparedPluginInstallDto {
     pub version: Option<String>,
     pub source_kind: String,
     pub source: String,
+    pub content_hash: String,
     pub staging_path: String,
     pub plugin_root: String,
     pub destination_path: String,
@@ -253,6 +256,12 @@ pub struct InstalledPluginState {
         skip_serializing_if = "Option::is_none"
     )]
     pub last_updated: Option<String>,
+    #[serde(
+        default,
+        alias = "contentHash",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -581,6 +590,7 @@ impl PluginService {
         }
 
         commit_plugin_directory(source, &destination, &self.roots.personal, &name)?;
+        let content_hash = plugin_directory_content_hash(&destination)?;
 
         let id = plugin_id(&name, PluginOrigin::Personal.as_str());
         let mut state = self.load_state()?;
@@ -592,6 +602,7 @@ impl PluginService {
                 install_path: destination.display().to_string(),
                 installed_at: now_string(),
                 last_updated: None,
+                content_hash: Some(content_hash),
             },
         );
         self.save_state(&state)?;
@@ -956,6 +967,7 @@ impl PluginService {
                 &plugin_root,
                 &manifest,
             );
+            let content_hash = plugin_directory_content_hash(&plugin_root)?;
             let metadata = PreparedPluginInstallState {
                 schema_version: 1,
                 token: token.clone(),
@@ -967,6 +979,7 @@ impl PluginService {
                 destination_path: destination.display().to_string(),
                 source_kind: entry.source.kind().to_string(),
                 source: entry.source.display().to_string(),
+                content_hash: content_hash.clone(),
                 created_at: now_string(),
             };
             write_prepared_install_metadata(&staging, &metadata)?;
@@ -979,6 +992,7 @@ impl PluginService {
                 version: Some(version),
                 source_kind: entry.source.kind().to_string(),
                 source: entry.source.display().to_string(),
+                content_hash,
                 staging_path: staging.display().to_string(),
                 plugin_root: plugin_root.display().to_string(),
                 destination_path: destination.display().to_string(),
@@ -1028,6 +1042,13 @@ impl PluginService {
                 return Err(CoreError::invalid(format!(
                     "prepared plugin id changed for '{}'",
                     manifest.name
+                )));
+            }
+            let content_hash = plugin_directory_content_hash(&plugin_root)?;
+            if content_hash != metadata.content_hash {
+                return Err(CoreError::invalid(format!(
+                    "prepared plugin content hash changed: expected {}, got {}",
+                    metadata.content_hash, content_hash
                 )));
             }
 
@@ -1104,6 +1125,7 @@ impl PluginService {
                         .map(|item| item.installed_at.clone())
                         .unwrap_or_else(now_string),
                     last_updated: previous.as_ref().map(|_| now_string()),
+                    content_hash: Some(metadata.content_hash.clone()),
                 },
             );
             self.save_state(&state)?;
@@ -1300,6 +1322,7 @@ impl PluginService {
                 &destination,
             )?;
         }
+        let content_hash = plugin_directory_content_hash(&destination)?;
 
         let id = plugin_id(&manifest.name, marketplace_key);
         let mut state = self.load_state()?;
@@ -1311,6 +1334,7 @@ impl PluginService {
                 install_path: destination.display().to_string(),
                 installed_at: now_string(),
                 last_updated: None,
+                content_hash: Some(content_hash),
             },
         );
         self.save_state(&state)?;
@@ -2009,6 +2033,10 @@ impl PluginService {
             .health_checks
             .get(&plugin.id)
             .map(|check| check.checked_at.clone());
+        let content_hash = state
+            .installed
+            .get(&plugin.id)
+            .and_then(|installed| installed.content_hash.clone());
         let lifecycle_state = self.plugin_lifecycle_state(
             plugin,
             manifest,
@@ -2059,6 +2087,7 @@ impl PluginService {
                 .and_then(|presentation| presentation.long_description.clone()),
             version: manifest.and_then(|m| m.version.clone()),
             local_version: manifest.and_then(|m| m.version.clone()),
+            content_hash,
             developer: presentation
                 .as_ref()
                 .and_then(|presentation| presentation.developer_name.clone()),
@@ -2805,6 +2834,8 @@ struct PreparedPluginInstallState {
     #[serde(rename = "sourceKind")]
     source_kind: String,
     source: String,
+    #[serde(rename = "contentHash")]
+    content_hash: String,
     #[serde(rename = "createdAt")]
     created_at: String,
 }
@@ -4172,6 +4203,111 @@ fn sha256_file(path: &Path) -> Result<String> {
         hasher.update(&buffer[..read]);
     }
     Ok(hex_lower(&hasher.finalize()))
+}
+
+fn plugin_directory_content_hash(root: &Path) -> Result<String> {
+    let mut entries = Vec::new();
+    collect_plugin_hash_entries(root, root, &mut entries)?;
+    entries.sort_by(|a, b| a.relative.cmp(&b.relative).then_with(|| a.kind.cmp(b.kind)));
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"deepagent-plugin-dir-v1\0");
+    for entry in entries {
+        hasher.update(entry.kind.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(entry.relative.as_bytes());
+        hasher.update(b"\0");
+        if entry.kind == "file" {
+            let metadata = std::fs::metadata(&entry.absolute).map_err(|e| {
+                CoreError::Persistence(format!(
+                    "stat plugin hash file {}: {e}",
+                    entry.absolute.display()
+                ))
+            })?;
+            hasher.update(metadata.len().to_string().as_bytes());
+            hasher.update(b"\0");
+            let mut file = File::open(&entry.absolute).map_err(|e| {
+                CoreError::Persistence(format!(
+                    "open plugin hash file {}: {e}",
+                    entry.absolute.display()
+                ))
+            })?;
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let read = file.read(&mut buffer).map_err(|e| {
+                    CoreError::Persistence(format!(
+                        "read plugin hash file {}: {e}",
+                        entry.absolute.display()
+                    ))
+                })?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+        }
+        hasher.update(b"\0");
+    }
+    Ok(format!("sha256:{}", hex_lower(&hasher.finalize())))
+}
+
+struct PluginHashEntry {
+    kind: &'static str,
+    relative: String,
+    absolute: PathBuf,
+}
+
+fn collect_plugin_hash_entries(
+    root: &Path,
+    current: &Path,
+    entries: &mut Vec<PluginHashEntry>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(current).map_err(|e| {
+        CoreError::Persistence(format!("read plugin hash dir {}: {e}", current.display()))
+    })? {
+        let entry =
+            entry.map_err(|e| CoreError::Persistence(format!("read plugin hash entry: {e}")))?;
+        let path = entry.path();
+        let relative = path.strip_prefix(root).map_err(|e| {
+            CoreError::Persistence(format!(
+                "strip plugin hash prefix {} from {}: {e}",
+                root.display(),
+                path.display()
+            ))
+        })?;
+        let relative = normalize_hash_relative_path(relative);
+        let file_type = entry.file_type().map_err(|e| {
+            CoreError::Persistence(format!("stat plugin hash entry {}: {e}", path.display()))
+        })?;
+        if file_type.is_dir() {
+            if entry.file_name().to_string_lossy() == ".git" {
+                continue;
+            }
+            entries.push(PluginHashEntry {
+                kind: "dir",
+                relative,
+                absolute: path.clone(),
+            });
+            collect_plugin_hash_entries(root, &path, entries)?;
+        } else if file_type.is_file() {
+            entries.push(PluginHashEntry {
+                kind: "file",
+                relative,
+                absolute: path,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn normalize_hash_relative_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -6521,6 +6657,7 @@ mod tests {
                     .to_string(),
                 installed_at: "first".to_string(),
                 last_updated: None,
+                content_hash: None,
             },
         );
         svc.save_state(&state).unwrap();
@@ -6598,6 +6735,7 @@ mod tests {
         let installed = state.installed.get("demo@team").unwrap();
         assert_eq!(installed.version.as_deref(), Some("0.1.0"));
         assert_eq!(installed.installed_at, "2026-07-22T10:00:00Z");
+        assert_eq!(installed.content_hash, None);
         assert_eq!(
             installed.last_updated.as_deref(),
             Some("2026-07-22T11:00:00Z")
@@ -7061,6 +7199,7 @@ mod tests {
 
         assert_eq!(prepared.plugin_id, "demo@team");
         assert!(prepared.scan_report.manifest_ok);
+        assert!(prepared.content_hash.starts_with("sha256:"));
         assert_eq!(
             prepared.runtime_inspection.execution_kind,
             PluginExecutionKind::SkillOnly
@@ -7072,6 +7211,18 @@ mod tests {
 
         assert_eq!(installed.id, "demo@team");
         assert_eq!(installed.version.as_deref(), Some("0.1.0"));
+        assert_eq!(
+            installed.content_hash.as_deref(),
+            Some(prepared.content_hash.as_str())
+        );
+        let state = svc.load_state().unwrap();
+        assert_eq!(
+            state
+                .installed
+                .get("demo@team")
+                .and_then(|installed| installed.content_hash.as_deref()),
+            Some(prepared.content_hash.as_str())
+        );
         assert!(!Path::new(&prepared.staging_path).exists());
         assert!(roots
             .marketplace_cache
@@ -7081,6 +7232,59 @@ mod tests {
             .join(".codex-plugin")
             .join("plugin.json")
             .is_file());
+    }
+
+    #[test]
+    fn prepared_marketplace_commit_rejects_changed_staged_content_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("demo");
+        write_plugin_with_version(&plugin_source, "demo", "0.1.0");
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.1.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let prepared = svc.prepare_plugin_install("team", "demo", false).unwrap();
+        std::fs::write(
+            Path::new(&prepared.plugin_root).join("scripts-added-after-prepare.sh"),
+            "echo tampered",
+        )
+        .unwrap();
+
+        let err = svc.commit_plugin_install(&prepared.token).unwrap_err();
+
+        assert!(err.to_string().contains("content hash changed"));
+        assert!(!Path::new(&prepared.staging_path).exists());
+        assert!(!roots
+            .marketplace_cache
+            .join("team")
+            .join("demo")
+            .join("0.1.0")
+            .exists());
+        let state = svc.load_state().unwrap();
+        assert!(!state.installed.contains_key("demo@team"));
     }
 
     #[test]
