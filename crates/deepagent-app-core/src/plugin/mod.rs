@@ -28,6 +28,7 @@
 //! implementation. They move into this tree in a dedicated move-only change so
 //! the refactor never mixes with behavior changes.
 
+pub mod component;
 pub mod model;
 pub mod spec;
 

@@ -203,7 +203,13 @@ pub enum DiagnosticSeverity { Info, Warning, Error }
 
 ### 组件发现
 
-**skills（§7.1）**：只读 `skills/` 的直接子项，是目录且其中 `SKILL.md` 解析为常规文件 → 一个 skill。**这修正了现有 `count_skill_root` 的递归行为**，是本 spec 中唯一一处会改变既有计数的地方，需在 M2-5 逐插件核对（现有 9 个内置插件的 skills 均为扁平结构，预期计数不变，但要实测而非假定）。
+**skills（§7.1）**：只读 `skills/` 的直接子项，是目录且其中名字**精确为** `SKILL.md` 的条目解析为常规文件 → 一个 skill。
+
+关于现有实现的一处更正：`count_skill_root` **并不递归**（初版 design 的描述有误）。它的语义是「`path/SKILL.md` 存在则 path 自身算一个 skill，否则枚举 path 的直接子项」。与 v1 的唯一差异是前半句——v1 的固定位置 `skills/` 只承认直接子目录，`skills/SKILL.md` 不构成 skill。而「path 自身即 skill」在 Codex 方言下是**需要保留的**行为（manifest 可写 `"skills": "./my-skill"` 直指单个 skill 目录）。所以这不是缺陷，而是分层问题：严格 v1 语义在 `component/skills.rs`，方言的单目录写法留在 `dialect/codex.rs`。
+
+大小写是这里的实际风险点：Windows 与 macOS 默认大小写不敏感，`path.join("SKILL.md").is_file()` 会接受 `skill.md`。§7.1 要求「named exactly」，因此实现比对目录项真实名字而非 join 后探测，保证同一插件在各平台被一致接受或拒绝。
+
+实测结论：9 个内置插件**都没有 `skills/` 目录**，故 skills 相关改动对既有计数零影响。
 
 **mcp.json（§7.2）**：
 - 顶层只允许 `$schema` 与 `mcpServers`，其余字段 → 整体禁用 MCP，记 `McpDisabled`。
@@ -300,6 +306,6 @@ Claude 侧事件与内部生命周期点的对应（既有实现，此处仅作�
 
 - **不新增 crate。** 依赖方向核对结果：`app-core` 依赖 `skills`/`hooks`/`mcp`，后者只依赖 `core`/`context`/`tools`。现有"app-core 编排、向下投影"无环，抽 crate 不解决问题只加层。
 - **`Ws` transport 插件不可用。** v1 闭合联合没有 WebSocket。用户手工配置的 MCP 仍可用 `Ws`，只是插件不能声明。
-- **skills 非递归是唯一可能改变既有计数的改动。** 必须实测 9 个内置插件而非假定不变。
+- **skills 发现对既有计数无影响。** 已实测：9 个内置插件均无 `skills/` 目录。原先担心的「非递归改动会改变计数」不成立，因为现有实现本来就不递归。
 - **Claude 插件的 `.mcp.json` 与 v1 `mcp.json` 并存。** 两个文件名都认，v1 优先。若插件同时提供两者且内容冲突，取 v1 并记诊断。
 - **本 spec 不含 dsh。** Cordis 侧车（M6/M7）是独立子系统，`ResolvedPlugin` 不为它预留字段，避免过早抽象；届时它走自己的模型。

@@ -82,6 +82,7 @@
   - 在 `plugin/component/skills.rs` 实现 `discover_skills(root) -> (Vec<SkillComponent>, Vec<PluginDiagnostic>)`：只枚举 `skills/` 直接子目录，其中 `SKILL.md` 解析为常规文件才算一个 skill。
   - 缺失 `skills/` 不算错误；`skills` 存在但不是目录 → 该组件类型无效并记诊断；单个 skill 越界或非法 → 记 `SkillSkipped` 并继续。
   - 回归测试：`skills/a/SKILL.md` 被发现；`skills/a/nested/SKILL.md` **不**被发现；`skills` 是文件时记诊断且其他组件仍加载。
+  - 更正（实施时查明）：现有 `count_skill_root` **并不递归**，它的语义是「`path/SKILL.md` 存在则 path 自身算一个 skill，否则枚举直接子项」。与 v1 的唯一差异是前半句，而那正是 Codex 方言需要保留的写法（`"skills": "./my-skill"`），因此归方言层而非当作缺陷修掉。真实风险点改为**文件名大小写**：Windows/macOS 大小写不敏感，`join("SKILL.md").is_file()` 会误收 `skill.md`，§7.1 要求 named exactly，故比对目录项真实名字。
   - _Requirements: 4.1, 4.2, 4.3, 6.4, 6.5_
 
 - [ ] 12. 实现 v1 `mcp.json` 解析与 per-server 隔离（M1-4）
@@ -135,8 +136,8 @@
 
 - [ ] 19. 既有 9 个内置插件零回归验证（M2-5）
   - 新增 `tests/plugin_real_fixtures.rs`，对 `apps/desktop/src-tauri/resources/plugins/` 下 9 个插件逐一断言 skill / command / agent / app / hook / MCP server / output-style 计数与改造前相等。
-  - 改造前基线：先在任务 9（纯搬移）完成时记录一份计数快照作为断言值，不凭推测填写。
-  - 特别核对 skills 非递归改动是否影响任何插件计数。
+  - 改造前基线：记录一份计数快照作为断言值，不凭推测填写。
+  - skills 部分已实测结清：9 个内置插件**均无 `skills/` 目录**，故 skills 发现的任何改动对既有计数零影响。剩余需核对的是 command / agent / app / hook / MCP server / output-style。
   - _Requirements: 8.1_
 
 - [ ] 20. 规范一致性测试套件
