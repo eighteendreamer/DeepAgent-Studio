@@ -286,6 +286,17 @@ struct PluginState {
     installed: BTreeMap<String, InstalledPluginState>,
     #[serde(default)]
     marketplaces: BTreeMap<String, MarketplaceState>,
+    #[serde(default, alias = "healthChecks")]
+    health_checks: BTreeMap<String, PluginHealthCheckState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PluginHealthCheckState {
+    status: PluginHealthStatus,
+    #[serde(alias = "checkedAt", alias = "lastHealthCheck")]
+    checked_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 impl Default for PluginState {
@@ -295,6 +306,7 @@ impl Default for PluginState {
             enabled: BTreeMap::new(),
             installed: BTreeMap::new(),
             marketplaces: BTreeMap::new(),
+            health_checks: BTreeMap::new(),
         }
     }
 }
@@ -406,7 +418,27 @@ impl PluginService {
 
     pub fn check_plugin_health(&self, id: &str) -> Result<Option<PluginRuntimeInspectionDto>> {
         self.invalidate_plugin_caches();
-        self.inspect_plugin_runtime(id)
+        let Some(plugin) = self.read(id)? else {
+            return Ok(None);
+        };
+        let checked_at = now_string();
+        let health_error = plugin.health_error.clone();
+        let mut state = self.load_state()?;
+        state.health_checks.insert(
+            id.to_string(),
+            PluginHealthCheckState {
+                status: plugin.health_status,
+                checked_at: checked_at.clone(),
+                error: health_error.clone(),
+            },
+        );
+        self.save_state(&state)?;
+        self.invalidate_plugin_caches();
+
+        let mut inspection = PluginRuntimeInspectionDto::from_plugin(&plugin);
+        inspection.last_health_check = Some(checked_at);
+        inspection.health_error = health_error;
+        Ok(Some(inspection))
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<PluginDto> {
@@ -1899,7 +1931,10 @@ impl PluginService {
             &runtime_requirements,
             health_status,
         );
-        let last_health_check = Some(now_string());
+        let last_health_check = state
+            .health_checks
+            .get(&plugin.id)
+            .map(|check| check.checked_at.clone());
         let lifecycle_state = self.plugin_lifecycle_state(
             plugin,
             manifest,
@@ -4891,6 +4926,41 @@ mod tests {
         .unwrap();
     }
 
+    fn write_plugin_with_connector_app(
+        root: &Path,
+        name: &str,
+        provider: &str,
+        connector_id: &str,
+    ) {
+        write_plugin(root, name);
+        std::fs::write(
+            root.join(".codex-plugin").join("plugin.json"),
+            serde_json::json!({
+                "name": name,
+                "version": "0.1.0",
+                "skills": "skills",
+                "apps": ".app.json",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut apps = serde_json::Map::new();
+        apps.insert(
+            provider.to_string(),
+            serde_json::json!({
+                "id": connector_id
+            }),
+        );
+        std::fs::write(
+            root.join(".app.json"),
+            serde_json::json!({
+                "apps": apps
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     fn write_plugin_with_command(root: &Path, name: &str) {
         write_plugin_with_version_and_dependencies(root, name, "0.1.0", &[]);
         std::fs::create_dir_all(root.join("commands")).unwrap();
@@ -5031,30 +5101,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
         let root = roots.builtin.join("connector-demo");
-        write_plugin(&root, "connector-demo");
-        std::fs::write(
-            root.join(".codex-plugin").join("plugin.json"),
-            serde_json::json!({
-                "name": "connector-demo",
-                "version": "0.1.0",
-                "skills": "skills",
-                "apps": ".app.json",
-            })
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            root.join(".app.json"),
-            serde_json::json!({
-                "apps": {
-                    "design-provider": {
-                        "id": "connector_test_123"
-                    }
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
+        write_plugin_with_connector_app(
+            &root,
+            "connector-demo",
+            "design-provider",
+            "connector_test_123",
+        );
         let svc = PluginService::new(roots, tmp.path().join("app-data"));
 
         let plugin = svc.read("connector-demo@builtin").unwrap().unwrap();
@@ -5073,6 +5125,80 @@ mod tests {
         assert_eq!(projection.connector_entries.len(), 1);
         assert_eq!(projection.connector_entries[0].provider, "design-provider");
         assert_eq!(projection.connector_entries[0].id, "connector_test_123");
+    }
+
+    #[test]
+    fn check_plugin_health_persists_latest_result_for_later_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("connector-demo");
+        write_plugin_with_connector_app(
+            &root,
+            "connector-demo",
+            "design-provider",
+            "connector_test_123",
+        );
+        let app_data = tmp.path().join("app-data");
+        let svc = PluginService::new(roots.clone(), &app_data);
+
+        let before = svc
+            .inspect_plugin_runtime("connector-demo@builtin")
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.health_status, PluginHealthStatus::NeedsAuthorization);
+        assert!(before.last_health_check.is_none());
+
+        let checked = svc
+            .check_plugin_health("connector-demo@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            checked.health_status,
+            PluginHealthStatus::NeedsAuthorization
+        );
+        let checked_at = checked
+            .last_health_check
+            .clone()
+            .expect("explicit check records timestamp");
+        assert!(checked
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("authorization"));
+
+        let state = svc.load_state().unwrap();
+        let persisted = state
+            .health_checks
+            .get("connector-demo@builtin")
+            .expect("health check persisted");
+        assert_eq!(persisted.status, PluginHealthStatus::NeedsAuthorization);
+        assert_eq!(persisted.checked_at, checked_at);
+        assert!(persisted
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("authorization"));
+
+        let reloaded = PluginService::new(roots, &app_data);
+        let after = reloaded.read("connector-demo@builtin").unwrap().unwrap();
+        assert_eq!(
+            after.last_health_check.as_deref(),
+            Some(checked_at.as_str())
+        );
+        assert_eq!(after.health_status, PluginHealthStatus::NeedsAuthorization);
+    }
+
+    #[test]
+    fn check_plugin_health_missing_plugin_does_not_pollute_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = PluginService::new(roots(tmp.path()), tmp.path().join("app-data"));
+
+        let checked = svc.check_plugin_health("missing@builtin").unwrap();
+
+        assert!(checked.is_none());
+        let state = svc.load_state().unwrap();
+        assert!(state.health_checks.is_empty());
     }
 
     #[test]
@@ -5291,6 +5417,13 @@ mod tests {
                         "sourceRoot": tmp.path().join("marketplaces/team").display().to_string(),
                         "lastUpdated": "2026-07-22T12:00:00Z"
                     }
+                },
+                "healthChecks": {
+                    "demo@team": {
+                        "status": "needs_authorization",
+                        "checkedAt": "2026-07-22T13:00:00Z",
+                        "error": "needs OAuth authorization"
+                    }
                 }
             })
             .to_string(),
@@ -5311,12 +5444,17 @@ mod tests {
         let marketplace = state.marketplaces.get("team").unwrap();
         assert_eq!(marketplace.git_ref.as_deref(), Some("main"));
         assert_eq!(marketplace.sparse_path.as_deref(), Some("plugins"));
+        let health = state.health_checks.get("demo@team").unwrap();
+        assert_eq!(health.status, PluginHealthStatus::NeedsAuthorization);
+        assert_eq!(health.checked_at, "2026-07-22T13:00:00Z");
+        assert_eq!(health.error.as_deref(), Some("needs OAuth authorization"));
 
         svc.save_state(&state).unwrap();
         let rewritten = std::fs::read_to_string(&state_path).unwrap();
         assert!(rewritten.contains("\"version\": 1"));
         assert!(rewritten.contains("install_path"));
         assert!(rewritten.contains("installed_at"));
+        assert!(rewritten.contains("health_checks"));
     }
 
     #[test]
