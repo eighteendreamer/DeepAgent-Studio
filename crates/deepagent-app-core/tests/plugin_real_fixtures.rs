@@ -2,6 +2,7 @@
 //!
 //! 这些 fixture 来自桌面应用实际随包资源，不使用人工构造的理想目录。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -25,6 +26,18 @@ const EXPECTED: &[(&str, u32, u32, u32, u32, u32, u32)] = &[
     ("superpowers", 14, 0, 0, 0, 0, 0),
     ("terminal", 0, 0, 0, 1, 1, 0),
     ("wedecode", 0, 0, 0, 1, 0, 0),
+];
+
+const EXISTING_HOST_ADAPTERS: &[&str] = &[
+    "browser",
+    "computer-use",
+    "files",
+    "meeting-recorder",
+    "office-agent",
+    "project-map",
+    "side-chat",
+    "terminal",
+    "wedecode",
 ];
 
 #[test]
@@ -81,6 +94,107 @@ fn bundled_plugins_keep_their_component_counts() {
             *output_styles,
             "{name} output styles"
         );
+    }
+}
+
+#[test]
+fn existing_host_adapters_preserve_state_and_data_from_install_dir() {
+    let root = bundled_plugins_root();
+    if !root.is_dir() {
+        eprintln!("skipping: bundled plugin resources are not present");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let install_dir = tmp.path().join("install");
+    let plugin_state_dir = install_dir.join("plugins");
+    let plugin_data_dir = plugin_state_dir.join("data");
+    std::fs::create_dir_all(&plugin_data_dir).unwrap();
+
+    let mut enabled = BTreeMap::new();
+    let mut health_checks = BTreeMap::new();
+    for (index, name) in EXISTING_HOST_ADAPTERS.iter().enumerate() {
+        let id = format!("{name}@builtin");
+        enabled.insert(id.clone(), index % 2 == 0);
+        health_checks.insert(
+            id.clone(),
+            serde_json::json!({
+                "status": "incomplete",
+                "checked_at": format!("2026-08-15T00:00:{index:02}Z"),
+                "error": format!("seeded health check for {id}")
+            }),
+        );
+        let data_dir = plugin_data_dir.join(sanitize_plugin_data_dir(&id));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("state-marker.json"),
+            format!(r#"{{"id":"{id}"}}"#),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        plugin_state_dir.join("state.json"),
+        serde_json::json!({
+            "version": 1,
+            "enabled": enabled,
+            "health_checks": health_checks
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let svc = PluginService::new(
+        PluginRoots {
+            session: Vec::new(),
+            builtin: root.clone(),
+            workspace: None,
+            personal: plugin_state_dir.join("personal"),
+            marketplace_cache: plugin_state_dir.join("cache"),
+            marketplaces: plugin_state_dir.join("marketplaces"),
+        },
+        &install_dir,
+    );
+    let plugins = svc.list().unwrap();
+
+    for (index, name) in EXISTING_HOST_ADAPTERS.iter().enumerate() {
+        let id = format!("{name}@builtin");
+        let matches = plugins
+            .iter()
+            .filter(|plugin| plugin.id == id)
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "{id} must not be deleted or duplicated");
+        let plugin = matches[0];
+        assert_eq!(plugin.name, *name);
+        assert_eq!(plugin.origin, "builtin");
+        assert_eq!(plugin.source.kind, "builtin");
+        assert!(plugin.installed, "{id} should still be installed");
+        assert!(plugin.available, "{id} should still be available");
+        assert_eq!(plugin.enabled, index % 2 == 0, "{id} enabled state");
+        assert_eq!(plugin.health_status, PluginHealthStatus::Incomplete);
+        assert_eq!(
+            plugin.last_health_check.as_deref(),
+            Some(format!("2026-08-15T00:00:{index:02}Z").as_str()),
+            "{id} last health check"
+        );
+        assert_eq!(
+            plugin.health_error.as_deref(),
+            Some(format!("seeded health check for {id}").as_str()),
+            "{id} health error"
+        );
+
+        let expected_data_dir = plugin_data_dir.join(sanitize_plugin_data_dir(&id));
+        assert_eq!(PathBuf::from(&plugin.data_dir), expected_data_dir);
+        assert!(
+            expected_data_dir.join("state-marker.json").is_file(),
+            "{id} user data must remain in the install-dir plugin data tree"
+        );
+        if *name != "wedecode" {
+            assert_eq!(
+                plugin.execution_kind,
+                PluginExecutionKind::HostBacked,
+                "{id} should remain a host adapter"
+            );
+        }
     }
 }
 
@@ -412,6 +526,18 @@ fn superpowers_registry() -> Option<SkillRegistry> {
 
 fn bundled_plugins_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop/src-tauri/resources/plugins")
+}
+
+fn sanitize_plugin_data_dir(id: &str) -> String {
+    id.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 #[test]

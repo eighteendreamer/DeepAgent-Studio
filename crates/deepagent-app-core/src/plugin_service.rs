@@ -2199,7 +2199,7 @@ impl PluginService {
             self.plugin_runtime_requirements(plugin, manifest, has_runtime_payload);
         let runtime_available = self.runtime_requirements_available(&runtime_requirements);
         let license_status = self.plugin_license_status(plugin);
-        let health_status = self.plugin_health_status(
+        let computed_health_status = self.plugin_health_status(
             plugin,
             manifest,
             resolved,
@@ -2207,17 +2207,23 @@ impl PluginService {
             runtime_available,
             &runtime_requirements,
         );
-        let health_error = self.plugin_health_error(
+        let computed_health_error = self.plugin_health_error(
             plugin,
             manifest,
             counts,
             &runtime_requirements,
-            health_status,
+            computed_health_status,
         );
-        let last_health_check = state
-            .health_checks
-            .get(&plugin.id)
-            .map(|check| check.checked_at.clone());
+        let persisted_health = state.health_checks.get(&plugin.id);
+        let last_health_check = persisted_health.map(|check| check.checked_at.clone());
+        let (health_status, health_error) =
+            if plugin.available && resolved.is_some() && !has_fatal_plugin_errors(plugin) {
+                persisted_health
+                    .map(|check| (check.status, check.error.clone()))
+                    .unwrap_or((computed_health_status, computed_health_error))
+            } else {
+                (computed_health_status, computed_health_error)
+            };
         let content_hash = state
             .installed
             .get(&plugin.id)
@@ -8129,8 +8135,16 @@ rl.on('line', (line) => {
 
         let reloaded = PluginService::new(roots, &app_data);
         let after = reloaded.read("hosted-demo@builtin").unwrap().unwrap();
-        assert_eq!(after.health_status, PluginHealthStatus::Ready);
+        assert_eq!(
+            after.health_status,
+            PluginHealthStatus::ConnectionUnavailable
+        );
         assert!(after.last_health_check.as_deref().is_some());
+        assert!(after
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("hosted MCP endpoint unavailable"));
     }
 
     #[test]
