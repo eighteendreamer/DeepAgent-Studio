@@ -1901,17 +1901,39 @@ impl PluginService {
         }
 
         let failures = hosted_mcp_connection_failures(&projection.mcp_config);
-        if failures.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some((
+        if !failures.is_empty() {
+            return Ok(Some((
                 PluginHealthStatus::ConnectionUnavailable,
                 Some(format!(
                     "hosted MCP endpoint unavailable: {}",
                     failures.join("; ")
                 )),
-            )))
+            )));
         }
+
+        if !credentials_satisfy_documented_auth(&loaded.root) {
+            let auth_failures = documented_auth_command_failures(&loaded.root);
+            if let Some(failure) = auth_failures.first() {
+                return Ok(Some(match failure.kind {
+                    CommandProbeFailureKind::Unavailable => (
+                        PluginHealthStatus::RuntimeUnavailable,
+                        Some(format!(
+                            "plugin authentication health check command is unavailable: {}",
+                            failure.probe.display()
+                        )),
+                    ),
+                    CommandProbeFailureKind::Rejected => (
+                        PluginHealthStatus::NeedsConfiguration,
+                        Some(format!(
+                            "plugin authentication health check failed: {}",
+                            failure.probe.display()
+                        )),
+                    ),
+                }));
+            }
+        }
+
+        Ok(None)
     }
 
     fn host_backed_validation_errors(
@@ -5090,6 +5112,44 @@ fn probe_external_command(probe: &PluginCommandProbe) -> bool {
         })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandProbeFailureKind {
+    Unavailable,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandProbeFailure {
+    probe: PluginCommandProbe,
+    kind: CommandProbeFailureKind,
+}
+
+fn documented_auth_command_failures(root: &Path) -> Vec<CommandProbeFailure> {
+    documented_auth_command_probes(root)
+        .into_iter()
+        .filter_map(|probe| probe_external_command_failure(&probe))
+        .collect()
+}
+
+fn probe_external_command_failure(probe: &PluginCommandProbe) -> Option<CommandProbeFailure> {
+    let mut saw_spawned_process = false;
+    for candidate in external_command_probe_candidates(&probe.program) {
+        match Command::new(candidate).args(&probe.args).output() {
+            Ok(output) if output.status.success() => return None,
+            Ok(_) => saw_spawned_process = true,
+            Err(_) => {}
+        }
+    }
+    Some(CommandProbeFailure {
+        probe: probe.clone(),
+        kind: if saw_spawned_process {
+            CommandProbeFailureKind::Rejected
+        } else {
+            CommandProbeFailureKind::Unavailable
+        },
+    })
+}
+
 fn external_command_probe_candidates(program: &str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     candidates.push(PathBuf::from(program));
@@ -5206,6 +5266,17 @@ fn python_requirement_import_name(line: &str) -> Option<String> {
 }
 
 fn documented_runtime_command_probes(root: &Path) -> BTreeSet<PluginCommandProbe> {
+    documented_command_probes(root, documented_runtime_command_probe)
+}
+
+fn documented_auth_command_probes(root: &Path) -> BTreeSet<PluginCommandProbe> {
+    documented_command_probes(root, documented_auth_command_probe)
+}
+
+fn documented_command_probes(
+    root: &Path,
+    parse_probe: fn(&str) -> Option<PluginCommandProbe>,
+) -> BTreeSet<PluginCommandProbe> {
     let mut probes = BTreeSet::new();
     let mut stack = vec![root.to_path_buf()];
     let mut visited_files = 0usize;
@@ -5240,7 +5311,7 @@ fn documented_runtime_command_probes(root: &Path) -> BTreeSet<PluginCommandProbe
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            collect_documented_runtime_command_probes(&text, &mut probes);
+            collect_documented_command_probes(&text, &mut probes, parse_probe);
         }
     }
     probes
@@ -5258,9 +5329,23 @@ fn should_scan_command_probe_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn collect_documented_runtime_command_probes(
     text: &str,
     probes: &mut BTreeSet<PluginCommandProbe>,
+) {
+    collect_documented_command_probes(text, probes, documented_runtime_command_probe);
+}
+
+#[cfg(test)]
+fn collect_documented_auth_command_probes(text: &str, probes: &mut BTreeSet<PluginCommandProbe>) {
+    collect_documented_command_probes(text, probes, documented_auth_command_probe);
+}
+
+fn collect_documented_command_probes(
+    text: &str,
+    probes: &mut BTreeSet<PluginCommandProbe>,
+    parse_probe: fn(&str) -> Option<PluginCommandProbe>,
 ) {
     let mut in_fence = false;
     for line in text.lines() {
@@ -5272,7 +5357,7 @@ fn collect_documented_runtime_command_probes(
         if !in_fence {
             continue;
         }
-        if let Some(probe) = documented_runtime_command_probe(trimmed) {
+        if let Some(probe) = parse_probe(trimmed) {
             probes.insert(probe);
         }
     }
@@ -5299,6 +5384,37 @@ fn documented_runtime_command_probe(line: &str) -> Option<PluginCommandProbe> {
         program: program.to_string(),
         args: vec![version_arg.to_string()],
     })
+}
+
+fn documented_auth_command_probe(line: &str) -> Option<PluginCommandProbe> {
+    let line = strip_shell_prompt(line.split('#').next().unwrap_or_default().trim());
+    if line.is_empty() || line_contains_shell_control(line) {
+        return None;
+    }
+    let tokens = shell_like_tokens(line);
+    let program = tokens.first()?.trim();
+    if !is_bare_executable_name(program) || is_common_shell_command(program) {
+        return None;
+    }
+    let args = &tokens[1..];
+    let allowed = matches!(args, [verb, noun] if verb == "auth" && noun == "status")
+        || matches!(args, [verb, noun] if verb == "login" && noun == "status")
+        || matches!(args, [verb] if verb == "whoami");
+    if !allowed {
+        return None;
+    }
+    Some(PluginCommandProbe {
+        program: program.to_string(),
+        args: args.to_vec(),
+    })
+}
+
+fn credentials_satisfy_documented_auth(root: &Path) -> bool {
+    let hints = credential_env_hints(root);
+    !hints.is_empty()
+        && hints
+            .iter()
+            .all(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
 }
 
 fn strip_shell_prompt(line: &str) -> &str {
@@ -7166,6 +7282,176 @@ mod tests {
                 )
             })),
             "only non-mutating version probes may be collected: {probes:?}"
+        );
+    }
+
+    #[test]
+    fn documented_auth_status_probe_marks_rejected_check_as_needs_configuration() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("DEEPAGENT_DEEPAGENT_TEST_AUTH_CLI", "cargo");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("analysis-plugin");
+        write_plugin(&root, "analysis-plugin");
+        std::fs::write(
+            root.join("README.md"),
+            r#"
+            ```sh
+            deepagent-test-auth-cli auth status
+            ```
+            "#,
+        )
+        .unwrap();
+        let app_data = tmp.path().join("app-data");
+        let svc = PluginService::new(roots.clone(), &app_data);
+
+        let before = svc.read("analysis-plugin@builtin").unwrap().unwrap();
+        assert_eq!(before.health_status, PluginHealthStatus::Ready);
+
+        let checked = svc
+            .check_plugin_health("analysis-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            checked.health_status,
+            PluginHealthStatus::NeedsConfiguration
+        );
+        assert_eq!(checked.state, PluginLifecycleState::RuntimeReady);
+        assert!(checked
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deepagent-test-auth-cli auth status"));
+
+        std::env::remove_var("DEEPAGENT_DEEPAGENT_TEST_AUTH_CLI");
+    }
+
+    #[test]
+    fn documented_auth_status_probe_marks_missing_command_as_runtime_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("analysis-plugin");
+        write_plugin(&root, "analysis-plugin");
+        std::fs::write(
+            root.join("README.md"),
+            r#"
+            ```sh
+            deepagent-definitely-missing-auth-cli auth status
+            ```
+            "#,
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let checked = svc
+            .check_plugin_health("analysis-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            checked.health_status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
+        assert_eq!(checked.state, PluginLifecycleState::Incomplete);
+        assert!(checked
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deepagent-definitely-missing-auth-cli auth status"));
+    }
+
+    #[test]
+    fn configured_credential_hint_satisfies_documented_auth_probe() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("DEEPAGENT_DEEPAGENT_TEST_AUTH_CLI", "cargo");
+        std::env::set_var("DEEPAGENT_TEST_PLUGIN_API_KEY", "configured");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("analysis-plugin");
+        write_plugin(&root, "analysis-plugin");
+        std::fs::write(
+            root.join("README.md"),
+            r#"
+            Requires DEEPAGENT_TEST_PLUGIN_API_KEY.
+
+            ```sh
+            deepagent-test-auth-cli auth status
+            ```
+            "#,
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let checked = svc
+            .check_plugin_health("analysis-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(checked.health_status, PluginHealthStatus::Ready);
+        assert!(checked.health_error.is_none());
+
+        std::env::remove_var("DEEPAGENT_DEEPAGENT_TEST_AUTH_CLI");
+        std::env::remove_var("DEEPAGENT_TEST_PLUGIN_API_KEY");
+    }
+
+    #[test]
+    fn documented_auth_command_probes_only_accept_safe_status_checks() {
+        let mut probes = BTreeSet::new();
+        collect_documented_auth_command_probes(
+            r#"
+            ```sh
+            boltz-api auth status
+            gh auth status
+            gh auth login
+            boltz-api auth login --device-code
+            npm whoami
+            curl https://example.invalid/whoami
+            ```
+            "#,
+            &mut probes,
+        );
+
+        assert!(probes.contains(&PluginCommandProbe {
+            program: "boltz-api".to_string(),
+            args: vec!["auth".to_string(), "status".to_string()],
+        }));
+        assert!(probes.contains(&PluginCommandProbe {
+            program: "gh".to_string(),
+            args: vec!["auth".to_string(), "status".to_string()],
+        }));
+        assert!(probes.contains(&PluginCommandProbe {
+            program: "npm".to_string(),
+            args: vec!["whoami".to_string()],
+        }));
+        assert_eq!(probes.len(), 3);
+    }
+
+    #[test]
+    fn bundled_boltz_declares_auth_status_probe_from_real_package_docs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/desktop/src-tauri/resources/plugins/boltz-api-cli");
+        if !root.is_dir() {
+            eprintln!("skipping: bundled boltz plugin resource is not present");
+            return;
+        }
+
+        let probes = documented_auth_command_probes(&root);
+
+        assert!(
+            probes.contains(&PluginCommandProbe {
+                program: "boltz-api".to_string(),
+                args: vec!["auth".to_string(), "status".to_string()],
+            }),
+            "expected boltz-api auth status probe from real boltz setup docs, got {probes:?}"
+        );
+        assert!(
+            !probes
+                .iter()
+                .any(|probe| probe.args.iter().any(|arg| arg == "login")),
+            "auth probe collection must not include login commands: {probes:?}"
         );
     }
 
