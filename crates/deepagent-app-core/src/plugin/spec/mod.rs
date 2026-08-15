@@ -17,6 +17,7 @@ pub mod name;
 pub mod path;
 pub mod placeholder;
 pub mod schema;
+pub mod v1;
 
 pub use name::{PluginName, PluginNameError, MAX_PLUGIN_NAME_LEN};
 pub use path::{is_within, resolve_existing_within, resolve_plugin_relative, PluginPathError};
@@ -24,6 +25,8 @@ pub use placeholder::{
     classify_cwd, expand_v1, normalize_and_expand, reserved_env_key, rewrite_dialect_aliases,
     CwdForm, PLUGIN_DATA_VAR, PLUGIN_ROOT_VAR, RESERVED_ENV_VARS,
 };
+pub use v1::{parse_portable, PluginAuthor, PortableManifest, PortableManifestError};
+
 pub use schema::{
     mcp_schema_status, read_schema_value, schema_status, schema_status_of, schema_version,
     versions_match, SchemaStatus, AGENT_PLUGIN_MANIFEST_RELATIVE_PATH,
