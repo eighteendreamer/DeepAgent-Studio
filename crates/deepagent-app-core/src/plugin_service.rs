@@ -9285,6 +9285,59 @@ rl.on('line', (line) => {
     }
 
     #[test]
+    fn runtime_projection_mcp_overlay_refreshes_on_enable_disable_without_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin_with_stdio_mcp(
+            &roots.builtin.join("mcp-demo"),
+            "mcp-demo",
+            "node",
+            vec!["server.js"],
+            None,
+        );
+        let plugins = PluginService::new(roots, tmp.path().join("app-data"));
+        let mcp = crate::mcp_service::McpService::new(std::sync::Arc::new(
+            deepagent_persistence::Database::open_in_memory().unwrap(),
+        ));
+
+        let initial = plugins.runtime_projection().unwrap();
+        let effective = mcp
+            .enabled_config_with_plugin_overlay(
+                initial.mcp_config.clone(),
+                &initial.mcp_server_sources,
+            )
+            .unwrap();
+        assert_eq!(effective.servers.len(), 1);
+        let runtime_name = effective.servers.keys().next().unwrap().clone();
+        assert!(initial.mcp_server_sources.contains_key(&runtime_name));
+
+        let disabled = plugins.set_enabled("mcp-demo@builtin", false).unwrap();
+        assert!(!disabled.enabled);
+        let disabled_projection = plugins.runtime_projection().unwrap();
+        assert!(disabled_projection.mcp_config.servers.is_empty());
+        assert!(disabled_projection.mcp_server_sources.is_empty());
+        let disabled_effective = mcp
+            .enabled_config_with_plugin_overlay(
+                disabled_projection.mcp_config,
+                &disabled_projection.mcp_server_sources,
+            )
+            .unwrap();
+        assert!(disabled_effective.servers.is_empty());
+
+        let enabled = plugins.set_enabled("mcp-demo@builtin", true).unwrap();
+        assert!(enabled.enabled);
+        let refreshed = plugins.runtime_projection().unwrap();
+        let refreshed_effective = mcp
+            .enabled_config_with_plugin_overlay(
+                refreshed.mcp_config.clone(),
+                &refreshed.mcp_server_sources,
+            )
+            .unwrap();
+        assert!(refreshed_effective.servers.contains_key(&runtime_name));
+        assert!(refreshed.mcp_server_sources.contains_key(&runtime_name));
+    }
+
+    #[test]
     fn policy_blocked_plugins_do_not_project_runtime_capabilities() {
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
