@@ -1649,6 +1649,9 @@ impl PluginService {
 
         if plugin.root.join("runtime.zip").is_file() {
             entrypoints.push(plugin.root.join("runtime.zip").display().to_string());
+            for entrypoint in runtime_payload_declared_entrypoints(&plugin.root) {
+                entrypoints.push(format!("runtime.zip!{}", entrypoint.display()));
+            }
         }
         for path in &manifest.paths.skills {
             if path.exists() {
@@ -1771,6 +1774,9 @@ impl PluginService {
         {
             return PluginHealthStatus::Incomplete;
         }
+        if !runtime_payload_errors(&plugin.root).is_empty() {
+            return PluginHealthStatus::Incomplete;
+        }
 
         if manifest.is_some_and(manifest_needs_host_authorization) {
             return PluginHealthStatus::NeedsAuthorization;
@@ -1833,7 +1839,10 @@ impl PluginService {
                         }
                     } else {
                         let hook_errors = self.plugin_hook_command_scripts(plugin, Some(manifest));
-                        if hook_errors.errors.is_empty() {
+                        let runtime_errors = runtime_payload_errors(&plugin.root);
+                        if !runtime_errors.is_empty() {
+                            runtime_errors.join("; ")
+                        } else if hook_errors.errors.is_empty() {
                             "plugin is missing one or more required entrypoints".to_string()
                         } else {
                             hook_errors.errors.join("; ")
@@ -1930,6 +1939,14 @@ impl PluginService {
                         )),
                     ),
                 }));
+            }
+        }
+
+        if plugin.has_runtime_payload {
+            let data_dir = self.data_root.join(sanitize_file_name(&loaded.id));
+            prepare_runtime_payload(&loaded.root, &data_dir)?;
+            if let Some(error) = runtime_payload_health_error(&loaded.root, &data_dir) {
+                return Ok(Some((PluginHealthStatus::Incomplete, Some(error))));
             }
         }
 
@@ -2798,6 +2815,10 @@ pub(crate) fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> R
     if !archive_path.is_file() {
         return Ok(());
     }
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| CoreError::Persistence(format!("create plugin data dir: {e}")))?;
+    std::fs::create_dir_all(data_dir.join("workspace"))
+        .map_err(|e| CoreError::Persistence(format!("create payload workspace: {e}")))?;
     let runtime_dir = data_dir.join("runtime");
     let marker = runtime_dir.join(".payload-size");
     let archive_size = std::fs::metadata(&archive_path)
@@ -2860,9 +2881,274 @@ pub(crate) fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> R
         .map_err(|e| CoreError::Persistence(format!("activate runtime payload: {e}")))?;
     std::fs::write(marker, archive_size.to_string())
         .map_err(|e| CoreError::Persistence(format!("write runtime payload marker: {e}")))?;
-    std::fs::create_dir_all(data_dir.join("workspace"))
-        .map_err(|e| CoreError::Persistence(format!("create payload workspace: {e}")))?;
     Ok(())
+}
+
+fn runtime_payload_declared_entrypoints(plugin_root: &Path) -> Vec<PathBuf> {
+    runtime_payload_inspection(plugin_root).entrypoints
+}
+
+fn runtime_payload_errors(plugin_root: &Path) -> Vec<String> {
+    runtime_payload_inspection(plugin_root).errors
+}
+
+fn runtime_payload_health_error(plugin_root: &Path, data_dir: &Path) -> Option<String> {
+    let inspection = runtime_payload_inspection(plugin_root);
+    if let Some(error) = inspection.errors.first() {
+        return Some(error.clone());
+    }
+    if inspection.entrypoints.is_empty() {
+        return None;
+    }
+
+    let runtime_dir = data_dir.join("runtime");
+    if !runtime_dir.is_dir() {
+        return Some(format!(
+            "runtime payload was not extracted to {}",
+            runtime_dir.display()
+        ));
+    }
+    let workspace_dir = data_dir.join("workspace");
+    if !workspace_dir.is_dir() {
+        return Some(format!(
+            "runtime payload workspace is missing: {}",
+            workspace_dir.display()
+        ));
+    }
+    if let Err(error) = verify_plugin_data_writable(data_dir) {
+        return Some(error);
+    }
+
+    for entrypoint in inspection.entrypoints {
+        let runtime_entry = runtime_dir.join(&entrypoint);
+        if !runtime_entry.is_file() {
+            return Some(format!(
+                "runtime payload entrypoint '{}' was not extracted",
+                entrypoint.display()
+            ));
+        }
+        if is_node_entrypoint(&runtime_entry) && probe_runtime("node", &["--version"]) {
+            let output = Command::new("node")
+                .arg("--check")
+                .arg(&runtime_entry)
+                .current_dir(&workspace_dir)
+                .env("PLUGIN_ROOT", plugin_root)
+                .env("PLUGIN_DATA", data_dir)
+                .env("DEEPAGENT_PLUGIN_ROOT", plugin_root)
+                .env("DEEPAGENT_PLUGIN_DATA", data_dir)
+                .output();
+            match output {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Some(format!(
+                        "runtime payload entrypoint '{}' failed node syntax check: {}",
+                        entrypoint.display(),
+                        stderr.trim()
+                    ));
+                }
+                Err(error) => {
+                    return Some(format!(
+                        "runtime payload entrypoint '{}' could not be checked with node: {error}",
+                        entrypoint.display()
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn verify_plugin_data_writable(data_dir: &Path) -> std::result::Result<(), String> {
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| format!("create plugin data dir {}: {e}", data_dir.display()))?;
+    let probe = data_dir.join(".deepagent-healthcheck.tmp");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .map_err(|e| format!("PLUGIN_DATA is not writable at {}: {e}", data_dir.display()))?;
+    file.write_all(b"ok")
+        .map_err(|e| format!("write PLUGIN_DATA health probe {}: {e}", probe.display()))?;
+    drop(file);
+    std::fs::remove_file(&probe)
+        .map_err(|e| format!("remove PLUGIN_DATA health probe {}: {e}", probe.display()))?;
+    Ok(())
+}
+
+fn is_node_entrypoint(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "js" | "cjs" | "mjs"))
+        .unwrap_or(false)
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct RuntimePayloadInspection {
+    entrypoints: Vec<PathBuf>,
+    errors: Vec<String>,
+}
+
+fn runtime_payload_inspection(plugin_root: &Path) -> RuntimePayloadInspection {
+    let archive_path = plugin_root.join("runtime.zip");
+    if !archive_path.is_file() {
+        return RuntimePayloadInspection::default();
+    }
+    let mut inspection = RuntimePayloadInspection::default();
+    let file = match File::open(&archive_path) {
+        Ok(file) => file,
+        Err(error) => {
+            inspection.errors.push(format!(
+                "runtime payload cannot be opened at {}: {error}",
+                archive_path.display()
+            ));
+            return inspection;
+        }
+    };
+    let mut archive = match zip::ZipArchive::new(file) {
+        Ok(archive) => archive,
+        Err(error) => {
+            inspection
+                .errors
+                .push(format!("runtime payload zip cannot be read: {error}"));
+            return inspection;
+        }
+    };
+    let Some(package_json_entry) = find_runtime_payload_package_json(&mut archive) else {
+        inspection
+            .errors
+            .push("runtime payload does not declare a package.json entrypoint".to_string());
+        return inspection;
+    };
+    let package_text = match archive.by_name(&package_json_entry) {
+        Ok(mut entry) => {
+            let mut text = String::new();
+            if let Err(error) = entry.read_to_string(&mut text) {
+                inspection.errors.push(format!(
+                    "runtime payload package.json cannot be read: {error}"
+                ));
+                return inspection;
+            }
+            text
+        }
+        Err(error) => {
+            inspection.errors.push(format!(
+                "runtime payload package.json cannot be opened: {error}"
+            ));
+            return inspection;
+        }
+    };
+    let package: serde_json::Value = match serde_json::from_str(&package_text) {
+        Ok(package) => package,
+        Err(error) => {
+            inspection.errors.push(format!(
+                "runtime payload package.json cannot be parsed: {error}"
+            ));
+            return inspection;
+        }
+    };
+    let package_dir = package_json_entry
+        .strip_suffix("package.json")
+        .unwrap_or_default();
+    for declared in package_json_declared_entrypoints(&package) {
+        match resolve_zip_package_entrypoint(package_dir, &declared) {
+            Some(entrypoint) if archive.by_name(&entrypoint).is_ok() => {
+                inspection.entrypoints.push(PathBuf::from(entrypoint));
+            }
+            Some(entrypoint) => inspection.errors.push(format!(
+                "runtime payload package.json declares missing entrypoint '{entrypoint}'"
+            )),
+            None => inspection.errors.push(format!(
+                "runtime payload package.json declares unsafe entrypoint '{declared}'"
+            )),
+        }
+    }
+    inspection.entrypoints.sort();
+    inspection.entrypoints.dedup();
+    inspection.errors.sort();
+    inspection.errors.dedup();
+    if inspection.entrypoints.is_empty() && inspection.errors.is_empty() {
+        inspection.errors.push(
+            "runtime payload package.json does not declare a bin or main entrypoint".to_string(),
+        );
+    }
+    inspection
+}
+
+fn find_runtime_payload_package_json(archive: &mut zip::ZipArchive<File>) -> Option<String> {
+    if archive.by_name("package.json").is_ok() {
+        return Some("package.json".to_string());
+    }
+    let mut candidates = Vec::new();
+    let limit = archive.len().min(2048);
+    for index in 0..limit {
+        let Ok(entry) = archive.by_index(index) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+        let name = normalize_zip_entry_name(entry.name());
+        if name.ends_with("package.json") && !name.contains("/node_modules/") {
+            candidates.push(name);
+        }
+    }
+    candidates.sort_by_key(|name| name.matches('/').count());
+    candidates.into_iter().next()
+}
+
+fn package_json_declared_entrypoints(package: &serde_json::Value) -> Vec<String> {
+    let mut entrypoints = Vec::new();
+    match package.get("bin") {
+        Some(serde_json::Value::String(path)) => entrypoints.push(path.clone()),
+        Some(serde_json::Value::Object(map)) => {
+            for value in map.values() {
+                if let Some(path) = value.as_str() {
+                    entrypoints.push(path.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    if entrypoints.is_empty() {
+        if let Some(main) = package.get("main").and_then(serde_json::Value::as_str) {
+            entrypoints.push(main.to_string());
+        }
+    }
+    entrypoints.sort();
+    entrypoints.dedup();
+    entrypoints
+}
+
+fn resolve_zip_package_entrypoint(package_dir: &str, declared: &str) -> Option<String> {
+    let declared = declared.trim().replace('\\', "/");
+    if declared.is_empty() || declared.starts_with('/') || declared.contains('\0') {
+        return None;
+    }
+    let mut components = Vec::new();
+    for component in declared.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => return None,
+            item => components.push(item),
+        }
+    }
+    if components.is_empty() {
+        return None;
+    }
+    let mut normalized = String::new();
+    if !package_dir.is_empty() {
+        normalized.push_str(package_dir);
+    }
+    normalized.push_str(&components.join("/"));
+    Some(normalized)
+}
+
+fn normalize_zip_entry_name(name: &str) -> String {
+    name.replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
 }
 
 #[derive(Default)]
@@ -6662,6 +6948,37 @@ mod tests {
         .unwrap();
     }
 
+    fn write_plugin_with_runtime_payload(
+        root: &Path,
+        name: &str,
+        package_json: serde_json::Value,
+        extra_files: &[(&str, &[u8])],
+    ) {
+        write_plugin_with_version_and_dependencies(root, name, "0.1.0", &[]);
+        let manifest = serde_json::json!({
+            "name": name,
+            "version": "0.1.0",
+            "runtime": {"node": ">=20"},
+            "skills": "skills",
+        });
+        std::fs::write(
+            root.join(".codex-plugin").join("plugin.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        let file = File::create(root.join("runtime.zip")).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+        zip.start_file("package.json", opts).unwrap();
+        zip.write_all(serde_json::to_string(&package_json).unwrap().as_bytes())
+            .unwrap();
+        for (relative, contents) in extra_files {
+            zip.start_file(*relative, opts).unwrap();
+            zip.write_all(contents).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
     fn write_plugin_with_app_and_output_style(root: &Path, name: &str) {
         write_plugin_with_app_component_and_output_style(root, name, &format!("builtin:{name}"));
     }
@@ -7990,6 +8307,135 @@ mod tests {
             r#"{"runs":7}"#,
             "§9.1 requires PLUGIN_DATA contents to survive a plugin update"
         );
+    }
+
+    #[test]
+    fn runtime_payload_bin_entrypoint_is_reported_from_full_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("runtime-demo");
+        write_plugin_with_runtime_payload(
+            &root,
+            "runtime-demo",
+            serde_json::json!({
+                "name": "runtime-demo",
+                "bin": {"runtime-demo": "./dist/cli.js"}
+            }),
+            &[("dist/cli.js", b"console.log('runtime ok');\n")],
+        );
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("runtime-demo@builtin").unwrap().unwrap();
+
+        assert!(plugin.has_runtime_payload);
+        assert_eq!(plugin.execution_kind, PluginExecutionKind::ManagedRuntime);
+        assert!(plugin.entrypoints.iter().any(|entry| {
+            entry
+                .replace('\\', "/")
+                .ends_with("runtime.zip!dist/cli.js")
+        }));
+        assert_ne!(plugin.health_status, PluginHealthStatus::Incomplete);
+        assert!(!plugin
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("entrypoint"));
+    }
+
+    #[test]
+    fn runtime_payload_missing_declared_entrypoint_is_incomplete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin_with_runtime_payload(
+            &roots.builtin.join("runtime-demo"),
+            "runtime-demo",
+            serde_json::json!({
+                "name": "runtime-demo",
+                "bin": {"runtime-demo": "./dist/missing.js"}
+            }),
+            &[],
+        );
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("runtime-demo@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.health_status, PluginHealthStatus::Incomplete);
+        assert_eq!(plugin.state, PluginLifecycleState::Incomplete);
+        assert!(plugin
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("missing entrypoint 'dist/missing.js'"));
+    }
+
+    #[test]
+    fn check_plugin_health_prepares_runtime_payload_and_checks_node_entrypoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("runtime-demo");
+        write_plugin_with_runtime_payload(
+            &root,
+            "runtime-demo",
+            serde_json::json!({
+                "name": "runtime-demo",
+                "bin": {"runtime-demo": "./dist/cli.js"}
+            }),
+            &[(
+                "dist/cli.js",
+                b"#!/usr/bin/env node\nconsole.log('runtime ok');\n",
+            )],
+        );
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let checked = svc
+            .check_plugin_health("runtime-demo@builtin")
+            .unwrap()
+            .unwrap();
+
+        let data_dir = svc
+            .data_root
+            .join(sanitize_file_name("runtime-demo@builtin"));
+        assert!(data_dir.join("runtime").join("package.json").is_file());
+        assert!(data_dir
+            .join("runtime")
+            .join("dist")
+            .join("cli.js")
+            .is_file());
+        assert!(data_dir.join("workspace").is_dir());
+        assert!(!data_dir.join(".deepagent-healthcheck.tmp").exists());
+        if probe_runtime("node", &["--version"]) {
+            assert_eq!(checked.health_status, PluginHealthStatus::Ready);
+            assert_eq!(checked.state, PluginLifecycleState::Executable);
+            assert!(checked.health_error.is_none());
+        } else {
+            assert_eq!(
+                checked.health_status,
+                PluginHealthStatus::RuntimeUnavailable
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_payload_marker_hit_still_restores_workspace_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_root = tmp.path().join("plugin");
+        write_plugin_with_runtime_payload(
+            &plugin_root,
+            "runtime-demo",
+            serde_json::json!({
+                "name": "runtime-demo",
+                "bin": {"runtime-demo": "./dist/cli.js"}
+            }),
+            &[("dist/cli.js", b"console.log('runtime ok');\n")],
+        );
+        let data_dir = tmp.path().join("data");
+
+        prepare_runtime_payload(&plugin_root, &data_dir).unwrap();
+        std::fs::remove_dir_all(data_dir.join("workspace")).unwrap();
+        prepare_runtime_payload(&plugin_root, &data_dir).unwrap();
+
+        assert!(data_dir.join("runtime").join(".payload-size").is_file());
+        assert!(data_dir.join("workspace").is_dir());
     }
 
     #[test]
