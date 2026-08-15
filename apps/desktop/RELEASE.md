@@ -97,7 +97,7 @@ The desktop app ships a Skill Marketplace that loads skills from four roots —
 `Installed` (`~/.deepagent/skills/marketplace/`), `Workspace`
 (`<project>/.deepagent/skills/`) — and lets the user discover and install more
 from [skillsmp.com](https://skillsmp.com). The 7 bundled skills are normalized
-and copied during `npm run prebundle-skills` (run automatically by `pnpm build`)
+and copied during `pnpm prebundle-skills` (run automatically by `pnpm build`)
 into `apps/desktop/src-tauri/resources/skills/`.
 
 ### Manual smoke test (run before each release)

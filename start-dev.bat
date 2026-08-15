@@ -9,11 +9,11 @@ echo [1/2] node_modules OK
 goto :start
 
 :need_install
-echo [1/2] Dependencies missing or incomplete, running npm install...
-call npm install
+echo [1/2] Dependencies missing or incomplete, running pnpm install...
+call pnpm install
 if errorlevel 1 (
     echo.
-    echo [ERROR] npm install failed. Exiting.
+    echo [ERROR] pnpm install failed. Exiting.
     pause
     exit /b 1
 )
@@ -22,7 +22,7 @@ if errorlevel 1 (
 
 rem ---- 2. Start Tauri dev server (vite + cargo) ----
 echo [2/2] Starting dev server, please wait...
-call npm run tauri dev
+call pnpm tauri dev
 
 echo.
 echo Dev server stopped.
