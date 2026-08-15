@@ -11309,6 +11309,199 @@ deepagent-definitely-missing-runtime-cli --version
     }
 
     #[test]
+    fn dsh_github_topic_installs_complete_sidecar_package_and_runs_health_probe() {
+        if !probe_runtime("node", &["--version"]) {
+            eprintln!("skipping: node runtime is not available");
+            return;
+        }
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let fixtures = tmp.path().join("github-api");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let archive = tmp.path().join("fixtures").join("topic-sidecar.zip");
+        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
+        let old_skip_clone = std::env::var_os("DEEPAGENT_TEST_GITHUB_SKIP_CLONE");
+        let old_download_source = std::env::var_os("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE");
+        std::env::set_var(
+            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
+            fixtures.display().to_string(),
+        );
+        std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", "1");
+        std::env::set_var(
+            "DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE",
+            archive.display().to_string(),
+        );
+
+        let search_endpoint =
+            "/search/repositories?q=topic%3Adsh-plugin&sort=updated&order=desc&per_page=100";
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(search_endpoint))),
+            r#"{
+              "items": [
+                {
+                  "name": "topic-sidecar",
+                  "full_name": "deepseek-ai/topic-sidecar",
+                  "description": "Topic sidecar fallback description",
+                  "default_branch": "main",
+                  "license": { "spdx_id": "MIT" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let commit = "cccccccccccccccccccccccccccccccccccccccc";
+        let branch_endpoint = "/repos/deepseek-ai/topic-sidecar/branches/main";
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(branch_endpoint))),
+            format!(r#"{{ "commit": {{ "sha": "{commit}" }} }}"#),
+        )
+        .unwrap();
+        write_github_contents_manifest_fixture(
+            &fixtures,
+            "deepseek-ai/topic-sidecar",
+            ".codex-plugin/plugin.json",
+            commit,
+            serde_json::json!({
+                "name": "topic-sidecar",
+                "version": "0.2.0",
+                "description": "Topic sidecar manifest",
+                "license": "MIT",
+                "skills": "skills",
+                "mcpServers": ".mcp.json",
+            }),
+        );
+        write_github_contents_directory_fixture(
+            &fixtures,
+            "deepseek-ai/topic-sidecar",
+            "",
+            commit,
+            serde_json::json!([
+                { "type": "dir", "name": ".codex-plugin" },
+                { "type": "file", "name": ".mcp.json" },
+                { "type": "file", "name": "server.js" },
+                { "type": "file", "name": "LICENSE" }
+            ]),
+        );
+
+        let mcp_config = serde_json::json!({
+            "mcpServers": {
+                "topic-local": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": ["server.js"],
+                    "cwd": "${PLUGIN_ROOT}"
+                }
+            }
+        })
+        .to_string();
+        write_plugin_zip_with_manifest(
+            &archive,
+            "deepseek-ai-topic-sidecar-ccccccc",
+            serde_json::json!({
+                "name": "topic-sidecar",
+                "version": "0.2.0",
+                "description": "Topic sidecar manifest",
+                "license": "MIT",
+                "skills": "skills",
+                "mcpServers": ".mcp.json",
+            }),
+            &[
+                (".mcp.json", mcp_config.as_bytes()),
+                ("server.js", minimal_mcp_node_server().as_bytes()),
+                ("README.md", b"# Topic Sidecar\n"),
+                ("LICENSE", b"MIT\n"),
+            ],
+        );
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("dsh".to_string()),
+            source: "https://github.com/topics/dsh-plugin".to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let entries = svc.list_marketplace_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.marketplace, "dsh");
+        assert_eq!(entry.name, "topic-sidecar");
+        assert_eq!(entry.version.as_deref(), Some("0.2.0"));
+        assert_eq!(entry.license.as_deref(), Some("MIT"));
+        assert_eq!(entry.mcp_count, 1);
+        assert_eq!(entry.source_kind, "github");
+        assert_eq!(entry.source_commit.as_deref(), Some(commit));
+        assert!(entry.installable);
+        assert!(!entry.installed);
+        assert!(!roots
+            .marketplace_cache
+            .join("dsh")
+            .join("topic-sidecar")
+            .exists());
+
+        let prepared = svc
+            .prepare_plugin_install("dsh", "topic-sidecar", false)
+            .unwrap();
+        assert_eq!(prepared.source_kind, "github");
+        assert!(prepared.source.contains("deepseek-ai/topic-sidecar@main"));
+        assert!(!prepared.source.contains("gh.llkk.cc"));
+        assert!(!prepared.source.contains("gh-proxy.com"));
+        assert!(prepared.content_hash.starts_with("sha256:"));
+        assert_eq!(
+            prepared.runtime_inspection.execution_kind,
+            PluginExecutionKind::DshSidecar
+        );
+        assert!(PathBuf::from(&prepared.plugin_root)
+            .join("server.js")
+            .is_file());
+
+        let installed = svc.commit_plugin_install(&prepared.token).unwrap();
+
+        assert_eq!(installed.id, "topic-sidecar@dsh");
+        assert_eq!(installed.execution_kind, PluginExecutionKind::DshSidecar);
+        assert_eq!(installed.health_status, PluginHealthStatus::Ready);
+        assert_eq!(installed.state, PluginLifecycleState::Executable);
+        assert!(installed.health_error.is_none());
+        assert!(roots
+            .marketplace_cache
+            .join("dsh")
+            .join("topic-sidecar")
+            .join("0.2.0")
+            .join("server.js")
+            .is_file());
+        let state = svc.load_state().unwrap();
+        assert_eq!(
+            state
+                .installed
+                .get("topic-sidecar@dsh")
+                .and_then(|installed| installed.content_hash.as_deref()),
+            Some(prepared.content_hash.as_str())
+        );
+        let health = state.health_checks.get("topic-sidecar@dsh").unwrap();
+        assert_eq!(health.status, PluginHealthStatus::Ready);
+        assert!(health.error.is_none());
+
+        let refreshed_entries = svc.list_marketplace_entries().unwrap();
+        assert!(refreshed_entries[0].installed);
+        assert!(refreshed_entries[0].enabled);
+
+        match old_fixtures {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
+        }
+        match old_skip_clone {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE"),
+        }
+        match old_download_source {
+            Some(path) => std::env::set_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE", path),
+            None => std::env::remove_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE"),
+        }
+    }
+
+    #[test]
     fn dsh_github_topic_refresh_failure_cleans_scratch_and_state() {
         let _guard = ENV_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
