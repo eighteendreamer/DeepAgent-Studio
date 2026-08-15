@@ -16,6 +16,10 @@
 //! location is not an error, and a location present with the wrong filesystem
 //! kind invalidates only that component type while the others keep loading.
 
+pub mod mcp;
 pub mod skills;
 
+pub use mcp::{
+    discover_mcp, parse_mcp, McpComponent, McpStatus, PluginMcpServer, PluginMcpTransport,
+};
 pub use skills::{discover_skills, SkillComponent, SKILL_MANIFEST_FILE_NAME};

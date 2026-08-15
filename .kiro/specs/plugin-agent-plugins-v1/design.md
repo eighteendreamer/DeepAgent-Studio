@@ -214,8 +214,10 @@ pub enum DiagnosticSeverity { Info, Warning, Error }
 **mcp.json（§7.2）**：
 - 顶层只允许 `$schema` 与 `mcpServers`，其余字段 → 整体禁用 MCP，记 `McpDisabled`。
 - `$schema` 版本必须与 `plugin.json` 一致 → 不一致同样整体禁用。
-- 逐 server 按 `type` 匹配闭合联合。任一不合规 → 记 `McpServerSkipped`，继续下一个。
+- 逐 server 按 `type` 匹配闭合联合。任一不合规 → 记 `McpServerSkipped`，继续下一个。**跨变体字段也要拒**（`stdio` 上出现 `url`、远程上出现 `command`），这才是"闭合"而非仅"带 tag"。
 - transport 映射到现有 `deepagent_mcp::config::TransportType`：`stdio`→`Stdio`、`streamable-http`→`Http`、`sse`→`Sse`。现有枚举还有 `Ws`，v1 没有对应值，插件无法声明它（这是正确的收紧）。
+
+**已确认的能力缺口：`cwd` 在共享 MCP 配置里无处安放。** `deepagent_mcp::config::McpServerConfig` 的字段是 `transport` / `command` / `args` / `env` / `url` / `headers`，**没有工作目录**。而 v1 的 stdio 允许 `cwd`，且 §7.2.1 还规定省略 `cwd` 时以插件根为工作目录。因此 `component/mcp.rs` 产出自带 `cwd` 的 `PluginMcpServer` 中间表示，不立即映射到共享配置。M2 接线时必须解决：要么给 `McpServerConfig` 加字段，要么在 spawn 处设置工作目录。**在接线处直接丢掉 `cwd` 会静默破坏合规插件**，这一点要有测试守住。
 
 **扩展组件**：Claude 方言在 manifest 未声明时回退约定目录：`commands/*.md`、`agents/*.md`、`hooks/hooks.json`、`.mcp.json`。注意 Claude 的 `.mcp.json` 与 v1 的 `mcp.json` 是**不同文件名**，两者都要认，v1 优先。
 
