@@ -17,5 +17,48 @@
     "side_chat",
     "terminal"
   ],
-  "tauriComponents": []
+  "tauriComponents": [],
+  "commandBindings": [
+    {
+      "command": "inspect",
+      "components": ["browser"],
+      "toolSurfaces": ["browser"]
+    },
+    {
+      "command": "find-context",
+      "components": ["files"],
+      "toolSurfaces": ["files"]
+    },
+    {
+      "command": "impact",
+      "components": ["project-map"],
+      "toolSurfaces": ["project-map"]
+    },
+    {
+      "command": "side-note",
+      "components": ["side-chat"],
+      "toolSurfaces": ["side-chat"]
+    },
+    {
+      "command": "command-plan",
+      "components": ["terminal"],
+      "tauriCommands": ["run_terminal"],
+      "toolSurfaces": ["terminal"]
+    },
+    {
+      "command": "minutes",
+      "components": ["recording"],
+      "toolSurfaces": ["recording"]
+    },
+    {
+      "command": "document-work",
+      "components": ["file-preview"],
+      "toolSurfaces": ["office-agent"]
+    },
+    {
+      "command": "control",
+      "components": ["computer-use"],
+      "toolSurfaces": ["computer-use"]
+    }
+  ]
 }

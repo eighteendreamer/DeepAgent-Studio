@@ -1,6 +1,6 @@
 //! UI-facing plugin service.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -1755,6 +1755,10 @@ impl PluginService {
     ) -> Vec<String> {
         let mut errors = Vec::new();
         let app_components = host_app_components(manifest);
+        let app_component_set = app_components
+            .iter()
+            .map(|component| host_component_name(component))
+            .collect::<BTreeSet<_>>();
         for component in &app_components {
             if !host_app_component_is_renderable(component) {
                 errors.push(format!(
@@ -1768,11 +1772,46 @@ impl PluginService {
                     .to_string(),
             );
         }
-        if counts.commands > 0 {
-            errors.push(format!(
-                "host-backed plugin command binding validation is still pending for {} command(s)",
-                counts.commands
-            ));
+        let command_ids = host_command_ids(manifest);
+        if counts.commands > 0 && command_ids.is_empty() {
+            errors.push(
+                "host-backed plugin declares command entrypoints but no markdown command files were found"
+                    .to_string(),
+            );
+        }
+        for command_id in command_ids {
+            let Some(binding) = host_command_binding(&command_id) else {
+                errors.push(format!(
+                    "host command '{command_id}' is not registered in the desktop host command registry"
+                ));
+                continue;
+            };
+            if binding.components.is_empty()
+                && binding.tauri_commands.is_empty()
+                && binding.tool_surfaces.is_empty()
+            {
+                errors.push(format!(
+                    "host command '{command_id}' does not declare a host binding target"
+                ));
+            }
+            for component in &binding.components {
+                if !host_app_component_is_renderable(component) {
+                    errors.push(format!(
+                        "host command '{command_id}' references unregistered host app component '{component}'"
+                    ));
+                }
+            }
+            if !binding.components.is_empty()
+                && !binding
+                    .components
+                    .iter()
+                    .any(|component| app_component_set.contains(&host_component_name(component)))
+            {
+                errors.push(format!(
+                    "host command '{command_id}' is bound to {} but the manifest does not declare a matching app component",
+                    binding.components.join(", ")
+                ));
+            }
         }
         errors
     }
@@ -3543,6 +3582,19 @@ struct HostPluginRegistry {
     builtin_components: Vec<String>,
     #[serde(default, rename = "tauriComponents")]
     tauri_components: Vec<String>,
+    #[serde(default, rename = "commandBindings")]
+    command_bindings: Vec<HostCommandBinding>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HostCommandBinding {
+    command: String,
+    #[serde(default)]
+    components: Vec<String>,
+    #[serde(default, rename = "tauriCommands")]
+    tauri_commands: Vec<String>,
+    #[serde(default, rename = "toolSurfaces")]
+    tool_surfaces: Vec<String>,
 }
 
 impl BundledPluginCatalog {
@@ -3589,6 +3641,7 @@ fn host_plugin_registry() -> &'static HostPluginRegistry {
         serde_json::from_str(json).unwrap_or_else(|_| HostPluginRegistry {
             builtin_components: Vec::new(),
             tauri_components: Vec::new(),
+            command_bindings: Vec::new(),
         })
     })
 }
@@ -3610,6 +3663,22 @@ fn host_app_component_is_renderable(component: &str) -> bool {
     true
 }
 
+fn host_component_name(component: &str) -> String {
+    let component = component.trim().to_ascii_lowercase();
+    component
+        .strip_prefix("builtin:")
+        .or_else(|| component.strip_prefix("tauri:"))
+        .unwrap_or(&component)
+        .to_string()
+}
+
+fn host_command_binding(command: &str) -> Option<&'static HostCommandBinding> {
+    host_plugin_registry()
+        .command_bindings
+        .iter()
+        .find(|binding| binding.command == command)
+}
+
 fn host_app_components(manifest: &PluginManifest) -> Vec<String> {
     let mut components = Vec::new();
     for value in manifest.paths.app_paths.iter().filter_map(read_json_file) {
@@ -3618,6 +3687,44 @@ fn host_app_components(manifest: &PluginManifest) -> Vec<String> {
     components.sort();
     components.dedup();
     components
+}
+
+fn host_command_ids(manifest: &PluginManifest) -> Vec<String> {
+    let mut command_ids = Vec::new();
+    for path in &manifest.paths.commands {
+        if path.is_file() {
+            push_command_id(path, &mut command_ids);
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if is_markdown_file(&path) {
+                push_command_id(&path, &mut command_ids);
+            }
+        }
+    }
+    command_ids.sort();
+    command_ids.dedup();
+    command_ids
+}
+
+fn push_command_id(path: &Path, out: &mut Vec<String>) {
+    if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+        let stem = stem.trim();
+        if !stem.is_empty() {
+            out.push(stem.to_string());
+        }
+    }
+}
+
+fn is_markdown_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "md" | "mdx"))
+        .unwrap_or(false)
 }
 
 fn collect_host_app_components(value: &serde_json::Value, out: &mut Vec<String>) {
@@ -4707,6 +4814,50 @@ mod tests {
         .unwrap();
     }
 
+    fn write_plugin_with_command_and_app_component(
+        root: &Path,
+        name: &str,
+        command: &str,
+        component: &str,
+    ) {
+        write_plugin_with_version_and_dependencies(root, name, "0.1.0", &[]);
+        std::fs::create_dir_all(root.join("commands")).unwrap();
+        std::fs::write(
+            root.join("commands").join(format!("{command}.md")),
+            format!("---\ndescription: {name} workflow\n---\nRun {command} with ${{ARGUMENTS}}"),
+        )
+        .unwrap();
+        let manifest = serde_json::json!({
+            "name": name,
+            "version": "0.1.0",
+            "skills": "skills",
+            "commands": "commands",
+        });
+        std::fs::write(
+            root.join(".codex-plugin").join("plugin.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".app.json"),
+            serde_json::json!({
+                "apps": [
+                    {
+                        "id": format!("{name}-panel"),
+                        "title": name,
+                        "description": format!("Open the {name} panel"),
+                        "placement": "right-sidebar",
+                        "component": component,
+                        "icon": "folder",
+                        "category": "Developer Tools"
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     fn write_plugin_with_command(root: &Path, name: &str) {
         write_plugin_with_version_and_dependencies(root, name, "0.1.0", &[]);
         std::fs::create_dir_all(root.join("commands")).unwrap();
@@ -4796,29 +4947,42 @@ mod tests {
     }
 
     #[test]
-    fn host_backed_plugin_with_unvalidated_commands_stays_incomplete() {
+    fn host_backed_plugin_with_registered_command_binding_can_be_verified() {
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
-        let root = roots.builtin.join("host-command-demo");
-        write_plugin_with_command(&root, "host-command-demo");
-        std::fs::write(
-            root.join(".app.json"),
-            serde_json::json!({
-                "apps": [
-                    {
-                        "id": "browser-panel",
-                        "title": "Browser",
-                        "placement": "right-sidebar",
-                        "component": "builtin:browser"
-                    }
-                ]
-            })
-            .to_string(),
-        )
-        .unwrap();
+        write_plugin_with_command_and_app_component(
+            &roots.builtin.join("browser"),
+            "browser",
+            "inspect",
+            "builtin:browser",
+        );
         let svc = PluginService::new(roots, tmp.path().join("app-data"));
 
-        let plugin = svc.read("host-command-demo@builtin").unwrap().unwrap();
+        let plugin = svc.read("browser@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.execution_kind, PluginExecutionKind::HostBacked);
+        assert_eq!(plugin.health_status, PluginHealthStatus::Ready);
+        assert_eq!(plugin.state, PluginLifecycleState::Verified);
+        assert_eq!(plugin.command_count, 1);
+        assert!(plugin
+            .entrypoints
+            .iter()
+            .any(|entry| Path::new(entry).ends_with("commands")));
+    }
+
+    #[test]
+    fn host_backed_plugin_with_unregistered_host_component_stays_incomplete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin_with_command_and_app_component(
+            &roots.builtin.join("computer-use"),
+            "computer-use",
+            "control",
+            "builtin:computer-use",
+        );
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("computer-use@builtin").unwrap().unwrap();
 
         assert_eq!(plugin.execution_kind, PluginExecutionKind::HostBacked);
         assert_eq!(plugin.health_status, PluginHealthStatus::Incomplete);
@@ -4826,7 +4990,7 @@ mod tests {
             .health_error
             .as_deref()
             .unwrap_or_default()
-            .contains("command binding validation"));
+            .contains("host app component"));
     }
 
     #[test]
