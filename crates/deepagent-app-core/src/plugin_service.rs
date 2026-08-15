@@ -5604,6 +5604,27 @@ mod tests {
         write_plugin_with_version(&source_v1, "demo", "0.1.0");
         write_plugin_with_version(&source_v2, "demo", "0.2.0");
         std::fs::write(source_v2.join("README.md"), "complete package marker").unwrap();
+        std::fs::write(source_v2.join("LICENSE"), "Apache-2.0").unwrap();
+        std::fs::create_dir_all(source_v2.join("assets")).unwrap();
+        std::fs::write(source_v2.join("assets").join("icon.png"), b"png").unwrap();
+        std::fs::create_dir_all(source_v2.join("commands")).unwrap();
+        std::fs::write(
+            source_v2.join("commands").join("inspect.md"),
+            "---\ndescription: Inspect complete package\n---\nInspect $ARGUMENTS",
+        )
+        .unwrap();
+        std::fs::create_dir_all(source_v2.join("scripts")).unwrap();
+        std::fs::write(
+            source_v2.join("scripts").join("run.sh"),
+            "#!/bin/sh\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(source_v2.join("agents")).unwrap();
+        std::fs::write(
+            source_v2.join("agents").join("reviewer.md"),
+            "---\ndescription: Review changes\n---\nReview the package",
+        )
+        .unwrap();
         let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
 
         let installed = svc.install_from_dir(&source_v1).unwrap();
@@ -5615,6 +5636,31 @@ mod tests {
         assert_eq!(updated.id, "demo@personal");
         assert_eq!(updated.version.as_deref(), Some("0.2.0"));
         assert!(roots.personal.join("demo").join("README.md").is_file());
+        assert!(roots.personal.join("demo").join("LICENSE").is_file());
+        assert!(roots
+            .personal
+            .join("demo")
+            .join("assets")
+            .join("icon.png")
+            .is_file());
+        assert!(roots
+            .personal
+            .join("demo")
+            .join("commands")
+            .join("inspect.md")
+            .is_file());
+        assert!(roots
+            .personal
+            .join("demo")
+            .join("scripts")
+            .join("run.sh")
+            .is_file());
+        assert!(roots
+            .personal
+            .join("demo")
+            .join("agents")
+            .join("reviewer.md")
+            .is_file());
         assert!(!roots.personal.join(".staging").join("demo").exists());
         let staged_entries = std::fs::read_dir(roots.personal.join(".staging"))
             .map(|entries| entries.count())
