@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_hooks::{HookDefinitions, HookEvent};
+use deepagent_hooks::{HookActionType, HookDefinitions, HookEvent};
 use deepagent_mcp::config::{McpConfig, McpServerConfig, TransportType};
 use serde::{Deserialize, Serialize};
 
@@ -456,7 +456,15 @@ fn project_hooks(
                         message: format!("hook event '{event}' is not supported and was skipped"),
                     });
                 }
-                expand_hook_commands(&mut defs, plugin_id, plugin_root, plugin_data);
+                for message in expand_hook_commands(&mut defs, plugin_id, plugin_root, plugin_data)
+                {
+                    projection.errors.push(PluginRuntimeError {
+                        plugin_id: plugin_id.to_string(),
+                        component: "hooks".to_string(),
+                        path: Some(path.display().to_string()),
+                        message,
+                    });
+                }
                 merge_hook_definitions(&mut projection.hook_definitions, defs);
                 push_unique_path(&mut projection.hook_config_paths, path.clone());
             }
@@ -475,7 +483,15 @@ fn project_hooks(
                         message: format!("hook event '{event}' is not supported and was skipped"),
                     });
                 }
-                expand_hook_commands(&mut defs, plugin_id, plugin_root, plugin_data);
+                for message in expand_hook_commands(&mut defs, plugin_id, plugin_root, plugin_data)
+                {
+                    projection.errors.push(PluginRuntimeError {
+                        plugin_id: plugin_id.to_string(),
+                        component: "hooks".to_string(),
+                        path: None,
+                        message,
+                    });
+                }
                 merge_hook_definitions(&mut projection.hook_definitions, defs);
             }
             Err(error) => push_error(projection, plugin_id, "hooks", None, error),
@@ -760,18 +776,70 @@ fn expand_hook_commands(
     plugin_id: &str,
     plugin_root: &Path,
     plugin_data: &Path,
-) {
+) -> Vec<String> {
+    let mut errors = Vec::new();
     for groups in defs.hooks.values_mut() {
         for group in groups {
             for action in &mut group.hooks {
-                action.command = crate::plugin::spec::placeholder::normalize_and_expand(
+                let command = crate::plugin::spec::placeholder::normalize_and_expand(
                     &action.command,
                     &plugin_root.display().to_string(),
                     &plugin_data.display().to_string(),
                 );
+                action.command = expand_plugin_relative_hook_command(&command, plugin_root);
+                if action.action_type == HookActionType::Command {
+                    if let Some(path) = plugin_hook_script_path(&action.command, plugin_root) {
+                        if !path.is_file() {
+                            errors.push(format!(
+                                "hook command script does not exist: {}",
+                                path.display()
+                            ));
+                        }
+                    }
+                }
                 inject_hook_env(action, plugin_id, plugin_root, plugin_data);
             }
         }
+    }
+    errors
+}
+
+fn expand_plugin_relative_hook_command(command: &str, plugin_root: &Path) -> String {
+    let trimmed = command.trim_start();
+    let leading = &command[..command.len() - trimmed.len()];
+    let Some((tail, separator_len)) = trimmed
+        .strip_prefix("./")
+        .map(|tail| (tail, 2usize))
+        .or_else(|| trimmed.strip_prefix(".\\").map(|tail| (tail, 2usize)))
+    else {
+        return command.to_string();
+    };
+    let path_len = tail.find(char::is_whitespace).unwrap_or(tail.len());
+    let path_tail = &tail[..path_len];
+    if path_tail.is_empty() {
+        return command.to_string();
+    }
+    let suffix = &trimmed[separator_len + path_len..];
+    let mut absolute = plugin_root.to_path_buf();
+    for segment in path_tail
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty())
+    {
+        absolute.push(segment);
+    }
+    format!("{}{}{}", leading, absolute.display(), suffix)
+}
+
+fn plugin_hook_script_path(command: &str, plugin_root: &Path) -> Option<PathBuf> {
+    let token = command.split_whitespace().next()?;
+    if token.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(token);
+    if path.is_absolute() && path.starts_with(plugin_root) {
+        Some(path)
+    } else {
+        None
     }
 }
 
@@ -1026,6 +1094,7 @@ mod tests {
             })
             .to_string(),
         );
+        write(&root.join("hooks").join("check.sh"), "echo ok\n");
         write(
             &root.join("hooks").join("hooks.json"),
             &serde_json::json!({
@@ -1137,6 +1206,67 @@ mod tests {
         // prefixed variants.
         assert_eq!(hook_env[PLUGIN_ROOT_VAR], root.display().to_string());
         assert_eq!(hook_env[PLUGIN_DATA_VAR], data_dir.display().to_string());
+        assert!(projection.errors.is_empty());
+    }
+
+    #[test]
+    fn plugin_relative_hook_command_is_resolved_to_plugin_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("figma-like-plugin");
+        let data_dir = tmp.path().join("data").join("figma-like-plugin-builtin");
+        write(&root.join("scripts").join("post_write.sh"), "echo ok\n");
+        write(
+            &root.join("hooks.json"),
+            &serde_json::json!({
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "Write|Edit",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "./scripts/post_write.sh"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+        );
+        write(
+            &root.join(".codex-plugin").join("plugin.json"),
+            r#"{
+                "name": "figma-like-plugin",
+                "hooks": "hooks.json"
+            }"#,
+        );
+        let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+        let resolved = resolved(&root, manifest);
+
+        let projection =
+            PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
+                id: "figma-like-plugin@builtin",
+                name: "figma-like-plugin",
+                source_priority: 10,
+                root: &root,
+                data_dir,
+                plugin: &resolved,
+            }]);
+
+        let groups = projection
+            .hook_definitions
+            .hooks
+            .get("PostToolUse")
+            .expect("projected hook event");
+        assert_eq!(groups[0].matcher.as_deref(), Some("Write|Edit"));
+        assert_eq!(
+            groups[0].hooks[0].command,
+            root.join("scripts")
+                .join("post_write.sh")
+                .display()
+                .to_string()
+        );
         assert!(projection.errors.is_empty());
     }
 
