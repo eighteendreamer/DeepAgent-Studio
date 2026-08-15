@@ -498,6 +498,7 @@ export interface PluginMarketplaceEntry {
   description: string;
   version?: string | null;
   category?: string | null;
+  license?: string | null;
   skill_count: number;
   command_count: number;
   agent_count: number;

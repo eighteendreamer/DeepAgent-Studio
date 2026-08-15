@@ -1028,6 +1028,7 @@ impl PluginService {
                         .unwrap_or_else(|| "Marketplace plugin".to_string()),
                     version: entry.version.clone(),
                     category: entry.category.clone(),
+                    license: entry.license.clone(),
                     skill_count: entry.component_summary.skills,
                     command_count: entry.component_summary.commands,
                     agent_count: entry.component_summary.agents,
@@ -4203,6 +4204,7 @@ fn materialize_github_topic_marketplace(
                 "displayName": display_name,
                 "version": version,
                 "description": description,
+                "license": license,
                 "source": source,
                 "category": category,
                 "components": marketplace_component_summary_json(component_summary),
@@ -10978,6 +10980,7 @@ deepagent-definitely-missing-runtime-cli --version
         assert_eq!(entry.name, "dsh-demo");
         assert_eq!(entry.display_name, "dsh-demo");
         assert_eq!(entry.description, "Demo DSH plugin (license: MIT)");
+        assert_eq!(entry.license.as_deref(), Some("MIT"));
         assert_eq!(entry.version.as_deref(), Some("git-aaaaaaaaaaaa"));
         assert_eq!(entry.source_kind, "github");
         assert!(entry.source.contains("deepseek-ai/dsh-demo@main"));
@@ -10998,6 +11001,7 @@ deepagent-definitely-missing-runtime-cli --version
             std::fs::read_to_string(roots.marketplaces.join("dsh").join("marketplace.json"))
                 .unwrap();
         assert!(snapshot.contains(r#""repo": "deepseek-ai/dsh-demo""#));
+        assert!(snapshot.contains(r#""license": "MIT""#));
         assert!(snapshot.contains(r#""sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa""#));
         assert!(snapshot.contains(r#""ref": "main""#));
         assert!(!snapshot.contains("gh.llkk.cc"));
@@ -11114,6 +11118,7 @@ deepagent-definitely-missing-runtime-cli --version
         );
         assert_eq!(entry.version.as_deref(), Some("2.3.4"));
         assert_eq!(entry.category.as_deref(), Some("Science"));
+        assert_eq!(entry.license.as_deref(), Some("Apache-2.0"));
         assert_eq!(entry.source_kind, "github");
         assert!(entry.source.contains("deepseek-ai/repo-shell@main"));
         assert!(!entry.source.contains("gh.llkk.cc"));
@@ -11146,6 +11151,7 @@ deepagent-definitely-missing-runtime-cli --version
                 .unwrap();
         assert!(snapshot.contains(r#""name": "manifest-plugin""#));
         assert!(snapshot.contains(r#""manifestPath": ".codex-plugin/plugin.json""#));
+        assert!(snapshot.contains(r#""license": "Apache-2.0""#));
         assert!(snapshot.contains(r#""repo": "deepseek-ai/repo-shell""#));
         assert!(snapshot.contains(r#""ref": "main""#));
         assert!(snapshot.contains(r#""sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb""#));

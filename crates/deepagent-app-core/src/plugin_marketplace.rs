@@ -48,6 +48,8 @@ pub struct PluginMarketplaceEntryDto {
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
     pub skill_count: u32,
     pub command_count: u32,
     pub agent_count: u32,
@@ -95,6 +97,7 @@ pub struct PluginMarketplaceEntry {
     pub description: Option<String>,
     pub version: Option<String>,
     pub category: Option<String>,
+    pub license: Option<String>,
     /// The curator's attribution for this entry.
     ///
     /// A Claude plugin's own manifest often has no `author` while the catalog
@@ -247,6 +250,8 @@ struct RawMarketplaceEntry {
     version: Option<String>,
     #[serde(default)]
     category: Option<String>,
+    #[serde(default)]
+    license: Option<String>,
     #[serde(default)]
     author: Option<RawMarketplaceAuthor>,
     #[serde(default)]
@@ -449,6 +454,7 @@ fn normalize_entry(root: &Path, raw: RawMarketplaceEntry) -> Result<PluginMarket
         description: raw.description.and_then(trimmed_string),
         version: raw.version.and_then(trimmed_string),
         category: raw.category.and_then(trimmed_string),
+        license: raw.license.and_then(trimmed_string),
         author_name: raw.author.and_then(RawMarketplaceAuthor::into_name),
         component_summary: raw.components.map(Into::into).unwrap_or_default(),
         runtime_summary: raw.runtime.map(Into::into).unwrap_or_default(),
@@ -1196,6 +1202,7 @@ mod tests {
                 },
                 {
                   "name": "github-plugin",
+                  "license": "Apache-2.0",
                   "source": {
                     "source": "github",
                     "repo": "owner/repo",
@@ -1254,6 +1261,7 @@ mod tests {
                 "owner/repo#path=packages/github-plugin"
             )
         );
+        assert_eq!(catalog.entries[1].license.as_deref(), Some("Apache-2.0"));
         assert_eq!(sources[2], ("npm-plugin", "npm", "@scope/plugin@1.2.3"));
         assert_eq!(
             sources[3],
