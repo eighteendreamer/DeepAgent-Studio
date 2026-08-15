@@ -38,6 +38,7 @@ use crate::plugin_security::{
 const PLUGIN_STATE_SCHEMA_VERSION: u32 = 1;
 const PLUGIN_CACHE_ORPHAN_MARKER: &str = ".orphaned_at";
 const PLUGIN_CACHE_ORPHAN_GRACE_MILLIS: u128 = 7 * 24 * 60 * 60 * 1000;
+const PREPARED_PLUGIN_INSTALL_FILE: &str = ".prepared-install.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginSourceDto {
@@ -184,6 +185,23 @@ pub struct PluginRuntimeInspectionDto {
     pub last_health_check: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedPluginInstallDto {
+    pub token: String,
+    pub marketplace: String,
+    pub plugin: String,
+    pub plugin_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub source_kind: String,
+    pub source: String,
+    pub staging_path: String,
+    pub plugin_root: String,
+    pub destination_path: String,
+    pub scan_report: PluginScanReportDto,
+    pub runtime_inspection: PluginRuntimeInspectionDto,
 }
 
 impl PluginRuntimeInspectionDto {
@@ -829,6 +847,236 @@ impl PluginService {
         scan_plugin_dir(materialized.plugin_root())
     }
 
+    pub fn prepare_plugin_install(
+        &self,
+        marketplace: &str,
+        plugin: &str,
+        authentication_confirmed: bool,
+    ) -> Result<PreparedPluginInstallDto> {
+        let marketplace_key = slugify(marketplace);
+        let (_, entry) = self.marketplace_entry(&marketplace_key, plugin)?;
+        ensure_marketplace_entry_installable(&marketplace_key, &entry)?;
+        ensure_marketplace_authentication_confirmed(
+            &marketplace_key,
+            &entry,
+            authentication_confirmed,
+        )?;
+
+        let staging = self.marketplace_staging_dir(&marketplace_key, &entry.name)?;
+        let prepared = (|| {
+            let materialized =
+                self.materialize_marketplace_plugin_source(&marketplace_key, &entry)?;
+            let package_root = staging.join("package");
+            copy_dir(materialized.plugin_root(), &package_root)?;
+            let plugin_root = resolve_plugin_root(&package_root)?;
+            let report = scan_plugin_dir(&plugin_root)?;
+            if !report.errors.is_empty() {
+                return Err(CoreError::invalid(format!(
+                    "plugin scan failed during prepare: {}",
+                    report.errors.join("; ")
+                )));
+            }
+
+            let manifest = load_plugin_manifest(&plugin_root)?
+                .ok_or_else(|| CoreError::invalid("plugin manifest not found"))?;
+            if manifest.name != entry.name {
+                return Err(CoreError::invalid(format!(
+                    "marketplace entry '{}' points to plugin manifest '{}'",
+                    entry.name, manifest.name
+                )));
+            }
+
+            let version = manifest
+                .version
+                .clone()
+                .or_else(|| entry.version.clone())
+                .unwrap_or_else(|| "0.0.0".to_string());
+            let destination =
+                self.marketplace_plugin_destination(&marketplace_key, &manifest.name, &version);
+            let token = staging
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    CoreError::invalid(format!(
+                        "prepared plugin staging dir has no token: {}",
+                        staging.display()
+                    ))
+                })?
+                .to_string();
+            let plugin_id = plugin_id(&manifest.name, &marketplace_key);
+            let runtime_inspection = self.runtime_inspection_for_staged_plugin(
+                &plugin_id,
+                &marketplace_key,
+                &plugin_root,
+                &manifest,
+            );
+            let metadata = PreparedPluginInstallState {
+                schema_version: 1,
+                token: token.clone(),
+                marketplace: marketplace_key.clone(),
+                plugin: manifest.name.clone(),
+                plugin_id: plugin_id.clone(),
+                plugin_version: Some(version.clone()),
+                plugin_root: plugin_root.display().to_string(),
+                destination_path: destination.display().to_string(),
+                source_kind: entry.source.kind().to_string(),
+                source: entry.source.display().to_string(),
+                created_at: now_string(),
+            };
+            write_prepared_install_metadata(&staging, &metadata)?;
+
+            Ok(PreparedPluginInstallDto {
+                token,
+                marketplace: marketplace_key,
+                plugin: manifest.name,
+                plugin_id,
+                version: Some(version),
+                source_kind: entry.source.kind().to_string(),
+                source: entry.source.display().to_string(),
+                staging_path: staging.display().to_string(),
+                plugin_root: plugin_root.display().to_string(),
+                destination_path: destination.display().to_string(),
+                scan_report: report,
+                runtime_inspection,
+            })
+        })();
+        if prepared.is_err() {
+            let _ = std::fs::remove_dir_all(&staging);
+        }
+        prepared
+    }
+
+    pub fn commit_plugin_install(&self, token: &str) -> Result<PluginDto> {
+        let staging = self.prepared_install_dir(token)?;
+        let result = (|| {
+            let metadata = load_prepared_install_metadata(&staging)?;
+            if metadata.token != token {
+                return Err(CoreError::invalid(format!(
+                    "prepared plugin token mismatch: expected {token}, found {}",
+                    metadata.token
+                )));
+            }
+            let plugin_root = PathBuf::from(&metadata.plugin_root);
+            if !path_is_under(&plugin_root, &staging) {
+                return Err(CoreError::invalid(format!(
+                    "prepared plugin root escapes staging dir: {}",
+                    plugin_root.display()
+                )));
+            }
+            let report = scan_plugin_dir(&plugin_root)?;
+            if !report.errors.is_empty() {
+                return Err(CoreError::invalid(format!(
+                    "plugin scan failed during commit: {}",
+                    report.errors.join("; ")
+                )));
+            }
+            let manifest = load_plugin_manifest(&plugin_root)?
+                .ok_or_else(|| CoreError::invalid("plugin manifest not found"))?;
+            if manifest.name != metadata.plugin {
+                return Err(CoreError::invalid(format!(
+                    "prepared plugin metadata names '{}' but manifest names '{}'",
+                    metadata.plugin, manifest.name
+                )));
+            }
+            if plugin_id(&manifest.name, &metadata.marketplace) != metadata.plugin_id {
+                return Err(CoreError::invalid(format!(
+                    "prepared plugin id changed for '{}'",
+                    manifest.name
+                )));
+            }
+
+            let mut stack = vec![metadata.plugin_id.clone()];
+            for dependency in &manifest.dependencies {
+                let dependency = marketplace_dependency_id(dependency, &metadata.marketplace)?;
+                if dependency.marketplace != metadata.marketplace {
+                    if self.is_marketplace_dependency_satisfied(&dependency.id)? {
+                        continue;
+                    }
+                    return Err(CoreError::invalid(format!(
+                        "plugin '{}' depends on '{}' from marketplace '{}'; install that dependency explicitly before installing this plugin",
+                        manifest.name, dependency.name, dependency.marketplace
+                    )));
+                }
+                if self.is_marketplace_dependency_satisfied(&dependency.id)? {
+                    continue;
+                }
+                self.install_from_marketplace_inner(
+                    &metadata.marketplace,
+                    &dependency.name,
+                    true,
+                    &mut stack,
+                )?;
+            }
+
+            let version = manifest
+                .version
+                .clone()
+                .or_else(|| metadata.plugin_version.clone())
+                .unwrap_or_else(|| "0.0.0".to_string());
+            let destination = self.marketplace_plugin_destination(
+                &metadata.marketplace,
+                &manifest.name,
+                &version,
+            );
+            if destination.display().to_string() != metadata.destination_path {
+                return Err(CoreError::invalid(format!(
+                    "prepared plugin destination changed: expected {}, found {}",
+                    metadata.destination_path,
+                    destination.display()
+                )));
+            }
+            commit_plugin_directory(
+                &plugin_root,
+                &destination,
+                &self.roots.marketplace_cache,
+                &format!("{}-{}-{version}", metadata.marketplace, manifest.name),
+            )?;
+            let plugin_dir = self
+                .roots
+                .marketplace_cache
+                .join(sanitize_file_name(&metadata.marketplace))
+                .join(sanitize_file_name(&manifest.name));
+            if plugin_dir.exists() {
+                mark_stale_marketplace_plugin_versions(
+                    &self.roots.marketplace_cache,
+                    &plugin_dir,
+                    &destination,
+                )?;
+            }
+
+            let id = plugin_id(&manifest.name, &metadata.marketplace);
+            let mut state = self.load_state()?;
+            let previous = state.installed.get(&id).cloned();
+            state.enabled.entry(id.clone()).or_insert(true);
+            state.installed.insert(
+                id.clone(),
+                InstalledPluginState {
+                    version: manifest.version.clone().or(Some(version)),
+                    install_path: destination.display().to_string(),
+                    installed_at: previous
+                        .as_ref()
+                        .map(|item| item.installed_at.clone())
+                        .unwrap_or_else(now_string),
+                    last_updated: previous.as_ref().map(|_| now_string()),
+                },
+            );
+            self.save_state(&state)?;
+            self.read(&id)?
+                .ok_or_else(|| CoreError::not_found(format!("plugin {id}")))
+        })();
+        let _ = std::fs::remove_dir_all(&staging);
+        result
+    }
+
+    pub fn cancel_plugin_install(&self, token: &str) -> Result<bool> {
+        let staging = self.prepared_install_dir(token)?;
+        if !staging.exists() {
+            return Ok(false);
+        }
+        safe_remove_dir(&self.roots.marketplace_cache.join(".staging"), &staging)?;
+        Ok(true)
+    }
+
     pub fn install_from_marketplace(&self, marketplace: &str, plugin: &str) -> Result<PluginDto> {
         self.install_from_marketplace_with_auth(marketplace, plugin, false)
     }
@@ -992,13 +1240,6 @@ impl PluginService {
             .marketplace_cache
             .join(sanitize_file_name(marketplace_key));
         let plugin_dir = marketplace_dir.join(sanitize_file_name(&manifest.name));
-        if plugin_dir.exists() {
-            mark_stale_marketplace_plugin_versions(
-                &self.roots.marketplace_cache,
-                &plugin_dir,
-                &plugin_dir.join(sanitize_file_name(&version)),
-            )?;
-        }
         let destination = plugin_dir.join(sanitize_file_name(&version));
         commit_plugin_directory(
             source,
@@ -1006,6 +1247,13 @@ impl PluginService {
             &self.roots.marketplace_cache,
             &format!("{marketplace_key}-{}-{version}", manifest.name),
         )?;
+        if plugin_dir.exists() {
+            mark_stale_marketplace_plugin_versions(
+                &self.roots.marketplace_cache,
+                &plugin_dir,
+                &destination,
+            )?;
+        }
 
         let id = plugin_id(&manifest.name, marketplace_key);
         let mut state = self.load_state()?;
@@ -1203,6 +1451,77 @@ impl PluginService {
         }
 
         PluginExecutionKind::SkillOnly
+    }
+
+    fn runtime_inspection_for_staged_plugin(
+        &self,
+        plugin_id: &str,
+        marketplace: &str,
+        plugin_root: &Path,
+        manifest: &PluginManifest,
+    ) -> PluginRuntimeInspectionDto {
+        let resolved = ResolvedPlugin::from_manifest(
+            plugin_root,
+            manifest.clone(),
+            MarketplaceSource::default(),
+        );
+        let loaded = LoadedPlugin {
+            id: plugin_id.to_string(),
+            name: manifest.name.clone(),
+            source_key: marketplace.to_string(),
+            origin: PluginOrigin::Marketplace,
+            marketplace: Some(marketplace.to_string()),
+            root: plugin_root.to_path_buf(),
+            resolved: Some(resolved),
+            available: true,
+            overridden_by: None,
+            errors: Vec::new(),
+        };
+        let counts = PluginComponentCounts::from_manifest(Some(manifest));
+        let entrypoints = self.plugin_entrypoints(&loaded, Some(manifest));
+        let has_runtime_payload = plugin_root.join("runtime.zip").is_file();
+        let runtime_requirements =
+            self.plugin_runtime_requirements(&loaded, Some(manifest), has_runtime_payload);
+        let runtime_available = self.runtime_requirements_available(&runtime_requirements);
+        let resolved = loaded.resolved.as_ref();
+        let health_status = self.plugin_health_status(
+            &loaded,
+            Some(manifest),
+            resolved,
+            counts,
+            runtime_available,
+            &runtime_requirements,
+        );
+        PluginRuntimeInspectionDto {
+            plugin_id: plugin_id.to_string(),
+            execution_kind: self.plugin_execution_kind(
+                &loaded,
+                Some(manifest),
+                counts,
+                has_runtime_payload,
+            ),
+            state: self.plugin_lifecycle_state(
+                &loaded,
+                Some(manifest),
+                resolved,
+                counts,
+                health_status,
+                &entrypoints,
+            ),
+            runtime_required: !runtime_requirements.is_empty(),
+            runtime_available,
+            entrypoints,
+            has_runtime_payload,
+            health_status,
+            last_health_check: Some(now_string()),
+            health_error: self.plugin_health_error(
+                &loaded,
+                Some(manifest),
+                counts,
+                &runtime_requirements,
+                health_status,
+            ),
+        }
     }
 
     fn plugin_runtime_requirements(
@@ -1953,6 +2272,47 @@ impl PluginService {
         ))
     }
 
+    fn prepared_install_dir(&self, token: &str) -> Result<PathBuf> {
+        let token = token.trim();
+        if token.is_empty()
+            || token == "."
+            || token == ".."
+            || token.contains(['/', '\\'])
+            || sanitize_file_name(token) != token
+        {
+            return Err(CoreError::invalid(format!(
+                "invalid prepared plugin install token: {token}"
+            )));
+        }
+        let base = self.roots.marketplace_cache.join(".staging");
+        std::fs::create_dir_all(&base).map_err(|e| {
+            CoreError::Persistence(format!(
+                "create plugin marketplace staging root {}: {e}",
+                base.display()
+            ))
+        })?;
+        let staging = base.join(token);
+        if !path_is_under(&staging, &base) {
+            return Err(CoreError::invalid(format!(
+                "prepared plugin install token escapes staging root: {token}"
+            )));
+        }
+        Ok(staging)
+    }
+
+    fn marketplace_plugin_destination(
+        &self,
+        marketplace: &str,
+        plugin: &str,
+        version: &str,
+    ) -> PathBuf {
+        self.roots
+            .marketplace_cache
+            .join(sanitize_file_name(marketplace))
+            .join(sanitize_file_name(plugin))
+            .join(sanitize_file_name(version))
+    }
+
     fn materialize_marketplace(
         &self,
         name: &str,
@@ -2202,6 +2562,32 @@ struct MaterializedPluginSource {
     cleanup_root: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PreparedPluginInstallState {
+    #[serde(default, rename = "schemaVersion")]
+    schema_version: u32,
+    token: String,
+    marketplace: String,
+    plugin: String,
+    #[serde(rename = "pluginId")]
+    plugin_id: String,
+    #[serde(
+        default,
+        rename = "pluginVersion",
+        skip_serializing_if = "Option::is_none"
+    )]
+    plugin_version: Option<String>,
+    #[serde(rename = "pluginRoot")]
+    plugin_root: String,
+    #[serde(rename = "destinationPath")]
+    destination_path: String,
+    #[serde(rename = "sourceKind")]
+    source_kind: String,
+    source: String,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+}
+
 struct MarketplaceDependency {
     id: String,
     name: String,
@@ -2234,6 +2620,34 @@ impl Drop for MaterializedPluginSource {
             let _ = std::fs::remove_dir_all(root);
         }
     }
+}
+
+fn write_prepared_install_metadata(
+    staging: &Path,
+    metadata: &PreparedPluginInstallState,
+) -> Result<()> {
+    let path = staging.join(PREPARED_PLUGIN_INSTALL_FILE);
+    let bytes = serde_json::to_vec_pretty(metadata).map_err(CoreError::from)?;
+    write_file_atomically(&path, &bytes)
+}
+
+fn load_prepared_install_metadata(staging: &Path) -> Result<PreparedPluginInstallState> {
+    let path = staging.join(PREPARED_PLUGIN_INSTALL_FILE);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        CoreError::Persistence(format!(
+            "read prepared plugin install metadata {}: {e}",
+            path.display()
+        ))
+    })?;
+    let metadata: PreparedPluginInstallState = serde_json::from_str(&text)
+        .map_err(|e| CoreError::invalid(format!("parse prepared plugin install metadata: {e}")))?;
+    if metadata.schema_version != 1 {
+        return Err(CoreError::invalid(format!(
+            "unsupported prepared plugin install metadata version {}",
+            metadata.schema_version
+        )));
+    }
+    Ok(metadata)
 }
 
 fn marketplace_source_installable(source: &PluginMarketplaceSource) -> bool {
@@ -2617,39 +3031,12 @@ fn mark_stale_marketplace_plugin_versions(
             continue;
         }
         if entry.file_name() == active_name {
-            let orphan = unique_orphan_cache_dir(plugin_dir, active_name)?;
-            move_managed_child_dir(base, &path, &orphan)?;
-            mark_cache_dir_orphaned(base, &orphan)?;
+            remove_orphan_marker_if_exists(&path)?;
         } else if !is_cache_dir_orphaned(&path) {
             mark_cache_dir_orphaned(base, &path)?;
         }
     }
     Ok(())
-}
-
-fn unique_orphan_cache_dir(plugin_dir: &Path, version: &std::ffi::OsStr) -> Result<PathBuf> {
-    let version = version.to_string_lossy();
-    let version = sanitize_file_name(&version);
-    let version = version.trim_matches('.');
-    let version = if version.is_empty() {
-        "version"
-    } else {
-        version
-    };
-    let now = now_string();
-    for attempt in 0..100u32 {
-        let candidate = plugin_dir.join(format!(
-            ".orphaned-{version}-{}-{now}-{attempt}",
-            std::process::id()
-        ));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    Err(CoreError::other(format!(
-        "failed to allocate orphaned plugin cache dir under {}",
-        plugin_dir.display()
-    )))
 }
 
 fn mark_cache_dir_orphaned(base: &Path, target: &Path) -> Result<()> {
@@ -2762,55 +3149,6 @@ fn remove_empty_managed_dir(base: &Path, target: &Path) -> Result<()> {
         remove_managed_child_dir(base, target)?;
     }
     Ok(())
-}
-
-fn move_managed_child_dir(base: &Path, source: &Path, target: &Path) -> Result<()> {
-    let base = std::fs::canonicalize(base).map_err(|e| {
-        CoreError::Persistence(format!("canonicalize cache base {}: {e}", base.display()))
-    })?;
-    let source = std::fs::canonicalize(source).map_err(|e| {
-        CoreError::Persistence(format!(
-            "canonicalize plugin cache source {}: {e}",
-            source.display()
-        ))
-    })?;
-    if source == base || !source.starts_with(&base) {
-        return Err(CoreError::invalid(format!(
-            "refusing to move path outside plugin cache: {}",
-            source.display()
-        )));
-    }
-    let parent = target.parent().ok_or_else(|| {
-        CoreError::invalid(format!(
-            "plugin cache target has no parent: {}",
-            target.display()
-        ))
-    })?;
-    let parent = std::fs::canonicalize(parent).map_err(|e| {
-        CoreError::Persistence(format!(
-            "canonicalize plugin cache target parent {}: {e}",
-            parent.display()
-        ))
-    })?;
-    if !parent.starts_with(&base) {
-        return Err(CoreError::invalid(format!(
-            "refusing to move plugin cache outside cache root: {}",
-            target.display()
-        )));
-    }
-    if target.exists() {
-        return Err(CoreError::invalid(format!(
-            "plugin cache target already exists: {}",
-            target.display()
-        )));
-    }
-    std::fs::rename(&source, target).map_err(|e| {
-        CoreError::Persistence(format!(
-            "move plugin cache {} -> {}: {e}",
-            source.display(),
-            target.display()
-        ))
-    })
 }
 
 fn split_source_ref(source: &str) -> (String, Option<String>) {
@@ -4869,6 +5207,188 @@ mod tests {
             svc.runtime_projection().unwrap().skill_roots,
             vec![cached.join("skills")]
         );
+    }
+
+    #[test]
+    fn prepared_marketplace_install_commits_after_user_confirmation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("demo");
+        write_plugin_with_version(&plugin_source, "demo", "0.1.0");
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.1.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let prepared = svc.prepare_plugin_install("team", "demo", false).unwrap();
+
+        assert_eq!(prepared.plugin_id, "demo@team");
+        assert!(prepared.scan_report.manifest_ok);
+        assert_eq!(
+            prepared.runtime_inspection.execution_kind,
+            PluginExecutionKind::SkillOnly
+        );
+        assert!(Path::new(&prepared.staging_path).is_dir());
+        assert!(svc.read("demo@team").unwrap().is_none());
+
+        let installed = svc.commit_plugin_install(&prepared.token).unwrap();
+
+        assert_eq!(installed.id, "demo@team");
+        assert_eq!(installed.version.as_deref(), Some("0.1.0"));
+        assert!(!Path::new(&prepared.staging_path).exists());
+        assert!(roots
+            .marketplace_cache
+            .join("team")
+            .join("demo")
+            .join("0.1.0")
+            .join(".codex-plugin")
+            .join("plugin.json")
+            .is_file());
+    }
+
+    #[test]
+    fn prepared_marketplace_install_cancel_removes_staging_without_installing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        write_plugin_with_version(
+            &marketplace_root.join("plugins").join("demo"),
+            "demo",
+            "0.1.0",
+        );
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.1.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+        let prepared = svc.prepare_plugin_install("team", "demo", false).unwrap();
+
+        assert!(svc.cancel_plugin_install(&prepared.token).unwrap());
+
+        assert!(!Path::new(&prepared.staging_path).exists());
+        assert!(svc.read("demo@team").unwrap().is_none());
+        assert!(svc.commit_plugin_install(&prepared.token).is_err());
+    }
+
+    #[test]
+    fn prepared_marketplace_commit_failure_preserves_installed_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("demo");
+        write_plugin_with_version(&plugin_source, "demo", "0.1.0");
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.1.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+        let installed = svc.install_from_marketplace("team", "demo").unwrap();
+        assert_eq!(installed.version.as_deref(), Some("0.1.0"));
+
+        write_plugin_with_version(&plugin_source, "demo", "0.2.0");
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.2.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        svc.refresh_marketplace("team").unwrap();
+        let prepared = svc.prepare_plugin_install("team", "demo", false).unwrap();
+        std::fs::write(
+            Path::new(&prepared.plugin_root)
+                .join(".codex-plugin")
+                .join("plugin.json"),
+            "{not valid json",
+        )
+        .unwrap();
+
+        let err = svc.commit_plugin_install(&prepared.token).unwrap_err();
+
+        assert!(err.to_string().contains("commit"));
+        assert!(!Path::new(&prepared.staging_path).exists());
+        let current = svc.read("demo@team").unwrap().unwrap();
+        assert_eq!(current.version.as_deref(), Some("0.1.0"));
+        assert!(roots
+            .marketplace_cache
+            .join("team")
+            .join("demo")
+            .join("0.1.0")
+            .join(".codex-plugin")
+            .join("plugin.json")
+            .is_file());
+        assert!(!roots
+            .marketplace_cache
+            .join("team")
+            .join("demo")
+            .join("0.2.0")
+            .exists());
     }
 
     #[test]

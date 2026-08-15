@@ -125,6 +125,7 @@ pub use plugin_security::{PluginComponentSummaryDto, PluginRiskItemDto, PluginSc
 pub use plugin_service::{
     CreatePluginDraftDto, PluginDto, PluginExecutionKind, PluginHealthStatus, PluginLicenseStatus,
     PluginLifecycleState, PluginRuntimeInspectionDto, PluginService, PluginSourceDto,
+    PreparedPluginInstallDto,
 };
 pub use project_map_service::{
     ProjectMapEdgeDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto,

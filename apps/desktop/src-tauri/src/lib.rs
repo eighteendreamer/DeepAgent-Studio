@@ -27,7 +27,7 @@ use deepagent_app_core::{
     KnowledgeService, LocalPtyHandle, McpServerDto, McpService, NewRuntimeLogEntry, OfficeService,
     PdfRenderResultDto, PluginAppEntry, PluginDto, PluginMarketplaceDto, PluginMarketplaceEntryDto,
     PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto, PluginScanReportDto,
-    PluginService, PreflightToolCallDto,
+    PluginService, PreparedPluginInstallDto, PreflightToolCallDto,
     PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
     ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
     ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, RecordingService,
@@ -1342,6 +1342,40 @@ fn scan_plugin_marketplace(
     state
         .plugins
         .scan_marketplace_plugin(&marketplace, &plugin)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn prepare_plugin_install(
+    state: State<'_, AppState>,
+    marketplace: String,
+    plugin: String,
+    auth_confirmed: Option<bool>,
+) -> Result<PreparedPluginInstallDto, String> {
+    state
+        .plugins
+        .prepare_plugin_install(&marketplace, &plugin, auth_confirmed.unwrap_or(false))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn commit_plugin_install(
+    state: State<'_, AppState>,
+    token: String,
+) -> Result<PluginDto, String> {
+    let plugin = state
+        .plugins
+        .commit_plugin_install(&token)
+        .map_err(|e| e.to_string())?;
+    sync_plugin_runtime_after_change(state.inner()).await?;
+    Ok(plugin)
+}
+
+#[tauri::command]
+fn cancel_plugin_install(state: State<'_, AppState>, token: String) -> Result<bool, String> {
+    state
+        .plugins
+        .cancel_plugin_install(&token)
         .map_err(|e| e.to_string())
 }
 
@@ -5380,6 +5414,9 @@ pub fn run() {
             refresh_plugin_marketplace,
             list_plugin_marketplace_entries,
             scan_plugin_marketplace,
+            prepare_plugin_install,
+            commit_plugin_install,
+            cancel_plugin_install,
             install_plugin_from_marketplace,
             update_plugin,
             skill_market_search,
