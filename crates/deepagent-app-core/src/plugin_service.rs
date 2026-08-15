@@ -7,10 +7,10 @@ use std::net::ToSocketAddrs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_mcp::config::{McpConfig, TransportType};
+use deepagent_mcp::config::{McpConfig, McpServerConfig, TransportType};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -48,6 +48,7 @@ const PLUGIN_CACHE_ORPHAN_GRACE_MILLIS: u128 = 7 * 24 * 60 * 60 * 1000;
 const PREPARED_PLUGIN_INSTALL_FILE: &str = ".prepared-install.json";
 const GITHUB_API_BASES_ENV: &str = "DEEPAGENT_PLUGIN_GITHUB_API_BASES";
 const GITHUB_TOPIC_PREFIX: &str = "https://github.com/topics/";
+const DSH_SIDECAR_MCP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginSourceDto {
@@ -3113,8 +3114,66 @@ fn dsh_sidecar_health_failure(
         ) {
             return Some(failure);
         }
+        if let Err(error) = probe_mcp_sidecar(server.clone()) {
+            return Some((
+                PluginHealthStatus::Failed,
+                Some(format!(
+                    "MCP sidecar '{server_name}' failed initialize/tools handshake: {error}"
+                )),
+            ));
+        }
     }
     None
+}
+
+fn probe_mcp_sidecar(server: McpServerConfig) -> std::result::Result<usize, String> {
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("create MCP probe runtime: {e}"))?;
+        runtime.block_on(async move {
+            let transport = deepagent_mcp::connect_transport(&server)
+                .map_err(|e| format!("connect transport: {e}"))?;
+            let client = deepagent_mcp::McpClient::new(transport);
+            match tokio::time::timeout(
+                DSH_SIDECAR_MCP_PROBE_TIMEOUT,
+                client.initialize("deepagent-plugin-health"),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    let _ = client.close().await;
+                    return Err(format!("initialize: {error}"));
+                }
+                Err(error) => {
+                    let _ = client.close().await;
+                    return Err(format!("initialize timed out: {error}"));
+                }
+            }
+            let tools = match tokio::time::timeout(
+                DSH_SIDECAR_MCP_PROBE_TIMEOUT,
+                client.list_tools(),
+            )
+            .await
+            {
+                Ok(Ok(tools)) => tools,
+                Ok(Err(error)) => {
+                    let _ = client.close().await;
+                    return Err(format!("tools/list: {error}"));
+                }
+                Err(error) => {
+                    let _ = client.close().await;
+                    return Err(format!("tools/list timed out: {error}"));
+                }
+            };
+            let _ = client.close().await;
+            Ok(tools.len())
+        })
+    })
+    .join()
+    .map_err(|_| "MCP probe thread panicked".to_string())?
 }
 
 #[derive(Debug)]
@@ -7723,6 +7782,46 @@ mod tests {
         .unwrap();
     }
 
+    fn minimal_mcp_node_server() -> &'static str {
+        r#"
+const readline = require('node:readline');
+const rl = readline.createInterface({ input: process.stdin });
+
+function send(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+}
+
+rl.on('line', (line) => {
+  const req = JSON.parse(line);
+  if (req.method === 'initialize') {
+    send(req.id, {
+      protocolVersion: req.params.protocolVersion,
+      serverInfo: { name: 'fixture-sidecar', version: '0.1.0' },
+      capabilities: { tools: {} }
+    });
+    return;
+  }
+  if (req.method === 'tools/list') {
+    send(req.id, {
+      tools: [
+        {
+          name: 'fixture_echo',
+          description: 'fixture echo tool',
+          inputSchema: { type: 'object', properties: {} }
+        }
+      ]
+    });
+    return;
+  }
+  process.stdout.write(JSON.stringify({
+    jsonrpc: '2.0',
+    id: req.id,
+    error: { code: -32601, message: 'method not found' }
+  }) + '\n');
+});
+"#
+    }
+
     fn write_plugin_with_command(root: &Path, name: &str) {
         write_plugin_with_version_and_dependencies(root, name, "0.1.0", &[]);
         std::fs::create_dir_all(root.join("commands")).unwrap();
@@ -8045,7 +8144,7 @@ mod tests {
             vec!["server.js"],
             Some("${PLUGIN_ROOT}"),
         );
-        std::fs::write(root.join("server.js"), "process.stdin.resume();\n").unwrap();
+        std::fs::write(root.join("server.js"), minimal_mcp_node_server()).unwrap();
         let app_data = tmp.path().join("app-data");
         let svc = PluginService::new(roots, &app_data);
 
@@ -8067,6 +8166,39 @@ mod tests {
                 .is_dir(),
             "PLUGIN_DATA should be created before a sidecar subprocess is considered healthy"
         );
+    }
+
+    #[test]
+    fn check_plugin_health_marks_dsh_stdio_mcp_protocol_failure_failed() {
+        if !probe_runtime("node", &["--version"]) {
+            eprintln!("skipping: node runtime is not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("sidecar-plugin");
+        write_plugin_with_stdio_mcp(
+            &root,
+            "sidecar-plugin",
+            "node",
+            vec!["server.js"],
+            Some("${PLUGIN_ROOT}"),
+        );
+        std::fs::write(root.join("server.js"), "process.exit(0);\n").unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let checked = svc
+            .check_plugin_health("sidecar-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(checked.health_status, PluginHealthStatus::Failed);
+        assert_eq!(checked.state, PluginLifecycleState::Failed);
+        assert!(checked
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("initialize/tools handshake"));
     }
 
     #[test]
