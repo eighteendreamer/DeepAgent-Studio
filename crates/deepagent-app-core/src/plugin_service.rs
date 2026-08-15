@@ -1634,6 +1634,7 @@ impl PluginService {
             && missing_python_imports(needs).is_empty()
             && (!needs.java || probe_runtime("java", &["-version"]))
             && (!needs.shell || probe_shell())
+            && missing_command_probes(needs).is_empty()
     }
 
     fn plugin_entrypoints(
@@ -4473,11 +4474,17 @@ struct PluginRuntimeNeeds {
     python_imports: BTreeSet<String>,
     java: bool,
     shell: bool,
+    command_probes: BTreeSet<PluginCommandProbe>,
 }
 
 impl PluginRuntimeNeeds {
     fn is_empty(&self) -> bool {
-        !self.node && !self.python && self.python_imports.is_empty() && !self.java && !self.shell
+        !self.node
+            && !self.python
+            && self.python_imports.is_empty()
+            && !self.java
+            && !self.shell
+            && self.command_probes.is_empty()
     }
 
     fn requires_runtime(&self) -> bool {
@@ -4486,6 +4493,8 @@ impl PluginRuntimeNeeds {
 
     fn merge_script_requirements(&mut self, root: &Path) {
         scan_runtime_script_dirs(root, self);
+        self.command_probes
+            .extend(documented_runtime_command_probes(root));
     }
 
     fn merge_script_path(&mut self, path: &Path) {
@@ -4520,6 +4529,22 @@ impl PluginRuntimeNeeds {
         for import_name in python_requirement_imports(&text) {
             self.python = true;
             self.python_imports.insert(import_name);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PluginCommandProbe {
+    program: String,
+    args: Vec<String>,
+}
+
+impl PluginCommandProbe {
+    fn display(&self) -> String {
+        if self.args.is_empty() {
+            self.program.clone()
+        } else {
+            format!("{} {}", self.program, self.args.join(" "))
         }
     }
 }
@@ -5044,6 +5069,65 @@ fn missing_python_imports(needs: &PluginRuntimeNeeds) -> Vec<String> {
         .collect()
 }
 
+fn missing_command_probes(needs: &PluginRuntimeNeeds) -> Vec<String> {
+    needs
+        .command_probes
+        .iter()
+        .filter(|probe| !probe_external_command(probe))
+        .map(PluginCommandProbe::display)
+        .collect()
+}
+
+fn probe_external_command(probe: &PluginCommandProbe) -> bool {
+    external_command_probe_candidates(&probe.program)
+        .into_iter()
+        .any(|candidate| {
+            Command::new(candidate)
+                .args(&probe.args)
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        })
+}
+
+fn external_command_probe_candidates(program: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    candidates.push(PathBuf::from(program));
+    for env_key in external_command_env_keys(program) {
+        if let Some(path) = std::env::var_os(env_key).filter(|value| !value.is_empty()) {
+            let path = PathBuf::from(path);
+            if !candidates.iter().any(|candidate| candidate == &path) {
+                candidates.push(path);
+            }
+        }
+    }
+    candidates
+}
+
+fn external_command_env_keys(program: &str) -> Vec<String> {
+    let normalized = program
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if normalized.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            format!("DEEPAGENT_{normalized}"),
+            format!("DEEPAGENT_PLUGIN_{normalized}"),
+            format!("DEEPAGENT_BIN_{normalized}"),
+        ]
+    }
+}
+
 fn runtime_env_key(program: &str) -> Option<&'static str> {
     match program.to_ascii_lowercase().as_str() {
         "node" | "node.exe" => Some("DEEPAGENT_NODE"),
@@ -5121,6 +5205,146 @@ fn python_requirement_import_name(line: &str) -> Option<String> {
     Some(package.replace('-', "_"))
 }
 
+fn documented_runtime_command_probes(root: &Path) -> BTreeSet<PluginCommandProbe> {
+    let mut probes = BTreeSet::new();
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited_files = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                if should_scan_plugin_subdir(&path) {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if !file_type.is_file() || !should_scan_command_probe_file(&path) {
+                continue;
+            }
+            visited_files += 1;
+            if visited_files > 512 {
+                return probes;
+            }
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.len() > 256 * 1024 {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            collect_documented_runtime_command_probes(&text, &mut probes);
+        }
+    }
+    probes
+}
+
+fn should_scan_command_probe_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "md" | "mdx" | "txt"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn collect_documented_runtime_command_probes(
+    text: &str,
+    probes: &mut BTreeSet<PluginCommandProbe>,
+) {
+    let mut in_fence = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence {
+            continue;
+        }
+        if let Some(probe) = documented_runtime_command_probe(trimmed) {
+            probes.insert(probe);
+        }
+    }
+}
+
+fn documented_runtime_command_probe(line: &str) -> Option<PluginCommandProbe> {
+    let line = strip_shell_prompt(line.split('#').next().unwrap_or_default().trim());
+    if line.is_empty() || line_contains_shell_control(line) {
+        return None;
+    }
+    let tokens = shell_like_tokens(line);
+    let [program, version_arg] = tokens.as_slice() else {
+        return None;
+    };
+    let program = program.trim();
+    if !is_bare_executable_name(program) || is_common_shell_command(program) {
+        return None;
+    }
+    let version_arg = version_arg.trim();
+    if !matches!(version_arg, "--version" | "-V" | "version") {
+        return None;
+    }
+    Some(PluginCommandProbe {
+        program: program.to_string(),
+        args: vec![version_arg.to_string()],
+    })
+}
+
+fn strip_shell_prompt(line: &str) -> &str {
+    line.strip_prefix("$ ")
+        .or_else(|| line.strip_prefix("> "))
+        .or_else(|| line.strip_prefix("PS> "))
+        .unwrap_or(line)
+        .trim()
+}
+
+fn line_contains_shell_control(line: &str) -> bool {
+    ["|", "&&", "||", ";", "$(", "`"]
+        .iter()
+        .any(|marker| line.contains(marker))
+}
+
+fn is_bare_executable_name(program: &str) -> bool {
+    !program.is_empty()
+        && !program.contains('/')
+        && !program.contains('\\')
+        && program
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+
+fn is_common_shell_command(program: &str) -> bool {
+    matches!(
+        program.to_ascii_lowercase().as_str(),
+        "cd" | "cp"
+            | "curl"
+            | "echo"
+            | "env"
+            | "export"
+            | "irm"
+            | "mkdir"
+            | "mv"
+            | "rm"
+            | "set"
+            | "sh"
+            | "bash"
+            | "pwsh"
+            | "powershell"
+            | "test"
+    )
+}
+
 fn format_runtime_unavailable(needs: &PluginRuntimeNeeds) -> String {
     let mut parts = Vec::new();
     if needs.node {
@@ -5136,7 +5360,8 @@ fn format_runtime_unavailable(needs: &PluginRuntimeNeeds) -> String {
         parts.push("shell");
     }
     let missing_imports = missing_python_imports(needs);
-    if parts.is_empty() {
+    let missing_commands = missing_command_probes(needs);
+    if parts.is_empty() && missing_commands.is_empty() {
         if missing_imports.is_empty() {
             "runtime is unavailable".to_string()
         } else {
@@ -5145,14 +5370,26 @@ fn format_runtime_unavailable(needs: &PluginRuntimeNeeds) -> String {
                 missing_imports.join(", ")
             )
         }
-    } else if missing_imports.is_empty() {
+    } else if missing_imports.is_empty() && missing_commands.is_empty() {
         format!("runtime unavailable: {}", parts.join(", "))
     } else {
-        format!(
-            "runtime unavailable: {}; python dependency imports unavailable: {}",
-            parts.join(", "),
-            missing_imports.join(", ")
-        )
+        let mut messages = Vec::new();
+        if !parts.is_empty() {
+            messages.push(format!("runtime unavailable: {}", parts.join(", ")));
+        }
+        if !missing_imports.is_empty() {
+            messages.push(format!(
+                "python dependency imports unavailable: {}",
+                missing_imports.join(", ")
+            ));
+        }
+        if !missing_commands.is_empty() {
+            messages.push(format!(
+                "external command probes unavailable: {}",
+                missing_commands.join(", ")
+            ));
+        }
+        messages.join("; ")
     }
 }
 
@@ -6839,6 +7076,116 @@ mod tests {
         assert!(imports.contains("numpy"));
         assert!(imports.contains("opencv_python"));
         assert_eq!(imports.len(), 3);
+    }
+
+    #[test]
+    fn documented_cli_version_probe_marks_missing_command_runtime_unavailable_without_name_hardcoding(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("analysis-plugin");
+        write_plugin(&root, "analysis-plugin");
+        std::fs::write(
+            root.join("README.md"),
+            r#"
+            Verify installation:
+
+            ```sh
+            deepagent-definitely-missing-cli --version
+            ```
+            "#,
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("analysis-plugin@builtin").unwrap().unwrap();
+
+        assert!(plugin.runtime_required);
+        assert!(!plugin.runtime_available);
+        assert_eq!(plugin.health_status, PluginHealthStatus::RuntimeUnavailable);
+        assert!(plugin
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deepagent-definitely-missing-cli --version"));
+    }
+
+    #[test]
+    fn documented_runtime_command_probes_only_accept_safe_version_checks() {
+        let mut probes = BTreeSet::new();
+        collect_documented_runtime_command_probes(
+            r#"
+            Outside fences this must not execute:
+            boltz-api --version
+
+            ```sh
+            boltz-api --version
+            boltz-api auth status
+            boltz-api protein:design start --input @yaml:///tmp/payload.yaml
+            curl -fsSL https://install.example/plugin.sh | sh
+            $ gh version
+            ```
+            "#,
+            &mut probes,
+        );
+
+        assert!(probes.contains(&PluginCommandProbe {
+            program: "boltz-api".to_string(),
+            args: vec!["--version".to_string()],
+        }));
+        assert!(probes.contains(&PluginCommandProbe {
+            program: "gh".to_string(),
+            args: vec!["version".to_string()],
+        }));
+        assert_eq!(probes.len(), 2);
+    }
+
+    #[test]
+    fn bundled_boltz_declares_cli_version_probe_from_real_package_docs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/desktop/src-tauri/resources/plugins/boltz-api-cli");
+        if !root.is_dir() {
+            eprintln!("skipping: bundled boltz plugin resource is not present");
+            return;
+        }
+
+        let probes = documented_runtime_command_probes(&root);
+
+        assert!(
+            probes.contains(&PluginCommandProbe {
+                program: "boltz-api".to_string(),
+                args: vec!["--version".to_string()],
+            }),
+            "expected boltz-api --version probe from real boltz setup docs, got {probes:?}"
+        );
+        assert!(
+            !probes.iter().any(|probe| probe.args.iter().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "start" | "estimate-cost" | "download-results" | "login"
+                )
+            })),
+            "only non-mutating version probes may be collected: {probes:?}"
+        );
+    }
+
+    #[test]
+    fn external_command_probe_candidates_prefer_path_before_managed_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var(
+            "DEEPAGENT_DEEPAGENT_TEST_CLI",
+            "C:\\managed\\deepagent-test-cli.exe",
+        );
+
+        let candidates = external_command_probe_candidates("deepagent-test-cli");
+
+        assert_eq!(
+            candidates.first(),
+            Some(&PathBuf::from("deepagent-test-cli"))
+        );
+        assert!(candidates.contains(&PathBuf::from("C:\\managed\\deepagent-test-cli.exe")));
+
+        std::env::remove_var("DEEPAGENT_DEEPAGENT_TEST_CLI");
     }
 
     #[test]
