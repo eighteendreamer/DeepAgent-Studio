@@ -32,33 +32,40 @@
   ],
   "bundledThirdParty": [
     {
+      "contentHash": "sha256:8f2161157731d3043dce139124f919b46203b84f5211dbbee1aec79103d3fe56",
       "license": "MIT",
       "licenseFile": "LICENSE",
       "name": "superpowers",
       "notes": [
         "Complete plugin bundle with skills and scripts."
       ],
-      "upstream": "https://github.com/obra/superpowers"
+      "upstream": "https://github.com/obra/superpowers",
+      "version": "5.1.3"
     },
     {
+      "contentHash": "sha256:6a0b2075ef77d1fb6dc783b0ddf4f7b4b2aca170a9ac9530c458087065bb9f05",
       "license": "LicenseRef-Figma-Developer-Terms",
       "licenseFile": "LICENSE.txt",
       "name": "figma",
       "notes": [
         "Complete plugin bundle with skills, commands, hooks, MCP, and UI assets."
       ],
-      "upstream": "https://www.figma.com"
+      "upstream": "https://www.figma.com",
+      "version": "2.0.13"
     },
     {
+      "contentHash": "sha256:ff855a7a3fa29271019d3abe8e1dab24b6701ce8509523100fd77409445c43ba",
       "license": "MIT",
       "licenseFile": "LICENSE",
       "name": "boltz-api-cli",
       "notes": [
         "Complete plugin bundle with skills and scripts."
       ],
-      "upstream": "https://boltz.bio"
+      "upstream": "https://boltz.bio",
+      "version": "0.1.1"
     },
     {
+      "contentHash": "sha256:8ff56cb190c2da9d78a0f058530d0492dfce6c7a5e5a0644d938faad436f486c",
       "license": "GPL-3.0-or-later",
       "licenseFile": "LICENSE",
       "name": "wedecode",
@@ -67,7 +74,8 @@
         "GPL-3.0 §6 requires the Corresponding Source for conveyed object code;",
         "see the open item recorded in THIRD_PARTY_NOTICES.md."
       ],
-      "upstream": "https://gitee.com/xiaoshangongzuoshi/wxapkg"
+      "upstream": "https://gitee.com/xiaoshangongzuoshi/wxapkg",
+      "version": "0.9.1"
     }
   ],
   "marketplaceOnly": [
