@@ -37,6 +37,7 @@ pub mod nested_instructions;
 pub mod office_service;
 pub mod permissions_prompt;
 pub mod plan_mode_reminder;
+pub mod plugin;
 pub mod plugin_dependency;
 pub mod plugin_loader;
 pub mod plugin_manifest;
