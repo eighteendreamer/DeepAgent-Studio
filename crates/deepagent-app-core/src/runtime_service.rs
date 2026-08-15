@@ -2367,6 +2367,51 @@ mod tests {
         }
     }
 
+    fn runtime_binary_name(name: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        }
+    }
+
+    fn compile_fake_runtime(dir: &Path, name: &str, version: &str) -> PathBuf {
+        let source = dir.join(format!("{name}.rs"));
+        let executable = dir.join(runtime_binary_name(name));
+        std::fs::write(
+            &source,
+            format!(
+                r#"
+fn main() {{
+    println!("{version}");
+}}
+"#
+            ),
+        )
+        .unwrap();
+
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        let status = std::process::Command::new(rustc)
+            .arg("--edition=2021")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to compile fake runtime");
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut perms = std::fs::metadata(&executable).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&executable, perms).unwrap();
+        }
+
+        executable
+    }
+
     fn multi_file_entry() -> RuntimeEntry {
         let files = vec![
             RuntimeFileArtifact {
@@ -2703,6 +2748,81 @@ mod tests {
             legacy.path().join("speech/models")
         );
         assert_eq!(svc.install_root(), active.path());
+    }
+
+    #[test]
+    fn project_runtime_wins_over_managed_fallback() {
+        let active = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let managed = tempfile::tempdir().unwrap();
+        let project_node = compile_fake_runtime(project.path(), "node", "22.1.0");
+
+        let managed_bin_dir = managed.path().join("managed/node");
+        std::fs::create_dir_all(&managed_bin_dir).unwrap();
+        let managed_node = managed_bin_dir.join(runtime_binary_name("node"));
+        std::fs::copy(&project_node, &managed_node).unwrap();
+
+        let mut artifacts = HashMap::new();
+        artifacts.insert(
+            Platform::current(),
+            RuntimeArtifact {
+                url: "https://example.com/node.exe".to_string(),
+                mirror_urls: Vec::new(),
+                sha256: None,
+                dest_subdir: "managed/node".to_string(),
+                file_name: runtime_binary_name("node"),
+                archive: ArchiveKind::Raw,
+                probe: Some(runtime_binary_name("node")),
+                files: Vec::new(),
+                allow_unpinned_files: false,
+            },
+        );
+        let entry = RuntimeEntry {
+            id: "node-22".to_string(),
+            name: "Managed Node".to_string(),
+            version: "22.1.0".to_string(),
+            capability: "node-runtime".to_string(),
+            size_bytes: 1,
+            artifacts,
+            probe: runtime_binary_name("node"),
+            system_probe_paths: vec![],
+        };
+        let svc = RuntimeService::with_registry_and_lookup(
+            &[active.path().to_path_buf()],
+            &[managed.path().to_path_buf()],
+            Arc::new(UnavailableDownloader),
+            vec![entry],
+        );
+        let requirement = RuntimeRequirement::prefer_local(RuntimeKind::Node, ">=20.19");
+        let local = svc
+            .resolve_runtime(&requirement, Some(project.path()), None)
+            .unwrap();
+        assert_eq!(local.source, RuntimeSource::Local);
+        assert_eq!(local.reason, "project runtime");
+        assert_eq!(local.executable, project_node);
+
+        let managed_only = RuntimeRequirement {
+            kind: RuntimeKind::Node,
+            version: Some(">=20.19".to_string()),
+            preference: RuntimePreference::ManagedOnly,
+        };
+        let managed = svc
+            .resolve_runtime(&managed_only, Some(project.path()), None)
+            .unwrap();
+        assert_eq!(managed.source, RuntimeSource::Managed);
+        assert_eq!(managed.reason, "DeepAgent managed fallback");
+        assert_eq!(managed.executable, managed_node);
+
+        let env = svc.build_process_environment(Some(project.path()));
+        let project_node_display = project_node.display().to_string();
+        assert_eq!(
+            env.get("DEEPAGENT_NODE").map(String::as_str),
+            Some(project_node_display.as_str())
+        );
+        assert_eq!(
+            env.get("DEEPAGENT_RUNTIME_SOURCE").map(String::as_str),
+            Some("local")
+        );
     }
 
     #[test]
