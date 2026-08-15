@@ -1024,19 +1024,33 @@ impl PluginService {
             let plugin_root = resolve_plugin_root(&package_root)?;
             let report = scan_plugin_dir(&plugin_root)?;
             if !report.errors.is_empty() {
-                return Err(CoreError::invalid(format!(
-                    "plugin scan failed during prepare: {}",
-                    report.errors.join("; ")
-                )));
+                return Err(plugin_install_failure(
+                    "prepare.scan",
+                    Some(&plugin_root),
+                    format!("plugin scan failed: {}", report.errors.join("; ")),
+                ));
             }
 
-            let manifest = load_plugin_manifest(&plugin_root)?
-                .ok_or_else(|| CoreError::invalid("plugin manifest not found"))?;
+            let manifest = load_plugin_manifest(&plugin_root)
+                .map_err(|error| {
+                    plugin_install_failure("prepare.parse_manifest", Some(&plugin_root), error)
+                })?
+                .ok_or_else(|| {
+                    plugin_install_failure(
+                        "prepare.parse_manifest",
+                        Some(&plugin_root),
+                        "plugin manifest not found",
+                    )
+                })?;
             if manifest.name != entry.name {
-                return Err(CoreError::invalid(format!(
-                    "marketplace entry '{}' points to plugin manifest '{}'",
-                    entry.name, manifest.name
-                )));
+                return Err(plugin_install_failure(
+                    "prepare.validate_metadata",
+                    Some(&manifest.manifest_path),
+                    format!(
+                        "marketplace entry '{}' points to plugin manifest '{}'",
+                        entry.name, manifest.name
+                    ),
+                ));
             }
 
             let version = manifest
@@ -1050,10 +1064,11 @@ impl PluginService {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| {
-                    CoreError::invalid(format!(
-                        "prepared plugin staging dir has no token: {}",
-                        staging.display()
-                    ))
+                    plugin_install_failure(
+                        "prepare.stage_metadata",
+                        Some(&staging),
+                        "prepared plugin staging dir has no token",
+                    )
                 })?
                 .to_string();
             let plugin_id = plugin_id(&manifest.name, &marketplace_key);
@@ -1063,7 +1078,9 @@ impl PluginService {
                 &plugin_root,
                 &manifest,
             );
-            let content_hash = plugin_directory_content_hash(&plugin_root)?;
+            let content_hash = plugin_directory_content_hash(&plugin_root).map_err(|error| {
+                plugin_install_failure("prepare.hash", Some(&plugin_root), error)
+            })?;
             let metadata = PreparedPluginInstallState {
                 schema_version: 1,
                 token: token.clone(),
@@ -1078,7 +1095,13 @@ impl PluginService {
                 content_hash: content_hash.clone(),
                 created_at: now_string(),
             };
-            write_prepared_install_metadata(&staging, &metadata)?;
+            write_prepared_install_metadata(&staging, &metadata).map_err(|error| {
+                plugin_install_failure(
+                    "prepare.write_metadata",
+                    Some(&staging.join(PREPARED_PLUGIN_INSTALL_FILE)),
+                    error,
+                )
+            })?;
 
             Ok(PreparedPluginInstallDto {
                 token,
@@ -1105,60 +1128,103 @@ impl PluginService {
     pub fn commit_plugin_install(&self, token: &str) -> Result<PluginDto> {
         let staging = self.prepared_install_dir(token)?;
         let result = (|| {
-            let metadata = load_prepared_install_metadata(&staging)?;
+            let metadata = load_prepared_install_metadata(&staging).map_err(|error| {
+                plugin_install_failure(
+                    "commit.load_metadata",
+                    Some(&staging.join(PREPARED_PLUGIN_INSTALL_FILE)),
+                    error,
+                )
+            })?;
             if metadata.token != token {
-                return Err(CoreError::invalid(format!(
-                    "prepared plugin token mismatch: expected {token}, found {}",
-                    metadata.token
-                )));
+                return Err(plugin_install_failure(
+                    "commit.validate_metadata",
+                    Some(&staging.join(PREPARED_PLUGIN_INSTALL_FILE)),
+                    format!(
+                        "prepared plugin token mismatch: expected {token}, found {}",
+                        metadata.token
+                    ),
+                ));
             }
             let plugin_root = PathBuf::from(&metadata.plugin_root);
             if !path_is_under(&plugin_root, &staging) {
-                return Err(CoreError::invalid(format!(
-                    "prepared plugin root escapes staging dir: {}",
-                    plugin_root.display()
-                )));
+                return Err(plugin_install_failure(
+                    "commit.validate_metadata",
+                    Some(&plugin_root),
+                    "prepared plugin root escapes staging dir",
+                ));
             }
             let report = scan_plugin_dir(&plugin_root)?;
             if !report.errors.is_empty() {
-                return Err(CoreError::invalid(format!(
-                    "plugin scan failed during commit: {}",
-                    report.errors.join("; ")
-                )));
+                return Err(plugin_install_failure(
+                    "commit.scan",
+                    Some(&plugin_root),
+                    format!("plugin scan failed: {}", report.errors.join("; ")),
+                ));
             }
-            let manifest = load_plugin_manifest(&plugin_root)?
-                .ok_or_else(|| CoreError::invalid("plugin manifest not found"))?;
+            let manifest = load_plugin_manifest(&plugin_root)
+                .map_err(|error| {
+                    plugin_install_failure("commit.parse_manifest", Some(&plugin_root), error)
+                })?
+                .ok_or_else(|| {
+                    plugin_install_failure(
+                        "commit.parse_manifest",
+                        Some(&plugin_root),
+                        "plugin manifest not found",
+                    )
+                })?;
             if manifest.name != metadata.plugin {
-                return Err(CoreError::invalid(format!(
-                    "prepared plugin metadata names '{}' but manifest names '{}'",
-                    metadata.plugin, manifest.name
-                )));
+                return Err(plugin_install_failure(
+                    "commit.validate_metadata",
+                    Some(&manifest.manifest_path),
+                    format!(
+                        "prepared plugin metadata names '{}' but manifest names '{}'",
+                        metadata.plugin, manifest.name
+                    ),
+                ));
             }
             if plugin_id(&manifest.name, &metadata.marketplace) != metadata.plugin_id {
-                return Err(CoreError::invalid(format!(
-                    "prepared plugin id changed for '{}'",
-                    manifest.name
-                )));
+                return Err(plugin_install_failure(
+                    "commit.validate_metadata",
+                    Some(&manifest.manifest_path),
+                    format!("prepared plugin id changed for '{}'", manifest.name),
+                ));
             }
-            let content_hash = plugin_directory_content_hash(&plugin_root)?;
+            let content_hash = plugin_directory_content_hash(&plugin_root).map_err(|error| {
+                plugin_install_failure("commit.verify_hash", Some(&plugin_root), error)
+            })?;
             if content_hash != metadata.content_hash {
-                return Err(CoreError::invalid(format!(
-                    "prepared plugin content hash changed: expected {}, got {}",
-                    metadata.content_hash, content_hash
-                )));
+                return Err(plugin_install_failure(
+                    "commit.verify_hash",
+                    Some(&plugin_root),
+                    format!(
+                        "prepared plugin content hash changed: expected {}, got {}",
+                        metadata.content_hash, content_hash
+                    ),
+                ));
             }
 
             let mut stack = vec![metadata.plugin_id.clone()];
             for dependency in &manifest.dependencies {
-                let dependency = marketplace_dependency_id(dependency, &metadata.marketplace)?;
+                let dependency = marketplace_dependency_id(dependency, &metadata.marketplace)
+                    .map_err(|error| {
+                        plugin_install_failure(
+                            "commit.resolve_dependencies",
+                            Some(&manifest.manifest_path),
+                            error,
+                        )
+                    })?;
                 if dependency.marketplace != metadata.marketplace {
                     if self.is_marketplace_dependency_satisfied(&dependency.id)? {
                         continue;
                     }
-                    return Err(CoreError::invalid(format!(
-                        "plugin '{}' depends on '{}' from marketplace '{}'; install that dependency explicitly before installing this plugin",
-                        manifest.name, dependency.name, dependency.marketplace
-                    )));
+                    return Err(plugin_install_failure(
+                        "commit.resolve_dependencies",
+                        Some(&manifest.manifest_path),
+                        format!(
+                            "plugin '{}' depends on '{}' from marketplace '{}'; install that dependency explicitly before installing this plugin",
+                            manifest.name, dependency.name, dependency.marketplace
+                        ),
+                    ));
                 }
                 if self.is_marketplace_dependency_satisfied(&dependency.id)? {
                     continue;
@@ -1182,18 +1248,25 @@ impl PluginService {
                 &version,
             );
             if destination.display().to_string() != metadata.destination_path {
-                return Err(CoreError::invalid(format!(
-                    "prepared plugin destination changed: expected {}, found {}",
-                    metadata.destination_path,
-                    destination.display()
-                )));
+                return Err(plugin_install_failure(
+                    "commit.validate_destination",
+                    Some(&destination),
+                    format!(
+                        "prepared plugin destination changed: expected {}, found {}",
+                        metadata.destination_path,
+                        destination.display()
+                    ),
+                ));
             }
             commit_plugin_directory(
                 &plugin_root,
                 &destination,
                 &self.roots.marketplace_cache,
                 &format!("{}-{}-{version}", metadata.marketplace, manifest.name),
-            )?;
+            )
+            .map_err(|error| {
+                plugin_install_failure("commit.atomic_commit", Some(&destination), error)
+            })?;
             let plugin_dir = self
                 .roots
                 .marketplace_cache
@@ -1204,7 +1277,10 @@ impl PluginService {
                     &self.roots.marketplace_cache,
                     &plugin_dir,
                     &destination,
-                )?;
+                )
+                .map_err(|error| {
+                    plugin_install_failure("commit.mark_stale_versions", Some(&plugin_dir), error)
+                })?;
             }
 
             let id = plugin_id(&manifest.name, &metadata.marketplace);
@@ -1224,7 +1300,9 @@ impl PluginService {
                     content_hash: Some(metadata.content_hash.clone()),
                 },
             );
-            self.save_state(&state)?;
+            self.save_state(&state).map_err(|error| {
+                plugin_install_failure("commit.write_state", Some(&self.state_path), error)
+            })?;
             self.read(&id)?
                 .ok_or_else(|| CoreError::not_found(format!("plugin {id}")))
         })();
@@ -3798,6 +3876,19 @@ fn marketplace_authentication_hint(entry: &PluginMarketplaceEntry) -> Option<Str
 
 fn plugin_state_schema_version() -> u32 {
     PLUGIN_STATE_SCHEMA_VERSION
+}
+
+fn plugin_install_failure(
+    stage: &str,
+    file: Option<&Path>,
+    reason: impl std::fmt::Display,
+) -> CoreError {
+    let file = file
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<unknown>".to_string());
+    CoreError::invalid(format!(
+        "plugin install failed: stage={stage}; file={file}; reason={reason}"
+    ))
 }
 
 fn migrate_plugin_state(mut state: PluginState) -> Result<PluginState> {
@@ -9830,8 +9921,11 @@ rl.on('line', (line) => {
         .unwrap();
 
         let err = svc.commit_plugin_install(&prepared.token).unwrap_err();
+        let err = err.to_string();
 
-        assert!(err.to_string().contains("content hash changed"));
+        assert!(err.contains("stage=commit.verify_hash"));
+        assert!(err.contains(&prepared.plugin_root));
+        assert!(err.contains("content hash changed"));
         assert!(!Path::new(&prepared.staging_path).exists());
         assert!(!roots
             .marketplace_cache
@@ -9946,8 +10040,12 @@ rl.on('line', (line) => {
         .unwrap();
 
         let err = svc.commit_plugin_install(&prepared.token).unwrap_err();
+        let err = err.to_string();
 
-        assert!(err.to_string().contains("commit"));
+        assert!(err.contains("stage=commit.scan"));
+        assert!(err.contains(&prepared.plugin_root));
+        assert!(err.contains("plugin scan failed"));
+        assert!(err.contains("reason="));
         assert!(!Path::new(&prepared.staging_path).exists());
         let current = svc.read("demo@team").unwrap().unwrap();
         assert_eq!(current.version.as_deref(), Some("0.1.0"));
