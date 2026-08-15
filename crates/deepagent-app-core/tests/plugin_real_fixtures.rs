@@ -3,6 +3,7 @@
 //! 这些 fixture 来自桌面应用实际随包资源，不使用人工构造的理想目录。
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use deepagent_app_core::plugin_loader::{load_plugins, PluginLoadError, PluginRoots};
 
@@ -183,4 +184,73 @@ fn complete_bundled_plugins_are_real_resources() {
         figma_root.join(".app.json").is_file(),
         "figma app config missing"
     );
+
+    let boltz_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/desktop/src-tauri/resources/plugins/boltz-api-cli");
+    assert!(
+        boltz_root
+            .join("tests")
+            .join("test_scan_sites.py")
+            .is_file(),
+        "boltz dry-run fixture missing"
+    );
+    assert!(
+        boltz_root
+            .join("skills")
+            .join("boltz-protein-design")
+            .join("scripts")
+            .join("scan_sites.py")
+            .is_file(),
+        "boltz scan_sites script missing"
+    );
+}
+
+#[test]
+fn boltz_api_cli_python_dry_run_executes_bundled_script_tests() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/desktop/src-tauri/resources/plugins/boltz-api-cli");
+    if !root.is_dir() {
+        eprintln!("skipping: bundled boltz plugin resource is not present");
+        return;
+    }
+    let Some(python) = python_command() else {
+        eprintln!("skipping: python runtime is not available");
+        return;
+    };
+
+    let test_file = root.join("tests").join("test_scan_sites.py");
+    let output = Command::new(&python)
+        .arg(&test_file)
+        .current_dir(&root)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run {}: {error}", python.display()));
+
+    assert!(
+        output.status.success(),
+        "boltz python dry-run failed with {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Ran 6 tests") && stderr.contains("OK"),
+        "unexpected boltz dry-run output:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        stderr
+    );
+}
+
+fn python_command() -> Option<PathBuf> {
+    let mut candidates = vec![PathBuf::from("python"), PathBuf::from("python3")];
+    if let Some(path) = std::env::var_os("DEEPAGENT_PYTHON").filter(|value| !value.is_empty()) {
+        candidates.push(PathBuf::from(path));
+    }
+    candidates.into_iter().find(|candidate| {
+        Command::new(candidate)
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    })
 }

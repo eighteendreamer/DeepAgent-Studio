@@ -3,6 +3,8 @@
 **/target
 Cargo.lock
 *.pdb
+__pycache__/
+*.pyc
 
 # Node / Frontend
 node_modules
