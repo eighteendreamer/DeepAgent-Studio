@@ -26,7 +26,8 @@ use deepagent_app_core::{
     GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
     KnowledgeService, LocalPtyHandle, McpServerDto, McpService, NewRuntimeLogEntry, OfficeService,
     PdfRenderResultDto, PluginAppEntry, PluginDto, PluginMarketplaceDto, PluginMarketplaceEntryDto,
-    PluginOutputStyleEntry, PluginRoots, PluginScanReportDto, PluginService, PreflightToolCallDto,
+    PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto, PluginScanReportDto,
+    PluginService, PreflightToolCallDto,
     PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
     ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
     ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, RecordingService,
@@ -1111,6 +1112,28 @@ async fn reload_plugins(state: State<'_, AppState>) -> Result<Vec<PluginDto>, St
 #[tauri::command]
 fn read_plugin(state: State<'_, AppState>, id: String) -> Result<Option<PluginDto>, String> {
     state.plugins.read(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn inspect_plugin_runtime(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<PluginRuntimeInspectionDto>, String> {
+    state
+        .plugins
+        .inspect_plugin_runtime(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn check_plugin_health(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<PluginRuntimeInspectionDto>, String> {
+    state
+        .plugins
+        .check_plugin_health(&id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -5340,6 +5363,8 @@ pub fn run() {
             list_plugins,
             reload_plugins,
             read_plugin,
+            inspect_plugin_runtime,
+            check_plugin_health,
             list_plugin_apps,
             list_plugin_output_styles,
             set_plugin_enabled,

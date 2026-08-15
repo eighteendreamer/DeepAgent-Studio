@@ -122,7 +122,10 @@ pub use plugin_runtime::{
     PluginOutputStyleEntry, PluginRuntimeError, PluginRuntimeProjection,
 };
 pub use plugin_security::{PluginComponentSummaryDto, PluginRiskItemDto, PluginScanReportDto};
-pub use plugin_service::{CreatePluginDraftDto, PluginDto, PluginService, PluginSourceDto};
+pub use plugin_service::{
+    CreatePluginDraftDto, PluginDto, PluginExecutionKind, PluginHealthStatus, PluginLicenseStatus,
+    PluginLifecycleState, PluginRuntimeInspectionDto, PluginService, PluginSourceDto,
+};
 pub use project_map_service::{
     ProjectMapEdgeDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto,
     ProjectMapNeighborDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,

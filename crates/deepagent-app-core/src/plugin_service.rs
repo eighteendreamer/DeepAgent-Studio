@@ -5,7 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use deepagent_core::error::{CoreError, Result};
@@ -56,6 +56,51 @@ pub struct PluginDependentDto {
     pub display_name: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginExecutionKind {
+    HostBacked,
+    SkillOnly,
+    Subprocess,
+    ManagedRuntime,
+    DshSidecar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginLifecycleState {
+    Discovered,
+    Parsed,
+    Installed,
+    RuntimeReady,
+    Executable,
+    Verified,
+    Incomplete,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginHealthStatus {
+    Ready,
+    NeedsConfiguration,
+    NeedsAuthorization,
+    RuntimeUnavailable,
+    Incomplete,
+    Failed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginLicenseStatus {
+    FirstParty,
+    BundledThirdParty,
+    MarketplaceOnly,
+    Missing,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginDto {
     pub id: String,
@@ -96,8 +141,22 @@ pub struct PluginDto {
     pub mcp_server_count: u32,
     pub hook_count: u32,
     pub command_count: u32,
+    pub agent_count: u32,
     pub app_count: u32,
     pub output_style_count: u32,
+    pub state: PluginLifecycleState,
+    pub execution_kind: PluginExecutionKind,
+    pub runtime_required: bool,
+    pub runtime_available: bool,
+    #[serde(default)]
+    pub entrypoints: Vec<String>,
+    pub has_runtime_payload: bool,
+    pub license_status: PluginLicenseStatus,
+    pub health_status: PluginHealthStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_health_check: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,6 +167,40 @@ pub struct PluginDto {
     pub required_by: Vec<PluginDependentDto>,
     #[serde(default)]
     pub errors: Vec<PluginLoadError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginRuntimeInspectionDto {
+    pub plugin_id: String,
+    pub execution_kind: PluginExecutionKind,
+    pub state: PluginLifecycleState,
+    pub runtime_required: bool,
+    pub runtime_available: bool,
+    #[serde(default)]
+    pub entrypoints: Vec<String>,
+    pub has_runtime_payload: bool,
+    pub health_status: PluginHealthStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_health_check: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_error: Option<String>,
+}
+
+impl PluginRuntimeInspectionDto {
+    fn from_plugin(plugin: &PluginDto) -> Self {
+        Self {
+            plugin_id: plugin.id.clone(),
+            execution_kind: plugin.execution_kind,
+            state: plugin.state,
+            runtime_required: plugin.runtime_required,
+            runtime_available: plugin.runtime_available,
+            entrypoints: plugin.entrypoints.clone(),
+            has_runtime_payload: plugin.has_runtime_payload,
+            health_status: plugin.health_status,
+            last_health_check: plugin.last_health_check.clone(),
+            health_error: plugin.health_error.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +299,34 @@ struct PluginListCache {
     snapshots: Vec<PathSnapshot>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PluginComponentCounts {
+    skills: u32,
+    mcp_servers: u32,
+    hooks: u32,
+    commands: u32,
+    agents: u32,
+    apps: u32,
+    output_styles: u32,
+}
+
+impl PluginComponentCounts {
+    fn from_manifest(manifest: Option<&PluginManifest>) -> Self {
+        let Some(manifest) = manifest else {
+            return Self::default();
+        };
+        Self {
+            skills: count_skills(manifest),
+            mcp_servers: count_mcp_servers(manifest),
+            hooks: count_hooks(manifest),
+            commands: count_commands(manifest),
+            agents: count_agents(manifest),
+            apps: count_apps(manifest),
+            output_styles: count_output_styles(manifest),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PathSnapshot {
     path: PathBuf,
@@ -257,6 +378,17 @@ impl PluginService {
 
     pub fn read(&self, id: &str) -> Result<Option<PluginDto>> {
         Ok(self.list()?.into_iter().find(|plugin| plugin.id == id))
+    }
+
+    pub fn inspect_plugin_runtime(&self, id: &str) -> Result<Option<PluginRuntimeInspectionDto>> {
+        Ok(self
+            .read(id)?
+            .map(|plugin| PluginRuntimeInspectionDto::from_plugin(&plugin)))
+    }
+
+    pub fn check_plugin_health(&self, id: &str) -> Result<Option<PluginRuntimeInspectionDto>> {
+        self.invalidate_plugin_caches();
+        self.inspect_plugin_runtime(id)
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<PluginDto> {
@@ -355,6 +487,13 @@ impl PluginService {
 
     pub fn install_from_dir(&self, source_dir: impl AsRef<Path>) -> Result<PluginDto> {
         let source = source_dir.as_ref();
+        let report = scan_plugin_dir(source)?;
+        if !report.errors.is_empty() {
+            return Err(CoreError::invalid(format!(
+                "plugin scan failed: {}",
+                report.errors.join("; ")
+            )));
+        }
         let manifest = load_plugin_manifest(source)?
             .ok_or_else(|| CoreError::invalid("plugin manifest not found"))?;
         let name = manifest.name.clone();
@@ -377,10 +516,7 @@ impl PluginService {
                 .ok_or_else(|| CoreError::not_found(format!("plugin {id}")));
         }
 
-        if destination.exists() {
-            safe_remove_dir(&self.roots.personal, &destination)?;
-        }
-        copy_dir(source, &destination)?;
+        commit_plugin_directory(source, &destination, &self.roots.personal, &name)?;
 
         let id = plugin_id(&name, PluginOrigin::Personal.as_str());
         let mut state = self.load_state()?;
@@ -864,7 +1000,12 @@ impl PluginService {
             )?;
         }
         let destination = plugin_dir.join(sanitize_file_name(&version));
-        copy_dir(source, &destination)?;
+        commit_plugin_directory(
+            source,
+            &destination,
+            &self.roots.marketplace_cache,
+            &format!("{marketplace_key}-{}-{version}", manifest.name),
+        )?;
 
         let id = plugin_id(&manifest.name, marketplace_key);
         let mut state = self.load_state()?;
@@ -1024,6 +1165,298 @@ impl PluginService {
         )
     }
 
+    fn plugin_execution_kind(
+        &self,
+        plugin: &LoadedPlugin,
+        manifest: Option<&PluginManifest>,
+        counts: PluginComponentCounts,
+        has_runtime_payload: bool,
+    ) -> PluginExecutionKind {
+        if self.bundled_license_bucket(plugin.name.as_str())
+            == Some(BundledPluginBucket::FirstParty)
+            || manifest.is_some_and(manifest_has_host_backed_app)
+        {
+            return PluginExecutionKind::HostBacked;
+        }
+        if has_runtime_payload
+            || manifest
+                .map(|manifest| {
+                    manifest.runtime.node.is_some()
+                        || manifest.runtime.python.is_some()
+                        || manifest.runtime.java.is_some()
+                })
+                .unwrap_or(false)
+        {
+            return PluginExecutionKind::ManagedRuntime;
+        }
+
+        if counts.mcp_servers > 0 || counts.hooks > 0 || counts.apps > 0 {
+            return PluginExecutionKind::DshSidecar;
+        }
+
+        if counts.commands > 0 {
+            return PluginExecutionKind::Subprocess;
+        }
+
+        if counts.skills > 0 || counts.agents > 0 || counts.output_styles > 0 {
+            return PluginExecutionKind::SkillOnly;
+        }
+
+        PluginExecutionKind::SkillOnly
+    }
+
+    fn plugin_runtime_requirements(
+        &self,
+        plugin: &LoadedPlugin,
+        manifest: Option<&PluginManifest>,
+        has_runtime_payload: bool,
+    ) -> PluginRuntimeNeeds {
+        let mut needs = PluginRuntimeNeeds::default();
+        if let Some(manifest) = manifest {
+            if manifest.runtime.node.is_some() {
+                needs.node = true;
+            }
+            if manifest.runtime.python.is_some() {
+                needs.python = true;
+            }
+            if manifest.runtime.java.is_some() {
+                needs.java = true;
+            }
+        }
+        if has_runtime_payload {
+            needs.node = true;
+        }
+        needs.merge_script_requirements(&plugin.root);
+        needs
+    }
+
+    fn runtime_requirements_available(&self, needs: &PluginRuntimeNeeds) -> bool {
+        (!needs.node || probe_runtime("node", &["--version"]))
+            && (!needs.python || probe_runtime("python", &["--version"]))
+            && (!needs.java || probe_runtime("java", &["-version"]))
+            && (!needs.shell || probe_shell())
+    }
+
+    fn plugin_entrypoints(
+        &self,
+        plugin: &LoadedPlugin,
+        manifest: Option<&PluginManifest>,
+    ) -> Vec<String> {
+        let mut entrypoints = Vec::new();
+        let Some(manifest) = manifest else {
+            return entrypoints;
+        };
+
+        if plugin.root.join("runtime.zip").is_file() {
+            entrypoints.push(plugin.root.join("runtime.zip").display().to_string());
+        }
+        for path in &manifest.paths.skills {
+            if path.exists() {
+                entrypoints.push(path.display().to_string());
+            }
+        }
+        for path in &manifest.paths.commands {
+            if path.exists() {
+                entrypoints.push(path.display().to_string());
+            }
+        }
+        for path in &manifest.paths.agents {
+            if path.exists() {
+                entrypoints.push(path.display().to_string());
+            }
+        }
+        for path in &manifest.paths.mcp_server_paths {
+            if path.is_file() {
+                entrypoints.push(path.display().to_string());
+            }
+        }
+        for path in &manifest.paths.hook_paths {
+            if path.is_file() {
+                entrypoints.push(path.display().to_string());
+            }
+        }
+        for path in &manifest.paths.app_paths {
+            if path.exists() {
+                entrypoints.push(path.display().to_string());
+            }
+        }
+        for path in &manifest.paths.output_styles {
+            if path.exists() {
+                entrypoints.push(path.display().to_string());
+            }
+        }
+        entrypoints.sort();
+        entrypoints.dedup();
+        entrypoints
+    }
+
+    fn plugin_license_status(&self, plugin: &LoadedPlugin) -> PluginLicenseStatus {
+        match self.bundled_license_bucket(plugin.name.as_str()) {
+            Some(BundledPluginBucket::FirstParty) => PluginLicenseStatus::FirstParty,
+            Some(BundledPluginBucket::BundledThirdParty) => PluginLicenseStatus::BundledThirdParty,
+            Some(BundledPluginBucket::MarketplaceOnly) => PluginLicenseStatus::MarketplaceOnly,
+            None => PluginLicenseStatus::Unknown,
+        }
+    }
+
+    fn plugin_health_status(
+        &self,
+        plugin: &LoadedPlugin,
+        manifest: Option<&PluginManifest>,
+        resolved: Option<&ResolvedPlugin>,
+        counts: PluginComponentCounts,
+        runtime_available: bool,
+        runtime_requirements: &PluginRuntimeNeeds,
+    ) -> PluginHealthStatus {
+        if !plugin.available || resolved.is_none() {
+            return PluginHealthStatus::Failed;
+        }
+        if has_fatal_plugin_errors(plugin) {
+            return PluginHealthStatus::Failed;
+        }
+        if runtime_requirements.requires_runtime() && !runtime_available {
+            return PluginHealthStatus::RuntimeUnavailable;
+        }
+
+        if manifest.is_some_and(|manifest| {
+            self.plugin_execution_kind(
+                plugin,
+                Some(manifest),
+                counts,
+                plugin.root.join("runtime.zip").is_file(),
+            ) == PluginExecutionKind::HostBacked
+        }) {
+            return PluginHealthStatus::Incomplete;
+        }
+
+        if manifest.is_some_and(manifest_has_oauth_mcp) {
+            return PluginHealthStatus::NeedsAuthorization;
+        }
+        let credential_hints = credential_env_hints(&plugin.root);
+        if !credential_hints.is_empty()
+            && !credential_hints
+                .iter()
+                .any(|name| std::env::var_os(name).is_some())
+        {
+            return PluginHealthStatus::NeedsConfiguration;
+        }
+
+        PluginHealthStatus::Ready
+    }
+
+    fn plugin_health_error(
+        &self,
+        plugin: &LoadedPlugin,
+        manifest: Option<&PluginManifest>,
+        counts: PluginComponentCounts,
+        runtime_requirements: &PluginRuntimeNeeds,
+        status: PluginHealthStatus,
+    ) -> Option<String> {
+        if status == PluginHealthStatus::Ready {
+            return None;
+        }
+        let message = match status {
+            PluginHealthStatus::NeedsConfiguration => {
+                let hints = credential_env_hints(&plugin.root);
+                if hints.is_empty() {
+                    "plugin configuration is required".to_string()
+                } else {
+                    format!(
+                        "plugin references unconfigured credential environment variables: {}",
+                        hints.join(", ")
+                    )
+                }
+            }
+            PluginHealthStatus::NeedsAuthorization => {
+                "plugin declares an OAuth-backed MCP or connector that still needs host authorization"
+                    .to_string()
+            }
+            PluginHealthStatus::RuntimeUnavailable => {
+                format_runtime_unavailable(runtime_requirements)
+            }
+            PluginHealthStatus::Incomplete => {
+                if let Some(manifest) = manifest {
+                    if self.plugin_execution_kind(
+                        plugin,
+                        Some(manifest),
+                        counts,
+                        plugin.root.join("runtime.zip").is_file(),
+                    ) == PluginExecutionKind::HostBacked
+                    {
+                        "host-backed plugin still needs host registry and command binding validation"
+                            .to_string()
+                    } else {
+                        "plugin is missing one or more required entrypoints".to_string()
+                    }
+                } else {
+                    "plugin manifest could not be resolved".to_string()
+                }
+            }
+            PluginHealthStatus::Failed => {
+                if !plugin.available {
+                    "plugin is unavailable".to_string()
+                } else if manifest.is_none() {
+                    "plugin manifest failed to load".to_string()
+                } else {
+                    "plugin failed health inspection".to_string()
+                }
+            }
+            PluginHealthStatus::Ready | PluginHealthStatus::Unknown => return None,
+        };
+        Some(message)
+    }
+
+    fn plugin_lifecycle_state(
+        &self,
+        plugin: &LoadedPlugin,
+        manifest: Option<&PluginManifest>,
+        resolved: Option<&ResolvedPlugin>,
+        counts: PluginComponentCounts,
+        health_status: PluginHealthStatus,
+        entrypoints: &[String],
+    ) -> PluginLifecycleState {
+        if !plugin.available || resolved.is_none() {
+            return PluginLifecycleState::Failed;
+        }
+        if has_fatal_plugin_errors(plugin) {
+            return PluginLifecycleState::Failed;
+        }
+        let Some(manifest) = manifest else {
+            return PluginLifecycleState::Discovered;
+        };
+        if entrypoints.is_empty() {
+            return PluginLifecycleState::Parsed;
+        }
+        match health_status {
+            PluginHealthStatus::NeedsConfiguration | PluginHealthStatus::NeedsAuthorization => {
+                PluginLifecycleState::RuntimeReady
+            }
+            PluginHealthStatus::RuntimeUnavailable | PluginHealthStatus::Incomplete => {
+                PluginLifecycleState::Incomplete
+            }
+            PluginHealthStatus::Failed => PluginLifecycleState::Failed,
+            PluginHealthStatus::Ready | PluginHealthStatus::Unknown => {
+                match self.plugin_execution_kind(
+                    plugin,
+                    Some(manifest),
+                    counts,
+                    plugin.root.join("runtime.zip").is_file(),
+                ) {
+                    PluginExecutionKind::HostBacked | PluginExecutionKind::SkillOnly => {
+                        PluginLifecycleState::Verified
+                    }
+                    PluginExecutionKind::Subprocess
+                    | PluginExecutionKind::ManagedRuntime
+                    | PluginExecutionKind::DshSidecar => PluginLifecycleState::Executable,
+                }
+            }
+        }
+    }
+
+    fn bundled_license_bucket(&self, name: &str) -> Option<BundledPluginBucket> {
+        bundled_plugin_catalog().bucket_for(name)
+    }
+
     fn dto_from_loaded(
         &self,
         plugin: &LoadedPlugin,
@@ -1039,29 +1472,54 @@ impl PluginService {
         let presentation =
             resolved.map(|resolved| self.presentation_for_loaded(plugin, resolved, state));
         let data_dir = self.data_root.join(sanitize_file_name(&plugin.id));
-        let skill_count = manifest.map(count_skills).unwrap_or_default();
-        let mcp_server_count = manifest.map(count_mcp_servers).unwrap_or_default();
-        let hook_count = manifest.map(count_hooks).unwrap_or_default();
-        let command_count = manifest.map(count_commands).unwrap_or_default();
-        let app_count = manifest.map(count_apps).unwrap_or_default();
-        let output_style_count = manifest.map(count_output_styles).unwrap_or_default();
+        let counts = PluginComponentCounts::from_manifest(manifest);
+        let entrypoints = self.plugin_entrypoints(plugin, manifest);
+        let has_runtime_payload = plugin.root.join("runtime.zip").is_file();
+        let runtime_requirements =
+            self.plugin_runtime_requirements(plugin, manifest, has_runtime_payload);
+        let runtime_available = self.runtime_requirements_available(&runtime_requirements);
+        let license_status = self.plugin_license_status(plugin);
+        let health_status = self.plugin_health_status(
+            plugin,
+            manifest,
+            resolved,
+            counts,
+            runtime_available,
+            &runtime_requirements,
+        );
+        let health_error = self.plugin_health_error(
+            plugin,
+            manifest,
+            counts,
+            &runtime_requirements,
+            health_status,
+        );
+        let last_health_check = Some(now_string());
+        let lifecycle_state = self.plugin_lifecycle_state(
+            plugin,
+            manifest,
+            resolved,
+            counts,
+            health_status,
+            &entrypoints,
+        );
         let mut capabilities = manifest
             .map(|m| m.interface.capabilities.clone())
             .unwrap_or_default();
         if capabilities.is_empty() {
-            if skill_count > 0 {
+            if counts.skills > 0 {
                 capabilities.push("Skill".to_string());
             }
-            if mcp_server_count > 0 {
+            if counts.mcp_servers > 0 {
                 capabilities.push("MCP".to_string());
             }
-            if hook_count > 0 {
+            if counts.hooks > 0 {
                 capabilities.push("Hooks".to_string());
             }
-            if app_count > 0 {
+            if counts.apps > 0 {
                 capabilities.push("App".to_string());
             }
-            if output_style_count > 0 {
+            if counts.output_styles > 0 {
                 capabilities.push("Output Style".to_string());
             }
         }
@@ -1116,12 +1574,28 @@ impl PluginService {
             permissions: manifest
                 .map(|m| m.interface.permissions.clone())
                 .unwrap_or_default(),
-            skill_count,
-            mcp_server_count,
-            hook_count,
-            command_count,
-            app_count,
-            output_style_count,
+            skill_count: counts.skills,
+            mcp_server_count: counts.mcp_servers,
+            hook_count: counts.hooks,
+            command_count: counts.commands,
+            agent_count: counts.agents,
+            app_count: counts.apps,
+            output_style_count: counts.output_styles,
+            state: lifecycle_state,
+            execution_kind: self.plugin_execution_kind(
+                plugin,
+                manifest,
+                counts,
+                has_runtime_payload,
+            ),
+            runtime_required: !runtime_requirements.is_empty(),
+            runtime_available,
+            entrypoints,
+            has_runtime_payload,
+            license_status,
+            health_status,
+            last_health_check,
+            health_error,
             icon_path: manifest
                 .and_then(|m| m.interface.composer_icon.as_ref())
                 .map(|path| path_string(path)),
@@ -2629,6 +3103,421 @@ fn find_first_archive(dir: &Path, predicate: impl Fn(&Path) -> bool) -> Result<O
     Ok(None)
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct PluginRuntimeNeeds {
+    node: bool,
+    python: bool,
+    java: bool,
+    shell: bool,
+}
+
+impl PluginRuntimeNeeds {
+    fn is_empty(&self) -> bool {
+        !self.node && !self.python && !self.java && !self.shell
+    }
+
+    fn requires_runtime(&self) -> bool {
+        !self.is_empty()
+    }
+
+    fn merge_script_requirements(&mut self, root: &Path) {
+        scan_runtime_script_dirs(root, self);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BundledPluginBucket {
+    FirstParty,
+    BundledThirdParty,
+    MarketplaceOnly,
+}
+
+#[derive(Debug, Deserialize)]
+struct BundledPluginCatalog {
+    #[serde(default, rename = "firstParty")]
+    first_party: Vec<String>,
+    #[serde(default, rename = "bundledThirdParty")]
+    bundled_third_party: Vec<BundledPluginCatalogEntry>,
+    #[serde(default, rename = "marketplaceOnly")]
+    marketplace_only: Vec<BundledPluginCatalogEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BundledPluginCatalogEntry {
+    name: String,
+}
+
+impl BundledPluginCatalog {
+    fn bucket_for(&self, name: &str) -> Option<BundledPluginBucket> {
+        if self.first_party.iter().any(|item| item == name) {
+            return Some(BundledPluginBucket::FirstParty);
+        }
+        if self
+            .bundled_third_party
+            .iter()
+            .any(|item| item.name == name)
+        {
+            return Some(BundledPluginBucket::BundledThirdParty);
+        }
+        if self.marketplace_only.iter().any(|item| item.name == name) {
+            return Some(BundledPluginBucket::MarketplaceOnly);
+        }
+        None
+    }
+}
+
+fn bundled_plugin_catalog() -> &'static BundledPluginCatalog {
+    static CATALOG: OnceLock<BundledPluginCatalog> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let json = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/desktop/src-tauri/bundled-plugins.json"
+        ));
+        serde_json::from_str(json).unwrap_or_else(|_| BundledPluginCatalog {
+            first_party: Vec::new(),
+            bundled_third_party: Vec::new(),
+            marketplace_only: Vec::new(),
+        })
+    })
+}
+
+fn scan_runtime_script_dirs(root: &Path, needs: &mut PluginRuntimeNeeds) {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let is_script_dir = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| matches!(name, "scripts" | "bin"))
+            .unwrap_or(false);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(path.clone());
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            if !is_script_file(&path) && !is_script_dir {
+                continue;
+            }
+            match path.extension().and_then(|ext| ext.to_str()) {
+                Some(ext)
+                    if matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "js" | "cjs" | "mjs" | "ts" | "tsx" | "jsx"
+                    ) =>
+                {
+                    needs.node = true;
+                }
+                Some(ext) if matches!(ext.to_ascii_lowercase().as_str(), "py") => {
+                    needs.python = true;
+                }
+                Some(ext)
+                    if matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "sh" | "bash" | "zsh" | "ps1" | "cmd" | "bat"
+                    ) =>
+                {
+                    needs.shell = true;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn is_script_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "js" | "cjs"
+                    | "mjs"
+                    | "ts"
+                    | "tsx"
+                    | "jsx"
+                    | "py"
+                    | "sh"
+                    | "bash"
+                    | "zsh"
+                    | "ps1"
+                    | "cmd"
+                    | "bat"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn probe_runtime(program: &str, args: &[&str]) -> bool {
+    runtime_probe_candidates(program)
+        .into_iter()
+        .any(|candidate| {
+            Command::new(candidate)
+                .args(args)
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        })
+}
+
+fn runtime_probe_candidates(program: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    candidates.push(PathBuf::from(program));
+    if let Some(env_key) = runtime_env_key(program) {
+        if let Some(path) = std::env::var_os(env_key).filter(|value| !value.is_empty()) {
+            let path = PathBuf::from(path);
+            if !candidates.iter().any(|candidate| candidate == &path) {
+                candidates.push(path);
+            }
+        }
+    }
+    candidates
+}
+
+fn runtime_env_key(program: &str) -> Option<&'static str> {
+    match program.to_ascii_lowercase().as_str() {
+        "node" | "node.exe" => Some("DEEPAGENT_NODE"),
+        "python" | "python.exe" | "python3" => Some("DEEPAGENT_PYTHON"),
+        "java" | "java.exe" => Some("DEEPAGENT_JAVA"),
+        _ => None,
+    }
+}
+
+fn probe_shell() -> bool {
+    let candidates: [(&str, &[&str]); 4] = [
+        (
+            "pwsh",
+            &[
+                "-NoProfile",
+                "-Command",
+                "$PSVersionTable.PSVersion.ToString()",
+            ],
+        ),
+        (
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "$PSVersionTable.PSVersion.ToString()",
+            ],
+        ),
+        ("bash", &["-lc", "true"]),
+        ("sh", &["-lc", "true"]),
+    ];
+    candidates.iter().any(|(program, args)| {
+        Command::new(program)
+            .args(*args)
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    })
+}
+
+fn format_runtime_unavailable(needs: &PluginRuntimeNeeds) -> String {
+    let mut parts = Vec::new();
+    if needs.node {
+        parts.push("node");
+    }
+    if needs.python {
+        parts.push("python");
+    }
+    if needs.java {
+        parts.push("java");
+    }
+    if needs.shell {
+        parts.push("shell");
+    }
+    if parts.is_empty() {
+        "runtime is unavailable".to_string()
+    } else {
+        format!("runtime unavailable: {}", parts.join(", "))
+    }
+}
+
+fn has_fatal_plugin_errors(plugin: &LoadedPlugin) -> bool {
+    plugin
+        .errors
+        .iter()
+        .any(|error| error.severity == crate::plugin::model::DiagnosticSeverity::Error)
+        || plugin
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind.as_str(), "manifest-parse-error" | "blocklist"))
+}
+
+fn manifest_has_host_backed_app(manifest: &PluginManifest) -> bool {
+    manifest
+        .paths
+        .app_paths
+        .iter()
+        .filter_map(read_json_file)
+        .any(|value| {
+            json_contains_text_value(&value, "component", |component| {
+                component.starts_with("builtin:") || component.starts_with("tauri:")
+            })
+        })
+}
+
+fn manifest_has_oauth_mcp(manifest: &PluginManifest) -> bool {
+    manifest
+        .paths
+        .mcp_server_paths
+        .iter()
+        .filter_map(read_json_file)
+        .any(|value| json_contains_key(&value, |key| key.to_ascii_lowercase().contains("oauth")))
+        || manifest
+            .paths
+            .mcp_servers_inline
+            .as_ref()
+            .is_some_and(|value| {
+                json_contains_key(value, |key| key.to_ascii_lowercase().contains("oauth"))
+            })
+}
+
+fn read_json_file(path: &PathBuf) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn json_contains_key(value: &serde_json::Value, predicate: impl Fn(&str) -> bool + Copy) -> bool {
+    match value {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .any(|(key, value)| predicate(key) || json_contains_key(value, predicate)),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|value| json_contains_key(value, predicate)),
+        _ => false,
+    }
+}
+
+fn json_contains_text_value(
+    value: &serde_json::Value,
+    key_name: &str,
+    predicate: impl Fn(&str) -> bool + Copy,
+) -> bool {
+    match value {
+        serde_json::Value::Object(map) => map.iter().any(|(key, value)| {
+            if key == key_name {
+                value.as_str().is_some_and(predicate)
+            } else {
+                json_contains_text_value(value, key_name, predicate)
+            }
+        }),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|value| json_contains_text_value(value, key_name, predicate)),
+        _ => false,
+    }
+}
+
+fn credential_env_hints(root: &Path) -> Vec<String> {
+    let mut hints = std::collections::BTreeSet::new();
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited_files = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                if should_scan_plugin_subdir(&path) {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if !file_type.is_file() || !should_scan_credential_file(&path) {
+                continue;
+            }
+            visited_files += 1;
+            if visited_files > 256 {
+                return hints.into_iter().collect();
+            }
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.len() > 256 * 1024 {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            collect_credential_tokens(&text, &mut hints);
+        }
+    }
+    hints.into_iter().collect()
+}
+
+fn should_scan_plugin_subdir(path: &Path) -> bool {
+    !path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            matches!(
+                name,
+                ".git" | "node_modules" | "target" | "dist" | "build" | "runtime"
+            )
+        })
+}
+
+fn should_scan_credential_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "md" | "mdx"
+                    | "json"
+                    | "yaml"
+                    | "yml"
+                    | "toml"
+                    | "sh"
+                    | "ps1"
+                    | "py"
+                    | "js"
+                    | "ts"
+                    | "cjs"
+                    | "mjs"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn collect_credential_tokens(text: &str, out: &mut std::collections::BTreeSet<String>) {
+    for token in text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')) {
+        let token = token.trim_matches('_');
+        if token.len() < 8 || token.len() > 80 {
+            continue;
+        }
+        if token.chars().any(|ch| ch.is_ascii_lowercase()) {
+            continue;
+        }
+        if is_credential_env_name(token) {
+            out.insert(token.to_string());
+        }
+    }
+}
+
+fn is_credential_env_name(token: &str) -> bool {
+    token.ends_with("_API_KEY")
+        || token.ends_with("_ACCESS_TOKEN")
+        || token.ends_with("_AUTH_TOKEN")
+        || token.ends_with("_CLIENT_SECRET")
+        || token.ends_with("_SECRET")
+}
+
 fn count_skills(manifest: &PluginManifest) -> u32 {
     manifest
         .paths
@@ -2673,6 +3562,10 @@ fn count_hooks(manifest: &PluginManifest) -> u32 {
 
 fn count_commands(manifest: &PluginManifest) -> u32 {
     count_markdown_like(&manifest.paths.commands)
+}
+
+fn count_agents(manifest: &PluginManifest) -> u32 {
+    count_markdown_like(&manifest.paths.agents)
 }
 
 fn count_apps(manifest: &PluginManifest) -> u32 {
@@ -2754,6 +3647,188 @@ fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
                     to.display()
                 ))
             })?;
+        }
+    }
+    Ok(())
+}
+
+fn commit_plugin_directory(
+    source: &Path,
+    destination: &Path,
+    install_root: &Path,
+    label: &str,
+) -> Result<()> {
+    let stage = create_plugin_staging_dir(install_root, label)?;
+    let result = (|| {
+        copy_dir(source, &stage)?;
+        load_plugin_manifest(&stage)?
+            .ok_or_else(|| CoreError::invalid("staged plugin manifest not found"))?;
+        replace_plugin_dir(&stage, destination, install_root)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&stage);
+    }
+    result
+}
+
+fn create_plugin_staging_dir(install_root: &Path, label: &str) -> Result<PathBuf> {
+    let stage = unique_plugin_staging_path(install_root, label)?;
+    std::fs::create_dir_all(&stage).map_err(|e| {
+        CoreError::Persistence(format!(
+            "create plugin staging dir {}: {e}",
+            stage.display()
+        ))
+    })?;
+    Ok(stage)
+}
+
+fn unique_plugin_staging_path(install_root: &Path, label: &str) -> Result<PathBuf> {
+    let base = install_root.join(".staging");
+    std::fs::create_dir_all(&base).map_err(|e| {
+        CoreError::Persistence(format!(
+            "create plugin staging root {}: {e}",
+            base.display()
+        ))
+    })?;
+    let label = sanitize_file_name(label);
+    for attempt in 0..100u32 {
+        let path = base.join(format!(
+            "{label}-{}-{}-{attempt}",
+            std::process::id(),
+            now_string()
+        ));
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(CoreError::other(format!(
+        "failed to allocate plugin staging dir under {}",
+        base.display()
+    )))
+}
+
+fn replace_plugin_dir(stage: &Path, destination: &Path, install_root: &Path) -> Result<()> {
+    ensure_replace_dir_is_managed(stage, destination, install_root)?;
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CoreError::Persistence(format!(
+                "create plugin destination parent {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    if !destination.exists() {
+        return std::fs::rename(stage, destination).map_err(|e| {
+            CoreError::Persistence(format!(
+                "activate plugin directory {} -> {}: {e}",
+                stage.display(),
+                destination.display()
+            ))
+        });
+    }
+
+    let backup = unique_plugin_staging_path(install_root, "rollback")?;
+    std::fs::rename(destination, &backup).map_err(|e| {
+        CoreError::Persistence(format!(
+            "backup existing plugin directory {} -> {}: {e}",
+            destination.display(),
+            backup.display()
+        ))
+    })?;
+
+    match std::fs::rename(stage, destination) {
+        Ok(()) => {
+            if let Err(error) = std::fs::remove_dir_all(&backup) {
+                tracing::warn!(
+                    path = %backup.display(),
+                    error = %error,
+                    "failed to remove replaced plugin backup"
+                );
+            }
+            Ok(())
+        }
+        Err(activate_err) => {
+            let restore = std::fs::rename(&backup, destination);
+            let _ = std::fs::remove_dir_all(stage);
+            match restore {
+                Ok(()) => Err(CoreError::Persistence(format!(
+                    "activate plugin directory {} -> {} failed and previous version was restored: {activate_err}",
+                    stage.display(),
+                    destination.display()
+                ))),
+                Err(restore_err) => Err(CoreError::Persistence(format!(
+                    "activate plugin directory {} -> {} failed ({activate_err}); restore from {} also failed: {restore_err}",
+                    stage.display(),
+                    destination.display(),
+                    backup.display()
+                ))),
+            }
+        }
+    }
+}
+
+fn ensure_replace_dir_is_managed(
+    stage: &Path,
+    destination: &Path,
+    install_root: &Path,
+) -> Result<()> {
+    std::fs::create_dir_all(install_root).map_err(|e| {
+        CoreError::Persistence(format!(
+            "create plugin install root {}: {e}",
+            install_root.display()
+        ))
+    })?;
+    let root = std::fs::canonicalize(install_root).map_err(|e| {
+        CoreError::Persistence(format!(
+            "canonicalize plugin install root {}: {e}",
+            install_root.display()
+        ))
+    })?;
+    let stage = std::fs::canonicalize(stage).map_err(|e| {
+        CoreError::Persistence(format!(
+            "canonicalize plugin staging dir {}: {e}",
+            stage.display()
+        ))
+    })?;
+    if stage == root || !stage.starts_with(&root) {
+        return Err(CoreError::invalid(format!(
+            "refusing to activate plugin staging dir outside install root: {}",
+            stage.display()
+        )));
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CoreError::Persistence(format!(
+                "create plugin destination parent {}: {e}",
+                parent.display()
+            ))
+        })?;
+        let parent = std::fs::canonicalize(parent).map_err(|e| {
+            CoreError::Persistence(format!(
+                "canonicalize plugin destination parent {}: {e}",
+                parent.display()
+            ))
+        })?;
+        if !parent.starts_with(&root) {
+            return Err(CoreError::invalid(format!(
+                "refusing to activate plugin outside install root: {}",
+                destination.display()
+            )));
+        }
+    }
+    if destination.exists() {
+        let destination = std::fs::canonicalize(destination).map_err(|e| {
+            CoreError::Persistence(format!(
+                "canonicalize plugin destination {}: {e}",
+                destination.display()
+            ))
+        })?;
+        if destination == root || !destination.starts_with(&root) {
+            return Err(CoreError::invalid(format!(
+                "refusing to replace plugin outside install root: {}",
+                destination.display()
+            )));
         }
     }
     Ok(())
@@ -3185,6 +4260,91 @@ mod tests {
         .unwrap();
     }
 
+    fn write_manifest_only_plugin(root: &Path, name: &str) {
+        std::fs::create_dir_all(root.join(".codex-plugin")).unwrap();
+        let manifest = serde_json::json!({
+            "name": name,
+            "version": "0.1.0",
+        });
+        std::fs::write(
+            root.join(".codex-plugin").join("plugin.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn manifest_only_plugin_stops_at_parsed_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_manifest_only_plugin(&roots.builtin.join("empty"), "empty");
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("empty@builtin").unwrap().unwrap();
+
+        assert!(plugin.installed);
+        assert_eq!(plugin.state, PluginLifecycleState::Parsed);
+        assert_eq!(plugin.health_status, PluginHealthStatus::Ready);
+        assert!(plugin.entrypoints.is_empty());
+        assert!(!plugin.runtime_required);
+    }
+
+    #[test]
+    fn host_backed_plugin_stays_incomplete_without_registry_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin_with_app_and_output_style(&roots.builtin.join("host-demo"), "host-demo");
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("host-demo@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.execution_kind, PluginExecutionKind::HostBacked);
+        assert_eq!(plugin.state, PluginLifecycleState::Incomplete);
+        assert_eq!(plugin.health_status, PluginHealthStatus::Incomplete);
+        assert!(plugin
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("host registry"));
+    }
+
+    #[test]
+    fn script_payload_marks_runtime_requirement_without_name_hardcoding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("analysis-plugin");
+        write_plugin(&root, "analysis-plugin");
+        std::fs::create_dir_all(root.join("skills").join("demo").join("scripts")).unwrap();
+        std::fs::write(
+            root.join("skills")
+                .join("demo")
+                .join("scripts")
+                .join("analyze.py"),
+            "print('ok')\n",
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("analysis-plugin@builtin").unwrap().unwrap();
+
+        assert!(plugin.runtime_required);
+        assert!(plugin
+            .entrypoints
+            .iter()
+            .any(|entrypoint| entrypoint.ends_with("skills")));
+    }
+
+    #[test]
+    fn runtime_probe_candidates_prefer_local_then_managed_env() {
+        let candidates = runtime_probe_candidates("node");
+
+        assert_eq!(candidates.first(), Some(&PathBuf::from("node")));
+        if let Some(managed) = std::env::var_os("DEEPAGENT_NODE").filter(|value| !value.is_empty())
+        {
+            assert!(candidates.contains(&PathBuf::from(managed)));
+        }
+    }
+
     #[test]
     fn create_plugin_writes_manifest_and_lists_enabled() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3202,6 +4362,33 @@ mod tests {
         assert_eq!(plugin.id, "my-helper@personal");
         assert!(plugin.enabled);
         assert!(Path::new(plugin.manifest_path.as_deref().unwrap()).is_file());
+    }
+
+    #[test]
+    fn install_from_dir_commits_complete_directory_via_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let source_v1 = tmp.path().join("source-v1");
+        let source_v2 = tmp.path().join("source-v2");
+        write_plugin_with_version(&source_v1, "demo", "0.1.0");
+        write_plugin_with_version(&source_v2, "demo", "0.2.0");
+        std::fs::write(source_v2.join("README.md"), "complete package marker").unwrap();
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+
+        let installed = svc.install_from_dir(&source_v1).unwrap();
+        assert_eq!(installed.id, "demo@personal");
+        assert_eq!(installed.version.as_deref(), Some("0.1.0"));
+
+        let updated = svc.install_from_dir(&source_v2).unwrap();
+
+        assert_eq!(updated.id, "demo@personal");
+        assert_eq!(updated.version.as_deref(), Some("0.2.0"));
+        assert!(roots.personal.join("demo").join("README.md").is_file());
+        assert!(!roots.personal.join(".staging").join("demo").exists());
+        let staged_entries = std::fs::read_dir(roots.personal.join(".staging"))
+            .map(|entries| entries.count())
+            .unwrap_or_default();
+        assert_eq!(staged_entries, 0);
     }
 
     #[test]

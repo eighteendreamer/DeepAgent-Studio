@@ -182,7 +182,10 @@ fn discover_collection(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if matches!(name, "cache" | "marketplaces" | "data" | "state.json") {
+        if matches!(
+            name,
+            ".staging" | "cache" | "marketplaces" | "data" | "state.json"
+        ) {
             continue;
         }
         if is_orphaned_plugin_root(&path) {
@@ -213,7 +216,7 @@ fn discover_marketplace_cache(cache_root: &Path) -> Vec<CandidateRoot> {
             continue;
         }
         let marketplace = market.file_name().to_string_lossy().trim().to_string();
-        if marketplace.is_empty() {
+        if marketplace.is_empty() || marketplace == ".staging" {
             continue;
         }
 
@@ -602,5 +605,33 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(marketplace_plugins.len(), 1);
         assert_eq!(marketplace_plugins[0].root, active);
+    }
+
+    #[test]
+    fn discovery_skips_staging_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let personal = tmp.path().join("personal");
+        let cache = tmp.path().join("cache");
+        write_manifest(&personal.join(".staging").join("demo-stage"), "demo-stage");
+        write_manifest(
+            &cache.join(".staging").join("team-demo-stage"),
+            "team-demo-stage",
+        );
+        write_manifest(&personal.join("demo"), "demo");
+
+        let plugins = load_plugins(&PluginRoots {
+            session: Vec::new(),
+            builtin: tmp.path().join("builtin"),
+            workspace: None,
+            personal,
+            marketplace_cache: cache,
+            marketplaces: tmp.path().join("marketplaces"),
+        });
+
+        assert!(plugins.iter().any(|plugin| plugin.id == "demo@personal"));
+        assert!(!plugins
+            .iter()
+            .any(|plugin| plugin.id == "demo-stage@personal"));
+        assert!(!plugins.iter().any(|plugin| plugin.name.contains("stage")));
     }
 }
