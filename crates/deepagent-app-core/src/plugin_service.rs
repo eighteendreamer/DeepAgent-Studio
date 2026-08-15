@@ -414,6 +414,18 @@ fn marketplace_runtime_summary_from_manifest(
     }
 }
 
+fn merge_marketplace_runtime_summary(
+    mut base: PluginMarketplaceRuntimeSummary,
+    extra: PluginMarketplaceRuntimeSummary,
+) -> PluginMarketplaceRuntimeSummary {
+    base.requirements.extend(extra.requirements);
+    base.requirements.sort();
+    base.requirements.dedup();
+    base.has_runtime_payload |= extra.has_runtime_payload;
+    base.required |= extra.required || !base.requirements.is_empty() || base.has_runtime_payload;
+    base
+}
+
 fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
@@ -3534,9 +3546,20 @@ fn materialize_github_topic_marketplace(
             let component_summary = manifest
                 .map(marketplace_component_summary_from_manifest)
                 .unwrap_or_default();
-            let runtime_summary = manifest
+            let mut runtime_summary = manifest
                 .map(marketplace_runtime_summary_from_manifest)
                 .unwrap_or_default();
+            if let Some(metadata) = manifest_metadata.as_ref() {
+                let repo_runtime_summary = github_topic_runtime_payload_summary(
+                    &full_name,
+                    &commit,
+                    &manifest_plugin_root_relative_path(&metadata.manifest_relative_path),
+                    &scratch,
+                )
+                .unwrap_or_default();
+                runtime_summary =
+                    merge_marketplace_runtime_summary(runtime_summary, repo_runtime_summary);
+            }
             let mut plugin_name = manifest
                 .map(|manifest| manifest.name.clone())
                 .unwrap_or_else(|| slugify(&repo_name));
@@ -3718,6 +3741,80 @@ fn github_topic_manifest_metadata(
 struct GitHubTopicManifestMetadata {
     manifest: PluginManifest,
     manifest_relative_path: String,
+}
+
+fn manifest_plugin_root_relative_path(manifest_relative_path: &str) -> String {
+    let path = Path::new(manifest_relative_path);
+    let manifest_dir = path.parent().unwrap_or_else(|| Path::new(""));
+    if manifest_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, ".codex-plugin" | ".claude-plugin"))
+    {
+        manifest_dir
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .to_string_lossy()
+            .replace('\\', "/")
+    } else {
+        manifest_dir.to_string_lossy().replace('\\', "/")
+    }
+}
+
+fn github_topic_runtime_payload_summary(
+    full_name: &str,
+    commit: &str,
+    plugin_root_relative_path: &str,
+    scratch: &Path,
+) -> Result<PluginMarketplaceRuntimeSummary> {
+    let endpoint = if plugin_root_relative_path.trim().is_empty() {
+        format!(
+            "/repos/{}/contents?ref={}",
+            full_name,
+            percent_encode_query_value(commit)
+        )
+    } else {
+        format!(
+            "/repos/{}/contents/{}?ref={}",
+            full_name,
+            percent_encode_content_path(plugin_root_relative_path),
+            percent_encode_query_value(commit)
+        )
+    };
+    let text = download_github_api_json(
+        &endpoint,
+        scratch,
+        &format!(
+            "{}-{}-runtime-summary",
+            full_name.replace('/', "-"),
+            plugin_root_relative_path.replace('/', "-")
+        ),
+    )?;
+    let entries: Vec<GitHubContentDirectoryEntry> = serde_json::from_str(&text)
+        .map_err(|e| CoreError::invalid(format!("parse GitHub contents response: {e}")))?;
+    let mut requirements = BTreeSet::new();
+    let mut has_runtime_payload = false;
+    for entry in entries {
+        let name = entry.name.trim().to_ascii_lowercase();
+        let kind = entry.kind.as_deref().unwrap_or_default();
+        match (kind, name.as_str()) {
+            ("file", "runtime.zip") => has_runtime_payload = true,
+            ("dir", "runtime" | "bin" | "scripts") => has_runtime_payload = true,
+            ("file", "package.json" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock") => {
+                requirements.insert("node".to_string());
+            }
+            ("file", "requirements.txt" | "pyproject.toml" | "poetry.lock" | "uv.lock") => {
+                requirements.insert("python".to_string());
+            }
+            _ => {}
+        }
+    }
+    let requirements = requirements.into_iter().collect::<Vec<_>>();
+    Ok(PluginMarketplaceRuntimeSummary {
+        required: has_runtime_payload || !requirements.is_empty(),
+        requirements,
+        has_runtime_payload,
+    })
 }
 
 fn materialize_git_plugin(
@@ -4299,6 +4396,14 @@ struct GitHubContentResponse {
     encoding: Option<String>,
     #[serde(default)]
     content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubContentDirectoryEntry {
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    name: String,
 }
 
 fn github_topic_from_source(source: &str) -> Option<String> {
@@ -6949,6 +7054,34 @@ mod tests {
                 "content": encoded,
             })
             .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn write_github_contents_directory_fixture(
+        fixtures: &Path,
+        full_name: &str,
+        relative_path: &str,
+        commit: &str,
+        entries: serde_json::Value,
+    ) {
+        let endpoint = if relative_path.is_empty() {
+            format!(
+                "/repos/{}/contents?ref={}",
+                full_name,
+                percent_encode_query_value(commit)
+            )
+        } else {
+            format!(
+                "/repos/{}/contents/{}?ref={}",
+                full_name,
+                percent_encode_content_path(relative_path),
+                percent_encode_query_value(commit)
+            )
+        };
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(&endpoint))),
+            entries.to_string(),
         )
         .unwrap();
     }
@@ -9772,6 +9905,17 @@ mod tests {
                 "outputStyles": "output-styles"
             }),
         );
+        write_github_contents_directory_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "",
+            commit,
+            serde_json::json!([
+                { "type": "dir", "name": ".codex-plugin" },
+                { "type": "dir", "name": "scripts" },
+                { "type": "file", "name": "package.json" }
+            ]),
+        );
 
         let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
         svc.add_marketplace(AddPluginMarketplaceDto {
@@ -9808,9 +9952,13 @@ mod tests {
         assert!(entry.runtime_required);
         assert_eq!(
             entry.runtime_requirements,
-            vec!["node >=20.19".to_string(), "python >=3.11".to_string()]
+            vec![
+                "node".to_string(),
+                "node >=20.19".to_string(),
+                "python >=3.11".to_string()
+            ]
         );
-        assert!(!entry.has_runtime_payload);
+        assert!(entry.has_runtime_payload);
         assert!(entry.installable);
 
         let snapshot =
@@ -9822,6 +9970,7 @@ mod tests {
         assert!(snapshot.contains(r#""components""#));
         assert!(snapshot.contains(r#""runtime""#));
         assert!(snapshot.contains(r#""node >=20.19""#));
+        assert!(snapshot.contains(r#""hasRuntimePayload": true"#));
         assert!(!snapshot.contains("gh.llkk.cc"));
         assert!(!snapshot.contains("gh-proxy.com"));
 
