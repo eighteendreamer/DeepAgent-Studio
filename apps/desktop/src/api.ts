@@ -587,10 +587,13 @@ export async function activateSkill(id: string): Promise<SkillActivation | null>
 
 // ---- plugins --------------------------------------------------------------
 
+// Plugins are discovered from disk by the Rust `PluginService`, so there is no
+// meaningful browser fallback: reads return empty, mutations fail loudly.
+
 export async function listPlugins(): Promise<Plugin[]> {
   const invoke = getInvoke();
   if (invoke) return invoke<Plugin[]>("list_plugins");
-  return mockPlugins();
+  return [];
 }
 
 export async function reloadPlugins(): Promise<Plugin[]> {
@@ -600,27 +603,25 @@ export async function reloadPlugins(): Promise<Plugin[]> {
     emitPluginsChanged();
     return plugins;
   }
-  const plugins = mockPlugins();
-  emitPluginsChanged();
-  return plugins;
+  return [];
 }
 
 export async function readPlugin(id: string): Promise<Plugin | null> {
   const invoke = getInvoke();
   if (invoke) return invoke<Plugin | null>("read_plugin", { id });
-  return mockPlugins().find((plugin) => plugin.id === id) ?? null;
+  return null;
 }
 
 export async function listPluginApps(): Promise<PluginApp[]> {
   const invoke = getInvoke();
   if (invoke) return invoke<PluginApp[]>("list_plugin_apps");
-  return mockPluginApps();
+  return [];
 }
 
 export async function listPluginOutputStyles(): Promise<PluginOutputStyle[]> {
   const invoke = getInvoke();
   if (invoke) return invoke<PluginOutputStyle[]>("list_plugin_output_styles");
-  return mockPluginOutputStyles();
+  return [];
 }
 
 export async function setPluginEnabled(id: string, enabled: boolean): Promise<Plugin> {
@@ -630,11 +631,7 @@ export async function setPluginEnabled(id: string, enabled: boolean): Promise<Pl
     emitPluginsChanged();
     return plugin;
   }
-  const plugin = mockPlugins().find((item) => item.id === id);
-  if (!plugin) throw new Error(`plugin not found: ${id}`);
-  const next = { ...plugin, enabled };
-  emitPluginsChanged();
-  return next;
+  throw new Error("toggling a plugin requires the desktop app");
 }
 
 export async function createPlugin(draft: CreatePluginDraft): Promise<Plugin> {
@@ -644,14 +641,7 @@ export async function createPlugin(draft: CreatePluginDraft): Promise<Plugin> {
     emitPluginsChanged();
     return plugin;
   }
-  const id = (draft.name || "plugin").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  const plugin = {
-    ...mockPluginBase(id || "plugin", draft.name || "Plugin", "personal"),
-    description: draft.description || "Personal plugin created in browser preview.",
-    enabled: true,
-  };
-  emitPluginsChanged();
-  return plugin;
+  throw new Error("creating a plugin requires the desktop app");
 }
 
 export async function installPluginFromDir(
@@ -687,8 +677,7 @@ export async function uninstallPlugin(id: string, removeData = false): Promise<b
     emitPluginsChanged();
     return removed;
   }
-  emitPluginsChanged();
-  return false;
+  throw new Error("plugin uninstall requires the desktop app");
 }
 
 export async function scanPlugin(sourceDir: string): Promise<PluginScanReport> {
@@ -744,16 +733,7 @@ export async function addPluginMarketplace(
     emitPluginsChanged();
     return marketplace;
   }
-  const marketplace = {
-    name: input.name || "marketplace",
-    source: input.source,
-    git_ref: input.git_ref ?? null,
-    sparse_path: input.sparse_path ?? null,
-    install_location: null,
-    last_updated: String(Date.now()),
-  };
-  emitPluginsChanged();
-  return marketplace;
+  throw new Error("adding a plugin marketplace requires the desktop app");
 }
 
 export async function removePluginMarketplace(name: string): Promise<boolean> {
@@ -763,8 +743,7 @@ export async function removePluginMarketplace(name: string): Promise<boolean> {
     emitPluginsChanged();
     return removed;
   }
-  emitPluginsChanged();
-  return true;
+  throw new Error("removing a plugin marketplace requires the desktop app");
 }
 
 export async function refreshPluginMarketplace(name: string): Promise<PluginMarketplace> {
@@ -774,9 +753,7 @@ export async function refreshPluginMarketplace(name: string): Promise<PluginMark
     emitPluginsChanged();
     return marketplace;
   }
-  const marketplace = { name, source: name, last_updated: String(Date.now()) };
-  emitPluginsChanged();
-  return marketplace;
+  throw new Error("refreshing a plugin marketplace requires the desktop app");
 }
 
 export async function scanPluginMarketplace(
@@ -3337,207 +3314,6 @@ function mockSkills(): Skill[] {
     { id: "superpowers", name: "Superpowers", description: "Meta-skill for authoring high-quality skills and following disciplined engineering workflows (brainstorm, plan, TDD).", version: "0.1.0", origin: "workspace", triggers: ["write a skill", "create a new skill", "improve a skill"] },
     { id: "ui-ux-pro-max-skill", name: "UI UX Pro Max", description: "UI/UX design intelligence — styles, color palettes, font pairings, product types, UX guidelines, chart types.", version: "0.1.0", origin: "workspace", triggers: ["design a UI", "improve the UX", "pick a color palette", "choose font pairings", "design a landing page", "audit a UI", "build a dashboard"] },
     { id: "webapp-testing", name: "Webapp Testing", description: "Python Playwright toolkit for testing/automating local web apps — e2e tests, screenshots, console logs, UI debugging.", version: "0.1.0", origin: "workspace", triggers: ["test a web app", "write an end-to-end test", "verify frontend behavior", "capture a screenshot", "debug UI interactions", "automate the browser", "check browser console logs"] },
-  ];
-}
-
-function mockPluginBase(id: string, displayName: string, origin: string): Plugin {
-  return {
-    id: `${id}@${origin}`,
-    name: id,
-    display_name: displayName,
-    description: `${displayName} plugin`,
-    long_description: `${displayName} is available when running the desktop app.`,
-    version: "0.1.0",
-    local_version: "0.1.0",
-    developer: "DeepAgent Studio",
-    source: { kind: origin, name: origin, path: null },
-    origin,
-    path: null,
-    manifest_path: null,
-    installed: true,
-    enabled: origin === "builtin",
-    available: true,
-    update_available: false,
-    overridden_by: null,
-    category: origin === "builtin" ? "Featured" : "Developer Tools",
-    keywords: [],
-    capabilities: ["App"],
-    permissions: [],
-    skill_count: 0,
-    mcp_server_count: 0,
-    hook_count: 0,
-    command_count: 0,
-    app_count: 0,
-    output_style_count: 0,
-    icon_path: null,
-    logo_path: null,
-    brand_color: null,
-    required_by: [],
-    errors: [],
-  };
-}
-
-function mockPlugins(): Plugin[] {
-  return [
-    {
-      ...mockPluginBase("browser", "Browser", "builtin"),
-      app_count: 1,
-    },
-    {
-      ...mockPluginBase("computer-use", "Computer Use", "builtin"),
-      app_count: 1,
-    },
-    {
-      ...mockPluginBase("files", "Files", "builtin"),
-      app_count: 1,
-      category: "Productivity",
-      permissions: ["file.read"],
-    },
-    {
-      ...mockPluginBase("side-chat", "Side Chat", "builtin"),
-      app_count: 1,
-      category: "Productivity",
-      permissions: ["chat.use"],
-    },
-    {
-      ...mockPluginBase("terminal", "Terminal", "builtin"),
-      app_count: 1,
-      category: "Developer Tools",
-      capabilities: ["App", "Interactive", "Execute"],
-      permissions: ["terminal.use", "process.execute"],
-    },
-    {
-      ...mockPluginBase("project-map", "Project Map", "builtin"),
-      app_count: 1,
-      category: "Developer Tools",
-      capabilities: ["App", "Read", "Analysis"],
-      permissions: ["file.read", "project.index"],
-    },
-    {
-      ...mockPluginBase("office-agent", "Office Agent", "builtin"),
-      app_count: 1,
-      output_style_count: 1,
-    },
-    {
-      ...mockPluginBase("meeting-recorder", "Meeting Recorder", "builtin"),
-      app_count: 1,
-    },
-  ];
-}
-
-function mockPluginApps(): PluginApp[] {
-  return [
-    {
-      plugin_id: "browser@builtin",
-      plugin_name: "browser",
-      id: "browser-panel",
-      title: "Browser",
-      description: "Open the built-in browser panel",
-      placement: "right-sidebar",
-      component: "builtin:browser",
-      icon: "browser",
-      category: "Developer Tools",
-      source_path: "browser/.app.json",
-    },
-    {
-      plugin_id: "computer-use@builtin",
-      plugin_name: "computer-use",
-      id: "computer-use",
-      title: "Computer Use",
-      description: "Open the computer-use control panel",
-      placement: "right-sidebar",
-      component: "builtin:computer-use",
-      icon: "desktop",
-      category: "Developer Tools",
-      source_path: "computer-use/.app.json",
-    },
-    {
-      plugin_id: "files@builtin",
-      plugin_name: "files",
-      id: "files",
-      title: "Files",
-      description: "Open the workspace file browser",
-      placement: "right-sidebar",
-      component: "builtin:files",
-      icon: "folder",
-      category: "Productivity",
-      source_path: "files/.app.json",
-    },
-    {
-      plugin_id: "side-chat@builtin",
-      plugin_name: "side-chat",
-      id: "side-chat",
-      title: "Side Chat",
-      description: "Open the side chat panel",
-      placement: "right-sidebar",
-      component: "builtin:side-chat",
-      icon: "chat",
-      category: "Productivity",
-      source_path: "side-chat/.app.json",
-    },
-    {
-      plugin_id: "terminal@builtin",
-      plugin_name: "terminal",
-      id: "terminal",
-      title: "Terminal",
-      description: "Open the integrated terminal",
-      placement: "right-sidebar",
-      component: "builtin:terminal",
-      icon: "terminal",
-      category: "Developer Tools",
-      source_path: "terminal/.app.json",
-    },
-    {
-      plugin_id: "project-map@builtin",
-      plugin_name: "project-map",
-      id: "project-map",
-      title: "Project Map",
-      description: "Open project structure and impact analysis",
-      placement: "right-sidebar",
-      component: "builtin:project-map",
-      icon: "project-map",
-      category: "Developer Tools",
-      source_path: "project-map/.app.json",
-    },
-    {
-      plugin_id: "office-agent@builtin",
-      plugin_name: "office-agent",
-      id: "office-preview",
-      title: "Office Preview",
-      description: "Preview office files from the built-in plugin",
-      placement: "right-sidebar",
-      component: "builtin:file-preview",
-      icon: "file-preview",
-      category: "Productivity",
-      source_path: "office-agent/.app.json",
-    },
-    {
-      plugin_id: "meeting-recorder@builtin",
-      plugin_name: "meeting-recorder",
-      id: "meeting-recorder",
-      title: "Meeting Recorder",
-      description: "Record and summarize meetings",
-      placement: "right-sidebar",
-      component: "builtin:recording",
-      icon: "microphone",
-      category: "Productivity",
-      source_path: "meeting-recorder/.app.json",
-    },
-  ];
-}
-
-function mockPluginOutputStyles(): PluginOutputStyle[] {
-  return [
-    {
-      plugin_id: "office-agent@builtin",
-      plugin_name: "office-agent",
-      name: "office-agent:concise-office",
-      description: "Keep Office responses concise, concrete, and action-oriented.",
-      prompt:
-        "# Concise Office Output\n\nAnswer in short, direct steps. Prioritize file names, exact actions, and next edits. When summarizing documents, keep the result compact and practical.",
-      force_for_plugin: true,
-      source_path: "output-styles/concise-office.md",
-    },
   ];
 }
 
