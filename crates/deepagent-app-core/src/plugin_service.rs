@@ -6899,6 +6899,70 @@ mod tests {
     }
 
     #[test]
+    fn marketplace_plugin_reinstall_keeps_user_data_and_single_runtime_projection_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("demo");
+        write_plugin(&plugin_source, "demo");
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.1.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let first = svc.install_from_marketplace("team", "demo").unwrap();
+        assert_eq!(first.id, "demo@team");
+        let data_dir = svc.data_root.join(sanitize_file_name(&first.id));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("state.json"), r#"{"runs":1}"#).unwrap();
+
+        let second = svc.install_from_marketplace("team", "demo").unwrap();
+        assert_eq!(second.id, "demo@team");
+        assert_eq!(second.version.as_deref(), Some("0.1.0"));
+        assert_eq!(
+            std::fs::read_to_string(data_dir.join("state.json")).unwrap(),
+            r#"{"runs":1}"#
+        );
+        assert_eq!(
+            svc.list()
+                .unwrap()
+                .into_iter()
+                .filter(|plugin| plugin.id == "demo@team")
+                .count(),
+            1
+        );
+        assert_eq!(
+            svc.runtime_projection().unwrap().skill_roots,
+            vec![roots
+                .marketplace_cache
+                .join("team")
+                .join("demo")
+                .join("0.1.0")
+                .join("skills")]
+        );
+    }
+
+    #[test]
     fn marketplace_install_installs_same_marketplace_dependencies() {
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
