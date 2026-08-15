@@ -1668,12 +1668,7 @@ impl PluginService {
         if manifest.is_some_and(manifest_has_oauth_mcp) {
             return PluginHealthStatus::NeedsAuthorization;
         }
-        let credential_hints = credential_env_hints(&plugin.root);
-        if !credential_hints.is_empty()
-            && !credential_hints
-                .iter()
-                .any(|name| std::env::var_os(name).is_some())
-        {
+        if !missing_credential_env_hints(&plugin.root).is_empty() {
             return PluginHealthStatus::NeedsConfiguration;
         }
 
@@ -1693,7 +1688,7 @@ impl PluginService {
         }
         let message = match status {
             PluginHealthStatus::NeedsConfiguration => {
-                let hints = credential_env_hints(&plugin.root);
+                let hints = missing_credential_env_hints(&plugin.root);
                 if hints.is_empty() {
                     "plugin configuration is required".to_string()
                 } else {
@@ -4031,6 +4026,13 @@ fn credential_env_hints(root: &Path) -> Vec<String> {
     hints.into_iter().collect()
 }
 
+fn missing_credential_env_hints(root: &Path) -> Vec<String> {
+    credential_env_hints(root)
+        .into_iter()
+        .filter(|name| std::env::var_os(name).is_none())
+        .collect()
+}
+
 fn should_scan_plugin_subdir(path: &Path) -> bool {
     !path
         .file_name()
@@ -4732,6 +4734,9 @@ fn push_unique_watch_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn roots(tmp: &Path) -> PluginRoots {
         PluginRoots {
@@ -5028,6 +5033,61 @@ mod tests {
         {
             assert!(candidates.contains(&PathBuf::from(managed)));
         }
+    }
+
+    #[test]
+    fn all_detected_plugin_credentials_must_be_configured() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("DEEPAGENT_TEST_PLUGIN_ALPHA_API_KEY");
+        std::env::remove_var("DEEPAGENT_TEST_PLUGIN_BETA_API_KEY");
+        std::env::set_var("DEEPAGENT_TEST_PLUGIN_ALPHA_API_KEY", "configured");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("credentialed-plugin");
+        write_plugin(&root, "credentialed-plugin");
+        std::fs::write(
+            root.join("README.md"),
+            "Requires DEEPAGENT_TEST_PLUGIN_ALPHA_API_KEY and DEEPAGENT_TEST_PLUGIN_BETA_API_KEY.",
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("credentialed-plugin@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.health_status, PluginHealthStatus::NeedsConfiguration);
+        let error = plugin.health_error.unwrap_or_default();
+        assert!(!error.contains("DEEPAGENT_TEST_PLUGIN_ALPHA_API_KEY"));
+        assert!(error.contains("DEEPAGENT_TEST_PLUGIN_BETA_API_KEY"));
+
+        std::env::remove_var("DEEPAGENT_TEST_PLUGIN_ALPHA_API_KEY");
+        std::env::remove_var("DEEPAGENT_TEST_PLUGIN_BETA_API_KEY");
+    }
+
+    #[test]
+    fn plugin_is_configured_when_all_detected_credentials_are_present() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("DEEPAGENT_TEST_PLUGIN_ALPHA_API_KEY", "configured");
+        std::env::set_var("DEEPAGENT_TEST_PLUGIN_BETA_API_KEY", "configured");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("credentialed-plugin");
+        write_plugin(&root, "credentialed-plugin");
+        std::fs::write(
+            root.join("README.md"),
+            "Requires DEEPAGENT_TEST_PLUGIN_ALPHA_API_KEY and DEEPAGENT_TEST_PLUGIN_BETA_API_KEY.",
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("credentialed-plugin@builtin").unwrap().unwrap();
+
+        assert_eq!(plugin.health_status, PluginHealthStatus::Ready);
+        assert_eq!(plugin.state, PluginLifecycleState::Verified);
+
+        std::env::remove_var("DEEPAGENT_TEST_PLUGIN_ALPHA_API_KEY");
+        std::env::remove_var("DEEPAGENT_TEST_PLUGIN_BETA_API_KEY");
     }
 
     #[test]
