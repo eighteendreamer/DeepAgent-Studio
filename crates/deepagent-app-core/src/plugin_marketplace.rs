@@ -1,10 +1,12 @@
 //! Marketplace state and local catalog parsing for plugin management.
 
 use std::collections::BTreeMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use deepagent_core::error::{CoreError, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::plugin::spec::{normalize_safe_relative, PluginPathError};
 
 const CODEX_MARKETPLACE: &str = ".codex-plugin/marketplace.json";
 const CODEX_AGENTS_MARKETPLACE: &str = ".agents/plugins/marketplace.json";
@@ -738,23 +740,13 @@ fn npm_source(mut object: BTreeMap<String, serde_json::Value>) -> Result<PluginM
 }
 
 fn safe_join_marketplace_path(root: &Path, raw: &str) -> Result<PathBuf> {
-    let path = Path::new(raw);
-    if path.is_absolute() {
-        return Err(CoreError::invalid(
-            "marketplace plugin source must be relative to the marketplace root",
-        ));
-    }
-    for component in path.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(CoreError::invalid(
-                    "marketplace plugin source cannot escape the marketplace root",
-                ));
-            }
+    let relative = normalize_safe_relative(raw).map_err(|error| match error {
+        PluginPathError::EmptyAfterPrefix | PluginPathError::Absolute { .. } => {
+            CoreError::invalid("marketplace plugin source must be relative to the marketplace root")
         }
-    }
-    Ok(root.join(path))
+        _ => CoreError::invalid("marketplace plugin source cannot escape the marketplace root"),
+    })?;
+    Ok(root.join(relative))
 }
 
 fn string_field(object: &mut BTreeMap<String, serde_json::Value>, key: &str) -> Option<String> {
@@ -774,29 +766,28 @@ fn optional_remote_subdir(
 }
 
 fn normalize_remote_subdir(raw: String) -> Result<String> {
-    let display = raw.trim().trim_start_matches("./").replace('\\', "/");
-    if display.is_empty() {
-        return Err(CoreError::invalid(
-            "remote plugin source path cannot be empty",
-        ));
-    }
-    let path = Path::new(&display);
-    if path.is_absolute() {
-        return Err(CoreError::invalid(
-            "remote plugin source path must be relative",
-        ));
-    }
-    for component in path.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(CoreError::invalid(
-                    "remote plugin source path cannot escape the repository root",
-                ));
-            }
+    let relative = normalize_safe_relative(&raw).map_err(|error| match error {
+        PluginPathError::EmptyAfterPrefix => {
+            CoreError::invalid("remote plugin source path cannot be empty")
         }
-    }
-    Ok(display)
+        PluginPathError::Absolute { .. } => {
+            CoreError::invalid("remote plugin source path must be relative")
+        }
+        _ => CoreError::invalid("remote plugin source path cannot escape the repository root"),
+    })?;
+    let display = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok(if display.is_empty() {
+        ".".to_string()
+    } else {
+        display
+    })
 }
 
 fn validate_github_repo(repo: &str) -> Result<()> {

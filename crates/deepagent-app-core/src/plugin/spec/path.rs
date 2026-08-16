@@ -121,6 +121,45 @@ pub fn resolve_plugin_relative(root: &Path, raw: &str) -> Result<PathBuf, Plugin
     Ok(resolved)
 }
 
+/// Normalizes a package path that must be relative but is not required to use
+/// the `./` plugin-manifest prefix.
+///
+/// This is used for marketplace source subdirectories and archive entries,
+/// where upstream formats commonly emit `path/to/plugin` rather than
+/// `./path/to/plugin`. Both `/` and `\` are separators on every platform.
+pub fn normalize_safe_relative(raw: &str) -> Result<PathBuf, PluginPathError> {
+    let raw = raw.trim();
+    let relative = raw.strip_prefix("./").unwrap_or(raw);
+    if relative.is_empty() {
+        if raw == "./" {
+            return Ok(PathBuf::from("."));
+        }
+        return Err(PluginPathError::EmptyAfterPrefix);
+    }
+    if is_rooted(relative) {
+        return Err(PluginPathError::Absolute {
+            raw: raw.to_string(),
+        });
+    }
+    if relative.split(['/', '\\']).any(|segment| segment == "..") {
+        return Err(PluginPathError::ParentComponent {
+            raw: raw.to_string(),
+        });
+    }
+
+    let mut normalized = PathBuf::new();
+    for segment in relative.split(['/', '\\']) {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        normalized.push(segment);
+    }
+    if normalized.as_os_str().is_empty() {
+        return Ok(PathBuf::from("."));
+    }
+    Ok(normalized)
+}
+
 /// Whether `candidate` is lexically inside `root`, treating `root` itself as
 /// inside.
 ///
@@ -226,6 +265,44 @@ mod tests {
                 "expected {raw} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn normalizes_safe_relative_paths_without_requiring_plugin_prefix() {
+        assert_eq!(
+            normalize_safe_relative("plugins/demo").unwrap(),
+            PathBuf::from("plugins").join("demo")
+        );
+        assert_eq!(
+            normalize_safe_relative("./plugins\\demo").unwrap(),
+            PathBuf::from("plugins").join("demo")
+        );
+        assert_eq!(
+            normalize_safe_relative("plugins//./demo").unwrap(),
+            PathBuf::from("plugins").join("demo")
+        );
+        assert_eq!(normalize_safe_relative("./").unwrap(), PathBuf::from("."));
+        assert_eq!(normalize_safe_relative(".").unwrap(), PathBuf::from("."));
+    }
+
+    #[test]
+    fn rejects_unsafe_generic_relative_paths() {
+        assert!(matches!(
+            normalize_safe_relative("../demo"),
+            Err(PluginPathError::ParentComponent { .. })
+        ));
+        assert!(matches!(
+            normalize_safe_relative(""),
+            Err(PluginPathError::EmptyAfterPrefix)
+        ));
+        assert!(matches!(
+            normalize_safe_relative(if cfg!(windows) {
+                r"C:\plugins\demo"
+            } else {
+                "/plugins/demo"
+            }),
+            Err(PluginPathError::Absolute { .. })
+        ));
     }
 
     /// A `..` written with a backslash must be rejected on every platform, not

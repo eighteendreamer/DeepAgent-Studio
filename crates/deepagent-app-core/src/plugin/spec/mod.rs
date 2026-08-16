@@ -20,7 +20,10 @@ pub mod schema;
 pub mod v1;
 
 pub use name::{PluginName, PluginNameError, MAX_PLUGIN_NAME_LEN};
-pub use path::{is_within, resolve_existing_within, resolve_plugin_relative, PluginPathError};
+pub use path::{
+    is_within, normalize_safe_relative, resolve_existing_within, resolve_plugin_relative,
+    PluginPathError,
+};
 pub use placeholder::{
     classify_cwd, expand_v1, normalize_and_expand, reserved_env_key, rewrite_dialect_aliases,
     CwdForm, PLUGIN_DATA_VAR, PLUGIN_ROOT_VAR, RESERVED_ENV_VARS,

@@ -25,7 +25,10 @@ use crate::plugin::dialect::{
     PresentationSources,
 };
 use crate::plugin::model::ResolvedPlugin;
-use crate::plugin::spec::{normalize_and_expand, resolve_existing_within, resolve_plugin_relative};
+use crate::plugin::spec::{
+    normalize_and_expand, normalize_safe_relative, resolve_existing_within,
+    resolve_plugin_relative, PluginPathError,
+};
 use crate::plugin_dependency::{
     find_reverse_dependents, verify_plugin_dependencies, PluginDependencyOutcome,
 };
@@ -5036,22 +5039,13 @@ fn resolve_marketplace_root(root: &Path) -> Result<PathBuf> {
 }
 
 fn safe_join_materialized_subdir(root: &Path, raw: &str) -> Result<PathBuf> {
-    let cleaned = raw.trim().trim_start_matches("./").replace('\\', "/");
-    let path = Path::new(&cleaned);
-    if cleaned.is_empty() || path.is_absolute() {
-        return Err(CoreError::invalid("plugin source subdir must be relative"));
-    }
-    for component in path.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(CoreError::invalid(
-                    "plugin source subdir cannot escape its materialized root",
-                ));
-            }
+    let relative = normalize_safe_relative(raw).map_err(|error| match error {
+        PluginPathError::EmptyAfterPrefix | PluginPathError::Absolute { .. } => {
+            CoreError::invalid("plugin source subdir must be relative")
         }
-    }
-    Ok(root.join(path))
+        _ => CoreError::invalid("plugin source subdir cannot escape its materialized root"),
+    })?;
+    Ok(root.join(relative))
 }
 
 fn remove_managed_child_dir(base: &Path, target: &Path) -> Result<()> {
@@ -5991,13 +5985,7 @@ fn extract_targz_into(archive_path: &Path, destination: &Path) -> Result<()> {
 }
 
 fn tar_path_escapes(path: &Path) -> bool {
-    path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
+    normalize_safe_relative(&path.to_string_lossy()).is_err()
 }
 
 fn find_first_archive(dir: &Path, predicate: impl Fn(&Path) -> bool) -> Result<Option<PathBuf>> {
