@@ -5198,7 +5198,7 @@ fn materialize_git_plugin(
         args.push(ref_name.to_string());
     }
     args.push(url.to_string());
-    args.push(repo_dir.display().to_string());
+    args.push(external_path_argument(&repo_dir));
     run_external("git", &args, None)?;
 
     if let Some(sha) = sha {
@@ -5353,7 +5353,7 @@ fn materialize_git_marketplace(
         args.push(ref_name.to_string());
     }
     args.push(url.to_string());
-    args.push(checkout.display().to_string());
+    args.push(external_path_argument(checkout));
     run_external("git", &args, None)?;
 
     let root = match subdir {
@@ -5381,7 +5381,7 @@ fn materialize_npm_plugin(
         "pack".to_string(),
         package_spec,
         "--pack-destination".to_string(),
-        pack_dir.display().to_string(),
+        external_path_argument(&pack_dir),
     ];
     if let Some(registry) = registry {
         args.push("--registry".to_string());
@@ -5995,7 +5995,7 @@ fn run_external_output(program: &str, args: &[String], cwd: Option<&Path>) -> Re
     let mut command = Command::new(program);
     command.args(args);
     if let Some(cwd) = cwd {
-        command.current_dir(cwd);
+        command.current_dir(external_path_argument(cwd));
     }
     #[cfg(windows)]
     command.creation_flags(WINDOWS_CREATE_NO_WINDOW);
@@ -6025,6 +6025,20 @@ fn run_external_output(program: &str, args: &[String], cwd: Option<&Path>) -> Re
             format!("; stderr: {}", truncate_chars(stderr.trim(), 500))
         }
     )))
+}
+
+fn external_path_argument(path: &Path) -> String {
+    let text = path.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    {
+        if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{stripped}");
+        }
+        if let Some(stripped) = text.strip_prefix(r"\\?\") {
+            return stripped.to_string();
+        }
+    }
+    text
 }
 
 fn external_command_display(program: &str, args: &[String]) -> String {
@@ -12980,6 +12994,21 @@ deepagent-definitely-missing-runtime-cli --version
         assert_eq!(
             names,
             BTreeSet::from(["page-one-plugin".to_string(), "page-two-plugin".to_string()])
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn external_path_argument_strips_windows_verbatim_prefixes() {
+        assert_eq!(
+            external_path_argument(Path::new(
+                r"\\?\G:\DeepAgent\plugins\cache\.staging\plugin\repo"
+            )),
+            r"G:\DeepAgent\plugins\cache\.staging\plugin\repo"
+        );
+        assert_eq!(
+            external_path_argument(Path::new(r"\\?\UNC\server\share\plugin")),
+            r"\\server\share\plugin"
         );
     }
 
