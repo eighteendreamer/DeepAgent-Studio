@@ -56,8 +56,6 @@ const KEYCHAIN_SERVICE: &str = "deepagent-studio";
 /// in Windows Credential Manager / macOS Keychain / Linux Secret Service.
 const KEYCHAIN_SKILLSMP_KEY_NAME: &str = "skillsmp_api_key";
 
-/// Shared application state.
-
 /// A [`CommandExecutor`] that routes bash/git commands through SSH to a
 /// remote machine. Created by the [`ExecutorFactory`] bound to
 /// [`ChatService`] when a session is in [`SessionMode::Remote`].
@@ -1364,22 +1362,6 @@ async fn search_plugin_marketplace_entries(
 }
 
 #[tauri::command]
-async fn scan_plugin_marketplace(
-    state: State<'_, AppState>,
-    marketplace: String,
-    plugin: String,
-) -> Result<PluginScanReportDto, String> {
-    let plugins = Arc::clone(&state.plugins);
-    tauri::async_runtime::spawn_blocking(move || {
-        plugins
-            .scan_marketplace_plugin(&marketplace, &plugin)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
 async fn prepare_plugin_install(
     state: State<'_, AppState>,
     marketplace: String,
@@ -1419,51 +1401,6 @@ fn cancel_plugin_install(state: State<'_, AppState>, token: String) -> Result<bo
         .plugins
         .cancel_plugin_install(&token)
         .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn install_plugin_from_marketplace(
-    state: State<'_, AppState>,
-    marketplace: String,
-    plugin: String,
-    scan_confirmed: Option<bool>,
-    auth_confirmed: Option<bool>,
-) -> Result<PluginDto, String> {
-    let _ = scan_confirmed;
-    let plugins = Arc::clone(&state.plugins);
-    let plugin = tauri::async_runtime::spawn_blocking(move || {
-        plugins
-            .install_from_marketplace_with_auth(
-                &marketplace,
-                &plugin,
-                auth_confirmed.unwrap_or(false),
-            )
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    sync_plugin_runtime_after_change(state.inner()).await?;
-    Ok(plugin)
-}
-
-#[tauri::command]
-async fn update_plugin(
-    state: State<'_, AppState>,
-    id: String,
-    scan_confirmed: Option<bool>,
-    auth_confirmed: Option<bool>,
-) -> Result<PluginDto, String> {
-    let report = state
-        .plugins
-        .scan_plugin_update(&id)
-        .map_err(|e| e.to_string())?;
-    ensure_plugin_scan_allowed(&report, scan_confirmed.unwrap_or(false))?;
-    let plugin = state
-        .plugins
-        .update_plugin_with_auth(&id, auth_confirmed.unwrap_or(false))
-        .map_err(|e| e.to_string())?;
-    sync_plugin_runtime_after_change(state.inner()).await?;
-    Ok(plugin)
 }
 
 // ---- skill marketplace (skillsmp.com + GitHub) ----------------------------
@@ -1908,6 +1845,7 @@ struct StartChatV2Ack {
 
 /// Start a v2 run without holding the IPC request open for the entire model
 /// loop. Consumers follow `chat://event`, `session://completed`, or `run_events`.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn start_chat_v2(
     app: tauri::AppHandle,
@@ -4032,6 +3970,7 @@ async fn ssh_list_connections(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn ssh_create_connection(
     state: State<'_, AppState>,
     name: String,
@@ -4064,6 +4003,7 @@ async fn ssh_create_connection(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn ssh_update_connection(
     state: State<'_, AppState>,
     id: String,
@@ -5183,7 +5123,7 @@ pub fn run() {
                     std::env::temp_dir().join("deepagent-builtin-plugins-missing")
                 }
             };
-            let plugin_install_dir = preferred_plugin_install_dir(&app.handle());
+            let plugin_install_dir = preferred_plugin_install_dir(app.handle());
             let plugin_cache = plugin_install_dir.join("cache");
             let plugin_marketplaces = plugin_install_dir.join("marketplaces");
             let _ = std::fs::create_dir_all(&plugin_install_dir);
@@ -5228,7 +5168,7 @@ pub fn run() {
             // Managed runtimes are user-downloaded assets. New installs target
             // the application resource runtime directory; older app-data/exe
             // locations remain read-only lookup roots until the user migrates.
-            let runtime_resource_dir = preferred_runtime_resource_dir(&app.handle());
+            let runtime_resource_dir = preferred_runtime_resource_dir(app.handle());
             let app_runtime_dir = dir.join("runtimes");
             let mut legacy_runtime_roots = vec![app_runtime_dir.clone()];
             if let Ok(exe) = std::env::current_exe() {
@@ -5465,12 +5405,9 @@ pub fn run() {
             refresh_plugin_marketplace,
             list_plugin_marketplace_entries,
             search_plugin_marketplace_entries,
-            scan_plugin_marketplace,
             prepare_plugin_install,
             commit_plugin_install,
             cancel_plugin_install,
-            install_plugin_from_marketplace,
-            update_plugin,
             skill_market_search,
             skill_market_test_key,
             skill_market_get_api_key,

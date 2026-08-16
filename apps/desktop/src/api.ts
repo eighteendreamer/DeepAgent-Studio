@@ -763,26 +763,6 @@ export async function refreshPluginMarketplace(name: string): Promise<PluginMark
   throw new Error("refreshing a plugin marketplace requires the desktop app");
 }
 
-export async function scanPluginMarketplace(
-  marketplace: string,
-  plugin: string
-): Promise<PluginScanReport> {
-  const invoke = getInvoke();
-  if (invoke) {
-    return invoke<PluginScanReport>("scan_plugin_marketplace", { marketplace, plugin });
-  }
-  return {
-    source_dir: `${marketplace}/${plugin}`,
-    manifest_ok: false,
-    plugin_name: null,
-    file_count: 0,
-    total_bytes: 0,
-    component_summaries: [],
-    risks: [],
-    errors: ["desktop runtime is unavailable"],
-  };
-}
-
 export async function preparePluginInstall(
   marketplace: string,
   plugin: string,
@@ -815,44 +795,6 @@ export async function cancelPluginInstall(token: string): Promise<boolean> {
     return invoke<boolean>("cancel_plugin_install", { token });
   }
   return false;
-}
-
-export async function installPluginFromMarketplace(
-  marketplace: string,
-  plugin: string,
-  scanConfirmed = false,
-  authConfirmed = false
-): Promise<Plugin> {
-  const invoke = getInvoke();
-  if (invoke) {
-    const installed = await invoke<Plugin>("install_plugin_from_marketplace", {
-      marketplace,
-      plugin,
-      scanConfirmed,
-      authConfirmed,
-    });
-    emitPluginsChanged();
-    return installed;
-  }
-  throw new Error("plugin marketplace install requires the desktop app");
-}
-
-export async function updatePlugin(
-  id: string,
-  scanConfirmed = false,
-  authConfirmed = false
-): Promise<Plugin> {
-  const invoke = getInvoke();
-  if (invoke) {
-    const updated = await invoke<Plugin>("update_plugin", {
-      id,
-      scanConfirmed,
-      authConfirmed,
-    });
-    emitPluginsChanged();
-    return updated;
-  }
-  throw new Error("plugin update requires the desktop app");
 }
 
 // ---- skill marketplace (skillsmp.com + GitHub install flow) ---------------

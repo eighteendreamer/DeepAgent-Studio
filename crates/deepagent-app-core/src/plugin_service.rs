@@ -1721,19 +1721,9 @@ impl PluginService {
         plugin: &str,
         authentication_confirmed: bool,
     ) -> Result<PluginDto> {
-        let marketplace_key = slugify(marketplace);
-        let mut stack = Vec::new();
-        self.install_from_marketplace_inner(
-            &marketplace_key,
-            plugin,
-            authentication_confirmed,
-            &mut stack,
-        )
-    }
-
-    pub fn scan_plugin_update(&self, id: &str) -> Result<PluginScanReportDto> {
-        let (marketplace, plugin) = self.marketplace_plugin_for_id(id)?;
-        self.scan_marketplace_plugin(&marketplace, &plugin)
+        let prepared =
+            self.prepare_plugin_install(marketplace, plugin, authentication_confirmed)?;
+        self.commit_plugin_install(&prepared.token)
     }
 
     pub fn update_plugin(&self, id: &str) -> Result<PluginDto> {
@@ -1746,30 +1736,11 @@ impl PluginService {
         authentication_confirmed: bool,
     ) -> Result<PluginDto> {
         let (marketplace, plugin_name) = self.marketplace_plugin_for_id(id)?;
-        let before = self.load_state()?;
-        let previous = before.installed.get(id).cloned();
-        let previous_enabled = before.enabled.get(id).copied();
-
-        let updated = self.install_from_marketplace_with_auth(
+        self.install_from_marketplace_with_auth(
             &marketplace,
             &plugin_name,
             authentication_confirmed,
-        )?;
-
-        let mut state = self.load_state()?;
-        if let Some(installed) = state.installed.get_mut(&updated.id) {
-            if let Some(previous) = previous {
-                installed.installed_at = previous.installed_at;
-            }
-            installed.last_updated = Some(now_string());
-        }
-        if let Some(enabled) = previous_enabled {
-            state.enabled.insert(updated.id.clone(), enabled);
-        }
-        self.save_state(&state)?;
-        self.invalidate_plugin_caches();
-        self.read(&updated.id)?
-            .ok_or_else(|| CoreError::not_found(format!("plugin {}", updated.id)))
+        )
     }
 
     pub fn cleanup_orphaned_cache(&self) -> Result<u32> {
