@@ -415,6 +415,40 @@ export interface PluginDependent {
   display_name: string;
 }
 
+export type PluginExecutionKind =
+  | "host_backed"
+  | "skill_only"
+  | "subprocess"
+  | "managed_runtime"
+  | "dsh_sidecar";
+
+export type PluginLifecycleState =
+  | "discovered"
+  | "parsed"
+  | "installed"
+  | "runtime_ready"
+  | "executable"
+  | "verified"
+  | "incomplete"
+  | "failed";
+
+export type PluginHealthStatus =
+  | "ready"
+  | "needs_configuration"
+  | "needs_authorization"
+  | "connection_unavailable"
+  | "runtime_unavailable"
+  | "incomplete"
+  | "failed"
+  | "unknown";
+
+export type PluginLicenseStatus =
+  | "first_party"
+  | "bundled_third_party"
+  | "marketplace_only"
+  | "missing"
+  | "unknown";
+
 export interface Plugin {
   id: string;
   name: string;
@@ -445,6 +479,16 @@ export interface Plugin {
   command_count: number;
   app_count: number;
   output_style_count: number;
+  state: PluginLifecycleState;
+  execution_kind: PluginExecutionKind;
+  runtime_required: boolean;
+  runtime_available: boolean;
+  entrypoints: string[];
+  has_runtime_payload: boolean;
+  license_status: PluginLicenseStatus;
+  health_status: PluginHealthStatus;
+  last_health_check?: string | null;
+  health_error?: string | null;
   icon_path?: string | null;
   logo_path?: string | null;
   brand_color?: string | null;

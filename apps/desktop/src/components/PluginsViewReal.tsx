@@ -677,6 +677,7 @@ function PluginRow({
             <StatusBadge plugin={plugin} />
           </div>
           <div className="mt-1 truncate text-[12px] text-text-secondary">{plugin.description}</div>
+          <PluginStateBadges plugin={plugin} />
           <div className="mt-2 flex flex-wrap gap-1">
             <MiniBadge>{originLabel(plugin.origin)}</MiniBadge>
             {plugin.capabilities.slice(0, 3).map((capability) => (
@@ -739,6 +740,7 @@ function PluginDetail({
                 <StatusBadge plugin={plugin} />
               </div>
               <p className="text-[14px] text-text-secondary">{plugin.description}</p>
+              <PluginStateBadges plugin={plugin} />
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -816,6 +818,16 @@ function InfoSection({ plugin }: { plugin: Plugin }) {
         <Info label="开发者" value={plugin.developer || "-"} />
         <Info label="版本" value={plugin.version || "-"} />
         <Info label="分类" value={categoryLabel(plugin.category || "Other")} />
+        <Info label="生命周期" value={pluginStateLabel(plugin.state)} />
+        <Info label="健康状态" value={pluginHealthLabel(plugin.health_status)} />
+        <Info label="执行类型" value={pluginExecutionLabel(plugin.execution_kind)} />
+        <Info label="许可证" value={pluginLicenseLabel(plugin.license_status)} />
+        <Info label="运行时要求" value={plugin.runtime_required ? "需要" : "不需要"} />
+        <Info label="运行时可用" value={plugin.runtime_available ? "可用" : "不可用"} />
+        <Info label="入口" value={plugin.entrypoints.join(", ") || "-"} />
+        <Info label="运行时载荷" value={plugin.has_runtime_payload ? "有" : "无"} />
+        <Info label="最近健康检查" value={plugin.last_health_check || "-"} />
+        <Info label="健康错误" value={plugin.health_error || "-"} />
         <Info label="能力" value={plugin.capabilities.join(", ") || "-"} />
         <Info label="权限" value={plugin.permissions.join(", ") || "-"} />
         <Info label="路径" value={plugin.path || "-"} mono />
@@ -1549,15 +1561,49 @@ function MiniBadge({
   tone = "neutral",
 }: {
   children: ReactNode;
-  tone?: "neutral" | "ok" | "warn";
+  tone?: "neutral" | "ok" | "warn" | "info" | "danger";
 }) {
-  const cls =
-    tone === "ok"
-      ? "bg-emerald-50 text-emerald-700"
-      : tone === "warn"
-        ? "bg-amber-50 text-amber-700"
-        : "bg-gray-100 text-text-secondary";
+  let cls = "bg-gray-100 text-text-secondary";
+  switch (tone) {
+    case "ok":
+      cls = "bg-emerald-50 text-emerald-700";
+      break;
+    case "warn":
+      cls = "bg-amber-50 text-amber-700";
+      break;
+    case "info":
+      cls = "bg-sky-50 text-sky-700";
+      break;
+    case "danger":
+      cls = "bg-red-50 text-red-700";
+      break;
+    default:
+      break;
+  }
   return <span className={`rounded-full px-2 py-0.5 text-[11px] ${cls}`}>{children}</span>;
+}
+
+function PluginStateBadges({ plugin }: { plugin: Plugin }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      <MiniBadge tone={pluginStateTone(plugin.state)}>{pluginStateLabel(plugin.state)}</MiniBadge>
+      <MiniBadge tone={pluginHealthTone(plugin.health_status)}>
+        {pluginHealthLabel(plugin.health_status)}
+      </MiniBadge>
+      <MiniBadge tone={pluginExecutionTone(plugin.execution_kind)}>
+        {pluginExecutionLabel(plugin.execution_kind)}
+      </MiniBadge>
+      <MiniBadge tone={pluginLicenseTone(plugin.license_status)}>
+        {pluginLicenseLabel(plugin.license_status)}
+      </MiniBadge>
+      {plugin.runtime_required && (
+        <MiniBadge tone={plugin.runtime_available ? "ok" : "warn"}>
+          {plugin.runtime_available ? "运行时就绪" : "需要运行时"}
+        </MiniBadge>
+      )}
+      {plugin.has_runtime_payload && <MiniBadge tone="info">含运行时包</MiniBadge>}
+    </div>
+  );
 }
 
 function Metric({ label, value }: { label: string; value: number }) {
@@ -1612,6 +1658,159 @@ function SeverityBadge({ severity }: { severity: string }) {
       {severityLabel(normalized)}
     </span>
   );
+}
+
+function pluginStateLabel(state: Plugin["state"]): string {
+  switch (state) {
+    case "discovered":
+      return "已发现";
+    case "parsed":
+      return "已解析";
+    case "installed":
+      return "已安装";
+    case "runtime_ready":
+      return "运行时就绪";
+    case "executable":
+      return "可执行";
+    case "verified":
+      return "已验证";
+    case "incomplete":
+      return "待补全";
+    case "failed":
+      return "失败";
+    default:
+      return state;
+  }
+}
+
+function pluginHealthLabel(status: Plugin["health_status"]): string {
+  switch (status) {
+    case "ready":
+      return "健康";
+    case "needs_configuration":
+      return "需要配置";
+    case "needs_authorization":
+      return "需要授权";
+    case "connection_unavailable":
+      return "连接不可用";
+    case "runtime_unavailable":
+      return "运行时不可用";
+    case "incomplete":
+      return "待补全";
+    case "failed":
+      return "失败";
+    case "unknown":
+      return "未知";
+    default:
+      return status;
+  }
+}
+
+function pluginExecutionLabel(kind: Plugin["execution_kind"]): string {
+  switch (kind) {
+    case "host_backed":
+      return "宿主适配器";
+    case "skill_only":
+      return "仅技能";
+    case "subprocess":
+      return "子进程";
+    case "managed_runtime":
+      return "托管运行时";
+    case "dsh_sidecar":
+      return "DSH Sidecar";
+    default:
+      return kind;
+  }
+}
+
+function pluginLicenseLabel(status: Plugin["license_status"]): string {
+  switch (status) {
+    case "first_party":
+      return "第一方";
+    case "bundled_third_party":
+      return "第三方内置";
+    case "marketplace_only":
+      return "仅市场";
+    case "missing":
+      return "缺失";
+    case "unknown":
+      return "未知";
+    default:
+      return status;
+  }
+}
+
+function pluginStateTone(state: Plugin["state"]): "neutral" | "ok" | "warn" | "info" | "danger" {
+  switch (state) {
+    case "verified":
+    case "executable":
+      return "ok";
+    case "runtime_ready":
+      return "info";
+    case "incomplete":
+      return "warn";
+    case "failed":
+      return "danger";
+    default:
+      return "neutral";
+  }
+}
+
+function pluginHealthTone(
+  status: Plugin["health_status"],
+): "neutral" | "ok" | "warn" | "info" | "danger" {
+  switch (status) {
+    case "ready":
+      return "ok";
+    case "needs_configuration":
+    case "needs_authorization":
+    case "incomplete":
+      return "warn";
+    case "connection_unavailable":
+    case "runtime_unavailable":
+      return "info";
+    case "failed":
+      return "danger";
+    case "unknown":
+    default:
+      return "neutral";
+  }
+}
+
+function pluginExecutionTone(
+  kind: Plugin["execution_kind"],
+): "neutral" | "ok" | "warn" | "info" | "danger" {
+  switch (kind) {
+    case "host_backed":
+    case "skill_only":
+      return "ok";
+    case "subprocess":
+      return "info";
+    case "managed_runtime":
+      return "warn";
+    case "dsh_sidecar":
+      return "neutral";
+    default:
+      return "neutral";
+  }
+}
+
+function pluginLicenseTone(
+  status: Plugin["license_status"],
+): "neutral" | "ok" | "warn" | "info" | "danger" {
+  switch (status) {
+    case "first_party":
+      return "ok";
+    case "bundled_third_party":
+      return "info";
+    case "marketplace_only":
+      return "warn";
+    case "missing":
+      return "danger";
+    case "unknown":
+    default:
+      return "neutral";
+  }
 }
 
 function originLabel(origin: string): string {
