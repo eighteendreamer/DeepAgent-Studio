@@ -17,6 +17,9 @@
     "developerName": "xiaoshangongzuoshi",
     "category": "Developer Tools",
     "capabilities": ["Command", "Execute"],
-    "permissions": ["process.execute", "workspace.read", "workspace.write"]
+    "permissions": ["process.execute", "workspace.read", "workspace.write"],
+    "brandColor": "#07C160",
+    "composerIcon": "./assets/app-icon.svg",
+    "logo": "./assets/app-icon.svg"
   }
 }

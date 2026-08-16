@@ -16,6 +16,8 @@
     "category": "Developer Tools",
     "capabilities": ["App", "Read", "Interactive"],
     "permissions": ["screen.read", "mouse.keyboard", "app.control"],
-    "brandColor": "#0891b2"
+    "brandColor": "#0891b2",
+    "composerIcon": "./assets/app-icon.svg",
+    "logo": "./assets/app-icon.svg"
   }
 }

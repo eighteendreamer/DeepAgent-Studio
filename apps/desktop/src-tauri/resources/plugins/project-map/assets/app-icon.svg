@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Project Map">
+  <rect width="64" height="64" rx="14" fill="#CA8A04"/>
+  <path d="M19 20l25 10-22 16m-3-26l3 26m22-16L22 46" fill="none" stroke="#FEF3C7" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="19" cy="20" r="7" fill="#FFFFFF"/>
+  <circle cx="44" cy="30" r="7" fill="#422006"/>
+  <circle cx="22" cy="46" r="7" fill="#FFFFFF"/>
+</svg>

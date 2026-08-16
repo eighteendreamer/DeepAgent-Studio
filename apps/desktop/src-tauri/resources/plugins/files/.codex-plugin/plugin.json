@@ -16,6 +16,8 @@
     "category": "Productivity",
     "capabilities": ["App", "Read", "Preview"],
     "permissions": ["file.read"],
-    "brandColor": "#0f766e"
+    "brandColor": "#0f766e",
+    "composerIcon": "./assets/app-icon.svg",
+    "logo": "./assets/app-icon.svg"
   }
 }

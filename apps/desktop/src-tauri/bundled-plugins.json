@@ -65,7 +65,7 @@
       "version": "0.1.1"
     },
     {
-      "contentHash": "sha256:8ff56cb190c2da9d78a0f058530d0492dfce6c7a5e5a0644d938faad436f486c",
+      "contentHash": "sha256:4b28569a11b28d0bc73e746eae1d34d80830c103cbf84a95069c311ece8be93b",
       "license": "GPL-3.0-or-later",
       "licenseFile": "LICENSE",
       "name": "wedecode",

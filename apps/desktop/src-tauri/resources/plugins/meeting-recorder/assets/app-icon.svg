@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Meeting Recorder">
+  <rect width="64" height="64" rx="14" fill="#E11D48"/>
+  <rect x="25" y="12" width="14" height="27" rx="7" fill="#FFFFFF"/>
+  <path d="M18 32a14 14 0 0028 0M32 46v7M24 53h16" fill="none" stroke="#FFE4E6" stroke-width="4" stroke-linecap="round"/>
+  <path d="M15 25v8M10 28v3M49 25v8M54 28v3" stroke="#FDA4AF" stroke-width="3" stroke-linecap="round"/>
+</svg>

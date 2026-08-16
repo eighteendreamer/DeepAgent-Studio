@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import {
@@ -1681,10 +1682,31 @@ function ScanMetric({ label, value }: { label: string; value: string }) {
 function PluginIcon({ plugin, size = "md" }: { plugin: Plugin; size?: "md" | "lg" }) {
   const icon = iconForPlugin(plugin);
   const large = size === "lg";
+  const assetPath = plugin.icon_path || plugin.logo_path;
+  const assetUrl = assetPath && isTauri() ? convertFileSrc(assetPath) : null;
+  const [assetFailed, setAssetFailed] = useState(false);
   const color = plugin.brand_color || "#334155";
+
+  useEffect(() => setAssetFailed(false), [assetPath]);
+
+  if (assetUrl && !assetFailed) {
+    return (
+      <div
+        className={`${large ? "h-12 w-12" : "h-8 w-8"} flex shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white`}
+      >
+        <img
+          src={assetUrl}
+          alt={`${plugin.display_name} Logo`}
+          className="h-full w-full object-contain"
+          onError={() => setAssetFailed(true)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div
-      className={`${large ? "h-[30px] w-[30px] text-[13px]" : "h-[22px] w-[22px] text-[10px]"} flex shrink-0 items-center justify-center rounded-md text-white`}
+      className={`${large ? "h-12 w-12 text-[18px]" : "h-8 w-8 text-[13px]"} flex shrink-0 items-center justify-center rounded-lg text-white`}
       style={{ backgroundColor: color }}
     >
       <FontAwesomeIcon icon={icon} />

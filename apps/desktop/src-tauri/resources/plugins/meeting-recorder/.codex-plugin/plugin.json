@@ -16,6 +16,8 @@
     "category": "Productivity",
     "capabilities": ["App", "Audio", "Read", "Write"],
     "permissions": ["microphone", "file.write", "runtime.use"],
-    "brandColor": "#e11d48"
+    "brandColor": "#e11d48",
+    "composerIcon": "./assets/app-icon.svg",
+    "logo": "./assets/app-icon.svg"
   }
 }
