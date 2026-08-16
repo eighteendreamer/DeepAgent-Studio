@@ -432,6 +432,7 @@ export function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [view, setView] = useState<View>("start");
+  const [pluginsMounted, setPluginsMounted] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // FIFO queue of tool-approval requests awaiting the user's decision.
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
@@ -445,6 +446,10 @@ export function App() {
   // it (session_registered) — used for the manual stop button and to navigate
   // into the still-running session.
   const [activePendingRunKey, setActivePendingRunKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (view === "plugins") setPluginsMounted(true);
+  }, [view]);
 
   // The in-flight transcript, kept per-session in a ref so it SURVIVES
   // navigation. Leaving and returning to a running session restores its live
@@ -2075,8 +2080,8 @@ export function App() {
                 <KnowledgeView />
               </div>
             )}
-            {view === "plugins" && (
-              <div key={viewFrameKey} className="view-frame">
+            {(view === "plugins" || pluginsMounted) && (
+              <div className={view === "plugins" ? "view-frame" : "hidden"}>
                 <PluginsView />
               </div>
             )}
