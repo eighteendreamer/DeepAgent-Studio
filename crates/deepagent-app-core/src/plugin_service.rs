@@ -396,22 +396,71 @@ fn marketplace_component_summary_from_manifest(
 fn marketplace_runtime_summary_from_manifest(
     manifest: &PluginManifest,
 ) -> PluginMarketplaceRuntimeSummary {
-    let mut requirements = Vec::new();
+    let mut requirements = BTreeSet::new();
     if let Some(version) = non_empty_trimmed(manifest.runtime.node.as_deref()) {
-        requirements.push(format!("node {version}"));
+        requirements.insert(format!("node {version}"));
     }
     if let Some(version) = non_empty_trimmed(manifest.runtime.python.as_deref()) {
-        requirements.push(format!("python {version}"));
+        requirements.insert(format!("python {version}"));
     }
     if let Some(version) = non_empty_trimmed(manifest.runtime.java.as_deref()) {
-        requirements.push(format!("java {version}"));
+        requirements.insert(format!("java {version}"));
     }
-    requirements.sort();
-    requirements.dedup();
+    extend_runtime_requirements_from_mcp_value(
+        &mut requirements,
+        manifest.paths.mcp_servers_inline.as_ref(),
+    );
+    let requirements = requirements.into_iter().collect::<Vec<_>>();
     PluginMarketplaceRuntimeSummary {
         required: !requirements.is_empty(),
         requirements,
         has_runtime_payload: false,
+    }
+}
+
+fn extend_runtime_requirements_from_mcp_value(
+    requirements: &mut BTreeSet<String>,
+    value: Option<&serde_json::Value>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    let Ok(text) = serde_json::to_string(value) else {
+        return;
+    };
+    let Ok(config) = McpConfig::parse(&text) else {
+        return;
+    };
+    extend_runtime_requirements_from_mcp_config(requirements, &config);
+}
+
+fn extend_runtime_requirements_from_mcp_config(
+    requirements: &mut BTreeSet<String>,
+    config: &McpConfig,
+) {
+    for server in config.servers.values() {
+        if !matches!(server.effective_type(), Ok(TransportType::Stdio)) {
+            continue;
+        }
+        let Some(command) = server.command.as_deref() else {
+            continue;
+        };
+        if let Some(requirement) = mcp_command_runtime_requirement(command) {
+            requirements.insert(requirement.to_string());
+        }
+    }
+}
+
+fn mcp_command_runtime_requirement(command: &str) -> Option<&'static str> {
+    let stem = Path::new(command)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.to_ascii_lowercase())?;
+    match stem.as_str() {
+        "node" | "npm" | "npx" | "pnpm" | "yarn" | "bun" => Some("node"),
+        "python" | "python3" | "py" | "pip" | "pip3" | "uv" | "uvx" => Some("python"),
+        "java" => Some("java"),
+        _ => None,
     }
 }
 
@@ -4142,6 +4191,11 @@ fn materialize_github_topic_marketplace(
                 .unwrap_or_default();
                 runtime_summary =
                     merge_marketplace_runtime_summary(runtime_summary, repo_runtime_summary);
+                let mcp_runtime_summary =
+                    github_topic_mcp_runtime_summary(&full_name, &commit, metadata, &scratch)
+                        .unwrap_or_default();
+                runtime_summary =
+                    merge_marketplace_runtime_summary(runtime_summary, mcp_runtime_summary);
             }
             let mut plugin_name = manifest
                 .map(|manifest| manifest.name.clone())
@@ -4316,6 +4370,7 @@ fn github_topic_manifest_metadata(
             return Ok(Some(GitHubTopicManifestMetadata {
                 manifest,
                 manifest_relative_path: manifest_relative_path.to_string(),
+                root,
             }));
         }
     }
@@ -4325,6 +4380,7 @@ fn github_topic_manifest_metadata(
 struct GitHubTopicManifestMetadata {
     manifest: PluginManifest,
     manifest_relative_path: String,
+    root: PathBuf,
 }
 
 fn manifest_plugin_root_relative_path(manifest_relative_path: &str) -> String {
@@ -4398,6 +4454,66 @@ fn github_topic_runtime_payload_summary(
         required: has_runtime_payload || !requirements.is_empty(),
         requirements,
         has_runtime_payload,
+    })
+}
+
+fn github_topic_mcp_runtime_summary(
+    full_name: &str,
+    commit: &str,
+    metadata: &GitHubTopicManifestMetadata,
+    scratch: &Path,
+) -> Result<PluginMarketplaceRuntimeSummary> {
+    let mut requirements = BTreeSet::new();
+    for path in &metadata.manifest.paths.mcp_server_paths {
+        let Ok(relative_path) = path.strip_prefix(&metadata.root) else {
+            continue;
+        };
+        let relative_path = relative_path.to_string_lossy().replace('\\', "/");
+        let endpoint = format!(
+            "/repos/{}/contents/{}?ref={}",
+            full_name,
+            percent_encode_content_path(&relative_path),
+            percent_encode_query_value(commit)
+        );
+        let text = match download_github_api_json(
+            &endpoint,
+            scratch,
+            &format!(
+                "{}-{}-mcp-summary",
+                full_name.replace('/', "-"),
+                relative_path.replace('/', "-")
+            ),
+        ) {
+            Ok(text) => text,
+            Err(_) => continue,
+        };
+        let Ok(contents) = serde_json::from_str::<GitHubContentResponse>(&text) else {
+            continue;
+        };
+        if contents.kind.as_deref() != Some("file")
+            || contents.encoding.as_deref() != Some("base64")
+        {
+            continue;
+        }
+        let Some(encoded) = contents.content else {
+            continue;
+        };
+        let Ok(bytes) = base64_decode_standard(&encoded) else {
+            continue;
+        };
+        let Ok(mcp_text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        let Ok(config) = McpConfig::parse(&mcp_text) else {
+            continue;
+        };
+        extend_runtime_requirements_from_mcp_config(&mut requirements, &config);
+    }
+    let requirements = requirements.into_iter().collect::<Vec<_>>();
+    Ok(PluginMarketplaceRuntimeSummary {
+        required: !requirements.is_empty(),
+        requirements,
+        has_runtime_payload: false,
     })
 }
 
@@ -8115,6 +8231,47 @@ rl.on('line', (line) => {
     }
 
     #[test]
+    fn marketplace_runtime_summary_infers_inline_mcp_sidecar_requirements() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("plugin");
+        std::fs::create_dir_all(root.join(".codex-plugin")).unwrap();
+        std::fs::write(
+            root.join(".codex-plugin").join("plugin.json"),
+            serde_json::json!({
+                "name": "inline-sidecars",
+                "mcpServers": {
+                    "node-tool": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "@example/server"]
+                    },
+                    "python-tool": {
+                        "type": "stdio",
+                        "command": "uv",
+                        "args": ["run", "server.py"]
+                    },
+                    "hosted": {
+                        "type": "http",
+                        "url": "https://example.com/mcp"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let manifest = load_plugin_manifest(&root).unwrap().unwrap();
+        let summary = marketplace_runtime_summary_from_manifest(&manifest);
+
+        assert!(summary.required);
+        assert_eq!(
+            summary.requirements,
+            vec!["node".to_string(), "python".to_string()]
+        );
+        assert!(!summary.has_runtime_payload);
+    }
+
+    #[test]
     fn host_backed_plugin_reports_missing_host_component() {
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
@@ -11383,6 +11540,21 @@ deepagent-definitely-missing-runtime-cli --version
                 { "type": "file", "name": "LICENSE" }
             ]),
         );
+        write_github_contents_manifest_fixture(
+            &fixtures,
+            "deepseek-ai/topic-sidecar",
+            ".mcp.json",
+            commit,
+            serde_json::json!({
+                "mcpServers": {
+                    "topic-local": {
+                        "type": "stdio",
+                        "command": "node",
+                        "args": ["server.js"]
+                    }
+                }
+            }),
+        );
 
         let mcp_config = serde_json::json!({
             "mcpServers": {
@@ -11433,6 +11605,8 @@ deepagent-definitely-missing-runtime-cli --version
         assert_eq!(entry.mcp_count, 1);
         assert_eq!(entry.source_kind, "github");
         assert_eq!(entry.source_commit.as_deref(), Some(commit));
+        assert!(entry.runtime_required);
+        assert_eq!(entry.runtime_requirements, vec!["node".to_string()]);
         assert!(entry.installable);
         assert!(!entry.installed);
         assert!(!roots
