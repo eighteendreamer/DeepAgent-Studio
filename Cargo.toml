@@ -142,6 +142,8 @@ blake3 = "1"
 
 # SHA-256 for verifying downloaded managed runtimes (office-agent RuntimeService).
 sha2 = "0.10"
+base64 = "0.22"
+percent-encoding = "2"
 
 # Archive extraction for managed runtimes distributed as .tar.gz (pandoc /
 # pdfium ship tarballs on some platforms). Pure Rust.

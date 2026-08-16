@@ -12,9 +12,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_mcp::config::{McpConfig, McpServerConfig, TransportType};
 use flate2::read::GzDecoder;
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
@@ -58,6 +60,37 @@ const GITHUB_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_PLUGIN_ARCHIVE_ENTRIES: usize = 10_000;
 const MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
+const QUERY_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'!')
+    .add(b'"')
+    .add(b'#')
+    .add(b'$')
+    .add(b'%')
+    .add(b'&')
+    .add(b'\'')
+    .add(b'(')
+    .add(b')')
+    .add(b'*')
+    .add(b'+')
+    .add(b',')
+    .add(b'/')
+    .add(b':')
+    .add(b';')
+    .add(b'<')
+    .add(b'=')
+    .add(b'>')
+    .add(b'?')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &QUERY_ENCODE_SET.remove(b':');
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginSourceDto {
@@ -5495,7 +5528,7 @@ fn github_download_url_candidates(url: &str) -> Vec<String> {
 }
 
 fn percent_encode_query_value(input: &str) -> String {
-    percent_encode_bytes(input.as_bytes(), true)
+    utf8_percent_encode(input, QUERY_ENCODE_SET).to_string()
 }
 
 fn github_topic_search_endpoint(topic: &str, query: &str, page: u32, per_page: u32) -> String {
@@ -5514,7 +5547,7 @@ fn github_topic_search_endpoint(topic: &str, query: &str, page: u32, per_page: u
 }
 
 fn percent_encode_path_segment(input: &str) -> String {
-    percent_encode_bytes(input.as_bytes(), false)
+    utf8_percent_encode(input, PATH_SEGMENT_ENCODE_SET).to_string()
 }
 
 #[cfg(test)]
@@ -5525,61 +5558,14 @@ fn percent_encode_content_path(path: &str) -> String {
         .join("/")
 }
 
-fn percent_encode_bytes(bytes: &[u8], encode_colon: bool) -> String {
-    let mut out = String::new();
-    for byte in bytes {
-        let ch = *byte as char;
-        if ch.is_ascii_alphanumeric()
-            || matches!(ch, '-' | '_' | '.' | '~')
-            || (!encode_colon && ch == ':')
-        {
-            out.push(ch);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
-
 fn base64_decode_standard(input: &str) -> Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(input.len() * 3 / 4);
-    let mut chunk = [0u8; 4];
-    let mut len = 0usize;
-    for byte in input.bytes().filter(|b| !b.is_ascii_whitespace()) {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' => 64,
-            _ => return Err(CoreError::invalid("invalid base64 data")),
-        };
-        chunk[len] = value;
-        len += 1;
-        if len == 4 {
-            push_base64_chunk(&mut out, chunk)?;
-            len = 0;
-        }
-    }
-    if len != 0 {
-        return Err(CoreError::invalid("invalid base64 padding"));
-    }
-    Ok(out)
-}
-
-fn push_base64_chunk(out: &mut Vec<u8>, chunk: [u8; 4]) -> Result<()> {
-    if chunk[0] == 64 || chunk[1] == 64 {
-        return Err(CoreError::invalid("invalid base64 padding"));
-    }
-    out.push((chunk[0] << 2) | (chunk[1] >> 4));
-    if chunk[2] != 64 {
-        out.push(((chunk[1] & 0b1111) << 4) | (chunk[2] >> 2));
-    }
-    if chunk[3] != 64 {
-        out.push(((chunk[2] & 0b11) << 6) | chunk[3]);
-    }
-    Ok(())
+    let compact = input
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    BASE64_STANDARD
+        .decode(compact)
+        .map_err(|_| CoreError::invalid("invalid base64 data"))
 }
 
 fn run_external(program: &str, args: &[String], cwd: Option<&Path>) -> Result<()> {
@@ -12901,6 +12887,32 @@ deepagent-definitely-missing-runtime-cli --version
             github_topic_search_endpoint("dsh-plugin", "figma api", 3, 30),
             "/search/repositories?q=topic%3Adsh-plugin%20figma%20api&sort=updated&order=desc&per_page=30&page=3"
         );
+    }
+
+    #[test]
+    fn github_api_percent_encoding_keeps_path_colon_but_encodes_query_colon() {
+        assert_eq!(
+            percent_encode_query_value("topic:dsh-plugin figma/api"),
+            "topic%3Adsh-plugin%20figma%2Fapi"
+        );
+        assert_eq!(
+            percent_encode_path_segment("release:main branch"),
+            "release:main%20branch"
+        );
+    }
+
+    #[test]
+    fn subresource_integrity_verification_uses_standard_base64() {
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = tmp.path().join("payload.tgz");
+        std::fs::write(&payload, b"hello").unwrap();
+        let digest = digest_file::<Sha256>(&payload).unwrap();
+        let encoded = BASE64_STANDARD.encode(digest);
+        let integrity = format!("sha256-\n{encoded}");
+
+        verify_subresource_integrity_file(&payload, &integrity).unwrap();
+        let err = verify_subresource_integrity_file(&payload, "sha256-AAAA").unwrap_err();
+        assert!(err.to_string().contains("integrity mismatch"));
     }
 
     #[test]

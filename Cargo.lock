@@ -1083,6 +1083,7 @@ name = "deepagent-app-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "calamine",
  "cpal",
  "deepagent-builtins",
@@ -1112,6 +1113,7 @@ dependencies = [
  "keyring",
  "pdf-extract",
  "pdfium-render",
+ "percent-encoding",
  "portable-pty",
  "reqwest",
  "rust_xlsxwriter",
