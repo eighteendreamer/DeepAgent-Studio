@@ -984,6 +984,7 @@ impl PluginService {
         let mut state = self.load_state()?;
         state.enabled.insert(id.clone(), true);
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         self.read(&id)?
             .ok_or_else(|| CoreError::other(format!("created plugin {id} was not discoverable")))
     }
@@ -1015,6 +1016,7 @@ impl PluginService {
             state.enabled.entry(id.clone()).or_insert(true);
             let had_health_check = state.health_checks.contains_key(&id);
             self.save_state(&state)?;
+            self.invalidate_plugin_caches();
             if !had_health_check {
                 if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                     tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after install");
@@ -1047,6 +1049,7 @@ impl PluginService {
             },
         );
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         if !had_health_check {
             if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                 tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after install");
@@ -1066,6 +1069,7 @@ impl PluginService {
                 state.enabled.remove(id).is_some() || state.installed.remove(id).is_some();
             if changed {
                 self.save_state(&state)?;
+                self.invalidate_plugin_caches();
             }
             return Ok(false);
         };
@@ -1087,6 +1091,7 @@ impl PluginService {
         state.enabled.remove(id);
         state.installed.remove(id);
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
 
         if remove_data {
             let data_dir = self.data_root.join(sanitize_file_name(id));
@@ -1160,6 +1165,7 @@ impl PluginService {
         let mut state = self.load_state()?;
         state.marketplaces.insert(name.clone(), state_item.clone());
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         Ok(PluginMarketplaceDto {
             name,
             source,
@@ -1234,6 +1240,7 @@ impl PluginService {
 
         if changed {
             self.save_state(&state)?;
+            self.invalidate_plugin_caches();
         }
         Ok(changed)
     }
@@ -1267,6 +1274,7 @@ impl PluginService {
             last_updated: item.last_updated.clone(),
         };
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         Ok(dto)
     }
 
@@ -1672,6 +1680,7 @@ impl PluginService {
             self.save_state(&state).map_err(|error| {
                 plugin_install_failure("commit.write_state", Some(&self.state_path), error)
             })?;
+            self.invalidate_plugin_caches();
             if !had_health_check {
                 if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                     tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after marketplace commit");
@@ -1749,6 +1758,7 @@ impl PluginService {
             state.enabled.insert(updated.id.clone(), enabled);
         }
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         self.read(&updated.id)?
             .ok_or_else(|| CoreError::not_found(format!("plugin {}", updated.id)))
     }
@@ -1887,6 +1897,7 @@ impl PluginService {
             },
         );
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         if !had_health_check {
             if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                 tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after marketplace install");
@@ -11432,6 +11443,17 @@ deepagent-definitely-missing-runtime-cli --version
         assert!(entries[0].update_available);
         assert!(svc.read("demo@team").unwrap().unwrap().update_available);
 
+        let old_version = roots
+            .marketplace_cache
+            .join("team")
+            .join("demo")
+            .join("0.1.0");
+        let mut stale_projection = crate::plugin_runtime::PluginRuntimeProjection::default();
+        stale_projection
+            .skill_roots
+            .push(old_version.join("skills"));
+        svc.store_runtime_projection_cache(stale_projection, Vec::new());
+
         let updated = svc.update_plugin("demo@team").unwrap();
         assert_eq!(updated.version.as_deref(), Some("0.2.0"));
         assert!(!updated.enabled, "update should preserve disabled state");
@@ -11442,11 +11464,6 @@ deepagent-definitely-missing-runtime-cli --version
         assert_eq!(installed_state.version.as_deref(), Some("0.2.0"));
         assert_eq!(installed_state.installed_at, original_installed_at);
         assert!(installed_state.last_updated.is_some());
-        let old_version = roots
-            .marketplace_cache
-            .join("team")
-            .join("demo")
-            .join("0.1.0");
         let new_version = roots
             .marketplace_cache
             .join("team")
