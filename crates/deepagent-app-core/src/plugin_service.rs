@@ -9124,20 +9124,19 @@ rl.on('line', (line) => {
     #[test]
     fn external_command_probe_candidates_prefer_path_before_managed_overrides() {
         let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var(
-            "DEEPAGENT_DEEPAGENT_TEST_CLI",
-            "C:\\managed\\deepagent-test-cli.exe",
-        );
+        let original = std::env::var_os("DEEPAGENT_DEEPAGENT_TEST_CLI");
+        let managed = "C:\\managed\\deepagent-test-cli.exe";
+        std::env::set_var("DEEPAGENT_DEEPAGENT_TEST_CLI", managed);
 
         let candidates = external_command_probe_candidates("deepagent-test-cli");
 
-        assert_eq!(
-            candidates.first(),
-            Some(&PathBuf::from("deepagent-test-cli"))
-        );
-        assert!(candidates.contains(&PathBuf::from("C:\\managed\\deepagent-test-cli.exe")));
+        assert_eq!(candidates[0], PathBuf::from("deepagent-test-cli"));
+        assert_eq!(candidates[1], PathBuf::from(managed));
 
-        std::env::remove_var("DEEPAGENT_DEEPAGENT_TEST_CLI");
+        match original {
+            Some(value) => std::env::set_var("DEEPAGENT_DEEPAGENT_TEST_CLI", value),
+            None => std::env::remove_var("DEEPAGENT_DEEPAGENT_TEST_CLI"),
+        }
     }
 
     #[test]
@@ -9269,12 +9268,19 @@ rl.on('line', (line) => {
 
     #[test]
     fn runtime_probe_candidates_prefer_local_then_managed_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original = std::env::var_os("DEEPAGENT_NODE");
+        let managed = "C:\\managed\\node.exe";
+        std::env::set_var("DEEPAGENT_NODE", managed);
         let candidates = runtime_probe_candidates("node");
 
-        assert_eq!(candidates.first(), Some(&PathBuf::from("node")));
-        if let Some(managed) = std::env::var_os("DEEPAGENT_NODE").filter(|value| !value.is_empty())
-        {
-            assert!(candidates.contains(&PathBuf::from(managed)));
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0], PathBuf::from("node"));
+        assert_eq!(candidates[1], PathBuf::from(managed));
+
+        match original {
+            Some(value) => std::env::set_var("DEEPAGENT_NODE", value),
+            None => std::env::remove_var("DEEPAGENT_NODE"),
         }
     }
 
