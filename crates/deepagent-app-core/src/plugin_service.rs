@@ -393,6 +393,121 @@ fn marketplace_component_summary_from_manifest(
     }
 }
 
+fn github_topic_component_summary(
+    full_name: &str,
+    commit: &str,
+    metadata: &GitHubTopicManifestMetadata,
+    scratch: &Path,
+) -> PluginMarketplaceComponentSummary {
+    let manifest = &metadata.manifest;
+    PluginMarketplaceComponentSummary {
+        skills: github_topic_existing_component_path_count(
+            full_name,
+            commit,
+            metadata,
+            scratch,
+            &manifest.paths.skills,
+        ),
+        commands: github_topic_existing_component_path_count(
+            full_name,
+            commit,
+            metadata,
+            scratch,
+            &manifest.paths.commands,
+        ),
+        agents: github_topic_existing_component_path_count(
+            full_name,
+            commit,
+            metadata,
+            scratch,
+            &manifest.paths.agents,
+        ),
+        hooks: inline_object_count(manifest.paths.hooks_inline.as_ref())
+            + github_topic_existing_component_path_count(
+                full_name,
+                commit,
+                metadata,
+                scratch,
+                &manifest.paths.hook_paths,
+            ),
+        mcp: inline_object_count(manifest.paths.mcp_servers_inline.as_ref())
+            + github_topic_existing_component_path_count(
+                full_name,
+                commit,
+                metadata,
+                scratch,
+                &manifest.paths.mcp_server_paths,
+            ),
+        apps: github_topic_existing_component_path_count(
+            full_name,
+            commit,
+            metadata,
+            scratch,
+            &manifest.paths.app_paths,
+        ),
+        output_styles: github_topic_existing_component_path_count(
+            full_name,
+            commit,
+            metadata,
+            scratch,
+            &manifest.paths.output_styles,
+        ),
+    }
+}
+
+fn github_topic_existing_component_path_count(
+    full_name: &str,
+    commit: &str,
+    metadata: &GitHubTopicManifestMetadata,
+    scratch: &Path,
+    paths: &[PathBuf],
+) -> u32 {
+    paths
+        .iter()
+        .filter(|path| {
+            github_topic_component_path_exists(full_name, commit, metadata, scratch, path)
+        })
+        .count() as u32
+}
+
+fn github_topic_component_path_exists(
+    full_name: &str,
+    commit: &str,
+    metadata: &GitHubTopicManifestMetadata,
+    scratch: &Path,
+    path: &Path,
+) -> bool {
+    let Ok(relative_path) = path.strip_prefix(&metadata.root) else {
+        return false;
+    };
+    let relative_path = relative_path.to_string_lossy().replace('\\', "/");
+    if relative_path.trim().is_empty() {
+        return false;
+    }
+    let endpoint = format!(
+        "/repos/{}/contents/{}?ref={}",
+        full_name,
+        percent_encode_content_path(&relative_path),
+        percent_encode_query_value(commit)
+    );
+    let text = match download_github_api_json(
+        &endpoint,
+        scratch,
+        &format!(
+            "{}-{}-component-summary",
+            full_name.replace('/', "-"),
+            relative_path.replace('/', "-")
+        ),
+    ) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    if let Ok(contents) = serde_json::from_str::<GitHubContentResponse>(&text) {
+        return matches!(contents.kind.as_deref(), Some("file" | "dir"));
+    }
+    serde_json::from_str::<Vec<GitHubContentDirectoryEntry>>(&text).is_ok()
+}
+
 fn marketplace_runtime_summary_from_manifest(
     manifest: &PluginManifest,
 ) -> PluginMarketplaceRuntimeSummary {
@@ -603,15 +718,16 @@ impl PluginService {
         let Some(plugin) = self.read(id)? else {
             return Ok(None);
         };
-        let (checked_at, health_status, health_error) =
+        let (checked_at, runtime_available, lifecycle_state, health_status, health_error) =
             self.evaluate_and_persist_plugin_health(id, &plugin)?;
         self.invalidate_plugin_caches();
 
         let mut inspection = PluginRuntimeInspectionDto::from_plugin(&plugin);
+        inspection.runtime_available = runtime_available;
         inspection.last_health_check = Some(checked_at);
         inspection.health_status = health_status;
         inspection.health_error = health_error;
-        inspection.state = explicit_health_lifecycle_state(inspection.state, health_status);
+        inspection.state = lifecycle_state;
         Ok(Some(inspection))
     }
 
@@ -619,12 +735,102 @@ impl PluginService {
         &self,
         id: &str,
         plugin: &PluginDto,
-    ) -> Result<(String, PluginHealthStatus, Option<String>)> {
+    ) -> Result<(
+        String,
+        bool,
+        PluginLifecycleState,
+        PluginHealthStatus,
+        Option<String>,
+    )> {
         let checked_at = now_string();
+        let (runtime_available, lifecycle_state, health_status, health_error) =
+            self.evaluate_plugin_health(id, plugin)?;
+        let (checked_at, health_status, health_error) =
+            self.persist_plugin_health_check(id, checked_at, health_status, health_error)?;
+        Ok((
+            checked_at,
+            runtime_available,
+            explicit_health_lifecycle_state(lifecycle_state, health_status),
+            health_status,
+            health_error,
+        ))
+    }
+
+    fn evaluate_plugin_health(
+        &self,
+        id: &str,
+        plugin: &PluginDto,
+    ) -> Result<(
+        bool,
+        PluginLifecycleState,
+        PluginHealthStatus,
+        Option<String>,
+    )> {
+        let Some(loaded) = load_plugins(&self.roots)
+            .into_iter()
+            .find(|loaded| loaded.id == id)
+        else {
+            return Ok((
+                plugin.runtime_available,
+                plugin.state,
+                plugin.health_status,
+                plugin.health_error.clone(),
+            ));
+        };
+        let resolved = loaded.resolved();
+        let manifest = resolved.map(|plugin| &plugin.manifest);
+        let counts = PluginComponentCounts::from_manifest(manifest);
+        let entrypoints = self.plugin_entrypoints(&loaded, manifest);
+        let has_runtime_payload = loaded.root.join("runtime.zip").is_file();
+        let runtime_requirements =
+            self.plugin_runtime_requirements(&loaded, manifest, has_runtime_payload);
+        let runtime_available = self.runtime_requirements_available(&runtime_requirements);
+        let health_status = self.plugin_health_status(
+            &loaded,
+            manifest,
+            resolved,
+            counts,
+            runtime_available,
+            &runtime_requirements,
+        );
+        let health_error = self.plugin_health_error(
+            &loaded,
+            manifest,
+            counts,
+            &runtime_requirements,
+            health_status,
+        );
+        let lifecycle_state = self.plugin_lifecycle_state(
+            &loaded,
+            manifest,
+            resolved,
+            counts,
+            health_status,
+            &entrypoints,
+        );
+        if health_status != PluginHealthStatus::Ready {
+            return Ok((
+                runtime_available,
+                lifecycle_state,
+                health_status,
+                health_error,
+            ));
+        }
+
+        let mut evaluated_plugin = plugin.clone();
+        evaluated_plugin.runtime_available = runtime_available;
+        evaluated_plugin.health_status = health_status;
+        evaluated_plugin.health_error = health_error.clone();
+        evaluated_plugin.state = lifecycle_state;
         let (health_status, health_error) = self
-            .explicit_plugin_health_override(id, plugin)?
-            .unwrap_or((plugin.health_status, plugin.health_error.clone()));
-        self.persist_plugin_health_check(id, checked_at, health_status, health_error)
+            .explicit_plugin_health_override(id, &evaluated_plugin)?
+            .unwrap_or((health_status, health_error));
+        Ok((
+            runtime_available,
+            lifecycle_state,
+            health_status,
+            health_error,
+        ))
     }
 
     fn persist_plugin_health_check(
@@ -2198,6 +2404,68 @@ impl PluginService {
         PluginHealthStatus::Ready
     }
 
+    fn plugin_lightweight_health_status(
+        &self,
+        plugin: &LoadedPlugin,
+        manifest: Option<&PluginManifest>,
+        resolved: Option<&ResolvedPlugin>,
+        counts: PluginComponentCounts,
+        runtime_requirements: &PluginRuntimeNeeds,
+    ) -> PluginHealthStatus {
+        if !plugin.available || resolved.is_none() {
+            return PluginHealthStatus::Failed;
+        }
+        if has_fatal_plugin_errors(plugin) {
+            return PluginHealthStatus::Failed;
+        }
+        let execution_kind = manifest
+            .map(|manifest| {
+                self.plugin_execution_kind(
+                    plugin,
+                    Some(manifest),
+                    counts,
+                    plugin.root.join("runtime.zip").is_file(),
+                )
+            })
+            .unwrap_or(PluginExecutionKind::SkillOnly);
+
+        if execution_kind == PluginExecutionKind::HostBacked {
+            if let Some(manifest) = manifest {
+                if !self
+                    .host_backed_validation_errors(plugin, manifest, counts)
+                    .is_empty()
+                {
+                    return PluginHealthStatus::Incomplete;
+                }
+            } else {
+                return PluginHealthStatus::Incomplete;
+            }
+        }
+        if manifest.is_some()
+            && !self
+                .plugin_hook_command_scripts(plugin, manifest)
+                .errors
+                .is_empty()
+        {
+            return PluginHealthStatus::Incomplete;
+        }
+        if !runtime_payload_errors(&plugin.root).is_empty() {
+            return PluginHealthStatus::Incomplete;
+        }
+
+        if manifest.is_some_and(manifest_needs_host_authorization) {
+            return PluginHealthStatus::NeedsAuthorization;
+        }
+        if !missing_credential_env_hints(&plugin.root).is_empty() {
+            return PluginHealthStatus::NeedsConfiguration;
+        }
+        if runtime_requirements.requires_runtime() {
+            return PluginHealthStatus::Unknown;
+        }
+
+        PluginHealthStatus::Ready
+    }
+
     fn plugin_health_error(
         &self,
         plugin: &LoadedPlugin,
@@ -2470,21 +2738,20 @@ impl PluginService {
                 PluginLifecycleState::Incomplete
             }
             PluginHealthStatus::Failed => PluginLifecycleState::Failed,
-            PluginHealthStatus::Ready | PluginHealthStatus::Unknown => {
-                match self.plugin_execution_kind(
-                    plugin,
-                    Some(manifest),
-                    counts,
-                    plugin.root.join("runtime.zip").is_file(),
-                ) {
-                    PluginExecutionKind::HostBacked | PluginExecutionKind::SkillOnly => {
-                        PluginLifecycleState::Verified
-                    }
-                    PluginExecutionKind::Subprocess
-                    | PluginExecutionKind::ManagedRuntime
-                    | PluginExecutionKind::DshSidecar => PluginLifecycleState::Executable,
+            PluginHealthStatus::Unknown => PluginLifecycleState::Installed,
+            PluginHealthStatus::Ready => match self.plugin_execution_kind(
+                plugin,
+                Some(manifest),
+                counts,
+                plugin.root.join("runtime.zip").is_file(),
+            ) {
+                PluginExecutionKind::HostBacked | PluginExecutionKind::SkillOnly => {
+                    PluginLifecycleState::Verified
                 }
-            }
+                PluginExecutionKind::Subprocess
+                | PluginExecutionKind::ManagedRuntime
+                | PluginExecutionKind::DshSidecar => PluginLifecycleState::Executable,
+            },
         }
     }
 
@@ -2512,14 +2779,15 @@ impl PluginService {
         let has_runtime_payload = plugin.root.join("runtime.zip").is_file();
         let runtime_requirements =
             self.plugin_runtime_requirements(plugin, manifest, has_runtime_payload);
-        let runtime_available = self.runtime_requirements_available(&runtime_requirements);
         let license_status = self.plugin_license_status(plugin);
-        let computed_health_status = self.plugin_health_status(
+        let persisted_health = state.health_checks.get(&plugin.id);
+        let runtime_available =
+            lightweight_runtime_available(&runtime_requirements, persisted_health);
+        let computed_health_status = self.plugin_lightweight_health_status(
             plugin,
             manifest,
             resolved,
             counts,
-            runtime_available,
             &runtime_requirements,
         );
         let computed_health_error = self.plugin_health_error(
@@ -2529,7 +2797,6 @@ impl PluginService {
             &runtime_requirements,
             computed_health_status,
         );
-        let persisted_health = state.health_checks.get(&plugin.id);
         let last_health_check = persisted_health.map(|check| check.checked_at.clone());
         let (health_status, health_error) =
             if plugin.available && resolved.is_some() && !has_fatal_plugin_errors(plugin) {
@@ -4287,13 +4554,15 @@ fn materialize_github_topic_marketplace(
             let manifest = manifest_metadata
                 .as_ref()
                 .map(|metadata| &metadata.manifest);
-            let component_summary = manifest
+            let mut component_summary = manifest
                 .map(marketplace_component_summary_from_manifest)
                 .unwrap_or_default();
             let mut runtime_summary = manifest
                 .map(marketplace_runtime_summary_from_manifest)
                 .unwrap_or_default();
             if let Some(metadata) = manifest_metadata.as_ref() {
+                component_summary =
+                    github_topic_component_summary(&full_name, &commit, metadata, &scratch);
                 let repo_runtime_summary = github_topic_runtime_payload_summary(
                     &full_name,
                     &commit,
@@ -6839,6 +7108,25 @@ fn explicit_health_lifecycle_state(
     }
 }
 
+fn lightweight_runtime_available(
+    needs: &PluginRuntimeNeeds,
+    persisted_health: Option<&PluginHealthCheckState>,
+) -> bool {
+    if !needs.requires_runtime() {
+        return true;
+    }
+    matches!(
+        persisted_health.map(|health| health.status),
+        Some(
+            PluginHealthStatus::Ready
+                | PluginHealthStatus::NeedsConfiguration
+                | PluginHealthStatus::NeedsAuthorization
+                | PluginHealthStatus::ConnectionUnavailable
+                | PluginHealthStatus::Incomplete
+        )
+    )
+}
+
 fn hosted_mcp_connection_failures(config: &McpConfig) -> Vec<String> {
     config
         .servers
@@ -8670,8 +8958,8 @@ rl.on('line', (line) => {
         let before = svc.read("sidecar-plugin@builtin").unwrap().unwrap();
         assert_eq!(before.execution_kind, PluginExecutionKind::DshSidecar);
         assert!(before.runtime_required);
-        assert!(before.runtime_available);
-        assert_eq!(before.health_status, PluginHealthStatus::Ready);
+        assert!(!before.runtime_available);
+        assert_eq!(before.health_status, PluginHealthStatus::Unknown);
 
         let checked = svc
             .check_plugin_health("sidecar-plugin@builtin")
@@ -8679,6 +8967,7 @@ rl.on('line', (line) => {
             .unwrap();
 
         assert_eq!(checked.health_status, PluginHealthStatus::Ready);
+        assert!(checked.runtime_available);
         assert_eq!(checked.state, PluginLifecycleState::Executable);
         assert!(checked.health_error.is_none());
         assert!(
@@ -8832,8 +9121,20 @@ rl.on('line', (line) => {
 
         assert!(plugin.runtime_required);
         assert!(!plugin.runtime_available);
-        assert_eq!(plugin.health_status, PluginHealthStatus::RuntimeUnavailable);
-        assert!(plugin
+        assert_eq!(plugin.health_status, PluginHealthStatus::Unknown);
+        assert!(plugin.health_error.is_none());
+
+        let checked = svc
+            .check_plugin_health("analysis-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert!(!checked.runtime_available);
+        assert_eq!(
+            checked.health_status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
+        assert!(checked
             .health_error
             .as_deref()
             .unwrap_or_default()
@@ -8884,8 +9185,20 @@ rl.on('line', (line) => {
 
         assert!(plugin.runtime_required);
         assert!(!plugin.runtime_available);
-        assert_eq!(plugin.health_status, PluginHealthStatus::RuntimeUnavailable);
-        assert!(plugin
+        assert_eq!(plugin.health_status, PluginHealthStatus::Unknown);
+        assert!(plugin.health_error.is_none());
+
+        let checked = svc
+            .check_plugin_health("analysis-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert!(!checked.runtime_available);
+        assert_eq!(
+            checked.health_status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
+        assert!(checked
             .health_error
             .as_deref()
             .unwrap_or_default()
@@ -9139,6 +9452,95 @@ rl.on('line', (line) => {
         }
     }
 
+    fn write_runtime_probe_sentinel(tmp: &Path, marker: &Path) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let script = tmp.join("deepagent-sentinel-probe.cmd");
+            std::fs::write(
+                &script,
+                format!(
+                    "@echo off\r\necho ran>\"{}\"\r\nexit /b 0\r\n",
+                    marker.display()
+                ),
+            )
+            .unwrap();
+            script
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let script = tmp.join("deepagent-sentinel-probe");
+            std::fs::write(
+                &script,
+                format!("#!/bin/sh\necho ran > '{}'\nexit 0\n", marker.display()),
+            )
+            .unwrap();
+            let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&script, permissions).unwrap();
+            script
+        }
+    }
+
+    #[test]
+    fn list_keeps_runtime_probe_metadata_lightweight_until_health_check() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let env_key = "DEEPAGENT_DEEPAGENT_SENTINEL_PROBE";
+        let original = std::env::var_os(env_key);
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("probe-plugin");
+        write_plugin(&root, "probe-plugin");
+        std::fs::write(
+            root.join("README.md"),
+            r#"
+            Verify installation:
+
+            ```sh
+            deepagent-sentinel-probe --version
+            ```
+            "#,
+        )
+        .unwrap();
+        let marker = tmp.path().join("probe-ran.txt");
+        let probe = write_runtime_probe_sentinel(tmp.path(), &marker);
+        std::env::set_var(env_key, &probe);
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("probe-plugin@builtin").unwrap().unwrap();
+
+        assert!(plugin.runtime_required);
+        assert!(!plugin.runtime_available);
+        assert_eq!(plugin.health_status, PluginHealthStatus::Unknown);
+        assert_eq!(plugin.state, PluginLifecycleState::Installed);
+        assert!(
+            !marker.exists(),
+            "plugin list must not execute runtime command probes"
+        );
+        assert!(svc.load_state().unwrap().health_checks.is_empty());
+
+        let checked = svc
+            .check_plugin_health("probe-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert!(marker.exists(), "health check should run command probes");
+        assert!(checked.runtime_required);
+        assert!(checked.runtime_available);
+        assert_eq!(checked.health_status, PluginHealthStatus::Ready);
+        let state = svc.load_state().unwrap();
+        assert_eq!(
+            state.health_checks["probe-plugin@builtin"].status,
+            PluginHealthStatus::Ready
+        );
+
+        match original {
+            Some(value) => std::env::set_var(env_key, value),
+            None => std::env::remove_var(env_key),
+        }
+    }
+
     #[test]
     fn hook_command_script_is_validated_and_reported_as_entrypoint() {
         let tmp = tempfile::tempdir().unwrap();
@@ -9168,13 +9570,20 @@ rl.on('line', (line) => {
         let plugin = svc.read("hook-plugin@builtin").unwrap().unwrap();
 
         assert_eq!(plugin.execution_kind, PluginExecutionKind::DshSidecar);
-        assert_eq!(plugin.health_status, PluginHealthStatus::Ready);
+        assert_eq!(plugin.health_status, PluginHealthStatus::Unknown);
         assert!(plugin.runtime_required);
         assert!(plugin
             .entrypoints
             .iter()
             .any(|entrypoint| entrypoint.ends_with("scripts\\post.sh")
                 || entrypoint.ends_with("scripts/post.sh")));
+
+        let checked = svc
+            .check_plugin_health("hook-plugin@builtin")
+            .unwrap()
+            .unwrap();
+        assert_eq!(checked.health_status, PluginHealthStatus::Ready);
+        assert!(checked.runtime_available);
     }
 
     #[test]
@@ -11642,9 +12051,9 @@ deepagent-definitely-missing-runtime-cli --version
                     "displayName": "Manifest Plugin",
                     "category": "Science"
                 },
-                "skills": "skills",
-                "commands": "commands",
-                "agents": "agents",
+                "skills": ["skills", "missing-skills"],
+                "commands": ["commands", "missing-commands"],
+                "agents": ["agents", "missing-agents"],
                 "hooks": "hooks.json",
                 "mcpServers": {
                     "demo": {
@@ -11653,8 +12062,8 @@ deepagent-definitely-missing-runtime-cli --version
                         "args": ["${PLUGIN_ROOT}/server.js"]
                     }
                 },
-                "apps": ".app.json",
-                "outputStyles": "output-styles"
+                "apps": [".app.json", "missing.app.json"],
+                "outputStyles": ["output-styles", "missing-output-styles"]
             }),
         );
         write_github_contents_directory_fixture(
@@ -11664,9 +12073,75 @@ deepagent-definitely-missing-runtime-cli --version
             commit,
             serde_json::json!([
                 { "type": "dir", "name": ".codex-plugin" },
+                { "type": "dir", "name": "skills" },
+                { "type": "dir", "name": "commands" },
+                { "type": "dir", "name": "agents" },
+                { "type": "file", "name": "hooks.json" },
+                { "type": "file", "name": ".app.json" },
+                { "type": "dir", "name": "output-styles" },
                 { "type": "dir", "name": "scripts" },
                 { "type": "file", "name": "package.json" }
             ]),
+        );
+        write_github_contents_directory_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "skills",
+            commit,
+            serde_json::json!([{ "type": "dir", "name": "planner" }]),
+        );
+        write_github_contents_directory_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "commands",
+            commit,
+            serde_json::json!([{ "type": "file", "name": "inspect.md" }]),
+        );
+        write_github_contents_directory_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "agents",
+            commit,
+            serde_json::json!([{ "type": "file", "name": "review.md" }]),
+        );
+        write_github_contents_manifest_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "hooks.json",
+            commit,
+            serde_json::json!({
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "Write",
+                            "hooks": [{ "type": "command", "command": "./scripts/check.sh" }]
+                        }
+                    ]
+                }
+            }),
+        );
+        write_github_contents_manifest_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            ".app.json",
+            commit,
+            serde_json::json!({
+                "apps": [
+                    {
+                        "id": "manifest-plugin-browser",
+                        "title": "Manifest Plugin Browser",
+                        "placement": "right-sidebar",
+                        "component": "builtin:browser"
+                    }
+                ]
+            }),
+        );
+        write_github_contents_directory_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "output-styles",
+            commit,
+            serde_json::json!([{ "type": "file", "name": "brief.md" }]),
         );
 
         let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
