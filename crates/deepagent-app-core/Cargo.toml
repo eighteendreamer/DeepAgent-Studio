@@ -43,13 +43,12 @@ calamine.workspace = true
 pdf-extract.workspace = true
 # Pure-Rust xlsx generation (Tier C office document creation).
 rust_xlsxwriter.workspace = true
-# SHA-256 for verifying downloaded managed runtimes (RuntimeService core,
-# always compiled). The HTTP client (reqwest) is optional, behind `runtimes`.
+# SHA-256 for verifying downloaded managed runtimes (RuntimeService core).
 sha2.workspace = true
 # .tar.gz extraction for managed runtimes (always compiled — small, pure Rust).
 tar.workspace = true
 flate2.workspace = true
-reqwest = { workspace = true, optional = true }
+reqwest = { workspace = true, features = ["blocking"] }
 # PDF page rendering (Tier R) — optional, behind `pdfium`.
 pdfium-render = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
@@ -90,9 +89,8 @@ keychain = ["dep:keyring"]
 web = ["deepagent-builtins/http", "deepagent-mcp/http", "deepagent-models/http"]
 # Real HTTP downloader for managed runtimes (office-agent RuntimeService). The
 # RuntimeService core (registry / resolve / sha256 verify / extract) is always
-# compiled; this only adds the reqwest-backed `ReqwestDownloader`. The desktop
-# app turns it on.
-runtimes = ["dep:reqwest", "dep:image"]
+# compiled; this enables the optional image support used by the desktop app.
+runtimes = ["dep:image"]
 # Real microphone capture for the recording panel (office-agent). The desktop
 # app turns it on; without it the RecordingService state machine still compiles
 # and runs (capture returns an "audio not enabled" error).

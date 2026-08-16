@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
@@ -18,6 +18,7 @@ import {
   scanPlugin,
   scanPluginMarketplace,
   scanPluginZip,
+  searchPluginMarketplaceEntries,
   setPluginEnabled,
   uninstallPlugin,
   updatePlugin,
@@ -103,12 +104,17 @@ const deepSeekHarnessMarketplaceDraft: AddPluginMarketplaceInput = {
   sparse_path: "",
 };
 
-const deepSeekHarnessMarketplaceBusyId = "marketplace:deepseek-harness";
-
 export function PluginsView() {
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [marketplaces, setMarketplaces] = useState<PluginMarketplace[]>([]);
   const [marketplaceEntries, setMarketplaceEntries] = useState<PluginMarketplaceEntry[]>([]);
+  const [marketplaceQuery, setMarketplaceQuery] = useState("");
+  const [marketplacePage, setMarketplacePage] = useState(1);
+  const [marketplaceTotalCount, setMarketplaceTotalCount] = useState(0);
+  const [marketplaceHasNext, setMarketplaceHasNext] = useState(false);
+  const [marketplaceLoading, setMarketplaceLoading] = useState(false);
+  const [marketplaceLoadingMore, setMarketplaceLoadingMore] = useState(false);
+  const marketplaceRequestId = useRef(0);
   const [outputStyles, setOutputStyles] = useState<PluginOutputStyle[]>([]);
   const [query, setQuery] = useState("");
   const [origin, setOrigin] = useState<OriginFilter>("all");
@@ -130,11 +136,18 @@ export function PluginsView() {
     setLoading(true);
     setError(null);
     try {
-      const [pluginRows, marketplaceRows, marketplaceEntryRows] = await Promise.all([
+      const [pluginRows, initialMarketplaceRows, marketplaceEntryRows] = await Promise.all([
         listPlugins(),
         listPluginMarketplaces(),
         listPluginMarketplaceEntries(),
       ]);
+      let marketplaceRows = initialMarketplaceRows;
+      if (isTauri() && !marketplaceRows.some(isDeepSeekHarnessMarketplace)) {
+        marketplaceRows = [
+          ...marketplaceRows,
+          await addPluginMarketplace(deepSeekHarnessMarketplaceDraft),
+        ];
+      }
       setPlugins(pluginRows);
       setMarketplaces(marketplaceRows);
       setMarketplaceEntries(marketplaceEntryRows);
@@ -149,9 +162,66 @@ export function PluginsView() {
     }
   };
 
+  const dshMarketplaceName = useMemo(
+    () => marketplaces.find(isDeepSeekHarnessMarketplace)?.name ?? null,
+    [marketplaces],
+  );
+
+  const fetchMarketplacePage = async (page: number, append: boolean) => {
+    if (!dshMarketplaceName) return;
+    const requestId = ++marketplaceRequestId.current;
+    if (append) setMarketplaceLoadingMore(true);
+    else setMarketplaceLoading(true);
+    try {
+      const result = await searchPluginMarketplaceEntries({
+        marketplace: dshMarketplaceName,
+        query: marketplaceQuery,
+        page,
+        per_page: 100,
+      });
+      if (requestId !== marketplaceRequestId.current) return;
+      setMarketplaceEntries((current) => {
+        if (!append) return result.entries;
+        const seen = new Set(current.map((entry) => `${entry.marketplace}:${entry.name}`));
+        return [...current, ...result.entries.filter((entry) => {
+          const key = `${entry.marketplace}:${entry.name}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })];
+      });
+      setMarketplacePage(result.page);
+      setMarketplaceTotalCount(result.total_count);
+      setMarketplaceHasNext(result.has_next);
+    } catch (err) {
+      if (requestId === marketplaceRequestId.current) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      if (requestId === marketplaceRequestId.current) {
+        setMarketplaceLoading(false);
+        setMarketplaceLoadingMore(false);
+      }
+    }
+  };
+
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!dshMarketplaceName) return;
+    const timer = window.setTimeout(() => {
+      void fetchMarketplacePage(1, false);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [dshMarketplaceName, marketplaceQuery]);
+
+  const loadNextMarketplacePage = () => {
+    if (!marketplaceLoading && !marketplaceLoadingMore && marketplaceHasNext) {
+      void fetchMarketplacePage(marketplacePage + 1, true);
+    }
+  };
 
   const selected = selectedId
     ? plugins.find((plugin) => plugin.id === selectedId) ?? null
@@ -393,25 +463,6 @@ export function PluginsView() {
     }
   };
 
-  const submitDeepSeekHarnessMarketplace = async () => {
-    setBusyId(deepSeekHarnessMarketplaceBusyId);
-    setError(null);
-    try {
-      const existing = marketplaces.find(isDeepSeekHarnessMarketplace);
-      if (existing) {
-        await refreshPluginMarketplace(existing.name);
-      } else {
-        await addPluginMarketplace(deepSeekHarnessMarketplaceDraft);
-      }
-      await load();
-      setOrigin("marketplace");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyId(null);
-    }
-  };
-
   const installMarketplaceEntry = async (entry: PluginMarketplaceEntry) => {
     setBusyId(`${entry.marketplace}:${entry.name}`);
     setError(null);
@@ -622,9 +673,14 @@ export function PluginsView() {
               marketplaces={marketplaces}
               entries={marketplaceEntries}
               busyId={busyId}
-              dshBusy={busyId === deepSeekHarnessMarketplaceBusyId}
               onAdd={() => setMarketOpen(true)}
-              onAddDeepSeekHarness={submitDeepSeekHarnessMarketplace}
+              query={marketplaceQuery}
+              onQueryChange={setMarketplaceQuery}
+              loading={marketplaceLoading}
+              loadingMore={marketplaceLoadingMore}
+              totalCount={marketplaceTotalCount}
+              hasNext={marketplaceHasNext}
+              onLoadMore={loadNextMarketplacePage}
               onRefresh={async (name) => {
                 await refreshPluginMarketplace(name);
                 await load();
@@ -1085,9 +1141,14 @@ function MarketplacePanel({
   marketplaces,
   entries,
   busyId,
-  dshBusy,
   onAdd,
-  onAddDeepSeekHarness,
+  query,
+  onQueryChange,
+  loading,
+  loadingMore,
+  totalCount,
+  hasNext,
+  onLoadMore,
   onRefresh,
   onRemove,
   onInstall,
@@ -1095,14 +1156,19 @@ function MarketplacePanel({
   marketplaces: PluginMarketplace[];
   entries: PluginMarketplaceEntry[];
   busyId: string | null;
-  dshBusy: boolean;
   onAdd: () => void;
-  onAddDeepSeekHarness: () => Promise<void>;
+  query: string;
+  onQueryChange: (query: string) => void;
+  loading: boolean;
+  loadingMore: boolean;
+  totalCount: number;
+  hasNext: boolean;
+  onLoadMore: () => void;
   onRefresh: (name: string) => Promise<void>;
   onRemove: (name: string) => Promise<void>;
   onInstall: (entry: PluginMarketplaceEntry) => Promise<void>;
 }) {
-  const dshMarketplace = marketplaces.find(isDeepSeekHarnessMarketplace);
+  const loadMoreRef = useRef<HTMLDivElement>(null);
   const entriesByMarketplace = new Map<string, PluginMarketplaceEntry[]>();
   for (const entry of entries) {
     const list = entriesByMarketplace.get(entry.marketplace) ?? [];
@@ -1116,28 +1182,34 @@ function MarketplacePanel({
       .filter((name) => !marketplaces.some((marketplace) => marketplace.name === name)),
   ];
 
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || !hasNext) return;
+    const observer = new IntersectionObserver((observations) => {
+      if (observations.some((observation) => observation.isIntersecting)) onLoadMore();
+    });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasNext, onLoadMore]);
+
   return (
     <section className="border-t border-border-theme pt-5">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-[15px] font-semibold text-text-base">
             DeepSeek Harness 插件市场
           </h2>
           <div className="mt-1 text-[12px] text-text-secondary">
-            从 GitHub `dsh-plugin` topic 获取市场源和可安装插件。
+            从 GitHub `dsh-plugin` topic 按需获取仓库索引，安装时才下载完整插件。
           </div>
         </div>
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button
-            variant={dshMarketplace ? "secondary" : "default"}
-            size="sm"
-            disabled={dshBusy}
-            onClick={() => void onAddDeepSeekHarness()}
-            title={dshMarketplace ? "刷新 DeepSeek Harness 市场" : "接入 DeepSeek Harness 市场"}
-          >
-            <FontAwesomeIcon icon={["fas", dshMarketplace ? "rotate" : "plug"]} />
-            <span>{dshBusy ? "处理中..." : dshMarketplace ? "刷新 DSH" : "接入 DSH"}</span>
-          </Button>
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          <Input
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder="搜索插件仓库"
+            className="h-8 w-[220px] text-[12px]"
+          />
           <Button variant="outline" size="sm" onClick={onAdd}>
             <FontAwesomeIcon icon={["fas", "plus"]} />
             <span>添加来源</span>
@@ -1145,33 +1217,39 @@ function MarketplacePanel({
         </div>
       </div>
       {marketplaceNames.length === 0 ? (
-        <EmptyState text="尚未接入插件市场，点击“接入 DSH”后会拉取可安装插件列表" />
+        <EmptyState text="插件市场正在初始化" />
       ) : (
         <div className="space-y-4">
           {marketplaceNames.map((name) => {
             const marketplace = marketplaces.find((item) => item.name === name);
             const marketplaceEntries = entriesByMarketplace.get(name) ?? [];
+            const isDsh = marketplace
+              ? isDeepSeekHarnessMarketplace(marketplace)
+              : name === deepSeekHarnessMarketplaceDraft.name;
             return (
-              <div key={name} className="rounded-lg border border-border-theme px-3 py-3">
-                <div className="flex items-center justify-between gap-3">
+              <div key={name} className="py-1">
+                <div className="flex items-start justify-between gap-3 border-b border-border-theme pb-3">
                   <div className="min-w-0">
                     <div className="flex min-w-0 items-center gap-2">
                       <span className="truncate font-medium text-text-base">{name}</span>
-                      {marketplace && isDeepSeekHarnessMarketplace(marketplace) && (
+                      {isDsh && (
                         <MiniBadge tone="info">DSH</MiniBadge>
                       )}
-                      <MiniBadge tone="neutral">{marketplaceEntries.length} 个插件</MiniBadge>
+                      <MiniBadge tone="neutral">
+                        {isDsh ? `${totalCount} 个插件` : `${marketplaceEntries.length} 个插件`}
+                      </MiniBadge>
                     </div>
-                    <div className="mt-1 truncate text-[12px] text-text-secondary">
+                    <div className="mt-1 flex items-center gap-1.5 truncate text-[12px] text-text-secondary">
+                      <FontAwesomeIcon icon={["fab", "github"]} className="text-[11px]" />
                       {marketplace?.source || "已发现市场插件"}
                     </div>
                     {marketplace?.last_updated && (
                       <div className="mt-1 text-[11px] text-text-tertiary">
-                        最近刷新：{marketplace.last_updated}
+                        最近同步：{formatMarketplaceUpdated(marketplace.last_updated)}
                       </div>
                     )}
                   </div>
-                  {marketplace && (
+                  {marketplace && !isDsh && (
                     <div className="flex gap-2">
                       <Button
                         variant="ghost"
@@ -1194,10 +1272,10 @@ function MarketplacePanel({
                 </div>
                 {marketplaceEntries.length === 0 ? (
                   <div className="mt-3">
-                    <EmptyState text="暂无可安装插件，刷新市场后显示插件列表" />
+                    <EmptyState text={loading ? "正在获取插件索引..." : "暂无匹配插件"} />
                   </div>
                 ) : (
-                  <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className="mt-4 grid grid-cols-1 items-stretch gap-4 md:grid-cols-2">
                     {marketplaceEntries.map((entry) => (
                       <MarketplaceEntryCard
                         key={`${entry.marketplace}:${entry.name}`}
@@ -1206,6 +1284,11 @@ function MarketplacePanel({
                         onInstall={onInstall}
                       />
                     ))}
+                  </div>
+                )}
+                {isDsh && (
+                  <div ref={loadMoreRef} className="mt-3 min-h-6 text-center text-[12px] text-text-tertiary">
+                    {loadingMore ? "正在加载下一页..." : hasNext ? "" : `已显示 ${marketplaceEntries.length} 个插件`}
                   </div>
                 )}
               </div>
@@ -1227,18 +1310,42 @@ function MarketplaceEntryCard({
   onInstall: (entry: PluginMarketplaceEntry) => Promise<void>;
 }) {
   const installHint = marketplaceInstallHint(entry);
+  const repositoryName = entry.repository_full_name || entry.display_name;
+  const visibleTopics = entry.topics.slice(0, 4);
+  const remainingTopics = Math.max(0, entry.topics.length - visibleTopics.length);
   return (
-    <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg bg-bg-subtle px-3 py-3 text-[13px]">
-      <div className="min-w-0">
-        <div className="font-medium text-text-base">{entry.display_name}</div>
-        <div className="mt-1 line-clamp-2 text-[12px] text-text-secondary">
-          {entry.description}
+    <article className="flex min-h-[190px] min-w-0 flex-col rounded-lg border border-border-theme bg-white p-4 transition-colors hover:border-gray-300">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0 truncate text-[14px] font-semibold leading-5 text-text-base" title={repositoryName}>
+          {repositoryName}
         </div>
-        <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-tertiary">
-          <span>{entry.source_kind}</span>
-          {entry.version && <span>{entry.version}</span>}
-          {entry.license && <span>{entry.license}</span>}
-          {entry.source_commit && <span>{entry.source_commit.slice(0, 12)}</span>}
+        <div className="flex shrink-0 items-center gap-1 text-[11px] text-text-secondary" title={`${entry.stargazers_count} stars`}>
+          <FontAwesomeIcon icon={["fas", "star"]} className="text-amber-500" />
+          <span>{formatMarketplaceStars(entry.stargazers_count)}</span>
+        </div>
+      </div>
+
+      <p className="mt-2 min-h-[3rem] line-clamp-2 text-[12px] leading-6 text-text-secondary">
+        {entry.description || "暂无仓库简介"}
+      </p>
+
+      <div className="mt-3 flex min-h-6 flex-wrap content-start gap-1.5 overflow-hidden">
+        {visibleTopics.length > 0 ? (
+          visibleTopics.map((topic) => (
+            <MiniBadge key={topic}>#{topic}</MiniBadge>
+          ))
+        ) : (
+          <span className="text-[11px] text-text-tertiary">暂无标签</span>
+        )}
+        {remainingTopics > 0 && <MiniBadge>+{remainingTopics}</MiniBadge>}
+      </div>
+
+      <div className="mt-auto flex items-end justify-between gap-3 border-t border-gray-100 pt-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="flex items-center gap-1 text-[11px] text-text-secondary">
+            <FontAwesomeIcon icon={["fas", "book"]} className="text-[10px]" />
+            {entry.license || "未声明协议"}
+          </span>
           {entry.policy_installation && (
             <MiniBadge tone={entry.installable ? "neutral" : "warn"}>
               {entry.policy_installation}
@@ -1252,27 +1359,32 @@ function MarketplaceEntryCard({
           {entry.runtime_required && <MiniBadge tone="warn">需要运行时</MiniBadge>}
           {entry.has_runtime_payload && <MiniBadge tone="info">含运行时包</MiniBadge>}
         </div>
-        {!entry.installable && installHint && (
-          <div className="mt-2 max-w-[420px] text-[12px] leading-5 text-amber-700">
-            {installHint}
-          </div>
-        )}
+        <Button
+          className="shrink-0"
+          size="sm"
+          variant={entry.installed && !entry.update_available ? "outline" : "default"}
+          disabled={busy || !entry.installable}
+          onClick={() => void onInstall(entry)}
+          title={installHint || (entry.installable ? "安装插件" : "该来源不可安装")}
+        >
+          <FontAwesomeIcon icon={["fas", "download"]} />
+          <span>
+            {busy
+              ? "处理中..."
+              : entry.update_available
+                ? "更新"
+                : entry.installed
+                  ? "重新安装"
+                  : "安装"}
+          </span>
+        </Button>
       </div>
-      <Button
-        variant={entry.installed && !entry.update_available ? "outline" : "default"}
-        disabled={busy || !entry.installable}
-        onClick={() => void onInstall(entry)}
-        title={installHint || (entry.installable ? "安装插件" : "该来源不可安装")}
-      >
-        {busy
-          ? "处理中..."
-          : entry.update_available
-            ? "更新"
-            : entry.installed
-              ? "重新安装"
-              : "安装"}
-      </Button>
-    </div>
+      {!entry.installable && installHint && (
+        <div className="mt-2 truncate text-[11px] text-amber-700" title={installHint}>
+          {installHint}
+        </div>
+      )}
+    </article>
   );
 }
 
@@ -1282,6 +1394,26 @@ function isDeepSeekHarnessMarketplace(marketplace: PluginMarketplace): boolean {
     normalizeMarketplaceSource(marketplace.source) ===
       normalizeMarketplaceSource(deepSeekHarnessMarketplaceDraft.source)
   );
+}
+
+function formatMarketplaceStars(stars: number): string {
+  if (stars >= 1000) return `${(stars / 1000).toFixed(stars >= 10000 ? 0 : 1)}k`;
+  return stars.toString();
+}
+
+function formatMarketplaceUpdated(value: string): string {
+  const numeric = Number(value);
+  const date = Number.isFinite(numeric)
+    ? new Date(numeric < 1_000_000_000_000 ? numeric * 1000 : numeric)
+    : new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function normalizeMarketplaceSource(source: string): string {

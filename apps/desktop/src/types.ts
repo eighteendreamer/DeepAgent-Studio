@@ -556,6 +556,9 @@ export interface PluginMarketplaceEntry {
   name: string;
   display_name: string;
   description: string;
+  repository_full_name?: string | null;
+  stargazers_count: number;
+  topics: string[];
   version?: string | null;
   category?: string | null;
   license?: string | null;
@@ -584,6 +587,22 @@ export interface PluginMarketplaceEntry {
   policy_authentication?: string | null;
   authentication_required: boolean;
   authentication_hint?: string | null;
+}
+
+export interface PluginMarketplaceEntriesQuery {
+  marketplace?: string | null;
+  query?: string;
+  page?: number;
+  per_page?: number;
+}
+
+export interface PluginMarketplacePage {
+  entries: PluginMarketplaceEntry[];
+  total_count: number;
+  page: number;
+  per_page: number;
+  has_next: boolean;
+  query: string;
 }
 
 export interface AddPluginMarketplaceInput {

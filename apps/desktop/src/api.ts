@@ -52,7 +52,9 @@ import type {
   Plugin,
   PluginApp,
   PluginMarketplace,
+  PluginMarketplaceEntriesQuery,
   PluginMarketplaceEntry,
+  PluginMarketplacePage,
   PluginOutputStyle,
   PluginScanReport,
   Project,
@@ -722,6 +724,23 @@ export async function listPluginMarketplaceEntries(): Promise<PluginMarketplaceE
     return invoke<PluginMarketplaceEntry[]>("list_plugin_marketplace_entries");
   }
   return [];
+}
+
+export async function searchPluginMarketplaceEntries(
+  input: PluginMarketplaceEntriesQuery,
+): Promise<PluginMarketplacePage> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<PluginMarketplacePage>("search_plugin_marketplace_entries", { input });
+  }
+  return {
+    entries: [],
+    total_count: 0,
+    page: input.page || 1,
+    per_page: input.per_page || 100,
+    has_next: false,
+    query: input.query || "",
+  };
 }
 
 export async function addPluginMarketplace(

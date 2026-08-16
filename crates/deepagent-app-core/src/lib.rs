@@ -115,7 +115,8 @@ pub use mcp_service::{McpConnectionStatusDto, McpServerDto, McpService, McpToolI
 pub use office_service::{markdown_to_docspec, DocBlock, DocSpec, OfficeService};
 pub use plugin_loader::{PluginLoadError, PluginOrigin, PluginRoots};
 pub use plugin_marketplace::{
-    AddPluginMarketplaceDto, PluginMarketplaceDto, PluginMarketplaceEntryDto,
+    AddPluginMarketplaceDto, PluginMarketplaceDto, PluginMarketplaceEntriesQueryDto,
+    PluginMarketplaceEntryDto, PluginMarketplacePageDto,
 };
 pub use plugin_runtime::{
     PluginAgentRoot, PluginAppEntry, PluginCommandRoot, PluginConnectorEntry,

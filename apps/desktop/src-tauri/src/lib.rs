@@ -25,7 +25,8 @@ use deepagent_app_core::{
     GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto, GitRefCompareDto, GitService,
     GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
     KnowledgeService, LocalPtyHandle, McpServerDto, McpService, NewRuntimeLogEntry, OfficeService,
-    PdfRenderResultDto, PluginAppEntry, PluginDto, PluginMarketplaceDto, PluginMarketplaceEntryDto,
+    PdfRenderResultDto, PluginAppEntry, PluginDto, PluginMarketplaceDto,
+    PluginMarketplaceEntriesQueryDto, PluginMarketplaceEntryDto, PluginMarketplacePageDto,
     PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto, PluginScanReportDto,
     PluginService, PreflightToolCallDto, PreparedPluginInstallDto, PreviewMetadataDto,
     PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto,
@@ -1310,14 +1311,16 @@ fn list_plugin_marketplaces(
 }
 
 #[tauri::command]
-fn add_plugin_marketplace(
+async fn add_plugin_marketplace(
     state: State<'_, AppState>,
     input: AddPluginMarketplaceDto,
 ) -> Result<PluginMarketplaceDto, String> {
-    state
-        .plugins
-        .add_marketplace(input)
-        .map_err(|e| e.to_string())
+    let plugins = Arc::clone(&state.plugins);
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins.add_marketplace(input).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1334,49 +1337,76 @@ async fn remove_plugin_marketplace(
 }
 
 #[tauri::command]
-fn refresh_plugin_marketplace(
+async fn refresh_plugin_marketplace(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<PluginMarketplaceDto, String> {
-    state
-        .plugins
-        .refresh_marketplace(&name)
-        .map_err(|e| e.to_string())
+    let plugins = Arc::clone(&state.plugins);
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins.refresh_marketplace(&name).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn list_plugin_marketplace_entries(
+async fn list_plugin_marketplace_entries(
     state: State<'_, AppState>,
 ) -> Result<Vec<PluginMarketplaceEntryDto>, String> {
-    state
-        .plugins
-        .list_marketplace_entries()
-        .map_err(|e| e.to_string())
+    let plugins = Arc::clone(&state.plugins);
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins.list_marketplace_entries().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn scan_plugin_marketplace(
+async fn search_plugin_marketplace_entries(
+    state: State<'_, AppState>,
+    input: PluginMarketplaceEntriesQueryDto,
+) -> Result<PluginMarketplacePageDto, String> {
+    let plugins = Arc::clone(&state.plugins);
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins
+            .search_marketplace_entries(input)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn scan_plugin_marketplace(
     state: State<'_, AppState>,
     marketplace: String,
     plugin: String,
 ) -> Result<PluginScanReportDto, String> {
-    state
-        .plugins
-        .scan_marketplace_plugin(&marketplace, &plugin)
-        .map_err(|e| e.to_string())
+    let plugins = Arc::clone(&state.plugins);
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins
+            .scan_marketplace_plugin(&marketplace, &plugin)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn prepare_plugin_install(
+async fn prepare_plugin_install(
     state: State<'_, AppState>,
     marketplace: String,
     plugin: String,
     auth_confirmed: Option<bool>,
 ) -> Result<PreparedPluginInstallDto, String> {
-    state
-        .plugins
-        .prepare_plugin_install(&marketplace, &plugin, auth_confirmed.unwrap_or(false))
-        .map_err(|e| e.to_string())
+    let plugins = Arc::clone(&state.plugins);
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins
+            .prepare_plugin_install(&marketplace, &plugin, auth_confirmed.unwrap_or(false))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1384,10 +1414,14 @@ async fn commit_plugin_install(
     state: State<'_, AppState>,
     token: String,
 ) -> Result<PluginDto, String> {
-    let plugin = state
-        .plugins
-        .commit_plugin_install(&token)
-        .map_err(|e| e.to_string())?;
+    let plugins = Arc::clone(&state.plugins);
+    let plugin = tauri::async_runtime::spawn_blocking(move || {
+        plugins
+            .commit_plugin_install(&token)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     sync_plugin_runtime_after_change(state.inner()).await?;
     Ok(plugin)
 }
@@ -1408,15 +1442,29 @@ async fn install_plugin_from_marketplace(
     scan_confirmed: Option<bool>,
     auth_confirmed: Option<bool>,
 ) -> Result<PluginDto, String> {
-    let report = state
-        .plugins
-        .scan_marketplace_plugin(&marketplace, &plugin)
-        .map_err(|e| e.to_string())?;
+    let plugins = Arc::clone(&state.plugins);
+    let marketplace_for_task = marketplace.clone();
+    let plugin_for_task = plugin.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        plugins
+            .scan_marketplace_plugin(&marketplace_for_task, &plugin_for_task)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     ensure_plugin_scan_allowed(&report, scan_confirmed.unwrap_or(false))?;
-    let plugin = state
-        .plugins
-        .install_from_marketplace_with_auth(&marketplace, &plugin, auth_confirmed.unwrap_or(false))
-        .map_err(|e| e.to_string())?;
+    let plugins = Arc::clone(&state.plugins);
+    let plugin = tauri::async_runtime::spawn_blocking(move || {
+        plugins
+            .install_from_marketplace_with_auth(
+                &marketplace,
+                &plugin,
+                auth_confirmed.unwrap_or(false),
+            )
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     sync_plugin_runtime_after_change(state.inner()).await?;
     Ok(plugin)
 }
@@ -5440,6 +5488,7 @@ pub fn run() {
             remove_plugin_marketplace,
             refresh_plugin_marketplace,
             list_plugin_marketplace_entries,
+            search_plugin_marketplace_entries,
             scan_plugin_marketplace,
             prepare_plugin_install,
             commit_plugin_install,

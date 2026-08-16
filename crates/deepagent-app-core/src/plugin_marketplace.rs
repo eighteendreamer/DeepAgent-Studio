@@ -45,6 +45,12 @@ pub struct PluginMarketplaceEntryDto {
     pub display_name: String,
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_full_name: Option<String>,
+    #[serde(default)]
+    pub stargazers_count: u64,
+    #[serde(default)]
+    pub topics: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
@@ -85,6 +91,36 @@ pub struct PluginMarketplaceEntryDto {
     pub authentication_hint: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PluginMarketplaceEntriesQueryDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace: Option<String>,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default = "default_marketplace_page")]
+    pub page: u32,
+    #[serde(default = "default_marketplace_page_size")]
+    pub per_page: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginMarketplacePageDto {
+    pub entries: Vec<PluginMarketplaceEntryDto>,
+    pub total_count: u32,
+    pub page: u32,
+    pub per_page: u32,
+    pub has_next: bool,
+    pub query: String,
+}
+
+fn default_marketplace_page() -> u32 {
+    1
+}
+
+fn default_marketplace_page_size() -> u32 {
+    100
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginMarketplaceCatalog {
     pub name: String,
@@ -99,6 +135,9 @@ pub struct PluginMarketplaceEntry {
     pub name: String,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    pub repository_full_name: Option<String>,
+    pub stargazers_count: u64,
+    pub topics: Vec<String>,
     pub version: Option<String>,
     pub category: Option<String>,
     pub license: Option<String>,
@@ -270,6 +309,12 @@ struct RawMarketplaceEntry {
     display_name: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default, rename = "full_name", alias = "repositoryFullName")]
+    repository_full_name: Option<String>,
+    #[serde(default)]
+    stargazers_count: u64,
+    #[serde(default)]
+    topics: Vec<String>,
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
@@ -478,6 +523,9 @@ fn normalize_entry(root: &Path, raw: RawMarketplaceEntry) -> Result<PluginMarket
         name,
         display_name: raw.display_name.and_then(trimmed_string),
         description: raw.description.and_then(trimmed_string),
+        repository_full_name: raw.repository_full_name.and_then(trimmed_string),
+        stargazers_count: raw.stargazers_count,
+        topics: raw.topics,
         version: raw.version.and_then(trimmed_string),
         category: raw.category.and_then(trimmed_string),
         license: raw.license.and_then(trimmed_string),
