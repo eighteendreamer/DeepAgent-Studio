@@ -10730,6 +10730,22 @@ deepagent-definitely-missing-runtime-cli --version
         .unwrap();
         let installed = svc.install_from_marketplace("team", "demo").unwrap();
         assert_eq!(installed.version.as_deref(), Some("0.1.0"));
+        let data_dir = svc.data_root.join(sanitize_file_name(&installed.id));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("user-state.json"), r#"{"kept":true}"#).unwrap();
+        let mut state = svc.load_state().unwrap();
+        state.enabled.insert(installed.id.clone(), false);
+        state.health_checks.insert(
+            installed.id.clone(),
+            PluginHealthCheckState {
+                status: PluginHealthStatus::NeedsAuthorization,
+                checked_at: "2026-08-16T09:30:00Z".to_string(),
+                error: Some("seeded health check should survive failed upgrade".to_string()),
+            },
+        );
+        svc.save_state(&state).unwrap();
+        let previous_installed = state.installed.get(&installed.id).cloned().unwrap();
+        let previous_health = state.health_checks.get(&installed.id).cloned().unwrap();
 
         write_plugin_with_version(&plugin_source, "demo", "0.2.0");
         std::fs::write(
@@ -10767,6 +10783,34 @@ deepagent-definitely-missing-runtime-cli --version
         assert!(!Path::new(&prepared.staging_path).exists());
         let current = svc.read("demo@team").unwrap().unwrap();
         assert_eq!(current.version.as_deref(), Some("0.1.0"));
+        assert!(
+            !current.enabled,
+            "failed upgrade must preserve enabled state"
+        );
+        assert_eq!(
+            current.health_status,
+            PluginHealthStatus::NeedsAuthorization,
+            "failed upgrade must preserve latest health check status"
+        );
+        assert_eq!(
+            current.health_error.as_deref(),
+            Some("seeded health check should survive failed upgrade")
+        );
+        assert!(
+            data_dir.join("user-state.json").is_file(),
+            "failed upgrade must preserve plugin data"
+        );
+        let state_after = svc.load_state().unwrap();
+        assert_eq!(
+            state_after.installed.get("demo@team"),
+            Some(&previous_installed),
+            "failed upgrade must preserve installed state"
+        );
+        assert_eq!(
+            state_after.health_checks.get("demo@team"),
+            Some(&previous_health),
+            "failed upgrade must preserve health state"
+        );
         assert!(roots
             .marketplace_cache
             .join("team")
