@@ -843,13 +843,13 @@ function PluginDetail({
           {plugin.long_description || plugin.description}
         </p>
 
-        <div className="mb-8 grid grid-cols-2 gap-3 md:grid-cols-5">
-          <Metric label="Skills" value={plugin.skill_count} />
+        <div className="mb-8 flex flex-wrap gap-2">
+          <Metric label="技能" value={plugin.skill_count} />
           <Metric label="MCP" value={plugin.mcp_server_count} />
-          <Metric label="Hooks" value={plugin.hook_count} />
-          <Metric label="Commands" value={plugin.command_count} />
-          <Metric label="Apps" value={plugin.app_count} />
-          <Metric label="Styles" value={plugin.output_style_count ?? 0} />
+          <Metric label="钩子" value={plugin.hook_count} />
+          <Metric label="命令" value={plugin.command_count} />
+          <Metric label="应用" value={plugin.app_count} />
+          <Metric label="样式" value={plugin.output_style_count ?? 0} />
         </div>
 
         <InfoSection plugin={plugin} />
@@ -1763,9 +1763,9 @@ function PluginStateBadges({ plugin }: { plugin: Plugin }) {
 
 function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-lg border border-border-theme px-3 py-3">
-      <div className="text-[11px] uppercase tracking-wide text-text-secondary">{label}</div>
-      <div className="mt-1 text-xl font-semibold text-text-base">{value}</div>
+    <div className="h-14 w-[102px] shrink-0 rounded-md border border-border-theme px-2.5 py-2">
+      <div className="text-[10px] leading-none text-text-secondary">{label}</div>
+      <div className="mt-1 text-base font-semibold leading-none text-text-base">{value}</div>
     </div>
   );
 }

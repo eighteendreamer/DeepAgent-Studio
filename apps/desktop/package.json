@@ -9,9 +9,10 @@
     "dev": "vite",
     "prebundle-skills": "node scripts/prebundle-skills.cjs",
     "check-plugin-licenses": "node scripts/check-plugin-licenses.cjs",
+    "test:plugin-detail": "node --test scripts/check-plugin-detail-metrics.test.cjs",
     "test:plugin-page": "node --test scripts/check-plugin-page-lifecycle.test.cjs",
     "test:plugin-toggle": "node --test scripts/check-plugin-toggle-refresh.test.cjs",
-    "build": "pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
+    "build": "pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "review": "ocr"
