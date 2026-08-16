@@ -258,8 +258,17 @@ export function PluginsView() {
     setBusyId(plugin.id);
     setError(null);
     try {
-      await setPluginEnabled(plugin.id, enabled);
-      await load();
+      const updated = await setPluginEnabled(plugin.id, enabled);
+      setPlugins((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+
+      const [pluginRows, outputStyleRows] = await Promise.all([
+        listPlugins(),
+        listPluginOutputStyles().catch(() => []),
+      ]);
+      setPlugins(pluginRows);
+      setOutputStyles(outputStyleRows);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
