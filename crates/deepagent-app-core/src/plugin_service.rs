@@ -1014,10 +1014,18 @@ impl PluginService {
             let id = plugin_id(&name, PluginOrigin::Personal.as_str());
             let mut state = self.load_state()?;
             state.enabled.entry(id.clone()).or_insert(true);
-            let had_health_check = state.health_checks.contains_key(&id);
+            let content_hash = plugin_directory_content_hash(source).ok();
+            let previous = state.installed.get(&id).cloned();
+            let should_refresh_health = mark_plugin_health_stale_for_install(
+                &mut state,
+                &id,
+                previous.as_ref(),
+                manifest.version.as_deref(),
+                content_hash.as_deref(),
+            );
             self.save_state(&state)?;
             self.invalidate_plugin_caches();
-            if !had_health_check {
+            if should_refresh_health {
                 if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                     tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after install");
                 }
@@ -1033,7 +1041,13 @@ impl PluginService {
         let id = plugin_id(&name, PluginOrigin::Personal.as_str());
         let mut state = self.load_state()?;
         let previous = state.installed.get(&id).cloned();
-        let had_health_check = state.health_checks.contains_key(&id);
+        let should_refresh_health = mark_plugin_health_stale_for_install(
+            &mut state,
+            &id,
+            previous.as_ref(),
+            manifest.version.as_deref(),
+            Some(content_hash.as_str()),
+        );
         state.enabled.entry(id.clone()).or_insert(true);
         state.installed.insert(
             id.clone(),
@@ -1050,7 +1064,7 @@ impl PluginService {
         );
         self.save_state(&state)?;
         self.invalidate_plugin_caches();
-        if !had_health_check {
+        if should_refresh_health {
             if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                 tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after install");
             }
@@ -1662,7 +1676,13 @@ impl PluginService {
             let id = plugin_id(&manifest.name, &metadata.marketplace);
             let mut state = self.load_state()?;
             let previous = state.installed.get(&id).cloned();
-            let had_health_check = state.health_checks.contains_key(&id);
+            let should_refresh_health = mark_plugin_health_stale_for_install(
+                &mut state,
+                &id,
+                previous.as_ref(),
+                manifest.version.as_deref().or(Some(version.as_str())),
+                Some(metadata.content_hash.as_str()),
+            );
             state.enabled.entry(id.clone()).or_insert(true);
             state.installed.insert(
                 id.clone(),
@@ -1681,7 +1701,7 @@ impl PluginService {
                 plugin_install_failure("commit.write_state", Some(&self.state_path), error)
             })?;
             self.invalidate_plugin_caches();
-            if !had_health_check {
+            if should_refresh_health {
                 if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                     tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after marketplace commit");
                 }
@@ -1884,7 +1904,14 @@ impl PluginService {
 
         let id = plugin_id(&manifest.name, marketplace_key);
         let mut state = self.load_state()?;
-        let had_health_check = state.health_checks.contains_key(&id);
+        let previous = state.installed.get(&id).cloned();
+        let should_refresh_health = mark_plugin_health_stale_for_install(
+            &mut state,
+            &id,
+            previous.as_ref(),
+            manifest.version.as_deref().or(Some(version.as_str())),
+            Some(content_hash.as_str()),
+        );
         state.enabled.insert(id.clone(), true);
         state.installed.insert(
             id.clone(),
@@ -1898,7 +1925,7 @@ impl PluginService {
         );
         self.save_state(&state)?;
         self.invalidate_plugin_caches();
-        if !had_health_check {
+        if should_refresh_health {
             if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                 tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after marketplace install");
             }
@@ -7120,6 +7147,36 @@ fn explicit_health_lifecycle_state(
     }
 }
 
+fn mark_plugin_health_stale_for_install(
+    state: &mut PluginState,
+    id: &str,
+    previous: Option<&InstalledPluginState>,
+    version: Option<&str>,
+    content_hash: Option<&str>,
+) -> bool {
+    if state.health_checks.contains_key(id)
+        && !plugin_health_matches_install(previous, version, content_hash)
+    {
+        state.health_checks.remove(id);
+    }
+    !state.health_checks.contains_key(id)
+}
+
+fn plugin_health_matches_install(
+    previous: Option<&InstalledPluginState>,
+    version: Option<&str>,
+    content_hash: Option<&str>,
+) -> bool {
+    let Some(previous) = previous else {
+        return false;
+    };
+    match (previous.content_hash.as_deref(), content_hash) {
+        (Some(previous_hash), Some(current_hash)) => previous_hash == current_hash,
+        (Some(_), None) | (None, Some(_)) => false,
+        (None, None) => previous.version.as_deref() == version,
+    }
+}
+
 fn lightweight_runtime_available(
     needs: &PluginRuntimeNeeds,
     persisted_health: Option<&PluginHealthCheckState>,
@@ -10082,14 +10139,16 @@ rl.on('line', (line) => {
             .installed_at
             .clone();
 
+        std::thread::sleep(std::time::Duration::from_millis(20));
         write_plugin_with_version(&source, "demo", "0.2.0");
         let updated = svc.install_from_dir(&source).unwrap();
         assert_eq!(updated.version.as_deref(), Some("0.2.0"));
         assert_eq!(updated.id, installed.id, "the id must be stable");
         assert!(!updated.enabled, "updates must preserve disabled state");
-        assert_eq!(
+        assert_ne!(
             updated.last_health_check.as_deref(),
-            Some(checked_at.as_str())
+            Some(checked_at.as_str()),
+            "content-changing updates must not inherit a previous package's health check"
         );
 
         svc.runtime_projection().unwrap();
@@ -10107,8 +10166,8 @@ rl.on('line', (line) => {
                 .health_checks
                 .get(&installed.id)
                 .map(|health| health.checked_at.as_str()),
-            Some(checked_at.as_str()),
-            "recent health check state must survive a plugin update"
+            updated.last_health_check.as_deref(),
+            "content-changing updates must persist a fresh health check for the new package"
         );
     }
 
@@ -11417,11 +11476,26 @@ deepagent-definitely-missing-runtime-cli --version
         .unwrap();
         let installed = svc.install_from_marketplace("team", "demo").unwrap();
         assert!(!installed.update_available);
+        assert_eq!(installed.health_status, PluginHealthStatus::Ready);
+        assert_eq!(installed.state, PluginLifecycleState::Verified);
         svc.set_enabled("demo@team", false).unwrap();
         let original_state = svc.load_state().unwrap();
         let original_installed_at = original_state.installed["demo@team"].installed_at.clone();
+        assert_eq!(
+            original_state.health_checks["demo@team"].status,
+            PluginHealthStatus::Ready
+        );
 
         write_plugin_with_version(&plugin_source, "demo", "0.2.0");
+        std::fs::write(
+            plugin_source.join("README.md"),
+            r#"
+            ```sh
+            deepagent-definitely-missing-runtime-cli --version
+            ```
+            "#,
+        )
+        .unwrap();
         std::fs::write(
             marketplace_root.join("marketplace.json"),
             r#"{
@@ -11458,12 +11532,26 @@ deepagent-definitely-missing-runtime-cli --version
         assert_eq!(updated.version.as_deref(), Some("0.2.0"));
         assert!(!updated.enabled, "update should preserve disabled state");
         assert!(!updated.update_available);
+        assert_eq!(
+            updated.health_status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
+        assert_eq!(updated.state, PluginLifecycleState::Incomplete);
+        assert!(updated
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deepagent-definitely-missing-runtime-cli --version"));
 
         let state = svc.load_state().unwrap();
         let installed_state = &state.installed["demo@team"];
         assert_eq!(installed_state.version.as_deref(), Some("0.2.0"));
         assert_eq!(installed_state.installed_at, original_installed_at);
         assert!(installed_state.last_updated.is_some());
+        assert_eq!(
+            state.health_checks["demo@team"].status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
         let new_version = roots
             .marketplace_cache
             .join("team")
