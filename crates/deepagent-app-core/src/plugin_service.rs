@@ -1496,6 +1496,15 @@ impl PluginService {
     }
 
     pub fn commit_plugin_install(&self, token: &str) -> Result<PluginDto> {
+        let mut stack = Vec::new();
+        self.commit_plugin_install_with_stack(token, &mut stack)
+    }
+
+    fn commit_plugin_install_with_stack(
+        &self,
+        token: &str,
+        stack: &mut Vec<String>,
+    ) -> Result<PluginDto> {
         let staging = self.prepared_install_dir(token)?;
         let result = (|| {
             let metadata = load_prepared_install_metadata(&staging).map_err(|error| {
@@ -1559,6 +1568,18 @@ impl PluginService {
                     format!("prepared plugin id changed for '{}'", manifest.name),
                 ));
             }
+            if stack.iter().any(|item| item == &metadata.plugin_id) {
+                let mut chain = stack.clone();
+                chain.push(metadata.plugin_id.clone());
+                return Err(plugin_install_failure(
+                    "commit.resolve_dependencies",
+                    Some(&manifest.manifest_path),
+                    format!(
+                        "plugin dependency cycle while installing marketplace plugin: {}",
+                        chain.join(" -> ")
+                    ),
+                ));
+            }
             let content_hash = plugin_directory_content_hash(&plugin_root).map_err(|error| {
                 plugin_install_failure("commit.verify_hash", Some(&plugin_root), error)
             })?;
@@ -1573,7 +1594,7 @@ impl PluginService {
                 ));
             }
 
-            let mut stack = vec![metadata.plugin_id.clone()];
+            stack.push(metadata.plugin_id.clone());
             for dependency in &manifest.dependencies {
                 let dependency = marketplace_dependency_id(dependency, &metadata.marketplace)
                     .map_err(|error| {
@@ -1603,9 +1624,10 @@ impl PluginService {
                     &metadata.marketplace,
                     &dependency.name,
                     true,
-                    &mut stack,
+                    stack,
                 )?;
             }
+            stack.pop();
 
             let version = manifest
                 .version
@@ -1769,13 +1791,6 @@ impl PluginService {
         stack: &mut Vec<String>,
     ) -> Result<PluginDto> {
         let (_, entry) = self.marketplace_entry(marketplace_key, plugin)?;
-        let entry = self.pin_marketplace_entry_for_install(marketplace_key, entry)?;
-        ensure_marketplace_entry_installable(marketplace_key, &entry)?;
-        ensure_marketplace_authentication_confirmed(
-            marketplace_key,
-            &entry,
-            authentication_confirmed,
-        )?;
         let id = plugin_id(&entry.name, marketplace_key);
         if stack.iter().any(|item| item == &id) {
             let mut chain = stack.clone();
@@ -1785,106 +1800,9 @@ impl PluginService {
                 chain.join(" -> ")
             )));
         }
-        stack.push(id.clone());
-
-        let materialized = self.materialize_marketplace_plugin_source(marketplace_key, &entry)?;
-        let source = materialized.plugin_root();
-        let report = scan_plugin_dir(source)?;
-        if !report.errors.is_empty() {
-            return Err(CoreError::invalid(format!(
-                "plugin scan failed: {}",
-                report.errors.join("; ")
-            )));
-        }
-
-        let manifest = load_plugin_manifest(source)?
-            .ok_or_else(|| CoreError::invalid("plugin manifest not found"))?;
-        if manifest.name != entry.name {
-            return Err(CoreError::invalid(format!(
-                "marketplace entry '{}' points to plugin manifest '{}'",
-                entry.name, manifest.name
-            )));
-        }
-
-        for dependency in &manifest.dependencies {
-            let dependency = marketplace_dependency_id(dependency, marketplace_key)?;
-            if dependency.marketplace != marketplace_key {
-                if self.is_marketplace_dependency_satisfied(&dependency.id)? {
-                    continue;
-                }
-                return Err(CoreError::invalid(format!(
-                    "plugin '{}' depends on '{}' from marketplace '{}'; install that dependency explicitly before installing this plugin",
-                    entry.name, dependency.name, dependency.marketplace
-                )));
-            }
-            if self.is_marketplace_dependency_satisfied(&dependency.id)? {
-                continue;
-            }
-            self.install_from_marketplace_inner(
-                marketplace_key,
-                &dependency.name,
-                authentication_confirmed,
-                stack,
-            )?;
-        }
-
-        let version = manifest
-            .version
-            .clone()
-            .or_else(|| entry.version.clone())
-            .unwrap_or_else(|| "0.0.0".to_string());
-        let marketplace_dir = self
-            .roots
-            .marketplace_cache
-            .join(sanitize_file_name(marketplace_key));
-        let plugin_dir = marketplace_dir.join(sanitize_file_name(&manifest.name));
-        let destination = plugin_dir.join(sanitize_file_name(&version));
-        commit_plugin_directory(
-            source,
-            &destination,
-            &self.roots.marketplace_cache,
-            &format!("{marketplace_key}-{}-{version}", manifest.name),
-        )?;
-        if plugin_dir.exists() {
-            mark_stale_marketplace_plugin_versions(
-                &self.roots.marketplace_cache,
-                &plugin_dir,
-                &destination,
-            )?;
-        }
-        let content_hash = plugin_directory_content_hash(&destination)?;
-
-        let id = plugin_id(&manifest.name, marketplace_key);
-        let mut state = self.load_state()?;
-        let previous = state.installed.get(&id).cloned();
-        let should_refresh_health = mark_plugin_health_stale_for_install(
-            &mut state,
-            &id,
-            previous.as_ref(),
-            manifest.version.as_deref().or(Some(version.as_str())),
-            Some(content_hash.as_str()),
-        );
-        state.enabled.insert(id.clone(), true);
-        state.installed.insert(
-            id.clone(),
-            InstalledPluginState {
-                version: manifest.version.clone().or(Some(version)),
-                install_path: destination.display().to_string(),
-                installed_at: now_string(),
-                last_updated: None,
-                content_hash: Some(content_hash),
-            },
-        );
-        self.save_state(&state)?;
-        self.invalidate_plugin_caches();
-        if should_refresh_health {
-            if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
-                tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after marketplace install");
-            }
-        }
-        stack.pop();
-        self.read(&id)?
-            .ok_or_else(|| CoreError::not_found(format!("plugin {id}")))
+        let prepared =
+            self.prepare_plugin_install(marketplace_key, &entry.name, authentication_confirmed)?;
+        self.commit_plugin_install_with_stack(&prepared.token, stack)
     }
 
     fn is_marketplace_dependency_satisfied(&self, id: &str) -> Result<bool> {
@@ -13367,6 +13285,26 @@ deepagent-definitely-missing-runtime-cli --version
         assert!(worker.enabled);
         assert!(helper.enabled);
         assert_eq!(helper.origin, "marketplace");
+        assert!(
+            helper
+                .content_hash
+                .as_deref()
+                .is_some_and(|hash| hash.starts_with("sha256:")),
+            "dependency install should use the same prepared commit path and record a content hash"
+        );
+        let state = svc.load_state().unwrap();
+        assert!(state
+            .installed
+            .get("helper@team")
+            .and_then(|installed| installed.content_hash.as_deref())
+            .is_some_and(|hash| hash.starts_with("sha256:")));
+        assert_eq!(
+            state
+                .health_checks
+                .get("helper@team")
+                .map(|health| health.status),
+            Some(PluginHealthStatus::Ready)
+        );
         let projection = svc.runtime_projection().unwrap();
         assert!(projection.skill_roots.contains(
             &roots

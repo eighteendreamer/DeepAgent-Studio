@@ -14,7 +14,6 @@ import {
   listPluginMarketplaces,
   listPluginOutputStyles,
   listPlugins,
-  refreshPluginMarketplace,
   removePluginMarketplace,
   preparePluginInstall,
   scanPlugin,
@@ -679,10 +678,6 @@ export function PluginsView() {
               totalCount={marketplaceTotalCount}
               hasNext={marketplaceHasNext}
               onLoadMore={loadNextMarketplacePage}
-              onRefresh={async (name) => {
-                await refreshPluginMarketplace(name);
-                await load();
-              }}
               onRemove={async (name) => {
                 await removePluginMarketplace(name);
                 await load();
@@ -1136,7 +1131,6 @@ function MarketplacePanel({
   totalCount,
   hasNext,
   onLoadMore,
-  onRefresh,
   onRemove,
   onInstall,
 }: {
@@ -1150,7 +1144,6 @@ function MarketplacePanel({
   totalCount: number;
   hasNext: boolean;
   onLoadMore: () => void;
-  onRefresh: (name: string) => Promise<void>;
   onRemove: (name: string) => Promise<void>;
   onInstall: (entry: PluginMarketplaceEntry) => Promise<void>;
 }) {
@@ -1233,14 +1226,6 @@ function MarketplacePanel({
                   </div>
                   {marketplace && !isDsh && (
                     <div className="flex gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => void onRefresh(marketplace.name)}
-                        title="刷新"
-                      >
-                        <FontAwesomeIcon icon={["fas", "rotate"]} />
-                      </Button>
                       <Button
                         variant="ghost"
                         size="icon"
