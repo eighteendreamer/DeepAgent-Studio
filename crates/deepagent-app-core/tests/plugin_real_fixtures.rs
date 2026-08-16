@@ -202,6 +202,93 @@ fn existing_host_adapters_preserve_state_and_data_from_install_dir() {
     }
 }
 
+#[test]
+fn existing_host_adapters_only_expose_registered_renderable_apps() {
+    let root = bundled_plugins_root();
+    if !root.is_dir() {
+        eprintln!("skipping: bundled plugin resources are not present");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = PluginService::new(
+        PluginRoots {
+            session: Vec::new(),
+            builtin: root,
+            workspace: None,
+            personal: tmp.path().join("personal"),
+            marketplace_cache: tmp.path().join("cache"),
+            marketplaces: tmp.path().join("marketplaces"),
+        },
+        tmp.path().join("app-data"),
+    );
+
+    for name in EXISTING_HOST_ADAPTERS
+        .iter()
+        .copied()
+        .filter(|name| *name != "wedecode")
+    {
+        let plugin = svc
+            .read(&format!("{name}@builtin"))
+            .unwrap()
+            .unwrap_or_else(|| panic!("missing bundled host adapter {name}"));
+        assert_eq!(
+            plugin.execution_kind,
+            PluginExecutionKind::HostBacked,
+            "{name} should be classified through host bindings, not plugin-id special cases"
+        );
+        assert_eq!(plugin.command_count, 1, "{name} command count changed");
+        assert_eq!(plugin.app_count, 1, "{name} app count changed");
+    }
+
+    let computer_use = svc
+        .read("computer-use@builtin")
+        .unwrap()
+        .expect("computer-use host adapter");
+    assert_eq!(
+        computer_use.health_status,
+        PluginHealthStatus::Incomplete,
+        "unregistered host components must not look executable"
+    );
+    assert_eq!(computer_use.state, PluginLifecycleState::Incomplete);
+    assert!(computer_use
+        .health_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("builtin:computer-use"));
+
+    let app_ids = svc
+        .list_apps()
+        .unwrap()
+        .into_iter()
+        .map(|app| (app.plugin_id, app.component))
+        .collect::<BTreeMap<_, _>>();
+    for name in [
+        "browser",
+        "files",
+        "meeting-recorder",
+        "office-agent",
+        "project-map",
+        "side-chat",
+        "terminal",
+    ] {
+        assert!(
+            app_ids.contains_key(&format!("{name}@builtin")),
+            "{name} should expose a registered renderable host app"
+        );
+    }
+    assert!(
+        !app_ids.contains_key("computer-use@builtin"),
+        "computer-use must stay hidden from renderable apps until a real host component is registered"
+    );
+    assert!(
+        app_ids.values().all(|component| component
+            .strip_prefix("builtin:")
+            .is_some_and(|name| name != "computer-use")),
+        "list_apps should only expose registered builtin host components: {app_ids:?}"
+    );
+}
+
 fn is_fatal_loader_error(error: &PluginLoadError) -> bool {
     error.severity.as_str() == "error"
 }
