@@ -4481,6 +4481,8 @@ mod tests {
         assert!(initial_projection.command_roots.is_empty());
         assert!(initial_projection.mcp_server_sources.is_empty());
         assert!(initial_projection.hook_definitions.is_empty());
+        assert!(initial_projection.app_entries.is_empty());
+        assert!(plugins.list_apps().unwrap().is_empty());
         assert!(initial_projection.output_styles.is_empty());
 
         let marketplace_root = tmp.path().join("team-marketplace");
@@ -4505,6 +4507,7 @@ mod tests {
                         "oauth_resource": "https://127.0.0.1:9/mcp"
                     }
                 },
+                "apps": ".app.json",
                 "outputStyles": "output-styles"
             })
             .to_string(),
@@ -4548,6 +4551,24 @@ mod tests {
         std::fs::write(
             plugin_source.join("output-styles").join("brief.md"),
             "# Brief live plugin style\n\nKeep marketplace plugin output brief.",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_source.join(".app.json"),
+            serde_json::json!({
+                "apps": [
+                    {
+                        "id": "chat-live-browser",
+                        "title": "Chat Live Browser",
+                        "description": "Open the freshly installed plugin app",
+                        "placement": "right-sidebar",
+                        "component": "builtin:browser",
+                        "icon": "browser",
+                        "category": "Developer Tools"
+                    }
+                ]
+            })
+            .to_string(),
         )
         .unwrap();
         std::fs::write(
@@ -4609,6 +4630,19 @@ mod tests {
             refreshed_projection.output_styles[0].name,
             "chat-live:brief"
         );
+        assert_eq!(refreshed_projection.app_entries.len(), 1);
+        assert_eq!(
+            refreshed_projection.app_entries[0].plugin_id,
+            "chat-live@team"
+        );
+        assert_eq!(
+            refreshed_projection.app_entries[0].component,
+            "builtin:browser"
+        );
+        let renderable_apps = plugins.list_apps().unwrap();
+        assert_eq!(renderable_apps.len(), 1);
+        assert_eq!(renderable_apps[0].plugin_id, "chat-live@team");
+        assert_eq!(renderable_apps[0].id, "chat-live-browser");
         let skills_guard = skills.lock().unwrap();
         assert_eq!(
             skills_guard.plugin_roots(),
