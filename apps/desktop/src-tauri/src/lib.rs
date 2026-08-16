@@ -1322,19 +1322,6 @@ async fn remove_plugin_marketplace(
 }
 
 #[tauri::command]
-async fn refresh_plugin_marketplace(
-    state: State<'_, AppState>,
-    name: String,
-) -> Result<PluginMarketplaceDto, String> {
-    let plugins = Arc::clone(&state.plugins);
-    tauri::async_runtime::spawn_blocking(move || {
-        plugins.refresh_marketplace(&name).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
 async fn list_plugin_marketplace_entries(
     state: State<'_, AppState>,
 ) -> Result<Vec<PluginMarketplaceEntryDto>, String> {
@@ -5402,7 +5389,6 @@ pub fn run() {
             scan_plugin_zip,
             list_plugin_marketplaces,
             remove_plugin_marketplace,
-            refresh_plugin_marketplace,
             list_plugin_marketplace_entries,
             search_plugin_marketplace_entries,
             prepare_plugin_install,

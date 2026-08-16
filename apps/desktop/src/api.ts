@@ -753,16 +753,6 @@ export async function removePluginMarketplace(name: string): Promise<boolean> {
   throw new Error("removing a plugin marketplace requires the desktop app");
 }
 
-export async function refreshPluginMarketplace(name: string): Promise<PluginMarketplace> {
-  const invoke = getInvoke();
-  if (invoke) {
-    const marketplace = await invoke<PluginMarketplace>("refresh_plugin_marketplace", { name });
-    emitPluginsChanged();
-    return marketplace;
-  }
-  throw new Error("refreshing a plugin marketplace requires the desktop app");
-}
-
 export async function preparePluginInstall(
   marketplace: string,
   plugin: string,
