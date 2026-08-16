@@ -451,6 +451,39 @@ fn extend_runtime_requirements_from_mcp_config(
     }
 }
 
+fn merge_runtime_requirements_from_mcp_value(
+    needs: &mut PluginRuntimeNeeds,
+    value: Option<&serde_json::Value>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    let Ok(text) = serde_json::to_string(value) else {
+        return;
+    };
+    let Ok(config) = McpConfig::parse(&text) else {
+        return;
+    };
+    merge_runtime_requirements_from_mcp_config(needs, &config);
+}
+
+fn merge_runtime_requirements_from_mcp_config(needs: &mut PluginRuntimeNeeds, config: &McpConfig) {
+    for server in config.servers.values() {
+        if !matches!(server.effective_type(), Ok(TransportType::Stdio)) {
+            continue;
+        }
+        let Some(command) = server.command.as_deref() else {
+            continue;
+        };
+        match mcp_command_runtime_requirement(command) {
+            Some("node") => needs.node = true,
+            Some("python") => needs.python = true,
+            Some("java") => needs.java = true,
+            _ => {}
+        }
+    }
+}
+
 fn mcp_command_runtime_requirement(command: &str) -> Option<&'static str> {
     let stem = Path::new(command)
         .file_stem()
@@ -1977,6 +2010,22 @@ impl PluginService {
             }
             if manifest.runtime.java.is_some() {
                 needs.java = true;
+            }
+            merge_runtime_requirements_from_mcp_value(
+                &mut needs,
+                manifest.paths.mcp_servers_inline.as_ref(),
+            );
+            for path in &manifest.paths.mcp_server_paths {
+                if !path.is_file() {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(path) else {
+                    continue;
+                };
+                let Ok(config) = McpConfig::parse(&text) else {
+                    continue;
+                };
+                merge_runtime_requirements_from_mcp_config(&mut needs, &config);
             }
         }
         if has_runtime_payload {
@@ -8620,6 +8669,8 @@ rl.on('line', (line) => {
 
         let before = svc.read("sidecar-plugin@builtin").unwrap().unwrap();
         assert_eq!(before.execution_kind, PluginExecutionKind::DshSidecar);
+        assert!(before.runtime_required);
+        assert!(before.runtime_available);
         assert_eq!(before.health_status, PluginHealthStatus::Ready);
 
         let checked = svc

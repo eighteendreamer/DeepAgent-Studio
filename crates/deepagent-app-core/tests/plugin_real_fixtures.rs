@@ -389,6 +389,7 @@ fn bundled_figma_requires_authorization_and_projects_real_runtime_entries() {
     assert_eq!(figma.hook_count, 1);
     assert_eq!(figma.mcp_server_count, 1);
     assert_eq!(figma.app_count, 1);
+    assert!(figma.runtime_required);
     assert!(figma
         .health_error
         .as_deref()
