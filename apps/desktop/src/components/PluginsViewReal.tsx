@@ -96,6 +96,15 @@ const emptyMarketplaceDraft: AddPluginMarketplaceInput = {
   sparse_path: "",
 };
 
+const deepSeekHarnessMarketplaceDraft: AddPluginMarketplaceInput = {
+  name: "deepseek-harness",
+  source: "https://github.com/topics/dsh-plugin",
+  git_ref: "main",
+  sparse_path: "",
+};
+
+const deepSeekHarnessMarketplaceBusyId = "marketplace:deepseek-harness";
+
 export function PluginsView() {
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [marketplaces, setMarketplaces] = useState<PluginMarketplace[]>([]);
@@ -384,6 +393,25 @@ export function PluginsView() {
     }
   };
 
+  const submitDeepSeekHarnessMarketplace = async () => {
+    setBusyId(deepSeekHarnessMarketplaceBusyId);
+    setError(null);
+    try {
+      const existing = marketplaces.find(isDeepSeekHarnessMarketplace);
+      if (existing) {
+        await refreshPluginMarketplace(existing.name);
+      } else {
+        await addPluginMarketplace(deepSeekHarnessMarketplaceDraft);
+      }
+      await load();
+      setOrigin("marketplace");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const installMarketplaceEntry = async (entry: PluginMarketplaceEntry) => {
     setBusyId(`${entry.marketplace}:${entry.name}`);
     setError(null);
@@ -594,7 +622,9 @@ export function PluginsView() {
               marketplaces={marketplaces}
               entries={marketplaceEntries}
               busyId={busyId}
+              dshBusy={busyId === deepSeekHarnessMarketplaceBusyId}
               onAdd={() => setMarketOpen(true)}
+              onAddDeepSeekHarness={submitDeepSeekHarnessMarketplace}
               onRefresh={async (name) => {
                 await refreshPluginMarketplace(name);
                 await load();
@@ -1055,7 +1085,9 @@ function MarketplacePanel({
   marketplaces,
   entries,
   busyId,
+  dshBusy,
   onAdd,
+  onAddDeepSeekHarness,
   onRefresh,
   onRemove,
   onInstall,
@@ -1063,119 +1095,197 @@ function MarketplacePanel({
   marketplaces: PluginMarketplace[];
   entries: PluginMarketplaceEntry[];
   busyId: string | null;
+  dshBusy: boolean;
   onAdd: () => void;
+  onAddDeepSeekHarness: () => Promise<void>;
   onRefresh: (name: string) => Promise<void>;
   onRemove: (name: string) => Promise<void>;
   onInstall: (entry: PluginMarketplaceEntry) => Promise<void>;
 }) {
+  const dshMarketplace = marketplaces.find(isDeepSeekHarnessMarketplace);
+  const entriesByMarketplace = new Map<string, PluginMarketplaceEntry[]>();
+  for (const entry of entries) {
+    const list = entriesByMarketplace.get(entry.marketplace) ?? [];
+    list.push(entry);
+    entriesByMarketplace.set(entry.marketplace, list);
+  }
+  const marketplaceNames = [
+    ...marketplaces.map((marketplace) => marketplace.name),
+    ...entries
+      .map((entry) => entry.marketplace)
+      .filter((name) => !marketplaces.some((marketplace) => marketplace.name === name)),
+  ];
+
   return (
     <section className="border-t border-border-theme pt-5">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-[15px] font-semibold text-text-base">插件市场</h2>
-        <Button variant="outline" size="sm" onClick={onAdd}>
-          <FontAwesomeIcon icon={["fas", "plus"]} />
-          <span>添加市场</span>
-        </Button>
-      </div>
-      {marketplaces.length === 0 ? (
-        <EmptyState text="暂无市场来源" />
-      ) : (
-        <div className="space-y-2">
-          {marketplaces.map((marketplace) => (
-            <div
-              key={marketplace.name}
-              className="flex items-center justify-between gap-3 rounded-lg border border-border-theme px-3 py-2 text-[13px]"
-            >
-              <div className="min-w-0">
-                <div className="font-medium text-text-base">{marketplace.name}</div>
-                <div className="truncate text-[12px] text-text-secondary">
-                  {marketplace.source}
-                </div>
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => void onRefresh(marketplace.name)}
-                  title="刷新"
-                >
-                  <FontAwesomeIcon icon={["fas", "rotate"]} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => void onRemove(marketplace.name)}
-                  title="删除"
-                >
-                  <FontAwesomeIcon icon={["fas", "trash"]} />
-                </Button>
-              </div>
-            </div>
-          ))}
+        <div>
+          <h2 className="text-[15px] font-semibold text-text-base">
+            DeepSeek Harness 插件市场
+          </h2>
+          <div className="mt-1 text-[12px] text-text-secondary">
+            从 GitHub `dsh-plugin` topic 获取市场源和可安装插件。
+          </div>
         </div>
-      )}
-      <div className="mt-5">
-        <h3 className="mb-3 text-[13px] font-semibold text-text-base">市场插件</h3>
-        {entries.length === 0 ? (
-          <EmptyState text="暂无可安装的市场插件" />
-        ) : (
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-            {entries.map((entry) => {
-              const busy = busyId === `${entry.marketplace}:${entry.name}`;
-              const installHint = marketplaceInstallHint(entry);
-              return (
-                <div
-                  key={`${entry.marketplace}:${entry.name}`}
-                  className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border-theme px-3 py-3 text-[13px]"
-                >
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            variant={dshMarketplace ? "secondary" : "default"}
+            size="sm"
+            disabled={dshBusy}
+            onClick={() => void onAddDeepSeekHarness()}
+            title={dshMarketplace ? "刷新 DeepSeek Harness 市场" : "接入 DeepSeek Harness 市场"}
+          >
+            <FontAwesomeIcon icon={["fas", dshMarketplace ? "rotate" : "plug"]} />
+            <span>{dshBusy ? "处理中..." : dshMarketplace ? "刷新 DSH" : "接入 DSH"}</span>
+          </Button>
+          <Button variant="outline" size="sm" onClick={onAdd}>
+            <FontAwesomeIcon icon={["fas", "plus"]} />
+            <span>添加来源</span>
+          </Button>
+        </div>
+      </div>
+      {marketplaceNames.length === 0 ? (
+        <EmptyState text="尚未接入插件市场，点击“接入 DSH”后会拉取可安装插件列表" />
+      ) : (
+        <div className="space-y-4">
+          {marketplaceNames.map((name) => {
+            const marketplace = marketplaces.find((item) => item.name === name);
+            const marketplaceEntries = entriesByMarketplace.get(name) ?? [];
+            return (
+              <div key={name} className="rounded-lg border border-border-theme px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="font-medium text-text-base">{entry.display_name}</div>
-                    <div className="mt-1 line-clamp-2 text-[12px] text-text-secondary">
-                      {entry.description}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-tertiary">
-                      <span>{entry.marketplace}</span>
-                      <span>{entry.source_kind}</span>
-                      {entry.version && <span>{entry.version}</span>}
-                      {entry.policy_installation && (
-                        <MiniBadge tone={entry.installable ? "neutral" : "warn"}>
-                          {entry.policy_installation}
-                        </MiniBadge>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="truncate font-medium text-text-base">{name}</span>
+                      {marketplace && isDeepSeekHarnessMarketplace(marketplace) && (
+                        <MiniBadge tone="info">DSH</MiniBadge>
                       )}
-                      {entry.policy_authentication && (
-                        <MiniBadge tone={entry.authentication_required ? "warn" : "neutral"}>
-                          {entry.policy_authentication}
-                        </MiniBadge>
-                      )}
+                      <MiniBadge tone="neutral">{marketplaceEntries.length} 个插件</MiniBadge>
                     </div>
-                    {!entry.installable && installHint && (
-                      <div className="mt-2 max-w-[420px] text-[12px] leading-5 text-amber-700">
-                        {installHint}
+                    <div className="mt-1 truncate text-[12px] text-text-secondary">
+                      {marketplace?.source || "已发现市场插件"}
+                    </div>
+                    {marketplace?.last_updated && (
+                      <div className="mt-1 text-[11px] text-text-tertiary">
+                        最近刷新：{marketplace.last_updated}
                       </div>
                     )}
                   </div>
-                  <Button
-                    variant={entry.installed && !entry.update_available ? "outline" : "default"}
-                    disabled={busy || !entry.installable}
-                    onClick={() => void onInstall(entry)}
-                    title={installHint || (entry.installable ? "安装插件" : "该来源不可安装")}
-                  >
-                    {busy
-                      ? "处理中..."
-                      : entry.update_available
-                        ? "更新"
-                        : entry.installed
-                          ? "重新安装"
-                          : "安装"}
-                  </Button>
+                  {marketplace && (
+                    <div className="flex gap-2">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => void onRefresh(marketplace.name)}
+                        title="刷新"
+                      >
+                        <FontAwesomeIcon icon={["fas", "rotate"]} />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => void onRemove(marketplace.name)}
+                        title="删除"
+                      >
+                        <FontAwesomeIcon icon={["fas", "trash"]} />
+                      </Button>
+                    </div>
+                  )}
                 </div>
-              );
-            })}
+                {marketplaceEntries.length === 0 ? (
+                  <div className="mt-3">
+                    <EmptyState text="暂无可安装插件，刷新市场后显示插件列表" />
+                  </div>
+                ) : (
+                  <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                    {marketplaceEntries.map((entry) => (
+                      <MarketplaceEntryCard
+                        key={`${entry.marketplace}:${entry.name}`}
+                        entry={entry}
+                        busy={busyId === `${entry.marketplace}:${entry.name}`}
+                        onInstall={onInstall}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MarketplaceEntryCard({
+  entry,
+  busy,
+  onInstall,
+}: {
+  entry: PluginMarketplaceEntry;
+  busy: boolean;
+  onInstall: (entry: PluginMarketplaceEntry) => Promise<void>;
+}) {
+  const installHint = marketplaceInstallHint(entry);
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg bg-bg-subtle px-3 py-3 text-[13px]">
+      <div className="min-w-0">
+        <div className="font-medium text-text-base">{entry.display_name}</div>
+        <div className="mt-1 line-clamp-2 text-[12px] text-text-secondary">
+          {entry.description}
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-tertiary">
+          <span>{entry.source_kind}</span>
+          {entry.version && <span>{entry.version}</span>}
+          {entry.license && <span>{entry.license}</span>}
+          {entry.source_commit && <span>{entry.source_commit.slice(0, 12)}</span>}
+          {entry.policy_installation && (
+            <MiniBadge tone={entry.installable ? "neutral" : "warn"}>
+              {entry.policy_installation}
+            </MiniBadge>
+          )}
+          {entry.policy_authentication && (
+            <MiniBadge tone={entry.authentication_required ? "warn" : "neutral"}>
+              {entry.policy_authentication}
+            </MiniBadge>
+          )}
+          {entry.runtime_required && <MiniBadge tone="warn">需要运行时</MiniBadge>}
+          {entry.has_runtime_payload && <MiniBadge tone="info">含运行时包</MiniBadge>}
+        </div>
+        {!entry.installable && installHint && (
+          <div className="mt-2 max-w-[420px] text-[12px] leading-5 text-amber-700">
+            {installHint}
           </div>
         )}
       </div>
-    </section>
+      <Button
+        variant={entry.installed && !entry.update_available ? "outline" : "default"}
+        disabled={busy || !entry.installable}
+        onClick={() => void onInstall(entry)}
+        title={installHint || (entry.installable ? "安装插件" : "该来源不可安装")}
+      >
+        {busy
+          ? "处理中..."
+          : entry.update_available
+            ? "更新"
+            : entry.installed
+              ? "重新安装"
+              : "安装"}
+      </Button>
+    </div>
   );
+}
+
+function isDeepSeekHarnessMarketplace(marketplace: PluginMarketplace): boolean {
+  return (
+    marketplace.name === deepSeekHarnessMarketplaceDraft.name ||
+    normalizeMarketplaceSource(marketplace.source) ===
+      normalizeMarketplaceSource(deepSeekHarnessMarketplaceDraft.source)
+  );
+}
+
+function normalizeMarketplaceSource(source: string): string {
+  return source.trim().replace(/\/+$/, "").toLowerCase();
 }
 
 function CreateDialog({
