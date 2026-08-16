@@ -4436,7 +4436,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_service_syncs_plugin_skills_after_install_without_restart() {
+    fn chat_service_syncs_plugin_runtime_after_install_without_restart() {
         let tmp = tempfile::tempdir().unwrap();
         let plugin_roots = crate::plugin_loader::PluginRoots {
             session: Vec::new(),
@@ -4478,17 +4478,34 @@ mod tests {
             .manager()
             .registry()
             .contains("plugin-planning"));
+        assert!(initial_projection.command_roots.is_empty());
+        assert!(initial_projection.mcp_server_sources.is_empty());
+        assert!(initial_projection.hook_definitions.is_empty());
+        assert!(initial_projection.output_styles.is_empty());
 
         let marketplace_root = tmp.path().join("team-marketplace");
         let plugin_source = marketplace_root.join("plugins").join("chat-live");
         std::fs::create_dir_all(plugin_source.join(".codex-plugin")).unwrap();
         std::fs::create_dir_all(plugin_source.join("skills").join("plugin-planning")).unwrap();
+        std::fs::create_dir_all(plugin_source.join("commands")).unwrap();
+        std::fs::create_dir_all(plugin_source.join("scripts")).unwrap();
+        std::fs::create_dir_all(plugin_source.join("output-styles")).unwrap();
         std::fs::write(
             plugin_source.join(".codex-plugin").join("plugin.json"),
             serde_json::json!({
                 "name": "chat-live",
                 "version": "0.1.0",
-                "skills": "skills"
+                "skills": "skills",
+                "commands": "commands",
+                "hooks": "hooks.json",
+                "mcpServers": {
+                    "hosted": {
+                        "type": "http",
+                        "url": "https://127.0.0.1:9/mcp",
+                        "oauth_resource": "https://127.0.0.1:9/mcp"
+                    }
+                },
+                "outputStyles": "output-styles"
             })
             .to_string(),
         )
@@ -4499,6 +4516,38 @@ mod tests {
                 .join("plugin-planning")
                 .join("SKILL.md"),
             "---\nname: plugin-planning\ndescription: Plan with the freshly installed plugin\n---\nUse the live plugin skill.",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_source.join("commands").join("inspect.md"),
+            "---\ndescription: Inspect live plugin state\n---\nInspect ${ARGUMENTS}",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_source.join("scripts").join("post-tool.ps1"),
+            "exit 0\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_source.join("hooks.json"),
+            serde_json::json!({
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "Write|Edit",
+                            "hooks": [
+                                { "type": "command", "command": "./scripts/post-tool.ps1" }
+                            ]
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_source.join("output-styles").join("brief.md"),
+            "# Brief live plugin style\n\nKeep marketplace plugin output brief.",
         )
         .unwrap();
         std::fs::write(
@@ -4533,6 +4582,33 @@ mod tests {
         let refreshed_projection = chat.sync_plugin_runtime().unwrap().unwrap();
         assert_eq!(refreshed_projection.skill_roots.len(), 1);
         assert!(refreshed_projection.skill_roots[0].ends_with("skills"));
+        assert_eq!(refreshed_projection.command_roots.len(), 1);
+        assert_eq!(
+            refreshed_projection.command_roots[0].plugin_id,
+            "chat-live@team"
+        );
+        assert!(refreshed_projection.command_roots[0]
+            .path
+            .ends_with("commands"));
+        assert!(
+            refreshed_projection
+                .mcp_server_sources
+                .values()
+                .any(|source| source.plugin_id == "chat-live@team"
+                    && source.declared_name == "hosted")
+        );
+        assert!(refreshed_projection
+            .hook_definitions
+            .hooks
+            .get("PostToolUse")
+            .into_iter()
+            .flatten()
+            .any(|group| group.matcher.as_deref() == Some("Write|Edit")));
+        assert_eq!(refreshed_projection.output_styles.len(), 1);
+        assert_eq!(
+            refreshed_projection.output_styles[0].name,
+            "chat-live:brief"
+        );
         let skills_guard = skills.lock().unwrap();
         assert_eq!(
             skills_guard.plugin_roots(),
