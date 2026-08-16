@@ -393,6 +393,121 @@ fn marketplace_component_summary_from_manifest(
     }
 }
 
+fn github_topic_component_summary(
+    full_name: &str,
+    commit: &str,
+    metadata: &GitHubTopicManifestMetadata,
+    scratch: &Path,
+) -> PluginMarketplaceComponentSummary {
+    let manifest = &metadata.manifest;
+    PluginMarketplaceComponentSummary {
+        skills: github_topic_existing_component_path_count(
+            full_name,
+            commit,
+            metadata,
+            scratch,
+            &manifest.paths.skills,
+        ),
+        commands: github_topic_existing_component_path_count(
+            full_name,
+            commit,
+            metadata,
+            scratch,
+            &manifest.paths.commands,
+        ),
+        agents: github_topic_existing_component_path_count(
+            full_name,
+            commit,
+            metadata,
+            scratch,
+            &manifest.paths.agents,
+        ),
+        hooks: inline_object_count(manifest.paths.hooks_inline.as_ref())
+            + github_topic_existing_component_path_count(
+                full_name,
+                commit,
+                metadata,
+                scratch,
+                &manifest.paths.hook_paths,
+            ),
+        mcp: inline_object_count(manifest.paths.mcp_servers_inline.as_ref())
+            + github_topic_existing_component_path_count(
+                full_name,
+                commit,
+                metadata,
+                scratch,
+                &manifest.paths.mcp_server_paths,
+            ),
+        apps: github_topic_existing_component_path_count(
+            full_name,
+            commit,
+            metadata,
+            scratch,
+            &manifest.paths.app_paths,
+        ),
+        output_styles: github_topic_existing_component_path_count(
+            full_name,
+            commit,
+            metadata,
+            scratch,
+            &manifest.paths.output_styles,
+        ),
+    }
+}
+
+fn github_topic_existing_component_path_count(
+    full_name: &str,
+    commit: &str,
+    metadata: &GitHubTopicManifestMetadata,
+    scratch: &Path,
+    paths: &[PathBuf],
+) -> u32 {
+    paths
+        .iter()
+        .filter(|path| {
+            github_topic_component_path_exists(full_name, commit, metadata, scratch, path)
+        })
+        .count() as u32
+}
+
+fn github_topic_component_path_exists(
+    full_name: &str,
+    commit: &str,
+    metadata: &GitHubTopicManifestMetadata,
+    scratch: &Path,
+    path: &Path,
+) -> bool {
+    let Ok(relative_path) = path.strip_prefix(&metadata.root) else {
+        return false;
+    };
+    let relative_path = relative_path.to_string_lossy().replace('\\', "/");
+    if relative_path.trim().is_empty() {
+        return false;
+    }
+    let endpoint = format!(
+        "/repos/{}/contents/{}?ref={}",
+        full_name,
+        percent_encode_content_path(&relative_path),
+        percent_encode_query_value(commit)
+    );
+    let text = match download_github_api_json(
+        &endpoint,
+        scratch,
+        &format!(
+            "{}-{}-component-summary",
+            full_name.replace('/', "-"),
+            relative_path.replace('/', "-")
+        ),
+    ) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    if let Ok(contents) = serde_json::from_str::<GitHubContentResponse>(&text) {
+        return matches!(contents.kind.as_deref(), Some("file" | "dir"));
+    }
+    serde_json::from_str::<Vec<GitHubContentDirectoryEntry>>(&text).is_ok()
+}
+
 fn marketplace_runtime_summary_from_manifest(
     manifest: &PluginManifest,
 ) -> PluginMarketplaceRuntimeSummary {
@@ -603,15 +718,16 @@ impl PluginService {
         let Some(plugin) = self.read(id)? else {
             return Ok(None);
         };
-        let (checked_at, health_status, health_error) =
+        let (checked_at, runtime_available, lifecycle_state, health_status, health_error) =
             self.evaluate_and_persist_plugin_health(id, &plugin)?;
         self.invalidate_plugin_caches();
 
         let mut inspection = PluginRuntimeInspectionDto::from_plugin(&plugin);
+        inspection.runtime_available = runtime_available;
         inspection.last_health_check = Some(checked_at);
         inspection.health_status = health_status;
         inspection.health_error = health_error;
-        inspection.state = explicit_health_lifecycle_state(inspection.state, health_status);
+        inspection.state = lifecycle_state;
         Ok(Some(inspection))
     }
 
@@ -619,12 +735,102 @@ impl PluginService {
         &self,
         id: &str,
         plugin: &PluginDto,
-    ) -> Result<(String, PluginHealthStatus, Option<String>)> {
+    ) -> Result<(
+        String,
+        bool,
+        PluginLifecycleState,
+        PluginHealthStatus,
+        Option<String>,
+    )> {
         let checked_at = now_string();
+        let (runtime_available, lifecycle_state, health_status, health_error) =
+            self.evaluate_plugin_health(id, plugin)?;
+        let (checked_at, health_status, health_error) =
+            self.persist_plugin_health_check(id, checked_at, health_status, health_error)?;
+        Ok((
+            checked_at,
+            runtime_available,
+            explicit_health_lifecycle_state(lifecycle_state, health_status),
+            health_status,
+            health_error,
+        ))
+    }
+
+    fn evaluate_plugin_health(
+        &self,
+        id: &str,
+        plugin: &PluginDto,
+    ) -> Result<(
+        bool,
+        PluginLifecycleState,
+        PluginHealthStatus,
+        Option<String>,
+    )> {
+        let Some(loaded) = load_plugins(&self.roots)
+            .into_iter()
+            .find(|loaded| loaded.id == id)
+        else {
+            return Ok((
+                plugin.runtime_available,
+                plugin.state,
+                plugin.health_status,
+                plugin.health_error.clone(),
+            ));
+        };
+        let resolved = loaded.resolved();
+        let manifest = resolved.map(|plugin| &plugin.manifest);
+        let counts = PluginComponentCounts::from_manifest(manifest);
+        let entrypoints = self.plugin_entrypoints(&loaded, manifest);
+        let has_runtime_payload = loaded.root.join("runtime.zip").is_file();
+        let runtime_requirements =
+            self.plugin_runtime_requirements(&loaded, manifest, has_runtime_payload);
+        let runtime_available = self.runtime_requirements_available(&runtime_requirements);
+        let health_status = self.plugin_health_status(
+            &loaded,
+            manifest,
+            resolved,
+            counts,
+            runtime_available,
+            &runtime_requirements,
+        );
+        let health_error = self.plugin_health_error(
+            &loaded,
+            manifest,
+            counts,
+            &runtime_requirements,
+            health_status,
+        );
+        let lifecycle_state = self.plugin_lifecycle_state(
+            &loaded,
+            manifest,
+            resolved,
+            counts,
+            health_status,
+            &entrypoints,
+        );
+        if health_status != PluginHealthStatus::Ready {
+            return Ok((
+                runtime_available,
+                lifecycle_state,
+                health_status,
+                health_error,
+            ));
+        }
+
+        let mut evaluated_plugin = plugin.clone();
+        evaluated_plugin.runtime_available = runtime_available;
+        evaluated_plugin.health_status = health_status;
+        evaluated_plugin.health_error = health_error.clone();
+        evaluated_plugin.state = lifecycle_state;
         let (health_status, health_error) = self
-            .explicit_plugin_health_override(id, plugin)?
-            .unwrap_or((plugin.health_status, plugin.health_error.clone()));
-        self.persist_plugin_health_check(id, checked_at, health_status, health_error)
+            .explicit_plugin_health_override(id, &evaluated_plugin)?
+            .unwrap_or((health_status, health_error));
+        Ok((
+            runtime_available,
+            lifecycle_state,
+            health_status,
+            health_error,
+        ))
     }
 
     fn persist_plugin_health_check(
@@ -691,6 +897,7 @@ impl PluginService {
         let mut state = self.load_state()?;
         state.enabled.insert(id.to_string(), enabled);
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         self.read(id)?
             .ok_or_else(|| CoreError::not_found(format!("plugin {id}")))
     }
@@ -777,6 +984,7 @@ impl PluginService {
         let mut state = self.load_state()?;
         state.enabled.insert(id.clone(), true);
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         self.read(&id)?
             .ok_or_else(|| CoreError::other(format!("created plugin {id} was not discoverable")))
     }
@@ -806,9 +1014,18 @@ impl PluginService {
             let id = plugin_id(&name, PluginOrigin::Personal.as_str());
             let mut state = self.load_state()?;
             state.enabled.entry(id.clone()).or_insert(true);
-            let had_health_check = state.health_checks.contains_key(&id);
+            let content_hash = plugin_directory_content_hash(source).ok();
+            let previous = state.installed.get(&id).cloned();
+            let should_refresh_health = mark_plugin_health_stale_for_install(
+                &mut state,
+                &id,
+                previous.as_ref(),
+                manifest.version.as_deref(),
+                content_hash.as_deref(),
+            );
             self.save_state(&state)?;
-            if !had_health_check {
+            self.invalidate_plugin_caches();
+            if should_refresh_health {
                 if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                     tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after install");
                 }
@@ -824,7 +1041,13 @@ impl PluginService {
         let id = plugin_id(&name, PluginOrigin::Personal.as_str());
         let mut state = self.load_state()?;
         let previous = state.installed.get(&id).cloned();
-        let had_health_check = state.health_checks.contains_key(&id);
+        let should_refresh_health = mark_plugin_health_stale_for_install(
+            &mut state,
+            &id,
+            previous.as_ref(),
+            manifest.version.as_deref(),
+            Some(content_hash.as_str()),
+        );
         state.enabled.entry(id.clone()).or_insert(true);
         state.installed.insert(
             id.clone(),
@@ -840,7 +1063,8 @@ impl PluginService {
             },
         );
         self.save_state(&state)?;
-        if !had_health_check {
+        self.invalidate_plugin_caches();
+        if should_refresh_health {
             if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                 tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after install");
             }
@@ -859,6 +1083,7 @@ impl PluginService {
                 state.enabled.remove(id).is_some() || state.installed.remove(id).is_some();
             if changed {
                 self.save_state(&state)?;
+                self.invalidate_plugin_caches();
             }
             return Ok(false);
         };
@@ -880,6 +1105,7 @@ impl PluginService {
         state.enabled.remove(id);
         state.installed.remove(id);
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
 
         if remove_data {
             let data_dir = self.data_root.join(sanitize_file_name(id));
@@ -953,6 +1179,7 @@ impl PluginService {
         let mut state = self.load_state()?;
         state.marketplaces.insert(name.clone(), state_item.clone());
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         Ok(PluginMarketplaceDto {
             name,
             source,
@@ -1027,6 +1254,7 @@ impl PluginService {
 
         if changed {
             self.save_state(&state)?;
+            self.invalidate_plugin_caches();
         }
         Ok(changed)
     }
@@ -1060,6 +1288,7 @@ impl PluginService {
             last_updated: item.last_updated.clone(),
         };
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         Ok(dto)
     }
 
@@ -1447,7 +1676,13 @@ impl PluginService {
             let id = plugin_id(&manifest.name, &metadata.marketplace);
             let mut state = self.load_state()?;
             let previous = state.installed.get(&id).cloned();
-            let had_health_check = state.health_checks.contains_key(&id);
+            let should_refresh_health = mark_plugin_health_stale_for_install(
+                &mut state,
+                &id,
+                previous.as_ref(),
+                manifest.version.as_deref().or(Some(version.as_str())),
+                Some(metadata.content_hash.as_str()),
+            );
             state.enabled.entry(id.clone()).or_insert(true);
             state.installed.insert(
                 id.clone(),
@@ -1465,7 +1700,8 @@ impl PluginService {
             self.save_state(&state).map_err(|error| {
                 plugin_install_failure("commit.write_state", Some(&self.state_path), error)
             })?;
-            if !had_health_check {
+            self.invalidate_plugin_caches();
+            if should_refresh_health {
                 if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                     tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after marketplace commit");
                 }
@@ -1542,6 +1778,7 @@ impl PluginService {
             state.enabled.insert(updated.id.clone(), enabled);
         }
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         self.read(&updated.id)?
             .ok_or_else(|| CoreError::not_found(format!("plugin {}", updated.id)))
     }
@@ -1667,7 +1904,14 @@ impl PluginService {
 
         let id = plugin_id(&manifest.name, marketplace_key);
         let mut state = self.load_state()?;
-        let had_health_check = state.health_checks.contains_key(&id);
+        let previous = state.installed.get(&id).cloned();
+        let should_refresh_health = mark_plugin_health_stale_for_install(
+            &mut state,
+            &id,
+            previous.as_ref(),
+            manifest.version.as_deref().or(Some(version.as_str())),
+            Some(content_hash.as_str()),
+        );
         state.enabled.insert(id.clone(), true);
         state.installed.insert(
             id.clone(),
@@ -1680,7 +1924,8 @@ impl PluginService {
             },
         );
         self.save_state(&state)?;
-        if !had_health_check {
+        self.invalidate_plugin_caches();
+        if should_refresh_health {
             if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
                 tracing::warn!(plugin_id = %id, error = %error, "failed to refresh plugin health after marketplace install");
             }
@@ -2198,6 +2443,68 @@ impl PluginService {
         PluginHealthStatus::Ready
     }
 
+    fn plugin_lightweight_health_status(
+        &self,
+        plugin: &LoadedPlugin,
+        manifest: Option<&PluginManifest>,
+        resolved: Option<&ResolvedPlugin>,
+        counts: PluginComponentCounts,
+        runtime_requirements: &PluginRuntimeNeeds,
+    ) -> PluginHealthStatus {
+        if !plugin.available || resolved.is_none() {
+            return PluginHealthStatus::Failed;
+        }
+        if has_fatal_plugin_errors(plugin) {
+            return PluginHealthStatus::Failed;
+        }
+        let execution_kind = manifest
+            .map(|manifest| {
+                self.plugin_execution_kind(
+                    plugin,
+                    Some(manifest),
+                    counts,
+                    plugin.root.join("runtime.zip").is_file(),
+                )
+            })
+            .unwrap_or(PluginExecutionKind::SkillOnly);
+
+        if execution_kind == PluginExecutionKind::HostBacked {
+            if let Some(manifest) = manifest {
+                if !self
+                    .host_backed_validation_errors(plugin, manifest, counts)
+                    .is_empty()
+                {
+                    return PluginHealthStatus::Incomplete;
+                }
+            } else {
+                return PluginHealthStatus::Incomplete;
+            }
+        }
+        if manifest.is_some()
+            && !self
+                .plugin_hook_command_scripts(plugin, manifest)
+                .errors
+                .is_empty()
+        {
+            return PluginHealthStatus::Incomplete;
+        }
+        if !runtime_payload_errors(&plugin.root).is_empty() {
+            return PluginHealthStatus::Incomplete;
+        }
+
+        if manifest.is_some_and(manifest_needs_host_authorization) {
+            return PluginHealthStatus::NeedsAuthorization;
+        }
+        if !missing_credential_env_hints(&plugin.root).is_empty() {
+            return PluginHealthStatus::NeedsConfiguration;
+        }
+        if runtime_requirements.requires_runtime() {
+            return PluginHealthStatus::Unknown;
+        }
+
+        PluginHealthStatus::Ready
+    }
+
     fn plugin_health_error(
         &self,
         plugin: &LoadedPlugin,
@@ -2470,21 +2777,20 @@ impl PluginService {
                 PluginLifecycleState::Incomplete
             }
             PluginHealthStatus::Failed => PluginLifecycleState::Failed,
-            PluginHealthStatus::Ready | PluginHealthStatus::Unknown => {
-                match self.plugin_execution_kind(
-                    plugin,
-                    Some(manifest),
-                    counts,
-                    plugin.root.join("runtime.zip").is_file(),
-                ) {
-                    PluginExecutionKind::HostBacked | PluginExecutionKind::SkillOnly => {
-                        PluginLifecycleState::Verified
-                    }
-                    PluginExecutionKind::Subprocess
-                    | PluginExecutionKind::ManagedRuntime
-                    | PluginExecutionKind::DshSidecar => PluginLifecycleState::Executable,
+            PluginHealthStatus::Unknown => PluginLifecycleState::Installed,
+            PluginHealthStatus::Ready => match self.plugin_execution_kind(
+                plugin,
+                Some(manifest),
+                counts,
+                plugin.root.join("runtime.zip").is_file(),
+            ) {
+                PluginExecutionKind::HostBacked | PluginExecutionKind::SkillOnly => {
+                    PluginLifecycleState::Verified
                 }
-            }
+                PluginExecutionKind::Subprocess
+                | PluginExecutionKind::ManagedRuntime
+                | PluginExecutionKind::DshSidecar => PluginLifecycleState::Executable,
+            },
         }
     }
 
@@ -2512,14 +2818,15 @@ impl PluginService {
         let has_runtime_payload = plugin.root.join("runtime.zip").is_file();
         let runtime_requirements =
             self.plugin_runtime_requirements(plugin, manifest, has_runtime_payload);
-        let runtime_available = self.runtime_requirements_available(&runtime_requirements);
         let license_status = self.plugin_license_status(plugin);
-        let computed_health_status = self.plugin_health_status(
+        let persisted_health = state.health_checks.get(&plugin.id);
+        let runtime_available =
+            lightweight_runtime_available(&runtime_requirements, persisted_health);
+        let computed_health_status = self.plugin_lightweight_health_status(
             plugin,
             manifest,
             resolved,
             counts,
-            runtime_available,
             &runtime_requirements,
         );
         let computed_health_error = self.plugin_health_error(
@@ -2529,7 +2836,6 @@ impl PluginService {
             &runtime_requirements,
             computed_health_status,
         );
-        let persisted_health = state.health_checks.get(&plugin.id);
         let last_health_check = persisted_health.map(|check| check.checked_at.clone());
         let (health_status, health_error) =
             if plugin.available && resolved.is_some() && !has_fatal_plugin_errors(plugin) {
@@ -4287,13 +4593,15 @@ fn materialize_github_topic_marketplace(
             let manifest = manifest_metadata
                 .as_ref()
                 .map(|metadata| &metadata.manifest);
-            let component_summary = manifest
+            let mut component_summary = manifest
                 .map(marketplace_component_summary_from_manifest)
                 .unwrap_or_default();
             let mut runtime_summary = manifest
                 .map(marketplace_runtime_summary_from_manifest)
                 .unwrap_or_default();
             if let Some(metadata) = manifest_metadata.as_ref() {
+                component_summary =
+                    github_topic_component_summary(&full_name, &commit, metadata, &scratch);
                 let repo_runtime_summary = github_topic_runtime_payload_summary(
                     &full_name,
                     &commit,
@@ -6839,6 +7147,55 @@ fn explicit_health_lifecycle_state(
     }
 }
 
+fn mark_plugin_health_stale_for_install(
+    state: &mut PluginState,
+    id: &str,
+    previous: Option<&InstalledPluginState>,
+    version: Option<&str>,
+    content_hash: Option<&str>,
+) -> bool {
+    if state.health_checks.contains_key(id)
+        && !plugin_health_matches_install(previous, version, content_hash)
+    {
+        state.health_checks.remove(id);
+    }
+    !state.health_checks.contains_key(id)
+}
+
+fn plugin_health_matches_install(
+    previous: Option<&InstalledPluginState>,
+    version: Option<&str>,
+    content_hash: Option<&str>,
+) -> bool {
+    let Some(previous) = previous else {
+        return false;
+    };
+    match (previous.content_hash.as_deref(), content_hash) {
+        (Some(previous_hash), Some(current_hash)) => previous_hash == current_hash,
+        (Some(_), None) | (None, Some(_)) => false,
+        (None, None) => previous.version.as_deref() == version,
+    }
+}
+
+fn lightweight_runtime_available(
+    needs: &PluginRuntimeNeeds,
+    persisted_health: Option<&PluginHealthCheckState>,
+) -> bool {
+    if !needs.requires_runtime() {
+        return true;
+    }
+    matches!(
+        persisted_health.map(|health| health.status),
+        Some(
+            PluginHealthStatus::Ready
+                | PluginHealthStatus::NeedsConfiguration
+                | PluginHealthStatus::NeedsAuthorization
+                | PluginHealthStatus::ConnectionUnavailable
+                | PluginHealthStatus::Incomplete
+        )
+    )
+}
+
 fn hosted_mcp_connection_failures(config: &McpConfig) -> Vec<String> {
     config
         .servers
@@ -8670,8 +9027,8 @@ rl.on('line', (line) => {
         let before = svc.read("sidecar-plugin@builtin").unwrap().unwrap();
         assert_eq!(before.execution_kind, PluginExecutionKind::DshSidecar);
         assert!(before.runtime_required);
-        assert!(before.runtime_available);
-        assert_eq!(before.health_status, PluginHealthStatus::Ready);
+        assert!(!before.runtime_available);
+        assert_eq!(before.health_status, PluginHealthStatus::Unknown);
 
         let checked = svc
             .check_plugin_health("sidecar-plugin@builtin")
@@ -8679,6 +9036,7 @@ rl.on('line', (line) => {
             .unwrap();
 
         assert_eq!(checked.health_status, PluginHealthStatus::Ready);
+        assert!(checked.runtime_available);
         assert_eq!(checked.state, PluginLifecycleState::Executable);
         assert!(checked.health_error.is_none());
         assert!(
@@ -8832,8 +9190,20 @@ rl.on('line', (line) => {
 
         assert!(plugin.runtime_required);
         assert!(!plugin.runtime_available);
-        assert_eq!(plugin.health_status, PluginHealthStatus::RuntimeUnavailable);
-        assert!(plugin
+        assert_eq!(plugin.health_status, PluginHealthStatus::Unknown);
+        assert!(plugin.health_error.is_none());
+
+        let checked = svc
+            .check_plugin_health("analysis-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert!(!checked.runtime_available);
+        assert_eq!(
+            checked.health_status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
+        assert!(checked
             .health_error
             .as_deref()
             .unwrap_or_default()
@@ -8884,8 +9254,20 @@ rl.on('line', (line) => {
 
         assert!(plugin.runtime_required);
         assert!(!plugin.runtime_available);
-        assert_eq!(plugin.health_status, PluginHealthStatus::RuntimeUnavailable);
-        assert!(plugin
+        assert_eq!(plugin.health_status, PluginHealthStatus::Unknown);
+        assert!(plugin.health_error.is_none());
+
+        let checked = svc
+            .check_plugin_health("analysis-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert!(!checked.runtime_available);
+        assert_eq!(
+            checked.health_status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
+        assert!(checked
             .health_error
             .as_deref()
             .unwrap_or_default()
@@ -9139,6 +9521,95 @@ rl.on('line', (line) => {
         }
     }
 
+    fn write_runtime_probe_sentinel(tmp: &Path, marker: &Path) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let script = tmp.join("deepagent-sentinel-probe.cmd");
+            std::fs::write(
+                &script,
+                format!(
+                    "@echo off\r\necho ran>\"{}\"\r\nexit /b 0\r\n",
+                    marker.display()
+                ),
+            )
+            .unwrap();
+            script
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let script = tmp.join("deepagent-sentinel-probe");
+            std::fs::write(
+                &script,
+                format!("#!/bin/sh\necho ran > '{}'\nexit 0\n", marker.display()),
+            )
+            .unwrap();
+            let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&script, permissions).unwrap();
+            script
+        }
+    }
+
+    #[test]
+    fn list_keeps_runtime_probe_metadata_lightweight_until_health_check() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let env_key = "DEEPAGENT_DEEPAGENT_SENTINEL_PROBE";
+        let original = std::env::var_os(env_key);
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let root = roots.builtin.join("probe-plugin");
+        write_plugin(&root, "probe-plugin");
+        std::fs::write(
+            root.join("README.md"),
+            r#"
+            Verify installation:
+
+            ```sh
+            deepagent-sentinel-probe --version
+            ```
+            "#,
+        )
+        .unwrap();
+        let marker = tmp.path().join("probe-ran.txt");
+        let probe = write_runtime_probe_sentinel(tmp.path(), &marker);
+        std::env::set_var(env_key, &probe);
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugin = svc.read("probe-plugin@builtin").unwrap().unwrap();
+
+        assert!(plugin.runtime_required);
+        assert!(!plugin.runtime_available);
+        assert_eq!(plugin.health_status, PluginHealthStatus::Unknown);
+        assert_eq!(plugin.state, PluginLifecycleState::Installed);
+        assert!(
+            !marker.exists(),
+            "plugin list must not execute runtime command probes"
+        );
+        assert!(svc.load_state().unwrap().health_checks.is_empty());
+
+        let checked = svc
+            .check_plugin_health("probe-plugin@builtin")
+            .unwrap()
+            .unwrap();
+
+        assert!(marker.exists(), "health check should run command probes");
+        assert!(checked.runtime_required);
+        assert!(checked.runtime_available);
+        assert_eq!(checked.health_status, PluginHealthStatus::Ready);
+        let state = svc.load_state().unwrap();
+        assert_eq!(
+            state.health_checks["probe-plugin@builtin"].status,
+            PluginHealthStatus::Ready
+        );
+
+        match original {
+            Some(value) => std::env::set_var(env_key, value),
+            None => std::env::remove_var(env_key),
+        }
+    }
+
     #[test]
     fn hook_command_script_is_validated_and_reported_as_entrypoint() {
         let tmp = tempfile::tempdir().unwrap();
@@ -9168,13 +9639,20 @@ rl.on('line', (line) => {
         let plugin = svc.read("hook-plugin@builtin").unwrap().unwrap();
 
         assert_eq!(plugin.execution_kind, PluginExecutionKind::DshSidecar);
-        assert_eq!(plugin.health_status, PluginHealthStatus::Ready);
+        assert_eq!(plugin.health_status, PluginHealthStatus::Unknown);
         assert!(plugin.runtime_required);
         assert!(plugin
             .entrypoints
             .iter()
             .any(|entrypoint| entrypoint.ends_with("scripts\\post.sh")
                 || entrypoint.ends_with("scripts/post.sh")));
+
+        let checked = svc
+            .check_plugin_health("hook-plugin@builtin")
+            .unwrap()
+            .unwrap();
+        assert_eq!(checked.health_status, PluginHealthStatus::Ready);
+        assert!(checked.runtime_available);
     }
 
     #[test]
@@ -9661,14 +10139,16 @@ rl.on('line', (line) => {
             .installed_at
             .clone();
 
+        std::thread::sleep(std::time::Duration::from_millis(20));
         write_plugin_with_version(&source, "demo", "0.2.0");
         let updated = svc.install_from_dir(&source).unwrap();
         assert_eq!(updated.version.as_deref(), Some("0.2.0"));
         assert_eq!(updated.id, installed.id, "the id must be stable");
         assert!(!updated.enabled, "updates must preserve disabled state");
-        assert_eq!(
+        assert_ne!(
             updated.last_health_check.as_deref(),
-            Some(checked_at.as_str())
+            Some(checked_at.as_str()),
+            "content-changing updates must not inherit a previous package's health check"
         );
 
         svc.runtime_projection().unwrap();
@@ -9686,8 +10166,8 @@ rl.on('line', (line) => {
                 .health_checks
                 .get(&installed.id)
                 .map(|health| health.checked_at.as_str()),
-            Some(checked_at.as_str()),
-            "recent health check state must survive a plugin update"
+            updated.last_health_check.as_deref(),
+            "content-changing updates must persist a fresh health check for the new package"
         );
     }
 
@@ -9836,6 +10316,29 @@ rl.on('line', (line) => {
         let disabled = svc.set_enabled("demo@builtin", false).unwrap();
         assert!(!disabled.enabled);
         assert!(svc.runtime_projection().unwrap().skill_roots.is_empty());
+    }
+
+    #[test]
+    fn set_enabled_invalidates_cached_runtime_projection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin(&roots.builtin.join("demo"), "demo");
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+
+        let stale_projection = svc.runtime_projection().unwrap();
+        assert_eq!(
+            stale_projection.skill_roots,
+            vec![roots.builtin.join("demo").join("skills")]
+        );
+        svc.store_runtime_projection_cache(stale_projection, Vec::new());
+
+        let disabled = svc.set_enabled("demo@builtin", false).unwrap();
+
+        assert!(!disabled.enabled);
+        assert!(
+            svc.runtime_projection().unwrap().skill_roots.is_empty(),
+            "set_enabled must invalidate runtime projection cache even when file snapshots still match"
+        );
     }
 
     #[test]
@@ -10973,11 +11476,26 @@ deepagent-definitely-missing-runtime-cli --version
         .unwrap();
         let installed = svc.install_from_marketplace("team", "demo").unwrap();
         assert!(!installed.update_available);
+        assert_eq!(installed.health_status, PluginHealthStatus::Ready);
+        assert_eq!(installed.state, PluginLifecycleState::Verified);
         svc.set_enabled("demo@team", false).unwrap();
         let original_state = svc.load_state().unwrap();
         let original_installed_at = original_state.installed["demo@team"].installed_at.clone();
+        assert_eq!(
+            original_state.health_checks["demo@team"].status,
+            PluginHealthStatus::Ready
+        );
 
         write_plugin_with_version(&plugin_source, "demo", "0.2.0");
+        std::fs::write(
+            plugin_source.join("README.md"),
+            r#"
+            ```sh
+            deepagent-definitely-missing-runtime-cli --version
+            ```
+            "#,
+        )
+        .unwrap();
         std::fs::write(
             marketplace_root.join("marketplace.json"),
             r#"{
@@ -10999,21 +11517,41 @@ deepagent-definitely-missing-runtime-cli --version
         assert!(entries[0].update_available);
         assert!(svc.read("demo@team").unwrap().unwrap().update_available);
 
+        let old_version = roots
+            .marketplace_cache
+            .join("team")
+            .join("demo")
+            .join("0.1.0");
+        let mut stale_projection = crate::plugin_runtime::PluginRuntimeProjection::default();
+        stale_projection
+            .skill_roots
+            .push(old_version.join("skills"));
+        svc.store_runtime_projection_cache(stale_projection, Vec::new());
+
         let updated = svc.update_plugin("demo@team").unwrap();
         assert_eq!(updated.version.as_deref(), Some("0.2.0"));
         assert!(!updated.enabled, "update should preserve disabled state");
         assert!(!updated.update_available);
+        assert_eq!(
+            updated.health_status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
+        assert_eq!(updated.state, PluginLifecycleState::Incomplete);
+        assert!(updated
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deepagent-definitely-missing-runtime-cli --version"));
 
         let state = svc.load_state().unwrap();
         let installed_state = &state.installed["demo@team"];
         assert_eq!(installed_state.version.as_deref(), Some("0.2.0"));
         assert_eq!(installed_state.installed_at, original_installed_at);
         assert!(installed_state.last_updated.is_some());
-        let old_version = roots
-            .marketplace_cache
-            .join("team")
-            .join("demo")
-            .join("0.1.0");
+        assert_eq!(
+            state.health_checks["demo@team"].status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
         let new_version = roots
             .marketplace_cache
             .join("team")
@@ -11642,9 +12180,9 @@ deepagent-definitely-missing-runtime-cli --version
                     "displayName": "Manifest Plugin",
                     "category": "Science"
                 },
-                "skills": "skills",
-                "commands": "commands",
-                "agents": "agents",
+                "skills": ["skills", "missing-skills"],
+                "commands": ["commands", "missing-commands"],
+                "agents": ["agents", "missing-agents"],
                 "hooks": "hooks.json",
                 "mcpServers": {
                     "demo": {
@@ -11653,8 +12191,8 @@ deepagent-definitely-missing-runtime-cli --version
                         "args": ["${PLUGIN_ROOT}/server.js"]
                     }
                 },
-                "apps": ".app.json",
-                "outputStyles": "output-styles"
+                "apps": [".app.json", "missing.app.json"],
+                "outputStyles": ["output-styles", "missing-output-styles"]
             }),
         );
         write_github_contents_directory_fixture(
@@ -11664,9 +12202,75 @@ deepagent-definitely-missing-runtime-cli --version
             commit,
             serde_json::json!([
                 { "type": "dir", "name": ".codex-plugin" },
+                { "type": "dir", "name": "skills" },
+                { "type": "dir", "name": "commands" },
+                { "type": "dir", "name": "agents" },
+                { "type": "file", "name": "hooks.json" },
+                { "type": "file", "name": ".app.json" },
+                { "type": "dir", "name": "output-styles" },
                 { "type": "dir", "name": "scripts" },
                 { "type": "file", "name": "package.json" }
             ]),
+        );
+        write_github_contents_directory_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "skills",
+            commit,
+            serde_json::json!([{ "type": "dir", "name": "planner" }]),
+        );
+        write_github_contents_directory_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "commands",
+            commit,
+            serde_json::json!([{ "type": "file", "name": "inspect.md" }]),
+        );
+        write_github_contents_directory_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "agents",
+            commit,
+            serde_json::json!([{ "type": "file", "name": "review.md" }]),
+        );
+        write_github_contents_manifest_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "hooks.json",
+            commit,
+            serde_json::json!({
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "Write",
+                            "hooks": [{ "type": "command", "command": "./scripts/check.sh" }]
+                        }
+                    ]
+                }
+            }),
+        );
+        write_github_contents_manifest_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            ".app.json",
+            commit,
+            serde_json::json!({
+                "apps": [
+                    {
+                        "id": "manifest-plugin-browser",
+                        "title": "Manifest Plugin Browser",
+                        "placement": "right-sidebar",
+                        "component": "builtin:browser"
+                    }
+                ]
+            }),
+        );
+        write_github_contents_directory_fixture(
+            &fixtures,
+            "deepseek-ai/repo-shell",
+            "output-styles",
+            commit,
+            serde_json::json!([{ "type": "file", "name": "brief.md" }]),
         );
 
         let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
