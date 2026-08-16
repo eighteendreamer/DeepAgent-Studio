@@ -27,20 +27,18 @@ use deepagent_app_core::{
     KnowledgeService, LocalPtyHandle, McpServerDto, McpService, NewRuntimeLogEntry, OfficeService,
     PdfRenderResultDto, PluginAppEntry, PluginDto, PluginMarketplaceDto, PluginMarketplaceEntryDto,
     PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto, PluginScanReportDto,
-    PluginService, PreparedPluginInstallDto, PreflightToolCallDto,
-    PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
-    ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
-    ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, RecordingService,
-    RecordingSessionDto, RewindResultDto, RuntimeLogEntry, RuntimeLogStore, RuntimeProgressDto,
-    RuntimeBroker, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxieExecutor,
-    SandboxieService,
-    SandboxieStatusDto, SecretStore, SessionDetailDto, SessionStateService, SessionSummaryDto,
-    SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
-    SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, StoredRunEvent,
+    PluginService, PreflightToolCallDto, PreparedPluginInstallDto, PreviewMetadataDto,
+    PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto,
+    ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto, ProjectMapRefreshDto,
+    ProjectMapService, ProjectMapStatusDto, ProjectService, ProjectTrustDto, RecordingService,
+    RecordingSessionDto, RewindResultDto, RuntimeBroker, RuntimeLogEntry, RuntimeLogStore,
+    RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxieExecutor,
+    SandboxieService, SandboxieStatusDto, SecretStore, SessionDetailDto, SessionStateService,
+    SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto,
+    SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, StoredRunEvent,
     TerminalResultDto, TerminalService, TerminalShell, TranscriptDto, TranscriptSegmentDto,
-    ProjectTrustDto, TrustService,
-    VisionRecognizeRequestDto, VisionRecognizeResultDto, VisionService, VisionSettings,
-    WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
+    TrustService, VisionRecognizeRequestDto, VisionRecognizeResultDto, VisionService,
+    VisionSettings, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
@@ -982,10 +980,8 @@ async fn test_anysearch_api_key(state: State<'_, AppState>) -> Result<AnySearchT
     let base_url = settings
         .anysearch_base_url
         .unwrap_or_else(|| "https://api.anysearch.com".to_string());
-    let client = ReqwestWebClient::with_search_chain(
-        Some(AnySearchConfig::new(Some(key), base_url)),
-        None,
-    );
+    let client =
+        ReqwestWebClient::with_search_chain(Some(AnySearchConfig::new(Some(key), base_url)), None);
     match client.search_response("test", 1).await {
         Ok(resp) => Ok(AnySearchTestResult {
             ok: true,
@@ -1118,11 +1114,13 @@ fn activate_skill(
 
 // ---- plugin commands ------------------------------------------------------
 
+fn list_plugins_for_display(plugins: &PluginService) -> Result<Vec<PluginDto>, String> {
+    plugins.list().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn list_plugins(state: State<'_, AppState>) -> Result<Vec<PluginDto>, String> {
-    let plugins = state.plugins.list().map_err(|e| e.to_string())?;
-    sync_plugin_skill_roots(state.inner())?;
-    Ok(plugins)
+    list_plugins_for_display(&state.plugins)
 }
 
 #[tauri::command]
@@ -2166,7 +2164,10 @@ fn set_thinking_depth(state: State<'_, AppState>, depth: String) -> Result<Setti
 }
 
 #[tauri::command]
-fn set_responses_developer_json(state: State<'_, AppState>, json: String) -> Result<SettingsView, String> {
+fn set_responses_developer_json(
+    state: State<'_, AppState>,
+    json: String,
+) -> Result<SettingsView, String> {
     match state.settings.set_responses_developer_json(&json) {
         Ok(view) => {
             log_responses_ineffective_settings(state.inner(), &view.responses.ineffective);
@@ -2180,12 +2181,20 @@ fn set_responses_developer_json(state: State<'_, AppState>, json: String) -> Res
 }
 
 #[tauri::command]
-fn get_responses_settings(state: State<'_, AppState>) -> Result<deepagent_app_core::settings::ResponsesApiSettings, String> {
-    state.settings.responses_settings().map_err(|e| e.to_string())
+fn get_responses_settings(
+    state: State<'_, AppState>,
+) -> Result<deepagent_app_core::settings::ResponsesApiSettings, String> {
+    state
+        .settings
+        .responses_settings()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn set_responses_settings(state: State<'_, AppState>, settings: deepagent_app_core::settings::ResponsesApiSettings) -> Result<SettingsView, String> {
+fn set_responses_settings(
+    state: State<'_, AppState>,
+    settings: deepagent_app_core::settings::ResponsesApiSettings,
+) -> Result<SettingsView, String> {
     match state.settings.set_responses_settings(settings) {
         Ok(view) => {
             log_responses_ineffective_settings(state.inner(), &view.responses.ineffective);
@@ -5733,11 +5742,67 @@ mod tests {
     #[test]
     fn preferred_plugin_install_dir_falls_back_to_exe_parent() {
         let tmp = tempfile::tempdir().unwrap();
-        let current_exe = tmp.path().join("DeepAgent").join("bin").join("deepagent.exe");
+        let current_exe = tmp
+            .path()
+            .join("DeepAgent")
+            .join("bin")
+            .join("deepagent.exe");
 
         let picked = preferred_plugin_install_dir_from(None, Some(&current_exe));
 
-        assert_eq!(picked, tmp.path().join("DeepAgent").join("bin").join("plugins"));
+        assert_eq!(
+            picked,
+            tmp.path().join("DeepAgent").join("bin").join("plugins")
+        );
+    }
+
+    #[test]
+    fn list_plugins_for_display_does_not_prepare_runtime_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_root = tmp.path().join("builtin").join("runtime-demo");
+        fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
+        fs::create_dir_all(plugin_root.join("skills")).unwrap();
+        fs::write(
+            plugin_root.join(".codex-plugin").join("plugin.json"),
+            r#"{"name":"runtime-demo","version":"0.1.0","runtime":{"node":">=20"},"skills":"skills"}"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin_root.join("skills").join("SKILL.md"),
+            "---\nname: demo\n---\nDemo",
+        )
+        .unwrap();
+        let runtime_zip = fs::File::create(plugin_root.join("runtime.zip")).unwrap();
+        let mut zip = zip::ZipWriter::new(runtime_zip);
+        let opts = zip::write::FileOptions::default();
+        zip.start_file("package.json", opts).unwrap();
+        std::io::Write::write_all(
+            &mut zip,
+            br#"{"name":"runtime-demo","bin":{"runtime-demo":"dist/cli.js"}}"#,
+        )
+        .unwrap();
+        zip.start_file("dist/cli.js", opts).unwrap();
+        std::io::Write::write_all(&mut zip, b"console.log('ok')\n").unwrap();
+        zip.finish().unwrap();
+
+        let roots = PluginRoots {
+            session: Vec::new(),
+            builtin: tmp.path().join("builtin"),
+            workspace: None,
+            personal: tmp.path().join("personal"),
+            marketplace_cache: tmp.path().join("cache"),
+            marketplaces: tmp.path().join("marketplaces"),
+        };
+        let plugin_service = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let plugins = list_plugins_for_display(&plugin_service).unwrap();
+
+        assert_eq!(plugins.len(), 1);
+        assert!(plugins[0].has_runtime_payload);
+        assert!(
+            !tmp.path().join("app-data").join("plugins").join("data").exists(),
+            "displaying the plugin list must not create plugin data dirs or unpack runtime payloads"
+        );
     }
 
     /// Production layout takes priority even when a flattened or `_up_/`
