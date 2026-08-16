@@ -1429,17 +1429,7 @@ async fn install_plugin_from_marketplace(
     scan_confirmed: Option<bool>,
     auth_confirmed: Option<bool>,
 ) -> Result<PluginDto, String> {
-    let plugins = Arc::clone(&state.plugins);
-    let marketplace_for_task = marketplace.clone();
-    let plugin_for_task = plugin.clone();
-    let report = tauri::async_runtime::spawn_blocking(move || {
-        plugins
-            .scan_marketplace_plugin(&marketplace_for_task, &plugin_for_task)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    ensure_plugin_scan_allowed(&report, scan_confirmed.unwrap_or(false))?;
+    let _ = scan_confirmed;
     let plugins = Arc::clone(&state.plugins);
     let plugin = tauri::async_runtime::spawn_blocking(move || {
         plugins

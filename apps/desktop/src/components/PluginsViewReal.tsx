@@ -5,8 +5,9 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import {
   createPlugin,
+  cancelPluginInstall,
+  commitPluginInstall,
   installPluginFromDir,
-  installPluginFromMarketplace,
   installPluginFromZip,
   isTauri,
   listPluginMarketplaceEntries,
@@ -15,13 +16,12 @@ import {
   listPlugins,
   refreshPluginMarketplace,
   removePluginMarketplace,
+  preparePluginInstall,
   scanPlugin,
-  scanPluginMarketplace,
   scanPluginZip,
   searchPluginMarketplaceEntries,
   setPluginEnabled,
   uninstallPlugin,
-  updatePlugin,
 } from "../api";
 import type {
   CreatePluginDraft,
@@ -54,6 +54,7 @@ type PendingScanAction = {
   report: PluginScanReport;
   authenticationHint?: string | null;
   onConfirm: () => Promise<void>;
+  onCancel?: () => Promise<void>;
 };
 
 type PendingConfirmAction = {
@@ -366,6 +367,19 @@ export function PluginsView() {
     }
   };
 
+  const closeScanDialog = async () => {
+    if (!scanDialog || scanBusy) return;
+    const action = scanDialog;
+    setScanDialog(null);
+    if (action.onCancel) {
+      try {
+        await action.onCancel();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    }
+  };
+
   const confirmActionDialog = async () => {
     if (!confirmDialog) return;
     setConfirmBusy(true);
@@ -447,9 +461,14 @@ export function PluginsView() {
     setBusyId(`${entry.marketplace}:${entry.name}`);
     setError(null);
     try {
-      const report = await scanPluginMarketplace(entry.marketplace, entry.name);
       const updating = entry.installed && entry.update_available;
       const authRequired = entry.authentication_required;
+      const prepared = await preparePluginInstall(
+        entry.marketplace,
+        entry.name,
+        authRequired,
+      );
+      const report = prepared.scan_report;
       openScanDialog({
         title: `${updating ? "更新" : "安装"} ${entry.display_name}`,
         submitLabel: highRiskCount(report) > 0
@@ -465,21 +484,13 @@ export function PluginsView() {
             `安装时需要认证: ${entry.policy_authentication || "ON_INSTALL"}`
           : null,
         onConfirm: async () => {
-          const plugin = updating
-            ? await updatePlugin(
-                `${entry.name}@${entry.marketplace}`,
-                true,
-                authRequired,
-              )
-            : await installPluginFromMarketplace(
-                entry.marketplace,
-                entry.name,
-                true,
-                authRequired,
-              );
+          const plugin = await commitPluginInstall(prepared.token);
           await load();
           setSelectedId(plugin.id);
           setOrigin("marketplace");
+        },
+        onCancel: async () => {
+          await cancelPluginInstall(prepared.token);
         },
       });
     } catch (err) {
@@ -495,11 +506,16 @@ export function PluginsView() {
     setBusyId(plugin.id);
     setError(null);
     try {
-      const report = await scanPluginMarketplace(marketplace, plugin.name);
       const entry = marketplaceEntries.find(
         (item) => item.marketplace === marketplace && item.name === plugin.name,
       );
       const authRequired = Boolean(entry?.authentication_required);
+      const prepared = await preparePluginInstall(
+        marketplace,
+        plugin.name,
+        authRequired,
+      );
+      const report = prepared.scan_report;
       openScanDialog({
         title: `更新 ${plugin.display_name}`,
         submitLabel: highRiskCount(report) > 0 ? "继续更新" : "更新插件",
@@ -509,10 +525,13 @@ export function PluginsView() {
             `更新时需要认证: ${entry?.policy_authentication || "ON_INSTALL"}`
           : null,
         onConfirm: async () => {
-          const updated = await updatePlugin(plugin.id, true, authRequired);
+          const updated = await commitPluginInstall(prepared.token);
           await load();
           setSelectedId(updated.id);
           setOrigin("marketplace");
+        },
+        onCancel: async () => {
+          await cancelPluginInstall(prepared.token);
         },
       });
     } catch (err) {
@@ -686,9 +705,7 @@ export function PluginsView() {
         <PluginScanDialog
           action={scanDialog}
           busy={scanBusy}
-          onClose={() => {
-            if (!scanBusy) setScanDialog(null);
-          }}
+          onClose={closeScanDialog}
           onConfirm={confirmScanDialog}
         />
       )}

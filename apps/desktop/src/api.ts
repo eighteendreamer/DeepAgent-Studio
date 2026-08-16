@@ -47,6 +47,7 @@ import type {
   PermissionPresetVisibility,
   PermissionRules,
   PersistedAttachment,
+  PreparedPluginInstall,
   CreatePluginDraft,
   Plugin,
   PluginApp,
@@ -780,6 +781,40 @@ export async function scanPluginMarketplace(
     risks: [],
     errors: ["desktop runtime is unavailable"],
   };
+}
+
+export async function preparePluginInstall(
+  marketplace: string,
+  plugin: string,
+  authConfirmed = false
+): Promise<PreparedPluginInstall> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<PreparedPluginInstall>("prepare_plugin_install", {
+      marketplace,
+      plugin,
+      authConfirmed,
+    });
+  }
+  throw new Error("plugin marketplace prepare requires the desktop app");
+}
+
+export async function commitPluginInstall(token: string): Promise<Plugin> {
+  const invoke = getInvoke();
+  if (invoke) {
+    const installed = await invoke<Plugin>("commit_plugin_install", { token });
+    emitPluginsChanged();
+    return installed;
+  }
+  throw new Error("plugin marketplace commit requires the desktop app");
+}
+
+export async function cancelPluginInstall(token: string): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<boolean>("cancel_plugin_install", { token });
+  }
+  return false;
 }
 
 export async function installPluginFromMarketplace(

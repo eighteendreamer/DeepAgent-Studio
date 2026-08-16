@@ -210,8 +210,10 @@ pub enum PluginMarketplaceSource {
     },
     Npm {
         package: String,
-        version: Option<String>,
+        version: String,
         registry: Option<String>,
+        integrity: Option<String>,
+        sha256: Option<String>,
         display: String,
     },
     Unsupported {
@@ -275,6 +277,14 @@ impl PluginMarketplaceSource {
                 sha256: Some(sha256),
                 ..
             } => Some(format!("sha256:{sha256}")),
+            Self::Npm {
+                sha256: Some(sha256),
+                ..
+            } => Some(format!("sha256:{sha256}")),
+            Self::Npm {
+                integrity: Some(integrity),
+                ..
+            } => Some(integrity.clone()),
             Self::Local { .. }
             | Self::Git { .. }
             | Self::GitHub { .. }
@@ -699,11 +709,19 @@ fn npm_source(mut object: BTreeMap<String, serde_json::Value>) -> Result<PluginM
         .ok_or_else(|| CoreError::invalid("npm marketplace source missing package"))?;
     let version = string_field(&mut object, "version");
     let registry = string_field(&mut object, "registry");
-    let display = match &version {
-        Some(version) => format!("{package}@{version}"),
-        None => package.clone(),
-    };
-    if let Err(error) = validate_npm_source(&package, version.as_deref(), registry.as_deref()) {
+    let integrity = string_field(&mut object, "integrity");
+    let sha256 = string_field(&mut object, "sha256");
+    let display = version
+        .as_ref()
+        .map(|version| format!("{package}@{version}"))
+        .unwrap_or_else(|| package.clone());
+    if let Err(error) = validate_npm_source(
+        &package,
+        version.as_deref(),
+        registry.as_deref(),
+        integrity.as_deref(),
+        sha256.as_deref(),
+    ) {
         return Ok(PluginMarketplaceSource::Unsupported {
             kind: "npm".to_string(),
             display: format!("{display} ({error})"),
@@ -711,8 +729,10 @@ fn npm_source(mut object: BTreeMap<String, serde_json::Value>) -> Result<PluginM
     }
     Ok(PluginMarketplaceSource::Npm {
         package,
-        version,
+        version: version.unwrap_or_default(),
         registry,
+        integrity,
+        sha256,
         display,
     })
 }
@@ -883,13 +903,31 @@ fn validate_git_sha(sha: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_npm_source(package: &str, version: Option<&str>, registry: Option<&str>) -> Result<()> {
+fn validate_npm_source(
+    package: &str,
+    version: Option<&str>,
+    registry: Option<&str>,
+    integrity: Option<&str>,
+    sha256: Option<&str>,
+) -> Result<()> {
     validate_npm_package(package)?;
-    if let Some(version) = version {
-        validate_npm_version(version)?;
-    }
+    let version =
+        version.ok_or_else(|| CoreError::invalid("npm marketplace source missing version"))?;
+    validate_npm_version(version)?;
     if let Some(registry) = registry {
         validate_npm_registry(registry)?;
+    }
+    match (integrity, sha256) {
+        (None, None) => {
+            return Err(CoreError::invalid(
+                "npm marketplace source missing integrity or sha256",
+            ))
+        }
+        (Some(integrity), _) => validate_npm_integrity(integrity)?,
+        (None, Some(sha256)) => validate_sha256_hex(sha256)?,
+    }
+    if let Some(sha256) = sha256 {
+        validate_sha256_hex(sha256)?;
     }
     Ok(())
 }
@@ -922,6 +960,9 @@ fn validate_npm_version(version: &str) -> Result<()> {
         || version == ".."
         || version.contains(['/', '\\', '@', ':'])
         || has_whitespace_or_control(version)
+        || version
+            .chars()
+            .any(|ch| matches!(ch, '^' | '~' | '*' | '<' | '>' | '='))
     {
         return Err(CoreError::invalid(format!(
             "invalid npm marketplace package version: {version}"
@@ -937,6 +978,30 @@ fn validate_npm_version(version: &str) -> Result<()> {
         return Err(CoreError::invalid(format!(
             "invalid npm marketplace package version: {version}"
         )));
+    }
+    Ok(())
+}
+
+fn validate_npm_integrity(integrity: &str) -> Result<()> {
+    let integrity = integrity.trim();
+    let Some((algorithm, digest)) = integrity.split_once('-') else {
+        return Err(CoreError::invalid("invalid npm marketplace integrity"));
+    };
+    if !matches!(algorithm, "sha256" | "sha384" | "sha512") || digest.is_empty() {
+        return Err(CoreError::invalid("invalid npm marketplace integrity"));
+    }
+    if digest
+        .chars()
+        .any(|ch| !(ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=')))
+    {
+        return Err(CoreError::invalid("invalid npm marketplace integrity"));
+    }
+    Ok(())
+}
+
+fn validate_sha256_hex(value: &str) -> Result<()> {
+    if !is_sha256_hex(value) {
+        return Err(CoreError::invalid(format!("invalid sha256: {value}")));
     }
     Ok(())
 }
@@ -1306,7 +1371,8 @@ mod tests {
                     "source": "npm",
                     "package": "@scope/plugin",
                     "version": "1.2.3",
-                    "registry": "https://registry.npmjs.org"
+                    "registry": "https://registry.npmjs.org",
+                    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                   }
                 },
                 {
@@ -1405,6 +1471,14 @@ mod tests {
                   }
                 },
                 {
+                  "name": "missing-npm-integrity",
+                  "source": {
+                    "source": "npm",
+                    "package": "@scope/plugin",
+                    "version": "1.2.3"
+                  }
+                },
+                {
                   "name": "bad-npm-registry",
                   "source": {
                     "source": "npm",
@@ -1439,16 +1513,18 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(unsupported.len(), 4);
+        assert_eq!(unsupported.len(), 5);
         assert_eq!(unsupported[0].0, "insecure-git");
         assert_eq!(unsupported[0].1, "git");
         assert!(unsupported[0].2.contains("must use https"));
         assert_eq!(unsupported[1].1, "git-subdir");
         assert!(unsupported[1].2.contains("must use https"));
         assert_eq!(unsupported[2].1, "npm");
-        assert!(unsupported[2].2.contains("registry must use https"));
+        assert!(unsupported[2].2.contains("missing integrity or sha256"));
         assert_eq!(unsupported[3].1, "npm");
-        assert!(unsupported[3].2.contains("invalid npm marketplace package"));
+        assert!(unsupported[3].2.contains("registry must use https"));
+        assert_eq!(unsupported[4].1, "npm");
+        assert!(unsupported[4].2.contains("invalid npm marketplace package"));
         assert!(catalog
             .entries
             .iter()

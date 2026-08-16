@@ -16,16 +16,13 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_mcp::config::{McpConfig, McpServerConfig, TransportType};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use crate::plugin::dialect::{
     resolve_presentation, InterfaceSource, MarketplaceSource, PortableSource, Presentation,
     PresentationSources,
 };
 use crate::plugin::model::ResolvedPlugin;
-use crate::plugin::spec::schema::{
-    AGENT_PLUGIN_MANIFEST_RELATIVE_PATH, DISCOVERABLE_MANIFEST_PATHS,
-};
 use crate::plugin::spec::{normalize_and_expand, resolve_existing_within, resolve_plugin_relative};
 use crate::plugin_dependency::{
     find_reverse_dependents, verify_plugin_dependencies, PluginDependencyOutcome,
@@ -34,12 +31,13 @@ use crate::plugin_loader::{
     load_plugins, plugin_id, LoadedPlugin, PluginLoadError, PluginOrigin, PluginRoots,
 };
 use crate::plugin_manifest::{find_plugin_manifest_path, load_plugin_manifest, PluginManifest};
+#[cfg(test)]
+use crate::plugin_marketplace::PluginMarketplaceRuntimeSummary;
 use crate::plugin_marketplace::{
     find_marketplace_manifest_path, load_marketplace_catalog, marketplace_root_from_manifest,
-    normalize_marketplace_name, slugify, AddPluginMarketplaceDto,
-    PluginMarketplaceComponentSummary, PluginMarketplaceDto, PluginMarketplaceEntriesQueryDto,
-    PluginMarketplaceEntry, PluginMarketplaceEntryDto, PluginMarketplacePageDto,
-    PluginMarketplaceRuntimeSummary, PluginMarketplaceSource,
+    normalize_marketplace_name, slugify, AddPluginMarketplaceDto, PluginMarketplaceDto,
+    PluginMarketplaceEntriesQueryDto, PluginMarketplaceEntry, PluginMarketplaceEntryDto,
+    PluginMarketplacePageDto, PluginMarketplaceSource,
 };
 use crate::plugin_runtime::{EnabledPluginRuntimeInput, PluginRuntimeProjection};
 use crate::plugin_security::{
@@ -58,6 +56,8 @@ const DSH_SIDECAR_MCP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const GITHUB_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const GITHUB_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const MAX_PLUGIN_ARCHIVE_ENTRIES: usize = 10_000;
+const MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginSourceDto {
@@ -387,137 +387,7 @@ impl PluginComponentCounts {
     }
 }
 
-fn marketplace_component_summary_from_manifest(
-    manifest: &PluginManifest,
-) -> PluginMarketplaceComponentSummary {
-    PluginMarketplaceComponentSummary {
-        skills: manifest.paths.skills.len() as u32,
-        commands: manifest.paths.commands.len() as u32,
-        agents: manifest.paths.agents.len() as u32,
-        hooks: manifest.paths.hook_paths.len() as u32
-            + inline_object_count(manifest.paths.hooks_inline.as_ref()),
-        mcp: manifest.paths.mcp_server_paths.len() as u32
-            + inline_object_count(manifest.paths.mcp_servers_inline.as_ref()),
-        apps: manifest.paths.app_paths.len() as u32,
-        output_styles: manifest.paths.output_styles.len() as u32,
-    }
-}
-
-fn github_topic_component_summary(
-    full_name: &str,
-    commit: &str,
-    metadata: &GitHubTopicManifestMetadata,
-    scratch: &Path,
-) -> PluginMarketplaceComponentSummary {
-    let manifest = &metadata.manifest;
-    PluginMarketplaceComponentSummary {
-        skills: github_topic_existing_component_path_count(
-            full_name,
-            commit,
-            metadata,
-            scratch,
-            &manifest.paths.skills,
-        ),
-        commands: github_topic_existing_component_path_count(
-            full_name,
-            commit,
-            metadata,
-            scratch,
-            &manifest.paths.commands,
-        ),
-        agents: github_topic_existing_component_path_count(
-            full_name,
-            commit,
-            metadata,
-            scratch,
-            &manifest.paths.agents,
-        ),
-        hooks: inline_object_count(manifest.paths.hooks_inline.as_ref())
-            + github_topic_existing_component_path_count(
-                full_name,
-                commit,
-                metadata,
-                scratch,
-                &manifest.paths.hook_paths,
-            ),
-        mcp: inline_object_count(manifest.paths.mcp_servers_inline.as_ref())
-            + github_topic_existing_component_path_count(
-                full_name,
-                commit,
-                metadata,
-                scratch,
-                &manifest.paths.mcp_server_paths,
-            ),
-        apps: github_topic_existing_component_path_count(
-            full_name,
-            commit,
-            metadata,
-            scratch,
-            &manifest.paths.app_paths,
-        ),
-        output_styles: github_topic_existing_component_path_count(
-            full_name,
-            commit,
-            metadata,
-            scratch,
-            &manifest.paths.output_styles,
-        ),
-    }
-}
-
-fn github_topic_existing_component_path_count(
-    full_name: &str,
-    commit: &str,
-    metadata: &GitHubTopicManifestMetadata,
-    scratch: &Path,
-    paths: &[PathBuf],
-) -> u32 {
-    paths
-        .iter()
-        .filter(|path| {
-            github_topic_component_path_exists(full_name, commit, metadata, scratch, path)
-        })
-        .count() as u32
-}
-
-fn github_topic_component_path_exists(
-    full_name: &str,
-    commit: &str,
-    metadata: &GitHubTopicManifestMetadata,
-    scratch: &Path,
-    path: &Path,
-) -> bool {
-    let Ok(relative_path) = path.strip_prefix(&metadata.root) else {
-        return false;
-    };
-    let relative_path = relative_path.to_string_lossy().replace('\\', "/");
-    if relative_path.trim().is_empty() {
-        return false;
-    }
-    let endpoint = format!(
-        "/repos/{}/contents/{}?ref={}",
-        full_name,
-        percent_encode_content_path(&relative_path),
-        percent_encode_query_value(commit)
-    );
-    let text = match download_github_api_json(
-        &endpoint,
-        scratch,
-        &format!(
-            "{}-{}-component-summary",
-            full_name.replace('/', "-"),
-            relative_path.replace('/', "-")
-        ),
-    ) {
-        Ok(text) => text,
-        Err(_) => return false,
-    };
-    if let Ok(contents) = serde_json::from_str::<GitHubContentResponse>(&text) {
-        return matches!(contents.kind.as_deref(), Some("file" | "dir"));
-    }
-    serde_json::from_str::<Vec<GitHubContentDirectoryEntry>>(&text).is_ok()
-}
-
+#[cfg(test)]
 fn marketplace_runtime_summary_from_manifest(
     manifest: &PluginManifest,
 ) -> PluginMarketplaceRuntimeSummary {
@@ -543,6 +413,7 @@ fn marketplace_runtime_summary_from_manifest(
     }
 }
 
+#[cfg(test)]
 fn extend_runtime_requirements_from_mcp_value(
     requirements: &mut BTreeSet<String>,
     value: Option<&serde_json::Value>,
@@ -559,6 +430,7 @@ fn extend_runtime_requirements_from_mcp_value(
     extend_runtime_requirements_from_mcp_config(requirements, &config);
 }
 
+#[cfg(test)]
 fn extend_runtime_requirements_from_mcp_config(
     requirements: &mut BTreeSet<String>,
     config: &McpConfig,
@@ -622,44 +494,9 @@ fn mcp_command_runtime_requirement(command: &str) -> Option<&'static str> {
     }
 }
 
-fn merge_marketplace_runtime_summary(
-    mut base: PluginMarketplaceRuntimeSummary,
-    extra: PluginMarketplaceRuntimeSummary,
-) -> PluginMarketplaceRuntimeSummary {
-    base.requirements.extend(extra.requirements);
-    base.requirements.sort();
-    base.requirements.dedup();
-    base.has_runtime_payload |= extra.has_runtime_payload;
-    base.required |= extra.required || !base.requirements.is_empty() || base.has_runtime_payload;
-    base
-}
-
+#[cfg(test)]
 fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
-}
-
-fn marketplace_component_summary_json(
-    summary: PluginMarketplaceComponentSummary,
-) -> serde_json::Value {
-    serde_json::json!({
-        "skills": summary.skills,
-        "commands": summary.commands,
-        "agents": summary.agents,
-        "hooks": summary.hooks,
-        "mcp": summary.mcp,
-        "apps": summary.apps,
-        "outputStyles": summary.output_styles
-    })
-}
-
-fn marketplace_runtime_summary_json(
-    summary: &PluginMarketplaceRuntimeSummary,
-) -> serde_json::Value {
-    serde_json::json!({
-        "required": summary.required,
-        "requirements": summary.requirements,
-        "hasRuntimePayload": summary.has_runtime_payload
-    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1502,6 +1339,7 @@ impl PluginService {
         plugin: &str,
     ) -> Result<PluginScanReportDto> {
         let (marketplace_key, entry) = self.marketplace_entry(marketplace, plugin)?;
+        let entry = self.pin_marketplace_entry_for_install(&marketplace_key, entry)?;
         ensure_marketplace_entry_installable(&marketplace_key, &entry)?;
         let materialized = self.materialize_marketplace_plugin_source(&marketplace_key, &entry)?;
         scan_plugin_dir(materialized.plugin_root())
@@ -1515,6 +1353,7 @@ impl PluginService {
     ) -> Result<PreparedPluginInstallDto> {
         let marketplace_key = slugify(marketplace);
         let (_, entry) = self.marketplace_entry(&marketplace_key, plugin)?;
+        let entry = self.pin_marketplace_entry_for_install(&marketplace_key, entry)?;
         ensure_marketplace_entry_installable(&marketplace_key, &entry)?;
         ensure_marketplace_authentication_confirmed(
             &marketplace_key,
@@ -1935,6 +1774,7 @@ impl PluginService {
         stack: &mut Vec<String>,
     ) -> Result<PluginDto> {
         let (_, entry) = self.marketplace_entry(marketplace_key, plugin)?;
+        let entry = self.pin_marketplace_entry_for_install(marketplace_key, entry)?;
         ensure_marketplace_entry_installable(marketplace_key, &entry)?;
         ensure_marketplace_authentication_confirmed(
             marketplace_key,
@@ -3382,6 +3222,8 @@ impl PluginService {
                 package,
                 version,
                 registry,
+                integrity,
+                sha256,
                 ..
             } => self.materialize_marketplace_plugin_in_staging(
                 marketplace,
@@ -3389,8 +3231,10 @@ impl PluginService {
                 |staging| {
                     materialize_npm_plugin(
                         package,
-                        version.as_deref(),
+                        version,
                         registry.as_deref(),
+                        integrity.as_deref(),
+                        sha256.as_deref(),
                         staging,
                     )
                 },
@@ -3399,6 +3243,49 @@ impl PluginService {
                 "marketplace source '{kind}' is not supported"
             ))),
         }
+    }
+
+    fn pin_marketplace_entry_for_install(
+        &self,
+        marketplace: &str,
+        mut entry: PluginMarketplaceEntry,
+    ) -> Result<PluginMarketplaceEntry> {
+        match &mut entry.source {
+            PluginMarketplaceSource::Git { sha, .. }
+            | PluginMarketplaceSource::GitSubdir { sha, .. }
+                if sha.as_deref().is_none() =>
+            {
+                return Err(CoreError::invalid(format!(
+                    "plugin '{}' in marketplace '{}' uses an unpinned git source; add a commit sha before installing",
+                    entry.name, marketplace
+                )));
+            }
+            PluginMarketplaceSource::GitHub {
+                repo,
+                ref_name,
+                sha,
+                display,
+                path,
+            } if sha.as_deref().is_none() => {
+                let ref_name = ref_name.clone().unwrap_or_else(|| "main".to_string());
+                let commit = if is_git_sha(&ref_name) {
+                    ref_name.clone()
+                } else {
+                    let scratch = self
+                        .roots
+                        .marketplaces
+                        .join(marketplace)
+                        .join(".github-api");
+                    let result = resolve_github_ref_commit(repo, &ref_name, &scratch);
+                    let _ = remove_dir_all_with_retry(&scratch);
+                    result?
+                };
+                *sha = Some(commit);
+                *display = marketplace_remote_display(repo, path.as_deref(), Some(&ref_name));
+            }
+            _ => {}
+        }
+        Ok(entry)
     }
 
     fn materialize_marketplace_plugin_in_staging(
@@ -3521,40 +3408,36 @@ impl PluginService {
         }
 
         if let Some(topic) = github_topic_from_source(source) {
-            return materialize_github_topic_marketplace(name, &topic, &registry_dir);
+            return materialize_github_topic_marketplace_page(
+                name,
+                &topic,
+                "",
+                1,
+                100,
+                &registry_dir,
+            )
+            .map(|(materialized, _, _)| materialized);
         }
 
         if source.starts_with("npm:") {
-            let package = source.trim_start_matches("npm:").trim();
-            if package.is_empty() {
-                return Err(CoreError::invalid("npm marketplace source missing package"));
-            }
-            let checkout = registry_dir.join("source");
-            remove_managed_child_dir(&registry_dir, &checkout)?;
-            std::fs::create_dir_all(&checkout).map_err(|e| {
-                CoreError::Persistence(format!(
-                    "create npm marketplace source dir {}: {e}",
-                    checkout.display()
-                ))
-            })?;
-            let package_root = materialize_npm_plugin(package, None, None, &checkout)?;
-            let source_root = resolve_marketplace_root(&package_root)?;
-            let manifest_path = find_marketplace_manifest_path(&source_root).ok_or_else(|| {
-                CoreError::invalid(format!(
-                    "marketplace manifest not found in npm package {}",
-                    package
-                ))
-            })?;
-            return snapshot_marketplace_manifest(name, &registry_dir, &manifest_path);
+            return Err(CoreError::invalid(
+                "npm marketplace sources require immutable integrity metadata; use a checked local manifest or zip URL with sha256",
+            ));
         }
 
-        if is_http_url(source) && source.ends_with(".json") {
+        let (checked_source, source_sha256) = split_checked_http_source(source)?;
+
+        if is_http_url(&checked_source) && checked_source.ends_with(".json") {
+            let expected_sha256 = source_sha256.ok_or_else(|| {
+                CoreError::invalid("remote marketplace JSON refresh requires #sha256=<hex>")
+            })?;
             let snapshot_path = registry_dir.join("marketplace.json");
-            download_file(source, &snapshot_path)?;
+            download_file(&checked_source, &snapshot_path)?;
+            verify_sha256_file(&snapshot_path, &expected_sha256)?;
             let catalog = load_marketplace_catalog(&snapshot_path)?;
             tracing::debug!(
                 marketplace = name,
-                source = source,
+                source = checked_source,
                 entries = catalog.entries.len(),
                 "downloaded plugin marketplace manifest"
             );
@@ -3564,11 +3447,15 @@ impl PluginService {
             });
         }
 
-        if is_http_url(source) && source.ends_with(".zip") {
+        if is_http_url(&checked_source) && checked_source.ends_with(".zip") {
+            let expected_sha256 = source_sha256.ok_or_else(|| {
+                CoreError::invalid("remote marketplace ZIP refresh requires #sha256=<hex>")
+            })?;
             let archive = registry_dir.join("marketplace.zip");
             let unpacked = registry_dir.join("source");
             remove_managed_child_dir(&registry_dir, &unpacked)?;
-            download_file(source, &archive)?;
+            download_file(&checked_source, &archive)?;
+            verify_sha256_file(&archive, &expected_sha256)?;
             extract_zip_into(&archive, &unpacked)?;
             let source_root = match sparse_path {
                 Some(path) => safe_join_materialized_subdir(&unpacked, path)?,
@@ -3576,7 +3463,7 @@ impl PluginService {
             };
             let manifest_path = find_marketplace_manifest_path(&source_root).ok_or_else(|| {
                 CoreError::invalid(format!(
-                    "marketplace manifest not found in zip source {source}"
+                    "marketplace manifest not found in zip source {checked_source}"
                 ))
             })?;
             return snapshot_marketplace_manifest(name, &registry_dir, &manifest_path);
@@ -4512,6 +4399,15 @@ fn marketplace_entry_install_block_reason(entry: &PluginMarketplaceEntry) -> Opt
     if let Some(error) = marketplace_source_kind_policy_error(entry.source.kind()) {
         return Some(error);
     }
+    match &entry.source {
+        PluginMarketplaceSource::Git { sha, .. }
+        | PluginMarketplaceSource::GitSubdir { sha, .. }
+            if sha.as_deref().is_none() =>
+        {
+            return Some("git source requires a pinned commit sha".to_string());
+        }
+        _ => {}
+    }
     if marketplace_policy_not_available(entry.policy_installation.as_deref()) {
         return Some(format!(
             "marketplace policy marks this plugin as not available for install ({})",
@@ -4653,193 +4549,6 @@ fn marketplace_dependency_id(
         name,
         marketplace,
     })
-}
-
-fn materialize_github_topic_marketplace(
-    name: &str,
-    topic: &str,
-    registry_dir: &Path,
-) -> Result<MaterializedMarketplace> {
-    let scratch = registry_dir.join(".github-api");
-    let snapshot_path = registry_dir.join("marketplace.json");
-    let result = (|| {
-        let search_endpoint = format!(
-            "/search/repositories?q={}&sort=updated&order=desc&per_page=100",
-            percent_encode_query_value(&format!("topic:{topic}"))
-        );
-        let search_text = download_github_api_json(&search_endpoint, &scratch, "topic-search")?;
-        let search: GitHubSearchRepositoriesResponse = serde_json::from_str(&search_text)
-            .map_err(|e| CoreError::invalid(format!("parse GitHub topic response: {e}")))?;
-        let mut used_names = BTreeSet::new();
-        let mut plugins = Vec::new();
-        for repo in search.items {
-            let Some(full_name) = trimmed_string(repo.full_name) else {
-                continue;
-            };
-            if full_name.split('/').count() != 2 {
-                continue;
-            }
-            let default_branch = repo
-                .default_branch
-                .and_then(trimmed_string)
-                .unwrap_or_else(|| "main".to_string());
-            let branch_endpoint = format!(
-                "/repos/{}/branches/{}",
-                full_name,
-                percent_encode_path_segment(&default_branch)
-            );
-            let branch_text = download_github_api_json(
-                &branch_endpoint,
-                &scratch,
-                &format!("{}-{default_branch}", full_name.replace('/', "-")),
-            )?;
-            let branch: GitHubBranchResponse = serde_json::from_str(&branch_text)
-                .map_err(|e| CoreError::invalid(format!("parse GitHub branch response: {e}")))?;
-            let commit = trimmed_string(branch.commit.sha)
-                .filter(|sha| is_git_sha(sha))
-                .ok_or_else(|| {
-                    CoreError::invalid(format!(
-                        "GitHub repository {full_name} default branch {default_branch} did not expose a valid commit sha"
-                    ))
-                })?;
-            let manifest_metadata =
-                github_topic_manifest_metadata(&full_name, &commit, &scratch).unwrap_or(None);
-            let repo_name = repo
-                .name
-                .and_then(trimmed_string)
-                .unwrap_or_else(|| full_name.rsplit('/').next().unwrap_or("plugin").to_string());
-            let manifest = manifest_metadata
-                .as_ref()
-                .map(|metadata| &metadata.manifest);
-            let mut component_summary = manifest
-                .map(marketplace_component_summary_from_manifest)
-                .unwrap_or_default();
-            let mut runtime_summary = manifest
-                .map(marketplace_runtime_summary_from_manifest)
-                .unwrap_or_default();
-            if let Some(metadata) = manifest_metadata.as_ref() {
-                component_summary =
-                    github_topic_component_summary(&full_name, &commit, metadata, &scratch);
-                let repo_runtime_summary = github_topic_runtime_payload_summary(
-                    &full_name,
-                    &commit,
-                    &manifest_plugin_root_relative_path(&metadata.manifest_relative_path),
-                    &scratch,
-                )
-                .unwrap_or_default();
-                runtime_summary =
-                    merge_marketplace_runtime_summary(runtime_summary, repo_runtime_summary);
-                let mcp_runtime_summary =
-                    github_topic_mcp_runtime_summary(&full_name, &commit, metadata, &scratch)
-                        .unwrap_or_default();
-                runtime_summary =
-                    merge_marketplace_runtime_summary(runtime_summary, mcp_runtime_summary);
-            }
-            let mut plugin_name = manifest
-                .map(|manifest| manifest.name.clone())
-                .unwrap_or_else(|| slugify(&repo_name));
-            let manifest_named = manifest.is_some();
-            if !used_names.insert(plugin_name.clone()) {
-                if manifest_named {
-                    continue;
-                }
-                plugin_name = slugify(&full_name.replace('/', "-"));
-                used_names.insert(plugin_name.clone());
-            }
-            let mut description = repo
-                .description
-                .and_then(trimmed_string)
-                .unwrap_or_else(|| "DSH plugin".to_string());
-            if let Some(manifest_description) =
-                manifest.and_then(|manifest| trimmed_string(manifest.short_description()))
-            {
-                description = manifest_description;
-            }
-            let license = manifest
-                .and_then(|manifest| manifest.license.clone())
-                .and_then(trimmed_string)
-                .or_else(|| {
-                    repo.license
-                        .and_then(|license| license.spdx_id)
-                        .and_then(trimmed_string)
-                });
-            if let Some(spdx_id) = license
-                .as_deref()
-                .filter(|_| !description.contains("license:"))
-            {
-                description = format!("{description} (license: {spdx_id})");
-            }
-            let display_name = manifest
-                .map(PluginManifest::display_name)
-                .unwrap_or_else(|| repo_name.clone());
-            let version = manifest
-                .and_then(|manifest| manifest.version.clone())
-                .and_then(trimmed_string)
-                .unwrap_or_else(|| format!("git-{}", &commit[..12.min(commit.len())]));
-            let category = manifest
-                .and_then(|manifest| manifest.interface.category.clone())
-                .and_then(trimmed_string)
-                .unwrap_or_else(|| "DSH Plugin".to_string());
-            let author_name = manifest.and_then(PluginManifest::developer_name);
-            let mut source = serde_json::json!({
-                "source": "github",
-                "repo": full_name,
-                "ref": default_branch,
-                "sha": commit
-            });
-            if let Some(metadata) = manifest_metadata.as_ref().filter(|metadata| {
-                metadata.manifest_relative_path != AGENT_PLUGIN_MANIFEST_RELATIVE_PATH
-            }) {
-                if let Some(object) = source.as_object_mut() {
-                    object.insert(
-                        "manifestPath".to_string(),
-                        serde_json::Value::String(metadata.manifest_relative_path.clone()),
-                    );
-                }
-            }
-            let mut entry = serde_json::json!({
-                "name": plugin_name,
-                "displayName": display_name,
-                "version": version,
-                "description": description,
-                "license": license,
-                "source": source,
-                "category": category,
-                "components": marketplace_component_summary_json(component_summary),
-                "runtime": marketplace_runtime_summary_json(&runtime_summary)
-            });
-            if let Some(author_name) = author_name {
-                if let Some(object) = entry.as_object_mut() {
-                    object.insert("author".to_string(), serde_json::Value::String(author_name));
-                }
-            }
-            plugins.push(entry);
-        }
-        let catalog = serde_json::json!({
-            "name": name,
-            "interface": {
-                "displayName": format!("GitHub topic: {topic}")
-            },
-            "plugins": plugins,
-        });
-        let bytes = serde_json::to_vec_pretty(&catalog).map_err(CoreError::from)?;
-        std::fs::write(&snapshot_path, bytes).map_err(|e| {
-            CoreError::Persistence(format!(
-                "write GitHub topic marketplace snapshot {}: {e}",
-                snapshot_path.display()
-            ))
-        })?;
-        load_marketplace_catalog(&snapshot_path)?;
-        Ok(MaterializedMarketplace {
-            manifest_path: Some(snapshot_path),
-            source_root: None,
-        })
-    })();
-    let _ = remove_dir_all_with_retry(&scratch);
-    if result.is_err() {
-        let _ = std::fs::remove_file(registry_dir.join("marketplace.json"));
-    }
-    result
 }
 
 /// Fetch only one remote index page for a GitHub topic.
@@ -4984,219 +4693,6 @@ fn merge_github_topic_page_snapshot(
     Ok(page_entry_names)
 }
 
-fn github_topic_manifest_metadata(
-    full_name: &str,
-    commit: &str,
-    scratch: &Path,
-) -> Result<Option<GitHubTopicManifestMetadata>> {
-    let mut manifest_paths = Vec::with_capacity(DISCOVERABLE_MANIFEST_PATHS.len() + 1);
-    manifest_paths.push(AGENT_PLUGIN_MANIFEST_RELATIVE_PATH);
-    manifest_paths.extend(DISCOVERABLE_MANIFEST_PATHS.iter().copied());
-    for manifest_relative_path in manifest_paths {
-        let endpoint = format!(
-            "/repos/{}/contents/{}?ref={}",
-            full_name,
-            percent_encode_content_path(manifest_relative_path),
-            percent_encode_query_value(commit)
-        );
-        let Ok(text) = download_github_api_json(
-            &endpoint,
-            scratch,
-            &format!(
-                "{}-{}",
-                full_name.replace('/', "-"),
-                manifest_relative_path.replace('/', "-")
-            ),
-        ) else {
-            continue;
-        };
-        let Ok(contents) = serde_json::from_str::<GitHubContentResponse>(&text) else {
-            continue;
-        };
-        if contents.kind.as_deref() != Some("file")
-            || contents.encoding.as_deref() != Some("base64")
-        {
-            continue;
-        }
-        let Some(encoded) = contents.content else {
-            continue;
-        };
-        let Ok(bytes) = base64_decode_standard(&encoded) else {
-            continue;
-        };
-        let Ok(manifest_text) = String::from_utf8(bytes) else {
-            continue;
-        };
-        let root = scratch
-            .join("manifests")
-            .join(sanitize_file_name(full_name));
-        let _ = std::fs::remove_dir_all(&root);
-        let manifest_path = root.join(manifest_relative_path);
-        if let Some(parent) = manifest_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                CoreError::Persistence(format!(
-                    "create GitHub manifest fixture dir {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
-        std::fs::write(&manifest_path, manifest_text).map_err(|e| {
-            CoreError::Persistence(format!(
-                "write GitHub manifest probe {}: {e}",
-                manifest_path.display()
-            ))
-        })?;
-        if let Some(manifest) = load_plugin_manifest(&root)? {
-            return Ok(Some(GitHubTopicManifestMetadata {
-                manifest,
-                manifest_relative_path: manifest_relative_path.to_string(),
-                root,
-            }));
-        }
-    }
-    Ok(None)
-}
-
-struct GitHubTopicManifestMetadata {
-    manifest: PluginManifest,
-    manifest_relative_path: String,
-    root: PathBuf,
-}
-
-fn manifest_plugin_root_relative_path(manifest_relative_path: &str) -> String {
-    let path = Path::new(manifest_relative_path);
-    let manifest_dir = path.parent().unwrap_or_else(|| Path::new(""));
-    if manifest_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| matches!(name, ".codex-plugin" | ".claude-plugin"))
-    {
-        manifest_dir
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .to_string_lossy()
-            .replace('\\', "/")
-    } else {
-        manifest_dir.to_string_lossy().replace('\\', "/")
-    }
-}
-
-fn github_topic_runtime_payload_summary(
-    full_name: &str,
-    commit: &str,
-    plugin_root_relative_path: &str,
-    scratch: &Path,
-) -> Result<PluginMarketplaceRuntimeSummary> {
-    let endpoint = if plugin_root_relative_path.trim().is_empty() {
-        format!(
-            "/repos/{}/contents?ref={}",
-            full_name,
-            percent_encode_query_value(commit)
-        )
-    } else {
-        format!(
-            "/repos/{}/contents/{}?ref={}",
-            full_name,
-            percent_encode_content_path(plugin_root_relative_path),
-            percent_encode_query_value(commit)
-        )
-    };
-    let text = download_github_api_json(
-        &endpoint,
-        scratch,
-        &format!(
-            "{}-{}-runtime-summary",
-            full_name.replace('/', "-"),
-            plugin_root_relative_path.replace('/', "-")
-        ),
-    )?;
-    let entries: Vec<GitHubContentDirectoryEntry> = serde_json::from_str(&text)
-        .map_err(|e| CoreError::invalid(format!("parse GitHub contents response: {e}")))?;
-    let mut requirements = BTreeSet::new();
-    let mut has_runtime_payload = false;
-    for entry in entries {
-        let name = entry.name.trim().to_ascii_lowercase();
-        let kind = entry.kind.as_deref().unwrap_or_default();
-        match (kind, name.as_str()) {
-            ("file", "runtime.zip") => has_runtime_payload = true,
-            ("dir", "runtime" | "bin" | "scripts") => has_runtime_payload = true,
-            ("file", "package.json" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock") => {
-                requirements.insert("node".to_string());
-            }
-            ("file", "requirements.txt" | "pyproject.toml" | "poetry.lock" | "uv.lock") => {
-                requirements.insert("python".to_string());
-            }
-            _ => {}
-        }
-    }
-    let requirements = requirements.into_iter().collect::<Vec<_>>();
-    Ok(PluginMarketplaceRuntimeSummary {
-        required: has_runtime_payload || !requirements.is_empty(),
-        requirements,
-        has_runtime_payload,
-    })
-}
-
-fn github_topic_mcp_runtime_summary(
-    full_name: &str,
-    commit: &str,
-    metadata: &GitHubTopicManifestMetadata,
-    scratch: &Path,
-) -> Result<PluginMarketplaceRuntimeSummary> {
-    let mut requirements = BTreeSet::new();
-    for path in &metadata.manifest.paths.mcp_server_paths {
-        let Ok(relative_path) = path.strip_prefix(&metadata.root) else {
-            continue;
-        };
-        let relative_path = relative_path.to_string_lossy().replace('\\', "/");
-        let endpoint = format!(
-            "/repos/{}/contents/{}?ref={}",
-            full_name,
-            percent_encode_content_path(&relative_path),
-            percent_encode_query_value(commit)
-        );
-        let text = match download_github_api_json(
-            &endpoint,
-            scratch,
-            &format!(
-                "{}-{}-mcp-summary",
-                full_name.replace('/', "-"),
-                relative_path.replace('/', "-")
-            ),
-        ) {
-            Ok(text) => text,
-            Err(_) => continue,
-        };
-        let Ok(contents) = serde_json::from_str::<GitHubContentResponse>(&text) else {
-            continue;
-        };
-        if contents.kind.as_deref() != Some("file")
-            || contents.encoding.as_deref() != Some("base64")
-        {
-            continue;
-        }
-        let Some(encoded) = contents.content else {
-            continue;
-        };
-        let Ok(bytes) = base64_decode_standard(&encoded) else {
-            continue;
-        };
-        let Ok(mcp_text) = String::from_utf8(bytes) else {
-            continue;
-        };
-        let Ok(config) = McpConfig::parse(&mcp_text) else {
-            continue;
-        };
-        extend_runtime_requirements_from_mcp_config(&mut requirements, &config);
-    }
-    let requirements = requirements.into_iter().collect::<Vec<_>>();
-    Ok(PluginMarketplaceRuntimeSummary {
-        required: !requirements.is_empty(),
-        requirements,
-        has_runtime_payload: false,
-    })
-}
-
 fn materialize_git_plugin(
     url: &str,
     subdir: Option<&str>,
@@ -5307,6 +4803,7 @@ fn materialize_github_archive_plugin(
     let unpacked = staging.join("github-archive");
     extract_zip_into(&archive, &unpacked)?;
     let checkout_root = github_archive_checkout_root(&unpacked)?;
+    verify_github_archive_tree_matches_commit(repo, sha, &checkout_root, staging)?;
     let root = match subdir {
         Some(subdir) => safe_join_materialized_subdir(&checkout_root, subdir)?,
         None => checkout_root,
@@ -5354,6 +4851,46 @@ fn github_archive_checkout_root(unpacked: &Path) -> Result<PathBuf> {
     Ok(unpacked.to_path_buf())
 }
 
+fn verify_github_archive_tree_matches_commit(
+    repo: &str,
+    sha: &str,
+    checkout_root: &Path,
+    scratch_root: &Path,
+) -> Result<()> {
+    let endpoint = format!("/repos/{repo}/git/commits/{sha}");
+    let text = download_github_api_json(
+        &endpoint,
+        &scratch_root.join("github-api"),
+        &format!("{}-{sha}-commit", repo.replace('/', "-")),
+    )?;
+    let commit: GitHubGitCommitResponse = serde_json::from_str(&text)
+        .map_err(|e| CoreError::invalid(format!("parse GitHub commit response: {e}")))?;
+    let expected_tree = trimmed_string(commit.tree.sha)
+        .filter(|tree| is_git_sha(tree))
+        .ok_or_else(|| {
+            CoreError::invalid(format!(
+                "GitHub commit {repo}@{sha} did not expose a valid tree sha"
+            ))
+        })?;
+
+    run_external("git", &["init".to_string()], Some(checkout_root))?;
+    run_external(
+        "git",
+        &["add".to_string(), "-A".to_string(), ".".to_string()],
+        Some(checkout_root),
+    )?;
+    let actual_tree = run_external_output("git", &["write-tree".to_string()], Some(checkout_root))?
+        .trim()
+        .to_ascii_lowercase();
+    let _ = remove_dir_all_with_retry(&checkout_root.join(".git"));
+    if actual_tree == expected_tree.to_ascii_lowercase() {
+        return Ok(());
+    }
+    Err(CoreError::invalid(format!(
+        "GitHub archive verification failed for {repo}@{sha}: expected tree {expected_tree}, got {actual_tree}"
+    )))
+}
+
 fn materialize_git_marketplace(
     url: &str,
     ref_name: Option<&str>,
@@ -5378,18 +4915,17 @@ fn materialize_git_marketplace(
 
 fn materialize_npm_plugin(
     package: &str,
-    version: Option<&str>,
+    version: &str,
     registry: Option<&str>,
+    integrity: Option<&str>,
+    sha256: Option<&str>,
     staging: &Path,
 ) -> Result<PathBuf> {
     let pack_dir = staging.join("npm-pack");
     std::fs::create_dir_all(&pack_dir).map_err(|e| {
         CoreError::Persistence(format!("create npm pack dir {}: {e}", pack_dir.display()))
     })?;
-    let package_spec = match version {
-        Some(version) => format!("{package}@{version}"),
-        None => package.to_string(),
-    };
+    let package_spec = format!("{package}@{version}");
     let mut args = vec![
         "pack".to_string(),
         package_spec,
@@ -5414,6 +4950,7 @@ fn materialize_npm_plugin(
                 .unwrap_or(false)
     })?
     .ok_or_else(|| CoreError::invalid("npm pack did not produce a .tgz archive"))?;
+    verify_npm_archive_identity(&archive, integrity, sha256)?;
     let unpacked = staging.join("npm-unpacked");
     extract_targz_into(&archive, &unpacked)?;
     resolve_plugin_root(&unpacked)
@@ -5775,21 +5312,13 @@ struct GitHubBranchCommit {
 }
 
 #[derive(Debug, Deserialize)]
-struct GitHubContentResponse {
-    #[serde(default, rename = "type")]
-    kind: Option<String>,
-    #[serde(default)]
-    encoding: Option<String>,
-    #[serde(default)]
-    content: Option<String>,
+struct GitHubGitCommitResponse {
+    tree: GitHubGitCommitTree,
 }
 
 #[derive(Debug, Deserialize)]
-struct GitHubContentDirectoryEntry {
-    #[serde(default, rename = "type")]
-    kind: Option<String>,
-    #[serde(default)]
-    name: String,
+struct GitHubGitCommitTree {
+    sha: String,
 }
 
 fn github_topic_from_source(source: &str) -> Option<String> {
@@ -5819,6 +5348,58 @@ fn is_safe_github_topic(topic: &str) -> bool {
 
 fn is_git_sha(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn split_checked_http_source(source: &str) -> Result<(String, Option<String>)> {
+    let Some((url, fragment)) = source.rsplit_once("#sha256=") else {
+        return Ok((source.to_string(), None));
+    };
+    let sha256 = fragment.trim();
+    if !is_sha256_hex_string(sha256) {
+        return Err(CoreError::invalid(format!(
+            "remote marketplace source has invalid sha256: {sha256}"
+        )));
+    }
+    Ok((url.to_string(), Some(sha256.to_string())))
+}
+
+fn is_sha256_hex_string(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn marketplace_remote_display(base: &str, path: Option<&str>, ref_name: Option<&str>) -> String {
+    let mut display = base.to_string();
+    if let Some(path) = path {
+        display.push_str("#path=");
+        display.push_str(path);
+    }
+    if let Some(ref_name) = ref_name {
+        display.push('@');
+        display.push_str(ref_name);
+    }
+    display
+}
+
+fn resolve_github_ref_commit(repo: &str, ref_name: &str, scratch: &Path) -> Result<String> {
+    let endpoint = format!(
+        "/repos/{}/branches/{}",
+        repo,
+        percent_encode_path_segment(ref_name)
+    );
+    let branch_text = download_github_api_json(
+        &endpoint,
+        scratch,
+        &format!("{}-{ref_name}", repo.replace('/', "-")),
+    )?;
+    let branch: GitHubBranchResponse = serde_json::from_str(&branch_text)
+        .map_err(|e| CoreError::invalid(format!("parse GitHub branch response: {e}")))?;
+    trimmed_string(branch.commit.sha)
+        .filter(|sha| is_git_sha(sha))
+        .ok_or_else(|| {
+            CoreError::invalid(format!(
+                "GitHub repository {repo} ref {ref_name} did not expose a valid commit sha"
+            ))
+        })
 }
 
 fn download_github_api_json(endpoint: &str, scratch: &Path, label: &str) -> Result<String> {
@@ -5936,6 +5517,7 @@ fn percent_encode_path_segment(input: &str) -> String {
     percent_encode_bytes(input.as_bytes(), false)
 }
 
+#[cfg(test)]
 fn percent_encode_content_path(path: &str) -> String {
     path.split('/')
         .map(percent_encode_path_segment)
@@ -6163,6 +5745,70 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex_lower(&hasher.finalize()))
 }
 
+fn verify_npm_archive_identity(
+    archive: &Path,
+    integrity: Option<&str>,
+    sha256: Option<&str>,
+) -> Result<()> {
+    if let Some(expected) = sha256 {
+        verify_sha256_file(archive, expected)?;
+    }
+    if let Some(expected) = integrity {
+        verify_subresource_integrity_file(archive, expected)?;
+    }
+    if integrity.is_none() && sha256.is_none() {
+        return Err(CoreError::invalid(
+            "npm package install requires integrity or sha256",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_subresource_integrity_file(path: &Path, integrity: &str) -> Result<()> {
+    let (algorithm, digest) = integrity
+        .trim()
+        .split_once('-')
+        .ok_or_else(|| CoreError::invalid("invalid npm package integrity"))?;
+    let expected = base64_decode_standard(digest)?;
+    let actual = match algorithm {
+        "sha256" => digest_file::<Sha256>(path)?,
+        "sha384" => digest_file::<Sha384>(path)?,
+        "sha512" => digest_file::<Sha512>(path)?,
+        _ => {
+            return Err(CoreError::invalid(format!(
+                "unsupported npm package integrity algorithm: {algorithm}"
+            )))
+        }
+    };
+    if actual == expected {
+        return Ok(());
+    }
+    Err(CoreError::invalid(format!(
+        "npm package integrity mismatch for {}",
+        path.display()
+    )))
+}
+
+fn digest_file<D>(path: &Path) -> Result<Vec<u8>>
+where
+    D: Digest + Default,
+{
+    let mut file = File::open(path)
+        .map_err(|e| CoreError::Persistence(format!("open {} for digest: {e}", path.display())))?;
+    let mut hasher = D::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|e| {
+            CoreError::Persistence(format!("read {} for digest: {e}", path.display()))
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().to_vec())
+}
+
 fn plugin_directory_content_hash(root: &Path) -> Result<String> {
     let mut entries = Vec::new();
     collect_plugin_hash_entries(root, root, &mut entries)?;
@@ -6287,13 +5933,30 @@ fn extract_zip_into(zip_path: &Path, destination: &Path) -> Result<()> {
         .map_err(|e| CoreError::Persistence(format!("open zip {}: {e}", zip_path.display())))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| CoreError::invalid(format!("read zip archive: {e}")))?;
+    if archive.len() > MAX_PLUGIN_ARCHIVE_ENTRIES {
+        return Err(CoreError::invalid(format!(
+            "zip archive has too many entries: {} > {}",
+            archive.len(),
+            MAX_PLUGIN_ARCHIVE_ENTRIES
+        )));
+    }
+    let mut total_size = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
             .map_err(|e| CoreError::invalid(format!("read zip entry {index}: {e}")))?;
         let Some(relative) = entry.enclosed_name().map(|path| path.to_path_buf()) else {
-            continue;
+            return Err(CoreError::invalid(format!(
+                "zip entry {index} escapes destination"
+            )));
         };
+        total_size = total_size.saturating_add(entry.size());
+        if total_size > MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES {
+            return Err(CoreError::invalid(format!(
+                "zip archive uncompressed size exceeds {} bytes",
+                MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES
+            )));
+        }
         let out = destination.join(relative);
         if entry.is_dir() {
             std::fs::create_dir_all(&out).map_err(|e| {
@@ -6334,26 +5997,49 @@ fn extract_targz_into(archive_path: &Path, destination: &Path) -> Result<()> {
     let entries = archive
         .entries()
         .map_err(|e| CoreError::invalid(format!("read tar archive: {e}")))?;
+    let mut entry_count = 0usize;
+    let mut total_size = 0u64;
     for entry in entries {
         let mut entry = entry.map_err(|e| CoreError::invalid(format!("read tar entry: {e}")))?;
+        entry_count += 1;
+        if entry_count > MAX_PLUGIN_ARCHIVE_ENTRIES {
+            return Err(CoreError::invalid(format!(
+                "tar archive has too many entries: {entry_count} > {MAX_PLUGIN_ARCHIVE_ENTRIES}"
+            )));
+        }
         let path = entry
             .path()
             .map_err(|e| CoreError::invalid(format!("read tar entry path: {e}")))?
             .to_path_buf();
         if tar_path_escapes(&path) {
-            continue;
+            return Err(CoreError::invalid(format!(
+                "tar entry {} escapes destination",
+                path.display()
+            )));
         }
-        let out = destination.join(path);
-        if let Some(parent) = out.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                CoreError::Persistence(format!(
-                    "create tar output parent {}: {e}",
-                    parent.display()
-                ))
-            })?;
+        if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
+            return Err(CoreError::invalid(format!(
+                "tar entry {} uses a link target",
+                path.display()
+            )));
         }
-        entry.unpack(&out).map_err(|e| {
-            CoreError::Persistence(format!("extract tar output {}: {e}", out.display()))
+        let size = entry
+            .header()
+            .size()
+            .map_err(|e| CoreError::invalid(format!("read tar entry size: {e}")))?;
+        total_size = total_size.saturating_add(size);
+        if total_size > MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES {
+            return Err(CoreError::invalid(format!(
+                "tar archive uncompressed size exceeds {} bytes",
+                MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES
+            )));
+        }
+        entry.unpack_in(destination).map_err(|e| {
+            CoreError::Persistence(format!(
+                "extract tar entry {} into {}: {e}",
+                path.display(),
+                destination.display()
+            ))
         })?;
     }
     Ok(())
@@ -8530,6 +8216,33 @@ mod tests {
             zip.write_all(contents).unwrap();
         }
         zip.finish().unwrap();
+    }
+
+    fn write_github_commit_tree_fixture(fixtures: &Path, repo: &str, sha: &str, archive: &Path) {
+        let tmp = tempfile::tempdir().unwrap();
+        let unpacked = tmp.path().join("archive");
+        extract_zip_into(archive, &unpacked).unwrap();
+        let checkout_root = github_archive_checkout_root(&unpacked).unwrap();
+        let tree = git_tree_for_test_dir(&checkout_root);
+        let endpoint = format!("/repos/{repo}/git/commits/{sha}");
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(&endpoint))),
+            serde_json::json!({ "tree": { "sha": tree } }).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn git_tree_for_test_dir(root: &Path) -> String {
+        run_external("git", &["init".to_string()], Some(root)).unwrap();
+        run_external(
+            "git",
+            &["add".to_string(), "-A".to_string(), ".".to_string()],
+            Some(root),
+        )
+        .unwrap();
+        let tree = run_external_output("git", &["write-tree".to_string()], Some(root)).unwrap();
+        let _ = remove_dir_all_with_retry(&root.join(".git"));
+        tree.trim().to_string()
     }
 
     fn write_github_contents_manifest_fixture(
@@ -11904,7 +11617,8 @@ deepagent-definitely-missing-runtime-cli --version
                   "source": {
                     "source": "git",
                     "url": "https://example.com/team/plugins.git",
-                    "path": "plugins/git-plugin"
+                    "path": "plugins/git-plugin",
+                    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                   }
                 },
                 {
@@ -11912,7 +11626,8 @@ deepagent-definitely-missing-runtime-cli --version
                   "source": {
                     "source": "npm",
                     "package": "@scope/plugin",
-                    "version": "1.2.3"
+                    "version": "1.2.3",
+                    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                   }
                 },
                 {
@@ -11997,13 +11712,24 @@ deepagent-definitely-missing-runtime-cli --version
 
     #[test]
     fn github_archive_fallback_installs_complete_directory_payload() {
+        if !git_available() {
+            eprintln!("skipping: git is not available");
+            return;
+        }
         let _guard = ENV_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
         let sha = "0123456789abcdef0123456789abcdef01234567";
         let archive = tmp.path().join("fixtures").join("archive-plugin.zip");
+        let fixtures = tmp.path().join("github-api");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
         let old_skip_clone = std::env::var_os("DEEPAGENT_TEST_GITHUB_SKIP_CLONE");
         let old_download_source = std::env::var_os("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE");
+        std::env::set_var(
+            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
+            fixtures.display().to_string(),
+        );
         std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", "1");
         std::env::set_var(
             "DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE",
@@ -12023,6 +11749,7 @@ deepagent-definitely-missing-runtime-cli --version
                 ("tests/smoke.txt", b"smoke"),
             ],
         );
+        write_github_commit_tree_fixture(&fixtures, "deepseek-ai/archive-demo", sha, &archive);
         let marketplace_root = tmp.path().join("remote-marketplace");
         std::fs::create_dir_all(&marketplace_root).unwrap();
         std::fs::write(
@@ -12123,6 +11850,111 @@ deepagent-definitely-missing-runtime-cli --version
             Some(path) => std::env::set_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE", path),
             None => std::env::remove_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE"),
         }
+        match old_fixtures {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
+        }
+    }
+
+    #[test]
+    fn github_archive_fallback_rejects_tree_mismatch_and_cleans_staging() {
+        if !git_available() {
+            eprintln!("skipping: git is not available");
+            return;
+        }
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let sha = "1111111111111111111111111111111111111111";
+        let archive = tmp.path().join("fixtures").join("archive-plugin.zip");
+        let fixtures = tmp.path().join("github-api");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
+        let old_skip_clone = std::env::var_os("DEEPAGENT_TEST_GITHUB_SKIP_CLONE");
+        let old_download_source = std::env::var_os("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE");
+        std::env::set_var(
+            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
+            fixtures.display().to_string(),
+        );
+        std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", "1");
+        std::env::set_var(
+            "DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE",
+            archive.display().to_string(),
+        );
+
+        write_plugin_zip(
+            &archive,
+            "deepseek-ai-archive-demo-1111111",
+            "archive-demo",
+            "0.1.0",
+        );
+        let endpoint = format!("/repos/deepseek-ai/archive-demo/git/commits/{sha}");
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(&endpoint))),
+            r#"{"tree":{"sha":"2222222222222222222222222222222222222222"}}"#,
+        )
+        .unwrap();
+        let marketplace_root = tmp.path().join("remote-marketplace");
+        std::fs::create_dir_all(&marketplace_root).unwrap();
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            format!(
+                r#"{{
+                  "name": "remote",
+                  "plugins": [
+                    {{
+                      "name": "archive-demo",
+                      "version": "0.1.0",
+                      "source": {{
+                        "source": "github",
+                        "repo": "deepseek-ai/archive-demo",
+                        "sha": "{sha}"
+                      }}
+                    }}
+                  ]
+                }}"#
+            ),
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("remote".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+        let err = svc
+            .prepare_plugin_install("remote", "archive-demo", false)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("archive verification failed"));
+        assert!(!roots
+            .marketplace_cache
+            .join("remote")
+            .join("archive-demo")
+            .exists());
+        let staging_root = roots.marketplace_cache.join(".staging");
+        assert!(
+            std::fs::read_dir(&staging_root)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(true),
+            "failed archive verification must clean staging"
+        );
+
+        match old_skip_clone {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE"),
+        }
+        match old_download_source {
+            Some(path) => std::env::set_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE", path),
+            None => std::env::remove_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE"),
+        }
+        match old_fixtures {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
+        }
     }
 
     #[test]
@@ -12131,13 +11963,24 @@ deepagent-definitely-missing-runtime-cli --version
             eprintln!("skipping: node runtime is not available");
             return;
         }
+        if !git_available() {
+            eprintln!("skipping: git is not available");
+            return;
+        }
         let _guard = ENV_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
         let sha = "fedcba9876543210fedcba9876543210fedcba98";
         let archive = tmp.path().join("fixtures").join("sidecar-plugin.zip");
+        let fixtures = tmp.path().join("github-api");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
         let old_skip_clone = std::env::var_os("DEEPAGENT_TEST_GITHUB_SKIP_CLONE");
         let old_download_source = std::env::var_os("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE");
+        std::env::set_var(
+            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
+            fixtures.display().to_string(),
+        );
         std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", "1");
         std::env::set_var(
             "DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE",
@@ -12172,6 +12015,7 @@ deepagent-definitely-missing-runtime-cli --version
                 ("LICENSE", b"MIT\n"),
             ],
         );
+        write_github_commit_tree_fixture(&fixtures, "deepseek-ai/sidecar-demo", sha, &archive);
         let marketplace_root = tmp.path().join("remote-marketplace");
         std::fs::create_dir_all(&marketplace_root).unwrap();
         std::fs::write(
@@ -12247,6 +12091,10 @@ deepagent-definitely-missing-runtime-cli --version
         match old_download_source {
             Some(path) => std::env::set_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE", path),
             None => std::env::remove_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE"),
+        }
+        match old_fixtures {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
         }
     }
 
@@ -12477,17 +12325,14 @@ deepagent-definitely-missing-runtime-cli --version
         assert_eq!(entry.marketplace, "dsh");
         assert_eq!(entry.name, "dsh-demo");
         assert_eq!(entry.display_name, "dsh-demo");
-        assert_eq!(entry.description, "Demo DSH plugin (license: MIT)");
+        assert_eq!(entry.description, "Demo DSH plugin");
         assert_eq!(entry.license.as_deref(), Some("MIT"));
-        assert_eq!(entry.version.as_deref(), Some("git-aaaaaaaaaaaa"));
+        assert_eq!(entry.version, None);
         assert_eq!(entry.source_kind, "github");
         assert!(entry.source.contains("deepseek-ai/dsh-demo@main"));
         assert!(!entry.source.contains("gh.llkk.cc"));
         assert!(!entry.source.contains("gh-proxy.com"));
-        assert_eq!(
-            entry.source_commit.as_deref(),
-            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        );
+        assert_eq!(entry.source_commit, None);
         assert_eq!(entry.skill_count, 0);
         assert_eq!(entry.command_count, 0);
         assert!(!entry.runtime_required);
@@ -12500,8 +12345,10 @@ deepagent-definitely-missing-runtime-cli --version
                 .unwrap();
         assert!(snapshot.contains(r#""repo": "deepseek-ai/dsh-demo""#));
         assert!(snapshot.contains(r#""license": "MIT""#));
-        assert!(snapshot.contains(r#""sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa""#));
         assert!(snapshot.contains(r#""ref": "main""#));
+        assert!(!snapshot.contains(r#""sha""#));
+        assert!(!snapshot.contains(r#""components""#));
+        assert!(!snapshot.contains(r#""runtime""#));
         assert!(!snapshot.contains("gh.llkk.cc"));
         assert!(!snapshot.contains("gh-proxy.com"));
         assert!(!roots
@@ -12675,55 +12522,41 @@ deepagent-definitely-missing-runtime-cli --version
         let entries = svc.list_marketplace_entries().unwrap();
         assert_eq!(entries.len(), 1);
         let entry = &entries[0];
-        assert_eq!(entry.name, "manifest-plugin");
-        assert_eq!(entry.display_name, "Manifest Plugin");
-        assert_eq!(
-            entry.description,
-            "Manifest description (license: Apache-2.0)"
-        );
-        assert_eq!(entry.version.as_deref(), Some("2.3.4"));
-        assert_eq!(entry.category.as_deref(), Some("Science"));
-        assert_eq!(entry.license.as_deref(), Some("Apache-2.0"));
+        assert_eq!(entry.name, "repo-shell");
+        assert_eq!(entry.display_name, "repo-shell");
+        assert_eq!(entry.description, "Repo fallback description");
+        assert_eq!(entry.version, None);
+        assert_eq!(entry.category.as_deref(), Some("DSH Plugin"));
+        assert_eq!(entry.license.as_deref(), Some("MIT"));
         assert_eq!(entry.source_kind, "github");
         assert!(entry.source.contains("deepseek-ai/repo-shell@main"));
         assert!(!entry.source.contains("gh.llkk.cc"));
         assert!(!entry.source.contains("gh-proxy.com"));
-        assert_eq!(
-            entry.source_commit.as_deref(),
-            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-        );
-        assert_eq!(entry.skill_count, 1);
-        assert_eq!(entry.command_count, 1);
-        assert_eq!(entry.agent_count, 1);
-        assert_eq!(entry.hook_count, 1);
-        assert_eq!(entry.mcp_count, 1);
-        assert_eq!(entry.app_count, 1);
-        assert_eq!(entry.output_style_count, 1);
-        assert!(entry.runtime_required);
-        assert_eq!(
-            entry.runtime_requirements,
-            vec![
-                "node".to_string(),
-                "node >=20.19".to_string(),
-                "python >=3.11".to_string()
-            ]
-        );
-        assert!(entry.has_runtime_payload);
+        assert_eq!(entry.source_commit, None);
+        assert_eq!(entry.skill_count, 0);
+        assert_eq!(entry.command_count, 0);
+        assert_eq!(entry.agent_count, 0);
+        assert_eq!(entry.hook_count, 0);
+        assert_eq!(entry.mcp_count, 0);
+        assert_eq!(entry.app_count, 0);
+        assert_eq!(entry.output_style_count, 0);
+        assert!(!entry.runtime_required);
+        assert!(entry.runtime_requirements.is_empty());
+        assert!(!entry.has_runtime_payload);
         assert!(entry.installable);
 
         let snapshot =
             std::fs::read_to_string(roots.marketplaces.join("dsh").join("marketplace.json"))
                 .unwrap();
-        assert!(snapshot.contains(r#""name": "manifest-plugin""#));
-        assert!(snapshot.contains(r#""manifestPath": ".codex-plugin/plugin.json""#));
-        assert!(snapshot.contains(r#""license": "Apache-2.0""#));
+        assert!(snapshot.contains(r#""name": "repo-shell""#));
+        assert!(!snapshot.contains(r#""manifestPath""#));
+        assert!(snapshot.contains(r#""license": "MIT""#));
         assert!(snapshot.contains(r#""repo": "deepseek-ai/repo-shell""#));
         assert!(snapshot.contains(r#""ref": "main""#));
-        assert!(snapshot.contains(r#""sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb""#));
-        assert!(snapshot.contains(r#""components""#));
-        assert!(snapshot.contains(r#""runtime""#));
-        assert!(snapshot.contains(r#""node >=20.19""#));
-        assert!(snapshot.contains(r#""hasRuntimePayload": true"#));
+        assert!(!snapshot.contains(r#""sha""#));
+        assert!(!snapshot.contains(r#""components""#));
+        assert!(!snapshot.contains(r#""runtime""#));
+        assert!(!snapshot.contains(r#""node >=20.19""#));
         assert!(!snapshot.contains("gh.llkk.cc"));
         assert!(!snapshot.contains("gh-proxy.com"));
 
@@ -12737,6 +12570,10 @@ deepagent-definitely-missing-runtime-cli --version
     fn dsh_github_topic_installs_complete_sidecar_package_and_runs_health_probe() {
         if !probe_runtime("node", &["--version"]) {
             eprintln!("skipping: node runtime is not available");
+            return;
+        }
+        if !git_available() {
+            eprintln!("skipping: git is not available");
             return;
         }
         let _guard = ENV_LOCK.lock().unwrap();
@@ -12853,6 +12690,7 @@ deepagent-definitely-missing-runtime-cli --version
                 ("LICENSE", b"MIT\n"),
             ],
         );
+        write_github_commit_tree_fixture(&fixtures, "deepseek-ai/topic-sidecar", commit, &archive);
 
         let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
         svc.add_marketplace(AddPluginMarketplaceDto {
@@ -12869,13 +12707,13 @@ deepagent-definitely-missing-runtime-cli --version
         let entry = &entries[0];
         assert_eq!(entry.marketplace, "dsh");
         assert_eq!(entry.name, "topic-sidecar");
-        assert_eq!(entry.version.as_deref(), Some("0.2.0"));
+        assert_eq!(entry.version, None);
         assert_eq!(entry.license.as_deref(), Some("MIT"));
-        assert_eq!(entry.mcp_count, 1);
+        assert_eq!(entry.mcp_count, 0);
         assert_eq!(entry.source_kind, "github");
-        assert_eq!(entry.source_commit.as_deref(), Some(commit));
-        assert!(entry.runtime_required);
-        assert_eq!(entry.runtime_requirements, vec!["node".to_string()]);
+        assert_eq!(entry.source_commit, None);
+        assert!(!entry.runtime_required);
+        assert!(entry.runtime_requirements.is_empty());
         assert!(entry.installable);
         assert!(!entry.installed);
         assert!(!roots
@@ -12991,16 +12829,29 @@ deepagent-definitely-missing-runtime-cli --version
             sparse_path: None,
         })
         .unwrap();
-        let err = svc.refresh_marketplace("dsh").unwrap_err();
+        let marketplace = svc.refresh_marketplace("dsh").unwrap();
+
+        assert!(marketplace.last_updated.is_some());
+        let entries = svc.list_marketplace_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_commit, None);
+        let err = svc
+            .prepare_plugin_install("dsh", "dsh-demo", false)
+            .unwrap_err();
 
         assert!(err.to_string().contains("valid commit sha"));
         assert_eq!(svc.list_marketplaces().unwrap().len(), 1);
-        assert!(!roots
+        assert!(roots
             .marketplaces
             .join("dsh")
             .join("marketplace.json")
             .exists());
         assert!(!roots.marketplaces.join("dsh").join(".github-api").exists());
+        assert!(!roots
+            .marketplace_cache
+            .join("dsh")
+            .join("dsh-demo")
+            .exists());
 
         match old_fixtures {
             Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
@@ -13143,6 +12994,54 @@ deepagent-definitely-missing-runtime-cli --version
             .scan_marketplace_plugin("remote", "zip-plugin")
             .unwrap_err();
         assert!(err.to_string().contains("unsupported source 'zip-url'"));
+    }
+
+    #[test]
+    fn remote_http_marketplace_add_requires_sha256_fragment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+        let err = svc
+            .add_marketplace(AddPluginMarketplaceDto {
+                name: Some("remote".to_string()),
+                source: "https://example.com/marketplace.json".to_string(),
+                git_ref: None,
+                sparse_path: None,
+            })
+            .unwrap_err();
+
+        assert!(err.to_string().contains("requires #sha256=<hex>"));
+    }
+
+    #[test]
+    fn remote_http_marketplace_refresh_requires_sha256_fragment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("local-marketplace");
+        std::fs::create_dir_all(&marketplace_root).unwrap();
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{"name":"remote","plugins":[]}"#,
+        )
+        .unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("remote".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+        {
+            let mut state = svc.load_state().unwrap();
+            state.marketplaces.get_mut("remote").unwrap().source =
+                "https://example.com/marketplace.json".to_string();
+            svc.save_state(&state).unwrap();
+        }
+
+        let err = svc.refresh_marketplace("remote").unwrap_err();
+
+        assert!(err.to_string().contains("requires #sha256=<hex>"));
     }
 
     #[test]

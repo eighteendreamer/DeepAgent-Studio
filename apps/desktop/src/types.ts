@@ -632,6 +632,22 @@ export interface PluginScanReport {
   errors: string[];
 }
 
+export interface PreparedPluginInstall {
+  token: string;
+  marketplace: string;
+  plugin: string;
+  plugin_id: string;
+  version?: string | null;
+  source_kind: string;
+  source: string;
+  content_hash: string;
+  staging_path: string;
+  plugin_root: string;
+  destination_path: string;
+  scan_report: PluginScanReport;
+  runtime_inspection?: unknown;
+}
+
 /** One row in a structured slash-command panel (mirrors SlashPanelItem). */
 export interface SlashPanelItem {
   label: string;
