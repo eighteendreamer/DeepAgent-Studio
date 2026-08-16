@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import {
-  addPluginMarketplace,
   createPlugin,
   installPluginFromDir,
   installPluginFromMarketplace,
@@ -24,7 +23,6 @@ import {
   updatePlugin,
 } from "../api";
 import type {
-  AddPluginMarketplaceInput,
   CreatePluginDraft,
   Plugin,
   PluginDiagnosticSeverity,
@@ -90,18 +88,9 @@ const emptyCreateDraft: CreatePluginDraft = {
   category: "Developer Tools",
 };
 
-const emptyMarketplaceDraft: AddPluginMarketplaceInput = {
-  name: "",
-  source: "",
-  git_ref: "main",
-  sparse_path: "",
-};
-
-const deepSeekHarnessMarketplaceDraft: AddPluginMarketplaceInput = {
+const deepSeekHarnessMarketplace: PluginMarketplace = {
   name: "deepseek-harness",
   source: "https://github.com/topics/dsh-plugin",
-  git_ref: "main",
-  sparse_path: "",
 };
 
 export function PluginsView() {
@@ -123,10 +112,7 @@ export function PluginsView() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [marketOpen, setMarketOpen] = useState(false);
   const [createDraft, setCreateDraft] = useState<CreatePluginDraft>(emptyCreateDraft);
-  const [marketDraft, setMarketDraft] =
-    useState<AddPluginMarketplaceInput>(emptyMarketplaceDraft);
   const [scanDialog, setScanDialog] = useState<PendingScanAction | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<PendingConfirmAction | null>(null);
@@ -142,11 +128,8 @@ export function PluginsView() {
         listPluginMarketplaceEntries(),
       ]);
       let marketplaceRows = initialMarketplaceRows;
-      if (isTauri() && !marketplaceRows.some(isDeepSeekHarnessMarketplace)) {
-        marketplaceRows = [
-          ...marketplaceRows,
-          await addPluginMarketplace(deepSeekHarnessMarketplaceDraft),
-        ];
+      if (!marketplaceRows.some(isDeepSeekHarnessMarketplace)) {
+        marketplaceRows = [...marketplaceRows, deepSeekHarnessMarketplace];
       }
       setPlugins(pluginRows);
       setMarketplaces(marketplaceRows);
@@ -450,19 +433,6 @@ export function PluginsView() {
     }
   };
 
-  const submitMarketplace = async () => {
-    if (!marketDraft.source.trim()) return;
-    setError(null);
-    try {
-      await addPluginMarketplace(marketDraft);
-      setMarketOpen(false);
-      setMarketDraft(emptyMarketplaceDraft);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
   const installMarketplaceEntry = async (entry: PluginMarketplaceEntry) => {
     setBusyId(`${entry.marketplace}:${entry.name}`);
     setError(null);
@@ -673,7 +643,6 @@ export function PluginsView() {
               marketplaces={marketplaces}
               entries={marketplaceEntries}
               busyId={busyId}
-              onAdd={() => setMarketOpen(true)}
               query={marketplaceQuery}
               onQueryChange={setMarketplaceQuery}
               loading={marketplaceLoading}
@@ -701,14 +670,6 @@ export function PluginsView() {
           onChange={setCreateDraft}
           onClose={() => setCreateOpen(false)}
           onSubmit={submitCreate}
-        />
-      )}
-      {marketOpen && (
-        <MarketplaceDialog
-          draft={marketDraft}
-          onChange={setMarketDraft}
-          onClose={() => setMarketOpen(false)}
-          onSubmit={submitMarketplace}
         />
       )}
       {scanDialog && (
@@ -1141,7 +1102,6 @@ function MarketplacePanel({
   marketplaces,
   entries,
   busyId,
-  onAdd,
   query,
   onQueryChange,
   loading,
@@ -1156,7 +1116,6 @@ function MarketplacePanel({
   marketplaces: PluginMarketplace[];
   entries: PluginMarketplaceEntry[];
   busyId: string | null;
-  onAdd: () => void;
   query: string;
   onQueryChange: (query: string) => void;
   loading: boolean;
@@ -1203,17 +1162,13 @@ function MarketplacePanel({
             从 GitHub `dsh-plugin` topic 按需获取仓库索引，安装时才下载完整插件。
           </div>
         </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+        <div className="flex shrink-0 flex-wrap justify-end">
           <Input
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             placeholder="搜索插件仓库"
             className="h-8 w-[220px] text-[12px]"
           />
-          <Button variant="outline" size="sm" onClick={onAdd}>
-            <FontAwesomeIcon icon={["fas", "plus"]} />
-            <span>添加来源</span>
-          </Button>
         </div>
       </div>
       {marketplaceNames.length === 0 ? (
@@ -1225,7 +1180,7 @@ function MarketplacePanel({
             const marketplaceEntries = entriesByMarketplace.get(name) ?? [];
             const isDsh = marketplace
               ? isDeepSeekHarnessMarketplace(marketplace)
-              : name === deepSeekHarnessMarketplaceDraft.name;
+              : name === deepSeekHarnessMarketplace.name;
             return (
               <div key={name} className="py-1">
                 <div className="flex items-start justify-between gap-3 border-b border-border-theme pb-3">
@@ -1390,9 +1345,9 @@ function MarketplaceEntryCard({
 
 function isDeepSeekHarnessMarketplace(marketplace: PluginMarketplace): boolean {
   return (
-    marketplace.name === deepSeekHarnessMarketplaceDraft.name ||
+    marketplace.name === deepSeekHarnessMarketplace.name ||
     normalizeMarketplaceSource(marketplace.source) ===
-      normalizeMarketplaceSource(deepSeekHarnessMarketplaceDraft.source)
+      normalizeMarketplaceSource(deepSeekHarnessMarketplace.source)
   );
 }
 
@@ -1465,57 +1420,6 @@ function CreateDialog({
           value={draft.category || ""}
           onChange={(event) => onChange({ ...draft, category: event.target.value })}
           placeholder="Developer Tools"
-        />
-      </Field>
-    </Modal>
-  );
-}
-
-function MarketplaceDialog({
-  draft,
-  onChange,
-  onClose,
-  onSubmit,
-}: {
-  draft: AddPluginMarketplaceInput;
-  onChange: (draft: AddPluginMarketplaceInput) => void;
-  onClose: () => void;
-  onSubmit: () => void;
-}) {
-  return (
-    <Modal
-      title="添加插件市场"
-      onClose={onClose}
-      onSubmit={onSubmit}
-      submitLabel="添加"
-      disabled={!draft.source.trim()}
-    >
-      <Field label="名称">
-        <Input
-          value={draft.name || ""}
-          onChange={(event) => onChange({ ...draft, name: event.target.value })}
-          placeholder="openai-curated"
-        />
-      </Field>
-      <Field label="来源">
-        <Input
-          value={draft.source}
-          onChange={(event) => onChange({ ...draft, source: event.target.value })}
-          placeholder="G:/plugins 或 https://github.com/org/plugins.git"
-        />
-      </Field>
-      <Field label="Git 引用">
-        <Input
-          value={draft.git_ref || ""}
-          onChange={(event) => onChange({ ...draft, git_ref: event.target.value })}
-          placeholder="main"
-        />
-      </Field>
-      <Field label="子路径">
-        <Input
-          value={draft.sparse_path || ""}
-          onChange={(event) => onChange({ ...draft, sparse_path: event.target.value })}
-          placeholder="plugins/browser"
         />
       </Field>
     </Modal>

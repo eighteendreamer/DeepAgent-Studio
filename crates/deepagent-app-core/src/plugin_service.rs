@@ -52,6 +52,8 @@ const PLUGIN_CACHE_ORPHAN_GRACE_MILLIS: u128 = 7 * 24 * 60 * 60 * 1000;
 const PREPARED_PLUGIN_INSTALL_FILE: &str = ".prepared-install.json";
 const GITHUB_API_BASES_ENV: &str = "DEEPAGENT_PLUGIN_GITHUB_API_BASES";
 const GITHUB_TOPIC_PREFIX: &str = "https://github.com/topics/";
+const DEEPSEEK_HARNESS_MARKETPLACE_NAME: &str = "deepseek-harness";
+const DEEPSEEK_HARNESS_MARKETPLACE_SOURCE: &str = "https://github.com/topics/dsh-plugin";
 const DSH_SIDECAR_MCP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const GITHUB_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const GITHUB_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1399,13 +1401,24 @@ impl PluginService {
         &self,
         input: PluginMarketplaceEntriesQueryDto,
     ) -> Result<PluginMarketplacePageDto> {
-        let state = self.load_state()?;
+        let mut state = self.load_state()?;
         let marketplace_name = input
             .marketplace
             .as_deref()
             .map(slugify)
             .or_else(|| state.marketplaces.keys().next().cloned())
             .ok_or_else(|| CoreError::not_found("plugin marketplace"))?;
+        if marketplace_name == DEEPSEEK_HARNESS_MARKETPLACE_NAME
+            && !state.marketplaces.contains_key(&marketplace_name)
+        {
+            self.add_marketplace(AddPluginMarketplaceDto {
+                name: Some(DEEPSEEK_HARNESS_MARKETPLACE_NAME.to_string()),
+                source: DEEPSEEK_HARNESS_MARKETPLACE_SOURCE.to_string(),
+                git_ref: None,
+                sparse_path: None,
+            })?;
+            state = self.load_state()?;
+        }
         let page = input.page.max(1);
         let per_page = input.per_page.clamp(1, 100);
         let query = input.query.trim().to_string();
@@ -12317,6 +12330,82 @@ deepagent-definitely-missing-runtime-cli --version
         match old_download_source {
             Some(path) => std::env::set_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE", path),
             None => std::env::remove_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE"),
+        }
+    }
+
+    #[test]
+    fn dsh_search_registers_official_marketplace_automatically() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let fixtures = tmp.path().join("github-api");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
+        std::env::set_var(
+            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
+            fixtures.display().to_string(),
+        );
+
+        let search_endpoint =
+            "/search/repositories?q=topic%3Adsh-plugin&sort=updated&order=desc&per_page=100";
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(search_endpoint))),
+            r#"{
+              "total_count": 1,
+              "items": [
+                {
+                  "name": "dsh-demo",
+                  "full_name": "deepseek-ai/dsh-demo",
+                  "description": "Demo DSH plugin",
+                  "default_branch": "main",
+                  "stargazers_count": 12,
+                  "topics": ["dsh-plugin"],
+                  "license": { "spdx_id": "MIT" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let branch_endpoint = "/repos/deepseek-ai/dsh-demo/branches/main";
+        std::fs::write(
+            fixtures.join(format!("{}.json", github_api_fixture_name(branch_endpoint))),
+            r#"{
+              "commit": {
+                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+        assert!(svc.list_marketplaces().unwrap().is_empty());
+
+        let page = svc
+            .search_marketplace_entries(PluginMarketplaceEntriesQueryDto {
+                marketplace: Some("deepseek-harness".to_string()),
+                query: String::new(),
+                page: 1,
+                per_page: 100,
+            })
+            .unwrap();
+
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(
+            page.entries[0].repository_full_name.as_deref(),
+            Some("deepseek-ai/dsh-demo")
+        );
+        let marketplaces = svc.list_marketplaces().unwrap();
+        assert_eq!(marketplaces.len(), 1);
+        assert_eq!(marketplaces[0].name, "deepseek-harness");
+        assert_eq!(
+            marketplaces[0].source,
+            "https://github.com/topics/dsh-plugin"
+        );
+
+        match old_fixtures {
+            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
+            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
         }
     }
 

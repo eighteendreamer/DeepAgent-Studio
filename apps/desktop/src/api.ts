@@ -47,7 +47,6 @@ import type {
   PermissionPresetVisibility,
   PermissionRules,
   PersistedAttachment,
-  AddPluginMarketplaceInput,
   CreatePluginDraft,
   Plugin,
   PluginApp,
@@ -741,18 +740,6 @@ export async function searchPluginMarketplaceEntries(
     has_next: false,
     query: input.query || "",
   };
-}
-
-export async function addPluginMarketplace(
-  input: AddPluginMarketplaceInput
-): Promise<PluginMarketplace> {
-  const invoke = getInvoke();
-  if (invoke) {
-    const marketplace = await invoke<PluginMarketplace>("add_plugin_marketplace", { input });
-    emitPluginsChanged();
-    return marketplace;
-  }
-  throw new Error("adding a plugin marketplace requires the desktop app");
 }
 
 export async function removePluginMarketplace(name: string): Promise<boolean> {

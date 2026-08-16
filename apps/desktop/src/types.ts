@@ -605,13 +605,6 @@ export interface PluginMarketplacePage {
   query: string;
 }
 
-export interface AddPluginMarketplaceInput {
-  name?: string | null;
-  source: string;
-  git_ref?: string | null;
-  sparse_path?: string | null;
-}
-
 export interface PluginRiskItem {
   severity: string;
   category: string;

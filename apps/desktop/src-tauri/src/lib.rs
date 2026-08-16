@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
-    AddPluginMarketplaceDto, AppService, ArchiveProjectResultDto, ArchiveService,
+    AppService, ArchiveProjectResultDto, ArchiveService,
     ArchivedConversationDto, AttachmentDto, AttachmentIngestDto, AttachmentService, BalanceDto,
     BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary,
     CreatePluginDraftDto, DiagnosticResult, DiffResult, FilePreviewService, ForkResultDto,
@@ -1308,19 +1308,6 @@ fn list_plugin_marketplaces(
     state: State<'_, AppState>,
 ) -> Result<Vec<PluginMarketplaceDto>, String> {
     state.plugins.list_marketplaces().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn add_plugin_marketplace(
-    state: State<'_, AppState>,
-    input: AddPluginMarketplaceDto,
-) -> Result<PluginMarketplaceDto, String> {
-    let plugins = Arc::clone(&state.plugins);
-    tauri::async_runtime::spawn_blocking(move || {
-        plugins.add_marketplace(input).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -5484,7 +5471,6 @@ pub fn run() {
             scan_plugin,
             scan_plugin_zip,
             list_plugin_marketplaces,
-            add_plugin_marketplace,
             remove_plugin_marketplace,
             refresh_plugin_marketplace,
             list_plugin_marketplace_entries,
