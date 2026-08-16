@@ -1366,18 +1366,6 @@ impl PluginService {
         })
     }
 
-    pub fn scan_marketplace_plugin(
-        &self,
-        marketplace: &str,
-        plugin: &str,
-    ) -> Result<PluginScanReportDto> {
-        let (marketplace_key, entry) = self.marketplace_entry(marketplace, plugin)?;
-        let entry = self.pin_marketplace_entry_for_install(&marketplace_key, entry)?;
-        ensure_marketplace_entry_installable(&marketplace_key, &entry)?;
-        let materialized = self.materialize_marketplace_plugin_source(&marketplace_key, &entry)?;
-        scan_plugin_dir(materialized.plugin_root())
-    }
-
     pub fn prepare_plugin_install(
         &self,
         marketplace: &str,
@@ -10652,11 +10640,9 @@ rl.on('line', (line) => {
         assert_eq!(entries[0].name, "demo");
         assert!(entries[0].installable);
         assert!(!entries[0].installed);
-        assert!(
-            svc.scan_marketplace_plugin("team", "demo")
-                .unwrap()
-                .manifest_ok
-        );
+        let prepared = svc.prepare_plugin_install("team", "demo", false).unwrap();
+        assert!(prepared.scan_report.manifest_ok);
+        assert!(svc.cancel_plugin_install(&prepared.token).unwrap());
 
         let installed = svc.install_from_marketplace("team", "demo").unwrap();
         assert_eq!(installed.id, "demo@team");
@@ -12974,7 +12960,7 @@ deepagent-definitely-missing-runtime-cli --version
         assert!(entries[0].source.contains("missing sha256"));
 
         let err = svc
-            .scan_marketplace_plugin("remote", "zip-plugin")
+            .prepare_plugin_install("remote", "zip-plugin", false)
             .unwrap_err();
         assert!(err.to_string().contains("unsupported source 'zip-url'"));
     }
@@ -13182,8 +13168,12 @@ deepagent-definitely-missing-runtime-cli --version
             Some("NOT_AVAILABLE")
         );
 
-        let scan_err = svc.scan_marketplace_plugin("team", "demo").unwrap_err();
-        assert!(scan_err.to_string().contains("not available for install"));
+        let prepare_err = svc
+            .prepare_plugin_install("team", "demo", false)
+            .unwrap_err();
+        assert!(prepare_err
+            .to_string()
+            .contains("not available for install"));
         let install_err = svc.install_from_marketplace("team", "demo").unwrap_err();
         assert!(install_err
             .to_string()
@@ -13234,7 +13224,9 @@ deepagent-definitely-missing-runtime-cli --version
             .as_deref()
             .unwrap()
             .contains("authentication confirmation required"));
-        assert!(svc.scan_marketplace_plugin("team", "demo").is_ok());
+        let prepared = svc.prepare_plugin_install("team", "demo", true).unwrap();
+        assert!(prepared.scan_report.manifest_ok);
+        assert!(svc.cancel_plugin_install(&prepared.token).unwrap());
 
         let install_err = svc.install_from_marketplace("team", "demo").unwrap_err();
         assert!(install_err
