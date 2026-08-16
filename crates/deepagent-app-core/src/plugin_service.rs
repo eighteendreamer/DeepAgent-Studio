@@ -897,6 +897,7 @@ impl PluginService {
         let mut state = self.load_state()?;
         state.enabled.insert(id.to_string(), enabled);
         self.save_state(&state)?;
+        self.invalidate_plugin_caches();
         self.read(id)?
             .ok_or_else(|| CoreError::not_found(format!("plugin {id}")))
     }
@@ -10245,6 +10246,29 @@ rl.on('line', (line) => {
         let disabled = svc.set_enabled("demo@builtin", false).unwrap();
         assert!(!disabled.enabled);
         assert!(svc.runtime_projection().unwrap().skill_roots.is_empty());
+    }
+
+    #[test]
+    fn set_enabled_invalidates_cached_runtime_projection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin(&roots.builtin.join("demo"), "demo");
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+
+        let stale_projection = svc.runtime_projection().unwrap();
+        assert_eq!(
+            stale_projection.skill_roots,
+            vec![roots.builtin.join("demo").join("skills")]
+        );
+        svc.store_runtime_projection_cache(stale_projection, Vec::new());
+
+        let disabled = svc.set_enabled("demo@builtin", false).unwrap();
+
+        assert!(!disabled.enabled);
+        assert!(
+            svc.runtime_projection().unwrap().skill_roots.is_empty(),
+            "set_enabled must invalidate runtime projection cache even when file snapshots still match"
+        );
     }
 
     #[test]
