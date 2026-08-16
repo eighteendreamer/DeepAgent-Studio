@@ -12984,6 +12984,13 @@ deepagent-definitely-missing-runtime-cli --version
         let data_dir = svc.data_root.join(sanitize_file_name(&first.id));
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::write(data_dir.join("state.json"), r#"{"runs":1}"#).unwrap();
+        let first_checked_at = svc
+            .load_state()
+            .unwrap()
+            .health_checks
+            .get("demo@team")
+            .map(|health| health.checked_at.clone())
+            .expect("first install should persist a health check");
 
         let second = svc.install_from_marketplace("team", "demo").unwrap();
         assert_eq!(second.id, "demo@team");
@@ -12999,6 +13006,15 @@ deepagent-definitely-missing-runtime-cli --version
                 .filter(|plugin| plugin.id == "demo@team")
                 .count(),
             1
+        );
+        assert_eq!(
+            svc.load_state()
+                .unwrap()
+                .health_checks
+                .get("demo@team")
+                .map(|health| health.checked_at.as_str()),
+            Some(first_checked_at.as_str()),
+            "reinstalling the same package should keep the existing health check instead of re-running it"
         );
         assert_eq!(
             svc.runtime_projection().unwrap().skill_roots,
