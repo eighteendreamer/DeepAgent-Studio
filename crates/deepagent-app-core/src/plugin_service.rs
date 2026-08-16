@@ -5861,6 +5861,44 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
+struct PluginArchiveBudget {
+    kind: &'static str,
+    entries: usize,
+    total_uncompressed_bytes: u64,
+}
+
+impl PluginArchiveBudget {
+    fn new(kind: &'static str) -> Self {
+        Self {
+            kind,
+            entries: 0,
+            total_uncompressed_bytes: 0,
+        }
+    }
+
+    fn add_entries(&mut self, entries: usize) -> Result<()> {
+        self.entries = self.entries.saturating_add(entries);
+        if self.entries > MAX_PLUGIN_ARCHIVE_ENTRIES {
+            return Err(CoreError::invalid(format!(
+                "{} archive has too many entries: {} > {}",
+                self.kind, self.entries, MAX_PLUGIN_ARCHIVE_ENTRIES
+            )));
+        }
+        Ok(())
+    }
+
+    fn add_uncompressed_size(&mut self, bytes: u64) -> Result<()> {
+        self.total_uncompressed_bytes = self.total_uncompressed_bytes.saturating_add(bytes);
+        if self.total_uncompressed_bytes > MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES {
+            return Err(CoreError::invalid(format!(
+                "{} archive uncompressed size exceeds {} bytes",
+                self.kind, MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES
+            )));
+        }
+        Ok(())
+    }
+}
+
 fn extract_zip_into(zip_path: &Path, destination: &Path) -> Result<()> {
     std::fs::create_dir_all(destination).map_err(|e| {
         CoreError::Persistence(format!(
@@ -5872,14 +5910,8 @@ fn extract_zip_into(zip_path: &Path, destination: &Path) -> Result<()> {
         .map_err(|e| CoreError::Persistence(format!("open zip {}: {e}", zip_path.display())))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| CoreError::invalid(format!("read zip archive: {e}")))?;
-    if archive.len() > MAX_PLUGIN_ARCHIVE_ENTRIES {
-        return Err(CoreError::invalid(format!(
-            "zip archive has too many entries: {} > {}",
-            archive.len(),
-            MAX_PLUGIN_ARCHIVE_ENTRIES
-        )));
-    }
-    let mut total_size = 0u64;
+    let mut budget = PluginArchiveBudget::new("zip");
+    budget.add_entries(archive.len())?;
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
@@ -5889,13 +5921,7 @@ fn extract_zip_into(zip_path: &Path, destination: &Path) -> Result<()> {
                 "zip entry {index} escapes destination"
             )));
         };
-        total_size = total_size.saturating_add(entry.size());
-        if total_size > MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES {
-            return Err(CoreError::invalid(format!(
-                "zip archive uncompressed size exceeds {} bytes",
-                MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES
-            )));
-        }
+        budget.add_uncompressed_size(entry.size())?;
         let out = destination.join(relative);
         if entry.is_dir() {
             std::fs::create_dir_all(&out).map_err(|e| {
@@ -5936,16 +5962,10 @@ fn extract_targz_into(archive_path: &Path, destination: &Path) -> Result<()> {
     let entries = archive
         .entries()
         .map_err(|e| CoreError::invalid(format!("read tar archive: {e}")))?;
-    let mut entry_count = 0usize;
-    let mut total_size = 0u64;
+    let mut budget = PluginArchiveBudget::new("tar");
     for entry in entries {
         let mut entry = entry.map_err(|e| CoreError::invalid(format!("read tar entry: {e}")))?;
-        entry_count += 1;
-        if entry_count > MAX_PLUGIN_ARCHIVE_ENTRIES {
-            return Err(CoreError::invalid(format!(
-                "tar archive has too many entries: {entry_count} > {MAX_PLUGIN_ARCHIVE_ENTRIES}"
-            )));
-        }
+        budget.add_entries(1)?;
         let path = entry
             .path()
             .map_err(|e| CoreError::invalid(format!("read tar entry path: {e}")))?
@@ -5966,13 +5986,7 @@ fn extract_targz_into(archive_path: &Path, destination: &Path) -> Result<()> {
             .header()
             .size()
             .map_err(|e| CoreError::invalid(format!("read tar entry size: {e}")))?;
-        total_size = total_size.saturating_add(size);
-        if total_size > MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES {
-            return Err(CoreError::invalid(format!(
-                "tar archive uncompressed size exceeds {} bytes",
-                MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES
-            )));
-        }
+        budget.add_uncompressed_size(size)?;
         entry.unpack_in(destination).map_err(|e| {
             CoreError::Persistence(format!(
                 "extract tar entry {} into {}: {e}",
