@@ -1873,7 +1873,9 @@ impl PluginService {
             self.plugin_runtime_requirements(&loaded, Some(manifest), has_runtime_payload);
         let runtime_available = self.runtime_requirements_available(&runtime_requirements);
         let resolved = loaded.resolved.as_ref();
-        let health_status = self.plugin_health_status(
+        let execution_kind =
+            self.plugin_execution_kind(&loaded, Some(manifest), counts, has_runtime_payload);
+        let mut health_status = self.plugin_health_status(
             &loaded,
             Some(manifest),
             resolved,
@@ -1881,14 +1883,26 @@ impl PluginService {
             runtime_available,
             &runtime_requirements,
         );
+        let mut health_error = self.plugin_health_error(
+            &loaded,
+            Some(manifest),
+            counts,
+            &runtime_requirements,
+            health_status,
+        );
+        if matches!(health_status, PluginHealthStatus::Ready) {
+            if let Some(resolved) = resolved {
+                if let Some((status, error)) =
+                    self.staged_plugin_health_override(&loaded, resolved, execution_kind)
+                {
+                    health_status = status;
+                    health_error = error;
+                }
+            }
+        }
         PluginRuntimeInspectionDto {
             plugin_id: plugin_id.to_string(),
-            execution_kind: self.plugin_execution_kind(
-                &loaded,
-                Some(manifest),
-                counts,
-                has_runtime_payload,
-            ),
+            execution_kind,
             state: self.plugin_lifecycle_state(
                 &loaded,
                 Some(manifest),
@@ -1903,14 +1917,48 @@ impl PluginService {
             has_runtime_payload,
             health_status,
             last_health_check: Some(now_string()),
-            health_error: self.plugin_health_error(
-                &loaded,
-                Some(manifest),
-                counts,
-                &runtime_requirements,
-                health_status,
-            ),
+            health_error,
         }
+    }
+
+    fn staged_plugin_health_override(
+        &self,
+        loaded: &LoadedPlugin,
+        resolved: &ResolvedPlugin,
+        execution_kind: PluginExecutionKind,
+    ) -> Option<(PluginHealthStatus, Option<String>)> {
+        let data_dir = self.data_root.join(sanitize_file_name(&loaded.id));
+        let projection =
+            PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
+                id: &loaded.id,
+                name: &loaded.name,
+                source_priority: plugin_runtime_priority(loaded.origin),
+                root: &loaded.root,
+                data_dir,
+                plugin: resolved,
+            }]);
+
+        if let Some(error) = projection
+            .errors
+            .iter()
+            .find(|error| error.component == "mcp")
+        {
+            return Some((
+                PluginHealthStatus::Failed,
+                Some(format!(
+                    "plugin MCP runtime projection failed: {}",
+                    error.message
+                )),
+            ));
+        }
+
+        if execution_kind == PluginExecutionKind::DshSidecar {
+            if let Some(failure) = dsh_sidecar_preflight_failure(&projection.mcp_config) {
+                return Some(failure);
+            }
+        }
+
+        None
     }
 
     fn plugin_runtime_requirements(
@@ -3290,6 +3338,19 @@ fn runtime_payload_health_error(plugin_root: &Path, data_dir: &Path) -> Option<S
 fn dsh_sidecar_health_failure(
     mcp_config: &McpConfig,
 ) -> Option<(PluginHealthStatus, Option<String>)> {
+    dsh_sidecar_health_failure_inner(mcp_config, true)
+}
+
+fn dsh_sidecar_preflight_failure(
+    mcp_config: &McpConfig,
+) -> Option<(PluginHealthStatus, Option<String>)> {
+    dsh_sidecar_health_failure_inner(mcp_config, false)
+}
+
+fn dsh_sidecar_health_failure_inner(
+    mcp_config: &McpConfig,
+    probe_sidecar: bool,
+) -> Option<(PluginHealthStatus, Option<String>)> {
     for (server_name, server) in &mcp_config.servers {
         let transport = match server.effective_type() {
             Ok(transport) => transport,
@@ -3342,13 +3403,15 @@ fn dsh_sidecar_health_failure(
         ) {
             return Some(failure);
         }
-        if let Err(error) = probe_mcp_sidecar(server.clone()) {
-            return Some((
-                PluginHealthStatus::Failed,
-                Some(format!(
-                    "MCP sidecar '{server_name}' failed initialize/tools handshake: {error}"
-                )),
-            ));
+        if probe_sidecar {
+            if let Err(error) = probe_mcp_sidecar(server.clone()) {
+                return Some((
+                    PluginHealthStatus::Failed,
+                    Some(format!(
+                        "MCP sidecar '{server_name}' failed initialize/tools handshake: {error}"
+                    )),
+                ));
+            }
         }
     }
     None
@@ -10234,6 +10297,116 @@ deepagent-definitely-missing-runtime-cli --version
             .join(".codex-plugin")
             .join("plugin.json")
             .is_file());
+    }
+
+    #[test]
+    fn prepared_marketplace_prepare_reports_missing_sidecar_script_incomplete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("demo");
+        write_plugin_with_stdio_mcp(
+            &plugin_source,
+            "demo",
+            "node",
+            vec!["missing.js"],
+            Some("${PLUGIN_ROOT}"),
+        );
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.1.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let prepared = svc.prepare_plugin_install("team", "demo", false).unwrap();
+        assert_eq!(
+            prepared.runtime_inspection.execution_kind,
+            PluginExecutionKind::DshSidecar
+        );
+        assert_eq!(
+            prepared.runtime_inspection.health_status,
+            PluginHealthStatus::Incomplete
+        );
+        assert!(prepared
+            .runtime_inspection
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("missing.js"));
+    }
+
+    #[test]
+    fn prepared_marketplace_prepare_reports_missing_sidecar_command_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let marketplace_root = tmp.path().join("team-marketplace");
+        let plugin_source = marketplace_root.join("plugins").join("demo");
+        write_plugin_with_stdio_mcp(
+            &plugin_source,
+            "demo",
+            "deepagent-definitely-missing-sidecar",
+            Vec::new(),
+            Some("${PLUGIN_ROOT}"),
+        );
+        std::fs::write(
+            marketplace_root.join("marketplace.json"),
+            r#"{
+              "name": "team",
+              "plugins": [
+                {
+                  "name": "demo",
+                  "version": "0.1.0",
+                  "description": "Demo marketplace plugin",
+                  "source": { "source": "local", "path": "./plugins/demo" }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
+        svc.add_marketplace(AddPluginMarketplaceDto {
+            name: Some("team".to_string()),
+            source: marketplace_root.display().to_string(),
+            git_ref: None,
+            sparse_path: None,
+        })
+        .unwrap();
+
+        let prepared = svc.prepare_plugin_install("team", "demo", false).unwrap();
+        assert_eq!(
+            prepared.runtime_inspection.execution_kind,
+            PluginExecutionKind::DshSidecar
+        );
+        assert_eq!(
+            prepared.runtime_inspection.health_status,
+            PluginHealthStatus::RuntimeUnavailable
+        );
+        assert!(prepared
+            .runtime_inspection
+            .health_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deepagent-definitely-missing-sidecar"));
     }
 
     #[test]
