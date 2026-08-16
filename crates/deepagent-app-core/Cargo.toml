@@ -47,6 +47,7 @@ rust_xlsxwriter.workspace = true
 sha2.workspace = true
 base64.workspace = true
 percent-encoding.workspace = true
+tempfile.workspace = true
 # .tar.gz extraction for managed runtimes (always compiled — small, pure Rust).
 tar.workspace = true
 flate2.workspace = true
@@ -103,5 +104,4 @@ audio = ["dep:cpal", "dep:hound"]
 pdfium = ["dep:pdfium-render", "dep:image"]
 
 [dev-dependencies]
-tempfile.workspace = true
 tokio = { workspace = true }

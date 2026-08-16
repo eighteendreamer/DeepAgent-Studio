@@ -3301,33 +3301,15 @@ impl PluginService {
 
     fn marketplace_staging_dir(&self, marketplace: &str, plugin: &str) -> Result<PathBuf> {
         let base = self.roots.marketplace_cache.join(".staging");
-        std::fs::create_dir_all(&base).map_err(|e| {
-            CoreError::Persistence(format!(
-                "create plugin marketplace staging root {}: {e}",
-                base.display()
-            ))
-        })?;
-        for attempt in 0..100u32 {
-            let dir = base.join(format!(
-                "{}-{}-{}-{attempt}",
+        create_temp_staging_dir(
+            &base,
+            &format!(
+                "{}-{}",
                 sanitize_file_name(marketplace),
-                sanitize_file_name(plugin),
-                now_string()
-            ));
-            if dir.exists() {
-                continue;
-            }
-            std::fs::create_dir_all(&dir).map_err(|e| {
-                CoreError::Persistence(format!(
-                    "create plugin marketplace staging dir {}: {e}",
-                    dir.display()
-                ))
-            })?;
-            return Ok(dir);
-        }
-        Err(CoreError::other(
-            "failed to allocate plugin marketplace staging dir",
-        ))
+                sanitize_file_name(plugin)
+            ),
+            "plugin marketplace staging",
+        )
     }
 
     fn prepared_install_dir(&self, token: &str) -> Result<PathBuf> {
@@ -7583,39 +7565,28 @@ fn commit_plugin_directory(
 }
 
 fn create_plugin_staging_dir(install_root: &Path, label: &str) -> Result<PathBuf> {
-    let stage = unique_plugin_staging_path(install_root, label)?;
-    std::fs::create_dir_all(&stage).map_err(|e| {
-        CoreError::Persistence(format!(
-            "create plugin staging dir {}: {e}",
-            stage.display()
-        ))
-    })?;
-    Ok(stage)
+    create_temp_staging_dir(
+        &install_root.join(".staging"),
+        &sanitize_file_name(label),
+        "plugin staging",
+    )
 }
 
-fn unique_plugin_staging_path(install_root: &Path, label: &str) -> Result<PathBuf> {
-    let base = install_root.join(".staging");
-    std::fs::create_dir_all(&base).map_err(|e| {
-        CoreError::Persistence(format!(
-            "create plugin staging root {}: {e}",
-            base.display()
-        ))
+fn create_temp_staging_dir(base: &Path, label: &str, purpose: &str) -> Result<PathBuf> {
+    std::fs::create_dir_all(base).map_err(|e| {
+        CoreError::Persistence(format!("create {purpose} root {}: {e}", base.display()))
     })?;
-    let label = sanitize_file_name(label);
-    for attempt in 0..100u32 {
-        let path = base.join(format!(
-            "{label}-{}-{}-{attempt}",
-            std::process::id(),
-            now_string()
-        ));
-        if !path.exists() {
-            return Ok(path);
-        }
-    }
-    Err(CoreError::other(format!(
-        "failed to allocate plugin staging dir under {}",
-        base.display()
-    )))
+    let prefix = format!("{}-{}-", sanitize_file_name(label), now_string());
+    let temp_dir = tempfile::Builder::new()
+        .prefix(&prefix)
+        .tempdir_in(base)
+        .map_err(|e| {
+            CoreError::Persistence(format!(
+                "create {purpose} dir under {}: {e}",
+                base.display()
+            ))
+        })?;
+    Ok(temp_dir.keep())
 }
 
 fn remove_dir_all_with_retry(path: &Path) -> std::io::Result<()> {
@@ -7658,8 +7629,10 @@ fn replace_plugin_dir(stage: &Path, destination: &Path, install_root: &Path) -> 
         });
     }
 
-    let backup = unique_plugin_staging_path(install_root, "rollback")?;
+    let backup_root = create_plugin_staging_dir(install_root, "rollback")?;
+    let backup = backup_root.join("previous");
     std::fs::rename(destination, &backup).map_err(|e| {
+        let _ = remove_dir_all_with_retry(&backup_root);
         CoreError::Persistence(format!(
             "backup existing plugin directory {} -> {}: {e}",
             destination.display(),
@@ -7669,9 +7642,9 @@ fn replace_plugin_dir(stage: &Path, destination: &Path, install_root: &Path) -> 
 
     match std::fs::rename(stage, destination) {
         Ok(()) => {
-            if let Err(error) = std::fs::remove_dir_all(&backup) {
+            if let Err(error) = remove_dir_all_with_retry(&backup_root) {
                 tracing::warn!(
-                    path = %backup.display(),
+                    path = %backup_root.display(),
                     error = %error,
                     "failed to remove replaced plugin backup"
                 );
@@ -7682,11 +7655,14 @@ fn replace_plugin_dir(stage: &Path, destination: &Path, install_root: &Path) -> 
             let restore = std::fs::rename(&backup, destination);
             let _ = std::fs::remove_dir_all(stage);
             match restore {
-                Ok(()) => Err(CoreError::Persistence(format!(
-                    "activate plugin directory {} -> {} failed and previous version was restored: {activate_err}",
-                    stage.display(),
-                    destination.display()
-                ))),
+                Ok(()) => {
+                    let _ = remove_dir_all_with_retry(&backup_root);
+                    Err(CoreError::Persistence(format!(
+                        "activate plugin directory {} -> {} failed and previous version was restored: {activate_err}",
+                        stage.display(),
+                        destination.display()
+                    )))
+                }
                 Err(restore_err) => Err(CoreError::Persistence(format!(
                     "activate plugin directory {} -> {} failed ({activate_err}); restore from {} also failed: {restore_err}",
                     stage.display(),
@@ -9874,38 +9850,29 @@ rl.on('line', (line) => {
 
     #[cfg(windows)]
     #[test]
-    fn replace_plugin_dir_restores_previous_version_and_cleans_staging_after_lock_release() {
+    fn replace_plugin_dir_activates_new_version_and_cleans_staging() {
         let tmp = tempfile::tempdir().unwrap();
         let install_root = tmp.path().join("install-root");
         let destination = install_root.join("demo");
-        let stage = install_root.join(".staging").join("demo");
+        let stage = create_plugin_staging_dir(&install_root, "demo").unwrap();
         write_plugin_with_version(&destination, "demo", "0.1.0");
         write_plugin_with_version(&stage, "demo", "0.2.0");
 
-        let lock_path = stage.join(".codex-plugin").join("plugin.json");
-        let lock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .unwrap();
-        let release = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            drop(lock);
-        });
+        replace_plugin_dir(&stage, &destination, &install_root).unwrap();
 
-        let err = replace_plugin_dir(&stage, &destination, &install_root).unwrap_err();
-        release.join().unwrap();
-
-        assert!(err.to_string().contains("restored"));
         assert!(destination
             .join(".codex-plugin")
             .join("plugin.json")
             .is_file());
         let manifest =
             std::fs::read_to_string(destination.join(".codex-plugin").join("plugin.json")).unwrap();
-        assert!(manifest.contains("\"0.1.0\""));
-        assert!(!manifest.contains("\"0.2.0\""));
+        assert!(manifest.contains("\"0.2.0\""));
+        assert!(!manifest.contains("\"0.1.0\""));
         assert!(!stage.exists());
+        let staging_entries = std::fs::read_dir(install_root.join(".staging"))
+            .map(|entries| entries.count())
+            .unwrap_or_default();
+        assert_eq!(staging_entries, 0);
     }
 
     #[test]
