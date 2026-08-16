@@ -116,6 +116,7 @@ pub enum PluginLicenseStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginDto {
     pub id: String,
+    pub plugin_id: String,
     pub name: String,
     pub display_name: String,
     pub description: String,
@@ -2884,6 +2885,7 @@ impl PluginService {
 
         PluginDto {
             id: plugin.id.clone(),
+            plugin_id: plugin.id.clone(),
             name: plugin.name.clone(),
             display_name: presentation
                 .as_ref()
@@ -8692,6 +8694,12 @@ rl.on('line', (line) => {
 
         let plugin = svc.read("empty@builtin").unwrap().unwrap();
 
+        assert_eq!(plugin.plugin_id, plugin.id);
+        let serialized = serde_json::to_value(&plugin).unwrap();
+        assert_eq!(
+            serialized.get("plugin_id").and_then(|value| value.as_str()),
+            Some(plugin.id.as_str())
+        );
         assert!(plugin.installed);
         assert_eq!(plugin.state, PluginLifecycleState::Parsed);
         assert_eq!(plugin.health_status, PluginHealthStatus::Ready);
