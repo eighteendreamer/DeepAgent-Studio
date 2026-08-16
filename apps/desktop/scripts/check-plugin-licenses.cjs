@@ -102,22 +102,33 @@ function main() {
   }
 
   for (const entry of marketplaceOnly) {
-    validateMarketplaceOnlyEntry(entry);
+    validateMarketplaceOnlyEntry(entry, classified);
   }
 
   const present = listPluginDirs();
   for (const name of present) {
+    if (classified.get(name) === "marketplaceOnly") {
+      fail(
+        `plugin '${name}' is listed as marketplaceOnly but is bundled under ` +
+          `${path.relative(repoRoot, pluginsDir)}. Remove the bundled directory and ` +
+          `install it through the marketplace flow instead.`,
+      );
+      continue;
+    }
     if (!classified.has(name)) {
       fail(
         `plugin '${name}' is bundled but not classified in ` +
           `${path.relative(repoRoot, manifestPath)}. Add it to \`firstParty\` if this project ` +
           `authored it, or to \`bundledThirdParty\` with its upstream and license, or to ` +
-          `\`marketplaceOnly\` if it should only be installed from the marketplace.`,
+          `\`marketplaceOnly\` only after removing it from bundled resources.`,
       );
     }
   }
 
   for (const name of classified.keys()) {
+    if (classified.get(name) === "marketplaceOnly") {
+      continue;
+    }
     if (!present.includes(name)) {
       fail(
         `bundled-plugins.json lists '${name}', but no such plugin directory exists under ` +
@@ -205,11 +216,15 @@ function validateBundledEntry(entry, bucket, classified, notices) {
   }
 }
 
-function validateMarketplaceOnlyEntry(entry) {
+function validateMarketplaceOnlyEntry(entry, classified) {
   if (!entry || typeof entry.name !== "string" || entry.name === "") {
     fail("bundled-plugins.json: every `marketplaceOnly` entry needs a non-empty `name`");
     return;
   }
+  if (classified.has(entry.name)) {
+    fail(`bundled-plugins.json: '${entry.name}' is listed more than once`);
+  }
+  classified.set(entry.name, "marketplaceOnly");
   for (const field of ["upstream", "license"]) {
     if (typeof entry[field] !== "string" || entry[field] === "") {
       fail(`bundled-plugins.json: marketplace-only '${entry.name}' is missing \`${field}\``);
