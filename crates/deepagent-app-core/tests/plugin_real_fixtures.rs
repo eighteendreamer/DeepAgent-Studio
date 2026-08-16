@@ -3,8 +3,10 @@
 //! 这些 fixture 来自桌面应用实际随包资源，不使用人工构造的理想目录。
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 use deepagent_app_core::plugin_loader::{load_plugins, PluginLoadError, PluginRoots};
 use deepagent_app_core::{
@@ -39,6 +41,8 @@ const EXISTING_HOST_ADAPTERS: &[&str] = &[
     "terminal",
     "wedecode",
 ];
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn bundled_plugins_keep_their_component_counts() {
@@ -359,6 +363,65 @@ fn complete_bundled_plugins_are_real_resources() {
 }
 
 #[test]
+fn bundled_boltz_cli_requires_runtime_or_configuration_before_verification() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let root = bundled_plugins_root();
+    if !root.join("boltz-api-cli").is_dir() {
+        eprintln!("skipping: bundled boltz plugin resource is not present");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _env_restore = EnvRestore::capture(&["BOLTZ_API_KEY"]);
+    std::env::remove_var("BOLTZ_API_KEY");
+
+    let svc = PluginService::new(
+        PluginRoots {
+            session: Vec::new(),
+            builtin: root,
+            workspace: None,
+            personal: tmp.path().join("personal"),
+            marketplace_cache: tmp.path().join("cache"),
+            marketplaces: tmp.path().join("marketplaces"),
+        },
+        tmp.path().join("app-data"),
+    );
+
+    let checked = svc
+        .check_plugin_health("boltz-api-cli@builtin")
+        .unwrap()
+        .expect("bundled boltz plugin");
+    let plugin = svc
+        .read("boltz-api-cli@builtin")
+        .unwrap()
+        .expect("bundled boltz plugin");
+
+    assert_eq!(plugin.skill_count, 8);
+    assert!(checked.runtime_required);
+    assert_ne!(checked.state, PluginLifecycleState::Verified);
+    let health_error = checked.health_error.as_deref().unwrap_or_default();
+    match checked.health_status {
+        PluginHealthStatus::NeedsConfiguration => {
+            assert_eq!(checked.state, PluginLifecycleState::RuntimeReady);
+            assert!(
+                health_error.contains("BOLTZ_API_KEY")
+                    || health_error.contains("boltz-api auth status"),
+                "expected Boltz configuration evidence in health error, got {health_error:?}"
+            );
+        }
+        PluginHealthStatus::RuntimeUnavailable => {
+            assert_eq!(checked.state, PluginLifecycleState::Incomplete);
+            assert!(
+                health_error.contains("runtime")
+                    || health_error.contains("external command probes"),
+                "expected Boltz runtime evidence in health error, got {health_error:?}"
+            );
+        }
+        status => panic!("Boltz must not verify without runtime and API configuration: {status:?}"),
+    }
+}
+
+#[test]
 fn bundled_figma_requires_authorization_and_projects_real_runtime_entries() {
     let root = bundled_plugins_root();
     if !root.is_dir() {
@@ -527,6 +590,32 @@ fn superpowers_registry() -> Option<SkillRegistry> {
 
 fn bundled_plugins_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop/src-tauri/resources/plugins")
+}
+
+struct EnvRestore {
+    values: Vec<(&'static str, Option<OsString>)>,
+}
+
+impl EnvRestore {
+    fn capture(keys: &[&'static str]) -> Self {
+        Self {
+            values: keys
+                .iter()
+                .map(|key| (*key, std::env::var_os(key)))
+                .collect(),
+        }
+    }
+}
+
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        for (key, value) in &self.values {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
 }
 
 fn sanitize_plugin_data_dir(id: &str) -> String {
