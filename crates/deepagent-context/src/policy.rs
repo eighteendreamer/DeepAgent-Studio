@@ -18,6 +18,12 @@ pub const AUTOCOMPACT_SUMMARY_RESERVE_TOKENS: usize = 20_000;
 /// `autocompact_reserve_tokens` setting / `DEEPAGENT_AUTOCOMPACT_RESERVE_TOKENS`.
 pub const AUTOCOMPACT_BUFFER_TOKENS: usize = 13_000;
 
+/// Local long-task management cap for DeepSeek's stateless Responses API.
+/// DeepSeek can expose a 1M provider window, but because every turn must send
+/// the client-managed history back through `input`, using the full window as
+/// the routine budget makes long tasks balloon before compaction starts.
+pub const DEEPSEEK_STATELESS_CONTEXT_MANAGEMENT_WINDOW_TOKENS: usize = 300_000;
+
 /// Budgeting policy derived from a resolved model capability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextPolicy {
@@ -37,6 +43,7 @@ impl ContextPolicy {
     /// depth. Thresholds are ratios of the real model budget, not fixed magic
     /// numbers scattered through the app.
     pub fn for_capability(capability: &ModelCapability, thinking_depth: ThinkingDepth) -> Self {
+        let management_window = context_management_window(capability);
         let desired_output = match thinking_depth {
             ThinkingDepth::Simple => 64_000,
             ThinkingDepth::Medium => 96_000,
@@ -44,11 +51,10 @@ impl ContextPolicy {
         };
         let reserved_output_tokens = desired_output
             .min(capability.max_output_tokens)
-            .min(capability.context_window / 2)
-            .max(4_000.min(capability.context_window));
-        let reserved_tool_tokens = (capability.context_window / 16).clamp(8_000, 64_000);
-        let prompt_budget = capability
-            .context_window
+            .min(management_window / 2)
+            .max(4_000.min(management_window));
+        let reserved_tool_tokens = (management_window / 16).clamp(8_000, 64_000);
+        let prompt_budget = management_window
             .saturating_sub(reserved_output_tokens)
             .saturating_sub(reserved_tool_tokens);
 
@@ -87,7 +93,9 @@ impl ContextPolicy {
         let reserved = self
             .max_output_tokens
             .min(AUTOCOMPACT_SUMMARY_RESERVE_TOKENS);
-        self.context_window.saturating_sub(reserved)
+        let management_window =
+            context_management_window_for_model(&self.model_id, self.context_window);
+        management_window.saturating_sub(reserved)
     }
 
     /// Proactive auto-compact threshold in tokens, checked before every model
@@ -119,6 +127,18 @@ const fn ratio(value: usize, percent: usize) -> usize {
     value.saturating_mul(percent) / 100
 }
 
+fn context_management_window(capability: &ModelCapability) -> usize {
+    context_management_window_for_model(&capability.model_id, capability.context_window)
+}
+
+fn context_management_window_for_model(model_id: &str, context_window: usize) -> usize {
+    if model_id.starts_with("deepseek-v4") {
+        context_window.min(DEEPSEEK_STATELESS_CONTEXT_MANAGEMENT_WINDOW_TOKENS)
+    } else {
+        context_window
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,13 +158,13 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_v4_policy_uses_large_window_without_fixed_thresholds() {
+    fn deepseek_v4_policy_keeps_provider_window_but_caps_management_budget() {
         let policy = ContextPolicy::for_capability(&cap(), ThinkingDepth::Medium);
         assert_eq!(policy.context_window, 1_000_000);
         assert_eq!(policy.reserved_output_tokens, 96_000);
-        assert_eq!(policy.reserved_tool_tokens, 62_500);
-        assert_eq!(policy.prompt_budget, 841_500);
-        assert_eq!(policy.auto_compact_at, 589_050);
+        assert_eq!(policy.reserved_tool_tokens, 18_750);
+        assert_eq!(policy.prompt_budget, 185_250);
+        assert_eq!(policy.auto_compact_at, 129_675);
     }
 
     #[test]
@@ -158,38 +178,39 @@ mod tests {
     #[test]
     fn autocompact_threshold_matches_claude_code_formula() {
         let policy = ContextPolicy::for_capability(&cap(), ThinkingDepth::Medium);
-        // effective = window − min(max_output, 20k) = 1_000_000 − 20_000.
-        assert_eq!(policy.effective_context_window(), 980_000);
+        // DeepSeek exposes a 1M window, but local long-task context management
+        // is capped so 1M remains overflow headroom instead of the daily budget.
+        assert_eq!(policy.effective_context_window(), 280_000);
         // threshold = effective − 13k (CC AUTOCOMPACT_BUFFER_TOKENS).
-        assert_eq!(policy.autocompact_threshold_tokens(None, None), 967_000);
+        assert_eq!(policy.autocompact_threshold_tokens(None, None), 267_000);
         // Custom reserve wins over the default buffer.
         assert_eq!(
             policy.autocompact_threshold_tokens(Some(50_000), None),
-            930_000
+            230_000
         );
     }
 
     #[test]
     fn autocompact_pct_override_is_min_combined_with_default() {
         let policy = ContextPolicy::for_capability(&cap(), ThinkingDepth::Medium);
-        // 50% of effective (490_000) < default threshold → percentage wins.
+        // 50% of effective (140_000) < default threshold → percentage wins.
         assert_eq!(
             policy.autocompact_threshold_tokens(None, Some(50.0)),
-            490_000
+            140_000
         );
-        // 99% of effective (970_200) > default threshold → default wins (min).
+        // 99% of effective (277_200) > default threshold → default wins (min).
         assert_eq!(
             policy.autocompact_threshold_tokens(None, Some(99.0)),
-            967_000
+            267_000
         );
         // Invalid override values are ignored.
         assert_eq!(
             policy.autocompact_threshold_tokens(None, Some(0.0)),
-            967_000
+            267_000
         );
         assert_eq!(
             policy.autocompact_threshold_tokens(None, Some(150.0)),
-            967_000
+            267_000
         );
     }
 
