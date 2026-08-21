@@ -185,6 +185,38 @@ impl<'db> RunStore<'db> {
         })
     }
 
+    /// List runs belonging to one persisted session, newest first.
+    pub fn list_for_session(&self, session_id: &str) -> Result<Vec<RunRecord>> {
+        self.db.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, session_id, task_id, state, terminal_kind, terminal_reason,
+                            created_at, updated_at, finished_at
+                     FROM runs
+                     WHERE session_id=?1
+                     ORDER BY created_at DESC",
+                )
+                .map_err(map_sqlite)?;
+            let rows = stmt
+                .query_map([session_id], |row| {
+                    Ok(RunRecord {
+                        id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        task_id: row.get(2)?,
+                        state: row.get(3)?,
+                        terminal_kind: row.get(4)?,
+                        terminal_reason: row.get(5)?,
+                        created_at: row.get(6)?,
+                        updated_at: row.get(7)?,
+                        finished_at: row.get(8)?,
+                    })
+                })
+                .map_err(map_sqlite)?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(map_sqlite)
+        })
+    }
+
     pub fn events_after(&self, run_id: &str, after: Option<u64>) -> Result<Vec<StoredRunEvent>> {
         self.db.with_conn(|conn| {
             let mut stmt = conn
@@ -259,5 +291,6 @@ mod tests {
         let record = store.get("r1").unwrap().unwrap();
         assert_eq!(record.terminal_kind.as_deref(), Some("succeeded"));
         assert_eq!(store.events_after("r1", None).unwrap().len(), 2);
+        assert_eq!(store.list_for_session("s1").unwrap().len(), 1);
     }
 }

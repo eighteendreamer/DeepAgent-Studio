@@ -54,6 +54,7 @@ pub mod run_environment;
 pub mod run_finalizer;
 pub mod runtime_event_log;
 pub mod runtime_service;
+pub mod sandbox_backend;
 pub mod sandboxie_service;
 pub mod secret_store;
 pub mod service;
@@ -84,7 +85,7 @@ pub mod workspace_service;
 pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
 pub use archive_service::ArchiveService;
 pub use attachment_service::AttachmentService;
-pub use chat_service::ChatService;
+pub use chat_service::{ChatService, HarnessRunOverrides};
 pub use commands::{
     builtin_commands, commands_from_roots, commands_from_roots_and_plugins, filter_commands,
 };
@@ -139,6 +140,11 @@ pub use runtime_service::{
     default_registry, ArchiveKind, Downloader, Platform, RuntimeArtifact, RuntimeBroker,
     RuntimeDiagnostic, RuntimeEntry, RuntimeKind, RuntimePreference, RuntimeRequirement,
     RuntimeResolution, RuntimeService, RuntimeSource, UnavailableDownloader,
+};
+pub use sandbox_backend::{
+    DirectSandboxBackend, SandboxBackend, SandboxBackendCommandExecutor, SandboxBackendKind,
+    SandboxCapabilities, SandboxExecutionRequest, SandboxExecutionResult, SandboxNetworkPolicy,
+    SandboxieBackend, WindowsSandboxBackend, WindowsSandboxTaskPlan, WindowsSandboxTaskPlanRequest,
 };
 pub use sandboxie_service::{SandboxieExecutor, SandboxieService, SandboxieStatusDto};
 pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore};

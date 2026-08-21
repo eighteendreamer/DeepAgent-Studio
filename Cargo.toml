@@ -30,6 +30,7 @@ members = [
     "crates/deepagent-observation",
     "crates/deepagent-security",
     "crates/deepagent-app-core",
+    "crates/deepagent-harness-protocol",
     "crates/deepagent-mcp",
     "crates/deepagent-codegraph",
     "crates/deepagent-ssh",
@@ -85,6 +86,7 @@ deepagent-subagents = { path = "crates/deepagent-subagents" }
 deepagent-observation = { path = "crates/deepagent-observation" }
 deepagent-security = { path = "crates/deepagent-security" }
 deepagent-app-core = { path = "crates/deepagent-app-core" }
+deepagent-harness-protocol = { path = "crates/deepagent-harness-protocol" }
 deepagent-mcp = { path = "crates/deepagent-mcp" }
 deepagent-codegraph = { path = "crates/deepagent-codegraph" }
 deepagent-ssh = { path = "crates/deepagent-ssh" }

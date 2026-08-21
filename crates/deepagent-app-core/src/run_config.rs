@@ -20,8 +20,10 @@ pub(crate) struct RunConfigOverlay {
 }
 
 impl RunConfigOverlay {
-    pub(crate) fn load(root: &Path) -> Self {
-        let overlay = DualConfigLoader::new(root).load();
+    pub(crate) fn load(root: &Path, run_overrides: serde_json::Value) -> Self {
+        let overlay = DualConfigLoader::new(root)
+            .with_run_overrides(run_overrides)
+            .load();
         Self {
             value: overlay.value,
             sources: overlay.sources,
@@ -58,6 +60,31 @@ impl RunConfigOverlay {
         &self,
         mut profile: EffectivePermissionProfile,
     ) -> Result<EffectivePermissionProfile> {
+        if let Some(permission_profile) =
+            string_field(&self.value, &["permission_profile", "permissionProfile"])
+        {
+            match permission_profile {
+                "read_only" => {
+                    profile.approval_policy = ApprovalPolicy::AlwaysAsk;
+                    profile.sandbox_mode = SandboxMode::ReadOnly;
+                }
+                "workspace_write" => {
+                    profile.approval_policy = ApprovalPolicy::AlwaysAsk;
+                    profile.sandbox_mode = SandboxMode::WorkspaceWrite;
+                }
+                "developer" => {
+                    profile = PermissionPreset::AutoReview.to_effective_profile();
+                }
+                "full_access" => {
+                    profile = PermissionPreset::FullAccess.to_effective_profile();
+                }
+                other => {
+                    return Err(CoreError::invalid(format!(
+                        "invalid permission profile in project config: {other}"
+                    )));
+                }
+            }
+        }
         if let Some(preset) = string_field(
             &self.value,
             &["permission_preset", "active_permission_preset"],
@@ -145,6 +172,18 @@ impl RunConfigOverlay {
     /// chain (managed > run > local > project > user > plugin).
     pub(crate) fn model_override(&self) -> Option<&str> {
         string_field(&self.value, &["model"])
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub(crate) fn provider_override(&self) -> Option<&str> {
+        string_field(&self.value, &["provider"])
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub(crate) fn reasoning_effort_override(&self) -> Option<&str> {
+        string_field(&self.value, &["reasoning_effort", "reasoningEffort"])
             .map(str::trim)
             .filter(|value| !value.is_empty())
     }
@@ -399,5 +438,16 @@ mod tests {
         assert_eq!(empty.model_override(), None);
         let none = RunConfigOverlay::from_value(serde_json::json!({}));
         assert_eq!(none.model_override(), None);
+    }
+
+    #[test]
+    fn provider_and_reasoning_overrides_are_run_scoped_scalars() {
+        let overlay = RunConfigOverlay::from_value(serde_json::json!({
+            "provider": "  deepseek-official ",
+            "reasoningEffort": " high "
+        }));
+
+        assert_eq!(overlay.provider_override(), Some("deepseek-official"));
+        assert_eq!(overlay.reasoning_effort_override(), Some("high"));
     }
 }

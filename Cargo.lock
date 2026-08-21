@@ -1153,22 +1153,16 @@ dependencies = [
 name = "deepagent-cli"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "deepagent-context",
+ "deepagent-app-core",
  "deepagent-core",
- "deepagent-intent",
- "deepagent-memory",
+ "deepagent-harness-protocol",
+ "deepagent-models",
  "deepagent-persistence",
- "deepagent-prompts",
  "deepagent-runtime",
  "deepagent-session",
- "deepagent-skills",
- "deepagent-tools",
  "deepagent-tracing",
- "deepagent-workspace",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -1229,6 +1223,15 @@ dependencies = [
  "thiserror 1.0.69",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "deepagent-harness-protocol"
+version = "0.1.0"
+dependencies = [
+ "deepagent-runtime",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

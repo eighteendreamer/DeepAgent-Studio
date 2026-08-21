@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_models::transport::HttpTransport;
-use deepagent_models::{ModelClient, ModelConfig, ModelRole, ResponseDefaults, ThinkingDepth};
+use deepagent_models::{
+    ModelClient, ModelConfig, ModelRole, ResponseDefaults, ThinkingDepth, WireMode,
+    DEEPSEEK_OFFICIAL_PROVIDER,
+};
 
 use crate::settings::SettingsService;
 
@@ -60,7 +63,9 @@ pub(crate) fn select_run_model(
     transport: Arc<dyn HttpTransport>,
     role: ModelRole,
     fallback_role: ModelRole,
+    provider_override: Option<&str>,
     model_override: Option<&str>,
+    reasoning_effort_override: Option<&str>,
 ) -> Result<RunModelSelection> {
     let loaded = settings
         .load()?
@@ -86,7 +91,9 @@ pub(crate) fn select_run_model(
         top_p: loaded.responses.effective_top_p(),
         max_output_tokens: loaded.responses.effective_max_output_tokens(),
         top_logprobs: loaded.responses.effective_top_logprobs(),
-        reasoning_effort: loaded.responses.effective_reasoning_effort(),
+        reasoning_effort: reasoning_effort_override
+            .map(str::to_string)
+            .or_else(|| loaded.responses.effective_reasoning_effort()),
         text: loaded.responses.effective_text(),
         tool_choice: loaded.responses.effective_tool_choice(),
         user: loaded.responses.effective_user(),
@@ -96,7 +103,21 @@ pub(crate) fn select_run_model(
                 crate::settings::WebSearchProvider::DeepSeekFirst
             ),
     };
-    let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role).with_defaults(defaults);
+    if let Some(provider) = provider_override {
+        if provider != DEEPSEEK_OFFICIAL_PROVIDER {
+            return Err(CoreError::invalid(format!(
+                "unsupported provider: {provider}"
+            )));
+        }
+    }
+    let wire_mode = if provider_override == Some(DEEPSEEK_OFFICIAL_PROVIDER) {
+        WireMode::ChatCompletions
+    } else {
+        WireMode::Responses
+    };
+    let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role)
+        .with_defaults(defaults)
+        .with_wire_mode(wire_mode);
     let client = Arc::new(ModelClient::new(transport, config));
     Ok(RunModelSelection {
         client,

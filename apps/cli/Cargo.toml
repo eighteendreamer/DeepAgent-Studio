@@ -5,26 +5,20 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "A headless demo driver for the DeepAgent runtime kernel (proves the stack end-to-end)."
+description = "Interactive and headless DeepAgent Harness CLI."
 
 [[bin]]
 name = "deepagent"
 path = "src/main.rs"
 
 [dependencies]
+deepagent-app-core.workspace = true
 deepagent-core.workspace = true
+deepagent-harness-protocol.workspace = true
+deepagent-models = { workspace = true, features = ["http"] }
 deepagent-persistence.workspace = true
 deepagent-session.workspace = true
 deepagent-runtime.workspace = true
-deepagent-tools.workspace = true
 deepagent-tracing.workspace = true
-deepagent-context.workspace = true
-deepagent-workspace.workspace = true
-deepagent-memory.workspace = true
-deepagent-intent.workspace = true
-deepagent-skills.workspace = true
-deepagent-prompts.workspace = true
-async-trait.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tracing.workspace = true
