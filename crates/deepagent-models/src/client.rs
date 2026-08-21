@@ -11,8 +11,19 @@ use std::sync::Arc;
 use deepagent_core::error::Result;
 
 use crate::chat::{Response, ResponseRequest};
+use crate::chat_completions::{ChatCompletionAccumulator, ChatCompletionRequest};
 use crate::stream::ResponseAccumulator;
 use crate::transport::{HttpTransport, TransportRequest};
+
+/// Stable provider identity exposed by the Harness layer.
+pub const DEEPSEEK_OFFICIAL_PROVIDER: &str = "deepseek-official";
+
+/// Wire protocol selected by a model client configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireMode {
+    Responses,
+    ChatCompletions,
+}
 
 /// Connection / endpoint configuration.
 #[derive(Debug, Clone)]
@@ -23,6 +34,8 @@ pub struct ModelConfig {
     pub api_key: String,
     /// Global provider-level overrides applied to every request built by this client.
     pub defaults: ResponseDefaults,
+    /// Provider wire protocol. Existing Desktop callers remain on Responses.
+    pub wire_mode: WireMode,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -45,6 +58,17 @@ impl ModelConfig {
             base_url: crate::discovery::DEEPSEEK_BASE_URL.to_string(),
             api_key: api_key.into(),
             defaults: ResponseDefaults::default(),
+            wire_mode: WireMode::Responses,
+        }
+    }
+
+    /// DeepSeek Chat Completions configuration for the Harness provider route.
+    pub fn deepseek_chat(api_key: impl Into<String>) -> Self {
+        Self {
+            base_url: crate::discovery::DEEPSEEK_BASE_URL.to_string(),
+            api_key: api_key.into(),
+            defaults: ResponseDefaults::default(),
+            wire_mode: WireMode::ChatCompletions,
         }
     }
 
@@ -61,6 +85,7 @@ impl ModelConfig {
             base_url: catalog.base_url.clone(),
             api_key: api_key.into(),
             defaults: ResponseDefaults::default(),
+            wire_mode: WireMode::Responses,
         }
     }
 
@@ -69,8 +94,18 @@ impl ModelConfig {
         format!("{}/responses", self.base_url.trim_end_matches('/'))
     }
 
+    /// The fully-qualified DeepSeek Chat Completions endpoint.
+    pub fn chat_endpoint(&self) -> String {
+        format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+    }
+
     pub fn with_defaults(mut self, defaults: ResponseDefaults) -> Self {
         self.defaults = defaults;
+        self
+    }
+
+    pub fn with_wire_mode(mut self, wire_mode: WireMode) -> Self {
+        self.wire_mode = wire_mode;
         self
     }
 }
@@ -173,6 +208,80 @@ impl ModelClient {
         accumulator.finish()
     }
 
+    /// Send a DeepSeek Chat Completions request and assemble its SSE stream.
+    pub async fn stream_chat_completion(&self, request: ChatCompletionRequest) -> Result<Response> {
+        self.stream_chat_completion_observed(request, &mut crate::stream::NoopObserver)
+            .await
+    }
+
+    /// Chat Completions streaming with the same semantic observer contract as
+    /// the existing Responses path.
+    pub async fn stream_chat_completion_observed(
+        &self,
+        mut request: ChatCompletionRequest,
+        observer: &mut dyn crate::stream::DeltaObserver,
+    ) -> Result<Response> {
+        request.stream = true;
+        self.apply_chat_defaults(&mut request);
+        request.validate()?;
+        let body = serde_json::to_string(&request)?;
+        let transport_req = TransportRequest {
+            url: self.config.chat_endpoint(),
+            api_key: self.config.api_key.clone(),
+            body,
+        };
+        let mut accumulator = ChatCompletionAccumulator::new();
+        {
+            let acc = &mut accumulator;
+            let mut sink =
+                move |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
+            self.transport.stream(transport_req, &mut sink).await?;
+        }
+        accumulator.finish()
+    }
+
+    /// Cancel-aware Chat Completions streaming.
+    pub async fn stream_chat_completion_cancelled(
+        &self,
+        request: ChatCompletionRequest,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Response> {
+        self.stream_chat_completion_observed_cancelled(
+            request,
+            &mut crate::stream::NoopObserver,
+            cancel,
+        )
+        .await
+    }
+
+    /// Cancel-aware Chat Completions streaming with semantic observation.
+    pub async fn stream_chat_completion_observed_cancelled(
+        &self,
+        mut request: ChatCompletionRequest,
+        observer: &mut dyn crate::stream::DeltaObserver,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Response> {
+        request.stream = true;
+        self.apply_chat_defaults(&mut request);
+        request.validate()?;
+        let body = serde_json::to_string(&request)?;
+        let transport_req = TransportRequest {
+            url: self.config.chat_endpoint(),
+            api_key: self.config.api_key.clone(),
+            body,
+        };
+        let mut accumulator = ChatCompletionAccumulator::new();
+        {
+            let acc = &mut accumulator;
+            let mut sink =
+                move |data: &str| -> Result<bool> { acc.push_sse_data_observed(data, observer) };
+            self.transport
+                .stream_cancelled(transport_req, &mut sink, cancel)
+                .await?;
+        }
+        accumulator.finish()
+    }
+
     fn apply_defaults(&self, request: &mut ResponseRequest) {
         if request.temperature.is_none() {
             request.temperature = self.config.defaults.temperature;
@@ -211,11 +320,35 @@ impl ModelClient {
             }
         }
     }
+
+    fn apply_chat_defaults(&self, request: &mut ChatCompletionRequest) {
+        if request.temperature.is_none() {
+            request.temperature = self.config.defaults.temperature;
+        }
+        if request.top_p.is_none() {
+            request.top_p = self.config.defaults.top_p;
+        }
+        if request.max_tokens.is_none() {
+            request.max_tokens = self.config.defaults.max_output_tokens;
+        }
+        if request.reasoning_effort.is_none() {
+            if let Some(effort) = self.config.defaults.reasoning_effort.as_deref() {
+                *request = request.clone().with_reasoning_effort(effort);
+            }
+        }
+        if request.tool_choice.is_none() {
+            request.tool_choice = self.config.defaults.tool_choice.clone();
+        }
+        if request.user.is_none() {
+            request.user = self.config.defaults.user.clone();
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat_completions::ChatCompletionRequest;
     use crate::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
     use async_trait::async_trait;
     use deepagent_core::message::Message;
@@ -338,5 +471,63 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].1, "search");
         assert_eq!(calls[0].2, serde_json::json!({"q": "rust"}));
+    }
+
+    #[tokio::test]
+    async fn streams_chat_completions_through_the_same_transport_and_observer() {
+        let events = vec![
+            r#"{"choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}"#
+                .to_string(),
+            r#"{"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}"#.to_string(),
+            r#"{"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5},"choices":[]}"#
+                .to_string(),
+            "[DONE]".to_string(),
+        ];
+        let client = ModelClient::new(
+            Arc::new(MockTransport::new(events)),
+            ModelConfig::deepseek_chat("test-key"),
+        );
+        let response = client
+            .stream_chat_completion(ChatCompletionRequest::new(
+                "deepseek-v4-pro",
+                vec![Message::user("hi")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.output_text_projection(), "hello");
+        assert_eq!(
+            response.reasoning_text_projection().as_deref(),
+            Some("think")
+        );
+        assert_eq!(response.usage.unwrap().total_tokens, 5);
+    }
+
+    #[tokio::test]
+    async fn invalid_chat_reasoning_effort_is_rejected_before_transport() {
+        struct FailIfCalled;
+
+        #[async_trait]
+        impl HttpTransport for FailIfCalled {
+            async fn stream(
+                &self,
+                _request: TransportRequest,
+                _sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                panic!("transport must not be called for invalid request");
+            }
+        }
+
+        let client = ModelClient::new(
+            Arc::new(FailIfCalled),
+            ModelConfig::deepseek_chat("test-key"),
+        );
+        let error = client
+            .stream_chat_completion(
+                ChatCompletionRequest::new("deepseek-v4-pro", vec![Message::user("hi")])
+                    .with_reasoning_effort("medium"),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("unsupported reasoning effort"));
     }
 }

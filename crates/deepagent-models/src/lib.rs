@@ -24,6 +24,7 @@
 pub mod balance;
 pub mod capability;
 pub mod chat;
+pub mod chat_completions;
 pub mod client;
 pub mod discovery;
 pub mod failure;
@@ -41,7 +42,10 @@ pub use chat::{
     FinishReason, FunctionSchema, Response, ResponseRequest, ThinkingConfig, ThinkingDepth,
     ThinkingToggle, ToolSchema, Usage,
 };
-pub use client::{ModelClient, ModelConfig, ResponseDefaults};
+pub use chat_completions::{ChatCompletionAccumulator, ChatCompletionRequest};
+pub use client::{
+    ModelClient, ModelConfig, ResponseDefaults, WireMode, DEEPSEEK_OFFICIAL_PROVIDER,
+};
 pub use discovery::{ModelCatalog, ModelDiscovery, ModelInfo, ModelRole, DEEPSEEK_BASE_URL};
 pub use failure::{classify_model_error, ModelFailureKind};
 pub use responses::{
