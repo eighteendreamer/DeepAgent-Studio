@@ -30,6 +30,7 @@ import urllib.request
 
 BASE_URL = "https://api.deepseek.com"
 KEYCHAIN_SERVICE = "deepagent-studio"
+# Logical credential name only; never place an API key in source control.
 KEYCHAIN_NAME = "deepseek_api_key"
 
 # 终端颜色（Windows 10+ 终端支持 ANSI）
