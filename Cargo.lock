@@ -1232,6 +1232,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "deepagent-harness-protocol"
+version = "0.1.0"
+dependencies = [
+ "deepagent-runtime",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "deepagent-hooks"
 version = "0.1.0"
 dependencies = [

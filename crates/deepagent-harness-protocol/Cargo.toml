@@ -1,0 +1,16 @@
+[package]
+name = "deepagent-harness-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Stable machine protocol DTOs and RuntimeEvent projections for DeepAgent Harness."
+
+[dependencies]
+deepagent-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
