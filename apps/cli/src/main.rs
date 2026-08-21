@@ -1,388 +1,362 @@
-//! DeepAgent headless demo driver.
-//!
-//! This binary is not the product UI (that is the Tauri desktop app added in
-//! Phase 8). It is a smoke-test driver that wires the Phase 1/2 kernel together
-//! and runs a tiny scripted agent end-to-end, proving:
-//!
-//! - the SQLite database opens & migrates,
-//! - a session is created and events are appended,
-//! - the runtime loop drives an agent through tool calls,
-//! - the session can be recovered purely from the event log,
-//! - the Phase 3 context pipeline scans the workspace, injects memory, and
-//!   assembles a budgeted five-layer prompt.
-//!
-//! Run with: `cargo run -p deepagent-cli`
+mod args;
+mod jsonl;
 
-use std::sync::Arc;
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
-use deepagent_context::{ContextPipeline, HeuristicTokenizer, PromptBudget};
-use deepagent_core::clock::SystemClock;
-use deepagent_core::error::Result;
-use deepagent_memory::store::MemoryStore;
-use deepagent_memory::{
-    to_l5_block, HashingEmbedder, HybridRetriever, MemoryItem, MemoryTier,
-    Observation as MemoryObservation, ObservationType,
+use args::{CliCommand, RunOptions};
+use deepagent_app_core::{
+    ChatService, DirectSandboxBackend, EnvSecretStore, HarnessRunOverrides, SandboxBackend,
+    SandboxBackendCommandExecutor, SandboxBackendKind, SandboxCapabilities, SandboxMode,
+    SandboxNetworkPolicy, SandboxieBackend, SandboxieExecutor, SandboxieService,
+    WindowsSandboxBackend,
 };
+use deepagent_harness_protocol::{EventContext, HarnessEvent, PROTOCOL_VERSION};
+use deepagent_models::{HttpTransport, ReqwestTransport, DEEPSEEK_OFFICIAL_PROVIDER};
 use deepagent_persistence::Database;
-use deepagent_runtime::agent::{Agent, AgentDecision, Observation};
-use deepagent_runtime::{RuntimeConfig, RuntimeEngine};
-use deepagent_session::Session;
-use deepagent_tools::permission::{PermissionSet, RiskLevel};
-use deepagent_tools::{Tool, ToolDescriptor, ToolInvocation, ToolOutput, ToolRegistry};
-use deepagent_tracing::metrics::Metrics;
-use deepagent_workspace::WorkspaceScanner;
-
-/// A trivial tool that reverses a string, to demonstrate tool routing.
-struct ReverseTool;
-
-#[async_trait]
-impl Tool for ReverseTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor {
-            name: "reverse".into(),
-            description: "Reverses the characters of `text`.".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": { "text": { "type": "string" } },
-                "required": ["text"]
-            }),
-            risk: RiskLevel::Safe,
-            required_permissions: PermissionSet::read_only(),
-        }
-    }
-
-    async fn invoke(&self, arguments: serde_json::Value) -> Result<ToolOutput> {
-        let text = arguments["text"].as_str().unwrap_or_default();
-        let reversed: String = text.chars().rev().collect();
-        Ok(ToolOutput::success(
-            serde_json::json!({ "reversed": reversed }),
-        ))
-    }
-}
-
-/// A deterministic demo agent: call `reverse` once, then complete.
-struct DemoAgent {
-    done_tool: bool,
-}
-
-#[async_trait]
-impl Agent for DemoAgent {
-    async fn think(&mut self, _step: usize, last: &[Observation]) -> Result<AgentDecision> {
-        if !self.done_tool {
-            self.done_tool = true;
-            return Ok(AgentDecision::CallTool(ToolInvocation::new(
-                "reverse",
-                serde_json::json!({ "text": "DeepAgent" }),
-            )));
-        }
-        let reversed = last
-            .first()
-            .and_then(|o| o.output.get("reversed"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("?")
-            .to_string();
-        Ok(AgentDecision::Complete(format!(
-            "reversed 'DeepAgent' to '{reversed}'"
-        )))
-    }
-}
+use deepagent_runtime::RuntimeEvent;
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    deepagent_tracing::init_dev();
+async fn main() {
+    let raw_args: Vec<_> = std::env::args_os().collect();
+    let command = match args::parse_args(raw_args) {
+        Ok(command) => command,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    };
 
-    // Use a temp on-disk DB under the OS temp dir so the demo is self-cleaning
-    // across runs but still exercises the real (non in-memory) path.
-    let db_path = std::env::temp_dir().join("deepagent-demo.db");
-    let _ = std::fs::remove_file(&db_path);
-    let db = Database::open(&db_path)?;
-    tracing::info!(schema_version = db.schema_version()?, "database ready");
+    deepagent_tracing::init(deepagent_tracing::TracingConfig {
+        default_directive: "warn,deepagent=info".to_string(),
+        format: deepagent_tracing::LogFormat::Pretty,
+        with_location: false,
+    });
 
-    let clock = SystemClock;
+    let result = match command {
+        CliCommand::Run(options) => run(options).await,
+        CliCommand::ToolsList => tools_list().await,
+        CliCommand::SandboxStatus => sandbox_status().await,
+        CliCommand::Server { transport } => Err(format!(
+            "app-server transport '{transport}' is reserved for P4; use the CLI run commands in P3"
+        )),
+    };
 
-    // Build the tool registry.
-    let mut registry = ToolRegistry::new();
-    registry.register(Arc::new(ReverseTool))?;
-
-    let metrics = Metrics::new();
-    let config = RuntimeConfig::default();
-
-    // --- Run a session ----------------------------------------------------
-    let session_id;
-    {
-        let mut session = Session::create(&db, &clock, Some("demo session"))?;
-        session_id = session.id();
-        let task = session.create_task("reverse the product name")?;
-
-        let engine = RuntimeEngine::new(&registry, metrics.clone(), config);
-        let mut agent = DemoAgent { done_tool: false };
-        let outcome = engine.run(&mut session, task, &mut agent).await?;
-
-        println!("\n=== Run finished ===");
-        println!("session : {session_id}");
-        println!("outcome : {outcome:?}");
-        println!("metrics : {:?}", metrics.snapshot().counters);
+    if let Err(error) = result {
+        eprintln!("{error}");
+        std::process::exit(1);
     }
-
-    // --- Recover purely from the event log --------------------------------
-    let recovered = Session::recover(&db, &clock, session_id)?;
-    let state = recovered.state();
-    println!("\n=== Recovered from event log ===");
-    println!("title           : {:?}", state.title);
-    println!("messages        : {}", state.message_count);
-    println!("tool calls done : {}", state.tool_calls_completed);
-    println!("tasks           :");
-    for t in state.tasks() {
-        println!("  - [{:?}] {}", t.state, t.goal);
-    }
-
-    // --- Phase 3: Context Engineering -------------------------------------
-    demo_context_pipeline()?;
-
-    // --- Input dispatch (intent) + Skill system ---------------------------
-    demo_intent_and_skills()?;
-
-    // --- Prompt engineering: command/agent loading + system-prompt assembly
-    demo_prompts()?;
-
-    Ok(())
 }
 
-/// Demonstrates the Phase 3 context engineering stack: scan the current
-/// workspace, retrieve relevant memory, and assemble a budgeted five-layer
-/// context prompt.
-fn demo_context_pipeline() -> Result<()> {
-    println!("\n=== Phase 3: Context Engineering ===");
-
-    // L4 — Workspace context: scan the current directory.
-    let cwd = std::env::current_dir()
-        .map_err(|e| deepagent_core::error::CoreError::other(format!("cannot read cwd: {e}")))?;
-    let snapshot = WorkspaceScanner::default().scan(&cwd)?;
-    println!(
-        "workspace scan  : {} files, {} dirs, kinds={:?}",
-        snapshot.file_count, snapshot.dir_count, snapshot.kinds
-    );
-
-    // L3 — Memory injection: seed a tiny memory store and retrieve.
-    let mut memory = MemoryStore::new();
-    let now = deepagent_core::clock::Timestamp::from_millis(1_000);
-    memory.insert(MemoryItem::new(
-        MemoryTier::Procedural,
-        "User prefers Rust and small, well-tested modules.",
-        0.9,
-        now,
-    ));
-    memory.insert(MemoryItem::new(
-        MemoryTier::Failure,
-        "Previously, skipping migrations caused a startup panic.",
-        0.8,
-        now,
-    ));
-    let hits = memory.retrieve("rust modules tests", None, 3, now);
-    let memory_block = hits
-        .iter()
-        .map(|h| format!("- {}", h.item.content))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // L5 — Semantic retrieval: hybrid (md + embedding + BM25 + rerank) over
-    // markdown observations, the Anthropic / claude-mem retrieval recipe.
-    let mut retriever: HybridRetriever<_, _> = HybridRetriever::new(HashingEmbedder::default());
-    retriever.insert(
-        MemoryObservation::new(ObservationType::BugFix, "Payment timeout fix")
-            .narrative("the payment service retries on timeout with exponential backoff")
-            .concepts(["payment".into(), "timeout".into()])
-            .files(["payment/retry.rs".into()])
-            .into_memory_item(now),
-    );
-    retriever.insert(
-        MemoryObservation::new(ObservationType::Feature, "Dashboard charts")
-            .narrative("render charts and graphs on the analytics dashboard")
-            .concepts(["ui".into()])
-            .into_memory_item(now),
-    );
-    retriever.insert(
-        MemoryObservation::new(ObservationType::Knowledge, "Retry budget config key")
-            .narrative("RETRY_BUDGET controls the maximum number of retries per request")
-            .concepts(["config".into(), "retry".into()])
-            .into_memory_item(now),
-    );
-    let l5_hits = retriever.retrieve("how is payment timeout retry handled", None, 2, now);
-    let semantic_block = to_l5_block(&l5_hits);
-    println!(
-        "L5 hybrid hits  : {} (embedding + BM25 + rerank)",
-        l5_hits.len()
-    );
-
-    // Assemble the five-layer context, fitted to a budget.
-    let tokenizer = HeuristicTokenizer::new();
-    let budget = PromptBudget::new(8_000, 1_000, 1_000);
-    let outcome = ContextPipeline::new()
-        .system_core("You are DeepAgent, a verifiable agent runtime.")
-        .safety_rules("Never run destructive commands without approval.")
-        .tool_rules("Prefer read tools before write tools.")
-        .task_summary("Goal: extend the runtime. Done: core, models, hooks.")
-        .workspace(snapshot.to_context_block())
-        .memory(memory_block)
-        .semantic_retrieval(semantic_block)
-        .recent_conversation("user: continue development\nassistant: building Phase 5")
-        .user_goal("Wire hybrid semantic retrieval into the context pipeline L5.")
-        .compile(&budget, &tokenizer);
-
-    println!(
-        "context prompt  : {} tokens, {} fragments kept, {} dropped (allowance {})",
-        outcome.prompt.tokens,
-        outcome.prompt.fragments.len(),
-        outcome.dropped_fragments,
-        outcome.allowance
-    );
-    println!("layers (in order):");
-    for frag in &outcome.prompt.fragments {
-        println!("  - {:?} (prio {})", frag.source, frag.priority);
+async fn run(options: RunOptions) -> Result<(), String> {
+    let workspace =
+        std::env::current_dir().map_err(|error| format!("read current directory: {error}"))?;
+    let (chat, backend_capabilities) = build_chat_service(&workspace, &options)?;
+    if let Some(capabilities) = backend_capabilities {
+        if !capabilities.available {
+            return emit_runtime_error(options.json, "sandbox_unavailable", capabilities.message);
+        }
     }
 
-    Ok(())
-}
+    let context = Arc::new(Mutex::new(EventContext::default()));
+    let context_for_events = context.clone();
+    let json = options.json;
+    let on_event = move |event: RuntimeEvent| {
+        if let Err(error) = emit_runtime_event(json, &context_for_events, &event) {
+            eprintln!("failed to emit runtime event: {error}");
+        }
+    };
 
-/// Demonstrates the input-dispatch layer (slash routing + attachments) and the
-/// Skill system (auto-discovery + passive trigger activation + progressive
-/// disclosure) end-to-end against the repo's `.deepagent/skills/` tree.
-fn demo_intent_and_skills() -> Result<()> {
-    use deepagent_intent::{CommandDef, CommandRegistry, Intent, IntentRouter};
-    use deepagent_skills::SkillManager;
-
-    println!("\n=== Input Dispatch (Intent) ===");
-    let mut commands = CommandRegistry::new();
-    commands.register(
-        CommandDef::new("review", "Review code for quality")
-            .with_body("Review the following for quality:\n$ARGUMENTS")
-            .with_allowed_tools(["read_file".into(), "grep".into()]),
-    );
-    let router = IntentRouter::new(commands);
-
-    for input in [
-        "/review src/main.rs for error handling",
-        "explain #src/lib.rs to me",
-        "/unknown do a thing",
-    ] {
-        let req = router.route(input);
-        match &req.intent {
-            Intent::SlashCommand { name, .. } => println!(
-                "  /{:<8} → command '{}', allowed_tools={:?}, attachments={}",
-                "slash",
-                name,
-                req.allowed_tools,
-                req.attachments.len()
-            ),
-            Intent::Chat => println!(
-                "  {:<9} → chat, attachments={} ({:?})",
-                "chat",
-                req.attachments.len(),
-                req.attachments.iter().map(|a| &a.value).collect::<Vec<_>>()
-            ),
-            Intent::UnknownCommand { name } => {
-                println!("  {:<9} → unknown command '{}'", "unknown", name)
+    let context_for_approval = context.clone();
+    let chat_for_approval = chat.clone();
+    let on_approval = move |approval: deepagent_app_core::ApprovalRequestDto| {
+        let context = context_for_approval
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if json {
+            let event = HarnessEvent::ApprovalRequested {
+                approval_id: Some(approval.call_id.clone()),
+                thread_id: context.thread_id,
+                turn_id: context.turn_id,
+                tool_name: Some(approval.tool.clone()),
+                reason: approval.reason.clone(),
+                scope: Some("tool".to_string()),
+            };
+            if let Ok(line) = jsonl::event_line(&event) {
+                println!("{line}");
+                let _ = io::stdout().flush();
             }
+        } else {
+            eprintln!(
+                "approval required for {}: {} [{}]",
+                approval.tool, approval.reason, approval.call_id
+            );
         }
-    }
 
-    println!("\n=== Skill System (progressive disclosure) ===");
-    // Auto-discover skills from the repo's `.deepagent/skills/` tree.
-    let cwd = std::env::current_dir()
-        .map_err(|e| deepagent_core::error::CoreError::other(format!("cannot read cwd: {e}")))?;
-    let ws_skills = cwd.join(".deepagent").join("skills");
-    let install_dir = std::env::temp_dir().join("deepagent-skills-installed");
-
-    let mut skills = SkillManager::new(Some(ws_skills), install_dir);
-    let count = skills.load_all()?;
-    println!("discovered      : {count} skill(s)");
-    for meta in skills.registry().catalog() {
-        println!(
-            "  - {} [{}] triggers: {}",
-            meta.id,
-            meta.origin.label(),
-            skills
-                .registry()
-                .get(&meta.id)
-                .map(|s| s.triggers.len())
-                .unwrap_or(0)
-        );
-    }
-
-    // Passive activation: a user query is matched against trigger phrases and
-    // the best skill's body is disclosed (Level 1 → Level 2).
-    let query = "can you review rust code in this crate for error handling?";
-    match skills.auto_activate(query) {
-        Some((id, fragment)) => {
-            println!("passive match   : query → skill '{id}'");
-            let preview: String = fragment.content.chars().take(80).collect();
-            println!("disclosed body  : {}…", preview.replace('\n', " "));
+        let approved = read_approval_decision();
+        if !chat_for_approval
+            .pending_approvals()
+            .resolve_approved(&approval.call_id, approved)
+        {
+            eprintln!(
+                "approval request was no longer pending: {}",
+                approval.call_id
+            );
         }
-        None => println!("passive match   : (none)"),
-    }
+    };
 
+    let overrides = HarnessRunOverrides {
+        provider: options.provider,
+        model: options.model,
+        reasoning_effort: options.reasoning_effort,
+        sandbox_backend: options.sandbox_backend,
+        permission_profile: options.permission_profile,
+    };
+    let prompt = if options.prompt.is_empty() {
+        "Continue the task from the existing thread.".to_string()
+    } else {
+        options.prompt
+    };
+    let thread_id = chat
+        .run_in_session_with_overrides(
+            &prompt,
+            options.continue_thread.as_deref(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            None,
+            overrides,
+            on_event,
+            on_approval,
+        )
+        .await
+        .map_err(|error| {
+            if json {
+                println!("{}", jsonl::error_line("run_failed", error.to_string()));
+            }
+            error.to_string()
+        })?;
+
+    if !json {
+        println!("thread: {thread_id}");
+    }
     Ok(())
 }
 
-/// Demonstrates prompt engineering: load command/agent definitions from
-/// `.deepagent/` and assemble a Claude-Code-structured system prompt over the
-/// context Prompt AST.
-fn demo_prompts() -> Result<()> {
-    use deepagent_context::HeuristicTokenizer;
-    use deepagent_prompts::{discover_commands, AgentDef, SystemPromptBuilder};
-
-    println!("\n=== Prompt Engineering (commands / agents / system prompt) ===");
-
-    let cwd = std::env::current_dir()
-        .map_err(|e| deepagent_core::error::CoreError::other(format!("cannot read cwd: {e}")))?;
-    let deepagent = cwd.join(".deepagent");
-
-    // Load slash commands from `.deepagent/commands/`.
-    let commands = discover_commands(deepagent.join("commands"))?;
-    println!("commands loaded : {}", commands.len());
-    for c in &commands {
-        println!(
-            "  - /{} — {} (allowed_tools={:?})",
-            c.name, c.description, c.allowed_tools
-        );
-    }
-
-    // Load an agent definition from `.deepagent/agents/`.
-    let agent_path = deepagent.join("agents").join("rust-architect.md");
-    let agent = std::fs::read_to_string(&agent_path)
-        .ok()
-        .and_then(|raw| AgentDef::parse(&raw));
-
-    // Assemble a layered system prompt (optionally adopting the agent persona).
-    let counter = HeuristicTokenizer::new();
-    let mut builder = SystemPromptBuilder::new()
-        .core("You are DeepAgent, a verifiable Rust-native agent runtime.")
-        .safety("Never run destructive commands without explicit approval.")
-        .workspace_rule("Match the crate's existing conventions; keep modules small and tested.")
-        .tool_rule("Prefer read tools before write tools.")
-        .user_goal("Design the prompt-assembly layer.");
-
-    if let Some(agent) = &agent {
-        println!(
-            "agent loaded    : {} (model={:?}, tools={})",
-            agent.name,
-            agent.model,
-            agent.tools.len()
-        );
-        builder = builder.with_agent(agent);
-    }
-
-    let compiled = builder.compile(&counter);
+async fn tools_list() -> Result<(), String> {
+    let workspace =
+        std::env::current_dir().map_err(|error| format!("read current directory: {error}"))?;
+    let (chat, _) = build_chat_service(
+        &workspace,
+        &RunOptions {
+            prompt: String::new(),
+            continue_thread: None,
+            json: true,
+            provider: Some(DEEPSEEK_OFFICIAL_PROVIDER.to_string()),
+            model: None,
+            sandbox_backend: Some("direct".to_string()),
+            permission_profile: None,
+            reasoning_effort: None,
+        },
+    )?;
+    let descriptors = chat.tool_descriptors().map_err(|error| error.to_string())?;
+    let payload = serde_json::json!({
+        "type": "tool.list",
+        "protocolVersion": PROTOCOL_VERSION,
+        "tools": descriptors,
+    });
     println!(
-        "system prompt   : {} tokens, {} layers",
-        compiled.tokens,
-        compiled.fragments.len()
+        "{}",
+        serde_json::to_string(&payload).map_err(|error| error.to_string())?
     );
-    println!("layers (in order):");
-    for frag in &compiled.fragments {
-        println!("  - {:?} (prio {})", frag.source, frag.priority);
-    }
-
     Ok(())
+}
+
+async fn sandbox_status() -> Result<(), String> {
+    let workspace =
+        std::env::current_dir().map_err(|error| format!("read current directory: {error}"))?;
+    let options = RunOptions {
+        prompt: String::new(),
+        continue_thread: None,
+        json: true,
+        provider: None,
+        model: None,
+        sandbox_backend: None,
+        permission_profile: None,
+        reasoning_effort: None,
+    };
+    let (_, capabilities) = build_chat_service(&workspace, &options)?;
+    let capabilities = capabilities.unwrap_or_else(|| SandboxCapabilities {
+        kind: SandboxBackendKind::Direct,
+        available: true,
+        supports_one_shot: true,
+        supports_interactive_pty: true,
+        supports_network_toggle: false,
+        supports_readonly_mapping: false,
+        message: "direct host execution".to_string(),
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "type": "sandbox.status",
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": capabilities,
+        }))
+        .map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
+fn build_chat_service(
+    workspace: &Path,
+    options: &RunOptions,
+) -> Result<(ChatService, Option<SandboxCapabilities>), String> {
+    let db_path = database_path(workspace)?;
+    let db = Arc::new(Database::open(&db_path).map_err(|error| format!("open database: {error}"))?);
+    let transport: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::new());
+    let settings = Arc::new(deepagent_app_core::SettingsService::new(
+        db.clone(),
+        transport.clone(),
+        Arc::new(EnvSecretStore::new()),
+    ));
+    let sandbox_mode = sandbox_mode_for_profile(options.permission_profile.as_deref())
+        .or_else(|| settings.sandbox_mode().ok())
+        .unwrap_or(SandboxMode::WorkspaceWrite);
+    let backend_kind = options
+        .sandbox_backend
+        .as_deref()
+        .map(SandboxBackendKind::parse)
+        .unwrap_or(Some(SandboxBackendKind::Direct))
+        .ok_or_else(|| {
+            format!(
+                "unsupported sandbox backend: {}",
+                options.sandbox_backend.as_deref().unwrap_or_default()
+            )
+        })?;
+
+    let (backend, capabilities, sandboxie) = build_backend(backend_kind);
+    let executor = SandboxBackendCommandExecutor::new(backend, workspace, sandbox_mode)
+        .with_network(SandboxNetworkPolicy::Disabled);
+    let mut chat = ChatService::new(db, settings, transport, workspace)
+        .with_local_command_executor(Arc::new(executor));
+    if let Some(sandboxie) = sandboxie {
+        chat = chat.with_sandboxie_executor(sandboxie);
+    }
+    Ok((chat, Some(capabilities)))
+}
+
+fn build_backend(
+    kind: SandboxBackendKind,
+) -> (
+    Arc<dyn SandboxBackend>,
+    SandboxCapabilities,
+    Option<Arc<SandboxieExecutor>>,
+) {
+    match kind {
+        SandboxBackendKind::Direct => {
+            let backend = Arc::new(DirectSandboxBackend::new());
+            (backend.clone(), backend.capabilities(), None)
+        }
+        SandboxBackendKind::Sandboxie => {
+            let service = Arc::new(SandboxieService::new(None));
+            let executor = Arc::new(SandboxieExecutor::new(service));
+            let backend = Arc::new(SandboxieBackend::new(executor.clone()));
+            (backend.clone(), backend.capabilities(), Some(executor))
+        }
+        SandboxBackendKind::WindowsSandbox => {
+            let backend = Arc::new(WindowsSandboxBackend::new(
+                std::env::temp_dir().join("deepagent-windows-sandbox"),
+            ));
+            (backend.clone(), backend.capabilities(), None)
+        }
+    }
+}
+
+fn database_path(workspace: &Path) -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("DEEPAGENT_DB_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+    let directory = workspace.join(".deepagent");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    Ok(directory.join("deepagent.db"))
+}
+
+fn sandbox_mode_for_profile(profile: Option<&str>) -> Option<SandboxMode> {
+    match profile {
+        Some("read_only") => Some(SandboxMode::ReadOnly),
+        Some("workspace_write") => Some(SandboxMode::WorkspaceWrite),
+        Some("developer" | "full_access") => Some(SandboxMode::FullAccess),
+        _ => None,
+    }
+}
+
+fn emit_runtime_event(
+    json: bool,
+    context: &Arc<Mutex<EventContext>>,
+    event: &RuntimeEvent,
+) -> Result<(), String> {
+    let mut guard = context
+        .lock()
+        .map_err(|_| "event context lock poisoned".to_string())?;
+    let line = jsonl::project_runtime_event_line(event, &guard)?;
+    if let Some(line) = line {
+        if json {
+            println!("{line}");
+            let _ = io::stdout().flush();
+        } else {
+            print_human_event(event);
+        }
+    }
+    match event {
+        RuntimeEvent::SessionRegistered { session_id, .. } => {
+            guard.thread_id = Some(session_id.clone());
+        }
+        RuntimeEvent::RunStarted { task_id } => {
+            guard.turn_id = Some(task_id.clone());
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn emit_runtime_error(json: bool, code: &str, message: String) -> Result<(), String> {
+    if json {
+        println!("{}", jsonl::error_line(code, &message));
+    }
+    Err(message)
+}
+
+fn print_human_event(event: &RuntimeEvent) {
+    match event {
+        RuntimeEvent::ContentDelta { text } => print!("{text}"),
+        RuntimeEvent::ReasoningDelta { .. } => {}
+        RuntimeEvent::RunCompleted { message } => println!("\n{message}"),
+        RuntimeEvent::RunFailed { reason } => eprintln!("run failed: {reason}"),
+        RuntimeEvent::RunCancelled => eprintln!("run interrupted"),
+        _ => {}
+    }
+    let _ = io::stdout().flush();
+}
+
+fn read_approval_decision() -> bool {
+    let mut line = String::new();
+    if io::stdin().lock().read_line(&mut line).is_err() {
+        return false;
+    }
+    let trimmed = line.trim();
+    if trimmed.eq_ignore_ascii_case("true")
+        || trimmed.eq_ignore_ascii_case("yes")
+        || trimmed.eq_ignore_ascii_case("y")
+    {
+        return true;
+    }
+    serde_json::from_str::<serde_json::Value>(trimmed)
+        .ok()
+        .and_then(|value| value.get("approved").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false)
 }

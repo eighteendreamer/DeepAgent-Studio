@@ -150,6 +150,11 @@ impl ModelClient {
         mut request: ResponseRequest,
         observer: &mut dyn crate::stream::DeltaObserver,
     ) -> Result<Response> {
+        if matches!(self.config.wire_mode, WireMode::ChatCompletions) {
+            return self
+                .stream_chat_completion_observed(response_to_chat_completion(request)?, observer)
+                .await;
+        }
         request.stream = true;
         self.apply_defaults(&mut request);
         // Ask the provider to include a final usage chunk in the stream.
@@ -186,6 +191,15 @@ impl ModelClient {
         observer: &mut dyn crate::stream::DeltaObserver,
         cancel: Arc<AtomicBool>,
     ) -> Result<Response> {
+        if matches!(self.config.wire_mode, WireMode::ChatCompletions) {
+            return self
+                .stream_chat_completion_observed_cancelled(
+                    response_to_chat_completion(request)?,
+                    observer,
+                    cancel,
+                )
+                .await;
+        }
         request.stream = true;
         self.apply_defaults(&mut request);
         let body = serde_json::to_string(&request)?;
@@ -345,6 +359,41 @@ impl ModelClient {
     }
 }
 
+fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletionRequest> {
+    if request.top_logprobs.is_some() {
+        return Err(deepagent_core::error::CoreError::invalid(
+            "top_logprobs is not supported by DeepSeek Chat Completions",
+        ));
+    }
+    if request.text.is_some() {
+        return Err(deepagent_core::error::CoreError::invalid(
+            "text response format is not supported by DeepSeek Chat Completions",
+        ));
+    }
+    let messages = crate::responses::messages_from_response_items(
+        request.instructions.as_deref(),
+        &request.input,
+    );
+    let mut chat = ChatCompletionRequest::new(request.model, messages).with_tools(request.tools);
+    if let Some(value) = request.temperature {
+        chat = chat.with_temperature(value);
+    }
+    if let Some(value) = request.max_output_tokens {
+        chat = chat.with_max_tokens(value);
+    }
+    if let Some(value) = request.top_p {
+        chat = chat.with_top_p(value);
+    }
+    if let Some(value) = request.tool_choice {
+        chat = chat.with_tool_choice(value);
+    }
+    if let Some(value) = request.reasoning_effort {
+        chat = chat.with_reasoning_effort(value);
+    }
+    chat.user = request.user;
+    Ok(chat)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,6 +548,32 @@ mod tests {
             response.reasoning_text_projection().as_deref(),
             Some("think")
         );
+        assert_eq!(response.usage.unwrap().total_tokens, 5);
+    }
+
+    #[tokio::test]
+    async fn stream_response_uses_chat_completions_when_configured() {
+        let events = vec![
+            r#"{"choices":[{"delta":{"content":"chat route"},"finish_reason":"stop"}]}"#
+                .to_string(),
+            r#"{"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5},"choices":[]}"#
+                .to_string(),
+            "[DONE]".to_string(),
+        ];
+        let client = ModelClient::new(
+            Arc::new(MockTransport::new(events)),
+            ModelConfig::deepseek_chat("test-key"),
+        );
+
+        let response = client
+            .stream_response(ResponseRequest::new(
+                "deepseek-v4-pro",
+                vec![Message::user("hi")],
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.output_text_projection(), "chat route");
         assert_eq!(response.usage.unwrap().total_tokens, 5);
     }
 

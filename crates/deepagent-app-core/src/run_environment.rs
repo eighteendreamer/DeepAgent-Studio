@@ -28,8 +28,9 @@ impl RunEnvironment {
         runtime_logs: &Option<Arc<RuntimeLogStore>>,
         sandboxie_executor: &Option<Arc<SandboxieExecutor>>,
         run_id: &str,
+        run_overrides: serde_json::Value,
     ) -> Result<Self> {
-        let config = RunConfigOverlay::load(root);
+        let config = RunConfigOverlay::load(root, run_overrides);
         // Surface the resolved managed-policy directory so a missing managed
         // layer is diagnosable at a glance (manual acceptance M-09: the
         // DEEPAGENT_MANAGED_SETTINGS_DIR env var did not propagate to the app

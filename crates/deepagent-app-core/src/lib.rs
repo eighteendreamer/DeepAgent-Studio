@@ -85,7 +85,7 @@ pub mod workspace_service;
 pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
 pub use archive_service::ArchiveService;
 pub use attachment_service::AttachmentService;
-pub use chat_service::ChatService;
+pub use chat_service::{ChatService, HarnessRunOverrides};
 pub use commands::{
     builtin_commands, commands_from_roots, commands_from_roots_and_plugins, filter_commands,
 };

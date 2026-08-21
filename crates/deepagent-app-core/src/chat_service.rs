@@ -291,6 +291,25 @@ type DiscoveredToolsMap =
 type InvokedSkillMap =
     Arc<std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>>;
 
+/// Per-run machine-facing overrides supplied by CLI/app-server transports.
+///
+/// These values are merged through the existing run configuration overlay so
+/// the desktop path and headless paths still share one permission/model
+/// resolution implementation.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct HarnessRunOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_profile: Option<String>,
+}
+
 #[derive(Clone)]
 struct OfficeSkillGuardHook {
     invoked_skills: InvokedSkillMap,
@@ -1860,6 +1879,27 @@ impl ChatService {
         ))
     }
 
+    /// List the same base built-in descriptors used by headless runs.
+    ///
+    /// Main-run-only additions such as `task` require a live sub-agent runner
+    /// and are intentionally not fabricated for discovery. MCP/plugin tools
+    /// remain owned by their existing services and are added by the run path.
+    pub fn tool_descriptors(&self) -> Result<Vec<deepagent_tools::ToolDescriptor>> {
+        let profile = self.settings.effective_permission_profile()?;
+        let (registry, _) = self.build_registry(
+            &self.workspace,
+            crate::run_environment::fs_access_for(profile.sandbox_mode),
+            None,
+            None,
+            Some(profile.local_execution_mode),
+            matches!(
+                profile.approval_policy,
+                crate::settings::ApprovalPolicy::FullAccess
+            ),
+        )?;
+        Ok(registry.visible_to(&PermissionSet::developer()))
+    }
+
     /// Assemble the shared [`ToolRegistryBuildRequest`] from this service's
     /// wiring. Used by both [`ChatService::build_registry`] (sub-agent /
     /// standalone registries) and the main run's
@@ -2279,6 +2319,43 @@ impl ChatService {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
+        self.run_in_session_with_overrides(
+            prompt,
+            continue_session,
+            env_mode,
+            connection_id,
+            preflight_tools,
+            preflight_abort_message,
+            initial_plan_mode,
+            diagnostic_run_id,
+            HarnessRunOverrides::default(),
+            on_event,
+            on_approval,
+        )
+        .await
+    }
+
+    /// Headless/app-server entrypoint that uses the same runtime as Desktop
+    /// while allowing transport-scoped model and permission overrides.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_in_session_with_overrides<F, A>(
+        &self,
+        prompt: &str,
+        continue_session: Option<&str>,
+        env_mode: Option<&str>,
+        connection_id: Option<&str>,
+        preflight_tools: Vec<PreflightToolCallDto>,
+        preflight_abort_message: Option<String>,
+        initial_plan_mode: bool,
+        diagnostic_run_id: Option<&str>,
+        overrides: HarnessRunOverrides,
+        on_event: F,
+        on_approval: A,
+    ) -> Result<String>
+    where
+        F: Fn(RuntimeEvent) + Send + 'static,
+        A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
+    {
         let root = self.effective_root();
         let normalized_input = InputIngress::normalize(
             continue_session.map(ToOwned::to_owned),
@@ -2349,6 +2426,7 @@ impl ChatService {
             &self.runtime_logs,
             &self.sandboxie_executor,
             &run_id,
+            serde_json::to_value(&overrides)?,
         )?;
 
         let mut model_prompt = self
@@ -2412,7 +2490,9 @@ impl ChatService {
             self.transport.clone(),
             ModelRole::Chat,
             ModelRole::Reasoner,
+            run_config.provider_override(),
             run_config.model_override(),
+            run_config.reasoning_effort_override(),
         )?;
         let client = run_model.client;
         let model = run_model.model;

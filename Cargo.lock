@@ -1153,22 +1153,14 @@ dependencies = [
 name = "deepagent-cli"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "deepagent-context",
- "deepagent-core",
- "deepagent-intent",
- "deepagent-memory",
+ "deepagent-app-core",
+ "deepagent-harness-protocol",
+ "deepagent-models",
  "deepagent-persistence",
- "deepagent-prompts",
  "deepagent-runtime",
- "deepagent-session",
- "deepagent-skills",
- "deepagent-tools",
  "deepagent-tracing",
- "deepagent-workspace",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
