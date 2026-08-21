@@ -4,6 +4,7 @@ use deepagent_models::DEEPSEEK_OFFICIAL_PROVIDER;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
+    Chat(RunOptions),
     Run(RunOptions),
     ToolsList,
     SandboxStatus,
@@ -29,21 +30,27 @@ where
 {
     let mut args = args.into_iter().map(Into::into);
     let _binary = args.next();
-    let command = args
-        .next()
-        .ok_or_else(|| usage().to_string())?
-        .to_string_lossy()
-        .to_string();
+    let Some(command) = args.next() else {
+        return parse_run(args, None, false).map(|command| match command {
+            CliCommand::Run(options) => CliCommand::Chat(options),
+            other => other,
+        });
+    };
+    let command = command.to_string_lossy().to_string();
 
     match command.as_str() {
-        "run" => parse_run(args, None),
+        "chat" => parse_run(args, None, false).map(|command| match command {
+            CliCommand::Run(options) => CliCommand::Chat(options),
+            other => other,
+        }),
+        "run" => parse_run(args, None, true),
         "resume" => {
             let thread_id = args
                 .next()
                 .ok_or_else(|| "resume requires a thread id".to_string())?
                 .to_string_lossy()
                 .to_string();
-            parse_run(args, Some(thread_id))
+            parse_run(args, Some(thread_id), false)
         }
         "tools" => {
             expect_subcommand(&mut args, "list")?;
@@ -82,7 +89,11 @@ where
     }
 }
 
-fn parse_run<I, S>(args: I, continue_thread: Option<String>) -> Result<CliCommand, String>
+fn parse_run<I, S>(
+    args: I,
+    continue_thread: Option<String>,
+    prompt_required: bool,
+) -> Result<CliCommand, String>
 where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
@@ -128,7 +139,7 @@ where
             "unsupported provider; only '{DEEPSEEK_OFFICIAL_PROVIDER}' is available"
         ));
     }
-    if continue_thread.is_none() && prompt_parts.is_empty() {
+    if prompt_required && continue_thread.is_none() && prompt_parts.is_empty() {
         return Err("run requires a prompt".to_string());
     }
 
@@ -189,7 +200,7 @@ where
 }
 
 fn usage() -> &'static str {
-    "usage: deepagent <run|resume|tools list|sandbox status|server> [options]"
+    "usage: deepagent [chat|run|resume|tools list|sandbox status|server] [options]"
 }
 
 #[cfg(test)]
@@ -262,5 +273,30 @@ mod tests {
             parse_args(["deepagent", "sandbox", "status"]).unwrap(),
             CliCommand::SandboxStatus
         );
+    }
+
+    #[test]
+    fn starts_interactive_chat_without_a_subcommand() {
+        assert_eq!(
+            parse_args(["deepagent"]).unwrap(),
+            CliCommand::Chat(RunOptions {
+                prompt: String::new(),
+                continue_thread: None,
+                json: false,
+                provider: None,
+                model: None,
+                sandbox_backend: None,
+                permission_profile: None,
+                reasoning_effort: None,
+            })
+        );
+    }
+
+    #[test]
+    fn starts_interactive_chat_with_explicit_chat_command() {
+        assert!(matches!(
+            parse_args(["deepagent", "chat"]).unwrap(),
+            CliCommand::Chat(_)
+        ));
     }
 }

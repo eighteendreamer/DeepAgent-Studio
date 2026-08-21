@@ -1,6 +1,7 @@
 mod app_server;
 mod args;
 mod jsonl;
+mod tui;
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -36,6 +37,7 @@ async fn main() {
     });
 
     let result = match command {
+        CliCommand::Chat(options) => tui::run(options).await,
         CliCommand::Run(options) => run(options).await,
         CliCommand::ToolsList => tools_list().await,
         CliCommand::SandboxStatus => sandbox_status().await,
