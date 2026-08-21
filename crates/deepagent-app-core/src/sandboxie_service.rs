@@ -438,6 +438,15 @@ impl SandboxieExecutor {
         self.sandbox_mode.store(val, Ordering::Relaxed);
     }
 
+    /// Whether the underlying Sandboxie tools are available.
+    ///
+    /// The legacy executor may still retain its compatibility fallback to
+    /// direct execution; the Harness backend reports this separately so a
+    /// caller can make an explicit safety decision.
+    pub fn is_available(&self) -> bool {
+        self.service.locate_tools().is_some()
+    }
+
     fn current_mode(&self) -> SandboxMode {
         match self.sandbox_mode.load(Ordering::Relaxed) {
             0 => SandboxMode::ReadOnly,

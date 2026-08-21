@@ -54,6 +54,7 @@ pub mod run_environment;
 pub mod run_finalizer;
 pub mod runtime_event_log;
 pub mod runtime_service;
+pub mod sandbox_backend;
 pub mod sandboxie_service;
 pub mod secret_store;
 pub mod service;
@@ -139,6 +140,11 @@ pub use runtime_service::{
     default_registry, ArchiveKind, Downloader, Platform, RuntimeArtifact, RuntimeBroker,
     RuntimeDiagnostic, RuntimeEntry, RuntimeKind, RuntimePreference, RuntimeRequirement,
     RuntimeResolution, RuntimeService, RuntimeSource, UnavailableDownloader,
+};
+pub use sandbox_backend::{
+    DirectSandboxBackend, SandboxBackend, SandboxBackendCommandExecutor, SandboxBackendKind,
+    SandboxCapabilities, SandboxExecutionRequest, SandboxExecutionResult, SandboxNetworkPolicy,
+    SandboxieBackend, WindowsSandboxBackend, WindowsSandboxTaskPlan, WindowsSandboxTaskPlanRequest,
 };
 pub use sandboxie_service::{SandboxieExecutor, SandboxieService, SandboxieStatusDto};
 pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore};
