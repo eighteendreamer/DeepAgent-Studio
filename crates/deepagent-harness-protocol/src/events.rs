@@ -206,7 +206,7 @@ pub fn project_runtime_event(event: &RuntimeEvent, context: &EventContext) -> Op
         }
         RuntimeEvent::RunStarted { task_id } => Some(HarnessEvent::TurnStarted {
             thread_id,
-            turn_id: task_id.clone(),
+            turn_id: turn_id.unwrap_or_else(|| task_id.clone()),
             step: None,
         }),
         RuntimeEvent::TurnStarted { step } => Some(HarnessEvent::TurnStarted {

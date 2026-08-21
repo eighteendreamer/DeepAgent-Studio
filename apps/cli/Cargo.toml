@@ -13,9 +13,11 @@ path = "src/main.rs"
 
 [dependencies]
 deepagent-app-core.workspace = true
+deepagent-core.workspace = true
 deepagent-harness-protocol.workspace = true
 deepagent-models = { workspace = true, features = ["http"] }
 deepagent-persistence.workspace = true
+deepagent-session.workspace = true
 deepagent-runtime.workspace = true
 deepagent-tracing.workspace = true
 serde_json.workspace = true

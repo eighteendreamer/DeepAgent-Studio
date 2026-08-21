@@ -78,6 +78,22 @@ fn runtime_content_and_reasoning_project_to_item_updates() {
 }
 
 #[test]
+fn transport_turn_id_wins_over_internal_runtime_task_id() {
+    let event = RuntimeEvent::RunStarted {
+        task_id: "runtime-task".into(),
+    };
+    let projected = project_runtime_event(
+        &event,
+        &EventContext::new(Some("thread-1".into()), Some("turn-1".into())),
+    )
+    .expect("run start projects");
+
+    let value = serde_json::to_value(projected).unwrap();
+    assert_eq!(value["type"], "turn.started");
+    assert_eq!(value["turnId"], "turn-1");
+}
+
+#[test]
 fn content_event_matches_golden_json_shape() {
     let event = project_runtime_event(
         &RuntimeEvent::ContentDelta {

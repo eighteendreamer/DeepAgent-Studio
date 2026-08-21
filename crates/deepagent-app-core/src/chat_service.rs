@@ -480,6 +480,23 @@ impl ChatService {
         }
     }
 
+    /// Return the shared database used by sessions, runs, settings, and
+    /// approvals. Harness transports use this handle for lifecycle queries
+    /// without creating a second persistence boundary.
+    pub fn database(&self) -> Arc<Database> {
+        self.db.clone()
+    }
+
+    /// Clone this service with a different workspace root while preserving the
+    /// shared runtime wiring and persistence handle.
+    pub fn for_workspace(&self, workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
+        let mut cloned = self.clone();
+        cloned.workspace = workspace.clone();
+        cloned.tool_results_dir = workspace.join(".deepagent").join("tool_results");
+        cloned
+    }
+
     /// Request cancellation of an in-flight run by session id or diagnostic
     /// run id. Both keys point at the same flag while a run is active. Returns
     /// whether a matching in-flight run was found. The run stops at its next

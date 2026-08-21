@@ -1154,10 +1154,12 @@ name = "deepagent-cli"
 version = "0.1.0"
 dependencies = [
  "deepagent-app-core",
+ "deepagent-core",
  "deepagent-harness-protocol",
  "deepagent-models",
  "deepagent-persistence",
  "deepagent-runtime",
+ "deepagent-session",
  "deepagent-tracing",
  "serde_json",
  "tokio",

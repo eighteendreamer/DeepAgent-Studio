@@ -1,3 +1,4 @@
+mod app_server;
 mod args;
 mod jsonl;
 
@@ -38,9 +39,7 @@ async fn main() {
         CliCommand::Run(options) => run(options).await,
         CliCommand::ToolsList => tools_list().await,
         CliCommand::SandboxStatus => sandbox_status().await,
-        CliCommand::Server { transport } => Err(format!(
-            "app-server transport '{transport}' is reserved for P4; use the CLI run commands in P3"
-        )),
+        CliCommand::Server { transport } => app_server::run(transport).await,
     };
 
     if let Err(error) = result {
