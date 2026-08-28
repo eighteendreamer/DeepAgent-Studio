@@ -30,7 +30,7 @@ AgentKernel -> RuntimeEngine -> ToolExecutionPipeline
           |
 ExecutionBackend (Direct / Sandboxie / WindowsSandbox / SSH / future worker)
           |
-SQLite local profile | PostgreSQL + object store + queue service profile
+SQLite control state + document/artifact storage
 ```
 
 核心原则：不新增第二套 runtime、第二套 approval、第二套 event store；Warp 的能力必须投影到现有 seam。
@@ -92,7 +92,7 @@ received -> prepared -> queued -> blocked -> running -> completed
 
 最少字段：`run_id`、`turn_id`、`call_id`、`sequence`、`tool_name`、`arguments_hash`、`state`、`risk`、`approval_id`、`attempt`、`lease_owner`、`lease_expires_at`、`started_at`、`finished_at`、`result_ref`、`blocked_reason`、`parent_action_id`。
 
-状态迁移必须通过单一 service，禁止 UI、CLI、SDK 直接更新 SQL。事件仍写 `run_events`，action table 是可查询 projection；两者在同一 SQLite transaction 中写入，生产数据库使用事务和唯一约束保证幂等。
+状态迁移必须通过单一 service，禁止 UI、CLI、SDK 直接更新 SQL。事件仍写 `run_events`，action table 是可查询 projection；两者在同一 SQLite transaction 中写入，并使用事务和唯一约束保证幂等。
 
 #### 不应照搬 Warp 的地方
 
@@ -280,18 +280,38 @@ primary -> coding -> vision -> child
 
 每次 attempt 写 `provider_attempt.started/completed/failed`，包含 provider、model、reason、retryable、backoff_ms、ttft_ms、usage_ref。credential 只记录 secret source/fingerprint。不要把 Warp credits 或未知服务端计费字段当成本系统事实；本系统先做 provider-neutral cost contract。
 
-### 3.10 Persistence：SQLite 单机 profile 与 server profile 分层
+### 3.10 Persistence：SQLite 与文档存储分工
 
-当前 persistence 以 SQLite 为中心，`RunStore` 使用 `BEGIN IMMEDIATE` 分配 gapless run sequence，`EventStore` 是 append-only session ledger；这适合桌面和单进程。直接把 SQLite 当多 worker 共享控制库是不合理的。
+当前 persistence 以 SQLite 为中心，`RunStore` 使用 `BEGIN IMMEDIATE` 分配 gapless run sequence，`EventStore` 是 append-only session ledger；这适合桌面和单进程。远程 Worker 不应通过共享目录或网络文件系统直接打开主进程的 SQLite 文件。
 
 目标分两档：
 
 | Profile | 使用场景 | 存储与执行 |
 |---|---|---|
 | `desktop-local` | Tauri/CLI 单机 | SQLite、文件 artifact、单进程 coordinator、Direct/Sandboxie/WindowsSandbox |
-| `server-worker` | 长任务/多客户端 | PostgreSQL（run/action/event projection）、对象存储（artifact/blob）、队列（dispatch）、worker lease、SSH/remote backend |
+| `daemon-worker` | 长任务/多客户端/远程执行 | coordinator 独占 SQLite；Worker 通过协议领取任务；JSONL/manifest/document bundle 保存可迁移内容；artifact 使用目录或文档存储 |
 
-迁移原则：保留 domain DTO 和 repository trait；先让 SQLite 实现通过同一 trait，再增加 PostgreSQL 实现。不要让 runtime 直接依赖 rusqlite SQL。
+迁移原则：保留 domain DTO 和 repository trait，但不引入外部数据库服务。结构化控制状态继续由 SQLite 保存；大 payload、run 导出包、transcript、artifact 和远端断线 spool 进入 `DocumentStore`。不要让 runtime 直接依赖 rusqlite SQL，也不要让 SQLite 与文档副本同时成为同一状态的双重真相。
+
+建议边界：
+
+- SQLite：run/action/approval/lease/cursor/idempotency 等小型结构化控制状态。
+- DocumentStore：按 content hash 命名的 artifact、transcript、environment manifest、run bundle、Worker outbox JSONL。
+- SQLite 中只保存 document id、hash、size、media type 和生命周期状态，不保存大 blob。
+- Worker 断线时写本地 append-only outbox；重连后按 event id 投递，coordinator ACK 后再压缩/清理。
+- 导入 run bundle 时由 coordinator 校验 schema version、hash、run ownership 和 sequence，再事务性写入本机 SQLite。
+
+建议文档布局（本地设计，具体命名进入实现前再冻结）：
+
+```text
+runs/<run_id>/manifest.json
+runs/<run_id>/events-000001.jsonl
+runs/<run_id>/transcript.jsonl
+artifacts/sha256/<digest>
+workers/<worker_id>/outbox/<batch_id>.jsonl
+```
+
+一致性边界：SQLite 中已提交的 control state 是本机 coordinator 的权威状态；Worker outbox 在 ACK 前是待投递事实；导出的 run bundle 是可迁移归档，不允许绕过 coordinator 直接修改当前 run 状态。
 
 ## 4. 目标分层架构
 
@@ -392,27 +412,30 @@ Tauri / CLI / SDK --stdio or local HTTP
 - 首先实现 stdio JSON-RPC 和本机 named pipe/loopback HTTP 之一，协议稳定后再开放远程 HTTP/WebSocket。
 - 引入 `/health/live`、`/health/ready`、`/metrics`，但不把内部 SQLite schema 暴露为公共 API。
 
-#### C. Server + Worker（后期）
+#### C. Coordinator + Worker（后期）
 
 ```text
-Clients -> App Server -> PostgreSQL / Queue / Object Store
-                           |
-                    worker lease scheduler
-                       /       |       \
-                 local       SSH      sandbox worker
+Clients -> Local/Remote Coordinator
+                    |
+          single-writer SQLite control DB
+              /                 \
+    DocumentStore             worker lease dispatcher
+ (bundle/artifact/outbox)       /       |       \
+                           local       SSH      sandbox worker
 ```
 
 必须先具备：
 
-- PostgreSQL repository 实现和 migration；
-- action/approval/worker lease 的 CAS 更新；
-- at-least-once dispatch + action idempotency；
+- coordinator 对 SQLite 的单写者所有权和 migration lock；
+- `dispatches`/lease/action 状态在 SQLite 内执行条件更新；
+- 至少一次的协议投递 + action idempotency；
 - worker heartbeat、lease expiry、fencing token；
-- artifact object store multipart/upload state；
-- tenant/workspace permission boundary；
+- document/artifact store 的临时写入、hash 校验、原子 rename 和传输状态；
+- Worker 本地 JSONL outbox、delivery ACK 和 cursor 恢复；
+- user/workspace permission boundary；
 - remote worker 只接收 resolved capability 和最小凭据，不接收完整 host secret。
 
-不建议现在直接上 Kubernetes。当前底层还没有 worker lease、幂等 action 和远程事件 cursor，先把这些契约在本机 daemon 跑通，再做容器编排。
+该形态不要求数据库服务，也不要求消息队列服务。调度记录保存在 coordinator 的 SQLite 中，Worker 通过长连接、轮询或 SSH 通道领取任务；远端产生的事件先进入本地文档 outbox，再按 ACK 投递。SQLite 文件只由所属 coordinator 打开，不通过 SMB/NFS 等方式给多个进程或主机共享写入。
 
 ### 5.3 部署安全边界
 
@@ -453,12 +476,12 @@ Clients -> App Server -> PostgreSQL / Queue / Object Store
 
 **P2 完成标准**：客户端退出不影响后台 run；daemon 重启后可恢复可恢复状态；不可恢复状态有明确 terminal reason。
 
-### P3：Server + Worker
+### P3：Coordinator + Remote Worker
 
-1. PostgreSQL/Object Store/Queue profile。
+1. SQLite durable dispatch/outbox schema 与目录型 `DocumentStore`。
 2. worker lease/fencing/idempotency。
 3. SSH/Windows remote worker capability negotiation。
-4. multi-tenant policy、audit export、quota/cost aggregation。
+4. 多用户可见性（如产品需要）、audit export、quota/cost aggregation。
 
 **P3 完成标准**：网络断开、worker 崩溃、重复 dispatch、artifact 重试和权限撤销都有可测试结果。
 
@@ -497,7 +520,7 @@ Clients -> App Server -> PostgreSQL / Queue / Object Store
 
 1. 不复制 Warp 的 `AIAgentActionType` 大枚举到 DeepAgent runtime。
 2. 不在 CLI、Desktop、SDK 各自实现 approval、cancel、queue 或 event persistence。
-3. 不把 SQLite 直接改成多进程/多主共享数据库来冒充 server control plane。
+3. 不让多个进程或远程主机共享写同一个 SQLite 文件；由 coordinator 单写，Worker 只通过协议交互。
 4. 不在没有 action idempotency 和 worker fencing 前上线远程自动重试。
 5. 不把 Computer Use 当作普通 JSON tool；先完成 screen/input/approval/recording/replay contract。
 6. 不把 Warp 的闭源云端能力、credits、SLA 或线上成熟度写进本系统验收标准。
@@ -513,7 +536,7 @@ DeepAgent 当前已有 runtime、审批、事件、sandbox、MCP、SSH、subagen
 P0 durable control plane
  -> P1 protocol/capability/execution convergence
  -> P2 local daemon/background recovery
- -> P3 server-worker deployment
+ -> P3 coordinator-remote-worker deployment
 ```
 
 在 P0/P1 没有完成前，继续增加第三方 harness、云端调度或 Computer Use 功能，会放大恢复、权限和部署风险。这个判断不是夸大本系统不足，而是由当前内存 approval、宏观 RunStore、分离的 subagent projection、PTY 能力不统一以及 stdio/desktop 单机部署事实直接推导出来的。
