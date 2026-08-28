@@ -256,6 +256,156 @@ DeepAgent 有 tracing/metrics、runtime logs、cost store、usage event、model 
 | replay | conversation restore/server task recovery | append-only run/session replay/fork/truncate | DeepAgent 基础更好；补富 item hydration |
 | testing | extensive UI/TUI/integration tests | runtime/app-core/protocol tests | 为每个协议事件加 fixture/reconnect/terminal test |
 
+## 6A. 源码级深入拆解
+
+### 6A.1 Warp action contract：不是“工具名”，而是可回填协议对象
+
+Warp 的 action contract 位于 `借鉴/warp/crates/ai/src/agent/action/mod.rs`，结果 contract 位于同目录 `action_result/mod.rs`。每个 server tool call 在 `app/src/ai/agent/api/convert_from.rs:625-645` 被转换为带 `tool_call_id`、`task_id`、`action`、`requires_result=true` 的 `AIAgentAction`；缺少 tool 或 skill reference 会返回显式转换错误，无法表示给客户端的消息可以返回 `NoClientRepresentation`，不会误当成成功工具。
+
+Warp action 家族及本项目对应边界如下：
+
+| Warp action | 真实语义/返回要求 | DeepAgent 对应 | 需要补的协议语义 |
+|---|---|---|---|
+| `RequestCommandOutput` | 执行短命令或捕获 long-running snapshot；携带 read-only、risky、pager、rationale、citations | command tool + sandbox executor | `execution_mode`、snapshot、pager、risk rationale |
+| `WriteToLongRunningShellCommand` | 向已有 PTY 写 bytes，带 `PtyWriteMode` | 尚无等价 PTY write contract | terminal session id、input lease、takeover |
+| `ReadShellCommandOutput` | 延迟读取命令 block 输出 | command observation | block/PTY correlation、delay/watchdog |
+| `ReadFiles` | 文件读取，可返回逐文件失败 | file read tool | per-file error 与 partial success |
+| `RequestFileEdits` | server 提供 diff，客户端展示/确认/应用 | file mutation + checkpoint | diff hunks、editable approval、mutation evidence |
+| `Grep`/`FileGlob`/`FileGlobV2` | 搜索/路径匹配，通常可并发 | search tools | search root、depth/result cap、ordering |
+| `SearchCodebase` | 索引/远程代码搜索 | codegraph/knowledge search | index version、remote source、staleness |
+| `ReadMCPResource`/`CallMCPTool` | 资源读取与 MCP tool 调用 | MCP registry/adapter | server installation UUID、resource URI、degradation |
+| `ReadSkill` | 按 `SkillReference` 加载技能内容 | skills crate | source/hash/scope、already-sent 状态 |
+| `ReadDocuments`/`EditDocuments`/`CreateDocuments` | Warp 文档对象的读取/修改/创建 | document/office service | document version、artifact id、conflict policy |
+| `UseComputer`/`RequestComputerUse` | Computer Use 实际操作或请求授权 | vision service（部分） | screen frame、pointer/keyboard action、approval |
+| `StartRecording`/`StopRecording` | 屏幕/窗口录像，配置由 server tool call 下发 | artifact store（部分） | recording lifecycle、window target、upload result |
+| `InsertCodeReviewComments`/`OpenCodeReview` | 代码审查 UI/评论写入 | review service（部分） | repo/base branch/comment id |
+| `UploadArtifact` | 上传本地文件并回报 artifact | tool artifact store | upload progress、media type、external URL |
+| `FetchConversation` | 查询另一个 conversation 的任务/消息 | session read | cross-thread permission 与 snapshot |
+| `SuggestNewConversation`/`SuggestPrompt` | 非执行性建议，仍需返回 result | UI suggestion | suggestion lifecycle，不能混入 tool side effect |
+| `SendMessageToAgent` | 向 child/peer agent 发消息 | subagent notification | recipient、delivery、message id |
+| `TransferShellCommandControlToUser` | agent 主动 relinquish PTY 控制 | cancellation/input lease | lease owner、resume condition |
+| `AskUserQuestion` | 多选/单选问题，UI 阻塞直到回答 | approval/input channel | question schema、answer payload、resume |
+| `RunAgents` | 批量 child agent，支持 local/remote、每 child prompt/model/identity | subagent executor/DAG | run graph、execution location、identity、join |
+| `WaitForEvents` | 等待 child/remote event 后重新唤醒 | cancellation/event wait | wait key、idle timeout、resume event |
+
+`AIAgentActionResultType` 对每一族都有明确结果 variant，并统一提供 cancellation variant（`action/mod.rs` 的 `cancelled_result`）。这意味着 Warp 的取消不是“丢掉当前 stream”，而是必须构造可被 server 下一轮消费的 typed result。DeepAgent 当前已经能把 tool failure 写成 observation，但对于 `AskUserQuestion`、`WaitForEvents`、PTY takeover、remote child 和 artifact upload，还需要同样的 typed resume result。
+
+### 6A.2 Warp supported-tools 是能力协商，不是静态注册表
+
+`借鉴/warp/app/src/ai/agent/api/impl.rs:212-311` 根据 `RequestParams` 和 feature flag 动态生成 `supported_tools`。基础工具始终包含 grep/glob/MCP/init/review/shell；文件编辑、search、artifact 取决于 execution mode；Computer Use 还同时受 `AgentModeComputerUse` feature flag 和 `computer_use_enabled` 参数控制；orchestration、ReadSkill、WaitForEvents、AskUserQuestion 各有独立开关。CLI agent 使用另一组 `get_supported_cli_agent_tools`，并加入 `TransferShellCommandControlToUser`。
+
+这暴露了一个重要设计：模型请求必须知道“本次 run 的能力集合”，而不是只拿全局 ToolRegistry。DeepAgent `tool/list` 已能列工具，但应新增 run-scoped capability snapshot：工具名、schema hash、risk、concurrency safe、sandbox capability、approval policy、provider-native/tool-owned 标记。这样可防止模型生成当前入口不能执行的工具，也能在 replay 时复原当时的工具面。
+
+### 6A.3 Warp proto-to-client conversion 的失败语义
+
+`convert_from.rs` 把 proto `Harness` oneof 映射为 `oz/claude/opencode/gemini/codex` 字符串，把 `RunAgents` 的 remote execution mode 映射为 environment id、worker host、Computer Use 开关、runner id；每个 child 还保留 name、prompt、title、agent identity uid、model override。`convert_to.rs` 则把客户端结果重新编码为 proto action result，并转换 MCP resource/tool、attachments、context、suggestions。
+
+转换层有三个有价值的边界：
+
+1. server-resolved 字段（例如 remote environment、runner、model）保留在 re-emitted tool call 中，客户端不能用本地默认值覆盖。
+2. auth secret 是 dispatch-time client concern，不进入 proto `RunAgents` payload；这减少凭据落盘/回传风险。
+3. unknown/unsupported tool 不会静默执行；转换失败或 `NoClientRepresentation` 与有效 action 明确区分。
+
+DeepAgent 当前 `HarnessRequest` 的 provider/model/permission/sandbox override 已有类似方向，但 `ToolDescriptor` 还缺“server-resolved vs client-resolved”标记。建议所有跨边界字段带 `source: provider|server|client|derived`，并在序列化测试中验证客户端不能提升权限或替换 resolved execution target。
+
+### 6A.4 Warp ActionModel 的实际并发算法
+
+`BlocklistAIActionModel` 维护五组状态：
+
+```text
+conversation_id -> pending_preprocessed_actions
+conversation_id -> pending_actions VecDeque<AIAgentAction>
+conversation_id -> running_actions
+conversation_id -> finished_action_results
+action_id -> past_action_results / original action order
+```
+
+收到一批 actions 时，先记录 `action_order`，对所有 action 启动 preprocessing future；所有 preprocessing 完成后按原顺序入队。`get_action_status` 的队首规则是：队首、非 view-only、当前没有 running action 才是 `Blocked`；其余 pending 是 `Queued`；running 是 `RunningAsync`；已有 result 是 `Finished`。
+
+执行时，如果是用户驱动确认且已有 running action，Warp 主动禁止重叠交互；普通安全 action 可以异步执行。`TryExecuteResult` 分为 `ExecutedAsync`、`ExecutedSync`、`NotExecuted`。NotExecuted 会把 action 插回原 index，并把 reason 转成 action result/状态事件。所有终端结果都经过 `handle_action_result`，统一释放 executor-held state；这是 Warp 避免 action state 泄漏的关键收敛点。
+
+DeepAgent `RuntimeEngine::execute_tools` 已实现相似但更通用的分区：`is_parallel_safe` 允许 `RiskLevel::Safe` 读操作和隔离的 `task` 子代理并发；先为所有并发调用分配 call id、发 ToolStarted，再按完成顺序发 ToolCompleted，最后按模型输入顺序写 session log。非安全/需审批工具进入 `ToolExecutionPipeline` 串行路径。这个实现实际上比报告初版描述更接近 Warp，应把差距修正为“DeepAgent 已有并发执行，缺的是 durable queue/blocked resume，而非并发本身”。
+
+### 6A.5 DeepAgent tool pipeline 的严格门禁顺序
+
+DeepAgent `loop_engine.rs:1661-1775` 的主路径顺序是：
+
+```text
+ToolInvocation
+  -> ToolExecutionPipeline::prepare
+     -> registry schema validation
+     -> BeforeToolUse hook（可 Continue/Modify/Ask/Deny）
+     -> permission/risk + ApprovalGate
+     -> checkpoint/artifact preparation
+  -> Ready: append ToolCallRequested
+  -> execute_prepared / speculative completion
+  -> ToolCallCompleted + AfterToolUse/FileChanged
+  -> Observation returned to model
+```
+
+Blocked 路径会取消 speculative read，仍写入 ToolCallRequested/Completed，使 agent 获得结构化失败 observation；不会把一个工具阻塞升级成整个 runtime 异常。`loop_engine.rs:1798-1949` 还明确保证 schema validation 发生在 hook/permission 之前，hook 修改后的参数要再次 validation，Ask 才调用 ApprovalGate。
+
+这比 Warp 的“UI blocklist + executor state”更适合作为统一内核；应吸收 Warp 的队列状态和可编辑 approval，却不要改变 DeepAgent 的门禁顺序。
+
+### 6A.6 Warp AgentDriver 的真实 setup/run/cleanup 状态机
+
+`AgentDriver::run_internal` 不是一个单函数启动器，而是以下阶段：
+
+| 阶段 | Warp 具体动作 | 失败分类/可观测性 | DeepAgent 当前对应 |
+|---|---|---|---|
+| Validate | 检查 task、cwd、harness、credential、working directory | `AgentDriverError` + task status update | ChatService 配置组装，缺少统一 preflight event |
+| TerminalBootstrap | 等待 terminal session bootstrap，确保 PATH/shell ready | setup event；bootstrap timeout/failure | Sandbox/command executor，尚无统一 PTY bootstrap |
+| CloudProviderSetup | 加载 provider credentials，注入 env，cleanup 时擦除 | provider-specific error | model client credential，缺少 run-scoped env lifecycle |
+| MCPResolve | managed/file/builtin/ephemeral MCP 解析 UUID/name/schema | per-server startup/degradation | registry/connect/reconnect，缺少 snapshot/degradation protocol |
+| MCPStart | 启动 server，等待 ready；必要时 inactive server | startup timeout、server detail | McpService/transport，部分能力已存在 |
+| SkillsResolve | global/environment skill 目录、repo clone、channel-gated skill | missing/invalid skill status | skills crate，缺少 run source/hash snapshot |
+| Environment | 多 repo clone、ref/commit checkout、origin removal、HEAD capture、codebase indexing | `PrepareEnvironmentError`，记录 resolved SHA | workspace/codegraph，缺少统一 snapshot |
+| Preflight | 执行 harness/plugin/platform 预检查 | setup step result | ChatService preflight/tool hooks，未统一为 driver 状态机 |
+| HarnessPrepare | Oz 或第三方 CLI 的 command/profile/model/terminal 配置 | unsupported harness/setup failure | RuntimeEngine 直接执行 Agent trait |
+| HarnessRun | stream response/event，写 exchange，输出 pretty/json/ndjson | retry、credential refresh、idle timeout | model stream + runtime event |
+| Linger | 失败后保留可诊断窗口，等待 terminal/CLI session 状态 | terminal status outcome | error returned immediately，缺少 linger 语义 |
+| Snapshot/Artifacts | 上传 environment snapshot、artifact、external reference | upload failure separately classified | artifact store，缺少外部引用回报 |
+| Cleanup | MCP、provider env、stream consumer、CLI task sync、terminal/session cleanup | cleanup best effort + logs | pipeline drop/DB persistence，缺少跨资源 cleanup coordinator |
+
+对 DeepAgent 的直接启示是：`Preparing` 不能只代表“创建 run record”，应细分为可 replay 的 setup items；但 setup coordinator 必须位于 AppCore/RuntimeEngine 边界，不应把 Warp 的整个 `AgentDriver` 搬进 runtime。
+
+### 6A.7 Warp server event driver：断线恢复不是 conversation restore
+
+`ai/agent_events/driver.rs` 提供 `AgentEventFilter`（按 sequence、run id、retry forever/bounded run ids）、WebSocket/SSE stream 打开、`on_event` consumer、cursor persistence、HTTP error classification 和 exponential backoff。`message_hydrator.rs` 在收到 agent event 后按 message id 拉取完整消息，可对 transient read error 重试，并在成功后调用 `mark_message_delivered`。
+
+因此 Warp 实际上有两条恢复线：
+
+```text
+event stream cursor recovery -> 保证收到哪些 run events
+message hydration/retry      -> 保证每个 event 的富 payload 完整
+conversation restore         -> 应用重启后的本地 transcript 恢复
+```
+
+DeepAgent `ThreadRead(afterSequence)` 已覆盖第一条和部分第三条，但 `HarnessEvent` 当前对 runtime 的 generic projection 仍可能让消费端拿到“event type + raw data”而非富对象。应增加 `item hydration` 或保证所有核心事件在首次发出时已经自包含；否则断线重连后 UI 只能重新解析内部 JSON。
+
+### 6A.8 Warp persistence 的 replace snapshot 与 lazy restore
+
+Warp `persistence/agent.rs` 对 conversation 做 upsert，对每个 task 做 upsert，再删除 snapshot 中不存在的 task；这避免删除/rewind 后的 orphan task 在 restore 时复活。conversation summary 单独存储，启动只加载 metadata，完整 task protobuf 在首次访问时 lazy load；summary 缺失时执行一次读时 backfill。eviction 以 orchestration tree 为原子单位，不会删除仍有 child 的 parent。
+
+`restored_conversations.rs` 还有 take-once 语义：读取失败不会消耗机会，成功交给 pane 后才标记 taken；这解决多个 terminal view 重复恢复同一对话的问题。
+
+DeepAgent 的 `EventStore` 更接近 append-only event sourcing，`RunStore` 是可查询 projection；它不需要复制 Warp 的 blob snapshot。但对于 run graph、fork、archive、lazy hydration，应该借鉴 Warp 的三个细节：tree-aware eviction、read failure 不消耗 restore lease、projection 与大 payload 分离。
+
+### 6A.9 取消/终态的真正差异
+
+Warp `CancellationReason` 细分为手动取消、自动 cloud handoff、follow-up 提交、用户执行 shell、revert、delete、inline command finish、CLI takeover、agent 退出 shell；`CancellationOutcome` 再映射为 KeepInProgress、Succeeded、Cancelled、FinalizedExternally。也就是说“取消 stream”不一定意味着“对话失败/取消”。
+
+DeepAgent `RunOutcome` 统一为 Completed、Cancelled、AwaitingApproval、StepLimitReached、BudgetExceeded、CompletionFailed，并在 Kernel 最后映射 `TerminalKind`、写 terminal event、finish run。它的 exactly-once 更强，但还不能表达 Warp 的“流取消只是控制信号，conversation 继续/由外部 finalize”。建议新增 `InterruptReason` 和 `ContinuationDisposition`，仍让 Kernel 保持唯一终态写入点。
+
+### 6A.10 现有报告需要修正的判断
+
+源码核对后，以下结论比初版更精确：
+
+1. DeepAgent 已经支持安全工具并行、subagent 并行、按完成时间 live event、按 call order 持久化；缺口是跨 turn/run 的 durable action queue 与 blocked resume。
+2. DeepAgent 已经在 `model_agent.rs` 保留 Responses stream event、reasoning/content、web search、usage、attempt reset，并在 `loop_engine.rs` 防止 provider tool call 重复写入；缺口是 Warp 那样的 action-rich client hydration，而非基础流式能力。
+3. DeepAgent 已经有 verification retry/reflection/loop detection 和 adversarial verifier；Warp 更强的是 terminal/environment/remote 产品集成，不是“所有可靠性机制都领先”。
+4. Warp 的富状态主要来自 server API、proto、客户端 persistence 和 UI models 的组合；它并非天然比 DeepAgent 的 append-only run event 更适合机器 replay。
+
 ## 7. DeepAgent Studio 的优势、劣势与风险
 
 ### 7.1 已领先的结构优势
@@ -347,12 +497,20 @@ Warp 是目前本地资料中“agent + terminal + cloud operations + multi-agen
 - `借鉴/warp/AGENTS.md`：GUI/TUI 共享 core、开发命令和测试策略。
 - `借鉴/warp/Cargo.toml`：workspace crate 与 GraphQL/WebSocket、多代理、Computer Use 依赖。
 - `借鉴/warp/app/src/ai/agent/mod.rs`：取消结果、stream output、action/result、subagent、MCP/context、artifact 等类型。
+- `借鉴/warp/crates/ai/src/agent/action/mod.rs`：完整 action 类型、RunAgents local/remote 配置、每类 cancelled result。
+- `借鉴/warp/crates/ai/src/agent/action_result/mod.rs`：完整 action result 类型和 command result 统一语义。
 - `借鉴/warp/app/src/ai/agent/api.rs`：`RequestParams`、conversation token、model/provider/autonomy/isolation/feature flags。
+- `借鉴/warp/app/src/ai/agent/api/convert_from.rs`、`convert_to.rs`：proto tool/harness/context/action/result 双向转换和失败语义。
+- `借鉴/warp/app/src/ai/agent/api/impl.rs`：按 feature flag、execution mode 和入口生成 supported tools。
 - `借鉴/warp/app/src/ai/agent/task.rs`：Task、parent task、exchange/message/context、working directory。
 - `借鉴/warp/app/src/ai/blocklist/action_model.rs`：动作状态、队列、原序、预处理、执行和结果释放。
+- `借鉴/warp/app/src/ai/blocklist/action_model/execute.rs`：动作 executor 的统一执行入口和交互约束。
 - `借鉴/warp/app/src/ai/agent_sdk/driver.rs`：AgentDriver、setup、harness、retry、错误分类、cleanup、输出。
+- `借鉴/warp/app/src/ai/agent_sdk/driver/harness/mod.rs`：Oz/ThirdParty/Unsupported harness 分类与运行器契约。
 - `借鉴/warp/app/src/ai/agent_sdk/driver/environment.rs`：多 repo clone、HEAD pin、environment snapshot、index。
 - `借鉴/warp/app/src/ai/agent_sdk/harness_support.rs`：ping、artifact/reference、notify、finish、shutdown side-channel。
+- `借鉴/warp/app/src/ai/agent_events/driver.rs`、`message_hydrator.rs`：event cursor、断线重试、message hydration、delivery ack。
+- `借鉴/warp/app/src/persistence/agent.rs`、`app/src/ai/restored_conversations.rs`：replace snapshot、lazy restore、tree eviction、take-once。
 - `借鉴/warp/app/src/ai/ambient_agents/task.rs`、`spawn.rs`、`scheduled.rs`：后台任务、执行位置、live session、schedule。
 - `借鉴/warp/app/src/ai/orchestration/providers.rs`：harness 的 model/host/environment/auth 选择持久化。
 - `借鉴/warp/app/src/ai/mcp/`、`借鉴/warp/crates/isolation_platform/`、`借鉴/warp/crates/computer_use/`：MCP、隔离、Computer Use。
@@ -362,6 +520,7 @@ Warp 是目前本地资料中“agent + terminal + cloud operations + multi-agen
 - `crates/deepagent-runtime/src/kernel.rs`：RunPhase、TerminalKind、AgentKernel、持久化 sink、终态 exactly-once。
 - `crates/deepagent-runtime/src/events.rs`：RuntimeEvent、工具/审批/subagent/checkpoint/usage/terminal 事件。
 - `crates/deepagent-runtime/src/loop_engine.rs`：RuntimeEngine 的 think/stream/tool/verify/finalize 循环。
+- `crates/deepagent-runtime/src/model_agent.rs`：Responses stream、tool-call correlation、speculative attempt、reasoning/cache/usage event。
 - `crates/deepagent-runtime/src/tool_pipeline.rs`：schema、hook、approval、执行、完成、checkpoint、artifact pipeline。
 - `crates/deepagent-harness-protocol/src/requests.rs`：版本化 JSON-RPC request contract。
 - `crates/deepagent-harness-protocol/src/events.rs`：HarnessEvent、ItemPayload、RuntimeEvent 投影与 replay context。
