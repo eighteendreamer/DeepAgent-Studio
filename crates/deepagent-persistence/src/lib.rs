@@ -21,6 +21,7 @@ pub mod document_store;
 pub mod event_store;
 pub mod managed_file_store;
 pub mod migrations;
+pub mod run_control;
 pub mod run_store;
 pub mod runtime_log_store;
 pub mod subagent_store;
@@ -55,6 +56,7 @@ impl Database {
             .unwrap_or_default()
             .as_millis()
             .min(i64::MAX as u128) as i64;
+        run_control::RunControlStore::new(&db).recover(now)?;
         subagent_store::SubagentRunStore::new(&db).cancel_orphaned(now)?;
         Ok(db)
     }
@@ -179,5 +181,82 @@ mod tests {
         assert_eq!(child.state, "cancelled");
         assert!(child.finished_at.is_some());
         assert!(child.summary.unwrap().contains("restarted"));
+    }
+
+    #[test]
+    fn reopening_disk_database_recovers_run_controls_without_replaying_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control-restart.db");
+        {
+            let db = Database::open(&path).unwrap();
+            db.with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO sessions (id,created_at,updated_at) VALUES ('s1',1,1)",
+                        [],
+                    )
+                    .map_err(map_sqlite)?;
+                Ok(())
+            })
+            .unwrap();
+            run_store::RunStore::new(&db)
+                .create("run-1", "s1", Some("turn-1"), 1)
+                .unwrap();
+            let controls = run_control::RunControlStore::new(&db);
+            controls
+                .create_action(&run_control::NewRunAction {
+                    run_id: "run-1",
+                    turn_id: "turn-1",
+                    call_id: "call-1",
+                    sequence: 0,
+                    tool_name: "bash",
+                    arguments_hash: "sha256:test",
+                    risk: "high",
+                    parent_action_id: None,
+                    now: 2,
+                })
+                .unwrap();
+            controls
+                .transition_action(
+                    "run-1",
+                    "call-1",
+                    run_control::RunActionState::Prepared,
+                    3,
+                    None,
+                    None,
+                )
+                .unwrap();
+            controls
+                .transition_action(
+                    "run-1",
+                    "call-1",
+                    run_control::RunActionState::Running,
+                    4,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+
+        let reopened = Database::open(&path).unwrap();
+        let action = run_control::RunControlStore::new(&reopened)
+            .get_action("run-1", "call-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(action.state, run_control::RunActionState::Failed);
+        assert_eq!(
+            action.blocked_reason.as_deref(),
+            Some("process_restarted_while_running")
+        );
+        let events = run_store::RunStore::new(&reopened)
+            .events_after("run-1", None)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "action.failed")
+                .count(),
+            1
+        );
     }
 }

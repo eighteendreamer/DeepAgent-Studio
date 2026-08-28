@@ -235,6 +235,78 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_managed_files_category_status
         ON managed_files(category, status, updated_at);
     "#,
+    // V15: durable run control projections. These tables do not replace
+    // runs/run_events; they make action, approval and execution-lease state
+    // queryable and recoverable while run_events remains the ordered ledger.
+    r#"
+    CREATE TABLE run_actions (
+        run_id            TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        turn_id           TEXT NOT NULL,
+        call_id           TEXT NOT NULL,
+        sequence          INTEGER NOT NULL,
+        tool_name         TEXT NOT NULL,
+        arguments_hash    TEXT NOT NULL,
+        state             TEXT NOT NULL,
+        risk              TEXT NOT NULL,
+        approval_id       TEXT,
+        attempt           INTEGER NOT NULL DEFAULT 0,
+        lease_owner       TEXT,
+        lease_expires_at  INTEGER,
+        started_at        INTEGER,
+        finished_at       INTEGER,
+        result_ref        TEXT,
+        blocked_reason    TEXT,
+        parent_action_id  TEXT,
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        PRIMARY KEY (run_id, call_id),
+        UNIQUE (run_id, sequence),
+        CHECK (state IN ('received','prepared','queued','blocked','running','completed','failed','cancelled','expired','denied'))
+    );
+    CREATE INDEX idx_run_actions_state
+        ON run_actions(run_id, state, sequence);
+
+    CREATE TABLE run_approvals (
+        approval_id       TEXT PRIMARY KEY NOT NULL,
+        run_id            TEXT NOT NULL,
+        call_id           TEXT NOT NULL,
+        state             TEXT NOT NULL DEFAULT 'pending',
+        scope             TEXT NOT NULL,
+        risk              TEXT NOT NULL,
+        reason            TEXT,
+        policy_snapshot   TEXT,
+        expires_at        INTEGER,
+        decided_at        INTEGER,
+        decided_by        TEXT,
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        UNIQUE (run_id, call_id, approval_id),
+        FOREIGN KEY (run_id, call_id) REFERENCES run_actions(run_id, call_id) ON DELETE CASCADE,
+        CHECK (state IN ('pending','approved','denied','expired','cancelled'))
+    );
+    CREATE INDEX idx_run_approvals_pending
+        ON run_approvals(run_id, state, expires_at);
+
+    CREATE TABLE execution_leases (
+        lease_id          TEXT PRIMARY KEY NOT NULL,
+        resource_kind     TEXT NOT NULL,
+        resource_id       TEXT NOT NULL,
+        owner             TEXT NOT NULL,
+        epoch             INTEGER NOT NULL,
+        fencing_token_hash TEXT NOT NULL,
+        acquired_at       INTEGER NOT NULL,
+        expires_at        INTEGER NOT NULL,
+        renewed_at        INTEGER,
+        revoked_at        INTEGER,
+        revoke_reason     TEXT,
+        UNIQUE (resource_kind, resource_id, epoch)
+    );
+    CREATE UNIQUE INDEX idx_execution_leases_active_resource
+        ON execution_leases(resource_kind, resource_id)
+        WHERE revoked_at IS NULL;
+    CREATE INDEX idx_execution_leases_expiry
+        ON execution_leases(expires_at, revoked_at);
+    "#,
 ];
 
 /// The highest schema version defined by this build.
@@ -319,6 +391,11 @@ mod tests {
             "checkpoints",
             "tool_artifacts",
             "subagent_runs",
+            "run_actions",
+            "run_approvals",
+            "execution_leases",
+            "secret_records",
+            "managed_files",
         ] {
             let count: i64 = conn
                 .query_row(
