@@ -78,6 +78,14 @@ use crate::subagent_runner::{
     collect_runtime_agent_definitions, ChatSubagentRunner, RuntimeAgentDefinition,
 };
 pub use crate::system_context::SYSTEM_PROMPT_DYNAMIC_BOUNDARY;
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
 #[cfg(test)]
 use crate::system_context::{build_system_manifest, build_system_prompt, current_date_string};
 #[cfg(test)]
@@ -837,6 +845,33 @@ impl ChatService {
     /// [`PendingApprovals::resolve_approved`] on this to answer a dialog.
     pub fn pending_approvals(&self) -> PendingApprovals {
         self.pending.clone()
+    }
+
+    /// Resolve an approval through the durable control projection before
+    /// waking the in-process gate. Repeating the same decision is idempotent.
+    pub fn resolve_approval(
+        &self,
+        approval_id: &str,
+        approved: bool,
+        decided_by: &str,
+    ) -> Result<bool> {
+        let controls = deepagent_persistence::run_control::RunControlStore::new(&self.db);
+        if controls.get_approval(approval_id)?.is_some() {
+            if let Err(error) =
+                controls.respond_approval(approval_id, approved, decided_by, now_millis())
+            {
+                // An expired decision must also release the waiter safely.
+                if controls.get_approval(approval_id)?.is_some_and(|record| {
+                    record.state == deepagent_persistence::run_control::ApprovalState::Expired
+                }) {
+                    let _ = self.pending.resolve_approved(approval_id, false);
+                }
+                return Err(error);
+            }
+            let _ = self.pending.resolve_approved(approval_id, approved);
+            return Ok(true);
+        }
+        Ok(self.pending.resolve_approved(approval_id, approved))
     }
 
     /// Return the shared plan-mode flag for a session, creating an inactive

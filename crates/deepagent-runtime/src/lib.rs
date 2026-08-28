@@ -66,7 +66,7 @@ pub use stall_detector::{
 };
 pub use tool_budget::ToolResultBudgetConfig;
 pub use tool_pipeline::{
-    PreparedToolInvocation, ToolArtifactPersistence, ToolExecutionPipeline, ToolPipelineResult,
-    ToolPipelineStage, ToolPreparation,
+    PreparedToolInvocation, ToolActionPersistence, ToolArtifactPersistence, ToolExecutionPipeline,
+    ToolPipelineResult, ToolPipelineStage, ToolPreparation,
 };
 pub use tool_result_decorator::{ChainDecorator, ToolResultDecorator};

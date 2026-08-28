@@ -753,10 +753,19 @@ impl ServerState {
         id: serde_json::Value,
         params: deepagent_harness_protocol::ApprovalRespondRequest,
     ) -> (RpcResponse, Option<TurnLaunch>) {
-        let resolved = self
-            .base_chat
-            .pending_approvals()
-            .resolve_approved(&params.approval_id, params.approved);
+        let resolved = match self.base_chat.resolve_approval(
+            &params.approval_id,
+            params.approved,
+            "harness_client",
+        ) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INVALID_PARAMS, error.to_string()),
+                    None,
+                )
+            }
+        };
         if !resolved {
             return (
                 RpcResponse::error(id, ERR_INVALID_PARAMS, "approval is not pending"),

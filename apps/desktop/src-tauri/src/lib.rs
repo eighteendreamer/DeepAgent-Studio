@@ -1921,11 +1921,15 @@ fn start_chat_v2(
 }
 
 #[tauri::command]
-fn resolve_approval(state: State<'_, AppState>, call_id: String, approved: bool) -> bool {
+fn resolve_approval(
+    state: State<'_, AppState>,
+    call_id: String,
+    approved: bool,
+) -> Result<bool, String> {
     state
         .chat
-        .pending_approvals()
-        .resolve_approved(&call_id, approved)
+        .resolve_approval(&call_id, approved, "desktop_user")
+        .map_err(|error| error.to_string())
 }
 
 /// Request a manual stop of an in-flight run for `session_id`. The run ends

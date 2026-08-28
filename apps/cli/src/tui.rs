@@ -185,9 +185,14 @@ async fn run_turn(
         print!("Approve? [y/N] ");
         let _ = io::stdout().flush();
         let approved = super::read_approval_decision();
-        let _ = chat_for_approval
-            .pending_approvals()
-            .resolve_approved(&approval.call_id, approved);
+        if let Err(error) =
+            chat_for_approval.resolve_approval(&approval.call_id, approved, "cli_tui_user")
+        {
+            eprintln!(
+                "failed to persist approval response for {}: {error}",
+                approval.call_id
+            );
+        }
     };
 
     let overrides = HarnessRunOverrides {

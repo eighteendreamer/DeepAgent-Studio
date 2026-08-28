@@ -9,10 +9,14 @@ use deepagent_core::error::Result;
 use deepagent_core::id::SessionId;
 use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry};
 use deepagent_persistence::artifact_store::{ToolArtifactRecord, ToolArtifactStore};
+use deepagent_persistence::run_control::{
+    NewRunAction, NewRunApproval, RunActionState, RunControlStore,
+};
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 use deepagent_tools::permission::PermissionSet;
 use deepagent_tools::{ToolExecutionContext, ToolInvocation, ToolOutput, ToolRegistry};
+use sha2::{Digest, Sha256};
 
 use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyGate};
 use crate::checkpoint::{CheckpointManager, MutationKind};
@@ -55,6 +59,168 @@ pub enum ToolPreparation {
 pub struct ToolArtifactPersistence {
     db: Arc<Database>,
     run_id: String,
+}
+
+/// Durable action projection attached to one kernel run. Registration happens
+/// before any parallel execution so sequence follows model call order.
+#[derive(Clone)]
+pub struct ToolActionPersistence {
+    db: Arc<Database>,
+    run_id: String,
+    turn_id: String,
+    next_sequence: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl std::fmt::Debug for ToolActionPersistence {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ToolActionPersistence")
+            .field("run_id", &self.run_id)
+            .field("turn_id", &self.turn_id)
+            .finish()
+    }
+}
+
+impl ToolActionPersistence {
+    pub fn new(
+        db: Arc<Database>,
+        run_id: impl Into<String>,
+        turn_id: impl Into<String>,
+    ) -> Result<Self> {
+        let run_id = run_id.into();
+        let next = RunControlStore::new(&db).next_action_sequence(&run_id)?;
+        Ok(Self {
+            db,
+            run_id,
+            turn_id: turn_id.into(),
+            next_sequence: Arc::new(std::sync::atomic::AtomicU64::new(next)),
+        })
+    }
+
+    pub(crate) fn register_invocations(
+        &self,
+        invocations: &mut [ToolInvocation],
+        registry: &ToolRegistry,
+    ) -> Result<()> {
+        for invocation in invocations {
+            let call_id = invocation
+                .id
+                .get_or_insert_with(|| format!("call_{}", deepagent_core::id::EventId::new()))
+                .clone();
+            let arguments = serde_json::to_vec(&invocation.arguments)?;
+            let arguments_hash = format!("sha256:{:x}", Sha256::digest(arguments));
+            let controls = RunControlStore::new(&self.db);
+            if let Some(existing) = controls.get_action(&self.run_id, &call_id)? {
+                if existing.turn_id == self.turn_id
+                    && existing.tool_name == invocation.name
+                    && existing.arguments_hash == arguments_hash
+                {
+                    continue;
+                }
+                return Err(deepagent_core::error::CoreError::invalid(format!(
+                    "idempotency conflict for action {}/{}",
+                    self.run_id, call_id
+                )));
+            }
+            // Allocate only after the idempotency lookup. Provider retries may
+            // repeat an already-recorded call id and must not create gaps in
+            // the model-order sequence for later calls.
+            let sequence = self
+                .next_sequence
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let risk = registry
+                .get(&invocation.name)
+                .map(|spec| format!("{:?}", spec.descriptor.risk).to_ascii_lowercase())
+                .unwrap_or_else(|| "unknown".to_string());
+            controls.create_action(&NewRunAction {
+                run_id: &self.run_id,
+                turn_id: &self.turn_id,
+                call_id: &call_id,
+                sequence,
+                tool_name: &invocation.name,
+                arguments_hash: &arguments_hash,
+                risk: &risk,
+                parent_action_id: None,
+                now: now_millis(),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn transition(
+        &self,
+        call_id: &str,
+        state: RunActionState,
+        blocked_reason: Option<&str>,
+        result_ref: Option<&str>,
+    ) -> Result<()> {
+        RunControlStore::new(&self.db).transition_action(
+            &self.run_id,
+            call_id,
+            state,
+            now_millis(),
+            blocked_reason,
+            result_ref,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn fail(&self, call_id: &str, reason: &str) -> Result<()> {
+        let store = RunControlStore::new(&self.db);
+        if store
+            .get_action(&self.run_id, call_id)?
+            .is_some_and(|action| action.state.is_terminal())
+        {
+            return Ok(());
+        }
+        self.transition(call_id, RunActionState::Failed, Some(reason), None)
+    }
+
+    pub(crate) fn cancel(&self, call_id: &str, reason: &str) -> Result<()> {
+        let store = RunControlStore::new(&self.db);
+        if store
+            .get_action(&self.run_id, call_id)?
+            .is_some_and(|action| action.state.is_terminal())
+        {
+            return Ok(());
+        }
+        self.transition(call_id, RunActionState::Cancelled, Some(reason), None)
+    }
+
+    pub(crate) fn request_approval(&self, call_id: &str, risk: &str, reason: &str) -> Result<()> {
+        RunControlStore::new(&self.db).request_approval(&NewRunApproval {
+            approval_id: call_id,
+            run_id: &self.run_id,
+            call_id,
+            scope: "single_call",
+            risk,
+            reason: Some(reason),
+            policy_snapshot: None,
+            expires_at: None,
+            now: now_millis(),
+        })?;
+        Ok(())
+    }
+
+    pub(crate) fn approve(&self, call_id: &str) -> Result<()> {
+        RunControlStore::new(&self.db).respond_approval(
+            call_id,
+            true,
+            "approval_gate",
+            now_millis(),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn deny(&self, call_id: &str) -> Result<()> {
+        RunControlStore::new(&self.db).respond_approval(
+            call_id,
+            false,
+            "approval_gate",
+            now_millis(),
+        )?;
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for ToolArtifactPersistence {
@@ -114,6 +280,7 @@ pub struct ToolExecutionPipeline<'a> {
     created_paths: Arc<Mutex<Vec<std::path::PathBuf>>>,
     checkpoint: Option<Arc<CheckpointManager>>,
     artifact_persistence: Option<ToolArtifactPersistence>,
+    action_persistence: Option<ToolActionPersistence>,
 }
 
 impl<'a> ToolExecutionPipeline<'a> {
@@ -137,6 +304,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             created_paths: Arc::new(Mutex::new(Vec::new())),
             checkpoint: None,
             artifact_persistence: None,
+            action_persistence: None,
         }
     }
 
@@ -191,6 +359,11 @@ impl<'a> ToolExecutionPipeline<'a> {
         self
     }
 
+    pub fn with_action_persistence(mut self, persistence: Option<ToolActionPersistence>) -> Self {
+        self.action_persistence = persistence;
+        self
+    }
+
     async fn fire(&self, point: HookPoint, data: HookData) -> Result<HookOutcome> {
         match self.hooks {
             Some(hooks) => {
@@ -235,7 +408,7 @@ impl<'a> ToolExecutionPipeline<'a> {
                 "input_validation_error",
                 ToolPipelineStage::Validation,
                 false,
-            )));
+            )?));
         }
 
         let validated = match self
@@ -252,10 +425,13 @@ impl<'a> ToolExecutionPipeline<'a> {
                     "input_validation_error",
                     ToolPipelineStage::Validation,
                     false,
-                )));
+                )?));
             }
         };
         invocation.arguments = validated.arguments;
+        if let Some(persistence) = self.action_persistence.as_ref() {
+            persistence.transition(&call_id, RunActionState::Prepared, None, None)?;
+        }
 
         let before = match before_override {
             Some(outcome) => outcome,
@@ -282,7 +458,7 @@ impl<'a> ToolExecutionPipeline<'a> {
                             "hook_validation_error",
                             ToolPipelineStage::PreToolUse,
                             false,
-                        )));
+                        )?));
                     }
                 }
             }
@@ -295,7 +471,7 @@ impl<'a> ToolExecutionPipeline<'a> {
                     "hook_denied",
                     ToolPipelineStage::PreToolUse,
                     false,
-                )));
+                )?));
             }
             HookOutcome::Ask { reason, .. } => {
                 if let Some(blocked) = self
@@ -320,7 +496,7 @@ impl<'a> ToolExecutionPipeline<'a> {
                     "permission_denied",
                     ToolPipelineStage::Permission,
                     false,
-                )));
+                )?));
             }
         };
         if spec.descriptor.risk.requires_approval() && !approval_granted {
@@ -371,7 +547,7 @@ impl<'a> ToolExecutionPipeline<'a> {
                 "permission_hook_denied",
                 ToolPipelineStage::Permission,
                 false,
-            )));
+            )?));
         }
         if self.auto_approve {
             return Ok(None);
@@ -381,6 +557,9 @@ impl<'a> ToolExecutionPipeline<'a> {
             reason: reason.clone(),
             needs_approval: true,
         });
+        if let Some(persistence) = self.action_persistence.as_ref() {
+            persistence.request_approval(call_id, risk, &reason)?;
+        }
         let decision = self
             .approvals
             .request(ApprovalRequest {
@@ -392,16 +571,26 @@ impl<'a> ToolExecutionPipeline<'a> {
             })
             .await;
         Ok(match decision {
-            ApprovalDecision::Allow => None,
-            ApprovalDecision::Deny => Some(self.blocked(
-                call_id.to_string(),
-                name.to_string(),
-                arguments.clone(),
-                format!("approval denied: {reason}"),
-                "approval_denied",
-                ToolPipelineStage::Permission,
-                false,
-            )),
+            ApprovalDecision::Allow => {
+                if let Some(persistence) = self.action_persistence.as_ref() {
+                    persistence.approve(call_id)?;
+                }
+                None
+            }
+            ApprovalDecision::Deny => {
+                if let Some(persistence) = self.action_persistence.as_ref() {
+                    persistence.deny(call_id)?;
+                }
+                Some(self.blocked(
+                    call_id.to_string(),
+                    name.to_string(),
+                    arguments.clone(),
+                    format!("approval denied: {reason}"),
+                    "approval_denied",
+                    ToolPipelineStage::Permission,
+                    false,
+                )?)
+            }
         })
     }
 
@@ -415,26 +604,32 @@ impl<'a> ToolExecutionPipeline<'a> {
         error_type: &str,
         stage: ToolPipelineStage,
         needs_approval: bool,
-    ) -> ToolPipelineResult {
+    ) -> Result<ToolPipelineResult> {
+        if let Some(persistence) = self.action_persistence.as_ref() {
+            persistence.fail(&call_id, &reason)?;
+        }
         self.events.emit(RuntimeEvent::ToolBlocked {
             name: name.clone(),
             reason: reason.clone(),
             needs_approval,
         });
-        ToolPipelineResult {
+        Ok(ToolPipelineResult {
             call_id,
             name,
             arguments,
             output: ToolOutput::failure(reason).with_error_type(error_type),
             duration_ms: 0,
             stage,
-        }
+        })
     }
 
     pub async fn execute_prepared(
         &self,
         prepared: PreparedToolInvocation,
     ) -> Result<ToolPipelineResult> {
+        if let Some(persistence) = self.action_persistence.as_ref() {
+            persistence.transition(&prepared.call_id, RunActionState::Running, None, None)?;
+        }
         let mut mutation_targets = Vec::new();
         if let Some(checkpoint) = self.checkpoint.as_ref() {
             for path in mutation_paths(&prepared.name, &prepared.arguments) {
@@ -501,6 +696,9 @@ impl<'a> ToolExecutionPipeline<'a> {
         mutation_targets: Vec<std::path::PathBuf>,
     ) -> Result<ToolPipelineResult> {
         if emit_started {
+            if let Some(persistence) = self.action_persistence.as_ref() {
+                persistence.transition(&prepared.call_id, RunActionState::Running, None, None)?;
+            }
             let metadata = tool_ui_metadata(&prepared.name, &prepared.arguments, None);
             self.events.emit(RuntimeEvent::ToolStarted {
                 name: prepared.name.clone(),
@@ -563,6 +761,15 @@ impl<'a> ToolExecutionPipeline<'a> {
         .await?;
         if output.ok {
             self.fire_file_changed_hooks(&mutation_targets).await?;
+        }
+        if let Some(persistence) = self.action_persistence.as_ref() {
+            if output.ok {
+                persistence.transition(&prepared.call_id, RunActionState::Completed, None, None)?;
+            } else if self.cancel.load(std::sync::atomic::Ordering::Acquire) {
+                persistence.cancel(&prepared.call_id, "tool execution observed cancellation")?;
+            } else {
+                persistence.fail(&prepared.call_id, "tool execution failed")?;
+            }
         }
 
         Ok(ToolPipelineResult {
@@ -656,7 +863,11 @@ impl ToolOutputErrorType for ToolOutput {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use deepagent_core::clock::Timestamp;
     use deepagent_hooks::{Hook, HookContext};
+    use deepagent_persistence::event_store::EventStore;
+    use deepagent_persistence::run_control::{ApprovalState, RunActionState, RunControlStore};
+    use deepagent_persistence::run_store::RunStore;
     use deepagent_tools::{PermissionSet, RiskLevel, Tool, ToolDescriptor};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -666,6 +877,12 @@ mod tests {
     }
 
     struct WriteFileProbeTool;
+
+    struct DelayedTool {
+        completions: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct CancellationAwareTool;
 
     #[async_trait]
     impl Tool for CountingTool {
@@ -721,6 +938,64 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl Tool for DelayedTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "delayed".into(),
+                description: "records completion order".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "required": ["label", "delay_ms"],
+                    "properties": {
+                        "label": { "type": "string" },
+                        "delay_ms": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                }),
+                risk: RiskLevel::Safe,
+                required_permissions: PermissionSet::read_only(),
+            }
+        }
+
+        async fn invoke(&self, arguments: serde_json::Value) -> Result<ToolOutput> {
+            let delay = arguments["delay_ms"].as_u64().unwrap();
+            let label = arguments["label"].as_str().unwrap().to_string();
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            self.completions
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .push(label.clone());
+            Ok(ToolOutput::success(serde_json::json!({ "label": label })))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for CancellationAwareTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "cancellation_aware".into(),
+                description: "observes the execution cancellation flag".into(),
+                parameters: serde_json::json!({ "type": "object" }),
+                risk: RiskLevel::Safe,
+                required_permissions: PermissionSet::read_only(),
+            }
+        }
+
+        async fn invoke(&self, _arguments: serde_json::Value) -> Result<ToolOutput> {
+            unreachable!("the context-aware implementation must be used")
+        }
+
+        async fn invoke_with_context(
+            &self,
+            _arguments: serde_json::Value,
+            context: ToolExecutionContext,
+        ) -> Result<ToolOutput> {
+            assert!(context.is_cancelled());
+            Ok(ToolOutput::failure("cancelled before side effect"))
+        }
+    }
+
     struct CountingHook(Arc<AtomicUsize>);
 
     struct FileChangeHook(Arc<Mutex<Vec<(String, String)>>>);
@@ -756,11 +1031,35 @@ mod tests {
 
     struct CountingApproval(Arc<AtomicUsize>);
 
+    struct PersistingApproval {
+        db: Arc<Database>,
+        approved: bool,
+    }
+
     #[async_trait]
     impl ApprovalGate for CountingApproval {
         async fn request(&self, _request: ApprovalRequest) -> ApprovalDecision {
             self.0.fetch_add(1, Ordering::SeqCst);
             ApprovalDecision::Allow
+        }
+    }
+
+    #[async_trait]
+    impl ApprovalGate for PersistingApproval {
+        async fn request(&self, request: ApprovalRequest) -> ApprovalDecision {
+            RunControlStore::new(&self.db)
+                .respond_approval(
+                    &request.call_id,
+                    self.approved,
+                    "test_external_client",
+                    now_millis(),
+                )
+                .unwrap();
+            if self.approved {
+                ApprovalDecision::Allow
+            } else {
+                ApprovalDecision::Deny
+            }
         }
     }
 
@@ -770,6 +1069,262 @@ mod tests {
             .register(Arc::new(CountingTool { calls, risk }))
             .unwrap();
         registry
+    }
+
+    fn action_fixture(registry: &ToolRegistry) -> (Arc<Database>, ToolActionPersistence) {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session_id = SessionId::new();
+        EventStore::new(&db)
+            .create_session(session_id, None, Timestamp::from_millis(1))
+            .unwrap();
+        RunStore::new(&db)
+            .create(
+                "run-action-test",
+                &session_id.to_string(),
+                Some("turn-1"),
+                1,
+            )
+            .unwrap();
+        let persistence =
+            ToolActionPersistence::new(db.clone(), "run-action-test", "turn-1").unwrap();
+        assert!(
+            registry.get("counting").is_some()
+                || registry.get("delayed").is_some()
+                || registry.get("cancellation_aware").is_some()
+        );
+        (db, persistence)
+    }
+
+    #[test]
+    fn durable_registration_preserves_model_order_without_retry_gaps() {
+        let registry = registry(RiskLevel::Safe, Arc::new(AtomicUsize::new(0)));
+        let (db, persistence) = action_fixture(&registry);
+        let mut invocations = (0..8)
+            .map(|index| {
+                ToolInvocation::new(
+                    "counting",
+                    serde_json::json!({ "value": index.to_string() }),
+                )
+                .with_id(format!("call-{index}"))
+            })
+            .collect::<Vec<_>>();
+        persistence
+            .register_invocations(&mut invocations, &registry)
+            .unwrap();
+
+        let mut provider_retry = vec![invocations[3].clone()];
+        persistence
+            .register_invocations(&mut provider_retry, &registry)
+            .unwrap();
+        let mut later =
+            vec![
+                ToolInvocation::new("counting", serde_json::json!({ "value": "later" }))
+                    .with_id("call-8"),
+            ];
+        persistence
+            .register_invocations(&mut later, &registry)
+            .unwrap();
+
+        let actions = RunControlStore::new(&db)
+            .list_actions("run-action-test")
+            .unwrap();
+        assert_eq!(actions.len(), 9);
+        assert_eq!(
+            actions
+                .iter()
+                .map(|action| action.sequence)
+                .collect::<Vec<_>>(),
+            (0..9).collect::<Vec<_>>()
+        );
+        assert_eq!(actions[3].call_id, "call-3");
+        assert_eq!(actions[8].call_id, "call-8");
+    }
+
+    #[tokio::test]
+    async fn durable_parallel_completion_keeps_persisted_model_order() {
+        let completions = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(DelayedTool {
+                completions: completions.clone(),
+            }))
+            .unwrap();
+        let (db, persistence) = action_fixture(&registry);
+        let mut invocations = vec![
+            ToolInvocation::new(
+                "delayed",
+                serde_json::json!({ "label": "slow", "delay_ms": 40 }),
+            )
+            .with_id("call-slow"),
+            ToolInvocation::new(
+                "delayed",
+                serde_json::json!({ "label": "fast", "delay_ms": 1 }),
+            )
+            .with_id("call-fast"),
+        ];
+        persistence
+            .register_invocations(&mut invocations, &registry)
+            .unwrap();
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_action_persistence(Some(persistence));
+
+        let (slow, fast) = tokio::join!(
+            pipeline.execute(invocations[0].clone()),
+            pipeline.execute(invocations[1].clone())
+        );
+        assert!(slow.unwrap().output.ok);
+        assert!(fast.unwrap().output.ok);
+        assert_eq!(
+            completions.lock().unwrap().as_slice(),
+            &["fast".to_string(), "slow".to_string()]
+        );
+        let actions = RunControlStore::new(&db)
+            .list_actions("run-action-test")
+            .unwrap();
+        assert_eq!(actions[0].call_id, "call-slow");
+        assert_eq!(actions[0].sequence, 0);
+        assert_eq!(actions[1].call_id, "call-fast");
+        assert_eq!(actions[1].sequence, 1);
+        assert!(actions
+            .iter()
+            .all(|action| action.state == RunActionState::Completed));
+    }
+
+    #[tokio::test]
+    async fn external_approval_and_runtime_confirmation_are_idempotent() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = registry(RiskLevel::High, calls.clone());
+        let (db, persistence) = action_fixture(&registry);
+        let mut invocations =
+            vec![
+                ToolInvocation::new("counting", serde_json::json!({ "value": "approved" }))
+                    .with_id("call-approved"),
+            ];
+        persistence
+            .register_invocations(&mut invocations, &registry)
+            .unwrap();
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_approvals(Arc::new(PersistingApproval {
+                    db: db.clone(),
+                    approved: true,
+                }))
+                .with_action_persistence(Some(persistence));
+
+        let result = pipeline.execute(invocations.remove(0)).await.unwrap();
+        assert!(result.output.ok);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            RunControlStore::new(&db)
+                .get_approval("call-approved")
+                .unwrap()
+                .unwrap()
+                .state,
+            ApprovalState::Approved
+        );
+        let action = RunControlStore::new(&db)
+            .get_action("run-action-test", "call-approved")
+            .unwrap()
+            .unwrap();
+        assert_eq!(action.state, RunActionState::Completed);
+        assert_eq!(action.attempt, 1);
+    }
+
+    #[tokio::test]
+    async fn denied_approval_is_terminal_and_never_executes_tool() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = registry(RiskLevel::High, calls.clone());
+        let (db, persistence) = action_fixture(&registry);
+        let mut invocations =
+            vec![
+                ToolInvocation::new("counting", serde_json::json!({ "value": "denied" }))
+                    .with_id("call-denied"),
+            ];
+        persistence
+            .register_invocations(&mut invocations, &registry)
+            .unwrap();
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_approvals(Arc::new(PersistingApproval {
+                    db: db.clone(),
+                    approved: false,
+                }))
+                .with_action_persistence(Some(persistence));
+
+        let result = pipeline.execute(invocations.remove(0)).await.unwrap();
+        assert!(!result.output.ok);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            RunControlStore::new(&db)
+                .get_action("run-action-test", "call-denied")
+                .unwrap()
+                .unwrap()
+                .state,
+            RunActionState::Denied
+        );
+    }
+
+    #[tokio::test]
+    async fn validation_failure_and_cancelled_execution_have_distinct_terminal_states() {
+        let registry = registry(RiskLevel::Safe, Arc::new(AtomicUsize::new(0)));
+        let (db, persistence) = action_fixture(&registry);
+        let mut invalid = vec![
+            ToolInvocation::new("counting", serde_json::json!({ "value": 42 }))
+                .with_id("call-invalid"),
+        ];
+        persistence
+            .register_invocations(&mut invalid, &registry)
+            .unwrap();
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_action_persistence(Some(persistence));
+        assert!(!pipeline.execute(invalid.remove(0)).await.unwrap().output.ok);
+        assert_eq!(
+            RunControlStore::new(&db)
+                .get_action("run-action-test", "call-invalid")
+                .unwrap()
+                .unwrap()
+                .state,
+            RunActionState::Failed
+        );
+
+        let mut cancelled_registry = ToolRegistry::new();
+        cancelled_registry
+            .register(Arc::new(CancellationAwareTool))
+            .unwrap();
+        let (cancel_db, cancel_persistence) = action_fixture(&cancelled_registry);
+        let mut cancelled = vec![
+            ToolInvocation::new("cancellation_aware", serde_json::json!({}))
+                .with_id("call-cancelled"),
+        ];
+        cancel_persistence
+            .register_invocations(&mut cancelled, &cancelled_registry)
+            .unwrap();
+        let cancel = Arc::new(AtomicBool::new(true));
+        let cancel_pipeline = ToolExecutionPipeline::new(
+            &cancelled_registry,
+            SessionId::new(),
+            PermissionSet::read_only(),
+        )
+        .with_execution_controls(cancel, Duration::from_secs(1))
+        .with_action_persistence(Some(cancel_persistence));
+        assert!(
+            !cancel_pipeline
+                .execute(cancelled.remove(0))
+                .await
+                .unwrap()
+                .output
+                .ok
+        );
+        assert_eq!(
+            RunControlStore::new(&cancel_db)
+                .get_action("run-action-test", "call-cancelled")
+                .unwrap()
+                .unwrap()
+                .state,
+            RunActionState::Cancelled
+        );
     }
 
     #[tokio::test]

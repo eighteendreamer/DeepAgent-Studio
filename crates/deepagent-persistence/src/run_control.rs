@@ -236,6 +236,19 @@ impl<'db> RunControlStore<'db> {
         Self { db }
     }
 
+    pub fn next_action_sequence(&self, run_id: &str) -> Result<u64> {
+        self.db.with_conn(|connection| {
+            let next: i64 = connection
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence),-1)+1 FROM run_actions WHERE run_id=?1",
+                    [run_id],
+                    |row| row.get(0),
+                )
+                .map_err(map_sqlite)?;
+            to_u64(next, "action sequence")
+        })
+    }
+
     pub fn create_action(&self, action: &NewRunAction<'_>) -> Result<ControlMutation> {
         self.db.with_conn(|connection| {
             in_immediate_transaction(connection, || {

@@ -56,9 +56,16 @@ pub(crate) fn build_kernel_runtime_config(
         checkpoint: Some(checkpoint.clone()),
         artifact_persistence: Some(
             deepagent_runtime::tool_pipeline::ToolArtifactPersistence::new(
-                request.db,
+                request.db.clone(),
                 request.run_id.to_string(),
             ),
+        ),
+        action_persistence: Some(
+            deepagent_runtime::tool_pipeline::ToolActionPersistence::new(
+                request.db.clone(),
+                request.run_id.to_string(),
+                request.run_id.to_string(),
+            )?,
         ),
         tool_result_budget: ToolResultBudgetConfig {
             output_dir: PathBuf::from(request.tool_results_dir),

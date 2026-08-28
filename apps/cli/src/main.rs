@@ -97,14 +97,16 @@ async fn run(options: RunOptions) -> Result<(), String> {
         }
 
         let approved = read_approval_decision();
-        if !chat_for_approval
-            .pending_approvals()
-            .resolve_approved(&approval.call_id, approved)
-        {
-            eprintln!(
+        match chat_for_approval.resolve_approval(&approval.call_id, approved, "cli_user") {
+            Ok(true) => {}
+            Ok(false) => eprintln!(
                 "approval request was no longer pending: {}",
                 approval.call_id
-            );
+            ),
+            Err(error) => eprintln!(
+                "failed to persist approval response for {}: {error}",
+                approval.call_id
+            ),
         }
     };
 

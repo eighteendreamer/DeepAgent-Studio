@@ -166,6 +166,8 @@ pub struct RuntimeConfig {
     pub checkpoint: Option<std::sync::Arc<crate::checkpoint::CheckpointManager>>,
     /// Durable index for large tool output artifact files.
     pub artifact_persistence: Option<crate::tool_pipeline::ToolArtifactPersistence>,
+    /// Durable action state projection for this kernel run.
+    pub action_persistence: Option<crate::tool_pipeline::ToolActionPersistence>,
     /// Tool result truncation and persistence budget.
     pub tool_result_budget: ToolResultBudgetConfig,
     /// Optional decorator that mutates each tool result after invocation.
@@ -194,6 +196,7 @@ impl Default for RuntimeConfig {
             tool_timeout: std::time::Duration::from_secs(120),
             checkpoint: None,
             artifact_persistence: None,
+            action_persistence: None,
             tool_result_budget: ToolResultBudgetConfig::default(),
             tool_result_decorator: None,
             max_adversarial_retries: 1,
@@ -901,7 +904,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     break;
                 }
 
-                AgentDecision::CallTool(invocation) => {
+                AgentDecision::CallTool(mut invocation) => {
+                    if let Some(persistence) = self.config.action_persistence.as_ref() {
+                        persistence.register_invocations(
+                            std::slice::from_mut(&mut invocation),
+                            self.registry,
+                        )?;
+                    }
                     let speculative = streaming_tools.take_speculative(&invocation);
                     let observation = match speculative {
                         Some(speculative) => {
@@ -927,7 +936,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     last_observations = vec![observation];
                 }
 
-                AgentDecision::CallTools(invocations) => {
+                AgentDecision::CallTools(mut invocations) => {
+                    if let Some(persistence) = self.config.action_persistence.as_ref() {
+                        persistence.register_invocations(&mut invocations, self.registry)?;
+                    }
                     let speculative = streaming_tools.take_speculative_batch(&invocations);
                     last_observations = self
                         .execute_tools(
@@ -1294,6 +1306,20 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 .id
                 .clone()
                 .unwrap_or_else(|| format!("call_{}", deepagent_core::id::EventId::new()));
+            if let Some(persistence) = self.config.action_persistence.as_ref() {
+                persistence.transition(
+                    &call_id,
+                    deepagent_persistence::run_control::RunActionState::Prepared,
+                    None,
+                    None,
+                )?;
+                persistence.transition(
+                    &call_id,
+                    deepagent_persistence::run_control::RunActionState::Running,
+                    None,
+                    None,
+                )?;
+            }
             let metadata = tool_ui_metadata(&inv.name, &inv.arguments, None);
             self.emit(RuntimeEvent::ToolStarted {
                 name: inv.name.clone(),
@@ -1379,6 +1405,25 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         // finishes (live, out-of-order progress) — the session-log append still
         // happens deterministically below in the model's original order.
         while let Some((i, call_id, name, arguments, result, duration_ms)) = futs.next().await {
+            if let Some(persistence) = self.config.action_persistence.as_ref() {
+                match &result {
+                    Ok(output) if output.ok => persistence.transition(
+                        &call_id,
+                        deepagent_persistence::run_control::RunActionState::Completed,
+                        None,
+                        None,
+                    )?,
+                    _ if self
+                        .cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) =>
+                    {
+                        persistence
+                            .cancel(&call_id, "parallel tool execution observed cancellation")?
+                    }
+                    _ => persistence.fail(&call_id, "parallel tool execution failed")?,
+                }
+            }
             let (ok, value) = match &result {
                 Ok(out) => (out.ok, out.value.clone()),
                 Err(e) => (false, serde_json::json!({ "error": e.to_string() })),
@@ -1688,6 +1733,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         )
         .with_checkpoint(self.config.checkpoint.clone());
         let pipeline = pipeline.with_artifact_persistence(self.config.artifact_persistence.clone());
+        let pipeline = pipeline.with_action_persistence(self.config.action_persistence.clone());
 
         let prepared = pipeline.prepare(invocation, before_override).await?;
         let result = match prepared {
