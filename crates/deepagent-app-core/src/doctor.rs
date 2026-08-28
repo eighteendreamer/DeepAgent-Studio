@@ -182,7 +182,7 @@ async fn check_api_key(settings: &SettingsService) -> DiagnosticResult {
         Err(e) => DiagnosticResult::error(
             "API Key",
             format!("could not read secret store: {e}"),
-            "Check OS keychain access and re-enter the API key.",
+            "Check encrypted SQLite and OS keychain access, then re-enter the API key.",
         ),
     }
 }

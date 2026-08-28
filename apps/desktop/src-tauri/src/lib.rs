@@ -3,7 +3,7 @@
 //! Thin command layer over `deepagent-app-core`. Each `#[command]` delegates to
 //! a service and returns the serializable DTOs the React UI consumes. Services:
 //! - [`AppService`] — sessions, timeline, commands, diff, fork/rewind/export.
-//! - [`SettingsService`] — project init + model discovery (API key → OS keychain).
+//! - [`SettingsService`] — project init + model discovery (encrypted SQLite secrets).
 //! - [`SkillsService`] — skill discovery/install/activation.
 //! - [`ChatService`] — streamed chat runs (rooted at the active project).
 //! - [`McpService`] — visual MCP server config + live tool registration.
@@ -24,7 +24,8 @@ use deepagent_app_core::{
     GitChangesDto, GitCommitMessageDraftDto, GitDiffDto, GitLogEntryDto, GitOperationResultDto,
     GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto, GitRefCompareDto, GitService,
     GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
-    KnowledgeService, LocalPtyHandle, McpServerDto, McpService, NewRuntimeLogEntry, OfficeService,
+    KnowledgeService, LocalPtyHandle, ManagedFileInventory, McpServerDto, McpService,
+    NewRuntimeLogEntry, OfficeService,
     PdfRenderResultDto, PluginAppEntry, PluginDto, PluginMarketplaceDto,
     PluginMarketplaceEntriesQueryDto, PluginMarketplaceEntryDto, PluginMarketplacePageDto,
     PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto, PluginScanReportDto,
@@ -36,7 +37,8 @@ use deepagent_app_core::{
     RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxieExecutor,
     SandboxieService, SandboxieStatusDto, SecretStore, SessionDetailDto, SessionStateService,
     SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto,
-    SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, StoredRunEvent,
+    SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, SqliteSecretStore,
+    StoredRunEvent,
     TerminalResultDto, TerminalService, TerminalShell, TranscriptDto, TranscriptSegmentDto,
     TrustService, VisionRecognizeRequestDto, VisionRecognizeResultDto, VisionService,
     VisionSettings, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
@@ -51,9 +53,8 @@ use tauri::{Emitter, Manager, State};
 /// Service name used for keychain entries.
 const KEYCHAIN_SERVICE: &str = "deepagent-studio";
 
-/// Keychain entry name for the user-supplied SkillsMP API key. Stored under
-/// the same `KEYCHAIN_SERVICE` as the DeepSeek API key, so both live together
-/// in Windows Credential Manager / macOS Keychain / Linux Secret Service.
+/// Logical name for the user-supplied SkillsMP API key in the encrypted SQLite
+/// secret table.
 const KEYCHAIN_SKILLSMP_KEY_NAME: &str = "skillsmp_api_key";
 
 /// A [`CommandExecutor`] that routes bash/git commands through SSH to a
@@ -288,6 +289,7 @@ fn parse_verify_mode(mode: &str) -> deepagent_ssh::RemoteVerifyMode {
 struct AppState {
     service: Mutex<AppService>,
     settings: Arc<SettingsService>,
+    secrets: Arc<dyn SecretStore>,
     /// Shared skills service. Wrapped in `Arc<Mutex>` so the chat service
     /// (`with_skills`) and the Tauri command layer share the same registry —
     /// installing a skill via `install_skill` / `skill_market_install`
@@ -1507,7 +1509,7 @@ fn skill_market_get_api_key(state: State<'_, AppState>) -> Result<ApiKeyInfo, St
     })
 }
 
-/// Save a user-supplied SkillsMP API key to the OS keychain and rebuild the
+/// Save a user-supplied SkillsMP API key to encrypted SQLite and rebuild the
 /// in-memory client so subsequent calls use it.
 ///
 /// _Validates: Requirements R9.2._
@@ -1517,23 +1519,23 @@ fn skill_market_set_api_key(state: State<'_, AppState>, key: String) -> Result<(
     if trimmed.is_empty() {
         return Err("API key cannot be empty".into());
     }
-    let keychain = KeychainStore::new(KEYCHAIN_SERVICE);
-    SecretStore::set(&keychain, KEYCHAIN_SKILLSMP_KEY_NAME, trimmed).map_err(|e| e.to_string())?;
+    state
+        .secrets
+        .set(KEYCHAIN_SKILLSMP_KEY_NAME, trimmed)
+        .map_err(|e| e.to_string())?;
     state.skillsmp.set_user_key(Some(trimmed.to_string()));
     Ok(())
 }
 
-/// Delete the user-supplied SkillsMP API key from the keychain and fall the
+/// Delete the user-supplied SkillsMP API key from encrypted SQLite and fall the
 /// in-memory client back to the built-in / anonymous tier.
 ///
 /// _Validates: Requirements R9.6._
 #[tauri::command]
 fn skill_market_clear_api_key(state: State<'_, AppState>) -> Result<(), String> {
-    let keychain = KeychainStore::new(KEYCHAIN_SERVICE);
     // Best-effort delete: ignore "no entry" errors. If the user never set a
-    // custom key, the keychain has no entry to remove and we still want the
-    // in-memory client to fall back to the built-in tier.
-    let _ = SecretStore::delete(&keychain, KEYCHAIN_SKILLSMP_KEY_NAME);
+    // custom key, the encrypted SQLite table has no entry to remove.
+    let _ = state.secrets.delete(KEYCHAIN_SKILLSMP_KEY_NAME);
     state.skillsmp.set_user_key(None);
     Ok(())
 }
@@ -4940,6 +4942,34 @@ pub fn run() {
                 .app_data_dir()
                 .unwrap_or_else(|_| std::env::temp_dir());
             std::fs::create_dir_all(&dir).ok();
+            let files_dir = dir.join("files");
+            let attachments_dir = files_dir.join("attachments");
+            let recordings_dir = files_dir.join("recordings");
+            let plugins_dir = files_dir.join("plugins");
+            let skills_dir = files_dir.join("skills");
+            let runtimes_dir = files_dir.join("runtimes");
+            let cache_dir = files_dir.join("cache");
+            let vision_cache_dir = cache_dir.join("vision");
+            let mcp_dir = files_dir.join("mcp");
+            let tool_results_dir = files_dir.join("tool-results");
+            for managed_dir in [
+                &attachments_dir,
+                &recordings_dir,
+                &plugins_dir,
+                &skills_dir,
+                &runtimes_dir,
+                &cache_dir,
+                &vision_cache_dir,
+                &mcp_dir,
+                &tool_results_dir,
+            ] {
+                std::fs::create_dir_all(managed_dir).map_err(|error| {
+                    format!(
+                        "failed to create managed directory '{}': {error}",
+                        managed_dir.display()
+                    )
+                })?;
+            }
             let db_path = dir.join("deepagent.db");
             let runtime_log_path = preferred_runtime_log_path()?;
 
@@ -4997,23 +5027,45 @@ pub fn run() {
                 );
             }
 
-            // Settings: share the same DB; key goes to the OS keychain; discovery
-            // uses the real reqwest transport against the hard-coded DeepSeek URL.
+            // Settings and credentials share the main DB. Credential ciphertext
+            // is stored in SQLite; the OS keychain only protects the wrapping
+            // secret used to decrypt the SQLite master-key record.
+            let sqlite_secrets = Arc::new(SqliteSecretStore::new(
+                service.shared_database(),
+                Arc::new(KeychainStore::new(KEYCHAIN_SERVICE)),
+            ));
+            // One-time compatibility migration from the former per-secret
+            // keychain entries into encrypted SQLite records. The device wrap
+            // key remains in the keychain; migrated plaintext entries are
+            // removed only after the SQLite write succeeds.
+            let legacy_keychain = KeychainStore::new(KEYCHAIN_SERVICE);
+            for name in [
+                "deepseek_api_key",
+                "vision_api_key",
+                "anysearch_api_key",
+                KEYCHAIN_SKILLSMP_KEY_NAME,
+            ] {
+                if sqlite_secrets.get(name).map_err(|e| e.to_string())?.is_none() {
+                    if let Some(value) = legacy_keychain.get(name).map_err(|e| e.to_string())? {
+                        sqlite_secrets.set(name, &value).map_err(|e| e.to_string())?;
+                        legacy_keychain.delete(name).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
             let settings_arc = Arc::new(SettingsService::new(
                 service.shared_database(),
                 Arc::new(ReqwestTransport::new()),
-                Arc::new(KeychainStore::new(KEYCHAIN_SERVICE)),
+                sqlite_secrets.clone(),
             ));
 
-            // SkillsMP API key: read from the OS keychain at boot. Errors and
+            // SkillsMP API key uses the same encrypted SQLite store. Errors and
             // missing entries are non-fatal — the handle falls through to the
             // built-in key (or anonymous if no built-in is configured).
             let user_skillsmp_key = {
-                let kc = KeychainStore::new(KEYCHAIN_SERVICE);
-                match kc.get(KEYCHAIN_SKILLSMP_KEY_NAME) {
+                match sqlite_secrets.get(KEYCHAIN_SKILLSMP_KEY_NAME) {
                     Ok(opt) => opt,
                     Err(e) => {
-                        eprintln!("skillsmp keychain read failed (falling back to builtin): {e}");
+                        eprintln!("skillsmp encrypted secret read failed (falling back to builtin): {e}");
                         None
                     }
                 }
@@ -5052,27 +5104,29 @@ pub fn run() {
                 }
             };
 
-            let user_root = app
+            let legacy_user_root = app
                 .path()
                 .home_dir()
                 .unwrap_or_else(|_| std::env::temp_dir())
                 .join(".deepagent")
                 .join("skills");
+            let user_root = skills_dir.join("user");
             let marketplace_dir = user_root.join("marketplace");
             // Make sure both dirs exist so first-run on a clean machine doesn't
             // error when the loader tries to canonicalize them.
             let _ = std::fs::create_dir_all(&user_root);
             let _ = std::fs::create_dir_all(&marketplace_dir);
+            let _ = copy_dir_missing(&legacy_user_root, &user_root);
 
             let workspace_skills = std::env::current_dir()
                 .ok()
                 .map(|c| c.join(".deepagent").join("skills"));
 
             let skills = SkillsService::open_v2(SkillsRoots {
-                builtin: resource_skills_dir,
-                user: user_root,
-                marketplace: marketplace_dir,
-                workspace: workspace_skills,
+                builtin: resource_skills_dir.clone(),
+                user: user_root.clone(),
+                marketplace: marketplace_dir.clone(),
+                workspace: workspace_skills.clone(),
             })
             .map_err(|e| format!("failed to open skills service: {e}"))?;
             // Wrap in Arc<Mutex> so the chat service shares the same handle.
@@ -5110,21 +5164,23 @@ pub fn run() {
                     std::env::temp_dir().join("deepagent-builtin-plugins-missing")
                 }
             };
-            let plugin_install_dir = preferred_plugin_install_dir(app.handle());
+            let legacy_plugin_install_dir = preferred_plugin_install_dir(app.handle());
+            let plugin_install_dir = plugins_dir.clone();
             let plugin_cache = plugin_install_dir.join("cache");
             let plugin_marketplaces = plugin_install_dir.join("marketplaces");
             let _ = std::fs::create_dir_all(&plugin_install_dir);
             let _ = std::fs::create_dir_all(&plugin_cache);
             let _ = std::fs::create_dir_all(&plugin_marketplaces);
+            let _ = copy_dir_missing(&legacy_plugin_install_dir, &plugin_install_dir);
             let session_plugins = session_plugin_roots_from_env();
             let plugins = Arc::new(PluginService::new(
                 PluginRoots {
                     session: session_plugins,
-                    builtin: resource_plugins_dir,
+                    builtin: resource_plugins_dir.clone(),
                     workspace: Some(workspace_root.join(".deepagent").join("plugins")),
-                    personal: plugin_install_dir,
-                    marketplace_cache: plugin_cache,
-                    marketplaces: plugin_marketplaces,
+                    personal: plugin_install_dir.clone(),
+                    marketplace_cache: plugin_cache.clone(),
+                    marketplaces: plugin_marketplaces.clone(),
                 },
                 &dir,
             ));
@@ -5142,22 +5198,24 @@ pub fn run() {
             // File preview: stateless office-file previewer for the desktop
             // "File Preview" panel (office-agent). Pure-Rust, no external runtime.
             let preview = Arc::new(FilePreviewService::new());
-            let attachments = Arc::new(AttachmentService::new(dir.join("attachments")));
+            let attachments = Arc::new(AttachmentService::new(attachments_dir.clone()));
 
             // Recording: microphone capture for the recording panel. Real cpal
-            // recorder; WAVs land under <app_data>/recordings.
-            let recordings_dir = dir.join("recordings");
+            // recorder; WAVs land under <app_data>/files/recordings.
             let recording = Arc::new(RecordingService::new(
-                recordings_dir,
+                recordings_dir.clone(),
                 Arc::new(deepagent_app_core::recording_service::CpalRecorder::new()),
             ));
 
             // Managed runtimes are user-downloaded assets. New installs target
-            // the application resource runtime directory; older app-data/exe
+            // the managed application-data runtime directory; older app-data/exe
             // locations remain read-only lookup roots until the user migrates.
-            let runtime_resource_dir = preferred_runtime_resource_dir(app.handle());
+            let legacy_resource_runtime_dir = preferred_runtime_resource_dir(app.handle());
+            let runtime_resource_dir = runtimes_dir.clone();
             let app_runtime_dir = dir.join("runtimes");
-            let mut legacy_runtime_roots = vec![app_runtime_dir.clone()];
+            let _ = copy_legacy_runtime_dir(&legacy_resource_runtime_dir, &runtime_resource_dir);
+            let _ = copy_legacy_runtime_dir(&app_runtime_dir, &runtime_resource_dir);
+            let mut legacy_runtime_roots = vec![app_runtime_dir.clone(), legacy_resource_runtime_dir];
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(exe_dir) = exe.parent() {
                     let legacy_runtime_dir = exe_dir.join("runtimes");
@@ -5165,7 +5223,7 @@ pub fn run() {
                 }
             }
             let runtime = Arc::new(RuntimeService::with_lookup_roots(
-                &[runtime_resource_dir],
+                std::slice::from_ref(&runtime_resource_dir),
                 &legacy_runtime_roots,
                 Arc::new(deepagent_app_core::runtime_service::ReqwestDownloader::default()),
             ));
@@ -5189,12 +5247,12 @@ pub fn run() {
                                 .join("js-reverse"),
                             Err(_) => std::env::temp_dir().join("deepagent-builtin-mcp-missing"),
                         },
-                        dir.join("mcp-data").join("js-reverse"),
+                        mcp_dir.join("js-reverse"),
                     ),
             );
             let vision = Arc::new(VisionService::new(
                 settings_arc.clone(),
-                dir.join("vision-cache"),
+                vision_cache_dir.clone(),
             ));
             let bundled_sandboxie_installer = app
                 .path()
@@ -5258,7 +5316,7 @@ pub fn run() {
                         service.shared_database(),
                         settings_arc.clone(),
                         Arc::new(ReqwestTransport::new()),
-                        workspace_root,
+                        workspace_root.clone(),
                     )
                     .with_runtime_broker(runtime_broker.clone())
                     .with_executor_factory(move |connection_id: String| {
@@ -5287,7 +5345,7 @@ pub fn run() {
                     .with_runtime_logs(runtime_logs.clone())
                     .with_skills(skills.clone())
                     .with_office(office.clone())
-                    .with_tool_results_dir(dir.join("tool_results")),
+                    .with_tool_results_dir(tool_results_dir.clone()),
                 )
             };
 
@@ -5300,9 +5358,72 @@ pub fn run() {
                 chat.clone(),
             ));
 
+            // Keep a SQLite metadata projection of every managed file while
+            // leaving file contents on disk. Built-in and workspace roots are
+            // indexed too, so diagnostics can explain where an asset came from.
+            let inventory = Arc::new(ManagedFileInventory::new(service.shared_database()));
+            let mut inventory_roots = vec![
+                ("attachments".to_string(), attachments_dir.clone()),
+                ("recordings".to_string(), recordings_dir.clone()),
+                ("plugins".to_string(), plugins_dir.clone()),
+                ("skills".to_string(), skills_dir.clone()),
+                ("runtimes".to_string(), runtimes_dir.clone()),
+                ("cache".to_string(), cache_dir.clone()),
+                ("mcp".to_string(), mcp_dir.clone()),
+                ("tool_results".to_string(), tool_results_dir.clone()),
+                ("builtin_plugins".to_string(), resource_plugins_dir.clone()),
+                ("builtin_skills".to_string(), resource_skills_dir.clone()),
+            ];
+            if let Some(root) = workspace_skills.clone() {
+                inventory_roots.push(("workspace_skills".to_string(), root));
+            }
+            let workspace_plugins = workspace_root.join(".deepagent").join("plugins");
+            inventory_roots.push(("workspace_plugins".to_string(), workspace_plugins));
+            for (category, root) in &inventory_roots {
+                if let Err(error) = inventory.refresh(category, root) {
+                    let _ = runtime_logs.append(
+                        NewRuntimeLogEntry::info("persistence", "managed_file_inventory_failed")
+                            .with_source("desktop-tauri")
+                            .with_message(format!(
+                                "failed to index managed files for category '{category}': {error}"
+                            ))
+                            .with_data(serde_json::json!({
+                                "category": category,
+                                "root": root,
+                            })),
+                    );
+                }
+            }
+            {
+                let inventory = inventory.clone();
+                let roots = inventory_roots.clone();
+                let runtime_logs = runtime_logs.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        for (category, root) in &roots {
+                            if let Err(error) = inventory.refresh(category, root) {
+                                let _ = runtime_logs.append(
+                                    NewRuntimeLogEntry::info(
+                                        "persistence",
+                                        "managed_file_inventory_failed",
+                                    )
+                                    .with_source("desktop-tauri")
+                                    .with_message(format!(
+                                        "background managed-file refresh failed for '{category}': {error}"
+                                    )),
+                                );
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
+                });
+            }
+            app.manage(inventory);
+
             app.manage(AppState {
                 service: Mutex::new(service),
                 settings: settings_arc,
+                secrets: sqlite_secrets,
                 skills,
                 skillsmp,
                 pending_scans: Arc::new(Mutex::new(HashMap::new())),

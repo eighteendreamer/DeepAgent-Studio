@@ -266,7 +266,7 @@ export async function computeDiff(oldText: string, newText: string): Promise<Dif
 /**
  * Initialize the project with a DeepSeek API key. This **validates** the key by
  * running model discovery against DeepSeek — an invalid key rejects (throws).
- * On success the key is stored in the OS keychain and the redacted view is
+ * On success the key is stored as encrypted SQLite ciphertext and the redacted view is
  * returned. Only callable inside the desktop app.
  */
 export async function initializeProject(apiKey: string): Promise<SettingsView> {
@@ -821,7 +821,7 @@ export async function skillMarketGetApiKey(): Promise<ApiKeyInfo> {
   return { has_user_key: false, source: "none" };
 }
 
-/** Save a user-supplied API key to the OS keychain. */
+/** Save a user-supplied API key to encrypted SQLite storage. */
 export async function skillMarketSetApiKey(key: string): Promise<void> {
   const invoke = getInvoke();
   if (invoke) await invoke("skill_market_set_api_key", { key });
@@ -1496,13 +1496,13 @@ export async function getAnySearchApiKeyInfo(): Promise<AnySearchApiKeyInfo> {
   return { has_user_key: false };
 }
 
-/** Save the AnySearch API key to the OS keychain. */
+/** Save the AnySearch API key to encrypted SQLite storage. */
 export async function setAnySearchApiKey(key: string): Promise<void> {
   const invoke = getInvoke();
   if (invoke) await invoke("set_anysearch_api_key", { key });
 }
 
-/** Clear the AnySearch API key from the OS keychain. */
+/** Clear the AnySearch API key from encrypted SQLite storage. */
 export async function clearAnySearchApiKey(): Promise<void> {
   const invoke = getInvoke();
   if (invoke) await invoke("clear_anysearch_api_key");

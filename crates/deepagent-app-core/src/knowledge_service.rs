@@ -764,15 +764,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let svc = service(tmp.path());
         svc.save(draft(
-            "Keyring on Windows",
-            "Credential stored under service deepagent-studio in Credential Manager.",
+            "Encrypted credential storage",
+            "Credential ciphertext is stored in SQLite under a separate logical field.",
             "config",
             "project",
         ))
         .unwrap();
-        let hits = svc.search("windows credential manager", None, 5);
+        let hits = svc.search("credential ciphertext sqlite", None, 5);
         assert!(!hits.is_empty());
-        assert_eq!(hits[0].title, "Keyring on Windows");
+        assert_eq!(hits[0].title, "Encrypted credential storage");
         assert!(hits[0].score > 0.0);
     }
 

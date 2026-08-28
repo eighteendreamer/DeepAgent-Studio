@@ -208,6 +208,33 @@ const MIGRATIONS: &[&str] = &[
     );
     INSERT OR IGNORE INTO migration_notices(key) VALUES ('responses_history_reset_completed');
     "#,
+    // V13: encrypted secret records. Ciphertext and the separately wrapped
+    // master-key record live in SQLite; plaintext is never persisted.
+    r#"
+    CREATE TABLE secret_records (
+        name        TEXT PRIMARY KEY NOT NULL,
+        ciphertext  BLOB NOT NULL,
+        nonce       BLOB NOT NULL,
+        key_version INTEGER NOT NULL DEFAULT 1,
+        updated_at  INTEGER NOT NULL
+    );
+    "#,
+    // V14: metadata inventory for large files kept in managed directories.
+    r#"
+    CREATE TABLE managed_files (
+        category     TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        root_path    TEXT NOT NULL,
+        byte_size    INTEGER NOT NULL DEFAULT 0,
+        modified_at  INTEGER,
+        digest       TEXT,
+        status       TEXT NOT NULL DEFAULT 'present',
+        updated_at   INTEGER NOT NULL,
+        PRIMARY KEY (category, relative_path)
+    );
+    CREATE INDEX idx_managed_files_category_status
+        ON managed_files(category, status, updated_at);
+    "#,
 ];
 
 /// The highest schema version defined by this build.

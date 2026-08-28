@@ -30,6 +30,7 @@ pub mod hook_runtime;
 pub mod input_runtime;
 pub mod kernel_runtime;
 pub mod knowledge_service;
+pub mod managed_files;
 pub mod mcp_runtime;
 pub mod mcp_service;
 pub mod model_runtime;
@@ -112,6 +113,7 @@ pub use git_service::GitService;
 pub use knowledge_service::{
     KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto, KnowledgeService, KnowledgeServiceBackend,
 };
+pub use managed_files::ManagedFileInventory;
 pub use mcp_service::{McpConnectionStatusDto, McpServerDto, McpService, McpToolInfoDto};
 pub use office_service::{markdown_to_docspec, DocBlock, DocSpec, OfficeService};
 pub use plugin_loader::{PluginLoadError, PluginOrigin, PluginRoots};
@@ -147,7 +149,7 @@ pub use sandbox_backend::{
     SandboxieBackend, WindowsSandboxBackend, WindowsSandboxTaskPlan, WindowsSandboxTaskPlanRequest,
 };
 pub use sandboxie_service::{SandboxieExecutor, SandboxieService, SandboxieStatusDto};
-pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore};
+pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore, SqliteSecretStore};
 pub use service::AppService;
 pub use session_state_service::SessionStateService;
 pub use settings::{

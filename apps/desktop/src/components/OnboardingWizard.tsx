@@ -88,7 +88,7 @@ export function OnboardingWizard({ onComplete }: Props) {
     setIsConnecting(true);
     try {
       // Invalid key → backend returns a 401 error → this throws → we stay on
-      // step 0. Only a valid key (stored in the OS keychain) advances.
+      // step 0. Only a valid key (stored as encrypted SQLite ciphertext) advances.
       await initializeProject(key);
       message.success("连接成功，API Key 已验证");
       setStep(1);

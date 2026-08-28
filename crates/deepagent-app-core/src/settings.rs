@@ -6,10 +6,10 @@
 //! That persisted model configuration is the key the rest of the system reads
 //! to know which model to call.
 //!
-//! **Credential storage:** the API key is NOT written to the SQLite database.
-//! It goes to a [`SecretStore`] (OS keychain in production), keeping plaintext
-//! secrets off disk — mirroring Claude Code. Only the public [`ModelCatalog`]
-//! is persisted in the `documents` table (collection `"settings"`, id `"app"`).
+//! **Credential storage:** API keys live behind [`SecretStore`]. The desktop
+//! persists authenticated ciphertext in SQLite and keeps only a device-bound
+//! wrapping secret in the OS keychain. Public [`ModelCatalog`] settings remain
+//! in the `documents` table (collection `"settings"`, id `"app"`).
 
 use std::sync::{Arc, Mutex};
 
@@ -2164,7 +2164,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_stores_key_in_secret_store_not_db() {
+    async fn initialize_stores_key_through_secret_store_boundary() {
         let (svc, secrets) = service();
         let view = svc.initialize("sk-secret-1234").await.unwrap();
         assert!(view.configured);

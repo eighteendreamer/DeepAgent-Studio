@@ -503,7 +503,7 @@ export function App() {
   }, []);
 
   // Reconcile the onboarding gate with the backend's real state: the source of
-  // truth for "logged in" is whether the keychain actually holds a valid key
+  // truth for "logged in" is whether encrypted storage actually holds a valid key
   // (settings.configured), not the local flag. This self-heals cases where the
   // localStorage flag is stale (e.g. set by an older build or after the key was
   // cleared) so the user is never dropped into the app without a usable key.
@@ -931,7 +931,7 @@ export function App() {
     [activeId, refreshSessions, sessions]
   );
 
-  // Log out: delete the stored API key from the keychain, clear the local
+  // Log out: delete the stored API key from encrypted SQLite, clear the local
   // onboarding flag, and return to the login (onboarding) screen.
   const onLogout = useCallback(() => {
     clearApiKey()

@@ -39,8 +39,8 @@ tauri = { version = "2", features = ["protocol-asset", "unstable"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-# Enable the OS keychain so the API key is stored in Windows Credential Manager
-# / macOS Keychain / Linux Secret Service — never in plaintext on disk.
+# Enable the OS keychain for the device-bound wrapping secret. API keys and the
+# wrapped master key are stored as separate ciphertext records in SQLite.
 deepagent-app-core = { path = "../../../crates/deepagent-app-core", features = ["keychain", "web", "audio", "runtimes"] }
 deepagent-builtins = { path = "../../../crates/deepagent-builtins", features = ["http"] }
 deepagent-core = { path = "../../../crates/deepagent-core" }

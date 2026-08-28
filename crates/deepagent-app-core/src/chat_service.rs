@@ -4383,8 +4383,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let kb = knowledge_with(
             tmp.path(),
-            "Keyring service name",
-            "The DeepSeek API key is stored under service deepagent-studio.",
+            "Encrypted secret record",
+            "The DeepSeek API key is stored as authenticated ciphertext in SQLite.",
         );
         let prompt = "where is the api key stored keyring service";
         let block = kb.passive_block(prompt);
@@ -4424,8 +4424,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let kb = knowledge_with(
             tmp.path(),
-            "Keyring service name",
-            "The DeepSeek API key is stored under service deepagent-studio.",
+            "Encrypted secret record",
+            "The DeepSeek API key is stored as authenticated ciphertext in SQLite.",
         );
         // A totally unrelated query should not clear the score threshold.
         assert!(kb
