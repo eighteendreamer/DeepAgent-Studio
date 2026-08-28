@@ -4,13 +4,23 @@
 >
 > 调研快照：Warp `061318ff7fc424e41fbd77e30432995d483c99e4`（2026-08-28）；DeepAgent Studio 当前工作树。
 >
-> 证据规则：本文只把源码、测试、Cargo workspace、项目规则和明确注释视为“已实现”。Warp 的 `specs/`、资源文件、feature flag 或服务端 API 依赖只能标记为“设计/依赖”，不冒充本地闭环。由于本次官方网页检索服务返回 502，本文不把网页宣传语作为事实来源。
+> 证据规则：本文使用四级证据标签。`S`（source）表示源码直接证明；`T`（test）表示测试直接验证；`I`（inference）表示根据源码结构作出的推断；`U`（unknown）表示本地副本无法确认。只有 `S/T` 可以写成“已实现”，`I/U` 不作为产品事实。Warp 的 `specs/`、资源文件、feature flag、客户端调用代码或服务端 API 类型只证明设计与客户端依赖，不能证明闭源服务端已经部署或可用。由于本次官方网页检索服务返回 502，本文不把网页宣传语作为事实来源。
+
+> 可复核性限制：本文是对两个本地源码快照的静态审计，不是对 Warp 线上账号、云服务容量、计费、SLA 或实际远程执行环境的黑盒验收。凡涉及这些能力，结论最高只能到 `S（客户端已实现相应调用/状态处理）`，不能外推为服务端生产可用。
+
+### 0.1 真实性审计结果
+
+本轮复核纠正了上一版中三类过度表述：
+
+1. DeepAgent 已支持安全读工具与隔离 `task` 子代理并发、完成顺序 live event、调用顺序 session log；差距是 **durable action queue 与跨重启 blocked resume**，不是“缺少并发”。`S/T`
+2. Warp 仓库虽有通用 `jsonrpc` crate，但可定位用途是 LSP 等内部服务；本地源码未发现一套面向 Agent、覆盖 thread/turn/approval/tool/config/sandbox 的统一公开本地协议。因此本文只能说“本地快照未发现等价协议”，不能说 Warp 整体绝对不存在。`S + U`
+3. Warp standalone AgentDriver 的 harness 分发不是全部可用：Oz 原生，Claude/Codex/Gemini 走 ThirdParty，OpenCode 明确为 Unsupported，Unknown 报错。proto 能表示某 harness，不等于当前 driver 能运行它。`S`
 
 ## 1. 结论摘要
 
 Warp 的强项不是单个 agent loop，而是把“终端作为 agent 工作台”做成了产品平台：GUI/TUI 共用 `warp_core`/WarpUI Entity 模型；`ai::agent` 负责服务端对话数据和富输出；`ai::blocklist` 负责动作预处理、队列、并发、阻塞和用户确认；`ai::agent_sdk::AgentDriver` 负责 CLI、环境、MCP、skill、provider、harness-support 和输出格式；ambient agents、orchestration、remote server、multi-agent API、Computer Use 又把单机运行扩展到云端、远端和多代理协作。
 
-DeepAgent Studio 的方向相反但更适合作为“运行时内核”：`AgentKernel`/`RuntimeEngine` 是唯一执行链，`RunStore`/`EventStore` 是持久化真相，`RuntimeEvent` 再投影为版本化 JSON-RPC harness 事件；工具、审批、hook、取消、checkpoint、verification、MCP、SandboxBackend 都在可组合 seam 上。就“平台化、可 replay、可跨 CLI/SDK/Desktop 复用、可测试”而言，DeepAgent 的边界更清楚；就“真实终端交互、云端任务管理、并行 child agent、成熟的多表面体验、环境准备和生态产品化”而言，Warp 更深。
+DeepAgent Studio 的方向相反但更适合作为“运行时内核”：当前主聊天运行路径由 `AgentKernel`/`RuntimeEngine` 收敛，`RunStore` 的 run event log 被 harness 协议源码明确声明为 source of truth，`RuntimeEvent` 再投影为版本化 JSON-RPC harness 事件；工具、审批、hook、取消、checkpoint、verification、MCP、SandboxBackend 都在可组合 seam 上。这里的“主路径”不等于已经穷举证明仓库没有任何旁路。就已审计边界而言，DeepAgent 的机器协议、replay 和门禁 seam 更集中；Warp 本地源码对终端交互、环境准备、富 action、child/ambient/remote 客户端状态的覆盖更深，但闭源服务端的实际成熟度属于 `U`，本文不据此下结论。
 
 最重要的判断：不要复制 Warp 的第二条执行链。应吸收 Warp 的产品能力与状态细节，投影进现有 `AgentKernel -> RuntimeEngine -> RunStore/EventStore -> harness protocol`，优先补四个缺口：
 
@@ -83,7 +93,7 @@ AgentKernel
 RunStore/EventStore/Session/Checkpoint/Artifact/Cost/RuntimeLog
 ```
 
-特点：事件日志是 source of truth，live sink 只是投影；`RunPhase` 明确为 Accepted、Preparing、RunningTurn、ExecutingTools、Verifying、Finalizing、Terminal；终态映射集中在 `AgentKernel`，不会让 UI、CLI、SDK 各自解释。
+特点：`deepagent-harness-protocol/src/events.rs:21` 明确声明 runtime event log 是 source of truth；`PersistentEventSink` 先写 `RunStore` 再转发 live sink。`RunPhase` 明确为 Accepted、Preparing、RunningTurn、ExecutingTools、Verifying、Finalizing、Terminal；已审计的 harness 终态映射集中在 `AgentKernel`。这证明当前主路径的设计意图与实现，不外推为所有历史/未来入口绝无旁路。`S/T`
 
 ### 3.3 架构结论
 
@@ -209,13 +219,13 @@ DeepAgent `RunStore` 明确 append event、transition、finish、events_after；
 
 ### 5.11 事件与协议
 
-Warp 的内部事件覆盖 response event、action result、blocklist event、terminal driver event、ambient event、orchestration event，跨边界主要是 GraphQL/WebSocket/proto 和 CLI JSON/NDJSON。它能表达的产品事件很丰富，但没有一个与 `thread/start` 等价的统一公开本地协议。
+Warp 的内部事件覆盖 response event、action result、blocklist event、terminal driver event、ambient event、orchestration event，跨边界主要是 GraphQL/WebSocket/proto 和 CLI JSON/NDJSON。仓库也有通用 `crates/jsonrpc`，但已定位的生产用途是 LSP 等内部协议。在本地快照已审计的 Agent 路径中，未发现一套与 `thread/start` 等价、覆盖 Agent 生命周期的统一公开本地协议；这是“未发现”的范围结论，不是对闭源服务端或仓库所有未来代码的绝对不存在证明。`S/U`
 
 DeepAgent `HarnessRequest` 已覆盖 initialize、thread 生命周期、turn start/interrupt/steer、approval、tool/config/sandbox；`HarnessEvent` 有稳定的 thread/turn/item/approval/error/interrupt 投影，并带 protocol version、threadId、turnId、itemId、afterSequence。缺口是把更多 runtime 事件（hook、checkpoint mutation、environment snapshot、artifact、provider retry、MCP lifecycle、child join）从 generic runtime item 提升为一等协议事件。
 
 ### 5.12 CLI、SDK、桌面与交互
 
-Warp TUI 是 agent 体验的一等前端，拥有 option selector、permission card、ask-question、orchestration config、focus synchronization、render-to-lines 测试；CLI agent session 还可接 Claude/Codex/Gemini/OpenCode 等第三方 harness。
+Warp TUI 是 agent 体验的一等前端，拥有 option selector、permission card、ask-question、orchestration config、focus synchronization、render-to-lines 测试。standalone AgentDriver 当前分发状态为：Oz 原生，Claude/Codex/Gemini 使用 ThirdParty runner，OpenCode 明确 Unsupported，Unknown 返回错误；不能因共享 enum 或 proto 出现 OpenCode 就写成“已支持”。`S: agent_sdk/driver/harness/mod.rs:223-261`
 
 DeepAgent Desktop 的 Tauri bridge 已有 `start_chat_v2`、事件通道、审批通道和完成通知，TypeScript SDK 已消费 harness JSON-RPC；但 TUI/PTY UX、第三方 CLI session plugin、session sharing/view-only 等体验需要补齐。协议 DTO 与 UI DTO 的分离应继续保持，Warp 的 UI 结构不要直接成为协议。
 
@@ -233,7 +243,7 @@ DeepAgent 有 tracing/metrics、runtime logs、cost store、usage event、model 
 | UI 架构 | 自研 GPU WarpUI + cell-grid TUI，共享 Entity core | Tauri React + Rust AppCore | Warp 终端交互领先，DeepAgent 跨客户端成本低 |
 | 模型流式 | server response event，text/reasoning/action/message hydration | SSE/Responses accumulator、DeepSeek reasoning/cache/raw usage | DeepAgent provider seam 更适合多模型；吸收 Warp 富 event taxonomy |
 | tool call | `AIAgentActionType` 大枚举 + `AIAgentActionResultType` | Tool trait + descriptor + validated invocation | DeepAgent 更可扩展；需动作队列状态 |
-| 并发 | preprocess 并行，action order 保序，running async | pipeline 控制每次执行，engine loop | 引入 durable action sequence |
+| 并发 | preprocess 并行，action order 保序，running async | 安全读工具与隔离 `task` 并发；完成顺序发 live event，调用顺序写 session log | 两者都有并发；DeepAgent 缺 durable action sequence/queue，而非执行并发 |
 | schema | proto/API conversion + action parsing | JSON schema validation 在 pipeline 入口 | DeepAgent 的“先校验再 hook/权限/执行”应保持 |
 | hooks | blocklist/terminal/server action hooks | HookRegistry + Before/After/FileChanged 等 HookPoint | DeepAgent 更统一；补 hook 事件协议 |
 | approval | UI selector/card + team/autonomy/isolation | ApprovalGate + permission profile + approval/respond | 合并 Warp UX 与 DeepAgent policy seam |
@@ -406,6 +416,33 @@ DeepAgent `RunOutcome` 统一为 Completed、Cancelled、AwaitingApproval、Step
 3. DeepAgent 已经有 verification retry/reflection/loop detection 和 adversarial verifier；Warp 更强的是 terminal/environment/remote 产品集成，不是“所有可靠性机制都领先”。
 4. Warp 的富状态主要来自 server API、proto、客户端 persistence 和 UI models 的组合；它并非天然比 DeepAgent 的 append-only run event 更适合机器 replay。
 
+## 6B. 高风险断言逐条审计
+
+下表专门审计最容易影响架构决策的结论。路径与行号针对报告顶部记录的快照；代码移动后应以符号名重新搜索。
+
+| 断言 | 等级 | 直接证据 | 审计后的可用结论 |
+|---|---|---|---|
+| Warp action contract 是 typed union | S | `crates/ai/src/agent/action/mod.rs:37`；`action_result/mod.rs` | 顶层 `AIAgentActionType` 当前有 31 个 variant；嵌套的 Local/Remote execution mode 不计为顶层 action。可借鉴其 typed resume/result 思想，不能直接复制枚举。 |
+| supported tools 是 run-scoped 能力协商 | S | `app/src/ai/agent/api/impl.rs:21-24,212-289` | 默认集合会受 execution mode、session/入口参数和 feature flag 影响；“代码存在某 action”不等于本次 run 向模型暴露。 |
+| Warp action 有五态和原序队列 | S/T | `action_model.rs:78-96,626-656,973-1064`；`action_model_tests.rs:75-94` | Preprocessing/Queued/Blocked/RunningAsync/Finished 是直接事实；测试直接验证 finished result 原序排序。 |
+| Warp queue 是 durable queue | 否，U | `action_model.rs` 的 HashMap/VecDeque；本地 persistence 未定位 action queue journal | 只能称 UI/runtime 内存 action queue。报告建议 DeepAgent 补 durable queue，不应声称 Warp 这个队列本身跨重启 durable。 |
+| DeepAgent 已有并行工具执行 | S/T | `loop_engine.rs:1148-1151,1281-1378,1539-1543`；测试 `parallel_tools_run_and_feed_back_all_observations` | 已有安全工具并发、live 完成顺序和 session deterministic order；缺口是 action 状态持久化与 resume。 |
+| DeepAgent tool 门禁先 schema 后 hook/权限 | S/T | `tool_pipeline.rs:prepare`；`loop_engine.rs:1661-1949` 及相关回归测试 | 可作为统一入口继续复用；引入 Warp 式 UI approval 不应绕开此顺序。 |
+| DeepAgent terminal exactly-once | S/T | `run_store.rs:77-93,250-293`；`kernel.rs:470-546,658-681` | 数据库更新以 `finished_at IS NULL` 保护，测试验证第二次 finish 不覆盖；结论限于经 `RunStore::finish` 的主路径。 |
+| runtime event log 是 harness source of truth | S | `harness-protocol/src/events.rs:21`；`kernel.rs:147-253` | 这是源码明确契约；live sink 为投影。Session EventStore 与 RunStore 是不同层次，不能笼统说整个项目只有一张 event log。 |
+| Warp Agent 有统一公开本地 JSON-RPC | U/未发现 | `crates/jsonrpc` 存在；已定位 LSP 使用；Agent 跨边界定位为 proto/GraphQL/event stream/CLI JSON(NDJSON) | 只能说“当前审计未发现与 DeepAgent harness 等价的 Agent 本地协议”，不能证明绝对不存在。 |
+| Warp 支持 Oz/Claude/Codex/Gemini/OpenCode | S，需拆分 | `agent_sdk/driver/harness/mod.rs:223-261` | Oz 原生；Claude/Codex/Gemini ThirdParty；OpenCode Unsupported；Unknown error。proto 可表达 OpenCode 不构成执行支持。 |
+| Warp event recovery 是单一路径 | 否，S | `agent_events/driver.rs:84-147,316-468`；`message_hydrator.rs:154-212`；`restored_conversations.rs:112-136` | 至少区分 cursor recovery、message hydration/delivery ack、local conversation restore；评估 replay 时必须分别比较。 |
+| Warp persistence 是 event sourcing | 否，S | `persistence/agent.rs` 的 conversation/task snapshot、lazy load 与 tree eviction | 客户端对话持久化更接近 replace snapshot/projection；不能与 DeepAgent append-only run/session events 等同。 |
+| Warp cloud/remote 已线上成熟可用 | U | 本地可见 driver、ambient/orchestration/remote client 类型和状态处理 | 只证明客户端和协议侧实现存在；没有线上凭据、服务端源码和验收结果，不能评价 SLA、容量或生产成熟度。 |
+| DeepAgent 没有 durable action queue | I（高可信） | 全局搜索未定位 action queue journal/state table；已定位 ToolBlocked event 和单次 pipeline | “未发现”不是形式化不存在证明。进入实现前还应审计 migrations、恢复入口和未纳入 workspace 的实验代码。 |
+
+### 6B.1 事实、推断与未知边界
+
+- **可直接用于设计决策的事实（S/T）**：Warp action/result 类型、supported-tools 动态生成、ActionModel 五态、driver harness 分发、setup 阶段、event cursor/hydration、客户端 snapshot restore；DeepAgent 的并行工具、pipeline 门禁、run terminal CAS、event projection、provider stream 信息保留。
+- **可以形成方案但必须验证的推断（I）**：将 Warp 的 action 状态提升为 DeepAgent durable state 会改善审批恢复；run graph 能统一 background/remote/child；setup items 能改善可观测性。这些是本地设计建议，不是源码事实。
+- **不能作为选型依据的未知项（U）**：Warp 闭源服务端内部 agent loop、线上云任务可靠性、计费与容量、服务端存储一致性、feature flag 实际开启比例、企业策略的服务端执行细节。
+
 ## 7. DeepAgent Studio 的优势、劣势与风险
 
 ### 7.1 已领先的结构优势
@@ -533,7 +570,10 @@ Warp 是目前本地资料中“agent + terminal + cloud operations + multi-agen
 
 ## 附录 B：本次验证记录
 
-- 已检查当前仓库 `git status --short --branch`：初始无本轮未提交改动，分支为 `main`（ahead 1）。
+- 已检查当前仓库 `git status --short --branch`：本轮开始时报告之外无未提交改动；分支为 `main`。ahead 数量属于随提交变化的工作树状态，不作为报告事实固化。
 - 已读取双方 workspace manifest、仓库规则、关键源码和测试定位，并核对 Warp git commit。
 - 已尝试官方网页检索；工具返回 `502 auth_not_found`，因此没有引用无法验证的网页宣传资料。
-- 本轮只新增 Markdown 文档，不涉及 Rust/TypeScript 行为；交付前执行 Markdown 内容/链接路径检查、diff 检查和 Git 状态检查。未运行全 workspace 编译/测试，因为没有代码行为变更。
+- 已实际执行 `cargo test -p deepagent-persistence run_terminal_is_exactly_once_and_events_are_gapless --offline`：1 passed，验证 run terminal 的 exactly-once 与 sequence 连续性。
+- 已实际执行 `cargo test -p deepagent-runtime parallel_tools_run_and_feed_back_all_observations --offline`：1 passed，验证并行工具执行与 observation 回填。
+- Warp 的 `warp` app crate 体量大且其测试依赖完整平台环境；本轮未实际编译/运行 Warp 测试。文中 Warp 的 `T` 表示仓库内存在直接测试证据，不表示本机已复跑；本机已执行的验证在本附录单列。
+- 本轮只修改 Markdown 文档，不涉及 Rust/TypeScript 行为；交付前执行 Markdown 内容/证据路径检查、`git diff --check` 和 Git 状态检查。未运行全 workspace 测试，因为没有代码行为变更。
