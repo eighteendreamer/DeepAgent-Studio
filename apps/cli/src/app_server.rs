@@ -739,9 +739,18 @@ impl ServerState {
                 None,
             );
         }
-        if let Err(error) = current.chat.request_cancel(&params.turn_id) {
+        let cancellation = match current.chat.request_cancel(&params.turn_id) {
+            Ok(request) => request,
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    None,
+                )
+            }
+        };
+        if !cancellation.accepted {
             return (
-                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                RpcResponse::error(id, ERR_INVALID_TURN, "turn is no longer cancellable"),
                 None,
             );
         }
