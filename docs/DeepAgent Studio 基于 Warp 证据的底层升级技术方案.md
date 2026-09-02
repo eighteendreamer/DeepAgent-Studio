@@ -596,5 +596,7 @@ P0 durable control plane
   - `91eaa83`：接入 Runtime 工具 action 状态、durable approval 以及 CLI/Desktop 审批响应。
   - `6b016c1`：新增 `RunCoordinator`，统一取消、审批、活动运行别名和 continuation 控制信号；持久化 `cancel.requested`、`cancel.observed`、`continuation.created`。
   - `3c9f6ef`、`415f0f2`：让 Desktop 与 app-server 的取消错误可观测，并阻止 steer 在取消持久化失败时启动替代 turn。
+  - `62bc846`：`thread/read` 在重连时返回 action/approval durable projection。
+  - `143d1c3`、`08e08d4`：统一控制投影 camelCase wire 字段并补充审批顺序、过期状态和序列化契约测试。
 - 当前仍未宣称 P0 全部完成：主 run 的自动恢复策略、统一 graph projection、PTY/worker lease、断线 outbox/ACK 以及完整 SDK 协议测试仍属于后续工作。
 - 已验证：app-core 779 项单元测试通过（1 项 ignored），runtime 145 项单元测试与 5 项稳定性测试通过，CLI app-server 控制测试通过，workspace 与 Desktop Tauri Rust 编译通过。
