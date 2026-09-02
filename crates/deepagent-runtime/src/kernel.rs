@@ -14,6 +14,7 @@ use deepagent_session::Session;
 use deepagent_tools::ToolRegistry;
 use deepagent_tracing::metrics::Metrics;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 use crate::agent::Agent;
 use crate::approval::{ApprovalGate, AutoDenyGate};
@@ -255,11 +256,28 @@ impl RuntimeEventSink for PersistentEventSink {
                     // lifecycle event. This gives reconnecting clients a
                     // durable marker for the point at which execution became
                     // ready without introducing a second runtime pipeline.
+                    let snapshot = serde_json::json!({
+                        "os": std::env::consts::OS,
+                        "arch": std::env::consts::ARCH,
+                        "cwd": std::env::current_dir()
+                            .ok()
+                            .map(|path| path.to_string_lossy().into_owned()),
+                    });
+                    let snapshot_bytes =
+                        serde_json::to_vec(&snapshot).unwrap_or_else(|_| b"{}".to_vec());
+                    let snapshot_hash = format!(
+                        "sha256:{:x}",
+                        sha2::Sha256::digest(snapshot_bytes.as_slice())
+                    );
                     self.append(
                         RunPhase::Preparing,
                         "completed",
                         "setup.completed",
-                        serde_json::json!({ "component": "agent_kernel" }),
+                        serde_json::json!({
+                            "component": "agent_kernel",
+                            "environment": snapshot,
+                            "snapshotHash": snapshot_hash,
+                        }),
                     );
                 }
                 if matches!(&event, RuntimeEvent::RunCancelled) {
@@ -701,9 +719,15 @@ mod tests {
         assert_eq!(record.terminal_kind.as_deref(), Some("succeeded"));
         let events = RunStore::new(&db).events_after("run-v2", None).unwrap();
         assert!(events.len() >= 4);
-        assert!(events
+        let setup = events
             .iter()
-            .any(|event| event.event_type == "setup.completed"));
+            .find(|event| event.event_type == "setup.completed")
+            .expect("setup event");
+        assert_eq!(setup.data["component"], "agent_kernel");
+        assert!(setup.data["snapshotHash"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:")));
+        assert!(setup.data["environment"]["os"].as_str().is_some());
     }
 
     #[test]
