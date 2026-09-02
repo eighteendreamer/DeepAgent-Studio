@@ -260,14 +260,27 @@ impl<'db> RunControlStore<'db> {
         event_type: &str,
         data: &serde_json::Value,
     ) -> Result<u64> {
-        crate::run_store::RunStore::new(self.db).append_event(
-            run_id,
-            now_millis(),
-            "accepted",
-            "progress",
-            event_type,
-            data,
-        )
+        self.append_control_signals(run_id, &[(event_type, data)])
+            .map(|sequences| sequences[0])
+    }
+
+    /// Append related control signals atomically and preserve their order.
+    pub fn append_control_signals(
+        &self,
+        run_id: &str,
+        signals: &[(&str, &serde_json::Value)],
+    ) -> Result<Vec<u64>> {
+        self.db.with_conn(|connection| {
+            in_immediate_transaction(connection, || {
+                let timestamp = now_millis();
+                signals
+                    .iter()
+                    .map(|(event_type, data)| {
+                        append_control_event(connection, run_id, timestamp, event_type, data)
+                    })
+                    .collect()
+            })
+        })
     }
 
     pub fn create_action(&self, action: &NewRunAction<'_>) -> Result<ControlMutation> {

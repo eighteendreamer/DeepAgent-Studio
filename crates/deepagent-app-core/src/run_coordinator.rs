@@ -80,15 +80,14 @@ impl RunCoordinator {
         };
         // `alias` is normally the run id. For session/turn aliases, the event
         // is still safely attached by the active registration's canonical key.
-        RunControlStore::new(&self.db).append_control_signal(
+        let requested = serde_json::json!({ "alias": alias });
+        let propagated = serde_json::json!({ "alias": alias, "target": "active_run" });
+        RunControlStore::new(&self.db).append_control_signals(
             &run_id,
-            "cancel.requested",
-            &serde_json::json!({ "alias": alias }),
-        )?;
-        RunControlStore::new(&self.db).append_control_signal(
-            &run_id,
-            "cancel.propagated",
-            &serde_json::json!({ "alias": alias, "target": "active_run" }),
+            &[
+                ("cancel.requested", &requested),
+                ("cancel.propagated", &propagated),
+            ],
         )?;
         flag.store(true, std::sync::atomic::Ordering::Release);
         Ok(CancelRequest { accepted: true })
