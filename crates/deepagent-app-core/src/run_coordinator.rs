@@ -237,6 +237,7 @@ mod tests {
     use deepagent_core::clock::Timestamp;
     use deepagent_core::id::SessionId;
     use deepagent_persistence::event_store::EventStore;
+    use deepagent_persistence::run_control::{NewRunAction, NewRunApproval, RunActionState};
     use deepagent_persistence::run_store::RunStore;
 
     #[test]
@@ -272,6 +273,72 @@ mod tests {
                 .request_cancel(&session_alias)
                 .expect("cancel after drop")
                 .accepted
+        );
+    }
+
+    #[test]
+    fn approval_scope_mismatch_does_not_mutate_durable_state() {
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let session_id = SessionId::new();
+        EventStore::new(&db)
+            .create_session(session_id, Some("test"), Timestamp::from_millis(1))
+            .expect("session");
+        RunStore::new(&db)
+            .create("run-approval", &session_id.to_string(), None, 1)
+            .expect("run");
+        let controls = RunControlStore::new(&db);
+        controls
+            .create_action(&NewRunAction {
+                run_id: "run-approval",
+                turn_id: "turn-1",
+                call_id: "call-1",
+                sequence: 0,
+                tool_name: "bash",
+                arguments_hash: "hash",
+                risk: "high",
+                parent_action_id: None,
+                now: 2,
+            })
+            .expect("action");
+        controls
+            .transition_action(
+                "run-approval",
+                "call-1",
+                RunActionState::Prepared,
+                3,
+                None,
+                None,
+            )
+            .expect("prepared");
+        controls
+            .request_approval(&NewRunApproval {
+                approval_id: "approval-1",
+                run_id: "run-approval",
+                call_id: "call-1",
+                scope: "single_call",
+                risk: "high",
+                reason: Some("test"),
+                policy_snapshot: Some("always_ask"),
+                expires_at: None,
+                now: 4,
+            })
+            .expect("approval");
+
+        let coordinator = RunCoordinator::new(db.clone());
+        assert!(coordinator
+            .resolve_approval_scoped("approval-1", true, Some("all_future_calls"), "test")
+            .is_err());
+        assert_eq!(
+            controls.get_approval("approval-1").unwrap().unwrap().state,
+            deepagent_persistence::run_control::ApprovalState::Pending
+        );
+        assert_eq!(
+            controls
+                .get_action("run-approval", "call-1")
+                .unwrap()
+                .unwrap()
+                .state,
+            RunActionState::Blocked
         );
     }
 }
