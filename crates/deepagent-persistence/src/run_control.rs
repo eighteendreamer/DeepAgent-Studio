@@ -542,6 +542,20 @@ impl<'db> RunControlStore<'db> {
             .with_conn(|connection| get_approval_from(connection, approval_id))
     }
 
+    pub fn list_approvals(&self, run_id: &str) -> Result<Vec<RunApprovalRecord>> {
+        self.db.with_conn(|connection| {
+            let mut statement = connection
+                .prepare("SELECT approval_id,run_id,call_id,state,scope,risk,reason,policy_snapshot,expires_at,decided_at,decided_by,created_at,updated_at FROM run_approvals WHERE run_id=?1 ORDER BY created_at, approval_id")
+                .map_err(map_sqlite)?;
+            let rows = statement.query_map([run_id], approval_row).map_err(map_sqlite)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(map_sqlite)?
+                .into_iter()
+                .map(parse_approval)
+                .collect()
+        })
+    }
+
     pub fn acquire_lease(&self, lease: &NewExecutionLease<'_>) -> Result<ExecutionLeaseRecord> {
         if lease.expires_at <= lease.now {
             return Err(CoreError::invalid("lease expiry must be in the future"));
@@ -789,53 +803,67 @@ fn get_approval_from(
     connection: &Connection,
     approval_id: &str,
 ) -> Result<Option<RunApprovalRecord>> {
-    type RawApproval = (
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        Option<i64>,
-        Option<String>,
-        i64,
-        i64,
-    );
     let raw = connection
         .query_row(
             "SELECT approval_id,run_id,call_id,state,scope,risk,reason,policy_snapshot,expires_at,decided_at,decided_by,created_at,updated_at FROM run_approvals WHERE approval_id=?1",
             [approval_id],
-            |row| -> rusqlite::Result<RawApproval> {
-                Ok((
-                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?,
-                    row.get(10)?, row.get(11)?, row.get(12)?,
-                ))
-            },
+            approval_row,
         )
         .optional()
         .map_err(map_sqlite)?;
-    raw.map(|raw| {
-        Ok(RunApprovalRecord {
-            approval_id: raw.0,
-            run_id: raw.1,
-            call_id: raw.2,
-            state: ApprovalState::parse(&raw.3)?,
-            scope: raw.4,
-            risk: raw.5,
-            reason: raw.6,
-            policy_snapshot: raw.7,
-            expires_at: raw.8,
-            decided_at: raw.9,
-            decided_by: raw.10,
-            created_at: raw.11,
-            updated_at: raw.12,
-        })
+    raw.map(parse_approval).transpose()
+}
+
+type RawApproval = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    i64,
+    i64,
+);
+
+fn approval_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawApproval> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+        row.get(11)?,
+        row.get(12)?,
+    ))
+}
+
+fn parse_approval(raw: RawApproval) -> Result<RunApprovalRecord> {
+    Ok(RunApprovalRecord {
+        approval_id: raw.0,
+        run_id: raw.1,
+        call_id: raw.2,
+        state: ApprovalState::parse(&raw.3)?,
+        scope: raw.4,
+        risk: raw.5,
+        reason: raw.6,
+        policy_snapshot: raw.7,
+        expires_at: raw.8,
+        decided_at: raw.9,
+        decided_by: raw.10,
+        created_at: raw.11,
+        updated_at: raw.12,
     })
-    .transpose()
 }
 
 fn lease_from(connection: &Connection, lease_id: &str) -> Result<Option<ExecutionLeaseRecord>> {

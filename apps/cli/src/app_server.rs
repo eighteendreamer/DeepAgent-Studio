@@ -13,6 +13,7 @@ use deepagent_harness_protocol::{
     TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, PROTOCOL_VERSION,
 };
 use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::run_control::RunControlStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 use deepagent_session::Session;
@@ -489,11 +490,24 @@ impl ServerState {
                             )
                         }
                     };
+                    let controls = RunControlStore::new(&self.database);
+                    let actions = controls.list_actions(&run.id).map_err(|error| {
+                        RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string())
+                    });
+                    let approvals = controls.list_approvals(&run.id).map_err(|error| {
+                        RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string())
+                    });
+                    let (actions, approvals) = match (actions, approvals) {
+                        (Ok(actions), Ok(approvals)) => (actions, approvals),
+                        (Err(response), _) | (_, Err(response)) => return (response, None),
+                    };
                     projected.push(serde_json::json!({
                         "runId": run.id,
                         "state": run.state,
                         "terminalKind": run.terminal_kind,
-                        "events": events
+                        "events": events,
+                        "actions": actions,
+                        "approvals": approvals
                     }));
                 }
                 projected
@@ -1054,6 +1068,7 @@ mod tests {
         assert_eq!(read.result()["threadId"], thread_id);
         assert!(!read.result()["events"].as_array().unwrap().is_empty());
         assert!(read.result()["runEvents"].as_array().unwrap().is_empty());
+        assert!(read.result()["runEvents"].is_array());
 
         let forked = state.handle_request_for_test(rpc_request(
             4,
