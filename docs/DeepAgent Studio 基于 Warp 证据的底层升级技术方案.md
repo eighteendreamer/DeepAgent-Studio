@@ -601,5 +601,8 @@ P0 durable control plane
   - `ae83e4c`、`949f53e`：增加 `setup.completed` 环境快照及 `setup.started` 初始化边界事件。
   - `aca380a`：记录工具 capability snapshot 与 `toolSchemaHash`，支持运行环境和能力集比对。
   - `c8480a2`：为 `thread/read` 控制投影增加 `controlProjectionVersion`。
+  - `f2d7795`、`5b82385`：补齐 `cancel.propagated`，并将相关控制信号改为同一 SQLite 事务写入。
+  - `02b9a29`、`b04bd1d`：明确 continuation disposition，并阻止取消未成功时创建替代 turn。
+  - `4e1639b`、`674ec5b`、`a202ff3`：增加 session/run 分流游标、按 run cursor 恢复及协议版本测试。
 - 当前仍未宣称 P0 全部完成：主 run 的自动恢复策略、统一 graph projection、PTY/worker lease、断线 outbox/ACK 以及完整 SDK 协议测试仍属于后续工作。
 - 已验证：app-core 779 项单元测试通过（1 项 ignored），runtime 145 项单元测试与 5 项稳定性测试通过，CLI app-server 控制测试通过，workspace 与 Desktop Tauri Rust 编译通过。
