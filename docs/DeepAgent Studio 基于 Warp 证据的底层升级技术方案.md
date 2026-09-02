@@ -605,5 +605,8 @@ P0 durable control plane
   - `02b9a29`、`b04bd1d`：明确 continuation disposition，并阻止取消未成功时创建替代 turn。
   - `4e1639b`、`674ec5b`、`a202ff3`：增加 session/run 分流游标、按 run cursor 恢复及协议版本测试。
   - `d3faf1b`、`71413cd`：将 tool artifact 元数据纳入 `thread/read`，并锁定 Artifact camelCase 序列化契约。
-- 当前仍未宣称 P0 全部完成：主 run 的自动恢复策略、统一 graph projection、PTY/worker lease、断线 outbox/ACK 以及完整 SDK 协议测试仍属于后续工作。
+- `ebd5ff3`：本地 PTY 增加进程内有界输出历史、单调 byte cursor、`truncated` 续读语义，并通过 Tauri/TypeScript 暴露 `local_pty_read_cursor`；旧 `local_pty_read` 保持兼容。
+- `b43e322`：新增 `deepagent-terminal` 共享内核边界，定义 `TerminalSessionBackend`、Direct backend、输入租约 takeover/release 与 epoch fencing。
+- `aa434d3`：SSH PTY 接入同一 TerminalSession 协议，增加 SSH 输出 cursor/history 和 lease 校验；SSH 与 Direct 仍由各自服务拥有底层连接生命周期。
+- 当前仍未宣称 P0/P1 全部完成：PTY 的跨进程恢复、SQLite-backed terminal lease、主 run 的自动恢复策略、统一 graph projection、worker outbox/ACK 以及完整 SDK 协议测试仍属于后续工作。当前 terminal cursor/history 是进程内有界缓存，不能冒充跨重启恢复。
 - 已验证：app-core 779 项单元测试通过（1 项 ignored），runtime 145 项单元测试与 5 项稳定性测试通过，CLI app-server 控制测试通过，workspace 与 Desktop Tauri Rust 编译通过。
