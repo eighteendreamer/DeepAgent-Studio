@@ -85,6 +85,11 @@ impl RunCoordinator {
             "cancel.requested",
             &serde_json::json!({ "alias": alias }),
         )?;
+        RunControlStore::new(&self.db).append_control_signal(
+            &run_id,
+            "cancel.propagated",
+            &serde_json::json!({ "alias": alias, "target": "active_run" }),
+        )?;
         flag.store(true, std::sync::atomic::Ordering::Release);
         Ok(CancelRequest { accepted: true })
     }
@@ -264,8 +269,9 @@ mod tests {
         let events = RunStore::new(&db)
             .events_after("run-1", None)
             .expect("events");
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, "cancel.requested");
+        assert_eq!(events[1].event_type, "cancel.propagated");
         assert_eq!(events[0].data["alias"], session_alias);
 
         drop(registration);
