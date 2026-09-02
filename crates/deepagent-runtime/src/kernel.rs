@@ -470,6 +470,33 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             "setup.started",
             &serde_json::json!({ "component": "agent_kernel" }),
         )?;
+        let capabilities: Vec<_> = self
+            .registry
+            .iter_specs()
+            .map(|spec| {
+                serde_json::json!({
+                    "name": spec.descriptor.name,
+                    "description": spec.descriptor.description,
+                    "parameters": spec.descriptor.parameters,
+                    "risk": spec.descriptor.risk,
+                    "requiredPermissions": spec.descriptor.required_permissions,
+                })
+            })
+            .collect();
+        let capability_bytes = serde_json::to_vec(&capabilities).unwrap_or_else(|_| b"[]".to_vec());
+        let schema_hash = format!("sha256:{:x}", sha2::Sha256::digest(&capability_bytes));
+        store.append_event(
+            &run_id,
+            now_ms(),
+            RunPhase::Preparing.label(),
+            "completed",
+            "capability.snapshot",
+            &serde_json::json!({
+                "toolCount": capabilities.len(),
+                "toolSchemaHash": schema_hash,
+                "tools": capabilities,
+            }),
+        )?;
         store.transition(&run_id, RunPhase::Preparing.label(), now_ms())?;
 
         let persistent = Arc::new(PersistentEventSink::new(
@@ -739,6 +766,14 @@ mod tests {
             .as_str()
             .is_some_and(|hash| hash.starts_with("sha256:")));
         assert!(setup.data["environment"]["os"].as_str().is_some());
+        let capability = events
+            .iter()
+            .find(|event| event.event_type == "capability.snapshot")
+            .expect("capability snapshot");
+        assert_eq!(capability.data["toolCount"], 0);
+        assert!(capability.data["toolSchemaHash"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:")));
     }
 
     #[test]
