@@ -447,7 +447,6 @@ impl ChatService {
     /// step boundary and ends as cancelled (partial transcript preserved).
     pub fn cancel_session(&self, session_id: &str) -> bool {
         let found = self
-            .coordinator
             .request_cancel(session_id)
             .map(|request| request.accepted)
             .unwrap_or(false);
@@ -464,6 +463,15 @@ impl ChatService {
                 .with_data(serde_json::json!({ "found": found })),
         );
         found
+    }
+
+    /// Durable cancellation API for transports that need to surface storage
+    /// failures instead of collapsing them into a `not_found` boolean.
+    pub fn request_cancel(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::run_coordinator::CancelRequest> {
+        self.coordinator.request_cancel(session_id)
     }
 
     /// Persist that a steering request created a replacement turn.

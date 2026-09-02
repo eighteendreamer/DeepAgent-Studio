@@ -1937,7 +1937,11 @@ fn resolve_approval(
 /// whether a matching in-flight run was found.
 #[tauri::command]
 fn stop_chat(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
-    Ok(state.chat.cancel_session(&session_id))
+    state
+        .chat
+        .request_cancel(&session_id)
+        .map(|request| request.accepted)
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1950,7 +1954,11 @@ struct CancelRunAck {
 /// a newly-created session has emitted `session_registered`.
 #[tauri::command]
 fn cancel_run(state: State<'_, AppState>, run_id: String) -> Result<CancelRunAck, String> {
-    let accepted = state.chat.cancel_session(&run_id);
+    let accepted = state
+        .chat
+        .request_cancel(&run_id)
+        .map_err(|error| error.to_string())?
+        .accepted;
     Ok(CancelRunAck {
         accepted,
         state: if accepted { "cancelling" } else { "not_found" }.to_string(),
