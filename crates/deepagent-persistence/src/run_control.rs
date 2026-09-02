@@ -1223,6 +1223,13 @@ mod tests {
             store.get_approval("approval-2").unwrap().unwrap().state,
             ApprovalState::Expired
         );
+        let approvals = store.list_approvals("run-1").unwrap();
+        assert_eq!(approvals.len(), 2);
+        assert_eq!(approvals[0].approval_id, "approval-1");
+        assert_eq!(approvals[1].state, ApprovalState::Expired);
+        let json = serde_json::to_value(&approvals[0]).unwrap();
+        assert!(json.get("approvalId").is_some());
+        assert!(json.get("approval_id").is_none());
     }
 
     #[test]
