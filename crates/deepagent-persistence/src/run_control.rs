@@ -83,6 +83,7 @@ impl RunActionState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunActionRecord {
     pub run_id: String,
     pub turn_id: String,
@@ -165,6 +166,7 @@ impl ApprovalState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunApprovalRecord {
     pub approval_id: String,
     pub run_id: String,
