@@ -107,5 +107,9 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].call_id, "c1");
         assert_eq!(records[0].byte_size, 42);
+        let json = serde_json::to_value(&records[0]).unwrap();
+        assert_eq!(json["runId"], "r1");
+        assert_eq!(json["mediaType"], "application/json");
+        assert!(json.get("run_id").is_none());
     }
 }
