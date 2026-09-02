@@ -15,7 +15,7 @@ use sha2::Digest;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::io::AsyncReadExt;
@@ -331,6 +331,9 @@ impl SshServiceImpl {
                 join,
                 cols,
                 rows,
+                output_cursor: AtomicU64::new(0),
+                history: tokio::sync::Mutex::new(std::collections::VecDeque::new()),
+                history_bytes: tokio::sync::Mutex::new(0),
             }))
             .await;
         Ok(SshServiceHandle::new(
@@ -354,6 +357,18 @@ impl SshServiceImpl {
         let session = self.connected_session(&handle.connection_id).await?;
         session
             .pty_read_available()
+            .await
+            .ok_or_else(|| SshError::Pty("no active PTY session".into()))
+    }
+
+    pub async fn pty_read_with_cursor(
+        &self,
+        handle: &SshServiceHandle,
+        after_cursor: u64,
+    ) -> SshResult<deepagent_terminal::TerminalReadChunk> {
+        let session = self.connected_session(&handle.connection_id).await?;
+        session
+            .pty_read_with_cursor(after_cursor)
             .await
             .ok_or_else(|| SshError::Pty("no active PTY session".into()))
     }

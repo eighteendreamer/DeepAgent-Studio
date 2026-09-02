@@ -2,7 +2,9 @@
 
 use super::config::{SshConnectionConfig, SshStatus};
 use async_ssh2_tokio::Client;
+use deepagent_terminal::TerminalReadChunk;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -55,6 +57,9 @@ pub struct PtyState {
     pub join: JoinHandle<()>,
     pub cols: u16,
     pub rows: u16,
+    pub output_cursor: AtomicU64,
+    pub history: Mutex<VecDeque<(u64, Vec<u8>)>>,
+    pub history_bytes: Mutex<usize>,
 }
 
 pub struct SshSession {
@@ -150,6 +155,51 @@ impl SshSession {
             }
         }
         Some(out)
+    }
+
+    pub async fn pty_read_with_cursor(&self, after_cursor: u64) -> Option<TerminalReadChunk> {
+        let pty = self.pty.read().await;
+        let pty = pty.as_ref()?;
+        let mut rx = pty.stdout.lock().await;
+        let mut history = pty.history.lock().await;
+        let mut history_bytes = pty.history_bytes.lock().await;
+        while let Ok(chunk) = rx.try_recv() {
+            if chunk.is_empty() {
+                continue;
+            }
+            let start = pty
+                .output_cursor
+                .fetch_add(chunk.len() as u64, Ordering::AcqRel);
+            *history_bytes += chunk.len();
+            history.push_back((start, chunk));
+            while *history_bytes > 256 * 1024 {
+                if let Some((_, old)) = history.pop_front() {
+                    *history_bytes = history_bytes.saturating_sub(old.len());
+                } else {
+                    break;
+                }
+            }
+        }
+        let current = pty.output_cursor.load(Ordering::Acquire);
+        let oldest = history.front().map(|(start, _)| *start).unwrap_or(current);
+        let truncated = after_cursor < oldest && oldest > 0;
+        let mut data = Vec::new();
+        for (start, chunk) in history.iter() {
+            let end = *start + chunk.len() as u64;
+            if end > after_cursor {
+                let offset = after_cursor.saturating_sub(*start) as usize;
+                data.extend_from_slice(&chunk[offset.min(chunk.len())..]);
+                if data.len() >= 64 * 1024 {
+                    data.truncate(64 * 1024);
+                    break;
+                }
+            }
+        }
+        Some(TerminalReadChunk {
+            cursor: current,
+            data,
+            truncated,
+        })
     }
 
     pub async fn pty_resize(&self, cols: u16, rows: u16) -> bool {

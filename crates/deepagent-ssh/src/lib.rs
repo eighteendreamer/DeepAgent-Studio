@@ -37,7 +37,185 @@ mod remote;
 mod service;
 mod session;
 
+use async_trait::async_trait;
+use deepagent_terminal::{
+    TerminalError, TerminalInputHolder, TerminalInputLease, TerminalLeaseRegistry,
+    TerminalOpenRequest, TerminalReadChunk, TerminalSession, TerminalSessionBackend,
+    TerminalSignal,
+};
 use service::SshServiceImpl;
+use std::sync::Arc;
+
+/// SSH implementation of the shared terminal-session contract. The service
+/// remains the owner of connection lifecycle; this adapter only adds run
+/// scope, cursor and input-lease validation.
+pub struct SshTerminalSessionBackend {
+    service: Arc<SshService>,
+    connection_id: String,
+    token: String,
+    leases: TerminalLeaseRegistry,
+}
+
+impl SshTerminalSessionBackend {
+    pub fn new(
+        service: Arc<SshService>,
+        connection_id: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Self {
+        Self {
+            service,
+            connection_id: connection_id.into(),
+            token: token.into(),
+            leases: TerminalLeaseRegistry::default(),
+        }
+    }
+
+    fn handle(&self, session: &TerminalSession) -> Result<SshServiceHandle, TerminalError> {
+        if session.backend != self.backend_kind() || !session.session_id.starts_with("ssh:") {
+            return Err(TerminalError::SessionNotFound(session.session_id.clone()));
+        }
+        Ok(SshServiceHandle::new(
+            self.connection_id.clone(),
+            self.token.clone(),
+            session.cols,
+            session.rows,
+        ))
+    }
+
+    fn validate(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+    ) -> Result<(), TerminalError> {
+        if session.session_id != lease.session_id || session.run_id != lease.run_id {
+            return Err(TerminalError::InvalidLease);
+        }
+        self.leases.validate(lease)
+    }
+}
+
+#[async_trait]
+impl TerminalSessionBackend for SshTerminalSessionBackend {
+    fn backend_kind(&self) -> &'static str {
+        "ssh"
+    }
+
+    async fn open(
+        &self,
+        request: TerminalOpenRequest,
+    ) -> deepagent_terminal::TerminalResult<(TerminalSession, TerminalInputLease)> {
+        let base =
+            SshServiceHandle::new(&self.connection_id, &self.token, request.cols, request.rows);
+        let handle = self
+            .service
+            .pty_spawn(&base, request.cols, request.rows)
+            .await
+            .map_err(|e| TerminalError::Backend(e.to_string()))?;
+        let session = TerminalSession {
+            session_id: format!("ssh:{}:{}", self.connection_id, handle.token),
+            run_id: request.run_id,
+            backend: self.backend_kind().to_string(),
+            cols: request.cols,
+            rows: request.rows,
+        };
+        let lease =
+            self.leases
+                .register(&session.session_id, &session.run_id, request.initial_holder)?;
+        Ok((session, lease))
+    }
+
+    async fn write(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        data: &[u8],
+    ) -> deepagent_terminal::TerminalResult<()> {
+        self.validate(session, lease)?;
+        let handle = self.handle(session)?;
+        self.service
+            .pty_write(&handle, data)
+            .await
+            .map_err(|e| TerminalError::Backend(e.to_string()))
+    }
+
+    async fn read(
+        &self,
+        session: &TerminalSession,
+        after_cursor: u64,
+    ) -> deepagent_terminal::TerminalResult<TerminalReadChunk> {
+        let handle = self.handle(session)?;
+        self.service
+            .pty_read_with_cursor(&handle, after_cursor)
+            .await
+            .map_err(|e| TerminalError::Backend(e.to_string()))
+    }
+
+    async fn resize(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        cols: u16,
+        rows: u16,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        self.validate(session, lease)?;
+        let handle = self.handle(session)?;
+        self.service
+            .pty_resize(&handle, cols, rows)
+            .await
+            .map_err(|e| TerminalError::Backend(e.to_string()))
+    }
+
+    async fn signal(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        signal: TerminalSignal,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        self.validate(session, lease)?;
+        let data = match signal {
+            TerminalSignal::Interrupt => vec![3],
+            TerminalSignal::Terminate => vec![28],
+            TerminalSignal::Kill => vec![4],
+        };
+        let handle = self.handle(session)?;
+        self.service
+            .pty_write(&handle, &data)
+            .await
+            .map_err(|e| TerminalError::Backend(e.to_string()))
+    }
+
+    async fn takeover(
+        &self,
+        session: &TerminalSession,
+        holder: TerminalInputHolder,
+    ) -> deepagent_terminal::TerminalResult<TerminalInputLease> {
+        self.handle(session)?;
+        self.leases.takeover(&session.session_id, holder)
+    }
+
+    async fn release(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        next_holder: TerminalInputHolder,
+    ) -> deepagent_terminal::TerminalResult<TerminalInputLease> {
+        self.validate(session, lease)?;
+        self.leases.release(lease, next_holder)
+    }
+
+    async fn close(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        self.validate(session, lease)?;
+        self.service
+            .disconnect(&self.connection_id)
+            .await
+            .map_err(|e| TerminalError::Backend(e.to_string()))?;
+        self.leases.remove(lease)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshServiceHandle {
@@ -128,6 +306,14 @@ impl SshService {
 
     pub async fn pty_read(&self, handle: &SshServiceHandle) -> SshResult<Vec<u8>> {
         self.inner.pty_read(handle).await
+    }
+
+    pub async fn pty_read_with_cursor(
+        &self,
+        handle: &SshServiceHandle,
+        after_cursor: u64,
+    ) -> SshResult<TerminalReadChunk> {
+        self.inner.pty_read_with_cursor(handle, after_cursor).await
     }
 
     pub async fn pty_resize(
