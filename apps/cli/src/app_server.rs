@@ -467,7 +467,15 @@ impl ServerState {
                         .after_sequence
                         .map_or(true, |after| event.sequence > after)
                 })
-                .filter_map(|event| serde_json::to_value(event).ok())
+                .filter_map(|event| {
+                    let sequence = event.sequence;
+                    let mut value = serde_json::to_value(event).ok()?;
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("stream".into(), serde_json::json!("session"));
+                        object.insert("streamSequence".into(), serde_json::json!(sequence));
+                    }
+                    Some(value)
+                })
                 .collect::<Vec<_>>(),
             Err(error) => {
                 return (
@@ -483,7 +491,23 @@ impl ServerState {
                     let events = match RunStore::new(&self.database)
                         .events_after(&run.id, params.after_sequence)
                     {
-                        Ok(events) => events,
+                        Ok(events) => events
+                            .into_iter()
+                            .filter_map(|event| {
+                                let run_id = event.run_id.clone();
+                                let sequence = event.sequence;
+                                let mut value = serde_json::to_value(event).ok()?;
+                                if let Some(object) = value.as_object_mut() {
+                                    object.insert("stream".into(), serde_json::json!("run"));
+                                    object.insert("runId".into(), serde_json::json!(run_id));
+                                    object.insert(
+                                        "streamSequence".into(),
+                                        serde_json::json!(sequence),
+                                    );
+                                }
+                                Some(value)
+                            })
+                            .collect::<Vec<_>>(),
                         Err(error) => {
                             return (
                                 RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
@@ -528,6 +552,7 @@ impl ServerState {
                     "title": record.title,
                     "cwd": record.project,
                     "controlProjectionVersion": CONTROL_PROJECTION_VERSION,
+                    "cursorMode": "stream_scoped",
                     "events": events,
                     "runEvents": run_events
                 }),
@@ -1079,6 +1104,7 @@ mod tests {
         ));
         assert_eq!(read.result()["threadId"], thread_id);
         assert_eq!(read.result()["controlProjectionVersion"], 1);
+        assert_eq!(read.result()["cursorMode"], "stream_scoped");
         assert!(!read.result()["events"].as_array().unwrap().is_empty());
         assert!(read.result()["runEvents"].as_array().unwrap().is_empty());
         assert!(read.result()["runEvents"].is_array());
