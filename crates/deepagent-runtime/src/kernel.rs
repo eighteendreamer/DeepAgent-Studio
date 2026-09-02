@@ -250,6 +250,18 @@ impl RuntimeEventSink for PersistentEventSink {
             _ => {
                 self.flush_delta();
                 let (phase, status) = phase_for_event(&event);
+                if matches!(&event, RuntimeEvent::RunStarted { .. }) {
+                    // Record the kernel setup boundary separately from the
+                    // lifecycle event. This gives reconnecting clients a
+                    // durable marker for the point at which execution became
+                    // ready without introducing a second runtime pipeline.
+                    self.append(
+                        RunPhase::Preparing,
+                        "completed",
+                        "setup.completed",
+                        serde_json::json!({ "component": "agent_kernel" }),
+                    );
+                }
                 if matches!(&event, RuntimeEvent::RunCancelled) {
                     // Keep the operator intent and the runtime observation as
                     // separate durable facts. The terminal event remains the
@@ -687,13 +699,11 @@ mod tests {
         assert_eq!(terminal.kind, TerminalKind::Succeeded);
         let record = RunStore::new(&db).get("run-v2").unwrap().unwrap();
         assert_eq!(record.terminal_kind.as_deref(), Some("succeeded"));
-        assert!(
-            RunStore::new(&db)
-                .events_after("run-v2", None)
-                .unwrap()
-                .len()
-                >= 4
-        );
+        let events = RunStore::new(&db).events_after("run-v2", None).unwrap();
+        assert!(events.len() >= 4);
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "setup.completed"));
     }
 
     #[test]
