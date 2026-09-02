@@ -1,6 +1,6 @@
 use deepagent_harness_protocol::{
     project_runtime_event, ApprovalRespondRequest, EventContext, HarnessEvent, HarnessRequest,
-    InitializeRequest, ItemPayload, ThreadStartRequest, TurnStartRequest,
+    InitializeRequest, ItemPayload, ThreadReadRequest, ThreadStartRequest, TurnStartRequest,
 };
 use deepagent_runtime::RuntimeEvent;
 
@@ -187,4 +187,18 @@ fn turn_start_request_serializes_provider_and_sandbox_overrides() {
     assert_eq!(json["method"], "turn/start");
     assert_eq!(json["params"]["threadId"], "thread-1");
     assert_eq!(json["params"]["reasoningEffort"], "high");
+}
+
+#[test]
+fn thread_read_supports_stream_specific_cursors() {
+    let request = HarnessRequest::ThreadRead(ThreadReadRequest {
+        thread_id: "thread-1".into(),
+        after_sequence: None,
+        session_after_sequence: Some(12),
+        run_after_sequence: Some(7),
+    });
+    let value = serde_json::to_value(request).unwrap();
+    assert_eq!(value["params"]["sessionAfterSequence"], 12);
+    assert_eq!(value["params"]["runAfterSequence"], 7);
+    assert!(value["params"].get("afterSequence").is_none());
 }

@@ -88,6 +88,18 @@ pub struct ThreadReadRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub after_sequence: Option<u64>,
+    #[serde(
+        rename = "sessionAfterSequence",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub session_after_sequence: Option<u64>,
+    #[serde(
+        rename = "runAfterSequence",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub run_after_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

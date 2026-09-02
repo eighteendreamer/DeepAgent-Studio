@@ -444,6 +444,8 @@ impl ServerState {
             }
         };
         let store = EventStore::new(&self.database);
+        let session_after = params.session_after_sequence.or(params.after_sequence);
+        let run_after = params.run_after_sequence.or(params.after_sequence);
         let record = match store.get_session(session_id) {
             Ok(Some(record)) => record,
             Ok(None) => {
@@ -462,11 +464,7 @@ impl ServerState {
         let events = match store.load_session(session_id) {
             Ok(events) => events
                 .into_iter()
-                .filter(|event| {
-                    params
-                        .after_sequence
-                        .map_or(true, |after| event.sequence > after)
-                })
+                .filter(|event| session_after.map_or(true, |after| event.sequence > after))
                 .filter_map(|event| {
                     let sequence = event.sequence;
                     let mut value = serde_json::to_value(event).ok()?;
@@ -488,33 +486,32 @@ impl ServerState {
             Ok(runs) => {
                 let mut projected = Vec::with_capacity(runs.len());
                 for run in runs {
-                    let events = match RunStore::new(&self.database)
-                        .events_after(&run.id, params.after_sequence)
-                    {
-                        Ok(events) => events
-                            .into_iter()
-                            .filter_map(|event| {
-                                let run_id = event.run_id.clone();
-                                let sequence = event.sequence;
-                                let mut value = serde_json::to_value(event).ok()?;
-                                if let Some(object) = value.as_object_mut() {
-                                    object.insert("stream".into(), serde_json::json!("run"));
-                                    object.insert("runId".into(), serde_json::json!(run_id));
-                                    object.insert(
-                                        "streamSequence".into(),
-                                        serde_json::json!(sequence),
-                                    );
-                                }
-                                Some(value)
-                            })
-                            .collect::<Vec<_>>(),
-                        Err(error) => {
-                            return (
-                                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                                None,
-                            )
-                        }
-                    };
+                    let events =
+                        match RunStore::new(&self.database).events_after(&run.id, run_after) {
+                            Ok(events) => events
+                                .into_iter()
+                                .filter_map(|event| {
+                                    let run_id = event.run_id.clone();
+                                    let sequence = event.sequence;
+                                    let mut value = serde_json::to_value(event).ok()?;
+                                    if let Some(object) = value.as_object_mut() {
+                                        object.insert("stream".into(), serde_json::json!("run"));
+                                        object.insert("runId".into(), serde_json::json!(run_id));
+                                        object.insert(
+                                            "streamSequence".into(),
+                                            serde_json::json!(sequence),
+                                        );
+                                    }
+                                    Some(value)
+                                })
+                                .collect::<Vec<_>>(),
+                            Err(error) => {
+                                return (
+                                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                                    None,
+                                )
+                            }
+                        };
                     let controls = RunControlStore::new(&self.database);
                     let actions = controls.list_actions(&run.id).map_err(|error| {
                         RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string())
