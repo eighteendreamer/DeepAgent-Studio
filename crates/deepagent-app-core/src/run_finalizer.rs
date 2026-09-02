@@ -1,7 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use deepagent_core::clock::Clock;
 use deepagent_core::error::Result;
@@ -15,7 +14,7 @@ use crate::cost_service::{CostRecordRequest, CostService};
 use crate::knowledge_service::KnowledgeService;
 use crate::tool_manifest::DiscoveredToolSet;
 
-pub(crate) type CancellationMap = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
+use crate::run_coordinator::CancellationMap;
 
 #[derive(Clone)]
 pub(crate) struct AppRunFinalizer {
@@ -203,6 +202,9 @@ mod tests {
     use super::*;
     use deepagent_core::clock::SystemClock;
     use deepagent_runtime::NullEventSink;
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Mutex;
 
     #[test]
     fn clear_run_cancellation_removes_session_and_run_aliases() {

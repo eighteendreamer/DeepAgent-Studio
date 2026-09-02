@@ -51,6 +51,7 @@ pub mod project_service;
 pub mod prompt_gate;
 pub mod recording_service;
 pub mod run_config;
+pub mod run_coordinator;
 pub mod run_environment;
 pub mod run_finalizer;
 pub mod runtime_event_log;
@@ -138,6 +139,7 @@ pub use project_map_service::{
 };
 pub use project_service::{folder_name, ProjectService};
 pub use recording_service::{AudioRecorder, RecordingService, UnavailableRecorder};
+pub use run_coordinator::RunCoordinator;
 pub use runtime_service::{
     default_registry, ArchiveKind, Downloader, Platform, RuntimeArtifact, RuntimeBroker,
     RuntimeDiagnostic, RuntimeEntry, RuntimeKind, RuntimePreference, RuntimeRequirement,

@@ -67,6 +67,7 @@ use crate::model_runtime::{build_model_client, select_run_model};
 use crate::office_service::OfficeService;
 use crate::project_map_service::ProjectMapService;
 use crate::prompt_gate::{finalize_blocked_user_prompt, submit_user_prompt};
+use crate::run_coordinator::RunCoordinator;
 use crate::run_environment::RunEnvironment;
 use crate::run_finalizer::{AppRunFinalizer, AppRunFinalizerRequest};
 use crate::runtime_event_log::{append_runtime_log, spawn_runtime_event_pump};
@@ -79,13 +80,6 @@ use crate::subagent_runner::{
 };
 pub use crate::system_context::SYSTEM_PROMPT_DYNAMIC_BOUNDARY;
 
-fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(i64::MAX as u128) as i64
-}
 #[cfg(test)]
 use crate::system_context::{build_system_manifest, build_system_prompt, current_date_string};
 #[cfg(test)]
@@ -133,7 +127,7 @@ pub struct ChatService {
     /// Allow-listed bash command prefixes.
     bash_allow: Vec<String>,
     /// Shared registry of in-flight approval requests (the UI resolves these).
-    pending: PendingApprovals,
+    coordinator: Arc<RunCoordinator>,
     /// Optional MCP server manager: when set, enabled MCP servers are connected
     /// at run time and their tools registered into the runtime tool registry.
     mcp: Option<Arc<crate::mcp_service::McpService>>,
@@ -176,7 +170,6 @@ pub struct ChatService {
     /// Per-session cancellation flags for in-flight runs. The UI sets one via
     /// [`ChatService::cancel_session`] to stop a run; the engine checks it at
     /// each step boundary.
-    cancellations: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
     /// Per-session input dispatch lease. A continued session may receive a new
     /// prompt while the previous turn is still streaming; the lease serializes
     /// those turns and lets the new prompt request interruption first.
@@ -235,62 +228,6 @@ pub struct ChatService {
 /// Used for remote (SSH) sessions — the factory is set up by the desktop
 /// app and captures the `SshService` handle.
 type ExecutorFactory = CommandExecutorFactory;
-
-struct RunCancellationRegistration {
-    map: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
-    flag: Arc<AtomicBool>,
-    keys: std::sync::Mutex<Vec<String>>,
-}
-
-impl RunCancellationRegistration {
-    fn new(
-        map: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
-        run_id: String,
-        session_id: Option<&str>,
-    ) -> Self {
-        let registration = Self {
-            map,
-            flag: Arc::new(AtomicBool::new(false)),
-            keys: std::sync::Mutex::new(Vec::new()),
-        };
-        registration.add_alias(run_id);
-        if let Some(session_id) = session_id {
-            registration.add_alias(session_id.to_string());
-        }
-        registration
-    }
-
-    fn add_alias(&self, key: String) {
-        let mut keys = self.keys.lock().unwrap_or_else(|p| p.into_inner());
-        if keys.contains(&key) {
-            return;
-        }
-        self.map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(key.clone(), self.flag.clone());
-        keys.push(key);
-    }
-
-    fn flag(&self) -> Arc<AtomicBool> {
-        self.flag.clone()
-    }
-}
-
-impl Drop for RunCancellationRegistration {
-    fn drop(&mut self) {
-        let keys = self.keys.lock().unwrap_or_else(|p| p.into_inner());
-        let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
-        for key in keys.iter() {
-            if map
-                .get(key)
-                .is_some_and(|flag| Arc::ptr_eq(flag, &self.flag))
-            {
-                map.remove(key);
-            }
-        }
-    }
-}
 
 /// Per-session map of [`DiscoveredToolSet`]s, keyed by session id.
 type DiscoveredToolsMap =
@@ -456,12 +393,12 @@ impl ChatService {
         let workspace = workspace.into();
         let tool_results_dir = workspace.join(".deepagent").join("tool_results");
         Self {
-            db,
+            db: db.clone(),
             settings,
             transport,
             workspace,
             bash_allow: default_bash_allow(),
-            pending: PendingApprovals::new(),
+            coordinator: Arc::new(RunCoordinator::new(db.clone())),
             mcp: None,
             plugins: None,
             projects: None,
@@ -472,7 +409,6 @@ impl ChatService {
             runtime_logs: None,
             tool_results_dir,
             plan_modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            cancellations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             input_leases: Arc::new(InputLeaseRegistry::default()),
             subagent_controls: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             discovered_tools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -510,14 +446,11 @@ impl ChatService {
     /// whether a matching in-flight run was found. The run stops at its next
     /// step boundary and ends as cancelled (partial transcript preserved).
     pub fn cancel_session(&self, session_id: &str) -> bool {
-        let map = self.cancellations.lock().unwrap_or_else(|p| p.into_inner());
-        let found = if let Some(flag) = map.get(session_id) {
-            flag.store(true, std::sync::atomic::Ordering::Relaxed);
-            true
-        } else {
-            false
-        };
-        drop(map);
+        let found = self
+            .coordinator
+            .request_cancel(session_id)
+            .map(|request| request.accepted)
+            .unwrap_or(false);
         append_runtime_log(
             &self.runtime_logs,
             NewRuntimeLogEntry::info("cancel", "cancel_requested")
@@ -531,6 +464,17 @@ impl ChatService {
                 .with_data(serde_json::json!({ "found": found })),
         );
         found
+    }
+
+    /// Persist that a steering request created a replacement turn.
+    pub fn record_continuation(
+        &self,
+        run_id: &str,
+        replaces_turn_id: &str,
+        new_turn_id: &str,
+    ) -> Result<u64> {
+        self.coordinator
+            .record_continuation(run_id, replaces_turn_id, new_turn_id)
     }
 
     /// Request cancellation of one background child without stopping its
@@ -844,7 +788,7 @@ impl ChatService {
     /// The shared pending-approvals registry. The UI calls
     /// [`PendingApprovals::resolve_approved`] on this to answer a dialog.
     pub fn pending_approvals(&self) -> PendingApprovals {
-        self.pending.clone()
+        self.coordinator.pending()
     }
 
     /// Resolve an approval through the durable control projection before
@@ -855,23 +799,8 @@ impl ChatService {
         approved: bool,
         decided_by: &str,
     ) -> Result<bool> {
-        let controls = deepagent_persistence::run_control::RunControlStore::new(&self.db);
-        if controls.get_approval(approval_id)?.is_some() {
-            if let Err(error) =
-                controls.respond_approval(approval_id, approved, decided_by, now_millis())
-            {
-                // An expired decision must also release the waiter safely.
-                if controls.get_approval(approval_id)?.is_some_and(|record| {
-                    record.state == deepagent_persistence::run_control::ApprovalState::Expired
-                }) {
-                    let _ = self.pending.resolve_approved(approval_id, false);
-                }
-                return Err(error);
-            }
-            let _ = self.pending.resolve_approved(approval_id, approved);
-            return Ok(true);
-        }
-        Ok(self.pending.resolve_approved(approval_id, approved))
+        self.coordinator
+            .resolve_approval(approval_id, approved, decided_by)
     }
 
     /// Return the shared plan-mode flag for a session, creating an inactive
@@ -2437,11 +2366,7 @@ impl ChatService {
         let run_trace = deepagent_tracing::trace_context::TraceContext::new_root();
         let run_trace_id = run_trace.trace_id.to_hex();
         let run_traceparent = run_trace.traceparent();
-        let cancellation = RunCancellationRegistration::new(
-            self.cancellations.clone(),
-            run_id.clone(),
-            continue_session,
-        );
+        let cancellation = self.coordinator.register(run_id.clone(), continue_session);
         append_runtime_log(
             &self.runtime_logs,
             NewRuntimeLogEntry::info("chat", "run_requested")
@@ -2721,7 +2646,8 @@ impl ChatService {
 
         // Wire the approval gate: AlwaysAsk → channel gate (prompts the UI);
         // auto policies short-circuit to allow.
-        let channel_gate = ChannelApprovalGate::new(self.pending.clone(), Arc::new(on_approval));
+        let channel_gate =
+            ChannelApprovalGate::new(self.coordinator.pending(), Arc::new(on_approval));
         let gate: Arc<dyn deepagent_runtime::ApprovalGate> = Arc::new(
             PolicyGate::new(policy, Arc::new(channel_gate))
                 .with_classifier(deepagent_builtins::SafetyClassifier::with_defaults()),
@@ -3224,7 +3150,7 @@ impl ChatService {
             self.db.clone(),
             self.cost.clone(),
             self.knowledge.clone(),
-            self.cancellations.clone(),
+            self.coordinator.cancellation_map(),
         )
         .finalize_after_kernel(
             &mut session,

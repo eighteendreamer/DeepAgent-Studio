@@ -720,6 +720,16 @@ impl ServerState {
         }
         let _ = current.chat.cancel_session(&params.turn_id);
         let next_turn = format!("turn_{}", deepagent_core::id::EventId::new());
+        if let Err(error) =
+            current
+                .chat
+                .record_continuation(&params.turn_id, &params.turn_id, &next_turn)
+        {
+            return (
+                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                None,
+            );
+        }
         self.turns.insert(
             next_turn.clone(),
             TurnState {

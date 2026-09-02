@@ -250,6 +250,17 @@ impl RuntimeEventSink for PersistentEventSink {
             _ => {
                 self.flush_delta();
                 let (phase, status) = phase_for_event(&event);
+                if matches!(&event, RuntimeEvent::RunCancelled) {
+                    // Keep the operator intent and the runtime observation as
+                    // separate durable facts. The terminal event remains the
+                    // final lifecycle record for replay compatibility.
+                    self.append(
+                        RunPhase::Finalizing,
+                        "progress",
+                        "cancel.observed",
+                        serde_json::json!({ "run_id": self.run_id }),
+                    );
+                }
                 self.append(
                     phase,
                     status,

@@ -249,6 +249,25 @@ impl<'db> RunControlStore<'db> {
         })
     }
 
+    /// Append a control-plane signal to the canonical run event ledger.
+    /// Transports use this for durable interrupt/continuation intent; the
+    /// kernel remains responsible for observed cancellation and terminal state.
+    pub fn append_control_signal(
+        &self,
+        run_id: &str,
+        event_type: &str,
+        data: &serde_json::Value,
+    ) -> Result<u64> {
+        crate::run_store::RunStore::new(self.db).append_event(
+            run_id,
+            now_millis(),
+            "accepted",
+            "progress",
+            event_type,
+            data,
+        )
+    }
+
     pub fn create_action(&self, action: &NewRunAction<'_>) -> Result<ControlMutation> {
         self.db.with_conn(|connection| {
             in_immediate_transaction(connection, || {
@@ -1004,6 +1023,14 @@ fn to_u64(value: i64, label: &str) -> Result<u64> {
 
 fn to_u32(value: i64, label: &str) -> Result<u32> {
     u32::try_from(value).map_err(|_| CoreError::EventLog(format!("invalid {label}")))
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
 }
 
 #[cfg(test)]
