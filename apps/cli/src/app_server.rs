@@ -787,9 +787,10 @@ impl ServerState {
         id: serde_json::Value,
         params: deepagent_harness_protocol::ApprovalRespondRequest,
     ) -> (RpcResponse, Option<TurnLaunch>) {
-        let resolved = match self.base_chat.resolve_approval(
+        let resolved = match self.base_chat.resolve_approval_scoped(
             &params.approval_id,
             params.approved,
+            params.scope.as_deref(),
             "harness_client",
         ) {
             Ok(resolved) => resolved,

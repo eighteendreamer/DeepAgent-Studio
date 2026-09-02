@@ -811,6 +811,17 @@ impl ChatService {
             .resolve_approval(approval_id, approved, decided_by)
     }
 
+    pub fn resolve_approval_scoped(
+        &self,
+        approval_id: &str,
+        approved: bool,
+        scope: Option<&str>,
+        decided_by: &str,
+    ) -> Result<bool> {
+        self.coordinator
+            .resolve_approval_scoped(approval_id, approved, scope, decided_by)
+    }
+
     /// Return the shared plan-mode flag for a session, creating an inactive
     /// flag the first time this process sees the session.
     fn plan_mode_for_session(&self, session_id: &str) -> deepagent_builtins::PlanMode {

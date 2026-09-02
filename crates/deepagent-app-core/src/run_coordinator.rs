@@ -95,8 +95,23 @@ impl RunCoordinator {
         approved: bool,
         decided_by: &str,
     ) -> Result<bool> {
+        self.resolve_approval_scoped(approval_id, approved, None, decided_by)
+    }
+
+    pub fn resolve_approval_scoped(
+        &self,
+        approval_id: &str,
+        approved: bool,
+        requested_scope: Option<&str>,
+        decided_by: &str,
+    ) -> Result<bool> {
         let controls = RunControlStore::new(&self.db);
-        if controls.get_approval(approval_id)?.is_some() {
+        if let Some(record) = controls.get_approval(approval_id)? {
+            if requested_scope.is_some_and(|scope| scope != record.scope) {
+                return Err(deepagent_core::error::CoreError::invalid(
+                    "approval scope does not match the persisted request",
+                ));
+            }
             if let Err(error) =
                 controls.respond_approval(approval_id, approved, decided_by, now_millis())
             {
