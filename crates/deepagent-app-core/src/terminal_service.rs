@@ -18,6 +18,11 @@ use std::sync::Arc;
 
 use deepagent_builtins::{is_dangerous, CommandExecutor, SystemExecutor};
 use deepagent_core::error::{CoreError, Result};
+use deepagent_terminal::{
+    TerminalError, TerminalInputHolder, TerminalInputLease, TerminalLeaseRegistry,
+    TerminalOpenRequest, TerminalReadChunk, TerminalSession, TerminalSessionBackend,
+    TerminalSignal,
+};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -63,6 +68,45 @@ pub struct TerminalService {
     runtime: Option<Arc<RuntimeBroker>>,
     ptys: RwLock<HashMap<String, Arc<LocalPtyState>>>,
     next_pty_id: AtomicU64,
+}
+
+/// Direct host PTY implementation of the shared terminal-session contract.
+pub struct DirectTerminalSessionBackend {
+    service: Arc<TerminalService>,
+    shell: TerminalShell,
+    leases: TerminalLeaseRegistry,
+}
+
+impl DirectTerminalSessionBackend {
+    pub fn new(service: Arc<TerminalService>, shell: TerminalShell) -> Self {
+        Self {
+            service,
+            shell,
+            leases: TerminalLeaseRegistry::default(),
+        }
+    }
+
+    fn validate_scope(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        if session.backend != self.backend_kind()
+            || session.session_id != lease.session_id
+            || session.run_id != lease.run_id
+        {
+            return Err(TerminalError::InvalidLease);
+        }
+        self.leases.validate(lease)
+    }
+
+    fn local_handle(session: &TerminalSession) -> LocalPtyHandle {
+        LocalPtyHandle {
+            pty_id: session.session_id.clone(),
+            cols: session.cols,
+            rows: session.rows,
+        }
+    }
 }
 
 impl TerminalService {
@@ -162,12 +206,22 @@ impl TerminalService {
         rows: u16,
     ) -> Result<LocalPtyHandle> {
         let cwd = self.cwd();
+        self.pty_spawn_in(shell, &cwd, cols, rows).await
+    }
+
+    pub async fn pty_spawn_in(
+        &self,
+        shell: TerminalShell,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<LocalPtyHandle> {
         let environment = self
             .runtime
             .as_ref()
             .map(|runtime| runtime.build_process_environment(Some(std::path::Path::new(&cwd))))
             .unwrap_or_default();
-        let state = spawn_local_pty(shell, &cwd, cols, rows, &environment)?;
+        let state = spawn_local_pty(shell, cwd, cols, rows, &environment)?;
         let id = format!(
             "local-pty-{}",
             self.next_pty_id.fetch_add(1, Ordering::Relaxed)
@@ -303,6 +357,29 @@ impl TerminalService {
         Ok(())
     }
 
+    async fn pty_kill(&self, handle: &LocalPtyHandle) -> Result<()> {
+        let state = self
+            .ptys
+            .read()
+            .await
+            .get(&handle.pty_id)
+            .cloned()
+            .ok_or_else(|| CoreError::not_found(format!("pty {} not found", handle.pty_id)))?;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let mut child = state
+                .child
+                .lock()
+                .map_err(|_| CoreError::other("pty child lock poisoned"))?;
+            child
+                .kill()
+                .map_err(|e| CoreError::other(format!("pty kill failed: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| CoreError::other(format!("pty kill join failed: {e}")))??;
+        Ok(())
+    }
+
     /// Launch the user's system terminal in the current working directory,
     /// using the preferred shell from settings.
     pub fn open_system(&self, shell: TerminalShell) -> Result<String> {
@@ -314,6 +391,145 @@ impl TerminalService {
             .unwrap_or_default();
         spawn_system_terminal(shell, &cwd, &environment)?;
         Ok(cwd)
+    }
+}
+
+#[async_trait::async_trait]
+impl TerminalSessionBackend for DirectTerminalSessionBackend {
+    fn backend_kind(&self) -> &'static str {
+        "direct"
+    }
+
+    async fn open(
+        &self,
+        request: TerminalOpenRequest,
+    ) -> deepagent_terminal::TerminalResult<(TerminalSession, TerminalInputLease)> {
+        let handle = self
+            .service
+            .pty_spawn_in(self.shell, &request.cwd, request.cols, request.rows)
+            .await
+            .map_err(|error| TerminalError::Backend(error.to_string()))?;
+        let session = TerminalSession {
+            session_id: handle.pty_id,
+            run_id: request.run_id,
+            backend: self.backend_kind().to_string(),
+            cols: request.cols,
+            rows: request.rows,
+        };
+        let lease =
+            match self
+                .leases
+                .register(&session.session_id, &session.run_id, request.initial_holder)
+            {
+                Ok(lease) => lease,
+                Err(error) => {
+                    let _ = self.service.pty_close(&Self::local_handle(&session)).await;
+                    return Err(error);
+                }
+            };
+        Ok((session, lease))
+    }
+
+    async fn write(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        data: &[u8],
+    ) -> deepagent_terminal::TerminalResult<()> {
+        self.validate_scope(session, lease)?;
+        self.service
+            .pty_write(&Self::local_handle(session), data)
+            .await
+            .map_err(|error| TerminalError::Backend(error.to_string()))
+    }
+
+    async fn read(
+        &self,
+        session: &TerminalSession,
+        after_cursor: u64,
+    ) -> deepagent_terminal::TerminalResult<TerminalReadChunk> {
+        if session.backend != self.backend_kind() {
+            return Err(TerminalError::SessionNotFound(session.session_id.clone()));
+        }
+        let chunk = self
+            .service
+            .pty_read_with_cursor(&Self::local_handle(session), after_cursor)
+            .await
+            .map_err(|error| TerminalError::Backend(error.to_string()))?;
+        Ok(TerminalReadChunk {
+            cursor: chunk.cursor,
+            data: chunk.data,
+            truncated: chunk.truncated,
+        })
+    }
+
+    async fn resize(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        cols: u16,
+        rows: u16,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        self.validate_scope(session, lease)?;
+        self.service
+            .pty_resize(&Self::local_handle(session), cols, rows)
+            .await
+            .map_err(|error| TerminalError::Backend(error.to_string()))
+    }
+
+    async fn signal(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        signal: TerminalSignal,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        self.validate_scope(session, lease)?;
+        match signal {
+            TerminalSignal::Interrupt => self
+                .service
+                .pty_write(&Self::local_handle(session), &[3])
+                .await
+                .map_err(|error| TerminalError::Backend(error.to_string())),
+            TerminalSignal::Terminate | TerminalSignal::Kill => self
+                .service
+                .pty_kill(&Self::local_handle(session))
+                .await
+                .map_err(|error| TerminalError::Backend(error.to_string())),
+        }
+    }
+
+    async fn takeover(
+        &self,
+        session: &TerminalSession,
+        holder: TerminalInputHolder,
+    ) -> deepagent_terminal::TerminalResult<TerminalInputLease> {
+        if session.backend != self.backend_kind() {
+            return Err(TerminalError::SessionNotFound(session.session_id.clone()));
+        }
+        self.leases.takeover(&session.session_id, holder)
+    }
+
+    async fn release(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+        next_holder: TerminalInputHolder,
+    ) -> deepagent_terminal::TerminalResult<TerminalInputLease> {
+        self.validate_scope(session, lease)?;
+        self.leases.release(lease, next_holder)
+    }
+
+    async fn close(
+        &self,
+        session: &TerminalSession,
+        lease: &TerminalInputLease,
+    ) -> deepagent_terminal::TerminalResult<()> {
+        self.validate_scope(session, lease)?;
+        self.service
+            .pty_close(&Self::local_handle(session))
+            .await
+            .map_err(|error| TerminalError::Backend(error.to_string()))?;
+        self.leases.remove(lease)
     }
 }
 

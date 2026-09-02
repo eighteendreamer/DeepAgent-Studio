@@ -1104,6 +1104,7 @@ dependencies = [
  "deepagent-session",
  "deepagent-skills",
  "deepagent-subagents",
+ "deepagent-terminal",
  "deepagent-tools",
  "deepagent-tracing",
  "deepagent-verification",
@@ -1437,6 +1438,7 @@ version = "0.1.0"
 dependencies = [
  "async-ssh2-tokio",
  "async-trait",
+ "deepagent-terminal",
  "flate2",
  "russh-sftp",
  "serde",
@@ -1462,6 +1464,17 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "deepagent-terminal"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
 ]
 
 [[package]]

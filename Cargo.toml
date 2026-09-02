@@ -34,6 +34,7 @@ members = [
     "crates/deepagent-mcp",
     "crates/deepagent-codegraph",
     "crates/deepagent-ssh",
+    "crates/deepagent-terminal",
     "crates/deepagent-vision",
     "apps/cli",
 ]
@@ -90,6 +91,7 @@ deepagent-harness-protocol = { path = "crates/deepagent-harness-protocol" }
 deepagent-mcp = { path = "crates/deepagent-mcp" }
 deepagent-codegraph = { path = "crates/deepagent-codegraph" }
 deepagent-ssh = { path = "crates/deepagent-ssh" }
+deepagent-terminal = { path = "crates/deepagent-terminal" }
 deepagent-vision = { path = "crates/deepagent-vision" }
 
 # Async runtime
