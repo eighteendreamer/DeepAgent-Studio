@@ -687,7 +687,12 @@ impl ServerState {
         // ChatService has installed its cancellation alias. The active turn
         // registry is authoritative for the app-server ACK; the runtime
         // cancellation call remains the single execution-side mechanism.
-        let _ = turn.chat.cancel_session(&params.turn_id);
+        if let Err(error) = turn.chat.request_cancel(&params.turn_id) {
+            return (
+                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                None,
+            );
+        }
         (
             RpcResponse::success(
                 id,
@@ -718,7 +723,12 @@ impl ServerState {
                 None,
             );
         }
-        let _ = current.chat.cancel_session(&params.turn_id);
+        if let Err(error) = current.chat.request_cancel(&params.turn_id) {
+            return (
+                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                None,
+            );
+        }
         let next_turn = format!("turn_{}", deepagent_core::id::EventId::new());
         if let Err(error) =
             current
