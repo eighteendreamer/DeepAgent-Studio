@@ -39,7 +39,8 @@ use deepagent_app_core::{
     SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto,
     SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, SqliteSecretStore,
     StoredRunEvent,
-    TerminalResultDto, TerminalService, TerminalShell, TranscriptDto, TranscriptSegmentDto,
+    PtyReadChunk, TerminalResultDto, TerminalService, TerminalShell, TranscriptDto,
+    TranscriptSegmentDto,
     TrustService, VisionRecognizeRequestDto, VisionRecognizeResultDto, VisionService,
     VisionSettings, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
 };
@@ -3854,6 +3855,26 @@ async fn local_pty_read(state: State<'_, AppState>, pty_id: String) -> Result<Ve
 }
 
 #[tauri::command]
+async fn local_pty_read_cursor(
+    state: State<'_, AppState>,
+    pty_id: String,
+    after_cursor: u64,
+) -> Result<PtyReadChunk, String> {
+    state
+        .terminal
+        .pty_read_with_cursor(
+            &LocalPtyHandle {
+                pty_id,
+                cols: 0,
+                rows: 0,
+            },
+            after_cursor,
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn local_pty_resize(
     state: State<'_, AppState>,
     pty_id: String,
@@ -5646,6 +5667,7 @@ pub fn run() {
             local_pty_spawn,
             local_pty_write,
             local_pty_read,
+            local_pty_read_cursor,
             local_pty_resize,
             local_pty_close,
             ssh_list_connections,

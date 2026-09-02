@@ -181,7 +181,7 @@ pub use deepagent_skills::{
 // desktop Tauri layer + downstream callers don't have to depend on
 // `deepagent-builtins` directly to get the user-facing config enum.
 pub use deepagent_builtins::ToolSearchMode;
-pub use terminal_service::{LocalPtyHandle, TerminalService};
+pub use terminal_service::{LocalPtyHandle, PtyReadChunk, TerminalService};
 pub use vision_service::VisionService;
 pub use workspace_service::WorkspaceService;
 

@@ -11,7 +11,7 @@
 //! a user-driven terminal, so any non-dangerous command the user types runs.
 //! The dangerous-command refusal remains as a guardrail.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -34,11 +34,24 @@ pub struct LocalPtyHandle {
     pub rows: u16,
 }
 
+/// A bounded, process-local PTY output slice. `cursor` is a monotonically
+/// increasing byte offset and can be supplied to `pty_read_with_cursor` on a
+/// reconnect. Output older than the bounded history is reported as truncated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyReadChunk {
+    pub cursor: u64,
+    pub data: Vec<u8>,
+    pub truncated: bool,
+}
+
 struct LocalPtyState {
     writer: Mutex<Box<dyn Write + Send>>,
     reader: Mutex<mpsc::Receiver<Vec<u8>>>,
     master: std::sync::Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     child: std::sync::Mutex<Box<dyn portable_pty::Child + Send>>,
+    output_cursor: AtomicU64,
+    history: Mutex<VecDeque<(u64, Vec<u8>)>>,
+    history_bytes: Mutex<usize>,
 }
 
 /// Runs interactive terminal commands in the active project directory.
@@ -199,15 +212,46 @@ impl TerminalService {
             .get(&handle.pty_id)
             .cloned()
             .ok_or_else(|| CoreError::not_found(format!("pty {} not found", handle.pty_id)))?;
-        let mut rx = state.reader.lock().await;
-        let mut out = Vec::new();
-        while let Ok(chunk) = rx.try_recv() {
-            out.extend_from_slice(&chunk);
-            if out.len() >= 64 * 1024 {
-                break;
+        let chunks = drain_pty_output(&state).await;
+        Ok(chunks.into_iter().flat_map(|(_, data)| data).collect())
+    }
+
+    /// Read PTY output after a byte cursor. The history is intentionally
+    /// bounded so a long-running shell cannot grow memory without limit.
+    pub async fn pty_read_with_cursor(
+        &self,
+        handle: &LocalPtyHandle,
+        after_cursor: u64,
+    ) -> Result<PtyReadChunk> {
+        let state = self
+            .ptys
+            .read()
+            .await
+            .get(&handle.pty_id)
+            .cloned()
+            .ok_or_else(|| CoreError::not_found(format!("pty {} not found", handle.pty_id)))?;
+        let _ = drain_pty_output(&state).await;
+        let history = state.history.lock().await;
+        let current = state.output_cursor.load(Ordering::Acquire);
+        let oldest = history.front().map(|(start, _)| *start).unwrap_or(current);
+        let truncated = after_cursor < oldest && oldest > 0;
+        let mut data = Vec::new();
+        for (start, chunk) in history.iter() {
+            let end = *start + chunk.len() as u64;
+            if end > after_cursor {
+                let offset = after_cursor.saturating_sub(*start) as usize;
+                data.extend_from_slice(&chunk[offset.min(chunk.len())..]);
+                if data.len() >= 64 * 1024 {
+                    data.truncate(64 * 1024);
+                    break;
+                }
             }
         }
-        Ok(out)
+        Ok(PtyReadChunk {
+            cursor: current,
+            data,
+            truncated,
+        })
     }
 
     pub async fn pty_resize(&self, handle: &LocalPtyHandle, cols: u16, rows: u16) -> Result<()> {
@@ -327,7 +371,36 @@ fn spawn_local_pty(
         reader: Mutex::new(stdout_rx),
         master: std::sync::Mutex::new(pair.master),
         child: std::sync::Mutex::new(child),
+        output_cursor: AtomicU64::new(0),
+        history: Mutex::new(VecDeque::new()),
+        history_bytes: Mutex::new(0),
     })
+}
+
+async fn drain_pty_output(state: &LocalPtyState) -> Vec<(u64, Vec<u8>)> {
+    let mut rx = state.reader.lock().await;
+    let mut history = state.history.lock().await;
+    let mut history_bytes = state.history_bytes.lock().await;
+    let mut chunks = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        if chunk.is_empty() {
+            continue;
+        }
+        let start = state
+            .output_cursor
+            .fetch_add(chunk.len() as u64, Ordering::AcqRel);
+        *history_bytes += chunk.len();
+        history.push_back((start, chunk.clone()));
+        chunks.push((start, chunk));
+        while *history_bytes > 256 * 1024 {
+            if let Some((_, old)) = history.pop_front() {
+                *history_bytes = history_bytes.saturating_sub(old.len());
+            } else {
+                break;
+            }
+        }
+    }
+    chunks
 }
 
 fn terminal_command(

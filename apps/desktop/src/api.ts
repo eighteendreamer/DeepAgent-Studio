@@ -2564,6 +2564,12 @@ export interface LocalPtyHandle {
   rows: number;
 }
 
+export interface PtyReadChunk {
+  cursor: number;
+  data: number[];
+  truncated: boolean;
+}
+
 /** Open the user's system terminal in the active project directory. */
 export async function openSystemTerminal(): Promise<string> {
   const invoke = getInvoke();
@@ -2586,6 +2592,20 @@ export async function localPtyRead(ptyId: string): Promise<number[]> {
   const invoke = getInvoke();
   if (invoke) return invoke<number[]>("local_pty_read", { ptyId });
   return [];
+}
+
+export async function localPtyReadCursor(
+  ptyId: string,
+  afterCursor: number,
+): Promise<PtyReadChunk> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<PtyReadChunk>("local_pty_read_cursor", {
+      ptyId,
+      afterCursor,
+    });
+  }
+  return { cursor: afterCursor, data: [], truncated: false };
 }
 
 export async function localPtyResize(ptyId: string, cols: number, rows: number): Promise<void> {
