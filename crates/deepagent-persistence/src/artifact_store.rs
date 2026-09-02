@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{map_sqlite, Database};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolArtifactRecord {
     pub id: String,
     pub run_id: String,
