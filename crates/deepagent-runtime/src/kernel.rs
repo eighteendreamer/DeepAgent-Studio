@@ -462,6 +462,14 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             "run_accepted",
             &serde_json::json!({ "session_id": session_id, "task_id": task_id }),
         )?;
+        store.append_event(
+            &run_id,
+            now_ms(),
+            RunPhase::Preparing.label(),
+            "started",
+            "setup.started",
+            &serde_json::json!({ "component": "agent_kernel" }),
+        )?;
         store.transition(&run_id, RunPhase::Preparing.label(), now_ms())?;
 
         let persistent = Arc::new(PersistentEventSink::new(
@@ -719,6 +727,9 @@ mod tests {
         assert_eq!(record.terminal_kind.as_deref(), Some("succeeded"));
         let events = RunStore::new(&db).events_after("run-v2", None).unwrap();
         assert!(events.len() >= 4);
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "setup.started"));
         let setup = events
             .iter()
             .find(|event| event.event_type == "setup.completed")
