@@ -15,3 +15,7 @@ pub use requests::{
     ThreadStartRequest, ToolListRequest, TurnInterruptRequest, TurnStartRequest, TurnSteerRequest,
     PROTOCOL_VERSION,
 };
+
+/// Version of the durable run/action/approval projection returned by
+/// `thread/read`.
+pub const CONTROL_PROJECTION_VERSION: u32 = 1;

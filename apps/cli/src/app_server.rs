@@ -10,7 +10,8 @@ use deepagent_harness_protocol::{
     project_runtime_event, EventContext, HarnessEvent, HarnessRequest, InitializeRequest,
     RpcNotification, RpcRequest, RpcResponse, ThreadArchiveRequest, ThreadForkRequest,
     ThreadListRequest, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, ToolListRequest,
-    TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, PROTOCOL_VERSION,
+    TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, CONTROL_PROJECTION_VERSION,
+    PROTOCOL_VERSION,
 };
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_control::RunControlStore;
@@ -526,6 +527,7 @@ impl ServerState {
                     "threadId": params.thread_id,
                     "title": record.title,
                     "cwd": record.project,
+                    "controlProjectionVersion": CONTROL_PROJECTION_VERSION,
                     "events": events,
                     "runEvents": run_events
                 }),
@@ -1067,6 +1069,7 @@ mod tests {
             serde_json::json!({ "threadId": thread_id }),
         ));
         assert_eq!(read.result()["threadId"], thread_id);
+        assert_eq!(read.result()["controlProjectionVersion"], 1);
         assert!(!read.result()["events"].as_array().unwrap().is_empty());
         assert!(read.result()["runEvents"].as_array().unwrap().is_empty());
         assert!(read.result()["runEvents"].is_array());
