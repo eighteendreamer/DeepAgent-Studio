@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// The current version of the machine protocol.
@@ -100,6 +102,12 @@ pub struct ThreadReadRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub run_after_sequence: Option<u64>,
+    #[serde(
+        rename = "runAfterSequences",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub run_after_sequences: Option<BTreeMap<String, u64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

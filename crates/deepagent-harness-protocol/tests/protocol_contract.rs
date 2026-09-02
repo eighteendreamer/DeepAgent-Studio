@@ -196,9 +196,11 @@ fn thread_read_supports_stream_specific_cursors() {
         after_sequence: None,
         session_after_sequence: Some(12),
         run_after_sequence: Some(7),
+        run_after_sequences: Some(std::collections::BTreeMap::from([("run-1".into(), 4)])),
     });
     let value = serde_json::to_value(request).unwrap();
     assert_eq!(value["params"]["sessionAfterSequence"], 12);
     assert_eq!(value["params"]["runAfterSequence"], 7);
+    assert_eq!(value["params"]["runAfterSequences"]["run-1"], 4);
     assert!(value["params"].get("afterSequence").is_none());
 }

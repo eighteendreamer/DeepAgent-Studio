@@ -486,6 +486,11 @@ impl ServerState {
             Ok(runs) => {
                 let mut projected = Vec::with_capacity(runs.len());
                 for run in runs {
+                    let run_after = params
+                        .run_after_sequences
+                        .as_ref()
+                        .and_then(|cursors| cursors.get(&run.id).copied())
+                        .or(run_after);
                     let events =
                         match RunStore::new(&self.database).events_after(&run.id, run_after) {
                             Ok(events) => events
