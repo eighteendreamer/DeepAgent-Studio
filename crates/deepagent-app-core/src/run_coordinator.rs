@@ -144,8 +144,9 @@ impl RunCoordinator {
                 .unwrap_or_else(|| run_alias.to_string()),
             "continuation.created",
             &serde_json::json!({
-                "replaces_turn_id": replaces_turn_id,
-                "new_turn_id": new_turn_id,
+                "replacesTurnId": replaces_turn_id,
+                "newTurnId": new_turn_id,
+                "disposition": "new_turn",
             }),
         )
     }
@@ -340,5 +341,24 @@ mod tests {
                 .state,
             RunActionState::Blocked
         );
+    }
+
+    #[test]
+    fn continuation_records_explicit_new_turn_disposition() {
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let session_id = SessionId::new();
+        EventStore::new(&db)
+            .create_session(session_id, Some("test"), Timestamp::from_millis(1))
+            .expect("session");
+        RunStore::new(&db)
+            .create("run-cont", &session_id.to_string(), None, 1)
+            .expect("run");
+        RunCoordinator::new(db.clone())
+            .record_continuation("run-cont", "turn-old", "turn-new")
+            .expect("continuation");
+        let events = RunStore::new(&db).events_after("run-cont", None).unwrap();
+        assert_eq!(events[0].event_type, "continuation.created");
+        assert_eq!(events[0].data["disposition"], "new_turn");
+        assert_eq!(events[0].data["replacesTurnId"], "turn-old");
     }
 }
