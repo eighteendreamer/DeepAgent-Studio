@@ -1129,6 +1129,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "uuid",
  "zip 2.4.2",
 ]
 
