@@ -2570,6 +2570,104 @@ export interface PtyReadChunk {
   truncated: boolean;
 }
 
+export type TerminalInputHolder = "runtime" | "user" | "remote_viewer";
+
+export interface TerminalSession {
+  sessionId: string;
+  runId: string;
+  backend: string;
+  cols: number;
+  rows: number;
+}
+
+export interface TerminalInputLease {
+  leaseId: string;
+  sessionId: string;
+  runId: string;
+  holder: TerminalInputHolder;
+  epoch: number;
+}
+
+export interface TerminalReadChunk {
+  cursor: number;
+  data: number[];
+  truncated: boolean;
+}
+
+/** Shared session/lease terminal API; legacy localPty* helpers remain compatible. */
+export async function terminalSessionOpen(
+  runId: string,
+  cols: number,
+  rows: number,
+): Promise<[TerminalSession, TerminalInputLease]> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("terminal sessions require the desktop app");
+  return invoke<[TerminalSession, TerminalInputLease]>("terminal_session_open", {
+    runId,
+    cols,
+    rows,
+  });
+}
+
+export async function terminalSessionWrite(
+  session: TerminalSession,
+  lease: TerminalInputLease,
+  data: string,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("terminal_session_write", { session, lease, data });
+}
+
+export async function terminalSessionRead(
+  session: TerminalSession,
+  afterCursor: number,
+): Promise<TerminalReadChunk> {
+  const invoke = getInvoke();
+  if (!invoke) return { cursor: afterCursor, data: [], truncated: false };
+  return invoke<TerminalReadChunk>("terminal_session_read", { session, afterCursor });
+}
+
+export async function terminalSessionResize(
+  session: TerminalSession,
+  lease: TerminalInputLease,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("terminal_session_resize", { session, lease, cols, rows });
+}
+
+export async function terminalSessionTakeover(
+  session: TerminalSession,
+  holder: TerminalInputHolder,
+): Promise<TerminalInputLease> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("terminal sessions require the desktop app");
+  return invoke<TerminalInputLease>("terminal_session_takeover", { session, holder });
+}
+
+export async function terminalSessionRelease(
+  session: TerminalSession,
+  lease: TerminalInputLease,
+  nextHolder: TerminalInputHolder,
+): Promise<TerminalInputLease> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("terminal sessions require the desktop app");
+  return invoke<TerminalInputLease>("terminal_session_release", {
+    session,
+    lease,
+    nextHolder,
+  });
+}
+
+export async function terminalSessionClose(
+  session: TerminalSession,
+  lease: TerminalInputLease,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("terminal_session_close", { session, lease });
+}
+
 /** Open the user's system terminal in the active project directory. */
 export async function openSystemTerminal(): Promise<string> {
   const invoke = getInvoke();

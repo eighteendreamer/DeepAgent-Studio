@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
-    AppService, ArchiveProjectResultDto, ArchiveService,
+    AppService, ArchiveProjectResultDto, ArchiveService, DirectTerminalSessionBackend,
     ArchivedConversationDto, AttachmentDto, AttachmentIngestDto, AttachmentService, BalanceDto,
     BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary,
     CreatePluginDraftDto, DiagnosticResult, DiffResult, FilePreviewService, ForkResultDto,
@@ -47,6 +47,10 @@ use deepagent_app_core::{
 use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
 use async_trait::async_trait;
+use deepagent_terminal::{
+    TerminalInputHolder, TerminalInputLease, TerminalOpenRequest, TerminalReadChunk,
+    TerminalSession, TerminalSessionBackend,
+};
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use tauri::window::{Effect as WindowEffect, EffectsBuilder};
@@ -376,6 +380,9 @@ struct AppState {
     project_map: Arc<ProjectMapService>,
     workspace: Arc<WorkspaceService>,
     terminal: Arc<TerminalService>,
+    /// Shared session/lease backend for the gradual Terminal protocol
+    /// migration. Legacy `local_pty_*` commands remain available below.
+    terminal_sessions: Arc<DirectTerminalSessionBackend>,
     git: Arc<GitService>,
     /// File preview for the desktop "File Preview" panel (office-agent).
     preview: Arc<FilePreviewService>,
@@ -3955,6 +3962,110 @@ async fn local_pty_close(state: State<'_, AppState>, pty_id: String) -> Result<(
         .map_err(|e| e.to_string())
 }
 
+// ---- shared terminal-session protocol (gradual migration) ----------------
+
+#[tauri::command]
+async fn terminal_session_open(
+    state: State<'_, AppState>,
+    run_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(TerminalSession, TerminalInputLease), String> {
+    state
+        .terminal_sessions
+        .open(TerminalOpenRequest {
+            run_id,
+            cwd: state.terminal.current_dir(),
+            cols,
+            rows,
+            initial_holder: TerminalInputHolder::User,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_write(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+    data: String,
+) -> Result<(), String> {
+    state
+        .terminal_sessions
+        .write(&session, &lease, data.as_bytes())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_read(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    after_cursor: u64,
+) -> Result<TerminalReadChunk, String> {
+    state
+        .terminal_sessions
+        .read(&session, after_cursor)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_resize(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    state
+        .terminal_sessions
+        .resize(&session, &lease, cols, rows)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_takeover(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    holder: TerminalInputHolder,
+) -> Result<TerminalInputLease, String> {
+    state
+        .terminal_sessions
+        .takeover(&session, holder)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_release(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+    next_holder: TerminalInputHolder,
+) -> Result<TerminalInputLease, String> {
+    state
+        .terminal_sessions
+        .release(&session, &lease, next_holder)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn terminal_session_close(
+    state: State<'_, AppState>,
+    session: TerminalSession,
+    lease: TerminalInputLease,
+) -> Result<(), String> {
+    state
+        .terminal_sessions
+        .close(&session, &lease)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 // ---- ssh (long-lived remote connections) -----------------------------------
 
 use deepagent_ssh::{
@@ -5325,6 +5436,17 @@ pub fn run() {
                 workspace_root.to_string_lossy().into_owned(),
                 runtime_broker.clone(),
             ));
+            let terminal_shell = settings_arc
+                .terminal_shell()
+                .map_err(|error| format!("read terminal shell: {error}"))?;
+            let terminal_sessions = Arc::new(
+                DirectTerminalSessionBackend::with_sqlite_lease_store(
+                    terminal.clone(),
+                    terminal_shell,
+                    service.shared_database(),
+                )
+                .map_err(|error| format!("initialize terminal lease store: {error}"))?,
+            );
             let mcp = Arc::new(
                 McpService::new(service.shared_database())
                     .with_runtime(runtime_broker.clone(), projects.clone())
@@ -5531,6 +5653,7 @@ pub fn run() {
                 project_map,
                 workspace,
                 terminal,
+                terminal_sessions,
                 git,
                 preview,
                 attachments,
@@ -5729,6 +5852,13 @@ pub fn run() {
             local_pty_read_cursor,
             local_pty_resize,
             local_pty_close,
+            terminal_session_open,
+            terminal_session_write,
+            terminal_session_read,
+            terminal_session_resize,
+            terminal_session_takeover,
+            terminal_session_release,
+            terminal_session_close,
             ssh_list_connections,
             ssh_create_connection,
             ssh_update_connection,

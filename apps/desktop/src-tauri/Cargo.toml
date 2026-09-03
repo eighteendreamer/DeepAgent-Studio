@@ -45,6 +45,7 @@ deepagent-app-core = { path = "../../../crates/deepagent-app-core", features = [
 deepagent-builtins = { path = "../../../crates/deepagent-builtins", features = ["http"] }
 deepagent-core = { path = "../../../crates/deepagent-core" }
 deepagent-ssh = { path = "../../../crates/deepagent-ssh" }
+deepagent-terminal = { path = "../../../crates/deepagent-terminal" }
 deepagent-models = { path = "../../../crates/deepagent-models", features = ["http"] }
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-opener = "2.5.4"

@@ -616,6 +616,7 @@ P0 durable control plane
 - `efd22c8`、`e7e5958`：复用 `execution_leases` 建立 `SqliteTerminalLeaseStore`，支持 terminal session/run scope、原子 takeover、renew、revoke、epoch fencing；共享 registry 可切换到该持久化实现，并补充重建数据库连接后的验证测试。
 - 当前又补齐 Direct/SSH adapter 的显式 `with_lease_persistence(...)` 构造器：装配层可注入同一 `SqliteTerminalLeaseStore`，旧 `new(...)` 保持进程内兼容模式。当前桌面 TerminalService 仍主要走既有直接命令/PTY 命令，尚未把该 adapter 作为唯一生产入口，因此这里只声明“边界可持久化”，不误报为桌面端跨进程 lease 已全面启用。
 - Direct adapter 另提供 `with_sqlite_lease_store(...)` 生产构造器，使用固定 30 分钟 TTL，并在 SQLite store 配置失败时返回错误而不静默降级到内存 lease；桌面入口尚未切换到该构造器，切换仍需同步 Tauri 命令和前端 session 协议。
+- 桌面端已把带 SQLite lease 的 Direct adapter 放入 `AppState`，并新增 `terminal_session_open/read/write/resize/takeover/release/close` Tauri 命令及 TypeScript API；旧 `local_pty_*` 命令继续兼容。新协议的 session/lease 字段和 epoch fencing 已具备真实生产入口，但 PTY 句柄仍是进程内资源，重启后的 reattach 尚未宣称完成。
 - `f2fbcaf`：stdio app-server 改为每连接一个有界单 writer event outbox，通知带单调 `eventSequence`；新增 `event/ack` 单调确认协议，队列满时明确记录 drop/backpressure，而不是为每个事件无序 `spawn` writer。
 - `f2fbcaf` 同时增加 `event/ack` 的单调回退保护测试；当前 outbox 是连接级有界内存队列，重连 replay 仍通过 `thread/read` cursor 完成，不把 ACK 误写成跨进程 durable outbox。
 - `443da90`：新增 `RuntimeEvent::McpLifecycle` 与 harness `mcp.lifecycle` typed event；连接成功记录 server/tool count，单 server 连接失败记录 `connect_failed` degradation，整体 resolve 失败记录 `resolve_failed`，并进入 run event ledger 与 runtime log，而不是继续压成 generic runtime item。
