@@ -427,3 +427,54 @@ impl SshService {
         self.inner.remote_install(id, request).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct MemoryConfigStore(Mutex<Vec<SshConnectionConfig>>);
+
+    #[async_trait]
+    impl SshConfigStore for MemoryConfigStore {
+        async fn load(&self) -> SshResult<Vec<SshConnectionConfig>> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+
+        async fn save(&self, configs: &[SshConnectionConfig]) -> SshResult<()> {
+            *self.0.lock().unwrap() = configs.to_vec();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn service_persists_configs_through_injected_store() {
+        let store = Arc::new(MemoryConfigStore(Mutex::new(Vec::new())));
+        let service = SshService::with_config_store(
+            std::env::temp_dir().join("deepagent-ssh-test"),
+            store.clone(),
+        );
+        let created = service
+            .create_connection(CreateSshConnectionRequest {
+                name: "test".into(),
+                host: "127.0.0.1".into(),
+                port: 22,
+                username: "tester".into(),
+                auth_type: SshAuthType::Agent,
+                key_path: None,
+                password: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(store.0.lock().unwrap().len(), 1);
+
+        let restored = SshService::with_config_store(
+            std::env::temp_dir().join("deepagent-ssh-test-restored"),
+            store,
+        );
+        restored.load().await.unwrap();
+        let listed = restored.list_connections().await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, created.id);
+    }
+}

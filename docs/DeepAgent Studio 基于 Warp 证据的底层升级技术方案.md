@@ -609,6 +609,7 @@ P0 durable control plane
 - CLI 的 `build_chat_service` 已在 stdio、JSONL、TUI 和 sandbox-status 共用的数据库初始化路径调用同一恢复入口，避免 Desktop 与 CLI 对启动恢复产生不同语义；恢复失败会阻止 harness 暴露，错误保留给调用方。
 - CLI 的生产 `SettingsService` 已改为使用 `SqliteSecretStore`；`EnvSecretStore` 仅作为兼容读取回退，API key/vision key/其他 secret 的写入不再落到环境变量或进程内存。
 - 桌面 SSH 配置已通过 `SshConfigStore` 接入同一 `SqliteSecretStore`：连接元数据和密码以单个加密 secret 保存；首次访问会从旧 `deepagent-ssh/connections.json` 导入，SQLite 写入成功后才删除旧文件。SSH 探测结果仍是可重建缓存，继续放固定目录，不混入结构化配置表。
+- `SshService` 已提供可注入的 `SshConfigStore` seam，并增加内存实现回归测试验证 create/load/list 全链路确实经过该 seam；默认 JSON 实现只保留给非桌面兼容调用方，桌面生产装配使用加密 SQLite 实现。
 - `ebd5ff3`：本地 PTY 增加进程内有界输出历史、单调 byte cursor、`truncated` 续读语义，并通过 Tauri/TypeScript 暴露 `local_pty_read_cursor`；旧 `local_pty_read` 保持兼容。
 - `b43e322`：新增 `deepagent-terminal` 共享内核边界，定义 `TerminalSessionBackend`、Direct backend、输入租约 takeover/release 与 epoch fencing。
 - `aa434d3`：SSH PTY 接入同一 TerminalSession 协议，增加 SSH 输出 cursor/history 和 lease 校验；SSH 与 Direct 仍由各自服务拥有底层连接生命周期。
