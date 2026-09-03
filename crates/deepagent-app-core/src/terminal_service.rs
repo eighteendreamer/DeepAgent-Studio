@@ -19,9 +19,9 @@ use std::sync::Arc;
 use deepagent_builtins::{is_dangerous, CommandExecutor, SystemExecutor};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_terminal::{
-    TerminalError, TerminalInputHolder, TerminalInputLease, TerminalLeaseRegistry,
-    TerminalOpenRequest, TerminalReadChunk, TerminalSession, TerminalSessionBackend,
-    TerminalSignal,
+    TerminalError, TerminalInputHolder, TerminalInputLease, TerminalLeasePersistence,
+    TerminalLeaseRegistry, TerminalOpenRequest, TerminalReadChunk, TerminalSession,
+    TerminalSessionBackend, TerminalSignal,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
@@ -79,10 +79,23 @@ pub struct DirectTerminalSessionBackend {
 
 impl DirectTerminalSessionBackend {
     pub fn new(service: Arc<TerminalService>, shell: TerminalShell) -> Self {
+        Self::with_lease_persistence(service, shell, None)
+    }
+
+    /// Construct the host PTY adapter with the shared durable lease store.
+    /// Keeping this explicit prevents callers from accidentally assuming that
+    /// the compatibility constructor provides cross-process fencing.
+    pub fn with_lease_persistence(
+        service: Arc<TerminalService>,
+        shell: TerminalShell,
+        persistence: Option<Arc<dyn TerminalLeasePersistence>>,
+    ) -> Self {
         Self {
             service,
             shell,
-            leases: TerminalLeaseRegistry::default(),
+            leases: persistence
+                .map(TerminalLeaseRegistry::with_persistence)
+                .unwrap_or_default(),
         }
     }
 

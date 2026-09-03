@@ -611,6 +611,7 @@ P0 durable control plane
 - `b43e322`：新增 `deepagent-terminal` 共享内核边界，定义 `TerminalSessionBackend`、Direct backend、输入租约 takeover/release 与 epoch fencing。
 - `aa434d3`：SSH PTY 接入同一 TerminalSession 协议，增加 SSH 输出 cursor/history 和 lease 校验；SSH 与 Direct 仍由各自服务拥有底层连接生命周期。
 - `efd22c8`、`e7e5958`：复用 `execution_leases` 建立 `SqliteTerminalLeaseStore`，支持 terminal session/run scope、原子 takeover、renew、revoke、epoch fencing；共享 registry 可切换到该持久化实现，并补充重建数据库连接后的验证测试。
+- 当前又补齐 Direct/SSH adapter 的显式 `with_lease_persistence(...)` 构造器：生产装配可注入同一 `SqliteTerminalLeaseStore`，旧 `new(...)` 保持进程内兼容模式；因此“可持久化”与“默认已持久化”被明确区分，避免把测试注入能力误报为生产接线完成。
 - `f2fbcaf`：stdio app-server 改为每连接一个有界单 writer event outbox，通知带单调 `eventSequence`；新增 `event/ack` 单调确认协议，队列满时明确记录 drop/backpressure，而不是为每个事件无序 `spawn` writer。
 - `f2fbcaf` 同时增加 `event/ack` 的单调回退保护测试；当前 outbox 是连接级有界内存队列，重连 replay 仍通过 `thread/read` cursor 完成，不把 ACK 误写成跨进程 durable outbox。
 - `443da90`：新增 `RuntimeEvent::McpLifecycle` 与 harness `mcp.lifecycle` typed event；连接成功记录 server/tool count，单 server 连接失败记录 `connect_failed` degradation，整体 resolve 失败记录 `resolve_failed`，并进入 run event ledger 与 runtime log，而不是继续压成 generic runtime item。

@@ -39,9 +39,9 @@ mod session;
 
 use async_trait::async_trait;
 use deepagent_terminal::{
-    TerminalError, TerminalInputHolder, TerminalInputLease, TerminalLeaseRegistry,
-    TerminalOpenRequest, TerminalReadChunk, TerminalSession, TerminalSessionBackend,
-    TerminalSignal,
+    TerminalError, TerminalInputHolder, TerminalInputLease, TerminalLeasePersistence,
+    TerminalLeaseRegistry, TerminalOpenRequest, TerminalReadChunk, TerminalSession,
+    TerminalSessionBackend, TerminalSignal,
 };
 use service::SshServiceImpl;
 use std::sync::Arc;
@@ -62,11 +62,24 @@ impl SshTerminalSessionBackend {
         connection_id: impl Into<String>,
         token: impl Into<String>,
     ) -> Self {
+        Self::with_lease_persistence(service, connection_id, token, None)
+    }
+
+    /// Construct the SSH adapter with the shared durable lease store so
+    /// takeover and fencing survive adapter/process recreation.
+    pub fn with_lease_persistence(
+        service: Arc<SshService>,
+        connection_id: impl Into<String>,
+        token: impl Into<String>,
+        persistence: Option<Arc<dyn TerminalLeasePersistence>>,
+    ) -> Self {
         Self {
             service,
             connection_id: connection_id.into(),
             token: token.into(),
-            leases: TerminalLeaseRegistry::default(),
+            leases: persistence
+                .map(TerminalLeaseRegistry::with_persistence)
+                .unwrap_or_default(),
         }
     }
 
