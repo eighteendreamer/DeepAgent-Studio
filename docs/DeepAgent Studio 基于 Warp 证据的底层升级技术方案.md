@@ -606,6 +606,7 @@ P0 durable control plane
   - `4e1639b`、`674ec5b`、`a202ff3`：增加 session/run 分流游标、按 run cursor 恢复及协议版本测试。
   - `d3faf1b`、`71413cd`：将 tool artifact 元数据纳入 `thread/read`，并锁定 Artifact camelCase 序列化契约。
 - 当前启动恢复入口 `AppService::recover_unfinished_runs` 已先调用 `RunControlStore::recover`：进程重启时将 `running action` 标记为 `failed`（`replayed=false`），过期 approval 标记为 `expired`，失效 execution lease 撤销，并把三类计数写入 `run_recovered_after_startup` 事件；回归测试覆盖三类控制记录。该能力只保证状态诚实和副作用不重放，不等同于主 run 自动续跑。
+- CLI 的 `build_chat_service` 已在 stdio、JSONL、TUI 和 sandbox-status 共用的数据库初始化路径调用同一恢复入口，避免 Desktop 与 CLI 对启动恢复产生不同语义；恢复失败会阻止 harness 暴露，错误保留给调用方。
 - `ebd5ff3`：本地 PTY 增加进程内有界输出历史、单调 byte cursor、`truncated` 续读语义，并通过 Tauri/TypeScript 暴露 `local_pty_read_cursor`；旧 `local_pty_read` 保持兼容。
 - `b43e322`：新增 `deepagent-terminal` 共享内核边界，定义 `TerminalSessionBackend`、Direct backend、输入租约 takeover/release 与 epoch fencing。
 - `aa434d3`：SSH PTY 接入同一 TerminalSession 协议，增加 SSH 输出 cursor/history 和 lease 校验；SSH 与 Direct 仍由各自服务拥有底层连接生命周期。

@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use args::{CliCommand, RunOptions};
 use deepagent_app_core::{
-    ChatService, DirectSandboxBackend, EnvSecretStore, HarnessRunOverrides, SandboxBackend,
-    SandboxBackendCommandExecutor, SandboxBackendKind, SandboxCapabilities, SandboxMode,
-    SandboxNetworkPolicy, SandboxieBackend, SandboxieExecutor, SandboxieService,
+    AppService, ChatService, DirectSandboxBackend, EnvSecretStore, HarnessRunOverrides,
+    SandboxBackend, SandboxBackendCommandExecutor, SandboxBackendKind, SandboxCapabilities,
+    SandboxMode, SandboxNetworkPolicy, SandboxieBackend, SandboxieExecutor, SandboxieService,
     WindowsSandboxBackend,
 };
 use deepagent_harness_protocol::{EventContext, HarnessEvent, PROTOCOL_VERSION};
@@ -249,6 +249,13 @@ fn build_chat_service(
     if let Some(sandboxie) = sandboxie {
         chat = chat.with_sandboxie_executor(sandboxie);
     }
+    // Reconcile both lifecycle and durable control-plane projections before
+    // exposing the CLI harness. This keeps CLI restarts consistent with the
+    // Desktop startup path and prevents stale actions/approvals/leases from
+    // blocking a resumed session.
+    AppService::from_shared(chat.database())
+        .recover_unfinished_runs()
+        .map_err(|error| format!("recover unfinished runs: {error}"))?;
     Ok((chat, Some(capabilities)))
 }
 
