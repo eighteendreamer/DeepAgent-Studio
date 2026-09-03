@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
@@ -20,6 +21,7 @@ use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 use deepagent_session::Session;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
 
 use crate::args::RunOptions;
 
@@ -33,6 +35,62 @@ const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INTERNAL: i32 = -32603;
 
 type EventEmitter = Arc<dyn Fn(HarnessEvent) + Send + Sync>;
+
+struct QueuedEvent {
+    sequence: u64,
+    event: HarnessEvent,
+}
+
+/// One bounded writer queue per stdio connection. Event sequence assignment
+/// occurs before enqueue; a full queue is an explicit backpressure/drop
+/// failure rather than spawning unordered writers for every event.
+struct EventOutbox {
+    tx: mpsc::Sender<QueuedEvent>,
+    next_sequence: AtomicU64,
+}
+
+impl EventOutbox {
+    fn new(stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>) -> Arc<Self> {
+        let (tx, mut rx) = mpsc::channel::<QueuedEvent>(256);
+        tokio::spawn(async move {
+            while let Some(queued) = rx.recv().await {
+                let notification = RpcNotification {
+                    jsonrpc: "2.0".into(),
+                    method: NOTIFICATION_METHOD.into(),
+                    event_sequence: Some(queued.sequence),
+                    params: serde_json::to_value(queued.event).unwrap_or_else(|_| {
+                        serde_json::json!({
+                            "type": "error",
+                            "code": "serialize",
+                            "message": "failed to serialize harness event"
+                        })
+                    }),
+                };
+                let Ok(line) = serde_json::to_string(&notification) else {
+                    eprintln!("serialize app-server notification failed");
+                    continue;
+                };
+                let mut output = stdout.lock().await;
+                if let Err(error) = output.write_all(format!("{line}\n").as_bytes()).await {
+                    eprintln!("write app-server notification: {error}");
+                    continue;
+                }
+                let _ = output.flush().await;
+            }
+        });
+        Arc::new(Self {
+            tx,
+            next_sequence: AtomicU64::new(1),
+        })
+    }
+
+    fn emit(&self, event: HarnessEvent) {
+        let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
+        if let Err(error) = self.tx.try_send(QueuedEvent { sequence, event }) {
+            eprintln!("app-server event outbox full; dropped sequence {sequence}: {error}");
+        }
+    }
+}
 
 pub async fn run(transport: String) -> Result<(), String> {
     if transport != "stdio" {
@@ -99,6 +157,7 @@ pub struct ServerState {
     workspace: PathBuf,
     capabilities: SandboxCapabilities,
     initialized: bool,
+    last_event_ack: u64,
     threads: HashMap<String, ThreadState>,
     turns: HashMap<String, TurnState>,
 }
@@ -116,6 +175,7 @@ impl ServerState {
             workspace,
             capabilities,
             initialized: false,
+            last_event_ack: 0,
             threads: HashMap::new(),
             turns: HashMap::new(),
         }
@@ -212,6 +272,7 @@ impl ServerState {
             HarnessRequest::TurnInterrupt(params) => self.turn_interrupt(request.id, params),
             HarnessRequest::TurnSteer(params) => self.turn_steer(request.id, params),
             HarnessRequest::ApprovalRespond(params) => self.approval_respond(request.id, params),
+            HarnessRequest::EventAck(params) => self.event_ack(request.id, params.event_sequence),
             HarnessRequest::ToolList(params) => self.tool_list(request.id, params),
             HarnessRequest::ConfigRead(_) => (
                 RpcResponse::success(
@@ -279,6 +340,34 @@ impl ServerState {
                         "approval": true,
                         "reconnect": true
                     }
+                }),
+            ),
+            None,
+        )
+    }
+
+    fn event_ack(
+        &mut self,
+        id: serde_json::Value,
+        event_sequence: u64,
+    ) -> (RpcResponse, Option<TurnLaunch>) {
+        if event_sequence < self.last_event_ack {
+            return (
+                RpcResponse::error(
+                    id,
+                    ERR_INVALID_PARAMS,
+                    "event acknowledgment cannot move backwards",
+                ),
+                None,
+            );
+        }
+        self.last_event_ack = event_sequence;
+        (
+            RpcResponse::success(
+                id,
+                serde_json::json!({
+                    "acknowledgedEventSequence": event_sequence,
+                    "status": "accepted"
                 }),
             ),
             None,
@@ -927,35 +1016,11 @@ pub async fn run_stdio(
 ) -> Result<(), String> {
     let state = Arc::new(Mutex::new(ServerState::new(chat, workspace, capabilities)));
     let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
+    let outbox = EventOutbox::new(stdout.clone());
     let emitter = {
-        let stdout = stdout.clone();
+        let outbox = outbox.clone();
         Arc::new(move |event: HarnessEvent| {
-            let stdout = stdout.clone();
-            tokio::spawn(async move {
-                let notification = RpcNotification {
-                    jsonrpc: "2.0".into(),
-                    method: NOTIFICATION_METHOD.into(),
-                    params: serde_json::to_value(event).unwrap_or_else(|_| {
-                        serde_json::json!({
-                            "type": "error",
-                            "code": "serialize",
-                            "message": "failed to serialize harness event"
-                        })
-                    }),
-                };
-                let line = match serde_json::to_string(&notification) {
-                    Ok(line) => line,
-                    Err(error) => {
-                        eprintln!("serialize app-server notification: {error}");
-                        return;
-                    }
-                };
-                let mut output = stdout.lock().await;
-                if let Err(error) = output.write_all(format!("{line}\n").as_bytes()).await {
-                    eprintln!("write app-server notification: {error}");
-                }
-                let _ = output.flush().await;
-            });
+            outbox.emit(event);
         }) as EventEmitter
     };
 
@@ -1097,6 +1162,25 @@ mod tests {
 
         let second = state.handle_request_for_test(request);
         assert_eq!(second.error_code(), Some(-32002));
+    }
+
+    #[test]
+    fn event_ack_is_monotonic() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+        let first = state.handle_request_for_test(rpc_request(
+            2,
+            "event/ack",
+            serde_json::json!({ "eventSequence": 4 }),
+        ));
+        assert_eq!(first.result()["acknowledgedEventSequence"], 4);
+
+        let backwards = state.handle_request_for_test(rpc_request(
+            3,
+            "event/ack",
+            serde_json::json!({ "eventSequence": 3 }),
+        ));
+        assert_eq!(backwards.error_code(), Some(ERR_INVALID_PARAMS));
     }
 
     #[test]

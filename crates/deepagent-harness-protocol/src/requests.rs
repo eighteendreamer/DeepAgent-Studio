@@ -31,6 +31,8 @@ pub enum HarnessRequest {
     TurnSteer(TurnSteerRequest),
     #[serde(rename = "approval/respond")]
     ApprovalRespond(ApprovalRespondRequest),
+    #[serde(rename = "event/ack")]
+    EventAck(EventAckRequest),
     #[serde(rename = "tool/list")]
     ToolList(ToolListRequest),
     #[serde(rename = "config/read")]
@@ -183,6 +185,12 @@ pub struct ApprovalRespondRequest {
     pub scope: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventAckRequest {
+    #[serde(rename = "eventSequence")]
+    pub event_sequence: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolListRequest {}
 
@@ -227,6 +235,12 @@ pub struct RpcError {
 pub struct RpcNotification {
     pub jsonrpc: String,
     pub method: String,
+    #[serde(
+        rename = "eventSequence",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub event_sequence: Option<u64>,
     pub params: serde_json::Value,
 }
 
