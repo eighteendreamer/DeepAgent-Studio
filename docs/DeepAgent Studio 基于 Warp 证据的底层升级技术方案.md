@@ -610,5 +610,6 @@ P0 durable control plane
 - `aa434d3`：SSH PTY 接入同一 TerminalSession 协议，增加 SSH 输出 cursor/history 和 lease 校验；SSH 与 Direct 仍由各自服务拥有底层连接生命周期。
 - `efd22c8`、`e7e5958`：复用 `execution_leases` 建立 `SqliteTerminalLeaseStore`，支持 terminal session/run scope、原子 takeover、renew、revoke、epoch fencing；共享 registry 可切换到该持久化实现，并补充重建数据库连接后的验证测试。
 - `f2fbcaf`：stdio app-server 改为每连接一个有界单 writer event outbox，通知带单调 `eventSequence`；新增 `event/ack` 单调确认协议，队列满时明确记录 drop/backpressure，而不是为每个事件无序 `spawn` writer。
-- 当前仍未宣称 P0/P1 全部完成：PTY 的跨进程恢复、启动时 terminal session 重绑、主 run 的自动恢复策略、统一 graph projection、跨进程/持久化 worker outbox replay 以及完整 SDK 协议测试仍属于后续工作。当前 terminal cursor/history 是进程内有界缓存，SQLite lease 负责 ownership/fencing，不能冒充 PTY 输出跨重启恢复；stdio ACK 当前是连接级确认状态，重连 replay 仍通过 `thread/read` cursor 完成。
+- `f2fbcaf` 同时增加 `event/ack` 的单调回退保护测试；当前 outbox 是连接级有界内存队列，重连 replay 仍通过 `thread/read` cursor 完成，不把 ACK 误写成跨进程 durable outbox。
+- 当前仍未宣称 P0/P1 全部完成：PTY 的跨进程恢复、启动时 terminal session 重绑、主 run 的自动恢复策略、统一 graph projection、跨进程/持久化 worker outbox replay 以及完整 SDK 协议测试仍属于后续工作。当前 terminal cursor/history 是进程内有界缓存，SQLite lease 负责 ownership/fencing，不能冒充 PTY 输出跨重启恢复。
 - 已验证：app-core 779 项单元测试通过（1 项 ignored），runtime 145 项单元测试与 5 项稳定性测试通过，CLI app-server 控制测试通过，workspace 与 Desktop Tauri Rust 编译通过。
