@@ -612,5 +612,6 @@ P0 durable control plane
 - `f2fbcaf`：stdio app-server 改为每连接一个有界单 writer event outbox，通知带单调 `eventSequence`；新增 `event/ack` 单调确认协议，队列满时明确记录 drop/backpressure，而不是为每个事件无序 `spawn` writer。
 - `f2fbcaf` 同时增加 `event/ack` 的单调回退保护测试；当前 outbox 是连接级有界内存队列，重连 replay 仍通过 `thread/read` cursor 完成，不把 ACK 误写成跨进程 durable outbox。
 - `443da90`：新增 `RuntimeEvent::McpLifecycle` 与 harness `mcp.lifecycle` typed event；连接成功记录 server/tool count，单 server 连接失败记录 `connect_failed` degradation，整体 resolve 失败记录 `resolve_failed`，并进入 run event ledger 与 runtime log，而不是继续压成 generic runtime item。
+- `92faaf1`：MCP 生命周期快照增加 transport、脱敏后的 `configHash`（只纳入 env/header key，不写 secret）、`toolSchemaHash`、`startupAttempt`，并补充协议字段投影测试。
 - 当前仍未宣称 P0/P1 全部完成：PTY 的跨进程恢复、启动时 terminal session 重绑、主 run 的自动恢复策略、统一 graph projection、跨进程/持久化 worker outbox replay 以及完整 SDK 协议测试仍属于后续工作。当前 terminal cursor/history 是进程内有界缓存，SQLite lease 负责 ownership/fencing，不能冒充 PTY 输出跨重启恢复。
 - 已验证：app-core 779 项单元测试通过（1 项 ignored），runtime 145 项单元测试与 5 项稳定性测试通过，CLI app-server 控制测试通过，workspace 与 Desktop Tauri Rust 编译通过。
