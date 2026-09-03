@@ -614,5 +614,6 @@ P0 durable control plane
 - `443da90`：新增 `RuntimeEvent::McpLifecycle` 与 harness `mcp.lifecycle` typed event；连接成功记录 server/tool count，单 server 连接失败记录 `connect_failed` degradation，整体 resolve 失败记录 `resolve_failed`，并进入 run event ledger 与 runtime log，而不是继续压成 generic runtime item。
 - `92faaf1`：MCP 生命周期快照增加 transport、脱敏后的 `configHash`（只纳入 env/header key，不写 secret）、`toolSchemaHash`、`startupAttempt`，并补充协议字段投影测试。
 - `319dde5`：新增只读 `RunGraphViewDto`，将 `runs` 主节点与 `subagent_runs` 子节点统一投影为 `rootRunId + nodes`，并在 CLI `thread/read` 每个 run projection 中返回 `graph`；底层仍复用两张既有事实表，不复制第二套生命周期存储。
+- `38f63d0`：RunGraphView 查询现有 `execution_leases` 活动记录，将真实 `workerId`、`leaseId`、`leaseEpoch` 投影到对应 run/child 节点；过期或不存在的 lease 保持 null，并补充 fencing 查询测试。
 - 当前仍未宣称 P0/P1 全部完成：PTY 的跨进程恢复、启动时 terminal session 重绑、主 run 的自动恢复策略、统一 graph projection、跨进程/持久化 worker outbox replay 以及完整 SDK 协议测试仍属于后续工作。当前 terminal cursor/history 是进程内有界缓存，SQLite lease 负责 ownership/fencing，不能冒充 PTY 输出跨重启恢复。
 - 已验证：app-core 779 项单元测试通过（1 项 ignored），runtime 145 项单元测试与 5 项稳定性测试通过，CLI app-server 控制测试通过，workspace 与 Desktop Tauri Rust 编译通过。
