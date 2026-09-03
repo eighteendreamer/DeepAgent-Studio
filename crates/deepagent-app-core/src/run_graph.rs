@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_persistence::run_control::RunControlStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::subagent_store::SubagentRunStore;
 use deepagent_persistence::Database;
@@ -20,6 +21,7 @@ pub struct RunGraphNodeDto {
     pub execution_location: String,
     pub worker_id: Option<String>,
     pub lease_id: Option<String>,
+    pub lease_epoch: Option<u64>,
     pub join_token_hash: Option<String>,
     pub background: bool,
     pub resume_policy: String,
@@ -38,14 +40,16 @@ pub fn load(db: &Arc<Database>, root_run_id: &str) -> Result<RunGraphViewDto> {
     let root = RunStore::new(db)
         .get(root_run_id)?
         .ok_or_else(|| CoreError::not_found(format!("run {root_run_id} not found")))?;
+    let root_lease = active_lease(db, &root.id);
     let mut nodes = vec![RunGraphNodeDto {
         run_id: root.id,
         parent_run_id: None,
         origin_run_id: None,
         state: root.state,
         execution_location: "local".into(),
-        worker_id: None,
-        lease_id: None,
+        worker_id: root_lease.as_ref().map(|lease| lease.owner.clone()),
+        lease_id: root_lease.as_ref().map(|lease| lease.lease_id.clone()),
+        lease_epoch: root_lease.as_ref().map(|lease| lease.epoch),
         join_token_hash: None,
         background: false,
         resume_policy: "manual".into(),
@@ -53,14 +57,16 @@ pub fn load(db: &Arc<Database>, root_run_id: &str) -> Result<RunGraphViewDto> {
         summary: None,
     }];
     for child in SubagentRunStore::new(db).list_for_parent(root_run_id)? {
+        let child_lease = active_lease(db, &child.id);
         nodes.push(RunGraphNodeDto {
             run_id: child.id,
             parent_run_id: Some(child.parent_run_id),
             origin_run_id: Some(child.origin_parent_run_id),
             state: child.state,
             execution_location: "local".into(),
-            worker_id: None,
-            lease_id: None,
+            worker_id: child_lease.as_ref().map(|lease| lease.owner.clone()),
+            lease_id: child_lease.as_ref().map(|lease| lease.lease_id.clone()),
+            lease_epoch: child_lease.as_ref().map(|lease| lease.epoch),
             join_token_hash: None,
             background: false,
             resume_policy: "manual".into(),
@@ -74,12 +80,27 @@ pub fn load(db: &Arc<Database>, root_run_id: &str) -> Result<RunGraphViewDto> {
     })
 }
 
+fn active_lease(
+    db: &Arc<Database>,
+    run_id: &str,
+) -> Option<deepagent_persistence::run_control::ExecutionLeaseRecord> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis()
+        .min(i64::MAX as u128) as i64;
+    RunControlStore::new(db)
+        .active_lease("run", run_id, now)
+        .ok()?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use deepagent_core::clock::Timestamp;
     use deepagent_core::id::SessionId;
     use deepagent_persistence::event_store::EventStore;
+    use deepagent_persistence::run_control::NewExecutionLease;
     use deepagent_persistence::subagent_store::SubagentRunRecord;
 
     #[test]
@@ -108,9 +129,27 @@ mod tests {
                 resume_count: 0,
             })
             .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        RunControlStore::new(&db)
+            .acquire_lease(&NewExecutionLease {
+                lease_id: "worker-lease-1",
+                resource_kind: "run",
+                resource_id: "child-1",
+                owner: "worker-a",
+                fencing_token_hash: "hash-a",
+                expires_at: now + 60_000,
+                now,
+            })
+            .unwrap();
         let graph = load(&db, "run-1").unwrap();
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.nodes[1].parent_run_id.as_deref(), Some("run-1"));
+        assert_eq!(graph.nodes[1].worker_id.as_deref(), Some("worker-a"));
+        assert_eq!(graph.nodes[1].lease_id.as_deref(), Some("worker-lease-1"));
+        assert_eq!(graph.nodes[1].lease_epoch, Some(1));
         assert_eq!(
             serde_json::to_value(graph).unwrap()["nodes"][1]["executionLocation"],
             "local"

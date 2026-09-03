@@ -678,6 +678,19 @@ impl<'db> RunControlStore<'db> {
         })
     }
 
+    /// Return the non-expired lease currently fencing a resource, if any.
+    pub fn active_lease(
+        &self,
+        resource_kind: &str,
+        resource_id: &str,
+        now: i64,
+    ) -> Result<Option<ExecutionLeaseRecord>> {
+        self.db.with_conn(|connection| {
+            let lease = active_lease_from(connection, resource_kind, resource_id)?;
+            Ok(lease.filter(|record| record.expires_at > now))
+        })
+    }
+
     /// Revoke the currently held lease only when owner and epoch still match.
     /// This is the durable counterpart of a terminal-session takeover.
     pub fn revoke_lease(
@@ -1358,6 +1371,15 @@ mod tests {
             })
             .unwrap();
         assert_eq!(first.epoch, 1);
+        assert_eq!(
+            store
+                .active_lease("run", "run-1", 3)
+                .unwrap()
+                .unwrap()
+                .lease_id,
+            "lease-1"
+        );
+        assert!(store.active_lease("run", "run-1", 10).unwrap().is_none());
         assert!(store
             .acquire_lease(&NewExecutionLease {
                 lease_id: "lease-conflict",
