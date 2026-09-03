@@ -605,6 +605,7 @@ P0 durable control plane
   - `02b9a29`、`b04bd1d`：明确 continuation disposition，并阻止取消未成功时创建替代 turn。
   - `4e1639b`、`674ec5b`、`a202ff3`：增加 session/run 分流游标、按 run cursor 恢复及协议版本测试。
   - `d3faf1b`、`71413cd`：将 tool artifact 元数据纳入 `thread/read`，并锁定 Artifact camelCase 序列化契约。
+- 当前启动恢复入口 `AppService::recover_unfinished_runs` 已先调用 `RunControlStore::recover`：进程重启时将 `running action` 标记为 `failed`（`replayed=false`），过期 approval 标记为 `expired`，失效 execution lease 撤销，并把三类计数写入 `run_recovered_after_startup` 事件；回归测试覆盖三类控制记录。该能力只保证状态诚实和副作用不重放，不等同于主 run 自动续跑。
 - `ebd5ff3`：本地 PTY 增加进程内有界输出历史、单调 byte cursor、`truncated` 续读语义，并通过 Tauri/TypeScript 暴露 `local_pty_read_cursor`；旧 `local_pty_read` 保持兼容。
 - `b43e322`：新增 `deepagent-terminal` 共享内核边界，定义 `TerminalSessionBackend`、Direct backend、输入租约 takeover/release 与 epoch fencing。
 - `aa434d3`：SSH PTY 接入同一 TerminalSession 协议，增加 SSH 输出 cursor/history 和 lease 校验；SSH 与 Direct 仍由各自服务拥有底层连接生命周期。
@@ -615,5 +616,5 @@ P0 durable control plane
 - `92faaf1`：MCP 生命周期快照增加 transport、脱敏后的 `configHash`（只纳入 env/header key，不写 secret）、`toolSchemaHash`、`startupAttempt`，并补充协议字段投影测试。
 - `319dde5`：新增只读 `RunGraphViewDto`，将 `runs` 主节点与 `subagent_runs` 子节点统一投影为 `rootRunId + nodes`，并在 CLI `thread/read` 每个 run projection 中返回 `graph`；底层仍复用两张既有事实表，不复制第二套生命周期存储。
 - `38f63d0`：RunGraphView 查询现有 `execution_leases` 活动记录，将真实 `workerId`、`leaseId`、`leaseEpoch` 投影到对应 run/child 节点；过期或不存在的 lease 保持 null，并补充 fencing 查询测试。
-- 当前仍未宣称 P0/P1 全部完成：PTY 的跨进程恢复、启动时 terminal session 重绑、主 run 的自动恢复策略、统一 graph projection、跨进程/持久化 worker outbox replay 以及完整 SDK 协议测试仍属于后续工作。当前 terminal cursor/history 是进程内有界缓存，SQLite lease 负责 ownership/fencing，不能冒充 PTY 输出跨重启恢复。
+- 当前仍未宣称 P0/P1 全部完成：PTY 的跨进程恢复、启动时 terminal session 重绑、主 run 的自动续跑策略、跨进程/持久化 worker outbox replay 以及完整 SDK 协议测试仍属于后续工作。当前 terminal cursor/history 是进程内有界缓存，SQLite lease 负责 ownership/fencing，不能冒充 PTY 输出跨重启恢复；启动恢复目前明确选择“终结未完成状态、禁止副作用自动重放”，而不是未经确认的自动续跑。
 - 已验证：app-core 779 项单元测试通过（1 项 ignored），runtime 145 项单元测试与 5 项稳定性测试通过，CLI app-server 控制测试通过，workspace 与 Desktop Tauri Rust 编译通过。

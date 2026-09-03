@@ -14,6 +14,7 @@ use deepagent_observation::{build_timeline, export_transcript, SessionStats, Tra
 use deepagent_persistence::checkpoint_store::CheckpointStore;
 use deepagent_persistence::cost_store::CostStore;
 use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::run_control::RunControlStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 use deepagent_runtime::{tool_ui_metadata, CheckpointManager};
@@ -69,6 +70,12 @@ impl AppService {
     /// from blocking cancellation/UI state on the next boot.
     pub fn recover_unfinished_runs(&self) -> Result<Vec<RunRecoveryDto>> {
         let clock = SystemClock;
+        let recovery_now = now_millis();
+        // Recover the durable control projection before finalizing lifecycle
+        // rows. This closes the crash window where `runs` is repaired but a
+        // running action, expired approval, or stale execution lease remains
+        // visible to the next process.
+        let control_recovery = RunControlStore::new(&self.db).recover(recovery_now)?;
         let store = RunStore::new(&self.db);
         let runs = store.unfinished()?;
         let mut recovered = Vec::new();
@@ -108,7 +115,7 @@ impl AppService {
             }
             store.append_event(
                 &run.id,
-                now_millis(),
+                recovery_now,
                 "finalizing",
                 "completed",
                 "run_recovered_after_startup",
@@ -124,9 +131,14 @@ impl AppService {
                     // pre-run state via the standard rewind path.
                     "checkpoint_ids": checkpoint_ids,
                     "has_file_backups": !checkpoint_ids.is_empty(),
+                    "control_recovery": {
+                        "failed_running_actions": control_recovery.failed_running_actions,
+                        "expired_approvals": control_recovery.expired_approvals,
+                        "revoked_leases": control_recovery.revoked_leases,
+                    },
                 }),
             )?;
-            store.finish(&run.id, "failed", Some(&reason), now_millis())?;
+            store.finish(&run.id, "failed", Some(&reason), recovery_now)?;
             recovered.push(RunRecoveryDto {
                 run_id: run.id,
                 session_id: run.session_id,
@@ -1147,11 +1159,111 @@ mod tests {
         runs.transition("run_crashed", "running_turn", 1_200)
             .unwrap();
 
+        // Seed control-plane rows that represent work interrupted by the
+        // previous process. Startup recovery must reconcile these projections
+        // in the same pass as the lifecycle run.
+        let control = deepagent_persistence::run_control::RunControlStore::new(&db);
+        control
+            .create_action(&deepagent_persistence::run_control::NewRunAction {
+                run_id: "run_crashed",
+                turn_id: "turn_crashed",
+                call_id: "call_running",
+                sequence: 0,
+                tool_name: "shell",
+                arguments_hash: "hash-running",
+                risk: "high",
+                parent_action_id: None,
+                now: 1_300,
+            })
+            .unwrap();
+        control
+            .transition_action(
+                "run_crashed",
+                "call_running",
+                deepagent_persistence::run_control::RunActionState::Prepared,
+                1_301,
+                None,
+                None,
+            )
+            .unwrap();
+        control
+            .transition_action(
+                "run_crashed",
+                "call_running",
+                deepagent_persistence::run_control::RunActionState::Running,
+                1_302,
+                None,
+                None,
+            )
+            .unwrap();
+        control
+            .create_action(&deepagent_persistence::run_control::NewRunAction {
+                run_id: "run_crashed",
+                turn_id: "turn_crashed",
+                call_id: "call_approval",
+                sequence: 1,
+                tool_name: "filesystem.write",
+                arguments_hash: "hash-approval",
+                risk: "high",
+                parent_action_id: None,
+                now: 1_303,
+            })
+            .unwrap();
+        control
+            .transition_action(
+                "run_crashed",
+                "call_approval",
+                deepagent_persistence::run_control::RunActionState::Prepared,
+                1_304,
+                None,
+                None,
+            )
+            .unwrap();
+        control
+            .request_approval(&deepagent_persistence::run_control::NewRunApproval {
+                approval_id: "approval_expired",
+                run_id: "run_crashed",
+                call_id: "call_approval",
+                scope: "workspace",
+                risk: "high",
+                reason: Some("needs review"),
+                policy_snapshot: None,
+                expires_at: Some(1),
+                now: 1_300,
+            })
+            .unwrap();
+        control
+            .acquire_lease(&deepagent_persistence::run_control::NewExecutionLease {
+                lease_id: "lease_expired",
+                resource_kind: "run",
+                resource_id: "run_crashed",
+                owner: "old-process",
+                fencing_token_hash: "fence",
+                expires_at: 1,
+                now: 0,
+            })
+            .unwrap();
+
         let svc = AppService::from_shared(db.clone());
         let recovered = svc.recover_unfinished_runs().unwrap();
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].run_id, "run_crashed");
         assert_eq!(recovered[0].terminal_kind, "failed");
+
+        let actions = control.list_actions("run_crashed").unwrap();
+        assert_eq!(
+            actions[0].state,
+            deepagent_persistence::run_control::RunActionState::Failed
+        );
+        let approvals = control.list_approvals("run_crashed").unwrap();
+        assert_eq!(
+            approvals[0].state,
+            deepagent_persistence::run_control::ApprovalState::Expired
+        );
+        assert!(control
+            .active_lease("run", "run_crashed", now_millis())
+            .unwrap()
+            .is_none());
 
         let record = RunStore::new(&db).get("run_crashed").unwrap().unwrap();
         assert_eq!(record.state, "terminal");
