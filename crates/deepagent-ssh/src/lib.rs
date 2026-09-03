@@ -46,6 +46,14 @@ use deepagent_terminal::{
 use service::SshServiceImpl;
 use std::sync::Arc;
 
+/// Persistence boundary for SSH connection configuration. Implementations may
+/// use encrypted SQLite without coupling this transport crate to app-core.
+#[async_trait]
+pub trait SshConfigStore: Send + Sync {
+    async fn load(&self) -> SshResult<Vec<SshConnectionConfig>>;
+    async fn save(&self, configs: &[SshConnectionConfig]) -> SshResult<()>;
+}
+
 /// SSH implementation of the shared terminal-session contract. The service
 /// remains the owner of connection lifecycle; this adapter only adds run
 /// scope, cursor and input-lease validation.
@@ -263,6 +271,12 @@ impl SshService {
     pub fn new(app_data: PathBuf) -> Self {
         Self {
             inner: SshServiceImpl::new(app_data),
+        }
+    }
+
+    pub fn with_config_store(app_data: PathBuf, store: Arc<dyn SshConfigStore>) -> Self {
+        Self {
+            inner: SshServiceImpl::with_config_store(app_data, store),
         }
     }
 

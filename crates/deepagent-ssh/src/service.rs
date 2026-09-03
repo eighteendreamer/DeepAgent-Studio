@@ -9,8 +9,9 @@ use super::remote::{
     RemotePushFileResult, RemoteRequireRequest, RemoteRequireResult, RemoteVerifyMode,
 };
 use super::session::{PtyState, SshExecResult, SshSession, SshStatusSnapshot, SshTestResult};
-use super::SshServiceHandle;
+use super::{SshConfigStore, SshServiceHandle};
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
+use async_trait::async_trait;
 use sha2::Digest;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -22,49 +23,92 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{timeout, Duration};
 
+struct JsonFileSshConfigStore {
+    path: PathBuf,
+}
+
+impl JsonFileSshConfigStore {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+#[async_trait]
+impl SshConfigStore for JsonFileSshConfigStore {
+    async fn load(&self) -> SshResult<Vec<SshConnectionConfig>> {
+        let data = match tokio::fs::read_to_string(&self.path).await {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(SshError::Persistence(error.to_string())),
+        };
+        let configs: HashMap<String, SshConnectionConfig> = serde_json::from_str(&data)
+            .map_err(|error| SshError::Persistence(error.to_string()))?;
+        Ok(configs.into_values().collect())
+    }
+
+    async fn save(&self, configs: &[SshConnectionConfig]) -> SshResult<()> {
+        let values = configs
+            .iter()
+            .cloned()
+            .map(|config| (config.id.clone(), config))
+            .collect::<HashMap<_, _>>();
+        let json = serde_json::to_string_pretty(&values)
+            .map_err(|error| SshError::Persistence(error.to_string()))?;
+        if let Some(parent) = self.path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|error| SshError::Persistence(error.to_string()))?;
+        }
+        tokio::fs::write(&self.path, json)
+            .await
+            .map_err(|error| SshError::Persistence(error.to_string()))
+    }
+}
+
 pub struct SshServiceImpl {
     configs: RwLock<HashMap<String, SshConnectionConfig>>,
     sessions: RwLock<HashMap<String, Arc<SshSession>>>,
-    store_path: PathBuf,
+    config_store: Arc<dyn SshConfigStore>,
+    data_root: PathBuf,
     loaded: AtomicBool,
 }
 
 impl SshServiceImpl {
     pub fn new(app_data: PathBuf) -> Self {
-        let store_path = app_data.join("deepagent-ssh").join("connections.json");
+        let data_root = app_data.join("deepagent-ssh");
+        let store = Arc::new(JsonFileSshConfigStore::new(
+            data_root.join("connections.json"),
+        ));
+        Self::with_config_store(app_data, store)
+    }
+
+    pub fn with_config_store(app_data: PathBuf, config_store: Arc<dyn SshConfigStore>) -> Self {
         Self {
             configs: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
-            store_path,
+            config_store,
+            data_root: app_data.join("deepagent-ssh"),
             loaded: AtomicBool::new(false),
         }
     }
 
     pub async fn load(&self) -> SshResult<()> {
-        let data = match tokio::fs::read_to_string(&self.store_path).await {
-            Ok(s) => s,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(SshError::Persistence(e.to_string())),
-        };
-        let configs: HashMap<String, SshConnectionConfig> =
-            serde_json::from_str(&data).map_err(|e| SshError::Persistence(e.to_string()))?;
+        let configs = self
+            .config_store
+            .load()
+            .await?
+            .into_iter()
+            .map(|config| (config.id.clone(), config))
+            .collect();
         *self.configs.write().await = configs;
         Ok(())
     }
 
     pub async fn persist_configs(&self) -> SshResult<()> {
         let configs = self.configs.read().await;
-        let json = serde_json::to_string_pretty(&*configs)
-            .map_err(|e| SshError::Persistence(e.to_string()))?;
-        if let Some(parent) = self.store_path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| SshError::Persistence(e.to_string()))?;
-        }
-        tokio::fs::write(&self.store_path, json)
-            .await
-            .map_err(|e| SshError::Persistence(e.to_string()))?;
-        Ok(())
+        let mut values = configs.values().cloned().collect::<Vec<_>>();
+        values.sort_by(|left, right| left.id.cmp(&right.id));
+        self.config_store.save(&values).await
     }
 
     pub async fn list_connections(&self) -> Vec<SshConnectionDto> {
@@ -1103,11 +1147,7 @@ impl SshServiceImpl {
     }
 
     fn probe_cache_path(&self, id: &str) -> PathBuf {
-        self.store_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("probes")
-            .join(format!("{id}.json"))
+        self.data_root.join("probes").join(format!("{id}.json"))
     }
 
     async fn exec_remote_raw(&self, client: &Client, command: &str) -> SshResult<SshExecResult> {

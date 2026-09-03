@@ -46,6 +46,7 @@ use deepagent_app_core::{
 };
 use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
+use async_trait::async_trait;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use tauri::window::{Effect as WindowEffect, EffectsBuilder};
@@ -57,6 +58,59 @@ const KEYCHAIN_SERVICE: &str = "deepagent-studio";
 /// Logical name for the user-supplied SkillsMP API key in the encrypted SQLite
 /// secret table.
 const KEYCHAIN_SKILLSMP_KEY_NAME: &str = "skillsmp_api_key";
+const SSH_CONFIG_SECRET_NAME: &str = "ssh_connection_configs";
+
+/// Encrypted SQLite persistence adapter for SSH connection metadata and
+/// credentials. The legacy JSON file is imported once, then removed only
+/// after the encrypted write succeeds.
+struct SqliteSshConfigStore {
+    secrets: Arc<SqliteSecretStore>,
+    legacy_path: PathBuf,
+}
+
+#[async_trait]
+impl deepagent_ssh::SshConfigStore for SqliteSshConfigStore {
+    async fn load(&self) -> deepagent_ssh::SshResult<Vec<deepagent_ssh::SshConnectionConfig>> {
+        if let Some(value) = self
+            .secrets
+            .get(SSH_CONFIG_SECRET_NAME)
+            .map_err(|error| deepagent_ssh::SshError::Persistence(error.to_string()))?
+        {
+            return serde_json::from_str(&value)
+                .map_err(|error| deepagent_ssh::SshError::Persistence(error.to_string()));
+        }
+
+        let legacy = match tokio::fs::read_to_string(&self.legacy_path).await {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(deepagent_ssh::SshError::Persistence(error.to_string())),
+        };
+        let configs: std::collections::HashMap<String, deepagent_ssh::SshConnectionConfig> =
+            serde_json::from_str(&legacy)
+                .map_err(|error| deepagent_ssh::SshError::Persistence(error.to_string()))?;
+        let values = configs.into_values().collect::<Vec<_>>();
+        let encoded = serde_json::to_string(&values)
+            .map_err(|error| deepagent_ssh::SshError::Persistence(error.to_string()))?;
+        self.secrets
+            .set(SSH_CONFIG_SECRET_NAME, &encoded)
+            .map_err(|error| deepagent_ssh::SshError::Persistence(error.to_string()))?;
+        tokio::fs::remove_file(&self.legacy_path)
+            .await
+            .map_err(|error| deepagent_ssh::SshError::Persistence(error.to_string()))?;
+        Ok(values)
+    }
+
+    async fn save(
+        &self,
+        configs: &[deepagent_ssh::SshConnectionConfig],
+    ) -> deepagent_ssh::SshResult<()> {
+        let encoded = serde_json::to_string(configs)
+            .map_err(|error| deepagent_ssh::SshError::Persistence(error.to_string()))?;
+        self.secrets
+            .set(SSH_CONFIG_SECRET_NAME, &encoded)
+            .map_err(|error| deepagent_ssh::SshError::Persistence(error.to_string()))
+    }
+}
 
 /// A [`CommandExecutor`] that routes bash/git commands through SSH to a
 /// remote machine. Created by the [`ExecutorFactory`] bound to
@@ -5319,9 +5373,14 @@ pub fn run() {
             let office = Arc::new(OfficeService::new(runtime.clone()));
 
             // SSH: long-lived remote connections (ControlMaster multiplexing,
-            // keepalive, reconnection). Configs persisted in app_data.
-            // Configs are loaded lazily on first access.
-            let ssh = Arc::new(SshService::new(dir.clone()));
+            // keepalive, reconnection). Configs and passwords use the same
+            // encrypted SQLite secret store as model credentials. The old
+            // JSON file is imported lazily on first access.
+            let ssh_store = Arc::new(SqliteSshConfigStore {
+                secrets: sqlite_secrets.clone(),
+                legacy_path: dir.join("deepagent-ssh").join("connections.json"),
+            });
+            let ssh = Arc::new(SshService::with_config_store(dir.clone(), ssh_store));
             {
                 let ssh_monitor = ssh.clone();
                 tauri::async_runtime::spawn(async move {
