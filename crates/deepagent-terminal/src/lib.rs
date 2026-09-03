@@ -5,6 +5,7 @@
 //! a UI transport.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -84,12 +85,50 @@ pub struct TerminalReadChunk {
 
 /// Process-local input ownership with epoch fencing. A stale lease can never
 /// write after a takeover, even if its holder still has the old value.
-#[derive(Default)]
 pub struct TerminalLeaseRegistry {
     leases: Mutex<HashMap<String, TerminalInputLease>>,
+    durable: Option<Arc<dyn TerminalLeasePersistence>>,
+}
+
+pub trait TerminalLeasePersistence: Send + Sync {
+    fn acquire(&self, lease: &TerminalInputLease, now: i64) -> TerminalResult<u64>;
+    fn transfer(
+        &self,
+        current: &TerminalInputLease,
+        next: &TerminalInputLease,
+        now: i64,
+        reason: &str,
+    ) -> TerminalResult<u64>;
+    fn validate(&self, lease: &TerminalInputLease, now: i64) -> TerminalResult<bool>;
+    fn revoke(&self, lease: &TerminalInputLease, now: i64, reason: &str) -> TerminalResult<()>;
+}
+
+impl std::fmt::Debug for TerminalLeaseRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TerminalLeaseRegistry")
+            .field("leases", &self.leases)
+            .field("durable", &self.durable.as_ref().map(|_| "configured"))
+            .finish()
+    }
+}
+
+impl Default for TerminalLeaseRegistry {
+    fn default() -> Self {
+        Self {
+            leases: Mutex::new(HashMap::new()),
+            durable: None,
+        }
+    }
 }
 
 impl TerminalLeaseRegistry {
+    pub fn with_persistence(persistence: Arc<dyn TerminalLeasePersistence>) -> Self {
+        Self {
+            leases: Mutex::new(HashMap::new()),
+            durable: Some(persistence),
+        }
+    }
+
     pub fn register(
         &self,
         session_id: &str,
@@ -100,18 +139,27 @@ impl TerminalLeaseRegistry {
         if leases.contains_key(session_id) {
             return Err(TerminalError::SessionExists(session_id.to_string()));
         }
-        let lease = new_lease(session_id, run_id, holder, 1);
+        let mut lease = new_lease(session_id, run_id, holder, 0);
+        if let Some(durable) = &self.durable {
+            lease.epoch = durable.acquire(&lease, unix_now())?;
+        } else {
+            lease.epoch = 1;
+        }
         leases.insert(session_id.to_string(), lease.clone());
         Ok(lease)
     }
 
     pub fn validate(&self, lease: &TerminalInputLease) -> TerminalResult<()> {
         let leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
-        if leases.get(&lease.session_id) == Some(lease) {
-            Ok(())
-        } else {
-            Err(TerminalError::InvalidLease)
+        if leases.get(&lease.session_id) != Some(lease) {
+            return Err(TerminalError::InvalidLease);
         }
+        if let Some(durable) = &self.durable {
+            if !durable.validate(lease, unix_now())? {
+                return Err(TerminalError::InvalidLease);
+            }
+        }
+        Ok(())
     }
 
     pub fn takeover(
@@ -124,7 +172,10 @@ impl TerminalLeaseRegistry {
             .get(session_id)
             .cloned()
             .ok_or_else(|| TerminalError::SessionNotFound(session_id.to_string()))?;
-        let next = new_lease(session_id, &current.run_id, holder, current.epoch + 1);
+        let mut next = new_lease(session_id, &current.run_id, holder, current.epoch + 1);
+        if let Some(durable) = &self.durable {
+            next.epoch = durable.transfer(&current, &next, unix_now(), "takeover")?;
+        }
         leases.insert(session_id.to_string(), next.clone());
         Ok(next)
     }
@@ -140,12 +191,23 @@ impl TerminalLeaseRegistry {
 
     pub fn remove(&self, lease: &TerminalInputLease) -> TerminalResult<()> {
         self.validate(lease)?;
+        if let Some(durable) = &self.durable {
+            durable.revoke(lease, unix_now(), "terminal_closed")?;
+        }
         self.leases
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&lease.session_id);
         Ok(())
     }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
 }
 
 fn new_lease(

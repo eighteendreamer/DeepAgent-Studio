@@ -678,6 +678,103 @@ impl<'db> RunControlStore<'db> {
         })
     }
 
+    /// Revoke the currently held lease only when owner and epoch still match.
+    /// This is the durable counterpart of a terminal-session takeover.
+    pub fn revoke_lease(
+        &self,
+        lease_id: &str,
+        owner: &str,
+        epoch: u64,
+        now: i64,
+        reason: &str,
+    ) -> Result<ControlMutation> {
+        self.db.with_conn(|connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE execution_leases SET revoked_at=?4,revoke_reason=?5 WHERE lease_id=?1 AND owner=?2 AND epoch=?3 AND revoked_at IS NULL",
+                    params![lease_id, owner, to_i64(epoch)?, now, reason],
+                )
+                .map_err(map_sqlite)?;
+            if changed == 1 {
+                Ok(ControlMutation::Applied)
+            } else {
+                Err(CoreError::IllegalTransition {
+                    from: "stale_or_missing_lease".to_string(),
+                    to: "revoked".to_string(),
+                })
+            }
+        })
+    }
+
+    /// Atomically revoke a matching lease and acquire its successor. The new
+    /// epoch is allocated from the resource history, so a crashed or delayed
+    /// writer holding the previous fence can no longer mutate the resource.
+    pub fn transfer_lease(
+        &self,
+        current_lease_id: &str,
+        current_owner: &str,
+        current_epoch: u64,
+        next: &NewExecutionLease<'_>,
+        reason: &str,
+    ) -> Result<ExecutionLeaseRecord> {
+        if next.expires_at <= next.now {
+            return Err(CoreError::invalid("lease expiry must be in the future"));
+        }
+        self.db.with_conn(|connection| {
+            in_immediate_transaction(connection, || {
+                let current = lease_from(connection, current_lease_id)?.ok_or_else(|| {
+                    CoreError::IllegalTransition {
+                        from: "missing_lease".to_string(),
+                        to: "transferred".to_string(),
+                    }
+                })?;
+                if current.owner != current_owner
+                    || current.epoch != current_epoch
+                    || current.revoked_at.is_some()
+                    || current.expires_at <= next.now
+                    || current.resource_kind != next.resource_kind
+                    || current.resource_id != next.resource_id
+                {
+                    return Err(CoreError::IllegalTransition {
+                        from: "stale_or_mismatched_lease".to_string(),
+                        to: "transferred".to_string(),
+                    });
+                }
+                connection
+                    .execute(
+                        "UPDATE execution_leases SET revoked_at=?2,revoke_reason=?3 WHERE lease_id=?1 AND revoked_at IS NULL",
+                        params![current_lease_id, next.now, reason],
+                    )
+                    .map_err(map_sqlite)?;
+                let epoch: i64 = connection
+                    .query_row(
+                        "SELECT COALESCE(MAX(epoch),0)+1 FROM execution_leases WHERE resource_kind=?1 AND resource_id=?2",
+                        params![next.resource_kind, next.resource_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite)?;
+                connection
+                    .execute(
+                        "INSERT INTO execution_leases (lease_id,resource_kind,resource_id,owner,epoch,fencing_token_hash,acquired_at,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                        params![
+                            next.lease_id,
+                            next.resource_kind,
+                            next.resource_id,
+                            next.owner,
+                            epoch,
+                            next.fencing_token_hash,
+                            next.now,
+                            next.expires_at,
+                        ],
+                    )
+                    .map_err(map_sqlite)?;
+                lease_from(connection, next.lease_id)?.ok_or_else(|| {
+                    CoreError::Persistence("transferred execution lease vanished".to_string())
+                })
+            })
+        })
+    }
+
     pub fn recover(&self, now: i64) -> Result<RunControlRecovery> {
         self.db.with_conn(|connection| {
             in_immediate_transaction(connection, || {
@@ -1290,6 +1387,65 @@ mod tests {
         assert!(store
             .validate_fence("run", "run-1", "worker-b", second.epoch, 12)
             .unwrap());
+    }
+
+    #[test]
+    fn lease_transfer_is_atomic_and_fences_previous_holder() {
+        let db = database_with_run();
+        let store = RunControlStore::new(&db);
+        let first = store
+            .acquire_lease(&NewExecutionLease {
+                lease_id: "terminal-user-1",
+                resource_kind: "terminal_session",
+                resource_id: "pty-1",
+                owner: "user",
+                fencing_token_hash: "hash-user",
+                expires_at: 100,
+                now: 10,
+            })
+            .unwrap();
+        let second = store
+            .transfer_lease(
+                &first.lease_id,
+                &first.owner,
+                first.epoch,
+                &NewExecutionLease {
+                    lease_id: "terminal-runtime-1",
+                    resource_kind: "terminal_session",
+                    resource_id: "pty-1",
+                    owner: "runtime",
+                    fencing_token_hash: "hash-runtime",
+                    expires_at: 120,
+                    now: 20,
+                },
+                "takeover",
+            )
+            .unwrap();
+
+        assert_eq!(second.epoch, first.epoch + 1);
+        assert!(!store
+            .validate_fence("terminal_session", "pty-1", "user", first.epoch, 21,)
+            .unwrap());
+        assert!(store
+            .validate_fence("terminal_session", "pty-1", "runtime", second.epoch, 21,)
+            .unwrap());
+        assert!(store
+            .transfer_lease(
+                &first.lease_id,
+                &first.owner,
+                first.epoch,
+                &NewExecutionLease {
+                    lease_id: "stale-transfer",
+                    resource_kind: "terminal_session",
+                    resource_id: "pty-1",
+                    owner: "remote_viewer",
+                    fencing_token_hash: "hash-stale",
+                    expires_at: 130,
+                    now: 22,
+                },
+                "stale",
+            )
+            .is_err());
     }
 
     #[test]

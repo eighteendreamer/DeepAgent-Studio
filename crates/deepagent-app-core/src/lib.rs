@@ -71,6 +71,7 @@ pub mod subagent_runner;
 pub mod system_context;
 pub mod system_prompt;
 pub mod system_reminder;
+pub mod terminal_lease;
 pub mod terminal_service;
 pub mod todo_snapshot_reminder;
 pub mod tool_manifest;
@@ -182,6 +183,7 @@ pub use deepagent_skills::{
 // `deepagent-builtins` directly to get the user-facing config enum.
 pub use deepagent_builtins::ToolSearchMode;
 pub use deepagent_terminal;
+pub use terminal_lease::SqliteTerminalLeaseStore;
 pub use terminal_service::{
     DirectTerminalSessionBackend, LocalPtyHandle, PtyReadChunk, TerminalService,
 };
