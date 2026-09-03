@@ -31,6 +31,10 @@ use crate::dto::TerminalResultDto;
 use crate::project_service::ProjectService;
 use crate::runtime_service::RuntimeBroker;
 use crate::settings::TerminalShell;
+use crate::terminal_lease::SqliteTerminalLeaseStore;
+use deepagent_persistence::Database;
+
+const DEFAULT_TERMINAL_LEASE_TTL_MS: i64 = 30 * 60 * 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalPtyHandle {
@@ -97,6 +101,22 @@ impl DirectTerminalSessionBackend {
                 .map(TerminalLeaseRegistry::with_persistence)
                 .unwrap_or_default(),
         }
+    }
+
+    /// Production-oriented constructor backed by the application's SQLite
+    /// database. The fallible return prevents silently falling back to memory
+    /// if the lease store configuration is invalid.
+    pub fn with_sqlite_lease_store(
+        service: Arc<TerminalService>,
+        shell: TerminalShell,
+        database: Arc<Database>,
+    ) -> Result<Self> {
+        let store = SqliteTerminalLeaseStore::new(database, DEFAULT_TERMINAL_LEASE_TTL_MS)?;
+        Ok(Self::with_lease_persistence(
+            service,
+            shell,
+            Some(Arc::new(store)),
+        ))
     }
 
     fn validate_scope(
