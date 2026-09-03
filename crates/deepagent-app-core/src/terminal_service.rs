@@ -489,6 +489,8 @@ impl TerminalSessionBackend for DirectTerminalSessionBackend {
             .pty_read_with_cursor(&Self::local_handle(session), after_cursor)
             .await
             .map_err(|error| TerminalError::Backend(error.to_string()))?;
+        self.leases
+            .record_cursor(&session.session_id, chunk.cursor)?;
         Ok(TerminalReadChunk {
             cursor: chunk.cursor,
             data: chunk.data,

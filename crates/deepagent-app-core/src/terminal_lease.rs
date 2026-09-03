@@ -13,6 +13,7 @@ use deepagent_terminal::{
     TerminalError, TerminalInputHolder, TerminalInputLease, TerminalLeasePersistence,
     TerminalResult,
 };
+use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -43,6 +44,22 @@ impl SqliteTerminalLeaseStore {
     ) -> Result<TerminalInputLease> {
         let lease_id = Uuid::new_v4().to_string();
         self.acquire_with_id(session_id, run_id, &lease_id, holder, now)
+    }
+
+    pub fn last_cursor(&self, session_id: &str) -> Result<u64> {
+        self.db.with_conn(|connection| {
+            let value: Option<i64> = connection
+                .query_row(
+                    "SELECT cursor FROM terminal_session_cursors WHERE session_id=?1",
+                    [session_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| {
+                    deepagent_core::error::CoreError::Persistence(error.to_string())
+                })?;
+            Ok(value.unwrap_or(0).max(0) as u64)
+        })
     }
 
     fn acquire_with_id(
@@ -188,6 +205,27 @@ impl TerminalLeasePersistence for SqliteTerminalLeaseStore {
         self.revoke(lease, now, reason)
             .map_err(|error| TerminalError::Backend(error.to_string()))
     }
+
+    fn record_cursor(&self, session_id: &str, cursor: u64) -> TerminalResult<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(i64::MAX as u128) as i64;
+        let cursor = i64::try_from(cursor)
+            .map_err(|_| TerminalError::Backend("terminal cursor exceeds SQLite range".into()))?;
+        self.db
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO terminal_session_cursors(session_id,cursor,updated_at) VALUES (?1,?2,?3) ON CONFLICT(session_id) DO UPDATE SET cursor=MAX(cursor,excluded.cursor), updated_at=excluded.updated_at",
+                        rusqlite::params![session_id, cursor, now],
+                    )
+                    .map_err(|error| deepagent_core::error::CoreError::Persistence(error.to_string()))?;
+                Ok(())
+            })
+            .map_err(|error| TerminalError::Backend(error.to_string()))
+    }
 }
 
 fn holder_name(holder: TerminalInputHolder) -> &'static str {
@@ -283,5 +321,18 @@ mod tests {
         assert!(next.epoch > first.epoch);
         assert!(registry.validate(&next).is_ok());
         assert!(registry.validate(&first).is_err());
+    }
+
+    #[test]
+    fn persisted_cursor_is_monotonic_and_survives_store_recreation() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SqliteTerminalLeaseStore::new(db.clone(), 1_000).unwrap();
+        store.record_cursor("pty-1", 128).unwrap();
+        store.record_cursor("pty-1", 64).unwrap();
+        assert_eq!(store.last_cursor("pty-1").unwrap(), 128);
+
+        let reopened = SqliteTerminalLeaseStore::new(db, 1_000).unwrap();
+        assert_eq!(reopened.last_cursor("pty-1").unwrap(), 128);
+        assert_eq!(reopened.last_cursor("pty-missing").unwrap(), 0);
     }
 }

@@ -101,6 +101,12 @@ pub trait TerminalLeasePersistence: Send + Sync {
     ) -> TerminalResult<u64>;
     fn validate(&self, lease: &TerminalInputLease, now: i64) -> TerminalResult<bool>;
     fn revoke(&self, lease: &TerminalInputLease, now: i64, reason: &str) -> TerminalResult<()>;
+
+    /// Persist the last output cursor observed for a session. Backends that
+    /// cannot persist cursors may keep the compatibility no-op.
+    fn record_cursor(&self, _session_id: &str, _cursor: u64) -> TerminalResult<()> {
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for TerminalLeaseRegistry {
@@ -198,6 +204,13 @@ impl TerminalLeaseRegistry {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&lease.session_id);
+        Ok(())
+    }
+
+    pub fn record_cursor(&self, session_id: &str, cursor: u64) -> TerminalResult<()> {
+        if let Some(durable) = &self.durable {
+            durable.record_cursor(session_id, cursor)?;
+        }
         Ok(())
     }
 }

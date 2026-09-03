@@ -307,6 +307,15 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_execution_leases_expiry
         ON execution_leases(expires_at, revoked_at);
     "#,
+    // V16: durable terminal read cursors. PTY bytes remain backend-owned, but
+    // reconnecting clients can resume from the last acknowledged offset.
+    r#"
+    CREATE TABLE terminal_session_cursors (
+        session_id TEXT PRIMARY KEY NOT NULL,
+        cursor     INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// The highest schema version defined by this build.
