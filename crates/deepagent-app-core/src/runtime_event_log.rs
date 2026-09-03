@@ -271,6 +271,7 @@ fn runtime_event_category(event: &RuntimeEvent) -> &'static str {
         | RuntimeEvent::ResponsesStreamEvent { .. }
         | RuntimeEvent::ResponsesWebSearchCall { .. }
         | RuntimeEvent::Usage { .. } => "model",
+        RuntimeEvent::McpLifecycle { .. } => "mcp",
         RuntimeEvent::ToolStarted { .. }
         | RuntimeEvent::ToolCompleted { .. }
         | RuntimeEvent::ToolBlocked { .. } => "tool",
@@ -401,6 +402,17 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
         } => format!(
             "native web search call={call_id} status={status} action_type={} queries_count={queries_count}",
             action_type.as_deref().unwrap_or("none"),
+        ),
+        RuntimeEvent::McpLifecycle {
+            server_id,
+            status,
+            degradation_code,
+            reason,
+            tool_count,
+        } => format!(
+            "MCP server {server_id} status={status} tools={tool_count} code={} reason={}",
+            degradation_code.as_deref().unwrap_or("none"),
+            reason.as_deref().unwrap_or("none"),
         ),
         RuntimeEvent::ToolStarted { name, call_id, .. } => {
             format!("tool {name} started ({call_id})")

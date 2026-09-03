@@ -204,3 +204,25 @@ fn thread_read_supports_stream_specific_cursors() {
     assert_eq!(value["params"]["runAfterSequences"]["run-1"], 4);
     assert!(value["params"].get("afterSequence").is_none());
 }
+
+#[test]
+fn mcp_degradation_projects_to_typed_lifecycle_event() {
+    let event = RuntimeEvent::McpLifecycle {
+        server_id: "docs".into(),
+        status: "degraded".into(),
+        degradation_code: Some("connect_failed".into()),
+        reason: Some("connection refused".into()),
+        tool_count: 0,
+    };
+    let projected = project_runtime_event(
+        &event,
+        &EventContext::new(Some("thread-1".into()), Some("turn-1".into())),
+    )
+    .unwrap();
+    let value = serde_json::to_value(projected).unwrap();
+
+    assert_eq!(value["type"], "mcp.lifecycle");
+    assert_eq!(value["serverId"], "docs");
+    assert_eq!(value["degradationCode"], "connect_failed");
+    assert_eq!(value["toolCount"], 0);
+}

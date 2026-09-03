@@ -134,6 +134,19 @@ pub enum RuntimeEvent {
         #[serde(default)]
         queries_count: usize,
     },
+    /// MCP server resolution/start lifecycle. Failures are explicit
+    /// degradations so clients can distinguish unavailable remote tools from
+    /// an empty registry.
+    McpLifecycle {
+        server_id: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degradation_code: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default)]
+        tool_count: usize,
+    },
     /// A tool call is about to run (after the BeforeToolUse gate allowed it).
     ToolStarted {
         /// Tool name.
@@ -561,6 +574,7 @@ impl RuntimeEvent {
             RuntimeEvent::ContentDelta { .. } => "content_delta",
             RuntimeEvent::ResponsesStreamEvent { .. } => "responses_stream_event",
             RuntimeEvent::ResponsesWebSearchCall { .. } => "responses_web_search_call",
+            RuntimeEvent::McpLifecycle { .. } => "mcp_lifecycle",
             RuntimeEvent::ToolStarted { .. } => "tool_started",
             RuntimeEvent::ToolCompleted { .. } => "tool_completed",
             RuntimeEvent::ToolBlocked { .. } => "tool_blocked",

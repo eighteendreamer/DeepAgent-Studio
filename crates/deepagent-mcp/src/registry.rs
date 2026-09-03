@@ -115,6 +115,12 @@ impl McpRegistry {
         self.servers.len()
     }
 
+    /// Connected server identifiers, stable-sorted for deterministic lifecycle
+    /// projections and capability snapshots.
+    pub fn server_names(&self) -> Vec<String> {
+        self.servers.keys().cloned().collect()
+    }
+
     /// All namespaced tools across all servers (for advertising to the model).
     pub fn all_tools(&self) -> Vec<RemoteTool> {
         self.servers

@@ -112,6 +112,26 @@ pub enum HarnessEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    #[serde(rename = "mcp.lifecycle")]
+    McpLifecycle {
+        #[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+        thread_id: Option<String>,
+        #[serde(rename = "turnId", default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(rename = "serverId")]
+        server_id: String,
+        status: String,
+        #[serde(
+            rename = "degradationCode",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        degradation_code: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(rename = "toolCount", default)]
+        tool_count: usize,
+    },
     #[serde(rename = "error")]
     Error {
         code: String,
@@ -405,6 +425,21 @@ pub fn project_runtime_event(event: &RuntimeEvent, context: &EventContext) -> Op
             thread_id,
             turn_id,
             reason: Some("run cancelled".into()),
+        }),
+        RuntimeEvent::McpLifecycle {
+            server_id,
+            status,
+            degradation_code,
+            reason,
+            tool_count,
+        } => Some(HarnessEvent::McpLifecycle {
+            thread_id,
+            turn_id,
+            server_id: server_id.clone(),
+            status: status.clone(),
+            degradation_code: degradation_code.clone(),
+            reason: reason.clone(),
+            tool_count: *tool_count,
         }),
         other => Some(HarnessEvent::ItemUpdated {
             thread_id,

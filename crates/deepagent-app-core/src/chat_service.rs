@@ -2640,6 +2640,15 @@ impl ChatService {
             tool_search_threshold,
         })
         .await?;
+        for lifecycle in &toolset.lifecycle {
+            sink.emit(RuntimeEvent::McpLifecycle {
+                server_id: lifecycle.server_id.clone(),
+                status: lifecycle.status.clone(),
+                degradation_code: lifecycle.degradation_code.clone(),
+                reason: lifecycle.reason.clone(),
+                tool_count: lifecycle.tool_count,
+            });
+        }
         let registry = toolset.registry;
         let todo_store = toolset.todo_store;
         let hook_mcp_registry = toolset.hook_mcp_registry;

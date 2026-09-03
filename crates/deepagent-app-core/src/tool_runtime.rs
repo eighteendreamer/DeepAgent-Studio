@@ -286,6 +286,7 @@ pub(crate) struct MainRunToolset {
     /// MCP registry handle for MCP-typed hooks (None when MCP is disabled or
     /// no server connected).
     pub(crate) hook_mcp_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
+    pub(crate) lifecycle: Vec<crate::mcp_runtime::McpLifecycleRecord>,
 }
 
 /// Inputs for [`build_main_run_toolset`]. `base` describes the shared
@@ -342,6 +343,7 @@ where
         todo_store,
         manifest,
         hook_mcp_registry: mcp_runtime.hook_registry,
+        lifecycle: mcp_runtime.lifecycle,
     })
 }
 
