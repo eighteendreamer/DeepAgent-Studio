@@ -2644,6 +2644,10 @@ impl ChatService {
             sink.emit(RuntimeEvent::McpLifecycle {
                 server_id: lifecycle.server_id.clone(),
                 status: lifecycle.status.clone(),
+                transport: lifecycle.transport.clone(),
+                config_hash: lifecycle.config_hash.clone(),
+                tool_schema_hash: lifecycle.tool_schema_hash.clone(),
+                startup_attempt: lifecycle.startup_attempt,
                 degradation_code: lifecycle.degradation_code.clone(),
                 reason: lifecycle.reason.clone(),
                 tool_count: lifecycle.tool_count,

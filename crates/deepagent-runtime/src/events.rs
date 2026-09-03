@@ -141,6 +141,14 @@ pub enum RuntimeEvent {
         server_id: String,
         status: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        transport: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_schema_hash: Option<String>,
+        #[serde(default = "default_startup_attempt")]
+        startup_attempt: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         degradation_code: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
@@ -382,6 +390,10 @@ pub enum RuntimeEvent {
     },
     /// The run was cancelled by the user (manual stop).
     RunCancelled,
+}
+
+const fn default_startup_attempt() -> u32 {
+    1
 }
 
 /// Derive row-rendering metadata from a tool name, arguments and optional

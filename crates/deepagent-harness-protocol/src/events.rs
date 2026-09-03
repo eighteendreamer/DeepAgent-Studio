@@ -121,6 +121,22 @@ pub enum HarnessEvent {
         #[serde(rename = "serverId")]
         server_id: String,
         status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transport: Option<String>,
+        #[serde(
+            rename = "configHash",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        config_hash: Option<String>,
+        #[serde(
+            rename = "toolSchemaHash",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        tool_schema_hash: Option<String>,
+        #[serde(rename = "startupAttempt")]
+        startup_attempt: u32,
         #[serde(
             rename = "degradationCode",
             default,
@@ -429,6 +445,10 @@ pub fn project_runtime_event(event: &RuntimeEvent, context: &EventContext) -> Op
         RuntimeEvent::McpLifecycle {
             server_id,
             status,
+            transport,
+            config_hash,
+            tool_schema_hash,
+            startup_attempt,
             degradation_code,
             reason,
             tool_count,
@@ -437,6 +457,10 @@ pub fn project_runtime_event(event: &RuntimeEvent, context: &EventContext) -> Op
             turn_id,
             server_id: server_id.clone(),
             status: status.clone(),
+            transport: transport.clone(),
+            config_hash: config_hash.clone(),
+            tool_schema_hash: tool_schema_hash.clone(),
+            startup_attempt: *startup_attempt,
             degradation_code: degradation_code.clone(),
             reason: reason.clone(),
             tool_count: *tool_count,

@@ -409,6 +409,7 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
             degradation_code,
             reason,
             tool_count,
+            ..
         } => format!(
             "MCP server {server_id} status={status} tools={tool_count} code={} reason={}",
             degradation_code.as_deref().unwrap_or("none"),

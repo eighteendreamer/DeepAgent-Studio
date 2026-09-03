@@ -210,6 +210,10 @@ fn mcp_degradation_projects_to_typed_lifecycle_event() {
     let event = RuntimeEvent::McpLifecycle {
         server_id: "docs".into(),
         status: "degraded".into(),
+        transport: Some("stdio".into()),
+        config_hash: Some("config-hash".into()),
+        tool_schema_hash: None,
+        startup_attempt: 1,
         degradation_code: Some("connect_failed".into()),
         reason: Some("connection refused".into()),
         tool_count: 0,
@@ -224,5 +228,6 @@ fn mcp_degradation_projects_to_typed_lifecycle_event() {
     assert_eq!(value["type"], "mcp.lifecycle");
     assert_eq!(value["serverId"], "docs");
     assert_eq!(value["degradationCode"], "connect_failed");
+    assert_eq!(value["configHash"], "config-hash");
     assert_eq!(value["toolCount"], 0);
 }
