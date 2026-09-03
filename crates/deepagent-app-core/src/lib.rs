@@ -54,6 +54,7 @@ pub mod run_config;
 pub mod run_coordinator;
 pub mod run_environment;
 pub mod run_finalizer;
+pub mod run_graph;
 pub mod runtime_event_log;
 pub mod runtime_service;
 pub mod sandbox_backend;
@@ -183,6 +184,7 @@ pub use deepagent_skills::{
 // `deepagent-builtins` directly to get the user-facing config enum.
 pub use deepagent_builtins::ToolSearchMode;
 pub use deepagent_terminal;
+pub use run_graph::{RunGraphNodeDto, RunGraphViewDto};
 pub use terminal_lease::SqliteTerminalLeaseStore;
 pub use terminal_service::{
     DirectTerminalSessionBackend, LocalPtyHandle, PtyReadChunk, TerminalService,

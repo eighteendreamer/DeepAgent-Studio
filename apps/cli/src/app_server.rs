@@ -628,6 +628,15 @@ impl ServerState {
                         (Ok(actions), Ok(approvals)) => (actions, approvals),
                         (Err(response), _) | (_, Err(response)) => return (response, None),
                     };
+                    let graph = match deepagent_app_core::run_graph::load(&self.database, &run.id) {
+                        Ok(graph) => graph,
+                        Err(error) => {
+                            return (
+                                RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string()),
+                                None,
+                            )
+                        }
+                    };
                     projected.push(serde_json::json!({
                         "runId": run.id,
                         "state": run.state,
@@ -636,6 +645,7 @@ impl ServerState {
                         "actions": actions,
                         "approvals": approvals,
                         "artifacts": artifacts
+                        ,"graph": graph
                     }));
                 }
                 projected
