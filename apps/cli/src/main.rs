@@ -12,7 +12,7 @@ use deepagent_app_core::{
     AppService, ChatService, DirectSandboxBackend, EnvSecretStore, HarnessRunOverrides,
     SandboxBackend, SandboxBackendCommandExecutor, SandboxBackendKind, SandboxCapabilities,
     SandboxMode, SandboxNetworkPolicy, SandboxieBackend, SandboxieExecutor, SandboxieService,
-    WindowsSandboxBackend,
+    SqliteSecretStore, WindowsSandboxBackend,
 };
 use deepagent_harness_protocol::{EventContext, HarnessEvent, PROTOCOL_VERSION};
 use deepagent_models::{HttpTransport, ReqwestTransport, DEEPSEEK_OFFICIAL_PROVIDER};
@@ -221,10 +221,17 @@ fn build_chat_service(
     let db_path = database_path(workspace)?;
     let db = Arc::new(Database::open(&db_path).map_err(|error| format!("open database: {error}"))?);
     let transport: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::new());
+    // Persist credentials in the shared encrypted SQLite secret store. The
+    // environment wrapper is read-only compatibility fallback for existing
+    // deployments; SettingsService writes always target SQLite.
+    let secrets = Arc::new(SqliteSecretStore::new(
+        db.clone(),
+        Arc::new(EnvSecretStore::new()),
+    ));
     let settings = Arc::new(deepagent_app_core::SettingsService::new(
         db.clone(),
         transport.clone(),
-        Arc::new(EnvSecretStore::new()),
+        secrets,
     ));
     let sandbox_mode = sandbox_mode_for_profile(options.permission_profile.as_deref())
         .or_else(|| settings.sandbox_mode().ok())
