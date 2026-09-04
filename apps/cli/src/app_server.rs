@@ -285,14 +285,20 @@ impl ServerState {
                 ),
                 None,
             ),
-            HarnessRequest::SandboxStatus(_) => (
-                RpcResponse::success(
-                    request.id,
-                    serde_json::to_value(&self.capabilities)
-                        .unwrap_or_else(|_| serde_json::json!({ "available": false })),
-                ),
-                None,
-            ),
+            HarnessRequest::SandboxStatus(_) => {
+                let mut status = serde_json::to_value(&self.capabilities)
+                    .unwrap_or_else(|_| serde_json::json!({ "available": false }));
+                if let Ok(readiness) = self.base_chat.coordinator_readiness() {
+                    if let Some(object) = status.as_object_mut() {
+                        object.insert(
+                            "coordinator".into(),
+                            serde_json::to_value(readiness)
+                                .unwrap_or_else(|_| serde_json::json!({ "ready": false })),
+                        );
+                    }
+                }
+                (RpcResponse::success(request.id, status), None)
+            }
         }
     }
 
