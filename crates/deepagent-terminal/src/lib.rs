@@ -365,4 +365,16 @@ mod tests {
         assert_eq!(json["initialHolder"], "runtime");
         assert!(json.get("run_id").is_none());
     }
+
+    #[test]
+    fn recovery_status_wire_contract_is_camel_case() {
+        let status = TerminalRecoveryStatus {
+            cursor: 4096,
+            available: false,
+        };
+        let json = serde_json::to_value(status).unwrap();
+        assert_eq!(json["cursor"], 4096);
+        assert_eq!(json["available"], false);
+        assert!(json.get("available_status").is_none());
+    }
 }
