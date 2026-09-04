@@ -1,6 +1,9 @@
 use deepagent_harness_protocol::{
-    project_runtime_event, ApprovalRespondRequest, EventContext, HarnessEvent, HarnessRequest,
-    InitializeRequest, ItemPayload, ThreadReadRequest, ThreadStartRequest, TurnStartRequest,
+    project_runtime_event, ApprovalRespondRequest, ConfigReadRequest, EventAckRequest,
+    EventContext, HarnessEvent, HarnessRequest, InitializeRequest, ItemPayload,
+    SandboxStatusRequest, ThreadArchiveRequest, ThreadForkRequest, ThreadListRequest,
+    ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, ToolListRequest,
+    TurnInterruptRequest, TurnStartRequest, TurnSteerRequest,
 };
 use deepagent_runtime::RuntimeEvent;
 
@@ -187,6 +190,94 @@ fn turn_start_request_serializes_provider_and_sandbox_overrides() {
     assert_eq!(json["method"], "turn/start");
     assert_eq!(json["params"]["threadId"], "thread-1");
     assert_eq!(json["params"]["reasoningEffort"], "high");
+}
+
+#[test]
+fn every_harness_request_variant_has_a_stable_method_and_round_trips() {
+    let requests = vec![
+        HarnessRequest::Initialize(InitializeRequest {
+            client_name: "test".into(),
+            client_version: "1".into(),
+            protocol_version: 1,
+        }),
+        HarnessRequest::ThreadStart(ThreadStartRequest {
+            cwd: None,
+            provider: None,
+            model: None,
+            permission_profile: None,
+            sandbox_backend: None,
+        }),
+        HarnessRequest::ThreadResume(ThreadResumeRequest {
+            thread_id: "thread-1".into(),
+        }),
+        HarnessRequest::ThreadList(ThreadListRequest::default()),
+        HarnessRequest::ThreadRead(ThreadReadRequest {
+            thread_id: "thread-1".into(),
+            after_sequence: None,
+            session_after_sequence: None,
+            run_after_sequence: None,
+            run_after_sequences: None,
+        }),
+        HarnessRequest::ThreadFork(ThreadForkRequest {
+            thread_id: "thread-1".into(),
+            at_sequence: None,
+        }),
+        HarnessRequest::ThreadArchive(ThreadArchiveRequest {
+            thread_id: "thread-1".into(),
+        }),
+        HarnessRequest::TurnStart(TurnStartRequest {
+            thread_id: "thread-1".into(),
+            input: "hello".into(),
+            provider: None,
+            model: None,
+            reasoning_effort: None,
+            permission_profile: None,
+            sandbox_backend: None,
+        }),
+        HarnessRequest::TurnInterrupt(TurnInterruptRequest {
+            thread_id: "thread-1".into(),
+            turn_id: "turn-1".into(),
+        }),
+        HarnessRequest::TurnSteer(TurnSteerRequest {
+            thread_id: "thread-1".into(),
+            turn_id: "turn-1".into(),
+            input: "continue".into(),
+        }),
+        HarnessRequest::ApprovalRespond(ApprovalRespondRequest {
+            approval_id: "approval-1".into(),
+            approved: false,
+            scope: None,
+        }),
+        HarnessRequest::EventAck(EventAckRequest { event_sequence: 7 }),
+        HarnessRequest::ToolList(ToolListRequest::default()),
+        HarnessRequest::ConfigRead(ConfigReadRequest::default()),
+        HarnessRequest::SandboxStatus(SandboxStatusRequest::default()),
+    ];
+    let expected_methods = [
+        "initialize",
+        "thread/start",
+        "thread/resume",
+        "thread/list",
+        "thread/read",
+        "thread/fork",
+        "thread/archive",
+        "turn/start",
+        "turn/interrupt",
+        "turn/steer",
+        "approval/respond",
+        "event/ack",
+        "tool/list",
+        "config/read",
+        "sandbox/status",
+    ];
+
+    assert_eq!(requests.len(), expected_methods.len());
+    for (request, expected_method) in requests.into_iter().zip(expected_methods) {
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(value["method"], expected_method);
+        let decoded: HarnessRequest = serde_json::from_value(value).expect("decode request");
+        assert_eq!(decoded, request);
+    }
 }
 
 #[test]
