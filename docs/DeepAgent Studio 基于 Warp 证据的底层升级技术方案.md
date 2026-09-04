@@ -6,6 +6,10 @@
 >
 > 目标：只吸收 Warp 中能够由本地源码复核、且确实对应 DeepAgent 底层不足的技术点。已经存在的能力不重复建设；无法由本地源码证明的 Warp 云端能力不作为事实或验收依据。
 
+### 术语澄清：cursor ≠ Cursor
+
+本文中的 `cursor` 一律指**数据流游标/读取偏移**：例如事件流或终端输出已经读到第几个字节，客户端断线后从该位置继续读取。它是协议和存储字段，不是 Cursor 编辑器、Cursor Agent 或 Cursor 软件集成。除非另有单独的产品需求，本项目不安装、不调用、也不依赖 Cursor 软件。
+
 ## 1. 先说结论
 
 本系统目前最需要升级的不是再增加几个工具或再接一个入口，而是把已有能力从“进程内可运行”升级为“可恢复、可观测、可部署、可跨执行后端”。当前代码已经有不少正确的组件：`AgentKernel`、`RuntimeEngine`、`ToolExecutionPipeline`、`RunStore`、`EventStore`、审批 gate、输入租约、MCP registry、SandboxBackend、SSH、子代理 store 和 stdio harness。但这些组件之间还存在明显的控制面断层：
