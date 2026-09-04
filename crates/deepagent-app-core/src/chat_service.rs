@@ -474,6 +474,11 @@ impl ChatService {
         self.coordinator.request_cancel(session_id)
     }
 
+    /// Read the shared coordinator's durable readiness projection.
+    pub fn coordinator_readiness(&self) -> Result<crate::run_coordinator::CoordinatorReadiness> {
+        self.coordinator.readiness()
+    }
+
     /// Persist that a steering request created a replacement turn.
     pub fn record_continuation(
         &self,

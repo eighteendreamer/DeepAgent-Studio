@@ -8,9 +8,11 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use deepagent_core::error::Result;
+use deepagent_core::error::{CoreError, Result};
 use deepagent_persistence::run_control::RunControlStore;
+use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
+use serde::Serialize;
 
 use crate::approval_bridge::PendingApprovals;
 
@@ -29,6 +31,18 @@ pub struct CancelRequest {
     pub accepted: bool,
 }
 
+/// Read-only readiness projection for the local coordinator. It reports
+/// durable control pressure without creating a second runtime or event store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoordinatorReadiness {
+    pub ready: bool,
+    pub active_runs: usize,
+    pub pending_approvals: u64,
+    pub running_actions: u64,
+    pub expired_leases: u64,
+}
+
 impl RunCoordinator {
     pub fn new(db: Arc<Database>) -> Self {
         Self {
@@ -41,6 +55,44 @@ impl RunCoordinator {
 
     pub fn pending(&self) -> PendingApprovals {
         self.pending.clone()
+    }
+
+    pub fn readiness(&self) -> Result<CoordinatorReadiness> {
+        let active_runs = RunStore::new(&self.db).unfinished()?.len();
+        let (pending_approvals, running_actions, expired_leases) =
+            self.db.with_conn(|connection| {
+                let pending: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM run_approvals WHERE state='pending'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| CoreError::Persistence(error.to_string()))?;
+                let running: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM run_actions WHERE state='running'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| CoreError::Persistence(error.to_string()))?;
+                let expired: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM execution_leases WHERE expires_at <= ?1 AND revoked_at IS NULL",
+                [now_millis()],
+                |row| row.get(0),
+            ).map_err(|error| CoreError::Persistence(error.to_string()))?;
+                Ok((
+                    pending.max(0) as u64,
+                    running.max(0) as u64,
+                    expired.max(0) as u64,
+                ))
+            })?;
+        Ok(CoordinatorReadiness {
+            ready: true,
+            active_runs,
+            pending_approvals,
+            running_actions,
+            expired_leases,
+        })
     }
 
     pub(crate) fn cancellation_map(&self) -> CancellationMap {
@@ -244,6 +296,19 @@ mod tests {
     use deepagent_persistence::event_store::EventStore;
     use deepagent_persistence::run_control::{NewRunAction, NewRunApproval, RunActionState};
     use deepagent_persistence::run_store::RunStore;
+
+    #[test]
+    fn readiness_reads_shared_durable_control_plane() {
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let readiness = RunCoordinator::new(db).readiness().expect("readiness");
+        assert!(readiness.ready);
+        assert_eq!(readiness.active_runs, 0);
+        assert_eq!(readiness.pending_approvals, 0);
+        assert_eq!(readiness.running_actions, 0);
+        assert_eq!(readiness.expired_leases, 0);
+        let json = serde_json::to_value(readiness).expect("json");
+        assert_eq!(json["activeRuns"], 0);
+    }
 
     #[test]
     fn cancel_persists_against_canonical_run_for_session_alias() {

@@ -3985,6 +3985,11 @@ async fn terminal_session_open(
 }
 
 #[tauri::command]
+fn coordinator_readiness(state: State<'_, AppState>) -> Result<deepagent_app_core::CoordinatorReadiness, String> {
+    state.chat.coordinator_readiness().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn terminal_session_write(
     state: State<'_, AppState>,
     session: TerminalSession,
@@ -5876,6 +5881,7 @@ pub fn run() {
             local_pty_resize,
             local_pty_close,
             terminal_session_open,
+            coordinator_readiness,
             terminal_session_write,
             terminal_session_read,
             terminal_session_last_cursor,

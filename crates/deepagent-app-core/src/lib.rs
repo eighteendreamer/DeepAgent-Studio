@@ -141,7 +141,7 @@ pub use project_map_service::{
 };
 pub use project_service::{folder_name, ProjectService};
 pub use recording_service::{AudioRecorder, RecordingService, UnavailableRecorder};
-pub use run_coordinator::RunCoordinator;
+pub use run_coordinator::{CoordinatorReadiness, RunCoordinator};
 pub use runtime_service::{
     default_registry, ArchiveKind, Downloader, Platform, RuntimeArtifact, RuntimeBroker,
     RuntimeDiagnostic, RuntimeEntry, RuntimeKind, RuntimePreference, RuntimeRequirement,
