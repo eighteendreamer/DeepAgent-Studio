@@ -2627,6 +2627,12 @@ export async function terminalSessionRead(
   return invoke<TerminalReadChunk>("terminal_session_read", { session, afterCursor });
 }
 
+export async function terminalSessionLastCursor(sessionId: string): Promise<number> {
+  const invoke = getInvoke();
+  if (!invoke) return 0;
+  return invoke<number>("terminal_session_last_cursor", { sessionId });
+}
+
 export async function terminalSessionResize(
   session: TerminalSession,
   lease: TerminalInputLease,

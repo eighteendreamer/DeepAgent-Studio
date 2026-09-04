@@ -107,6 +107,10 @@ pub trait TerminalLeasePersistence: Send + Sync {
     fn record_cursor(&self, _session_id: &str, _cursor: u64) -> TerminalResult<()> {
         Ok(())
     }
+
+    fn last_cursor(&self, _session_id: &str) -> TerminalResult<u64> {
+        Ok(0)
+    }
 }
 
 impl std::fmt::Debug for TerminalLeaseRegistry {
@@ -212,6 +216,12 @@ impl TerminalLeaseRegistry {
             durable.record_cursor(session_id, cursor)?;
         }
         Ok(())
+    }
+
+    pub fn last_cursor(&self, session_id: &str) -> TerminalResult<u64> {
+        self.durable
+            .as_ref()
+            .map_or(Ok(0), |durable| durable.last_cursor(session_id))
     }
 }
 

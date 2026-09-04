@@ -140,6 +140,10 @@ impl DirectTerminalSessionBackend {
             rows: session.rows,
         }
     }
+
+    pub fn last_cursor(&self, session_id: &str) -> deepagent_terminal::TerminalResult<u64> {
+        self.leases.last_cursor(session_id)
+    }
 }
 
 impl TerminalService {

@@ -226,6 +226,11 @@ impl TerminalLeasePersistence for SqliteTerminalLeaseStore {
             })
             .map_err(|error| TerminalError::Backend(error.to_string()))
     }
+
+    fn last_cursor(&self, session_id: &str) -> TerminalResult<u64> {
+        SqliteTerminalLeaseStore::last_cursor(self, session_id)
+            .map_err(|error| TerminalError::Backend(error.to_string()))
+    }
 }
 
 fn holder_name(holder: TerminalInputHolder) -> &'static str {

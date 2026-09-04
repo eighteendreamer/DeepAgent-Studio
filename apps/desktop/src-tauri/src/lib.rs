@@ -4012,6 +4012,17 @@ async fn terminal_session_read(
 }
 
 #[tauri::command]
+fn terminal_session_last_cursor(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<u64, String> {
+    state
+        .terminal_sessions
+        .last_cursor(&session_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn terminal_session_resize(
     state: State<'_, AppState>,
     session: TerminalSession,
@@ -5855,6 +5866,7 @@ pub fn run() {
             terminal_session_open,
             terminal_session_write,
             terminal_session_read,
+            terminal_session_last_cursor,
             terminal_session_resize,
             terminal_session_takeover,
             terminal_session_release,

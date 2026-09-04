@@ -618,6 +618,7 @@ P0 durable control plane
 - Direct adapter 另提供 `with_sqlite_lease_store(...)` 生产构造器，使用固定 30 分钟 TTL，并在 SQLite store 配置失败时返回错误而不静默降级到内存 lease；桌面入口尚未切换到该构造器，切换仍需同步 Tauri 命令和前端 session 协议。
 - 桌面端已把带 SQLite lease 的 Direct adapter 放入 `AppState`，并新增 `terminal_session_open/read/write/resize/takeover/release/close` Tauri 命令及 TypeScript API；旧 `local_pty_*` 命令继续兼容。新协议的 session/lease 字段和 epoch fencing 已具备真实生产入口，但 PTY 句柄仍是进程内资源，重启后的 reattach 尚未宣称完成。
 - 新增 V16 `terminal_session_cursors` 表和 `TerminalLeasePersistence::record_cursor`：共享 Direct backend 每次读取后持久化单调 cursor，重连可读取最后确认位置；cursor 只表示字节偏移，不是 Cursor 编辑器集成，也不能替代 PTY 句柄重绑。
+- 新增 `TerminalLeasePersistence::last_cursor`、`DirectTerminalSessionBackend::last_cursor` 及 Tauri/TypeScript 的 `terminal_session_last_cursor`，客户端可在重连前查询已确认位置；该查询只提供恢复起点，若进程内 PTY 历史已截断或句柄不存在，协议仍必须报告不可恢复。
 - `f2fbcaf`：stdio app-server 改为每连接一个有界单 writer event outbox，通知带单调 `eventSequence`；新增 `event/ack` 单调确认协议，队列满时明确记录 drop/backpressure，而不是为每个事件无序 `spawn` writer。
 - `f2fbcaf` 同时增加 `event/ack` 的单调回退保护测试；当前 outbox 是连接级有界内存队列，重连 replay 仍通过 `thread/read` cursor 完成，不把 ACK 误写成跨进程 durable outbox。
 - `443da90`：新增 `RuntimeEvent::McpLifecycle` 与 harness `mcp.lifecycle` typed event；连接成功记录 server/tool count，单 server 连接失败记录 `connect_failed` degradation，整体 resolve 失败记录 `resolve_failed`，并进入 run event ledger 与 runtime log，而不是继续压成 generic runtime item。
