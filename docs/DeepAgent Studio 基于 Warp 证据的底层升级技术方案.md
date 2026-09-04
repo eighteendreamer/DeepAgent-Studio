@@ -628,6 +628,7 @@ P0 durable control plane
 - 新增 `TerminalLeasePersistence::last_cursor`、`DirectTerminalSessionBackend::last_cursor` 及 Tauri/TypeScript 的 `terminal_session_last_cursor`，客户端可在重连前查询已确认位置；该查询只提供恢复起点，若进程内 PTY 历史已截断或句柄不存在，协议仍必须报告不可恢复。
 - `f2fbcaf`：stdio app-server 改为每连接一个有界单 writer event outbox，通知带单调 `eventSequence`；新增 `event/ack` 单调确认协议，队列满时明确记录 drop/backpressure，而不是为每个事件无序 `spawn` writer。
 - `f2fbcaf` 同时增加 `event/ack` 的单调回退保护测试；当前 outbox 是连接级有界内存队列，重连 replay 仍通过 `thread/read` cursor 完成，不把 ACK 误写成跨进程 durable outbox。
+- `d4d6d7c`、`04b3a68`、`8b55aa1`：锁定全部 Harness 请求方法的稳定名称与 JSON 往返契约，并从协议 crate 根部导出 `EventAckRequest`，使外部 SDK 可以构造 `event/ack`。
 - `443da90`：新增 `RuntimeEvent::McpLifecycle` 与 harness `mcp.lifecycle` typed event；连接成功记录 server/tool count，单 server 连接失败记录 `connect_failed` degradation，整体 resolve 失败记录 `resolve_failed`，并进入 run event ledger 与 runtime log，而不是继续压成 generic runtime item。
 - `92faaf1`：MCP 生命周期快照增加 transport、脱敏后的 `configHash`（只纳入 env/header key，不写 secret）、`toolSchemaHash`、`startupAttempt`，并补充协议字段投影测试。
 - `319dde5`：新增只读 `RunGraphViewDto`，将 `runs` 主节点与 `subagent_runs` 子节点统一投影为 `rootRunId + nodes`，并在 CLI `thread/read` 每个 run projection 中返回 `graph`；底层仍复用两张既有事实表，不复制第二套生命周期存储。
