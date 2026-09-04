@@ -49,7 +49,7 @@ use deepagent_ssh::SshService;
 use async_trait::async_trait;
 use deepagent_terminal::{
     TerminalInputHolder, TerminalInputLease, TerminalOpenRequest, TerminalReadChunk,
-    TerminalSession, TerminalSessionBackend,
+    TerminalRecoveryStatus, TerminalSession, TerminalSessionBackend,
 };
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
@@ -4023,6 +4023,18 @@ fn terminal_session_last_cursor(
 }
 
 #[tauri::command]
+async fn terminal_session_recovery_status(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<TerminalRecoveryStatus, String> {
+    state
+        .terminal_sessions
+        .recovery_status(&session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn terminal_session_resize(
     state: State<'_, AppState>,
     session: TerminalSession,
@@ -5867,6 +5879,7 @@ pub fn run() {
             terminal_session_write,
             terminal_session_read,
             terminal_session_last_cursor,
+            terminal_session_recovery_status,
             terminal_session_resize,
             terminal_session_takeover,
             terminal_session_release,

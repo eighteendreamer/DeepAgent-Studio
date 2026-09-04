@@ -83,6 +83,15 @@ pub struct TerminalReadChunk {
     pub truncated: bool,
 }
 
+/// State returned when a client asks whether a persisted cursor can still be
+/// attached to a live terminal session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalRecoveryStatus {
+    pub cursor: u64,
+    pub available: bool,
+}
+
 /// Process-local input ownership with epoch fencing. A stale lease can never
 /// write after a takeover, even if its holder still has the old value.
 pub struct TerminalLeaseRegistry {

@@ -2594,6 +2594,11 @@ export interface TerminalReadChunk {
   truncated: boolean;
 }
 
+export interface TerminalRecoveryStatus {
+  cursor: number;
+  available: boolean;
+}
+
 /** Shared session/lease terminal API; legacy localPty* helpers remain compatible. */
 export async function terminalSessionOpen(
   runId: string,
@@ -2631,6 +2636,15 @@ export async function terminalSessionLastCursor(sessionId: string): Promise<numb
   const invoke = getInvoke();
   if (!invoke) return 0;
   return invoke<number>("terminal_session_last_cursor", { sessionId });
+}
+
+/** Query whether the persisted cursor still points to a live local PTY. */
+export async function terminalSessionRecoveryStatus(
+  sessionId: string,
+): Promise<TerminalRecoveryStatus> {
+  const invoke = getInvoke();
+  if (!invoke) return { cursor: 0, available: false };
+  return invoke<TerminalRecoveryStatus>("terminal_session_recovery_status", { sessionId });
 }
 
 export async function terminalSessionResize(

@@ -20,8 +20,8 @@ use deepagent_builtins::{is_dangerous, CommandExecutor, SystemExecutor};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_terminal::{
     TerminalError, TerminalInputHolder, TerminalInputLease, TerminalLeasePersistence,
-    TerminalLeaseRegistry, TerminalOpenRequest, TerminalReadChunk, TerminalSession,
-    TerminalSessionBackend, TerminalSignal,
+    TerminalLeaseRegistry, TerminalOpenRequest, TerminalReadChunk, TerminalRecoveryStatus,
+    TerminalSession, TerminalSessionBackend, TerminalSignal,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
@@ -143,6 +143,17 @@ impl DirectTerminalSessionBackend {
 
     pub fn last_cursor(&self, session_id: &str) -> deepagent_terminal::TerminalResult<u64> {
         self.leases.last_cursor(session_id)
+    }
+
+    pub async fn recovery_status(
+        &self,
+        session_id: &str,
+    ) -> deepagent_terminal::TerminalResult<TerminalRecoveryStatus> {
+        let cursor = self.last_cursor(session_id)?;
+        Ok(TerminalRecoveryStatus {
+            cursor,
+            available: self.service.pty_exists(session_id).await,
+        })
     }
 }
 
@@ -305,6 +316,11 @@ impl TerminalService {
             .ok_or_else(|| CoreError::not_found(format!("pty {} not found", handle.pty_id)))?;
         let chunks = drain_pty_output(&state).await;
         Ok(chunks.into_iter().flat_map(|(_, data)| data).collect())
+    }
+
+    /// Check whether a local PTY handle is still owned by this process.
+    pub async fn pty_exists(&self, pty_id: &str) -> bool {
+        self.ptys.read().await.contains_key(pty_id)
     }
 
     /// Read PTY output after a byte cursor. The history is intentionally
