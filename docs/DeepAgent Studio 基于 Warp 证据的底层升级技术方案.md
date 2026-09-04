@@ -10,6 +10,8 @@
 
 本文中的 `cursor` 一律指**数据流游标/读取偏移**：例如事件流或终端输出已经读到第几个字节，客户端断线后从该位置继续读取。它是协议和存储字段，不是 Cursor 编辑器、Cursor Agent 或 Cursor 软件集成。除非另有单独的产品需求，本项目不安装、不调用、也不依赖 Cursor 软件。
 
+具体语义：服务端返回一段终端输出并将当前偏移记为 `cursor=4096`，客户端确认收到后把 `4096` 作为下一次 `read(after_cursor)` 的起点；重连时服务端只返回偏移之后的内容。这个值可以持久化到 SQLite，但它不保存输出正文，也不保证原来的 PTY 进程、句柄或内存历史仍然存在；若底层会话已消失，协议必须返回“不可恢复”，而不能把 cursor 当成会话重绑凭证。
+
 ## 1. 先说结论
 
 本系统目前最需要升级的不是再增加几个工具或再接一个入口，而是把已有能力从“进程内可运行”升级为“可恢复、可观测、可部署、可跨执行后端”。当前代码已经有不少正确的组件：`AgentKernel`、`RuntimeEngine`、`ToolExecutionPipeline`、`RunStore`、`EventStore`、审批 gate、输入租约、MCP registry、SandboxBackend、SSH、子代理 store 和 stdio harness。但这些组件之间还存在明显的控制面断层：
