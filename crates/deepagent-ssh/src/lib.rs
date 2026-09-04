@@ -91,6 +91,12 @@ impl SshTerminalSessionBackend {
         }
     }
 
+    /// Return the last output cursor durably acknowledged for this session.
+    /// A zero value is returned by the compatibility in-memory registry.
+    pub fn last_cursor(&self, session_id: &str) -> deepagent_terminal::TerminalResult<u64> {
+        self.leases.last_cursor(session_id)
+    }
+
     fn handle(&self, session: &TerminalSession) -> Result<SshServiceHandle, TerminalError> {
         if session.backend != self.backend_kind() || !session.session_id.starts_with("ssh:") {
             return Err(TerminalError::SessionNotFound(session.session_id.clone()));
@@ -165,10 +171,17 @@ impl TerminalSessionBackend for SshTerminalSessionBackend {
         after_cursor: u64,
     ) -> deepagent_terminal::TerminalResult<TerminalReadChunk> {
         let handle = self.handle(session)?;
-        self.service
+        let chunk = self
+            .service
             .pty_read_with_cursor(&handle, after_cursor)
             .await
-            .map_err(|e| TerminalError::Backend(e.to_string()))
+            .map_err(|e| TerminalError::Backend(e.to_string()))?;
+        // Keep SSH and Direct backends on the same durable cursor contract.
+        // The cursor is an acknowledgement point only; the PTY history remains
+        // owned by the SSH service and may still be unavailable after restart.
+        self.leases
+            .record_cursor(&session.session_id, chunk.cursor)?;
+        Ok(chunk)
     }
 
     async fn resize(
