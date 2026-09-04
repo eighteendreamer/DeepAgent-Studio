@@ -11,8 +11,11 @@
 //! inside the Rust binary without relying on `ssh.exe`, `plink`, or `sshpass`.
 //!
 //! Persistence:
-//! Connection configs are stored in the app data directory
-//! (`<app_data>/deepagent-ssh/connections.json`) so they survive app restarts.
+//! The desktop application injects an encrypted SQLite-backed
+//! [`SshConfigStore`], so connection metadata and credentials survive app
+//! restarts without remaining in a plaintext JSON file. The default
+//! compatibility constructor still uses the legacy JSON store for callers
+//! outside the desktop application; it is not the desktop production path.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
