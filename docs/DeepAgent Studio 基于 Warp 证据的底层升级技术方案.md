@@ -617,6 +617,7 @@ P0 durable control plane
 - `ebd5ff3`：本地 PTY 增加进程内有界输出历史、单调 byte cursor、`truncated` 续读语义，并通过 Tauri/TypeScript 暴露 `local_pty_read_cursor`；旧 `local_pty_read` 保持兼容。
 - `b43e322`：新增 `deepagent-terminal` 共享内核边界，定义 `TerminalSessionBackend`、Direct backend、输入租约 takeover/release 与 epoch fencing。
 - `aa434d3`：SSH PTY 接入同一 TerminalSession 协议，增加 SSH 输出 cursor/history 和 lease 校验；SSH 与 Direct 仍由各自服务拥有底层连接生命周期。
+- `d2f2074`：SSH TerminalSessionBackend 与 Direct 对齐，读取后的输出 cursor 通过同一 `TerminalLeasePersistence` 单调写入 SQLite，并提供 `last_cursor` 查询；这只保存恢复起点，不宣称 SSH PTY 跨重启可重绑。
 - `efd22c8`、`e7e5958`：复用 `execution_leases` 建立 `SqliteTerminalLeaseStore`，支持 terminal session/run scope、原子 takeover、renew、revoke、epoch fencing；共享 registry 可切换到该持久化实现，并补充重建数据库连接后的验证测试。
 - 当前又补齐 Direct/SSH adapter 的显式 `with_lease_persistence(...)` 构造器：装配层可注入同一 `SqliteTerminalLeaseStore`，旧 `new(...)` 保持进程内兼容模式。当前桌面 TerminalService 仍主要走既有直接命令/PTY 命令，尚未把该 adapter 作为唯一生产入口，因此这里只声明“边界可持久化”，不误报为桌面端跨进程 lease 已全面启用。
 - Direct adapter 另提供 `with_sqlite_lease_store(...)` 生产构造器，使用固定 30 分钟 TTL，并在 SQLite store 配置失败时返回错误而不静默降级到内存 lease；桌面入口尚未切换到该构造器，切换仍需同步 Tauri 命令和前端 session 协议。
