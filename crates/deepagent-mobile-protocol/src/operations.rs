@@ -29,6 +29,7 @@ pub enum MobileOperationKind {
     ListAvds,
     StartEmulator(StartEmulatorRequest),
     StopEmulator(StopEmulatorRequest),
+    FindNodes(FindNodeRequest),
 }
 
 /// Target an installed application by package name (Android) or bundle ID
@@ -150,6 +151,35 @@ pub struct StartEmulatorRequest {
 pub struct StopEmulatorRequest {
     /// ADB serial of the running emulator (e.g., "emulator-5554").
     pub serial: String,
+}
+
+/// Filter criteria for finding nodes in a UI snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeFilter {
+    /// Match nodes containing this text (case-insensitive substring).
+    pub text: Option<String>,
+    /// Match nodes with this resource-id (exact match).
+    pub resource_id: Option<String>,
+    /// Match nodes with this content-desc (case-insensitive substring).
+    pub content_desc: Option<String>,
+    /// Match nodes with this role.
+    pub role: Option<super::UiRole>,
+}
+
+/// Request to find nodes in a UI snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindNodeRequest {
+    pub device_id: String,
+    pub snapshot_id: String,
+    pub filter: NodeFilter,
+}
+
+/// Result of a find-node operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindNodeResult {
+    pub snapshot_id: String,
+    pub matches: Vec<super::UiNode>,
+    pub total_nodes_searched: u32,
 }
 
 #[cfg(test)]

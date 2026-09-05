@@ -54,6 +54,202 @@ impl UiSnapshot {
             .flat_map(|n| &n.children)
             .any(|c| !all_ids.contains(c.as_str()))
     }
+
+    /// Find all nodes matching the given filter criteria.
+    ///
+    /// All specified filter fields must match (AND logic). Unspecified fields
+    /// are ignored. Text and content_desc matches are case-insensitive
+    /// substring matches; resource_id is an exact match.
+    pub fn find_by_filter(&self, filter: &super::NodeFilter) -> Vec<&UiNode> {
+        self.nodes
+            .iter()
+            .filter(|node| {
+                if let Some(ref text) = filter.text {
+                    let node_text = node.text.as_deref().unwrap_or("");
+                    let node_label = node.label.as_deref().unwrap_or("");
+                    if !node_text.to_lowercase().contains(&text.to_lowercase())
+                        && !node_label.to_lowercase().contains(&text.to_lowercase())
+                    {
+                        return false;
+                    }
+                }
+                if let Some(ref rid) = filter.resource_id {
+                    if node.accessibility_id.as_deref() != Some(rid.as_str()) {
+                        return false;
+                    }
+                }
+                if let Some(ref desc) = filter.content_desc {
+                    let node_desc = node.accessibility_id.as_deref().unwrap_or("");
+                    if !node_desc.to_lowercase().contains(&desc.to_lowercase()) {
+                        return false;
+                    }
+                }
+                if let Some(ref role) = filter.role {
+                    if node.role != *role {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect()
+    }
+
+    /// Redact sensitive fields in the snapshot (passwords, emails, phones).
+    ///
+    /// Returns a new snapshot with sensitive text replaced by placeholders.
+    pub fn redact_sensitive(&self) -> UiSnapshot {
+        let mut redacted = self.clone();
+        for node in &mut redacted.nodes {
+            if node.role == UiRole::Password {
+                node.text = Some("[redacted:password]".into());
+                node.label = None;
+                node.accessibility_id = None;
+                continue;
+            }
+            if let Some(ref text) = node.text {
+                node.text = Some(redact_text(text));
+            }
+            if let Some(ref label) = node.label {
+                node.label = Some(redact_text(label));
+            }
+            if let Some(ref desc) = node.accessibility_id {
+                node.accessibility_id = Some(redact_text(desc));
+            }
+        }
+        redacted
+    }
+}
+
+/// Redact sensitive patterns in text.
+///
+/// Detects and replaces:
+/// - Email addresses → `[redacted:email]`
+/// - Phone numbers (10+ digits) → `[redacted:phone]`
+/// - Password-like fields (node role is Password) → `[redacted:password]`
+fn redact_text(text: &str) -> String {
+    let result = redact_emails(text);
+    redact_phones(&result)
+}
+
+/// Detect and redact email addresses in text (no regex dependency).
+///
+/// Finds substrings of the form `word@word.word` and replaces them.
+fn redact_emails(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if let Some(at_pos) = find_email_start(&chars, i) {
+            // Copy everything before the email
+            let prefix: String = chars[i..at_pos].iter().collect();
+            result.push_str(&prefix);
+
+            // Find the end of the email
+            if let Some(end) = find_email_end(&chars, at_pos) {
+                result.push_str("[redacted:email]");
+                i = end;
+            } else {
+                result.push(chars[at_pos]);
+                i = at_pos + 1;
+            }
+        } else {
+            let rest: String = chars[i..].iter().collect();
+            result.push_str(&rest);
+            break;
+        }
+    }
+    result
+}
+
+fn find_email_start(chars: &[char], from: usize) -> Option<usize> {
+    for i in from..chars.len() {
+        if chars[i] == '@' && i > 0 && i < chars.len() - 1 {
+            let local = &chars[..i];
+            let has_local = local
+                .iter()
+                .rev()
+                .take_while(|c| is_email_local(**c))
+                .count()
+                > 0;
+            let domain = &chars[i + 1..];
+            let has_domain = domain.iter().take_while(|c| is_email_domain(**c)).count() > 1;
+            if has_local && has_domain {
+                // Find start of local part
+                let local_start = i - local
+                    .iter()
+                    .rev()
+                    .take_while(|c| is_email_local(**c))
+                    .count();
+                return Some(local_start);
+            }
+        }
+    }
+    None
+}
+
+fn find_email_end(chars: &[char], at_pos: usize) -> Option<usize> {
+    let domain_start = at_pos + 1;
+    let domain_len = chars[domain_start..]
+        .iter()
+        .take_while(|c| is_email_domain(**c))
+        .count();
+    if domain_len > 1 {
+        Some(domain_start + domain_len)
+    } else {
+        None
+    }
+}
+
+fn is_email_local(c: char) -> bool {
+    c.is_alphanumeric() || c == '.' || c == '_' || c == '-' || c == '+'
+}
+
+fn is_email_domain(c: char) -> bool {
+    c.is_alphanumeric() || c == '.' || c == '-'
+}
+
+/// Detect and redact phone numbers (10+ consecutive digits, ignoring
+/// separators like spaces, dashes, parens).
+fn redact_phones(text: &str) -> String {
+    let digits: Vec<char> = text.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() < 10 {
+        return text.to_string();
+    }
+
+    // Find contiguous runs of digit+separator characters
+    let mut result = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i].is_ascii_digit() {
+            let start = i;
+            let mut digit_count = 0;
+            while i < len && (chars[i].is_ascii_digit() || is_phone_separator(chars[i])) {
+                if chars[i].is_ascii_digit() {
+                    digit_count += 1;
+                }
+                i += 1;
+            }
+            if digit_count >= 10 {
+                result.push_str("[redacted:phone]");
+            } else {
+                let segment: String = chars[start..i].iter().collect();
+                result.push_str(&segment);
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result
+}
+
+fn is_phone_separator(c: char) -> bool {
+    matches!(c, ' ' | '-' | '(' | ')' | '.')
 }
 
 /// A single node in the unified UI tree.
@@ -91,6 +287,7 @@ pub enum UiRole {
     Button,
     Text,
     TextBox,
+    Password,
     Image,
     List,
     ListItem,
