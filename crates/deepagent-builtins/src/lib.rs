@@ -110,7 +110,8 @@ pub use knowledge_tools::{
 };
 pub use mobile_tools::{
     mobile_tools, ArtifactRefDto, MobileBackend, MobileDeviceDto, MobileDeviceInfoTool,
-    MobileListDevicesTool, MobileScreenshotTool, MobileUiSnapshotTool, UnavailableMobileBackend,
+    MobileInputTool, MobileInstallTool, MobileLaunchTool, MobileListDevicesTool,
+    MobileScreenshotTool, MobileTerminateTool, MobileUiSnapshotTool, UnavailableMobileBackend,
     MOBILE_DEVICE_INFO_TOOL_NAME, MOBILE_INPUT_TOOL_NAME, MOBILE_INSTALL_TOOL_NAME,
     MOBILE_LAUNCH_TOOL_NAME, MOBILE_LIST_DEVICES_TOOL_NAME, MOBILE_READ_LOGS_TOOL_NAME,
     MOBILE_SCREENSHOT_TOOL_NAME, MOBILE_TERMINATE_TOOL_NAME, MOBILE_UI_SNAPSHOT_TOOL_NAME,
