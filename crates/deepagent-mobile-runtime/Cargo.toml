@@ -1,0 +1,25 @@
+[package]
+name = "deepagent-mobile-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Device state machine, operation lifecycle and backend orchestration for DeepAgent Mobile."
+
+[dependencies]
+deepagent-mobile-core = { path = "../deepagent-mobile-core" }
+deepagent-mobile-protocol = { path = "../deepagent-mobile-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
+time.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+serde_json.workspace = true

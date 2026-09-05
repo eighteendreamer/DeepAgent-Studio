@@ -1,0 +1,18 @@
+[package]
+name = "deepagent-mobile-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Platform-agnostic domain types, capabilities and errors for DeepAgent Mobile subsystem."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

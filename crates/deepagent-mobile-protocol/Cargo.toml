@@ -1,0 +1,18 @@
+[package]
+name = "deepagent-mobile-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Stable DTOs, commands, events and versioning for DeepAgent Mobile subsystem."
+
+[dependencies]
+deepagent-mobile-core = { path = "../deepagent-mobile-core" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
