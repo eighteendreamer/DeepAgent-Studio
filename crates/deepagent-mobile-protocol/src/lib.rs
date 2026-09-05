@@ -5,11 +5,16 @@
 //! operation requests, UI tree structures, mobile events, and the protocol
 //! version. It depends only on `deepagent-mobile-core`.
 
+mod artifact;
 mod events;
 mod network;
 mod operations;
 mod ui;
 
+pub use artifact::{
+    ArtifactKind, ArtifactLifecycle, ArtifactListRequest, ArtifactListResponse,
+    ArtifactPurgeRequest, ArtifactPurgeResult, ArtifactQuery, ArtifactRecord, MAX_ARTIFACT_SIZE,
+};
 pub use events::MobileEvent;
 pub use network::{
     NetworkRecord, NetworkRequest, NetworkResponse, MAX_BODY_SIZE, SENSITIVE_HEADERS,
