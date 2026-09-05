@@ -15,6 +15,7 @@ mod device_registry;
 mod discovery;
 mod operation;
 mod remote_mac;
+mod remote_mac_manager;
 mod snapshot_store;
 
 pub use artifact_store::{ArtifactStore, ArtifactStoreError, RegisterArtifactRequest};
@@ -24,5 +25,8 @@ pub use discovery::{run_discovery_loop, DiscoveryConfig};
 pub use operation::{OperationContext, OperationHandle};
 pub use remote_mac::{
     FakeRemoteTransport, RemoteMacSession, RemoteTransport, RemoteTransportError,
+};
+pub use remote_mac_manager::{
+    AggregatedHealth, MacHealthEntry, RemoteMacManager, RemoteMacManagerError, TransportFactory,
 };
 pub use snapshot_store::SnapshotStore;

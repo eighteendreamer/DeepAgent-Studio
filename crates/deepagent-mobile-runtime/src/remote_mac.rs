@@ -97,6 +97,20 @@ impl FakeRemoteTransport {
         }
     }
 
+    /// Create a transport pre-configured with initial health and response.
+    ///
+    /// This constructor is synchronous and safe to call from async contexts.
+    pub fn with_initial_state(
+        health: RemoteMacHealth,
+        response: Option<RemoteMacResponse>,
+    ) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RemoteMacState::Disconnected)),
+            health: Arc::new(Mutex::new(health)),
+            response: Arc::new(Mutex::new(response)),
+        }
+    }
+
     pub async fn set_state(&self, state: RemoteMacState) {
         *self.state.lock().await = state;
     }
