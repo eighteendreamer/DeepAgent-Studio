@@ -5,19 +5,29 @@
 //! operation requests, UI tree structures, mobile events, and the protocol
 //! version. It depends only on `deepagent-mobile-core`.
 
+mod app_sdk;
 mod artifact;
 mod events;
+mod framework;
 mod ios;
 mod network;
 mod operations;
 mod remote_mac;
 mod ui;
 
+pub use app_sdk::{
+    AppLifecycleState, AppSdkEnvelope, AppSdkKind, AppSdkPayload, ConsoleLogEntry, ConsoleLogLevel,
+    HelloPayload, LifecyclePayload, NetworkRecordPayload, SdkCapabilities,
+    APP_SDK_PROTOCOL_VERSION,
+};
 pub use artifact::{
     ArtifactKind, ArtifactLifecycle, ArtifactListRequest, ArtifactListResponse,
     ArtifactPurgeRequest, ArtifactPurgeResult, ArtifactQuery, ArtifactRecord, MAX_ARTIFACT_SIZE,
 };
 pub use events::MobileEvent;
+pub use framework::{
+    BusinessEvent, ComponentNode, ComponentTree, DebugProfile, FrameworkKind, SdkManifest,
+};
 pub use ios::{
     classify_ios_error, IosErrorKind, IosToolError, SimDevice, SimDeviceState, SimRuntime,
     SimctlListOutput,
