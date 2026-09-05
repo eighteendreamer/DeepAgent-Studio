@@ -840,3 +840,139 @@ Remote Mac 先做 fake protocol，再做 SSH 启动，最后接真实设备。�
 ## 33. 最小闭环验收
 
 发现 Android Emulator → 创建 DebugSession → 等待 Ready → 安装 APK → 启动 package/activity → 获取 screenshot artifact → 获取 UiSnapshot → 按 snapshot_id+node_id 点击 → 重新 snapshot → 读取 logcat → 断开设备 → replay RuntimeEvent。过程必须可见 operation_id、状态变化、审批决定、稳定错误码、artifact hash/size，并能被 Agent、桌面 UI、CLI 分别投影。
+
+# 34. 工程冻结决策（直接开工版）
+
+本章覆盖前文可能存在的选择空间。自本章开始，后续实现按确定方案执行，不能重新发明方向。
+
+## 34.1 第一阶段唯一目标
+
+第一阶段只做 Android 本地通用调试闭环，目标是同时支持：
+
+- Android Emulator；
+- Android USB 真机；
+- 任意可被 Android Accessibility/UI Automator 暴露的已安装应用；
+- 已运行项目的真实页面显示；
+- 完整可观测 UI 层级；
+- 通用网络请求观测结果。
+
+第一阶段不实现 iOS、不实现 Remote Mac、不实现 App SDK、不实现全局 HTTPS MITM、不实现项目特判。第一阶段没有通过前，不得开始第二阶段。
+
+## 34.2 第一阶段固定 crate
+
+必须按以下 crate 开工，不新增同义 crate：
+
+```text
+crates/deepagent-mobile-core/
+crates/deepagent-mobile-protocol/
+crates/deepagent-mobile-runtime/
+crates/deepagent-mobile-android/
+```
+
+现有 crate 的改动边界固定为：
+
+```text
+crates/deepagent-app-core/src/mobile_service.rs
+crates/deepagent-builtins/src/mobile.rs
+crates/deepagent-persistence/src/migrations.rs
+apps/desktop/src-tauri/src/lib.rs
+apps/desktop/src/api.ts
+apps/desktop/src/App.tsx
+```
+
+第一阶段禁止新增 `deepagent-mobile-ios`、`deepagent-mobile-sdk`、`deepagent-mobile-network` 和 `apps/mobile-agent`。这些目录只能在第一阶段验收通过后创建。
+
+## 34.3 固定后端实现
+
+Android 后端固定使用外部官方工具，不实现 ADB 协议：
+
+- 设备发现：`adb devices -l`；
+- 设备信息：`adb -s <serial> shell getprop`；
+- 页面显示：`adb -s <serial> exec-out screencap -p`；
+- 输入：`adb -s <serial> shell input`；
+- 应用生命周期：`adb -s <serial> shell am`；
+- 日志：`adb -s <serial> logcat`；
+- UI 结构：设备端 UI Automator hierarchy 导出；
+- 模拟器生命周期：`emulator`、`avdmanager`、`sdkmanager` 仅由环境诊断和设备服务调用。
+
+所有命令只能由 `deepagent-mobile-android` 构造，再由现有受控进程边界执行。不得从 Tauri、React、Agent 或 MCP 构造命令。
+
+## 34.4 固定公共接口
+
+`deepagent-mobile-core` 必须先实现以下 trait，名称和职责固定：
+
+```rust
+#[async_trait]
+pub trait MobileBackend: Send + Sync {
+    async fn list_devices(&self) -> MobileResult<Vec<MobileDevice>>;
+    async fn device_info(&self, device_id: &str) -> MobileResult<MobileDevice>;
+    async fn screenshot(&self, device_id: &str) -> MobileResult<ArtifactRef>;
+    async fn ui_snapshot(&self, device_id: &str) -> MobileResult<UiSnapshot>;
+    async fn launch(&self, request: LaunchRequest) -> MobileResult<()>;
+    async fn terminate(&self, request: AppTarget) -> MobileResult<()>;
+    async fn input(&self, request: InputRequest) -> MobileResult<InputResult>;
+    async fn read_logs(&self, request: LogRequest) -> MobileResult<LogPage>;
+}
+```
+
+第一阶段不增加通用字符串命令接口，不增加平台专属公共 trait，不增加未经测试的泛型抽象。
+
+## 34.5 UI 完整性定义
+
+第一阶段“完整 UI 结构”定义为：一次 snapshot 返回设备当前 Accessibility/UI Automator hierarchy 的完整根节点、所有后代节点、每个节点的稳定属性和父子关系。必须包含不可见但仍存在于 hierarchy 的节点，并标注 `visible=false`；不能只返回屏幕上可见节点。
+
+以下内容不属于第一阶段完整性承诺：Canvas/OpenGL 绘制内容、无障碍树完全不暴露的自绘控件、应用内部 Vue/React/Compose 组件树。对这些情况必须返回 `UiTreeBoundary` 诊断，不能声称已获取业务内部组件树。
+
+完整性验收固定为：节点总数、最大深度、父子引用完整性、无重复 node_id、无悬空 child、根节点唯一、snapshot 可 replay。测试 fixture 必须覆盖普通 View、输入框、列表、弹窗、不可见节点和 WebView。
+
+## 34.6 网络观测固定路线
+
+第一阶段网络目标固定为“通用观测链路”，不是修改某个项目的网络代码，也不是伪造抓包。实现顺序固定为：
+
+1. 先建立设备级观测能力和请求/响应关联模型；
+2. 优先读取 Android 官方调试可获得的请求记录；
+3. 对无法在不修改应用的情况下观测的 HTTPS/证书绑定请求，返回明确 `NetworkObservationUnavailable`；
+4. 不为单个项目添加 OkHttp、Retrofit、uni.request 或业务日志特判；
+5. 第一阶段不承诺绕过证书绑定，不承诺解密所有 HTTPS。
+
+网络记录固定字段：request_id、device_id、timestamp、method、url、query、request_headers_redacted、request_body_redacted、status、response_headers_redacted、response_body_redacted、duration_ms、error。正文和 header 必须限长并脱敏。
+
+## 34.7 第一轮直接执行任务
+
+第一轮只允许执行以下任务：
+
+1. 在根 `Cargo.toml` 注册四个 mobile crate；
+2. 创建 core/protocol 的类型、错误和序列化 fixture；
+3. 创建 runtime 的设备状态机、operation_id、取消和超时模型；
+4. 创建 android 的 `adb devices -l` 解析器和 fake executable；
+5. 为 unauthorized/offline/device/no-permissions 编写测试；
+6. 运行 `cargo fmt --all -- --check`、相关 crate 测试和 `cargo clippy`；
+7. 完成回顾和评分，未达到 90 分不得实现 Tauri 或真实 ADB 操作。
+
+第一轮不得创建 React 页面，不得写 UI Inspector，不得写抓包，不得修改被测项目，不得添加项目专属配置。
+
+## 34.8 后续阶段入口条件
+
+- M1 入口：四个 crate、协议 fixture、状态机和 fake backend 测试通过；
+- M2 入口：Android Emulator 和 USB 真机都通过页面显示、截图、启动/停止、断开/重连；
+- M3 入口：M2 通过完整 UI hierarchy 验收和 stale snapshot 验收；
+- M4 入口：M3 通过网络记录字段、脱敏、请求响应关联和不可观测边界验收；
+- M5 入口：Android 全部三项目标达到 90 分以上，才开始 iOS 设计。
+
+任一入口条件不满足，停止扩展范围，先修复当前阶段根因。
+
+## 34.9 固定交付格式
+
+每轮必须在 `docs/mobile/validation/` 生成一份报告，文件名为 `M<阶段>-<日期>.md`，包含：设备/模拟器信息、工具版本、命令、测试结果、真实截图或 artifact 引用、UI 节点统计、网络记录样例、失败场景、三项目标分数、总分、回顾结论和下一轮唯一任务。
+
+## 34.10 停线条件
+
+出现以下任一情况，立即停止新增功能并回到架构修复：
+
+- 需要为某个包名、页面或接口写特判；
+- UI 树只能通过截图 OCR 或固定坐标获得；
+- 网络结果来自被测项目新增日志而非通用观测链路；
+- Tauri 或 Agent 绕过 MobileService 执行命令；
+- 设备断开后操作仍报告成功；
+- 测试没有真实输入、失败路径或证据；
+- 本轮评分低于 90 分。
