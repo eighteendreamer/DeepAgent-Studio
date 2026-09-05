@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
+    mobile_service::{AppMobileService, ArtifactRefDto, BackendStatusDto, DeviceDto, UiSnapshotSummaryDto},
     AppService, ArchiveProjectResultDto, ArchiveService, DirectTerminalSessionBackend,
     ArchivedConversationDto, AttachmentDto, AttachmentIngestDto, AttachmentService, BalanceDto,
     BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary,
@@ -405,6 +406,8 @@ struct AppState {
     /// Per-project workspace trust (§6.2): grant/query trust; the run hook
     /// gate (opt-in) escalates bash in untrusted projects to approval.
     trust: Arc<TrustService>,
+    /// Mobile device debugging subsystem (Android/iOS/Remote Mac).
+    mobile: Arc<AppMobileService>,
     /// Tokio runtime for async calls invoked from sync commands.
     rt: tokio::runtime::Runtime,
 }
@@ -5118,6 +5121,51 @@ fn office_export_minutes_docx(
     Ok(out)
 }
 
+// ---- mobile device debugging (Android/iOS/Remote Mac) ---------------------
+
+/// Probe all mobile backends and return their status.
+#[tauri::command]
+async fn mobile_backend_status(state: State<'_, AppState>) -> Result<Vec<BackendStatusDto>, String> {
+    Ok(state.mobile.probe_backends().await)
+}
+
+/// List all known mobile devices.
+#[tauri::command]
+async fn mobile_list_devices(state: State<'_, AppState>) -> Result<Vec<DeviceDto>, String> {
+    Ok(state.mobile.list_devices().await)
+}
+
+/// Get device info by ID.
+#[tauri::command]
+async fn mobile_device_info(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<DeviceDto, String> {
+    state.mobile.device_info(&device_id).await.map_err(|e| e.to_string())
+}
+
+/// Capture a screenshot from a device.
+#[tauri::command]
+async fn mobile_screenshot(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<ArtifactRefDto, String> {
+    state.mobile.screenshot(&device_id).await.map_err(|e| e.to_string())
+}
+
+/// Capture a UI snapshot summary from a device.
+#[tauri::command]
+async fn mobile_ui_snapshot(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<UiSnapshotSummaryDto, String> {
+    state
+        .mobile
+        .ui_snapshot_summary(&device_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Extract `zip_path` into `dest`, returning the directory to install from: the
 /// single top-level folder if the archive has exactly one, else `dest` itself.
 fn extract_zip(zip_path: &str, dest: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
@@ -5693,6 +5741,7 @@ pub fn run() {
                 office,
                 ssh,
                 trust,
+                mobile: Arc::new(AppMobileService::new()),
                 rt,
             });
             Ok(())
@@ -5963,7 +6012,12 @@ pub fn run() {
             speech_generate_meeting_minutes,
             office_read_text,
             office_create_docx_from_markdown,
-            office_export_minutes_docx
+            office_export_minutes_docx,
+            mobile_backend_status,
+            mobile_list_devices,
+            mobile_device_info,
+            mobile_screenshot,
+            mobile_ui_snapshot
         ])
         .run(tauri::generate_context!())
         .expect("error while running DeepAgent Studio");

@@ -96,6 +96,28 @@ pub struct UiSnapshotSummaryDto {
     pub captured_at_ms: u64,
 }
 
+/// DTO for artifact reference (screenshot, recording, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactRefDto {
+    pub artifact_id: String,
+    pub mime: String,
+    pub size_bytes: u64,
+    pub sha256: Option<String>,
+    pub storage_path: String,
+}
+
+impl From<deepagent_mobile_core::ArtifactRef> for ArtifactRefDto {
+    fn from(a: deepagent_mobile_core::ArtifactRef) -> Self {
+        Self {
+            artifact_id: a.artifact_id,
+            mime: a.mime,
+            size_bytes: a.size_bytes,
+            sha256: a.sha256,
+            storage_path: a.storage_path,
+        }
+    }
+}
+
 /// Application-layer mobile service.
 ///
 /// Wraps `deepagent_mobile_runtime::MobileService` and provides DTO-returning
@@ -165,13 +187,11 @@ impl AppMobileService {
         Ok(DeviceDto::from(device))
     }
 
-    /// Capture a screenshot and return the artifact reference.
-    pub async fn screenshot(
-        &self,
-        device_id: &str,
-    ) -> MobileResult<deepagent_mobile_core::ArtifactRef> {
+    /// Capture a screenshot and return the artifact reference DTO.
+    pub async fn screenshot(&self, device_id: &str) -> MobileResult<ArtifactRefDto> {
         let ctx = self.make_context(device_id, "screenshot");
-        self.inner.screenshot(device_id, &ctx).await
+        let artifact = self.inner.screenshot(device_id, &ctx).await?;
+        Ok(ArtifactRefDto::from(artifact))
     }
 
     /// Capture a UI snapshot and return it.
