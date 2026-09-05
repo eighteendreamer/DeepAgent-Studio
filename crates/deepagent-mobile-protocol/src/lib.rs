@@ -6,10 +6,14 @@
 //! version. It depends only on `deepagent-mobile-core`.
 
 mod events;
+mod network;
 mod operations;
 mod ui;
 
 pub use events::MobileEvent;
+pub use network::{
+    NetworkRecord, NetworkRequest, NetworkResponse, MAX_BODY_SIZE, SENSITIVE_HEADERS,
+};
 pub use operations::{
     AppTarget, AvdInfo, FindNodeRequest, FindNodeResult, InputAction, InputRequest, InputResult,
     InstallRequest, LaunchRequest, LogPage, LogRecord, LogRequest, MobileOperation,
