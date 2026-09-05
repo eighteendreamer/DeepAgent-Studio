@@ -10,6 +10,7 @@ mod events;
 mod ios;
 mod network;
 mod operations;
+mod remote_mac;
 mod ui;
 
 pub use artifact::{
@@ -28,6 +29,10 @@ pub use operations::{
     AppTarget, AvdInfo, FindNodeRequest, FindNodeResult, InputAction, InputRequest, InputResult,
     InstallRequest, LaunchRequest, LogPage, LogRecord, LogRequest, MobileOperation,
     MobileOperationKind, NodeFilter, StartEmulatorRequest, StopEmulatorRequest,
+};
+pub use remote_mac::{
+    validate_config_no_plaintext_secret, CancellationSource, RemoteMacConfig, RemoteMacEvent,
+    RemoteMacHealth, RemoteMacMethod, RemoteMacRequest, RemoteMacResponse, RemoteMacState,
 };
 pub use ui::{Bounds, UiNode, UiNodeSource, UiRole, UiSnapshot};
 

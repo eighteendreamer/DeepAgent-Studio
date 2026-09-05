@@ -1338,6 +1338,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "deepagent-mobile-ios"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "deepagent-mobile-core",
+ "deepagent-mobile-protocol",
+ "deepagent-mobile-runtime",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "deepagent-mobile-protocol"
 version = "0.1.0"
 dependencies = [
