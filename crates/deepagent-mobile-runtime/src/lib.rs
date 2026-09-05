@@ -13,6 +13,7 @@ mod artifact_store;
 mod backend;
 mod device_registry;
 mod discovery;
+mod mobile_service;
 mod operation;
 mod remote_mac;
 mod remote_mac_manager;
@@ -22,6 +23,7 @@ pub use artifact_store::{ArtifactStore, ArtifactStoreError, RegisterArtifactRequ
 pub use backend::MobileBackend;
 pub use device_registry::DeviceRegistry;
 pub use discovery::{run_discovery_loop, DiscoveryConfig};
+pub use mobile_service::MobileService;
 pub use operation::{OperationContext, OperationHandle};
 pub use remote_mac::{
     FakeRemoteTransport, RemoteMacSession, RemoteTransport, RemoteTransportError,

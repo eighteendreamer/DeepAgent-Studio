@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 /// All state transitions are centralized here. No other crate may infer device
 /// state from raw tool output. Every transition emits a
 /// `DeviceStateChanged` event through the event channel.
+#[derive(Clone)]
 pub struct DeviceRegistry {
     inner: Arc<Mutex<RegistryInner>>,
 }
