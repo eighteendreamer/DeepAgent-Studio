@@ -53,6 +53,8 @@ pub mod git_tools;
 pub mod glob_match;
 pub mod guard_hooks;
 pub mod knowledge_tools;
+#[allow(missing_docs)]
+pub mod mobile_tools;
 pub mod office_tools;
 pub mod plan_mode;
 pub mod project_map_tools;
@@ -105,6 +107,13 @@ pub use knowledge_tools::{
     KnowledgeBackend, KnowledgeSearchTool, KnowledgeToolDraft, KnowledgeToolHit,
     KnowledgeWriteTool, UnavailableKnowledgeBackend, KNOWLEDGE_SEARCH_TOOL_NAME,
     KNOWLEDGE_WRITE_TOOL_NAME,
+};
+pub use mobile_tools::{
+    mobile_tools, ArtifactRefDto, MobileBackend, MobileDeviceDto, MobileDeviceInfoTool,
+    MobileListDevicesTool, MobileScreenshotTool, MobileUiSnapshotTool, UnavailableMobileBackend,
+    MOBILE_DEVICE_INFO_TOOL_NAME, MOBILE_INPUT_TOOL_NAME, MOBILE_INSTALL_TOOL_NAME,
+    MOBILE_LAUNCH_TOOL_NAME, MOBILE_LIST_DEVICES_TOOL_NAME, MOBILE_READ_LOGS_TOOL_NAME,
+    MOBILE_SCREENSHOT_TOOL_NAME, MOBILE_TERMINATE_TOOL_NAME, MOBILE_UI_SNAPSHOT_TOOL_NAME,
 };
 pub use office_tools::{
     OfficeBackend, OfficeDocxCreateTool, OfficeReadTool, OfficeXlsxCreateTool,
