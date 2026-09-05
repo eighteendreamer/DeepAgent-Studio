@@ -33,6 +33,7 @@ pub mod knowledge_service;
 pub mod managed_files;
 pub mod mcp_runtime;
 pub mod mcp_service;
+pub mod mobile_service;
 pub mod model_runtime;
 pub mod nested_instructions;
 pub mod office_service;
