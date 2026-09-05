@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use deepagent_mobile_core::{ArtifactRef, BackendStatus, MobileDevice, MobileResult};
 use deepagent_mobile_protocol::{
-    AppTarget, InputRequest, InputResult, InstallRequest, LaunchRequest, LogPage, LogRequest,
-    UiSnapshot,
+    AppTarget, AvdInfo, InputRequest, InputResult, InstallRequest, LaunchRequest, LogPage,
+    LogRequest, StartEmulatorRequest, StopEmulatorRequest, UiSnapshot,
 };
 
 use crate::OperationContext;
@@ -68,4 +68,40 @@ pub trait MobileBackend: Send + Sync {
         request: &LogRequest,
         ctx: &OperationContext,
     ) -> MobileResult<LogPage>;
+
+    /// List available Android Virtual Devices (AVDs).
+    ///
+    /// Returns an empty list for non-Android backends.
+    async fn list_avds(&self, ctx: &OperationContext) -> MobileResult<Vec<AvdInfo>> {
+        let _ = ctx;
+        Ok(vec![])
+    }
+
+    /// Start an Android Emulator.
+    ///
+    /// Returns the ADB serial of the started emulator (e.g., "emulator-5554").
+    /// Default implementation returns an error for backends that don't support
+    /// emulators.
+    async fn start_emulator(
+        &self,
+        request: &StartEmulatorRequest,
+        ctx: &OperationContext,
+    ) -> MobileResult<String> {
+        let _ = (request, ctx);
+        Err(deepagent_mobile_core::MobileError::NotSupported {
+            operation: "start_emulator".into(),
+        })
+    }
+
+    /// Stop a running Android Emulator.
+    async fn stop_emulator(
+        &self,
+        request: &StopEmulatorRequest,
+        ctx: &OperationContext,
+    ) -> MobileResult<()> {
+        let _ = (request, ctx);
+        Err(deepagent_mobile_core::MobileError::NotSupported {
+            operation: "stop_emulator".into(),
+        })
+    }
 }

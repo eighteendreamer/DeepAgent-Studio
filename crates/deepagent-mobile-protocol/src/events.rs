@@ -65,6 +65,14 @@ pub enum MobileEvent {
     BackendError {
         message: String,
     },
+    EmulatorStarted {
+        avd_name: String,
+        serial: String,
+    },
+    EmulatorStopped {
+        serial: String,
+        reason: String,
+    },
 }
 
 #[cfg(test)]

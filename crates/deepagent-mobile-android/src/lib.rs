@@ -10,11 +10,15 @@
 mod adb_parser;
 mod adb_runner;
 mod backend;
+mod emulator_parser;
+mod emulator_runner;
 mod fake;
 mod tool_resolver;
 
 pub use adb_parser::{parse_adb_devices, AdbDeviceEntry, AdbDeviceStatus};
 pub use adb_runner::{AdbCommandOutput, AdbCommandRunner, FakeAdbRunner, SystemAdbRunner};
 pub use backend::AdbBackend;
+pub use emulator_parser::{extract_emulator_port, parse_avdmanager_list, parse_list_avds};
+pub use emulator_runner::{EmulatorCommandRunner, FakeEmulatorRunner, SystemEmulatorRunner};
 pub use fake::FakeAndroidBackend;
 pub use tool_resolver::ToolResolver;

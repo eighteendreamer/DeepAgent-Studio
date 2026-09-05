@@ -423,6 +423,154 @@ impl MobileBackend for AdbBackend {
             truncated: output.stdout.lines().count() > max as usize,
         })
     }
+
+    async fn list_avds(&self, ctx: &OperationContext) -> MobileResult<Vec<AvdInfo>> {
+        if ctx.is_cancelled() {
+            return Err(MobileError::Cancelled {
+                operation_id: ctx.operation_id.clone(),
+            });
+        }
+
+        let emulator_path = self
+            .resolver
+            .resolve("emulator")
+            .map(|t| t.path.display().to_string())
+            .ok_or_else(|| MobileError::ToolNotFound {
+                tool_name: "emulator".into(),
+            })?;
+
+        let output = self
+            .runner
+            .run(
+                &emulator_path,
+                &["-list-avds"],
+                ctx.deadline,
+                &ctx.cancellation_token(),
+            )
+            .await?;
+
+        if output.exit_code != Some(0) {
+            return Err(MobileError::ToolExecutionFailed {
+                tool_name: "emulator".into(),
+                exit_code: output.exit_code.unwrap_or(-1),
+                stderr: output.stderr,
+            });
+        }
+
+        let mut avds = crate::emulator_parser::parse_list_avds(&output.stdout);
+
+        // Mark running AVDs by checking current devices
+        let devices = self.list_devices(ctx).await.unwrap_or_default();
+        for avd in &mut avds {
+            for device in &devices {
+                if device.kind == DeviceKind::Emulator {
+                    // Check if this emulator matches the AVD name
+                    // Emulator serials are like "emulator-5554"
+                    if let Some(serial) = device.id.strip_prefix("android-emulator-") {
+                        avd.running = true;
+                        avd.serial = Some(serial.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(avds)
+    }
+
+    async fn start_emulator(
+        &self,
+        request: &StartEmulatorRequest,
+        ctx: &OperationContext,
+    ) -> MobileResult<String> {
+        if ctx.is_cancelled() {
+            return Err(MobileError::Cancelled {
+                operation_id: ctx.operation_id.clone(),
+            });
+        }
+
+        let emulator_path = self
+            .resolver
+            .resolve("emulator")
+            .map(|t| t.path.display().to_string())
+            .ok_or_else(|| MobileError::ToolNotFound {
+                tool_name: "emulator".into(),
+            })?;
+
+        // Build emulator command: emulator -avd <name> [args...]
+        let mut args: Vec<&str> = vec!["-avd", &request.avd_name];
+        let extra_args: Vec<&str> = request.args.iter().map(|s| s.as_str()).collect();
+        args.extend_from_slice(&extra_args);
+
+        // Start emulator in background (don't wait for it to exit)
+        // The emulator process will keep running after this command returns
+        let _output = self
+            .runner
+            .run(
+                &emulator_path,
+                &args,
+                std::time::Duration::from_millis(request.boot_timeout_ms),
+                &ctx.cancellation_token(),
+            )
+            .await?;
+
+        // Wait for the emulator to appear in adb devices
+        let boot_deadline = std::time::Duration::from_millis(request.boot_timeout_ms);
+        let poll_interval = std::time::Duration::from_secs(2);
+        let start = std::time::Instant::now();
+
+        while start.elapsed() < boot_deadline {
+            if ctx.is_cancelled() {
+                return Err(MobileError::Cancelled {
+                    operation_id: ctx.operation_id.clone(),
+                });
+            }
+
+            tokio::time::sleep(poll_interval).await;
+
+            // Check if emulator is online
+            let devices = self.list_devices(ctx).await.unwrap_or_default();
+            for device in devices {
+                if device.kind == DeviceKind::Emulator && device.state == DeviceState::Ready {
+                    // Extract serial from device id (android-emulator-5554 -> emulator-5554)
+                    if let Some(serial) = device.id.strip_prefix("android-") {
+                        tracing::info!(
+                            avd_name = %request.avd_name,
+                            serial = %serial,
+                            "emulator started"
+                        );
+                        return Ok(serial.to_string());
+                    }
+                }
+            }
+        }
+
+        Err(MobileError::Timeout {
+            operation_id: ctx.operation_id.clone(),
+            elapsed_ms: request.boot_timeout_ms,
+        })
+    }
+
+    async fn stop_emulator(
+        &self,
+        request: &StopEmulatorRequest,
+        ctx: &OperationContext,
+    ) -> MobileResult<()> {
+        if ctx.is_cancelled() {
+            return Err(MobileError::Cancelled {
+                operation_id: ctx.operation_id.clone(),
+            });
+        }
+
+        // Use adb emu kill to stop the emulator
+        let output = self
+            .adb_shell(&request.serial, &["emu", "kill"], ctx)
+            .await?;
+
+        // emu kill may not return a clean exit code, but the emulator will stop
+        tracing::info!(serial = %request.serial, exit_code = ?output.exit_code, "emulator stop requested");
+        Ok(())
+    }
 }
 
 fn parse_logcat_line(line: &str) -> (String, Option<String>, String) {

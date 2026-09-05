@@ -67,6 +67,9 @@ pub enum MobileError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error("operation not supported: {operation}")]
+    NotSupported { operation: String },
 }
 
 /// Convenience alias.
@@ -89,6 +92,7 @@ pub enum MobileErrorCode {
     ArtifactTooLarge,
     BackendUnavailable,
     ProtocolVersionMismatch,
+    NotSupported,
     Internal,
 }
 
@@ -108,6 +112,7 @@ impl MobileError {
             Self::ArtifactTooLarge { .. } => MobileErrorCode::ArtifactTooLarge,
             Self::BackendUnavailable { .. } => MobileErrorCode::BackendUnavailable,
             Self::ProtocolVersionMismatch { .. } => MobileErrorCode::ProtocolVersionMismatch,
+            Self::NotSupported { .. } => MobileErrorCode::NotSupported,
             Self::Serialization(_) | Self::Internal(_) => MobileErrorCode::Internal,
         }
     }

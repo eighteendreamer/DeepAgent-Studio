@@ -11,8 +11,9 @@ mod ui;
 
 pub use events::MobileEvent;
 pub use operations::{
-    AppTarget, InputAction, InputRequest, InputResult, InstallRequest, LaunchRequest, LogPage,
-    LogRecord, LogRequest, MobileOperation, MobileOperationKind,
+    AppTarget, AvdInfo, InputAction, InputRequest, InputResult, InstallRequest, LaunchRequest,
+    LogPage, LogRecord, LogRequest, MobileOperation, MobileOperationKind, StartEmulatorRequest,
+    StopEmulatorRequest,
 };
 pub use ui::{Bounds, UiNode, UiNodeSource, UiRole, UiSnapshot};
 

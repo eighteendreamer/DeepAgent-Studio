@@ -26,6 +26,9 @@ pub enum MobileOperationKind {
     Terminate(AppTarget),
     Input(InputRequest),
     ReadLogs(LogRequest),
+    ListAvds,
+    StartEmulator(StartEmulatorRequest),
+    StopEmulator(StopEmulatorRequest),
 }
 
 /// Target an installed application by package name (Android) or bundle ID
@@ -114,6 +117,39 @@ pub struct LogPage {
     pub device_id: String,
     pub records: Vec<LogRecord>,
     pub truncated: bool,
+}
+
+/// Information about an Android Virtual Device (AVD).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvdInfo {
+    /// AVD name (used with `emulator -avd <name>`).
+    pub name: String,
+    /// AVD directory path.
+    pub path: Option<String>,
+    /// Target API level or Android version.
+    pub target: Option<String>,
+    /// Whether the AVD is currently running.
+    pub running: bool,
+    /// ADB serial if running (e.g., "emulator-5554").
+    pub serial: Option<String>,
+}
+
+/// Request to start an Android Emulator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartEmulatorRequest {
+    /// AVD name to start.
+    pub avd_name: String,
+    /// Additional emulator arguments (e.g., "-no-snapshot", "-port 5554").
+    pub args: Vec<String>,
+    /// Maximum time to wait for the emulator to boot (milliseconds).
+    pub boot_timeout_ms: u64,
+}
+
+/// Request to stop a running Android Emulator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopEmulatorRequest {
+    /// ADB serial of the running emulator (e.g., "emulator-5554").
+    pub serial: String,
 }
 
 #[cfg(test)]
