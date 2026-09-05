@@ -40,6 +40,7 @@ members = [
     "crates/deepagent-mobile-protocol",
     "crates/deepagent-mobile-runtime",
     "crates/deepagent-mobile-android",
+    "crates/deepagent-mobile-ios",
     "apps/cli",
 ]
 # The Tauri desktop shell is its own workspace root (it carries the WebView
@@ -101,6 +102,7 @@ deepagent-mobile-core = { path = "crates/deepagent-mobile-core" }
 deepagent-mobile-protocol = { path = "crates/deepagent-mobile-protocol" }
 deepagent-mobile-runtime = { path = "crates/deepagent-mobile-runtime" }
 deepagent-mobile-android = { path = "crates/deepagent-mobile-android" }
+deepagent-mobile-ios = { path = "crates/deepagent-mobile-ios" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

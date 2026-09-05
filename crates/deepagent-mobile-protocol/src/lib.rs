@@ -7,6 +7,7 @@
 
 mod artifact;
 mod events;
+mod ios;
 mod network;
 mod operations;
 mod ui;
@@ -16,6 +17,10 @@ pub use artifact::{
     ArtifactPurgeRequest, ArtifactPurgeResult, ArtifactQuery, ArtifactRecord, MAX_ARTIFACT_SIZE,
 };
 pub use events::MobileEvent;
+pub use ios::{
+    classify_ios_error, IosErrorKind, IosToolError, SimDevice, SimDeviceState, SimRuntime,
+    SimctlListOutput,
+};
 pub use network::{
     NetworkRecord, NetworkRequest, NetworkResponse, MAX_BODY_SIZE, SENSITIVE_HEADERS,
 };
