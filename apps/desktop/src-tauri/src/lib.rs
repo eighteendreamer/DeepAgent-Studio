@@ -5244,6 +5244,38 @@ async fn mobile_stop_emulator(
     state.mobile.stop_emulator(&req).await.map_err(|e| e.to_string())
 }
 
+/// Perform a UI action (tap, swipe, text input, etc.) on a device.
+#[tauri::command]
+async fn mobile_ui_action(
+    state: State<'_, AppState>,
+    device_id: String,
+    snapshot_id: Option<String>,
+    action: deepagent_mobile_protocol::InputAction,
+) -> Result<deepagent_mobile_protocol::InputResult, String> {
+    let req = deepagent_mobile_protocol::InputRequest {
+        device_id,
+        snapshot_id,
+        action,
+    };
+    state.mobile.input(&req).await.map_err(|e| e.to_string())
+}
+
+/// Read device logs (logcat / syslog).
+#[tauri::command]
+async fn mobile_read_logs(
+    state: State<'_, AppState>,
+    device_id: String,
+    max_lines: u32,
+    since_ms: Option<u64>,
+) -> Result<deepagent_mobile_protocol::LogPage, String> {
+    let req = deepagent_mobile_protocol::LogRequest {
+        device_id,
+        max_lines,
+        since_ms,
+    };
+    state.mobile.read_logs(&req).await.map_err(|e| e.to_string())
+}
+
 /// Extract `zip_path` into `dest`, returning the directory to install from: the
 /// single top-level folder if the archive has exactly one, else `dest` itself.
 fn extract_zip(zip_path: &str, dest: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
@@ -6101,7 +6133,9 @@ pub fn run() {
             mobile_stop_app,
             mobile_list_avds,
             mobile_start_emulator,
-            mobile_stop_emulator
+            mobile_stop_emulator,
+            mobile_ui_action,
+            mobile_read_logs
         ])
         .run(tauri::generate_context!())
         .expect("error while running DeepAgent Studio");
