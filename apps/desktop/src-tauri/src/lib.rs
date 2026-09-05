@@ -5166,6 +5166,84 @@ async fn mobile_ui_snapshot(
         .map_err(|e| e.to_string())
 }
 
+/// Install an application on a device.
+#[tauri::command]
+async fn mobile_install_app(
+    state: State<'_, AppState>,
+    device_id: String,
+    artifact_path: String,
+) -> Result<(), String> {
+    let req = deepagent_mobile_protocol::InstallRequest {
+        device_id,
+        artifact_path,
+    };
+    state.mobile.install(&req).await.map_err(|e| e.to_string())
+}
+
+/// Launch an application on a device.
+#[tauri::command]
+async fn mobile_launch_app(
+    state: State<'_, AppState>,
+    device_id: String,
+    package: String,
+    activity: Option<String>,
+) -> Result<(), String> {
+    let req = deepagent_mobile_protocol::LaunchRequest {
+        device_id,
+        package,
+        activity,
+    };
+    state.mobile.launch(&req).await.map_err(|e| e.to_string())
+}
+
+/// Stop a running application on a device.
+#[tauri::command]
+async fn mobile_stop_app(
+    state: State<'_, AppState>,
+    device_id: String,
+    package: String,
+) -> Result<(), String> {
+    let target = deepagent_mobile_protocol::AppTarget {
+        device_id,
+        package,
+    };
+    state.mobile.terminate(&target).await.map_err(|e| e.to_string())
+}
+
+/// List available Android Virtual Devices.
+#[tauri::command]
+async fn mobile_list_avds(
+    state: State<'_, AppState>,
+) -> Result<Vec<deepagent_mobile_protocol::AvdInfo>, String> {
+    state.mobile.list_avds().await.map_err(|e| e.to_string())
+}
+
+/// Start an Android Emulator.
+#[tauri::command]
+async fn mobile_start_emulator(
+    state: State<'_, AppState>,
+    avd_name: String,
+    args: Option<Vec<String>>,
+    boot_timeout_ms: Option<u64>,
+) -> Result<String, String> {
+    let req = deepagent_mobile_protocol::StartEmulatorRequest {
+        avd_name,
+        args: args.unwrap_or_default(),
+        boot_timeout_ms: boot_timeout_ms.unwrap_or(60_000),
+    };
+    state.mobile.start_emulator(&req).await.map_err(|e| e.to_string())
+}
+
+/// Stop an Android Emulator.
+#[tauri::command]
+async fn mobile_stop_emulator(
+    state: State<'_, AppState>,
+    serial: String,
+) -> Result<(), String> {
+    let req = deepagent_mobile_protocol::StopEmulatorRequest { serial };
+    state.mobile.stop_emulator(&req).await.map_err(|e| e.to_string())
+}
+
 /// Extract `zip_path` into `dest`, returning the directory to install from: the
 /// single top-level folder if the archive has exactly one, else `dest` itself.
 fn extract_zip(zip_path: &str, dest: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
@@ -6017,7 +6095,13 @@ pub fn run() {
             mobile_list_devices,
             mobile_device_info,
             mobile_screenshot,
-            mobile_ui_snapshot
+            mobile_ui_snapshot,
+            mobile_install_app,
+            mobile_launch_app,
+            mobile_stop_app,
+            mobile_list_avds,
+            mobile_start_emulator,
+            mobile_stop_emulator
         ])
         .run(tauri::generate_context!())
         .expect("error while running DeepAgent Studio");
