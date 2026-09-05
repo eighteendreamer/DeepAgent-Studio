@@ -3861,3 +3861,126 @@ export async function sshPtyResize(
   if (invoke) return invoke<void>("ssh_pty_resize", { connectionId, cols, rows });
 }
 
+// ─── Mobile DevTools API ─────────────────────────────────────────────────────
+
+export async function mobileBackendStatus(): Promise<import("./types").BackendStatusDto[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<import("./types").BackendStatusDto[]>("mobile_backend_status");
+  return [];
+}
+
+export async function mobileListDevices(): Promise<import("./types").DeviceDto[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<import("./types").DeviceDto[]>("mobile_list_devices");
+  return [];
+}
+
+export async function mobileDeviceInfo(
+  deviceId: string,
+): Promise<import("./types").DeviceDto> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<import("./types").DeviceDto>("mobile_device_info", { deviceId });
+  throw new Error("mobile device info requires the desktop app");
+}
+
+export async function mobileScreenshot(
+  deviceId: string,
+): Promise<import("./types").ArtifactRefDto> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<import("./types").ArtifactRefDto>("mobile_screenshot", { deviceId });
+  throw new Error("mobile screenshot requires the desktop app");
+}
+
+export async function mobileUiSnapshot(
+  deviceId: string,
+): Promise<import("./types").UiSnapshotSummaryDto> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<import("./types").UiSnapshotSummaryDto>("mobile_ui_snapshot", { deviceId });
+  throw new Error("mobile UI snapshot requires the desktop app");
+}
+
+export async function mobileInstallApp(
+  deviceId: string,
+  artifactPath: string,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("mobile_install_app", { deviceId, artifactPath });
+  throw new Error("mobile install requires the desktop app");
+}
+
+export async function mobileLaunchApp(
+  deviceId: string,
+  pkg: string,
+  activity?: string,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("mobile_launch_app", { deviceId, package: pkg, activity });
+  throw new Error("mobile launch requires the desktop app");
+}
+
+export async function mobileStopApp(
+  deviceId: string,
+  pkg: string,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("mobile_stop_app", { deviceId, package: pkg });
+  throw new Error("mobile stop app requires the desktop app");
+}
+
+export async function mobileListAvds(): Promise<import("./types").AvdInfo[]> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<import("./types").AvdInfo[]>("mobile_list_avds");
+  return [];
+}
+
+export async function mobileStartEmulator(
+  avdName: string,
+  args?: string[],
+  bootTimeoutMs?: number,
+): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<string>("mobile_start_emulator", { avdName, args, bootTimeoutMs });
+  }
+  throw new Error("mobile start emulator requires the desktop app");
+}
+
+export async function mobileStopEmulator(serial: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("mobile_stop_emulator", { serial });
+  throw new Error("mobile stop emulator requires the desktop app");
+}
+
+export async function mobileUiAction(
+  deviceId: string,
+  action: import("./types").InputAction,
+  snapshotId?: string,
+): Promise<import("./types").InputResult> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<import("./types").InputResult>("mobile_ui_action", {
+      deviceId,
+      snapshotId,
+      action,
+    });
+  }
+  throw new Error("mobile UI action requires the desktop app");
+}
+
+export async function mobileReadLogs(
+  deviceId: string,
+  maxLines: number,
+  sinceMs?: number,
+): Promise<import("./types").LogPage> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<import("./types").LogPage>("mobile_read_logs", {
+      deviceId,
+      maxLines,
+      sinceMs,
+    });
+  }
+  throw new Error("mobile read logs requires the desktop app");
+}
+
+

@@ -1608,3 +1608,72 @@ export interface RemoteInstallResult {
   installed_packages: string[];
   probe?: RemoteProbeResult;
 }
+
+// ─── Mobile DevTools DTOs ────────────────────────────────────────────────────
+
+export interface BackendStatusDto {
+  name: string;
+  available: boolean;
+  toolchain_detected: boolean;
+  details: string;
+}
+
+export interface DeviceDto {
+  id: string;
+  name: string;
+  platform: string;
+  state: string;
+  serial: string;
+  transport: string;
+  capabilities: string[];
+}
+
+export interface UiSnapshotSummaryDto {
+  snapshot_id: string;
+  device_id: string;
+  node_count: number;
+  max_depth: number;
+  root_node_id: string;
+  captured_at_ms: number;
+}
+
+export interface ArtifactRefDto {
+  artifact_id: string;
+  mime: string;
+  size_bytes: number;
+  sha256?: string;
+  storage_path: string;
+}
+
+export interface AvdInfo {
+  name: string;
+  path?: string;
+  target?: string;
+  running: boolean;
+  serial?: string;
+}
+
+export type InputAction =
+  | { tap: { x: number; y: number } }
+  | { long_press: { x: number; y: number; duration_ms: number } }
+  | { swipe: { x1: number; y1: number; x2: number; y2: number; duration_ms: number } }
+  | { input_text: { text: string } }
+  | { press_back: Record<string, never> };
+
+export interface InputResult {
+  accepted: boolean;
+}
+
+export interface LogRecord {
+  timestamp_ms: number;
+  level: string;
+  tag?: string;
+  message: string;
+}
+
+export interface LogPage {
+  device_id: string;
+  records: LogRecord[];
+  truncated: boolean;
+}
+
