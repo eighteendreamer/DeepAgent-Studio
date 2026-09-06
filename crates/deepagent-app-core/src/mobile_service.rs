@@ -529,4 +529,108 @@ mod tests {
             "should have DeviceDiscovered event, got: {events:?}"
         );
     }
+
+    /// Real-device integration test: full chain from AppMobileService through
+    /// real AdbBackend to physical USB device. Requires a real Android device
+    /// connected via USB. Ignored by default; run with `-- --ignored`.
+    #[tokio::test]
+    #[ignore = "requires real Android device connected via USB"]
+    async fn real_device_full_chain_through_app_mobile_service() {
+        use deepagent_mobile_android::{AdbBackend, SystemAdbRunner, ToolResolver};
+        use deepagent_mobile_core::MobilePlatform;
+        use deepagent_mobile_protocol::MobileEvent;
+        use deepagent_mobile_runtime::{run_discovery_loop, DiscoveryConfig};
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let service = AppMobileService::new();
+
+        let resolver = ToolResolver::new();
+        let runner = Arc::new(SystemAdbRunner::new());
+        let adb_backend = Arc::new(AdbBackend::new(resolver, runner));
+
+        service
+            .inner
+            .register_backend(MobilePlatform::Android, adb_backend.clone())
+            .await;
+
+        let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected_clone = collected.clone();
+        service.start_event_forwarding(move |event: &MobileEvent| {
+            collected_clone.lock().unwrap().push(format!("{event:?}"));
+        });
+
+        let cancel = CancellationToken::new();
+        let config = DiscoveryConfig {
+            poll_interval: Duration::from_millis(100),
+        };
+        let registry = Arc::new(service.inner.registry().clone());
+        let backend_for_discovery: Arc<dyn deepagent_mobile_runtime::MobileBackend> = adb_backend;
+        let event_tx = service.event_tx.clone();
+
+        let cancel_clone = cancel.clone();
+        let handle = tokio::spawn(async move {
+            run_discovery_loop(
+                backend_for_discovery,
+                registry,
+                config,
+                cancel_clone,
+                event_tx,
+            )
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let statuses = service.probe_backends().await;
+        assert_eq!(statuses.len(), 1);
+        assert!(statuses[0].available, "adb should be available");
+        assert!(
+            !statuses[0].tool_paths.is_empty(),
+            "should have adb tool path"
+        );
+        eprintln!("Backend status: {:?}", statuses[0]);
+
+        let devices = service.list_devices().await;
+        assert!(
+            !devices.is_empty(),
+            "at least one real device should be discovered"
+        );
+        let ready_device = devices
+            .iter()
+            .find(|d| d.state == "Ready")
+            .expect("at least one Ready device required");
+        eprintln!("Discovered device: {:?}", ready_device);
+
+        let info = service.device_info(&ready_device.id).await.unwrap();
+        assert!(!info.name.is_empty(), "device name should not be empty");
+        eprintln!(
+            "Device info: name={}, os_version={:?}",
+            info.name, info.os_version
+        );
+
+        let screenshot = service.screenshot(&ready_device.id).await.unwrap();
+        assert_eq!(screenshot.mime, "image/png");
+        assert!(screenshot.size_bytes > 0, "screenshot should have content");
+        eprintln!(
+            "Screenshot: {} bytes at {}",
+            screenshot.size_bytes, screenshot.storage_path
+        );
+
+        cancel.cancel();
+        let _ = handle.await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let events = collected.lock().unwrap();
+        assert!(
+            !events.is_empty(),
+            "event forwarding should have captured events"
+        );
+        let has_discovered = events.iter().any(|e| e.contains("DeviceDiscovered"));
+        assert!(
+            has_discovered,
+            "should have DeviceDiscovered event, got: {events:?}"
+        );
+        eprintln!("Captured {} events", events.len());
+    }
 }
