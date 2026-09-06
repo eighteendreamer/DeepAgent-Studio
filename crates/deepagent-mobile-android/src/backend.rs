@@ -738,52 +738,84 @@ fn parse_uiautomator_output(output: &str) -> Vec<UiNode> {
         }
     };
 
-    let mut nodes = Vec::new();
-    let mut node_counter = 0u32;
+    let mut nodes: Vec<UiNode> = Vec::new();
+    let mut parent_stack: Vec<usize> = Vec::new();
+    let mut pos = 0usize;
+    let bytes = xml.as_bytes();
 
-    for segment in xml.split("<node") {
-        if !segment.contains("bounds=") {
+    while pos < bytes.len() {
+        if bytes[pos] != b'<' {
+            pos += 1;
             continue;
         }
 
-        let node_id = format!("ui-{node_counter}");
-        node_counter += 1;
+        let tag_start = pos;
+        if let Some(tag_end) = xml[tag_start..].find('>') {
+            let tag_end = tag_start + tag_end;
+            let tag_content = &xml[tag_start + 1..tag_end];
 
-        let text = extract_attr(segment, "text");
-        let resource_id = extract_attr(segment, "resource-id");
-        let class = extract_attr(segment, "class");
-        let content_desc = extract_attr(segment, "content-desc");
-        let visible = extract_attr(segment, "visible-to-user")
-            .map(|v| v != "false")
-            .unwrap_or(true);
-        let enabled = extract_attr(segment, "enabled")
-            .map(|v| v != "false")
-            .unwrap_or(true);
-        let clickable = extract_attr(segment, "clickable")
-            .map(|v| v == "true")
-            .unwrap_or(false);
-        let editable = extract_attr(segment, "editable")
-            .map(|v| v == "true")
-            .unwrap_or(false);
+            if tag_content.starts_with("node ") || tag_content.starts_with("node\t") {
+                let segment = tag_content;
+                let node_id = format!("ui-{}", nodes.len());
 
-        let bounds = parse_bounds_attr(segment);
-        let role = infer_role(&class, &resource_id, &text);
+                let parent_id = parent_stack.last().map(|idx| nodes[*idx].node_id.clone());
+                let my_index = nodes.len();
 
-        nodes.push(UiNode {
-            node_id,
-            parent_id: None,
-            role,
-            text,
-            label: content_desc,
-            accessibility_id: None,
-            bounds,
-            visible,
-            enabled,
-            clickable,
-            editable,
-            children: vec![],
-            source: UiNodeSource::AndroidUiAutomator,
-        });
+                let text = extract_attr(segment, "text");
+                let resource_id = extract_attr(segment, "resource-id");
+                let class = extract_attr(segment, "class");
+                let content_desc = extract_attr(segment, "content-desc");
+                let visible = extract_attr(segment, "visible-to-user")
+                    .map(|v| v != "false")
+                    .unwrap_or(true);
+                let enabled = extract_attr(segment, "enabled")
+                    .map(|v| v != "false")
+                    .unwrap_or(true);
+                let clickable = extract_attr(segment, "clickable")
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+                let editable = extract_attr(segment, "editable")
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+
+                let bounds = parse_bounds_attr(segment);
+                let role = infer_role(&class, &resource_id, &text);
+
+                nodes.push(UiNode {
+                    node_id,
+                    parent_id,
+                    role,
+                    text,
+                    label: content_desc,
+                    accessibility_id: None,
+                    bounds,
+                    visible,
+                    enabled,
+                    clickable,
+                    editable,
+                    children: vec![],
+                    source: UiNodeSource::AndroidUiAutomator,
+                });
+
+                if let Some(&parent_idx) = parent_stack.last() {
+                    let child_id = nodes[my_index].node_id.clone();
+                    nodes[parent_idx].children.push(child_id);
+                }
+
+                if tag_content.ends_with('/') {
+                    // self-closing <node ... />
+                } else {
+                    parent_stack.push(my_index);
+                }
+            } else if tag_content == "/node" {
+                parent_stack.pop();
+            }
+            // skip <?xml ...>, <hierarchy>, </hierarchy>, etc.
+
+            pos = tag_end + 1;
+        } else {
+            pos += 1;
+        }
     }
 
     if nodes.is_empty() {
@@ -1076,6 +1108,47 @@ mod tests {
         let btn = nodes.iter().find(|n| n.role == UiRole::Button).unwrap();
         assert_eq!(btn.text.as_deref(), Some("OK"));
         assert!(btn.clickable);
+    }
+
+    #[test]
+    fn parse_uiautomator_builds_hierarchy() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy rotation="0">
+  <node bounds="[0,0][1080,1920]" class="android.widget.FrameLayout">
+    <node bounds="[0,63][1080,168]" class="android.widget.TextView" text="Settings" />
+    <node bounds="[0,168][1080,1920]" class="android.widget.RecyclerView">
+      <node bounds="[0,168][1080,336]" class="android.widget.LinearLayout" text="Network" />
+      <node bounds="[0,336][1080,504]" class="android.widget.LinearLayout" text="Display" />
+    </node>
+  </node>
+</hierarchy>"#;
+        let nodes = parse_uiautomator_output(xml);
+        assert_eq!(nodes.len(), 5);
+
+        let root = &nodes[0];
+        assert_eq!(root.node_id, "ui-0");
+        assert!(root.parent_id.is_none());
+        assert_eq!(root.children.len(), 2);
+        assert_eq!(root.children[0], "ui-1");
+        assert_eq!(root.children[1], "ui-2");
+
+        let settings_text = &nodes[1];
+        assert_eq!(settings_text.parent_id.as_deref(), Some("ui-0"));
+        assert!(settings_text.children.is_empty());
+
+        let recycler = &nodes[2];
+        assert_eq!(recycler.parent_id.as_deref(), Some("ui-0"));
+        assert_eq!(recycler.children.len(), 2);
+        assert_eq!(recycler.children[0], "ui-3");
+        assert_eq!(recycler.children[1], "ui-4");
+
+        let network = &nodes[3];
+        assert_eq!(network.parent_id.as_deref(), Some("ui-2"));
+        assert_eq!(network.text.as_deref(), Some("Network"));
+
+        let display = &nodes[4];
+        assert_eq!(display.parent_id.as_deref(), Some("ui-2"));
+        assert_eq!(display.text.as_deref(), Some("Display"));
     }
 
     #[test]
