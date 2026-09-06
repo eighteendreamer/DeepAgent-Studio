@@ -935,12 +935,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn adb_tool_not_found() {
+    async fn adb_backend_uses_resolver_cached_path() {
         let resolver = super::super::ToolResolver::new();
         let runner = Arc::new(FakeAdbRunner::new());
+        resolver.insert(ResolvedTool {
+            name: "adb".into(),
+            path: std::path::PathBuf::from("/custom/adb"),
+            version: Some("1.0.41".into()),
+        });
         let backend = AdbBackend::new(resolver, runner);
-        let err = backend.adb_path().unwrap_err();
-        assert!(matches!(err, MobileError::ToolNotFound { .. }));
+        let resolved = backend.adb_path().unwrap();
+        assert_eq!(resolved, "/custom/adb");
     }
 
     #[test]

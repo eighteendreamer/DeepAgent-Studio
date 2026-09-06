@@ -102,20 +102,27 @@ impl ToolResolver {
                 dirs.push(PathBuf::from(local).join("Android").join("Sdk"));
             }
             if let Some(home) = std::env::var_os("USERPROFILE") {
-                dirs.push(PathBuf::from(home).join("Android").join("Sdk"));
+                let home = PathBuf::from(&home);
+                dirs.push(home.join("Android").join("Sdk"));
+                dirs.push(home.clone());
             }
         } else if cfg!(target_os = "macos") {
             if let Some(home) = std::env::var_os("HOME") {
                 dirs.push(
-                    PathBuf::from(home)
+                    PathBuf::from(&home)
                         .join("Library")
                         .join("Android")
                         .join("sdk"),
                 );
+                dirs.push(PathBuf::from(&home));
             }
         }
         if let Some(home) = std::env::var_os("HOME") {
-            dirs.push(PathBuf::from(home).join("Android").join("Sdk"));
+            let home = PathBuf::from(&home);
+            dirs.push(home.join("Android").join("Sdk"));
+            if !dirs.iter().any(|d| d == &home) {
+                dirs.push(home);
+            }
         }
         dirs
     }
@@ -184,13 +191,14 @@ mod tests {
     #[test]
     fn resolver_clear() {
         let resolver = ToolResolver::new();
+        let name = "nonexistent-tool-xyz-clear-test";
         resolver.insert(ResolvedTool {
-            name: "adb-clear-test".into(),
-            path: PathBuf::from("/usr/bin/adb"),
+            name: name.into(),
+            path: PathBuf::from("/usr/bin/fake"),
             version: None,
         });
         resolver.clear();
-        assert!(resolver.resolve("adb.clear-test").is_none());
+        assert!(resolver.resolve(name).is_none());
     }
 
     #[test]
@@ -201,10 +209,22 @@ mod tests {
     }
 
     #[test]
-    fn well_known_dirs_returns_vec() {
+    fn well_known_dirs_are_existing_paths() {
         let dirs = ToolResolver::well_known_sdk_dirs();
+        assert!(!dirs.is_empty(), "should have at least one well-known dir");
         for dir in &dirs {
-            assert!(dir.ends_with("Android/Sdk") || dir.ends_with("Android/sdk"));
+            let is_sdk = dir.ends_with("Android/Sdk") || dir.ends_with("Android/sdk");
+            let is_home = std::env::var_os("USERPROFILE")
+                .map(|h| dir == &PathBuf::from(h))
+                .unwrap_or(false)
+                || std::env::var_os("HOME")
+                    .map(|h| dir == &PathBuf::from(h))
+                    .unwrap_or(false);
+            assert!(
+                is_sdk || is_home,
+                "dir should be an SDK root or home: {:?}",
+                dir
+            );
         }
     }
 }
