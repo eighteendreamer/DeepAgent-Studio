@@ -276,3 +276,75 @@ async fn real_ui_snapshot_returns_full_tree() {
 
     assert!(snapshot.max_depth() > 0, "tree should have depth > 0");
 }
+
+#[tokio::test]
+#[ignore = "requires real Android device or emulator"]
+async fn real_network_capture_chain_works() {
+    let backend = real_backend();
+    let devices = backend
+        .list_devices(&ctx())
+        .await
+        .expect("list_devices should succeed");
+    let ready = devices
+        .iter()
+        .find(|d| d.state == DeviceState::Ready)
+        .expect("at least one Ready device required");
+
+    assert!(
+        ready.capabilities.network_inspection,
+        "device should report network_inspection capability"
+    );
+
+    backend
+        .start_network_capture(&ready.id, &ctx())
+        .await
+        .expect("start_network_capture should succeed");
+    eprintln!("Network capture started on {}", ready.id);
+
+    let launch_req = LaunchRequest {
+        device_id: ready.id.clone(),
+        package: "com.android.settings".into(),
+        activity: Some("com.android.settings.Settings".into()),
+    };
+    backend
+        .launch(&launch_req, &ctx())
+        .await
+        .expect("launch should succeed");
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let records = backend
+        .get_network_records(&ready.id, &ctx())
+        .await
+        .expect("get_network_records should succeed");
+    eprintln!(
+        "Captured {} network records (logcat may not have HTTP entries for all apps)",
+        records.len()
+    );
+
+    for record in &records {
+        assert!(
+            !record.record_id.is_empty(),
+            "record_id should not be empty"
+        );
+        assert_eq!(record.device_id, ready.id, "device_id should match");
+        eprintln!(
+            "  Record: {} {} -> {:?}",
+            record.request.method,
+            record.request.url,
+            record.response.as_ref().map(|r| r.status_code),
+        );
+    }
+
+    backend
+        .stop_network_capture(&ready.id, &ctx())
+        .await
+        .expect("stop_network_capture should succeed");
+    eprintln!("Network capture stopped on {}", ready.id);
+
+    let terminate_target = AppTarget {
+        device_id: ready.id.clone(),
+        package: "com.android.settings".into(),
+    };
+    let _ = backend.terminate(&terminate_target, &ctx()).await;
+}

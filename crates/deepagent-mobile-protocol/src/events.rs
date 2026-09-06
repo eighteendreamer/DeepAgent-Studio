@@ -73,6 +73,10 @@ pub enum MobileEvent {
         serial: String,
         reason: String,
     },
+    NetworkRecordCaptured {
+        device_id: String,
+        record_id: String,
+    },
 }
 
 #[cfg(test)]

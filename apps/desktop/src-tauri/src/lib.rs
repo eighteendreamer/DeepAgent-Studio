@@ -5276,6 +5276,45 @@ async fn mobile_read_logs(
     state.mobile.read_logs(&req).await.map_err(|e| e.to_string())
 }
 
+/// Start capturing network traffic for a device.
+#[tauri::command]
+async fn mobile_start_network_capture(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<(), String> {
+    state
+        .mobile
+        .start_network_capture(&device_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Stop capturing network traffic for a device.
+#[tauri::command]
+async fn mobile_stop_network_capture(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<(), String> {
+    state
+        .mobile
+        .stop_network_capture(&device_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Get captured network records (redacted).
+#[tauri::command]
+async fn mobile_get_network_records(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<Vec<deepagent_mobile_protocol::NetworkRecord>, String> {
+    state
+        .mobile
+        .get_network_records(&device_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Extract `zip_path` into `dest`, returning the directory to install from: the
 /// single top-level folder if the archive has exactly one, else `dest` itself.
 fn extract_zip(zip_path: &str, dest: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
@@ -6146,7 +6185,10 @@ pub fn run() {
             mobile_start_emulator,
             mobile_stop_emulator,
             mobile_ui_action,
-            mobile_read_logs
+            mobile_read_logs,
+            mobile_start_network_capture,
+            mobile_stop_network_capture,
+            mobile_get_network_records
         ])
         .run(tauri::generate_context!())
         .expect("error while running DeepAgent Studio");

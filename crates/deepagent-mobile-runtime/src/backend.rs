@@ -104,4 +104,40 @@ pub trait MobileBackend: Send + Sync {
             operation: "stop_emulator".into(),
         })
     }
+
+    /// Start capturing network traffic for a device.
+    async fn start_network_capture(
+        &self,
+        device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<()> {
+        let _ = (device_id, ctx);
+        Err(deepagent_mobile_core::MobileError::NotSupported {
+            operation: "start_network_capture".into(),
+        })
+    }
+
+    /// Stop capturing network traffic for a device.
+    async fn stop_network_capture(
+        &self,
+        device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<()> {
+        let _ = (device_id, ctx);
+        Err(deepagent_mobile_core::MobileError::NotSupported {
+            operation: "stop_network_capture".into(),
+        })
+    }
+
+    /// Get captured network records for a device.
+    async fn get_network_records(
+        &self,
+        device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<Vec<deepagent_mobile_protocol::NetworkRecord>> {
+        let _ = (device_id, ctx);
+        Err(deepagent_mobile_core::MobileError::NotSupported {
+            operation: "get_network_records".into(),
+        })
+    }
 }

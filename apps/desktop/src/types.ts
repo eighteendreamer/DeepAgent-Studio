@@ -1707,6 +1707,32 @@ export interface AvdInfo {
   serial?: string;
 }
 
+export interface NetworkRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: string | null;
+  content_type: string | null;
+}
+
+export interface NetworkResponse {
+  status_code: number;
+  status_text: string;
+  headers: Record<string, string>;
+  body: string | null;
+  content_type: string | null;
+}
+
+export interface NetworkRecord {
+  record_id: string;
+  device_id: string;
+  package: string | null;
+  request: NetworkRequest;
+  response: NetworkResponse | null;
+  timestamp_ms: number;
+  duration_ms: number | null;
+}
+
 export type InputAction =
   | { tap: { x: number; y: number } }
   | { long_press: { x: number; y: number; duration_ms: number } }

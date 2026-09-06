@@ -216,6 +216,45 @@ impl MobileBackend for FakeAndroidBackend {
             truncated: false,
         })
     }
+
+    async fn start_network_capture(
+        &self,
+        _device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<()> {
+        if ctx.is_cancelled() {
+            return Err(MobileError::Cancelled {
+                operation_id: ctx.operation_id.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn stop_network_capture(
+        &self,
+        _device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<()> {
+        if ctx.is_cancelled() {
+            return Err(MobileError::Cancelled {
+                operation_id: ctx.operation_id.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn get_network_records(
+        &self,
+        _device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<Vec<NetworkRecord>> {
+        if ctx.is_cancelled() {
+            return Err(MobileError::Cancelled {
+                operation_id: ctx.operation_id.clone(),
+            });
+        }
+        Ok(vec![])
+    }
 }
 
 #[cfg(test)]

@@ -2,10 +2,13 @@ use async_trait::async_trait;
 use deepagent_mobile_core::*;
 use deepagent_mobile_protocol::*;
 use deepagent_mobile_runtime::{MobileBackend, OperationContext};
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::adb_parser::{parse_adb_devices, AdbDeviceStatus};
 use crate::adb_runner::AdbCommandRunner;
+use crate::network_capture::NetworkCaptureState;
 
 /// Real ADB-based Android backend.
 ///
@@ -14,11 +17,16 @@ use crate::adb_runner::AdbCommandRunner;
 pub struct AdbBackend {
     resolver: super::ToolResolver,
     runner: Arc<dyn AdbCommandRunner>,
+    captures: Mutex<HashMap<String, NetworkCaptureState>>,
 }
 
 impl AdbBackend {
     pub fn new(resolver: super::ToolResolver, runner: Arc<dyn AdbCommandRunner>) -> Self {
-        Self { resolver, runner }
+        Self {
+            resolver,
+            runner,
+            captures: Mutex::new(HashMap::new()),
+        }
     }
 
     fn adb_path(&self) -> MobileResult<String> {
@@ -73,7 +81,7 @@ impl AdbBackend {
                 input: entry.status == AdbDeviceStatus::Device,
                 logs: entry.status == AdbDeviceStatus::Device,
                 install: entry.status == AdbDeviceStatus::Device,
-                network_inspection: false,
+                network_inspection: true,
             },
         }
     }
@@ -227,7 +235,7 @@ impl MobileBackend for AdbBackend {
                 input: true,
                 logs: true,
                 install: true,
-                network_inspection: false,
+                network_inspection: true,
             },
         };
 
@@ -613,6 +621,79 @@ impl MobileBackend for AdbBackend {
         // emu kill may not return a clean exit code, but the emulator will stop
         tracing::info!(serial = %request.serial, exit_code = ?output.exit_code, "emulator stop requested");
         Ok(())
+    }
+
+    async fn start_network_capture(
+        &self,
+        device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<()> {
+        let serial =
+            device_id
+                .strip_prefix("android-")
+                .ok_or_else(|| MobileError::DeviceNotFound {
+                    device_id: device_id.into(),
+                })?;
+
+        let output = self.adb_shell(serial, &["logcat", "-c"], ctx).await?;
+        Self::check_exit(&output, "adb logcat -c")?;
+
+        let mut captures = self.captures.lock().await;
+        captures.insert(device_id.to_string(), NetworkCaptureState::new());
+
+        tracing::info!(device_id = %device_id, "network capture started");
+        Ok(())
+    }
+
+    async fn stop_network_capture(
+        &self,
+        device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<()> {
+        let serial =
+            device_id
+                .strip_prefix("android-")
+                .ok_or_else(|| MobileError::DeviceNotFound {
+                    device_id: device_id.into(),
+                })?;
+
+        let mut captures = self.captures.lock().await;
+        if captures.remove(device_id).is_none() {
+            return Ok(());
+        }
+
+        let output = self
+            .adb_shell(serial, &["logcat", "-d", "-t", "1"], ctx)
+            .await?;
+        Self::check_exit(&output, "adb logcat flush")?;
+
+        tracing::info!(device_id = %device_id, "network capture stopped");
+        Ok(())
+    }
+
+    async fn get_network_records(
+        &self,
+        device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<Vec<NetworkRecord>> {
+        let serial =
+            device_id
+                .strip_prefix("android-")
+                .ok_or_else(|| MobileError::DeviceNotFound {
+                    device_id: device_id.into(),
+                })?;
+
+        let output = self
+            .adb_shell(serial, &["logcat", "-d", "-v", "threadtime"], ctx)
+            .await?;
+        Self::check_exit(&output, "adb logcat")?;
+
+        let mut captures = self.captures.lock().await;
+        let state = captures
+            .entry(device_id.to_string())
+            .or_insert_with(NetworkCaptureState::new);
+        state.parse_lines(device_id, &output.stdout_text());
+        Ok(state.take_records())
     }
 }
 

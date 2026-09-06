@@ -13,6 +13,7 @@ mod backend;
 mod emulator_parser;
 mod emulator_runner;
 mod fake;
+mod network_capture;
 mod tool_resolver;
 
 pub use adb_parser::{parse_adb_devices, AdbDeviceEntry, AdbDeviceStatus};

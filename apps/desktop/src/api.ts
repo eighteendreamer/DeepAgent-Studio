@@ -3983,4 +3983,26 @@ export async function mobileReadLogs(
   throw new Error("mobile read logs requires the desktop app");
 }
 
+export async function mobileStartNetworkCapture(deviceId: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("mobile_start_network_capture", { deviceId });
+  throw new Error("mobile network capture requires the desktop app");
+}
+
+export async function mobileStopNetworkCapture(deviceId: string): Promise<void> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<void>("mobile_stop_network_capture", { deviceId });
+  throw new Error("mobile network capture requires the desktop app");
+}
+
+export async function mobileGetNetworkRecords(
+  deviceId: string,
+): Promise<import("./types").NetworkRecord[]> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<import("./types").NetworkRecord[]>("mobile_get_network_records", { deviceId });
+  }
+  throw new Error("mobile network capture requires the desktop app");
+}
+
 

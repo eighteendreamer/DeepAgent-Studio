@@ -30,6 +30,9 @@ pub enum MobileOperationKind {
     StartEmulator(StartEmulatorRequest),
     StopEmulator(StopEmulatorRequest),
     FindNodes(FindNodeRequest),
+    StartNetworkCapture { device_id: String },
+    StopNetworkCapture { device_id: String },
+    GetNetworkRecords { device_id: String },
 }
 
 /// Target an installed application by package name (Android) or bundle ID

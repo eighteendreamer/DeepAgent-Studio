@@ -7,7 +7,7 @@ use deepagent_mobile_core::{
 };
 use deepagent_mobile_protocol::{
     AppTarget, ArtifactKind, AvdInfo, InputRequest, InputResult, InstallRequest, LaunchRequest,
-    LogPage, LogRequest, StartEmulatorRequest, StopEmulatorRequest, UiSnapshot,
+    LogPage, LogRequest, NetworkRecord, StartEmulatorRequest, StopEmulatorRequest, UiSnapshot,
 };
 use tokio::sync::RwLock;
 
@@ -233,6 +233,39 @@ impl MobileService {
             .backend_arc(deepagent_mobile_core::MobilePlatform::Android)
             .await?;
         backend.stop_emulator(request, ctx).await
+    }
+
+    /// Start capturing network traffic for a device.
+    pub async fn start_network_capture(
+        &self,
+        device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<()> {
+        let device = self.inner.registry.get(device_id).await?;
+        let backend = self.backend_arc(device.platform).await?;
+        backend.start_network_capture(device_id, ctx).await
+    }
+
+    /// Stop capturing network traffic for a device.
+    pub async fn stop_network_capture(
+        &self,
+        device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<()> {
+        let device = self.inner.registry.get(device_id).await?;
+        let backend = self.backend_arc(device.platform).await?;
+        backend.stop_network_capture(device_id, ctx).await
+    }
+
+    /// Get captured network records for a device.
+    pub async fn get_network_records(
+        &self,
+        device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<Vec<NetworkRecord>> {
+        let device = self.inner.registry.get(device_id).await?;
+        let backend = self.backend_arc(device.platform).await?;
+        backend.get_network_records(device_id, ctx).await
     }
 
     /// Get a reference to the device registry.
