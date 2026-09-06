@@ -62,6 +62,7 @@ impl NetworkCaptureState {
                     ParsedHttpLine::Response {
                         status_code,
                         status_text,
+                        url,
                         headers,
                         duration_ms,
                         timestamp_ms,
@@ -98,7 +99,7 @@ impl NetworkCaptureState {
                                 package: None,
                                 request: NetworkRequest {
                                     method: "UNKNOWN".into(),
-                                    url: String::new(),
+                                    url: url.unwrap_or_default(),
                                     headers: HashMap::new(),
                                     body: None,
                                     content_type: None,
@@ -157,6 +158,7 @@ enum ParsedHttpLine {
     Response {
         status_code: u16,
         status_text: String,
+        url: Option<String>,
         headers: HashMap<String, String>,
         duration_ms: Option<u64>,
         timestamp_ms: u64,
@@ -179,8 +181,19 @@ fn try_parse_http_line(line: &str) -> Option<ParsedHttpLine> {
             return Some(ParsedHttpLine::Response {
                 status_code: resp.0,
                 status_text: resp.1,
+                url: None,
                 headers: HashMap::new(),
                 duration_ms: resp.2,
+                timestamp_ms,
+            });
+        }
+        if let Some(combined) = try_parse_comb_response_line(rest) {
+            return Some(ParsedHttpLine::Response {
+                status_code: combined.0,
+                status_text: combined.1,
+                url: Some(combined.2),
+                headers: HashMap::new(),
+                duration_ms: None,
                 timestamp_ms,
             });
         }
@@ -284,6 +297,51 @@ fn try_parse_response_line(msg: &str) -> Option<(u16, String, Option<u64>)> {
 
     let status_text = status_text_parts.join(" ");
     Some((status_code, status_text, duration_ms))
+}
+
+/// Parse combined response lines containing both status code and URL.
+/// Matches patterns like: "code:200 ,url:https://example.com/path"
+fn try_parse_comb_response_line(msg: &str) -> Option<(u16, String, String)> {
+    let code_pos = msg.find("code:")?;
+    let code_rest = &msg[code_pos + 5..];
+    let code_str: String = code_rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    let status_code: u16 = code_str.parse().ok()?;
+    if !(100..=599).contains(&status_code) {
+        return None;
+    }
+
+    let url_pos = msg.find("url:")?;
+    let url_rest = &msg[url_pos + 4..];
+    let url: String = url_rest
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != ',' && *c != '\'')
+        .collect();
+    if url.is_empty() {
+        return None;
+    }
+
+    let status_text = match status_code {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "",
+    }
+    .to_string();
+
+    Some((status_code, status_text, url))
 }
 
 /// Parse duration strings like "42ms", "1.5s", "(1.5s)", "(42ms)".
@@ -481,5 +539,85 @@ mod tests {
         assert_eq!(try_parse_duration("1.5s"), Some(1500));
         assert_eq!(try_parse_duration("(1.5s)"), Some(1500));
         assert_eq!(try_parse_duration("hello"), None);
+    }
+
+    #[test]
+    fn parse_combined_response_taphttp() {
+        let line = "09-06 10:30:00.000  1234  5678 I TapHttp.SpecialCallServerStub: response online : protocol: http/1.1, code:200 ,url:https://dc-dragate-cn.heytapmobi.com/v3_1/dcs/appEnterLaunch/20200?ak=1487123111&brand=OPPO";
+        let result = try_parse_http_line(line);
+        assert!(result.is_some());
+        match result.unwrap() {
+            ParsedHttpLine::Response {
+                status_code,
+                status_text,
+                url,
+                ..
+            } => {
+                assert_eq!(status_code, 200);
+                assert_eq!(status_text, "OK");
+                assert_eq!(
+                    url,
+                    Some("https://dc-dragate-cn.heytapmobi.com/v3_1/dcs/appEnterLaunch/20200?ak=1487123111&brand=OPPO".into())
+                );
+            }
+            _ => panic!("expected response"),
+        }
+    }
+
+    #[test]
+    fn parse_combined_response_404() {
+        let line = "09-06 10:30:00.000  1  2 I SomeTag: response code:404 ,url:https://api.example.com/missing";
+        match try_parse_http_line(line).unwrap() {
+            ParsedHttpLine::Response {
+                status_code, url, ..
+            } => {
+                assert_eq!(status_code, 404);
+                assert_eq!(url, Some("https://api.example.com/missing".into()));
+            }
+            _ => panic!("expected response"),
+        }
+    }
+
+    #[test]
+    fn combined_response_without_code_returns_none() {
+        let line = "09-06 10:30:00.000  1  2 I Tag: just some url:https://example.com text";
+        assert!(try_parse_http_line(line).is_none());
+    }
+
+    #[test]
+    fn combined_response_without_url_returns_none() {
+        let line = "09-06 10:30:00.000  1  2 I Tag: response code:200 but no url here";
+        assert!(try_parse_http_line(line).is_none());
+    }
+
+    #[test]
+    fn capture_state_combined_response_standalone() {
+        let mut state = NetworkCaptureState::new();
+        state.parse_lines(
+            "dev-1",
+            "09-06 10:30:00.000  1234  5678 I TapHttp: response online : protocol: http/1.1, code:200 ,url:https://api.example.com/data\n",
+        );
+        let records = state.take_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].request.method, "UNKNOWN");
+        assert_eq!(records[0].request.url, "https://api.example.com/data");
+        assert!(records[0].response.is_some());
+        assert_eq!(records[0].response.as_ref().unwrap().status_code, 200);
+    }
+
+    #[test]
+    fn capture_state_multiple_combined_responses() {
+        let mut state = NetworkCaptureState::new();
+        state.parse_lines(
+            "dev-1",
+            "09-06 10:30:00.000  1  2 I TapHttp: response code:200 ,url:https://first.com\n\
+             09-06 10:30:01.000  1  2 I TapHttp: response code:404 ,url:https://second.com\n",
+        );
+        let records = state.take_records();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].request.url, "https://first.com");
+        assert_eq!(records[0].response.as_ref().unwrap().status_code, 200);
+        assert_eq!(records[1].request.url, "https://second.com");
+        assert_eq!(records[1].response.as_ref().unwrap().status_code, 404);
     }
 }
