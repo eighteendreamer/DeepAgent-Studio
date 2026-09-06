@@ -238,13 +238,32 @@ impl MobileBackend for AdbBackend {
         let output = self.adb_shell(serial, &["screencap", "-p"], ctx).await?;
         Self::check_exit(&output, "adb screencap")?;
 
+        let dir = std::env::temp_dir().join("deepagent-mobile-artifacts");
+        std::fs::create_dir_all(&dir).map_err(|e| MobileError::ToolExecutionFailed {
+            tool_name: "screenshot mkdir".into(),
+            exit_code: -1,
+            stderr: e.to_string(),
+        })?;
+
+        let artifact_id = format!("screenshot-{device_id}-{}", uuid::Uuid::new_v4());
+        let file_name = format!("{artifact_id}.png");
+        let file_path = dir.join(&file_name);
+
+        std::fs::write(&file_path, &output.stdout).map_err(|e| {
+            MobileError::ToolExecutionFailed {
+                tool_name: "screenshot write".into(),
+                exit_code: -1,
+                stderr: e.to_string(),
+            }
+        })?;
+
         let size = output.stdout.len() as u64;
         Ok(ArtifactRef {
-            artifact_id: format!("screenshot-{device_id}-{}", uuid::Uuid::new_v4()),
+            artifact_id,
             mime: "image/png".into(),
             size_bytes: size,
             sha256: None,
-            storage_path: format!("memory://{device_id}/screenshot.png"),
+            storage_path: file_path.display().to_string(),
         })
     }
 
