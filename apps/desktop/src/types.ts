@@ -1612,20 +1612,26 @@ export interface RemoteInstallResult {
 // ─── Mobile DevTools DTOs ────────────────────────────────────────────────────
 
 export interface BackendStatusDto {
-  name: string;
+  platform: string;
   available: boolean;
-  toolchain_detected: boolean;
-  details: string;
+  toolchain_version: string | null;
+  tool_paths: string[];
+  diagnostics: string[];
 }
 
 export interface DeviceDto {
   id: string;
   name: string;
   platform: string;
+  kind: string;
+  connection: string;
   state: string;
-  serial: string;
-  transport: string;
-  capabilities: string[];
+  os_version: string | null;
+  can_screenshot: boolean;
+  can_ui_tree: boolean;
+  can_input: boolean;
+  can_logs: boolean;
+  can_install: boolean;
 }
 
 export interface UiSnapshotSummaryDto {
