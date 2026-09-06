@@ -157,37 +157,29 @@ impl AppMobileService {
     ///
     /// This must be called asynchronously after construction to enable device discovery.
     pub async fn init(&self) {
-        // Create and register AdbBackend
         let resolver = ToolResolver::new();
         let runner = std::sync::Arc::new(SystemAdbRunner::new());
-        let adb_backend = AdbBackend::new(resolver, runner);
+        let adb_backend = std::sync::Arc::new(AdbBackend::new(resolver, runner));
 
         self.inner
             .register_backend(
                 deepagent_mobile_core::MobilePlatform::Android,
-                Box::new(adb_backend),
+                adb_backend.clone(),
             )
             .await;
 
-        // Start discovery loop in background
         let cancel_token = CancellationToken::new();
         let config = DiscoveryConfig::default();
-        let registry_for_discovery = Arc::new(self.inner.registry().clone());
-        let backend_for_discovery: std::sync::Arc<dyn deepagent_mobile_runtime::MobileBackend> =
-            std::sync::Arc::new(AdbBackend::new(
-                ToolResolver::new(),
-                std::sync::Arc::new(SystemAdbRunner::new()),
-            ));
+        let registry_for_discovery = std::sync::Arc::new(self.inner.registry().clone());
 
         tokio::spawn(deepagent_mobile_runtime::run_discovery_loop(
-            backend_for_discovery,
+            adb_backend,
             registry_for_discovery,
             config,
             cancel_token.clone(),
             self.event_tx.clone(),
         ));
 
-        // Store the cancel token
         if let Ok(mut token) = self.cancel_token.lock() {
             *token = cancel_token;
         }

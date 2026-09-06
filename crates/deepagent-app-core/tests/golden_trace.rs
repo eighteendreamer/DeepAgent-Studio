@@ -219,6 +219,9 @@ async fn golden_trace_simple_answer_matches_fixture() {
     // kernel state machine only — that separation is part of the contract.
     let expected = vec![
         "accepted:run_accepted",
+        "preparing:setup.started",
+        "preparing:capability.snapshot",
+        "preparing:setup.completed",
         "preparing:run_started",
         "preparing:session_registered",
         "running_turn:turn_started",

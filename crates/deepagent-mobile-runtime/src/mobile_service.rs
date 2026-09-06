@@ -37,7 +37,7 @@ struct ServiceInner {
     artifact_store: ArtifactStore,
     snapshot_store: SnapshotStore,
     remote_manager: RwLock<Option<RemoteMacManager>>,
-    backends: RwLock<HashMap<MobilePlatform, Box<dyn MobileBackend>>>,
+    backends: RwLock<HashMap<MobilePlatform, Arc<dyn MobileBackend>>>,
 }
 
 impl MobileService {
@@ -67,9 +67,25 @@ impl MobileService {
     pub async fn register_backend(
         &self,
         platform: MobilePlatform,
-        backend: Box<dyn MobileBackend>,
+        backend: Arc<dyn MobileBackend>,
     ) {
         self.inner.backends.write().await.insert(platform, backend);
+    }
+
+    /// Get a shared reference to the backend for a given platform.
+    pub async fn backend_arc(
+        &self,
+        platform: MobilePlatform,
+    ) -> MobileResult<Arc<dyn MobileBackend>> {
+        self.inner
+            .backends
+            .read()
+            .await
+            .get(&platform)
+            .cloned()
+            .ok_or_else(|| MobileError::BackendUnavailable {
+                reason: format!("{:?} backend not registered", platform),
+            })
     }
 
     /// Probe all registered backends and return their status.
@@ -103,7 +119,8 @@ impl MobileService {
         device_id: &str,
         ctx: &OperationContext,
     ) -> MobileResult<ArtifactRef> {
-        let backend = self.backend_for_device(device_id).await?;
+        let device = self.inner.registry.get(device_id).await?;
+        let backend = self.backend_arc(device.platform).await?;
         let artifact_ref = backend.screenshot(device_id, ctx).await?;
 
         let req = RegisterArtifactRequest {
@@ -126,7 +143,8 @@ impl MobileService {
         device_id: &str,
         ctx: &OperationContext,
     ) -> MobileResult<UiSnapshot> {
-        let backend = self.backend_for_device(device_id).await?;
+        let device = self.inner.registry.get(device_id).await?;
+        let backend = self.backend_arc(device.platform).await?;
         let snapshot = backend.ui_snapshot(device_id, ctx).await?;
 
         let _ = self.inner.snapshot_store.register(device_id).await;
@@ -140,7 +158,8 @@ impl MobileService {
         request: &InstallRequest,
         ctx: &OperationContext,
     ) -> MobileResult<()> {
-        let backend = self.backend_for_device(&request.device_id).await?;
+        let device = self.inner.registry.get(&request.device_id).await?;
+        let backend = self.backend_arc(device.platform).await?;
         backend.install(request, ctx).await
     }
 
@@ -150,13 +169,15 @@ impl MobileService {
         request: &LaunchRequest,
         ctx: &OperationContext,
     ) -> MobileResult<()> {
-        let backend = self.backend_for_device(&request.device_id).await?;
+        let device = self.inner.registry.get(&request.device_id).await?;
+        let backend = self.backend_arc(device.platform).await?;
         backend.launch(request, ctx).await
     }
 
     /// Terminate a running application.
     pub async fn terminate(&self, target: &AppTarget, ctx: &OperationContext) -> MobileResult<()> {
-        let backend = self.backend_for_device(&target.device_id).await?;
+        let device = self.inner.registry.get(&target.device_id).await?;
+        let backend = self.backend_arc(device.platform).await?;
         backend.terminate(target, ctx).await
     }
 
@@ -166,7 +187,8 @@ impl MobileService {
         request: &InputRequest,
         ctx: &OperationContext,
     ) -> MobileResult<InputResult> {
-        let backend = self.backend_for_device(&request.device_id).await?;
+        let device = self.inner.registry.get(&request.device_id).await?;
+        let backend = self.backend_arc(device.platform).await?;
         backend.input(request, ctx).await
     }
 
@@ -176,18 +198,16 @@ impl MobileService {
         request: &LogRequest,
         ctx: &OperationContext,
     ) -> MobileResult<LogPage> {
-        let backend = self.backend_for_device(&request.device_id).await?;
+        let device = self.inner.registry.get(&request.device_id).await?;
+        let backend = self.backend_arc(device.platform).await?;
         backend.read_logs(request, ctx).await
     }
 
     /// List available Android Virtual Devices.
     pub async fn list_avds(&self, ctx: &OperationContext) -> MobileResult<Vec<AvdInfo>> {
-        let backends = self.inner.backends.read().await;
-        let backend = backends.get(&MobilePlatform::Android).ok_or_else(|| {
-            MobileError::BackendUnavailable {
-                reason: "android backend not registered".into(),
-            }
-        })?;
+        let backend = self
+            .backend_arc(deepagent_mobile_core::MobilePlatform::Android)
+            .await?;
         backend.list_avds(ctx).await
     }
 
@@ -197,12 +217,9 @@ impl MobileService {
         request: &StartEmulatorRequest,
         ctx: &OperationContext,
     ) -> MobileResult<String> {
-        let backends = self.inner.backends.read().await;
-        let backend = backends.get(&MobilePlatform::Android).ok_or_else(|| {
-            MobileError::BackendUnavailable {
-                reason: "android backend not registered".into(),
-            }
-        })?;
+        let backend = self
+            .backend_arc(deepagent_mobile_core::MobilePlatform::Android)
+            .await?;
         backend.start_emulator(request, ctx).await
     }
 
@@ -212,12 +229,9 @@ impl MobileService {
         request: &StopEmulatorRequest,
         ctx: &OperationContext,
     ) -> MobileResult<()> {
-        let backends = self.inner.backends.read().await;
-        let backend = backends.get(&MobilePlatform::Android).ok_or_else(|| {
-            MobileError::BackendUnavailable {
-                reason: "android backend not registered".into(),
-            }
-        })?;
+        let backend = self
+            .backend_arc(deepagent_mobile_core::MobilePlatform::Android)
+            .await?;
         backend.stop_emulator(request, ctx).await
     }
 
@@ -248,25 +262,6 @@ impl MobileService {
             device_id.to_string(),
             deadline,
         )
-    }
-
-    /// Resolve the backend for a device by looking up its platform in the
-    /// registry.
-    async fn backend_for_device(
-        &self,
-        device_id: &str,
-    ) -> MobileResult<tokio::sync::RwLockReadGuard<'_, Box<dyn MobileBackend>>> {
-        let device = self.inner.registry.get(device_id).await?;
-        let backends = self.inner.backends.read().await;
-        if backends.contains_key(&device.platform) {
-            Ok(tokio::sync::RwLockReadGuard::map(backends, |map| {
-                map.get(&device.platform).unwrap()
-            }))
-        } else {
-            Err(MobileError::BackendUnavailable {
-                reason: format!("{:?} backend not registered", device.platform),
-            })
-        }
     }
 }
 
@@ -345,14 +340,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn service_backend_for_device_no_backend() {
+    async fn service_backend_arc_not_registered() {
         let (registry, _rx) = test_registry();
         let service =
             MobileService::new(registry.clone(), ArtifactStore::new(), SnapshotStore::new());
-        registry
-            .upsert(test_device("dev-1", MobilePlatform::Android))
-            .await;
-        let result = service.backend_for_device("dev-1").await;
+        let result = service.backend_arc(MobilePlatform::Android).await;
         assert!(matches!(
             result,
             Err(MobileError::BackendUnavailable { .. })
