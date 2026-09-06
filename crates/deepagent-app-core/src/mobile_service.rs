@@ -128,7 +128,7 @@ pub struct AppMobileService {
     inner: Arc<MobileService>,
     default_timeout: Duration,
     event_tx: mpsc::UnboundedSender<MobileEvent>,
-    _event_rx: mpsc::UnboundedReceiver<MobileEvent>,
+    event_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<MobileEvent>>>,
     cancel_token: std::sync::Mutex<CancellationToken>,
 }
 
@@ -148,7 +148,7 @@ impl AppMobileService {
             inner: Arc::new(inner),
             default_timeout: Duration::from_secs(30),
             event_tx,
-            _event_rx: event_rx,
+            event_rx: std::sync::Mutex::new(Some(event_rx)),
             cancel_token: std::sync::Mutex::new(CancellationToken::new()),
         }
     }
@@ -185,6 +185,26 @@ impl AppMobileService {
         }
     }
 
+    /// Take the event receiver and spawn a forwarding task.
+    ///
+    /// The callback receives each `MobileEvent` and should project it into the
+    /// host event system (e.g. Tauri `emit`). Can only be called once; subsequent
+    /// calls are no-ops.
+    pub fn start_event_forwarding<F>(&self, forward: F)
+    where
+        F: Fn(&MobileEvent) + Send + Sync + 'static,
+    {
+        let rx = self.event_rx.lock().ok().and_then(|mut guard| guard.take());
+        let Some(mut rx) = rx else {
+            return;
+        };
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                forward(&event);
+            }
+        });
+    }
+
     /// Create from an existing MobileService (for testing or custom setup).
     pub fn from_service(service: MobileService) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel::<MobileEvent>();
@@ -193,7 +213,7 @@ impl AppMobileService {
             inner: Arc::new(service),
             default_timeout: Duration::from_secs(30),
             event_tx,
-            _event_rx: event_rx,
+            event_rx: std::sync::Mutex::new(Some(event_rx)),
             cancel_token: std::sync::Mutex::new(CancellationToken::new()),
         }
     }

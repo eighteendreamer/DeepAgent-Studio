@@ -5823,8 +5823,12 @@ pub fn run() {
             // Initialize mobile service with Android backend and discovery
             let mobile_service = Arc::new(AppMobileService::new());
             let mobile_service_for_init = mobile_service.clone();
+            let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 mobile_service_for_init.init().await;
+            });
+            mobile_service.start_event_forwarding(move |event| {
+                let _ = app_handle.emit("mobile://event", event);
             });
 
             app.manage(AppState {
