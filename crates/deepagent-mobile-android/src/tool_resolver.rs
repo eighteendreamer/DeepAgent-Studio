@@ -50,7 +50,7 @@ impl ToolResolver {
         }
         let subdir = Self::sdk_subdir(name);
         if let Some(env) = std::env::var_os("ANDROID_HOME") {
-            let candidate = PathBuf::from(&env).join(&subdir).join(name);
+            let candidate = PathBuf::from(&env).join(subdir).join(name);
             if candidate.is_file() {
                 return Some(candidate);
             }
@@ -62,7 +62,7 @@ impl ToolResolver {
             }
         }
         if let Some(env) = std::env::var_os("ANDROID_SDK_ROOT") {
-            let candidate = PathBuf::from(&env).join(&subdir).join(name);
+            let candidate = PathBuf::from(&env).join(subdir).join(name);
             if candidate.is_file() {
                 return Some(candidate);
             }
@@ -74,7 +74,7 @@ impl ToolResolver {
             }
         }
         for dir in Self::well_known_sdk_dirs() {
-            let candidate = dir.join(&subdir).join(name);
+            let candidate = dir.join(subdir).join(name);
             if candidate.is_file() {
                 return Some(candidate);
             }

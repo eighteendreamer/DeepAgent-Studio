@@ -11,8 +11,17 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[derive(Debug, Clone)]
 pub struct AdbCommandOutput {
     pub exit_code: Option<i32>,
-    pub stdout: String,
+    pub stdout: Vec<u8>,
     pub stderr: String,
+}
+
+impl AdbCommandOutput {
+    /// Interpret stdout as lossy UTF-8 text. Use for text-based commands
+    /// (devices, shell, uiautomator). For binary output (screencap), use
+    /// `stdout` directly.
+    pub fn stdout_text(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.stdout)
+    }
 }
 
 /// Trait for executing ADB commands. Abstracted for testability.
@@ -92,9 +101,9 @@ impl AdbCommandRunner for SystemAdbRunner {
         let stdout_task = stdout_handle.map(|s| {
             tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
-                let mut buf = String::new();
+                let mut buf = Vec::new();
                 let mut reader = tokio::io::BufReader::new(s);
-                let _ = reader.read_to_string(&mut buf).await;
+                let _ = reader.read_to_end(&mut buf).await;
                 buf
             })
         });
@@ -114,7 +123,7 @@ impl AdbCommandRunner for SystemAdbRunner {
                 let exit_code = status.ok().and_then(|s| s.code());
                 let stdout = match stdout_task {
                     Some(t) => t.await.unwrap_or_default(),
-                    None => String::new(),
+                    None => Vec::new(),
                 };
                 let stderr = match stderr_task {
                     Some(t) => t.await.unwrap_or_default(),
@@ -184,7 +193,7 @@ impl AdbCommandRunner for FakeAdbRunner {
         let responses = self.responses.lock().await;
         Ok(responses.get(key).cloned().unwrap_or(AdbCommandOutput {
             exit_code: Some(0),
-            stdout: String::new(),
+            stdout: Vec::new(),
             stderr: String::new(),
         }))
     }
@@ -202,7 +211,7 @@ mod tests {
                 "devices",
                 AdbCommandOutput {
                     exit_code: Some(0),
-                    stdout: "List of devices attached\nABC123\tdevice\n".into(),
+                    stdout: b"List of devices attached\nABC123\tdevice\n".to_vec(),
                     stderr: String::new(),
                 },
             )
@@ -214,7 +223,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(0));
-        assert!(result.stdout.contains("ABC123"));
+        assert!(result.stdout_text().contains("ABC123"));
     }
 
     #[tokio::test]

@@ -109,3 +109,61 @@ async fn real_device_info_returns_full_properties() {
     assert_eq!(info.id, ready.id);
     assert!(!info.name.is_empty(), "device name should not be empty");
 }
+
+#[tokio::test]
+#[ignore = "requires real Android device or emulator"]
+async fn real_screenshot_produces_valid_png() {
+    let backend = real_backend();
+    let devices = backend
+        .list_devices(&ctx())
+        .await
+        .expect("list_devices should succeed");
+    let ready = devices
+        .iter()
+        .find(|d| d.state == DeviceState::Ready)
+        .expect("at least one Ready device required");
+
+    let artifact = backend
+        .screenshot(&ready.id, &ctx())
+        .await
+        .expect("screenshot should succeed");
+
+    eprintln!(
+        "Screenshot: id={} mime={} size={} path={}",
+        artifact.artifact_id, artifact.mime, artifact.size_bytes, artifact.storage_path
+    );
+
+    assert_eq!(artifact.mime, "image/png");
+    assert!(
+        artifact.size_bytes > 0,
+        "screenshot should have non-zero size"
+    );
+
+    let storage_path = std::path::Path::new(&artifact.storage_path);
+    assert!(
+        storage_path.exists(),
+        "artifact file should exist at {}",
+        artifact.storage_path
+    );
+
+    let bytes = std::fs::read(storage_path).expect("should be able to read artifact file");
+    assert_eq!(
+        bytes.len() as u64,
+        artifact.size_bytes,
+        "file size should match reported size"
+    );
+
+    // PNG magic bytes: 89 50 4E 47 0D 0A 1A 0A
+    assert!(
+        bytes.len() >= 8,
+        "file should have at least 8 bytes for PNG header"
+    );
+    assert_eq!(
+        &bytes[..8],
+        &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        "file should start with valid PNG magic bytes"
+    );
+
+    // Clean up
+    let _ = std::fs::remove_file(storage_path);
+}

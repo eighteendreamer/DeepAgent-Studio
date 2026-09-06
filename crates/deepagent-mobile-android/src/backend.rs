@@ -92,6 +92,23 @@ impl AdbBackend {
             .await
     }
 
+    /// Binary-safe variant of `adb_shell`. Uses `exec-out` which bypasses
+    /// the Android shell's line-ending conversion (\\n → \\r\\n). Required
+    /// for binary commands like `screencap`.
+    async fn adb_exec_out(
+        &self,
+        serial: &str,
+        cmd_args: &[&str],
+        ctx: &OperationContext,
+    ) -> MobileResult<crate::adb_runner::AdbCommandOutput> {
+        let adb = self.adb_path()?;
+        let mut args: Vec<&str> = vec!["-s", serial, "exec-out"];
+        args.extend_from_slice(cmd_args);
+        self.runner
+            .run(&adb, &args, ctx.deadline, &ctx.cancellation_token())
+            .await
+    }
+
     fn check_exit(output: &crate::adb_runner::AdbCommandOutput, tool: &str) -> MobileResult<()> {
         match output.exit_code {
             Some(0) => Ok(()),
@@ -160,7 +177,7 @@ impl MobileBackend for AdbBackend {
             .await?;
         Self::check_exit(&output, "adb devices")?;
 
-        let entries = parse_adb_devices(&output.stdout);
+        let entries = parse_adb_devices(&output.stdout_text());
         Ok(entries.iter().map(Self::entry_to_device).collect())
     }
 
@@ -181,12 +198,12 @@ impl MobileBackend for AdbBackend {
             .await?;
         Self::check_exit(&output, "adb shell getprop")?;
 
-        let model = output.stdout.trim().to_string();
+        let model = output.stdout_text().trim().to_string();
 
         let version_output = self
             .adb_shell(serial, &["getprop", "ro.build.version.release"], ctx)
             .await?;
-        let os_version = Some(version_output.stdout.trim().to_string());
+        let os_version = Some(version_output.stdout_text().trim().to_string());
 
         let mut device = MobileDevice {
             id: device_id.into(),
@@ -235,7 +252,7 @@ impl MobileBackend for AdbBackend {
                     device_id: device_id.into(),
                 })?;
 
-        let output = self.adb_shell(serial, &["screencap", "-p"], ctx).await?;
+        let output = self.adb_exec_out(serial, &["screencap", "-p"], ctx).await?;
         Self::check_exit(&output, "adb screencap")?;
 
         let dir = std::env::temp_dir().join("deepagent-mobile-artifacts");
@@ -285,7 +302,7 @@ impl MobileBackend for AdbBackend {
         Self::check_exit(&output, "adb uiautomator dump")?;
 
         let snapshot_id = format!("snap-{device_id}-{}", uuid::Uuid::new_v4());
-        let nodes = parse_uiautomator_output(&output.stdout);
+        let nodes = parse_uiautomator_output(&output.stdout_text());
 
         Ok(UiSnapshot {
             snapshot_id,
@@ -421,8 +438,8 @@ impl MobileBackend for AdbBackend {
             .await?;
         Self::check_exit(&output, "adb logcat")?;
 
-        let records = output
-            .stdout
+        let text = output.stdout_text();
+        let records = text
             .lines()
             .filter(|l| !l.is_empty())
             .map(|line| {
@@ -439,7 +456,7 @@ impl MobileBackend for AdbBackend {
         Ok(LogPage {
             device_id: request.device_id.clone(),
             records,
-            truncated: output.stdout.lines().count() > max as usize,
+            truncated: text.lines().count() > max as usize,
         })
     }
 
@@ -476,7 +493,7 @@ impl MobileBackend for AdbBackend {
             });
         }
 
-        let mut avds = crate::emulator_parser::parse_list_avds(&output.stdout);
+        let mut avds = crate::emulator_parser::parse_list_avds(&output.stdout_text());
 
         // Mark running AVDs by checking current devices
         let devices = self.list_devices(ctx).await.unwrap_or_default();
@@ -810,7 +827,7 @@ mod tests {
                 "devices",
                 AdbCommandOutput {
                     exit_code: Some(0),
-                    stdout: "List of devices attached\nABC123\tdevice\tproduct:walleye model:Pixel_2 device:walleye transport_id:1\n".into(),
+                    stdout: b"List of devices attached\nABC123\tdevice\tproduct:walleye model:Pixel_2 device:walleye transport_id:1\n".to_vec(),
                     stderr: String::new(),
                 },
             )
@@ -831,7 +848,7 @@ mod tests {
                 "devices",
                 AdbCommandOutput {
                     exit_code: Some(0),
-                    stdout: "List of devices attached\nXYZ789\tunauthorized\n".into(),
+                    stdout: b"List of devices attached\nXYZ789\tunauthorized\n".to_vec(),
                     stderr: String::new(),
                 },
             )
@@ -850,7 +867,7 @@ mod tests {
                 "devices",
                 AdbCommandOutput {
                     exit_code: Some(0),
-                    stdout: "List of devices attached\nOFF001\toffline\n".into(),
+                    stdout: b"List of devices attached\nOFF001\toffline\n".to_vec(),
                     stderr: String::new(),
                 },
             )
@@ -868,8 +885,9 @@ mod tests {
                 "devices",
                 AdbCommandOutput {
                     exit_code: Some(0),
-                    stdout: "List of devices attached\nemulator-5554\tdevice\tmodel:sdk_gphone64\n"
-                        .to_string(),
+                    stdout:
+                        b"List of devices attached\nemulator-5554\tdevice\tmodel:sdk_gphone64\n"
+                            .to_vec(),
                     stderr: String::new(),
                 },
             )
@@ -887,7 +905,7 @@ mod tests {
                 "shell",
                 AdbCommandOutput {
                     exit_code: Some(0),
-                    stdout: "Starting: Intent { ... }\n".into(),
+                    stdout: b"Starting: Intent { ... }\n".to_vec(),
                     stderr: String::new(),
                 },
             )
@@ -914,7 +932,7 @@ mod tests {
                 "shell",
                 AdbCommandOutput {
                     exit_code: Some(0),
-                    stdout: String::new(),
+                    stdout: Vec::new(),
                     stderr: String::new(),
                 },
             )

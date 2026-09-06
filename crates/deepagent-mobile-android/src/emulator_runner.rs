@@ -107,7 +107,7 @@ mod tests {
             "-list-avds",
             AdbCommandOutput {
                 exit_code: Some(0),
-                stdout: "Pixel_4\nPixel_6\n".to_string(),
+                stdout: b"Pixel_4\nPixel_6\n".to_vec(),
                 stderr: String::new(),
             },
         );
@@ -123,7 +123,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(output.exit_code, Some(0));
-        assert!(output.stdout.contains("Pixel_4"));
+        assert!(output.stdout_text().contains("Pixel_4"));
     }
 
     #[tokio::test]
