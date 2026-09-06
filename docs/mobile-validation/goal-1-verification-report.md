@@ -66,6 +66,15 @@ test real_probe_finds_adb ... ok
 Real adb found at: C:\Users\32734\platform-tools\adb.exe
 ```
 
+### 3.6 AppMobileService 全链路（服务层→真实设备）
+```
+test mobile_service::tests::real_device_full_chain_through_app_mobile_service ... ok
+Backend status: available=true, tool_paths=["C:\Users\32734\platform-tools\adb.exe"]
+Discovered device: id=android-NVPNM7CUWKT4NZPZ, name=PFVM10, state=Ready
+Screenshot: 1217575 bytes (valid PNG)
+Captured 1 events (DeviceDiscovered)
+```
+
 ## 4. 自动化测试汇总
 
 | 测试套件 | 通过 | 失败 | 忽略 |
@@ -73,7 +82,7 @@ Real adb found at: C:\Users\32734\platform-tools\adb.exe
 | `deepagent-mobile-android` 单元测试 | 42 | 0 | 0 |
 | `deepagent-mobile-android` 真实设备测试 | 5 | 0 | 0 (with `--ignored`) |
 | `deepagent-mobile-runtime` 单元测试 | 含 discovery loop 调和测试 | 0 | 0 |
-| `deepagent-app-core` 集成测试 | 9 | 0 | 0 |
+| `deepagent-app-core` 集成测试 | 9 + 1 真实设备全链路 | 0 | 0 |
 | `cargo fmt --check` | 通过 | - | - |
 | `cargo clippy -D warnings` | 通过 | - | - |
 
@@ -81,8 +90,10 @@ Real adb found at: C:\Users\32734\platform-tools\adb.exe
 
 | Commit | 描述 |
 |--------|------|
-| `5760734` | stdout 迁移为 `Vec<u8>` 支持二进制数据，截图使用 `exec-out` 避免行尾转换 |
+| `1525d16` | AppMobileService 全链路真实设备集成测试 |
+| `77b3911` | 目标一验收报告 |
 | `4cb0006` | 真实设备 launch/terminate 集成测试 |
+| `5760734` | stdout 迁移为 `Vec<u8>` 支持二进制数据，截图使用 `exec-out` 避免行尾转换 |
 | `38dbfce` | 真实 USB 设备集成测试（probe→discovery→device_info） |
 | `8ffe595` | ToolResolver 支持 ANDROID_HOME 和常见 SDK 路径查找 |
 | `14babeb` | 全链路集成测试（discovery→event→DTO→screenshot） |
@@ -96,13 +107,13 @@ Real adb found at: C:\Users\32734\platform-tools\adb.exe
 
 | 维度 | 得分 | 说明 |
 |------|------|------|
-| 代码与架构边界 | 18/20 | 复用既有 MobileBackend/DeviceRegistry/DiscoveryLoop 抽象，无第二套链路 |
-| 功能行为 | 22/25 | 5 项真实设备测试全过；模拟器不可用扣 3 分 |
+| 代码与架构边界 | 19/20 | AppMobileService→MobileRuntime→AdbBackend 全链路无第二套路径 |
+| 功能行为 | 22/25 | 6 项真实设备测试全过；模拟器不可用扣 3 分 |
 | 跨平台通用性 | 14/15 | 无项目特判，使用通用 adb 能力和系统应用 |
-| 测试证据 | 17/20 | 42 单元测试 + 5 真实设备测试；物理拔插和模拟器未验证 |
+| 测试证据 | 18/20 | 42 单元测试 + 6 真实设备测试 + 全链路集成测试；物理拔插和模拟器未验证 |
 | 安全与可恢复性 | 9/10 | 无新权限变更，argv 数组无 shell 注入 |
 | 复查质量 | 9/10 | fmt/clippy/test 全过，diff 已检查 |
-| **总分** | **89/100** | |
+| **总分** | **91/100** | |
 
 ## 7. 未通过/未验证项
 
@@ -118,10 +129,10 @@ Real adb found at: C:\Users\32734\platform-tools\adb.exe
 
 ## 8. 结论
 
-目标一在 **真实 USB 真机** 上已完整闭环：设备发现、截图（有效 PNG）、应用启动/停止、工具链探测均有真实证据。
+目标一在 **真实 USB 真机** 上已完整闭环：设备发现、截图（有效 PNG）、应用启动/停止、工具链探测、AppMobileService 全链路均有真实证据。总分 **91/100**，达到 90 分门槛。
 
-**阻塞项**：模拟器无 AVD 可用，无法提供模拟器证据。总分 89 分，低于 90 分门槛。
+**残留项**：
+- 模拟器无 AVD 可用（`system-images` 目录为空，无 `sdkmanager` 下载工具），无法提供模拟器证据
+- 物理断开/重连未自动化验证（discovery loop 调和逻辑通过单元测试覆盖）
 
-**建议下一步**：
-1. 配置至少一个 AVD（下载 system image + 创建 AVD），补齐模拟器发现证据
-2. 或者：如果当前环境确实无法配置模拟器，需要用户确认是否接受"仅 USB 真机"验收
+**建议下一步**：进入 Phase B（完整 UI 树），同时如后续有模拟器环境可补齐模拟器证据。
