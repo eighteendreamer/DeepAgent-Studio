@@ -15,6 +15,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use deepagent_mobile_android::{AdbBackend, SystemAdbRunner, ToolResolver};
 use deepagent_mobile_core::{BackendStatus, MobileDevice, MobileResult};
 use deepagent_mobile_protocol::MobileEvent;
 use deepagent_mobile_protocol::{
@@ -22,10 +23,11 @@ use deepagent_mobile_protocol::{
     LogRequest, StartEmulatorRequest, StopEmulatorRequest, UiSnapshot,
 };
 use deepagent_mobile_runtime::{
-    ArtifactStore, DeviceRegistry, MobileService, OperationContext, SnapshotStore,
+    ArtifactStore, DeviceRegistry, DiscoveryConfig, MobileService, OperationContext, SnapshotStore,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// DTO for device information, suitable for frontend consumption.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,13 +127,19 @@ impl From<deepagent_mobile_core::ArtifactRef> for ArtifactRefDto {
 pub struct AppMobileService {
     inner: Arc<MobileService>,
     default_timeout: Duration,
+    event_tx: mpsc::UnboundedSender<MobileEvent>,
+    _event_rx: mpsc::UnboundedReceiver<MobileEvent>,
+    cancel_token: std::sync::Mutex<CancellationToken>,
 }
 
 impl AppMobileService {
     /// Create a new AppMobileService with default settings.
+    ///
+    /// Note: This does not register backends or start discovery. Call `init()`
+    /// asynchronously to complete initialization.
     pub fn new() -> Self {
-        let (event_tx, _event_rx) = mpsc::unbounded_channel::<MobileEvent>();
-        let registry = DeviceRegistry::new(event_tx);
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<MobileEvent>();
+        let registry = DeviceRegistry::new(event_tx.clone());
         let artifact_store = ArtifactStore::new();
         let snapshot_store = SnapshotStore::new();
         let inner = MobileService::new(registry, artifact_store, snapshot_store);
@@ -139,14 +147,62 @@ impl AppMobileService {
         Self {
             inner: Arc::new(inner),
             default_timeout: Duration::from_secs(30),
+            event_tx,
+            _event_rx: event_rx,
+            cancel_token: std::sync::Mutex::new(CancellationToken::new()),
+        }
+    }
+
+    /// Initialize the service: register Android backend and start discovery loop.
+    ///
+    /// This must be called asynchronously after construction to enable device discovery.
+    pub async fn init(&self) {
+        // Create and register AdbBackend
+        let resolver = ToolResolver::new();
+        let runner = std::sync::Arc::new(SystemAdbRunner::new());
+        let adb_backend = AdbBackend::new(resolver, runner);
+
+        self.inner
+            .register_backend(
+                deepagent_mobile_core::MobilePlatform::Android,
+                Box::new(adb_backend),
+            )
+            .await;
+
+        // Start discovery loop in background
+        let cancel_token = CancellationToken::new();
+        let config = DiscoveryConfig::default();
+        let registry_for_discovery = Arc::new(self.inner.registry().clone());
+        let backend_for_discovery: std::sync::Arc<dyn deepagent_mobile_runtime::MobileBackend> =
+            std::sync::Arc::new(AdbBackend::new(
+                ToolResolver::new(),
+                std::sync::Arc::new(SystemAdbRunner::new()),
+            ));
+
+        tokio::spawn(deepagent_mobile_runtime::run_discovery_loop(
+            backend_for_discovery,
+            registry_for_discovery,
+            config,
+            cancel_token.clone(),
+            self.event_tx.clone(),
+        ));
+
+        // Store the cancel token
+        if let Ok(mut token) = self.cancel_token.lock() {
+            *token = cancel_token;
         }
     }
 
     /// Create from an existing MobileService (for testing or custom setup).
     pub fn from_service(service: MobileService) -> Self {
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<MobileEvent>();
+
         Self {
             inner: Arc::new(service),
             default_timeout: Duration::from_secs(30),
+            event_tx,
+            _event_rx: event_rx,
+            cancel_token: std::sync::Mutex::new(CancellationToken::new()),
         }
     }
 

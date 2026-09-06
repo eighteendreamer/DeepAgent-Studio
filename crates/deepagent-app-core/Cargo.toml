@@ -32,12 +32,14 @@ deepagent-verification.workspace = true
 deepagent-mobile-runtime.workspace = true
 deepagent-mobile-core.workspace = true
 deepagent-mobile-protocol.workspace = true
+deepagent-mobile-android.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 tokio = { workspace = true }
+tokio-util.workspace = true
 # Concurrent MCP server probing (McpService::connection_status fans out the
 # per-server connect + tools/list handshakes with join_all).
 futures.workspace = true

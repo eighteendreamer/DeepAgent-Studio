@@ -5820,6 +5820,13 @@ pub fn run() {
             }
             app.manage(inventory);
 
+            // Initialize mobile service with Android backend and discovery
+            let mobile_service = Arc::new(AppMobileService::new());
+            let mobile_service_for_init = mobile_service.clone();
+            tauri::async_runtime::spawn(async move {
+                mobile_service_for_init.init().await;
+            });
+
             app.manage(AppState {
                 service: Mutex::new(service),
                 settings: settings_arc,
@@ -5851,7 +5858,7 @@ pub fn run() {
                 office,
                 ssh,
                 trust,
-                mobile: Arc::new(AppMobileService::new()),
+                mobile: mobile_service,
                 rt,
             });
             Ok(())
