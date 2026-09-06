@@ -440,4 +440,93 @@ mod tests {
         assert_eq!(dto.toolchain_version, Some("1.0".into()));
         assert_eq!(dto.diagnostics, vec!["OK"]);
     }
+
+    /// Integration test: full chain from backend registration through discovery,
+    /// event emission, DTO conversion, and event forwarding.
+    #[tokio::test]
+    async fn full_chain_discovery_to_dto() {
+        use deepagent_mobile_android::FakeAndroidBackend;
+        use deepagent_mobile_core::{DeviceState, MobilePlatform};
+        use deepagent_mobile_protocol::MobileEvent;
+        use deepagent_mobile_runtime::{run_discovery_loop, DiscoveryConfig};
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let service = AppMobileService::new();
+
+        let fake = Arc::new(FakeAndroidBackend::new());
+        fake.set_devices(vec![FakeAndroidBackend::fake_device(
+            "android-emulator-5554",
+            DeviceState::Ready,
+        )])
+        .await;
+
+        service
+            .inner
+            .register_backend(MobilePlatform::Android, fake.clone())
+            .await;
+
+        let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected_clone = collected.clone();
+        service.start_event_forwarding(move |event: &MobileEvent| {
+            collected_clone.lock().unwrap().push(format!("{event:?}"));
+        });
+
+        let cancel = CancellationToken::new();
+        let config = DiscoveryConfig {
+            poll_interval: Duration::from_millis(50),
+        };
+        let registry = Arc::new(service.inner.registry().clone());
+        let backend_for_discovery: Arc<dyn deepagent_mobile_runtime::MobileBackend> = fake;
+        let event_tx = service.event_tx.clone();
+
+        let cancel_clone = cancel.clone();
+        let handle = tokio::spawn(async move {
+            run_discovery_loop(
+                backend_for_discovery,
+                registry,
+                config,
+                cancel_clone,
+                event_tx,
+            )
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let devices = service.list_devices().await;
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "android-emulator-5554");
+        assert_eq!(devices[0].state, "Ready");
+        assert_eq!(devices[0].platform, "Android");
+        assert!(devices[0].can_screenshot);
+        assert!(devices[0].can_ui_tree);
+
+        let statuses = service.probe_backends().await;
+        assert_eq!(statuses.len(), 1);
+        assert!(statuses[0].available);
+
+        let info = service.device_info("android-emulator-5554").await.unwrap();
+        assert_eq!(info.name, "Fake android-emulator-5554");
+        assert_eq!(info.os_version, Some("14".into()));
+
+        let screenshot = service.screenshot("android-emulator-5554").await.unwrap();
+        assert_eq!(screenshot.mime, "image/png");
+        assert!(screenshot.size_bytes > 0);
+
+        cancel.cancel();
+        let _ = handle.await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let events = collected.lock().unwrap();
+        assert!(
+            !events.is_empty(),
+            "event forwarding should have captured events"
+        );
+        let has_discovered = events.iter().any(|e| e.contains("DeviceDiscovered"));
+        assert!(
+            has_discovered,
+            "should have DeviceDiscovered event, got: {events:?}"
+        );
+    }
 }
