@@ -7,6 +7,7 @@
 
 use deepagent_mobile_android::{AdbBackend, SystemAdbRunner, ToolResolver};
 use deepagent_mobile_core::DeviceState;
+use deepagent_mobile_protocol::{AppTarget, LaunchRequest};
 use deepagent_mobile_runtime::{MobileBackend, OperationContext};
 use std::sync::Arc;
 use std::time::Duration;
@@ -166,4 +167,61 @@ async fn real_screenshot_produces_valid_png() {
 
     // Clean up
     let _ = std::fs::remove_file(storage_path);
+}
+
+#[tokio::test]
+#[ignore = "requires real Android device or emulator"]
+async fn real_launch_and_terminate_system_app() {
+    let backend = real_backend();
+    let devices = backend
+        .list_devices(&ctx())
+        .await
+        .expect("list_devices should succeed");
+    let ready = devices
+        .iter()
+        .find(|d| d.state == DeviceState::Ready)
+        .expect("at least one Ready device required");
+
+    let launch_req = LaunchRequest {
+        device_id: ready.id.clone(),
+        package: "com.android.settings".into(),
+        activity: Some("com.android.settings.Settings".into()),
+    };
+
+    backend
+        .launch(&launch_req, &ctx())
+        .await
+        .expect("launch com.android.settings should succeed");
+    eprintln!("Launched com.android.settings on {}", ready.id);
+
+    // Give the app a moment to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Take a screenshot to prove the app is visible
+    let artifact = backend
+        .screenshot(&ready.id, &ctx())
+        .await
+        .expect("screenshot after launch should succeed");
+    assert!(
+        artifact.size_bytes > 0,
+        "post-launch screenshot should have content"
+    );
+    eprintln!(
+        "Post-launch screenshot: {} bytes at {}",
+        artifact.size_bytes, artifact.storage_path
+    );
+
+    let terminate_target = AppTarget {
+        device_id: ready.id.clone(),
+        package: "com.android.settings".into(),
+    };
+
+    backend
+        .terminate(&terminate_target, &ctx())
+        .await
+        .expect("terminate com.android.settings should succeed");
+    eprintln!("Terminated com.android.settings on {}", ready.id);
+
+    // Clean up screenshot
+    let _ = std::fs::remove_file(&artifact.storage_path);
 }
