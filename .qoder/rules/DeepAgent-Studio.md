@@ -2,140 +2,281 @@
 trigger: always_on
 ---
 
-# DeepAgent-Studio 开发铁律：对齐成熟架构与官方文档，不缝补丁、不摸瞎
+# DeepAgent Studio 项目开发规则
 
-本项目是 **monorepo**，核心产品为 `apps/desktop` 下的 **Tauri v2 桌面应用**；后端为 Rust，前端为 React/TypeScript，目标是为 DeepSeek 提供 Claude Code 级执行内核。**任何架构、选型、技术点、代码生成，都必须有权威依据（成熟参考项目 / 官方文档）；严禁凭直觉自创。自己想的永远不如官方技术文档权威。**
+本文件是 `G:\Code_Warehouse\DeepAgent-Studio` 的项目专属规则。用户当前指令优先于本文档；当前代码、配置、测试和官方文档优先于猜测。`借鉴/` 目录只作为设计和实现参考，不能当作可直接复制的业务代码来源。
 
-**重点是系统底层（后端 Rust 内核）；前端并非不管——凡后端改动涉及前后端交互（Tauri command 签名、事件、数据契约），必须同步更新前端并保持一致，避免前后端脱节。**
+## 0. 最高优先级铁律
 
-## 信源优先级（按此顺序查证，命中即停）
+1. 每次开始回复时，先称呼用户为“程序员Eighteen”。
+2. 先查证，再动手。任何 API、库、框架、系统行为、命令参数和版本行为，都必须先找到依据。
+3. 禁止臆造。不要凭记忆写 API 签名、配置项、模型参数、协议字段或系统沙箱能力。
+4. 要根因修复，不要补丁。重复出现的问题，优先重审设计边界，而不是继续加临时特判。
+5. 完成以验证为准。没实际跑过编译、测试、lint、构建或手动验证，不算完成；未执行的验证必须如实说明。
+6. 忠实执行用户意图。不擅自扩范围，不顺手改无关内容，不覆盖用户已有改动。
+7. 不堆屎山。新增代码必须收敛复杂度、复用既有边界，并能被测试验证；不能为了赶进度复制粘贴出第二套链路。
 
-**A. 行为机制 / 架构**（工具循环、权限、Hook、Skill/CLAUDE.md 注入、压缩、子代理、取消、状态机、系统提示词）——本地 `G:\Code_Warehouse\DeepAgent-Studio\借鉴`：
-1. **Claude Code**（`借鉴\claudecode`，restored-src / package）—— 行为机制第一信源。
-2. **Codex**（`借鉴\codex\codex-rs`，Rust）—— 与本项目同语言，架构/状态机/取消/沙箱执行直接对照；**代码审查触发链（`/review` 命令、审查专用流程）以它为准**。
-3. **Grok**（`借鉴\grok-build`，Rust）—— 模型交互、流式、工具协议。
-4. **其它本地参考**：DeepSeek-Reasonix（Go 桌面 Agent，会话/恢复/心跳/沙箱）、Kun。
-5. **能力增强参考**（为本系统增强而引入，接入时同样先读源码再动手）：
-   - **open-code-review**（`借鉴\open-code-review`，Go）—— 代码审查能力：审查规则引擎、diff 审查、`delegate` 宿主代理委托模式、plugins/skills 接入形态。
-   - **better-harness**（`借鉴\better-harness`）—— 让 AI 写好代码的 harness 工程：hooks、skills、agent 资产组织、case-studies 经验库。
+## 1. 项目事实与目录边界
 
-**B. Rust 技术点 / 库选型 / 语言用法**：
-- 优先看参考项目（codex-rs、grok-build）里同类技术用哪个 crate、怎么组织；
-- 再查 **Rust 官方文档 / std / docs.rs / 该 crate 官方文档**；
-- **禁止**凭记忆臆造 API、crate 名、feature、版本行为——以官方文档为准。
+这是一个 Rust monorepo：
 
-**C. 参考项目都没有的技术点**（如 Windows 沙箱用的是**微软官方 Sandboxie / Windows Sandbox**、Job Object、Win32 API 等）：
-- **必须查对应官方文档**（Microsoft Learn / Sandboxie 官方文档 / Win32 API 手册）；
-- 官方怎么规定就怎么做，不得用"应该是这样"的猜测实现系统底层能力。
+- `crates/`：运行时核心、模型、工具、MCP、存储、配置等 Rust crate。
+- `apps/cli/`：无头 CLI。
+- `apps/desktop/`：Tauri 桌面应用；`src-tauri/` 是 Rust 后端，`src/` 是 React/TypeScript 前端。
+- `借鉴/`：参考项目目录，只用于查证设计、协议和实现方式。
+- `target/`、`dist/`、`node_modules/`、本地缓存、运行日志和构建产物不要提交。
 
-**D. 模型侧**：以 **DeepSeek 官方手册**（联网）为准——模型能力、API 参数、Thinking/reasoning_effort、function calling、上下文窗口、限流等，不得沿用 Claude/OpenAI 的假设。
+涉及架构判断时，默认认为 DeepAgent Studio 的核心价值在现有内核：`AgentKernel`、`RunStore`、`run_events`、`RunPhase`、`TerminalKind`、`InputLeaseRegistry`、审批、取消、MCP、工具注册、权限、Sandboxie/Tauri UI。升级应把这些能力平台化，而不是绕开它们另造一套。
 
-**E. 联网检索**：仅当上述本地信源与官方文档都无对应时才用，优先官方/一手来源。
+## 2. 证据优先级
 
-> 查证结论必须写进方案：`{信源项目/官方文档 + 具体位置} 的做法 → 本项目的对齐方式`。冲突裁决：行为逻辑以 Claude Code 为准、Rust 工程实现以 Codex 为准、模型侧以 DeepSeek 官方为准、OS/沙箱以微软官方为准。
+动手前按顺序核对，命中即可作为主要依据：
 
-## 能力增强接入要求（open-code-review / better-harness）
+1. 当前代码库已有同类实现、测试、配置和提交历史。
+2. `借鉴/claudecode`
+3. `借鉴/codex/codex-rs`
+4. `借鉴/grok-build`
+5. `借鉴/open-code-review`
+6. `借鉴/better-harness`
+7. `借鉴/deepseek-harness`，优先用于 DeepSeek 官方模型接入、插件化、运行时编排、会话/工作流设计。
+8. Rust、Tauri、DeepSeek、OpenAI、Microsoft 官方文档。
 
-- **代码审查触发方式**：先对照 **codex 的 `/review` 实现**（触发入口、前端命令、审查会话形态）再设计本系统方案。基线：**手动触发**走前端 `@`/斜杠命令（对齐 codex）；**AI 写代码任务的自动触发**（写任务完成后自动审查一轮）作为可选增强，需先在 codex/claudecode 中查证是否有对应机制，无对应则按"自创从宽"处理——审查结果只作反馈，不得变成误杀 run 的门卫。
-- **审查执行通道**：优先用 open-code-review 的 `delegate` 模式（输出结构化审查规格，由 DeepSeek 模型执行审查），CLI 已作为 devDependency 存在（`pnpm review` / `npx ocr`）。
-- **better-harness 的用法**：其 hooks/skills/资产组织作为"让 AI 写好代码"的参考蓝本，接入本系统时必须遵守"附加物是参考不是指令"基线，不得压制内置工具。
+如果以上都没有覆盖，必须明确标注为“本地设计”，说明为什么需要自设计，并把边界和验证方式写清楚。涉及联网查证时，优先使用官方文档和一手资料。
 
-## 开发改动边界（动手前必须判断）
+## 3. 动手前检查
 
-先判断用户要的是“修复原行为”还是“新增能力”。性能、报错、轻量化、查询慢、体验卡顿等问题，默认按 **保持原功能、原接口和原调用方式不变** 处理；只有调用链、真实失败样本或参考架构证明当前子系统存在系统性缺失时，才扩大到架构调整。
+开始开发前必须完成：
 
-- **禁止未经要求扩功能**：用户未要求新入口、新页面、新交互、新前端状态时，不得主动新增。不能把性能优化做成一套新的协议、DTO、command、缓存状态或 UI。
-- **优先优化现有实现**：能在当前 Tauri command、service、repository、API wrapper 或组件内部减少读取、扫描和重复查询，就不要新增接口。
-- **新增接口必须收口**：确需新增接口时，同步处理旧接口去留；旧接口要么有明确兼容理由并委托新实现，要么迁移调用点后删除。禁止新旧两套悬空并存。
-- **禁止无授权改前端**：用户只要求后端、Rust、数据查询、规则文档或方案时，不得修改 React 组件、交互、样式和 i18n。前端必须配合契约变化时，先说明原因和改动边界。
-- **代码量与收益成比例**：优先删除不必要工作，避免用大量缓存结构、分页状态或 DTO 扩散掩盖根因。不要顺手重构无关模块。
-- **性能问题先定位**：先用 `rg`、日志、SQL、调用链和已有测试确认耗时来源；禁止凭感觉同时修改 sessions、skills、前端和接口层。
-- **保持行为兼容**：若改成懒加载、截断或分页，用户触发原功能时仍必须能取得完整数据，不能静默改变接口语义。
-- **清理悬空实现**：调试代码、临时 DTO、未使用 API、未接入 command、废弃函数和无用类型必须随本次改动清理，并用 `rg`、编译和类型检查确认。
-- **最终说明边界**：明确改了哪些层、哪些层未动、为什么；刻意未改前端或未新增接口时也要说明。
+- 明确本轮需求范围、受影响模块和不应修改的内容。
+- 读取将要修改的文件，以及同类功能的实现、调用方、测试和配置。
+- 检查 `Cargo.toml`、`package.json`、`rustfmt.toml`、CI/脚本和现有规则文件，不猜命令。
+- 涉及跨层契约时，全局搜索生产方和消费方，包括 Rust 类型、Tauri command、前端类型、事件名、持久化字段、CLI 输出和测试。
+- 涉及删除数据、改公共 API、改协议、改模型供应商、改权限/沙箱边界或外部服务时，先确认影响范围；没有明确授权时不执行不可逆操作。
 
-> “不要局部补丁”与“小步修改”并不冲突：一次性偶发问题优先在现有正确架构内做最小完整修复；同类问题反复出现或证据表明架构错位时，再对照上游重构对应子系统。
+## 4. 反堆屎山与渐进治理
 
-## 强制工作流
+- 不通过复制粘贴、超长函数、深层嵌套、散落魔法值、重复分支、无边界全局状态或连续临时特判完成需求。
+- 同一规则、状态机、事件流、审批逻辑、取消逻辑、权限判定只能有一个可信实现。
+- 不为了“看起来抽象”而抽象。只有在真实复用、隔离边界或降低复杂度时，才新增 crate、trait、service、DTO、command 或 UI 组件。
+- 遇到已有复杂代码，先补最小验证或测试，再按小步、可回滚的方式治理；不做无边界重写。
+- 重构必须保持外部契约兼容，或同步更新所有消费方并明确说明破坏性影响。
+- 如果同类问题连续出现三次，停止继续打补丁，先提出架构级修复方案。
 
-1. **先查证再动手**：任何行为机制、库选型、系统底层技术点，先按 A–E 找到权威依据并引用具体文件/文档位置，禁止无依据就写代码。
-2. **要完整架构，不要补丁**：修复前先判断"这是补丁还是架构缺失"。同类问题反复出现（如 CompletionGate 连环误杀）即为架构错位——**必须对照信源重构该子系统，而非在旧结构上再加一层判断**。
-3. **选型有据**：引入/更换任何 crate、系统 API、脚手架、算法时，必须说明依据来源（参考项目在用 / 官方文档推荐），不得只凭"常见""应该"。
-4. **前后端同步**：改动 Tauri command、事件名、payload/DTO 结构时，必须同时更新前端调用与类型（`api.ts`/`types.ts` 等），并核对一致，禁止只改一侧造成脱节。
-5. **无对应才自创**：所有信源与官方文档都无对应时才允许自设计，代码中标注 `// No upstream counterpart (checked: claudecode/codex/grok/official docs):` + 理由。
-6. **自创机制默认从宽**：自创的"门卫/校验/强制"逻辑（如 CompletionGate）宁可漏过、不可误杀——误杀正确执行的 run 比没有门卫更糟。
-7. **真实失败样本回归**：修行为缺陷时，回归测试必须用日志/会话抓到的真实失败 prompt 与数据，不允许只造理想化用例。
+## 5. DeepAgent 架构专属规则
 
-## Tauri 前端运行与验证
+### 5.1 Harness 平台化边界
 
-前端代码会被编译进 Tauri 应用。**只改代码、不运行，旧窗口和旧安装包不会出现改动。**任何前端修改都必须实际运行供用户验证，不能只通过类型检查就宣称完成。
+- Harness 是统一入口，不是第二套运行链。CLI、SDK、Desktop、app-server 必须收敛到同一套 AppCore/RuntimeEngine 能力。
+- 禁止新增第二套 run store、第二套 event store、第二套审批中心、第二套取消机制或第二套工具注册表。
+- 优先把现有 `RuntimeEvent`、`RunStore`、`run_events`、运行终态和取消能力投影为 harness 协议事件，而不是重建持久化。
+- 协议 DTO 与 Tauri UI DTO 分离：UI DTO 服务视图展示，harness DTO 服务机器协议。跨边界字段必须版本化、可序列化、可测试。
+- `thread/start`、`thread/resume`、`turn/start`、`turn/stream`、`turn/interrupt`、`turn/steer`、`approval/respond`、`tool/list`、`config/read`、`sandbox/status` 等能力应共用协议层和测试夹具。
+- 第一批优先闭环 stdio JSON-RPC、CLI JSONL 和 TypeScript SDK；HTTP/WebSocket/远程 daemon 只有在协议稳定后再进入。
 
-日常开发：
+### 5.2 事件与持久化
 
-```bash
-cd apps/desktop && npm run tauri dev
+- 事件必须保持可 replay、可断线续读、顺序稳定。修改 `run_events`、sequence、terminal event 或 replay 语义时，必须补持久化和重连测试。
+- 运行终态只能落一次。失败、取消、中断、完成的映射必须明确，不允许 UI、CLI、SDK 各自解释。
+- 流式事件必须携带足够上下文，使前端、CLI JSONL、SDK stream 和日志能还原同一次 turn 的状态。
+
+### 5.3 DeepSeek 模型适配
+
+- 本项目默认模型方向是 DeepSeek 官方模型。涉及模型参数、reasoning、工具调用、流式响应、usage、cache 命中、错误码和限流策略时，以 DeepSeek 官方文档和 `借鉴/deepseek-harness` 为优先依据。
+- 不得把 OpenAI/Codex 的字段、事件和 tool call 假设直接套到 DeepSeek 上。需要兼容多模型时，在 provider adapter 层做显式映射。
+- 保留 DeepSeek 特有能力的结构化信息，例如 reasoning、cache usage、token usage、工具调用增量和供应商错误上下文；不能压平成只剩文本。
+- 模型接入必须隔离在 `deepagent-models` 或既有 provider seam 内，不把供应商分支散落到 UI、CLI 或工具层。
+
+### 5.4 工具、MCP 与审批
+
+- 工具能力优先复用现有 `Tool` trait、`ToolRegistry`、权限集合、风险级别和 schema validation。
+- MCP 能力优先复用现有 registry、adapter、deferred tools；不要在 CLI、SDK 或 app-server 内绕开 MCP 层手写工具发现。
+- 审批请求必须走统一路由，能够被 UI、CLI、SDK 或自动策略处理。批准结果需要包含作用域、风险类别和可审计上下文。
+- 高风险工具、文件写入、命令执行、网络访问和跨 workspace 操作都必须经过权限模型，不允许在新入口中默认放行。
+
+### 5.5 沙箱与权限
+
+- 沙箱升级必须通过 `SandboxBackend` 或等价边界适配，不能把 Sandboxie、Microsoft Windows Sandbox、无沙箱模式的判断散落到业务逻辑。
+- Microsoft Windows Sandbox 适配以微软官方 `.wsb` 能力为准，包括 MappedFolders、Networking、Clipboard、Printer、MemoryInMB、LogonCommand 等；不臆造未支持的隔离能力。
+- Windows Sandbox 映射目录默认最小权限，写入目录必须可审计；host path、workspace root、临时目录和日志目录都要做边界检查。
+- 权限模型优先用 profile 化表达，例如 filesystem、network、command、approval reviewer、grant scope。UI 现有设置可以做映射，但不能替代协议级权限。
+- 任何绕过沙箱执行命令的路径都必须有明确理由、日志和测试覆盖。
+
+### 5.6 Tauri 桌面与前端
+
+- 桌面端已有 `start_chat_v2`、事件通道、审批通道和会话完成通知等链路；harness 迁移应渐进并保持兼容。
+- 修改 Tauri command、事件 payload 或前端类型时，必须同步 Rust 端、TypeScript 类型、调用方和构建验证。
+- 所有涉及前端 UI 组件的改动，优先使用 `apps/desktop/src/components/shadcn/` 中与 `G:\Code_UZIP\ui` 或 `https://ui.shadcn.com/` 对齐的组件；不要在业务组件中直接使用原生或自设计组件，除非文件上传等语义确实要求原生控件。
+- UI 改动应保持现有产品气质：工作台式、清晰、可扫描，不引入与当前设计体系冲突的孤立风格。
+
+## 6. 通用开发规范
+
+- 优先在现有架构内做最小、完整、可验证的修复。
+- 没有必要不要新增 command、DTO、UI、协议、配置项或额外抽象。
+- Rust 代码按 `rustfmt.toml` 统一格式，当前 `max_width = 100`。
+- Rust 命名使用 `snake_case`，React 组件使用 `CamelCase`。
+- 错误处理必须保留上下文，不吞异常，不静默降级。可以转换错误类型，但要保留原因。
+- 日志走项目既有设施；核心路径的状态流转、外部调用、权限判定、配置加载、降级和恢复必须留下可追踪信息。
+- 引入新依赖前确认现有依赖能否满足，检查维护状态、许可证和版本兼容性。
+- 不提交密钥、API Key、token、机器专属配置、敏感日志、提示词内容或用户隐私数据。
+
+## 7. 构建、测试与运行
+
+常用命令以仓库当前配置为准，优先使用：
+
+```text
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --workspace --offline
+cargo run -p deepagent-cli
+cd apps/desktop && pnpm install
+cd apps/desktop && pnpm build
+cd apps/desktop && pnpm tauri dev
 ```
 
-非交互环境中，`pnpm dev` 可能因无 TTY 触发 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`，应绕过 `beforeDevCommand`：
+验证要求：
 
-```bash
-# 终端 1：端口必须与 tauri.conf.json 的 devUrl 一致
-cd apps/desktop && npx vite --port 1420 --strictPort
+- 文档变更至少检查 diff 和 Markdown 内容一致性。
+- Rust 行为变更至少运行格式检查、相关 crate 测试；跨 crate 或共享行为变更运行 workspace 测试。
+- Tauri 桥接或前端类型变更至少运行 `cd apps/desktop && pnpm build`。
+- UI 行为变更需要手动运行或截图验证，并报告验证方式。
+- 如果环境、网络、依赖或权限导致某项验证无法执行，必须如实报告，不用“应该可以”替代结果。
 
-# 终端 2：运行 Rust 外壳
-cd apps/desktop/src-tauri && cargo run --no-default-features
+## 8. 修 Bug 纪律
+
+1. 先复现，再修复。优先用真实失败输入、日志或堆栈定位。
+2. 沿调用链追到第一个错误来源，形成单一可验证假设。
+3. 一次只做一个根因修复，重新运行相关验证。
+4. 修复行为缺陷时，优先补真实回归测试，不只造理想化样本。
+5. 同一路线连续失败三次时，停止继续微调，重新评估设计或向用户报告阻塞原因。
+
+## 9. Git 与交付规范
+
+- 可提交任务完成后，默认创建一个只包含本轮相关文件的 Git commit；不自动推送、不创建 PR，除非用户明确要求。
+- 提交前必须检查 `git status` 和 diff，不得提交无关改动、用户未授权文件、密钥或敏感日志。
+- 最近提交常用简短中文前缀，提交信息格式：
+
+```text
+【类型】中文描述
 ```
 
-- 前端改动至少执行 `npx tsc --noEmit`，并完成实际运行或浏览器验证及关键交互断言。
-- 浏览器验证可用 Playwright 打开 Vite 地址，并通过 `window.__TAURI_INTERNALS__.invoke` 注入 mock；mock 返回值必须符合真实 DTO 形状，例如 balance 结果必须包含 `infos` 数组。
-- 本地打包：`cd apps/desktop && npm run tauri build`。正式发布按 `apps/desktop/RELEASE.md` 打 tag 走 GitHub Actions；前端改动必须重新打包才会进入安装包。
+常用类型：
 
-## 包管理器与 Git 已知坑
+- `feat`：新增功能
+- `fix`：修复缺陷
+- `refactor`：不改变外部行为的重构或屎山治理
+- `perf`：性能优化
+- `test`：测试变更
+- `docs`：文档或规则变更
+- `chore`：构建、依赖或工具调整
+- `migration`：数据库结构或数据迁移
 
-- `apps/desktop` 同时存在 `package-lock.json` 和 `pnpm-lock.yaml`；项目内 `node_modules/pnpm` 为 pnpm v11，全局 PATH 可能为 v10。
-- **非交互环境禁止运行 `pnpm install`**：版本校验失败可能清空 `node_modules` 顶层。依赖布局损坏时使用 `cd apps/desktop && npm install` 恢复。
-- 根目录 `.gitignore` 的 `ui/` 规则会误伤 `apps/desktop/src/components/ui/`。提交该目录时必须使用 `git add -f apps/desktop/src/components/ui/`，随后用 `git status` 确认文件没有遗漏。
+交付时简要说明：
 
-## 前端样式与组件规范
+- 修改了哪些文件以及目的。
+- 实际运行了哪些命令和结果。
+- 哪些测试或环境验证未执行，以及原因。
+- 是否存在兼容性、配置、数据迁移、权限或沙箱注意事项。
+- 如果已提交，报告 commit id。
 
-现行界面语言是 **无边框、无浮起阴影、静默着色**。颜色必须使用 `tailwind.config.js` 中的主题 token，禁止硬编码 hex、`bg-white`、`hover:bg-gray-50/100` 或 `bg-gray-100` 激活态。
+## 10. 安全与配置
 
-- 浮层容器：使用 `Panel`，`bg-elevated-bg` + `shadow-[0_6px_24px_rgba(0,0,0,0.10)]`，不加 border。
-- 触发按钮/胶囊：无 border，使用 `bg-black/5`；列表 hover/激活同样使用 `bg-black/5`。
-- Composer 输入区：使用 `InputSurface`，无 border；默认 `shadow-[0_2px_12px_rgba(0,0,0,0.07)]`，聚焦使用 `focus-within:shadow-[0_4px_18px_rgba(0,0,0,0.12)]`。
-- 动效统一使用 `components/ui/motion.ts`：150ms hover、300ms ease-out 滑块/面板/滑动药丸、400ms 大面板，并尊重 `prefers-reduced-motion`。
-- 新 UI 必须复用 `components/ui/`：`Panel`、`ListItem`、`SlidingMenuList`、`MorphingMenuShell`、`MorphingToolbarMenu`、`MorphingSelect`、`ToolbarMenuTrigger`、`TintButton`、`IconButton`、`InputSurface`、`Slider`、`DropdownMenu`、`SlidingTabs`。使用 `cn()` 合并类，禁止重复手写已有组件的类名组合。
-- 侧栏滑动药丸使用 `useSlidingIndicator` + `SlidingPill`；按钮必须 `relative z-[1]`。浮层列表使用 `SlidingMenuList`，二者不能混用。
-- 一级菜单可用 `MorphingMenuShell`/`MorphingToolbarMenu` 的 `layoutId` 形变；每个实例的 `layoutId` 必须唯一。二级 flyout 使用独立 `Panel`，不得给菜单行增加 hover `layoutId` morph。
-- 含 `SlidingMenuList` 的 morph 菜单必须 `staggerContent={false}`。行需带 `data-menu-item={id}` 与 `relative z-[1]`，`activeId` 必须匹配真实 id。
-- Footer 项目/环境/Git 菜单互斥；Composer 模型/权限/上下文菜单互斥；两区之间通过既有 overlay 信号保持互斥。
-- Composer 附件按钮沿用 `ComposerAttachButton` 的“悬停时按钮自身 morph 展开”模式，不改成点击展开菜单或独立 tooltip 卡片。
-- 导航和设置文案必须走 i18n，不得在组件中硬编码中文。
-- 新交互样式/动效在落地前先制作 `choice-preview-YYYY-MM-DD-HHMM.html`，至少提供 6 个方案；用户确认并完成验证后删除临时选择页，用户明确保留的探索文件不得擅自删除。
+- 把运行日志、本地缓存、凭据、模型请求和模型响应都当作敏感信息处理。
+- 凡是涉及模型接入、工具调用、权限、沙箱、持久化、恢复逻辑、远程控制或 app-server 的改动，都要确认脱敏、边界检查和审计信息仍然有效。
+- 不执行破坏性命令，不强推，不绕过 hook，不修改 Git 配置，除非用户明确要求并理解后果。
 
-## 日志纪律（排查问题的生命线）
 
-- **习惯性打日志**：新增/修改任何核心路径（状态机转换、工具执行、Hook 派发、权限判定、配置加载、压缩、恢复、取消、降级/熔断）时，**必须同步补结构化日志**——判定标准：该路径出问题时，仅凭日志能还原"发生了什么、为什么走到这一步"。
-- **格式统一，走既有双路日志，不得另起炉灶**：
-  - 诊断日志 → `runtime-logs.db`：统一经 `append_runtime_log` + `NewRuntimeLogEntry`，字段齐全（`level` / `category` / `event` / `message` / `data_json`，并尽量带 `run_id` / `session_id` / `source`）；
-  - 产品事件 → `run_events`：可回放的状态机事实，经内核事件通道落库。
-- **命名与结构**：`event` 用 snake_case 动词短语（如 `registry_ready`、`input_queued`）；上下文一律放 `data` 结构化 JSON 字段，**禁止把变量拼进 message 字符串**了事。
-- **失败路径必留痕**：任何 `Err` 返回、静默降级、fallback、熔断触发点，都必须有一条可检索的日志（含原因与关键参数），禁止吞错。
-- **脱敏红线**：日志不得记录 API key/密钥/prompt 原文（runtime-logs 只记长度；密钥经 redaction 清洗），新日志点必须遵守。
+## 11. 移动端预览调试专项规则（用户强制要求）
 
-## 已验证的对齐基线（违反即回归）
+本节适用于 Android/iOS 模拟器、USB 真机、移动端预览、UI Inspector、网络抓包和 Remote Mac。与本节冲突时，优先执行用户当前指令。
 
-- **错误可见性**：任何执行器（含沙箱）必须把子进程完整 stdout/stderr 回传给模型。自纠错完全依赖看得见报错——空输出 + exit code 不可接受。
-- **附加物永远是参考，不是指令**：Skill/规则正文注入用参考性措辞，附"环境中反复失败即放弃该路线"逃生条款；附加物（skill/MCP/rules）不得门禁或压制内置工具。
-- **失败必须升级**：同一工具滑动窗口内失败 ≥4 次 → 反馈升级为强制换根本路线（APPROACH CHANGE REQUIRED），优先内置能力与零依赖路线。
-- **外部配置须校验**：兼容读取 `~/.claude/*` 等外部配置时，值必须验证对本 provider 有效（如 model 名必须存在于目录），无效则忽略而非透传。
-- **完成校验以事实为准、从用户短指令推导**：CompletionPolicy 只能从用户原始短指令提取要求，绝不扫描附件/粘贴正文/文件内容；提取结果必须有数量上限与合法性过滤（中文全角标点、CJK 粘连已多次误伤）。
-- **模型侧一律以 DeepSeek 官方为准**：Thinking/reasoning_effort、max_tokens、function calling 格式、上下文窗口、限流重试策略等，不得照搬 Claude/OpenAI 的取值。
+### 11.1 目标不可改变
 
-## 已知踩坑速查（详见 memory）
+移动端子系统的三个首要验收目标固定如下，不得用 mock、截图假象或项目定制适配替代：
 
-- Sandboxie `Start.exe` 不中继沙箱内输出 → 已用工作区重定向回读修复，勿回退。
-- 中文 prompt 全角标点（：，；）粘连进"必须路径" → 路径提取按路径合法字符切段，勿改回空格分词。
-- skill 命令式全文重注入曾锁死模型策略 → 保持参考性措辞。
-- 测试须隔离用户主目录：`DualConfigLoader` 会读真实 `~/.claude/settings.json`，测试用 `with_user_home(None)`/临时目录。
-- 写工作区外文件（如本规则文件）受沙箱写限制 → 需提权执行。
+1. 系统启动后，能够发现并通过 USB 访问已运行到 Android 真机上的项目，或接入已运行的模拟手机，打开页面并显示真实画面。
+2. 能够通过 USB 或模拟器访问已编译项目的完整 UI 结构；UI Inspector 必须返回设备平台公开调试接口实际暴露的完整层级，不得只返回当前可见的一小部分节点，也不得以截图 OCR 代替 UI 树。
+3. 能够通过 USB 或模拟器采集已编译项目的接口请求，返回请求方法、URL、传递参数、请求头脱敏结果、响应状态、响应头脱敏结果、响应结构、耗时和失败原因。
+
+每个目标都必须分别提供：真实设备/模拟器记录、可复现步骤、原始证据位置、自动化测试结果和评分。没有真实证据只能标记为未完成。
+
+### 11.2 禁止项目特判
+
+禁止为了适配用户当前运行到真机上的某一个项目而添加：
+
+- 项目名、包名、Bundle ID、页面名、接口 URL、控件文本的硬编码分支；
+- 只识别某个框架、某个页面或某套业务协议的专用解析器；
+- 项目专属坐标、固定截图模板、固定 JSON 字段映射；
+- 绕过通用能力的临时 Tauri command、临时 MCP tool 或临时 UI 分支；
+- 通过修改被测项目源码来制造“支持成功”的结果。
+
+实现目标是类似浏览器 DevTools 的通用调试基础设施：对 Android/iOS 平台公开的设备、UI、日志和网络调试能力做统一抽象。若平台本身不公开某项能力，必须报告平台限制、当前可观测边界和验证方法，不得编造完整支持。
+
+### 11.3 每轮任务的固定闭环
+
+每一轮开发任务必须按以下顺序执行，少一步都不能宣称完成：
+
+1. 说明本轮范围、受影响模块、不修改范围和验收目标。
+2. 先查证现有代码、配置、调用方、测试和官方工具行为。
+3. 只实现一个可验证的根因或完整垂直切片，不复制第二套链路。
+4. 执行与本轮变更匹配的格式、编译、单元测试、集成测试或真实设备验证。
+5. 回顾检查：查看 diff、状态机、错误路径、取消/超时、权限、脱敏、事件持久化和跨层契约，确认没有误改和临时特判。
+6. 按 11.4 评分，并记录通过项、失败项、未执行项、证据和下一步。
+
+测试失败、真实设备不可用或证据不足时，必须报告为未完成/阻塞，不得用“应该可以”或“代码已写好”替代结果。
+
+### 11.4 每轮评分标准（100 分）
+
+- 代码与架构边界：20 分。复用既有 AppCore/Runtime/Tool/权限/事件边界，无第二套链路、无屎山。
+- 功能行为：25 分。本轮目标在真实输入下可复现，成功和失败路径都存在。
+- 跨平台通用性：15 分。没有被测项目硬编码，协议和 DTO 不泄漏供应商实现。
+- 测试证据：20 分。自动化测试、真实设备/模拟器测试、日志和 artifact 证据充分。
+- 安全与可恢复性：10 分。审批、权限、脱敏、取消、超时、断开和重连正确。
+- 复查质量：10 分。执行了 diff/status 检查，明确列出风险、遗漏和未验证内容。
+
+90 分以下不得进入下一阶段；三项目标任意一个为 0 分，整轮最高 59 分；出现项目特判、任意 shell 绕过、伪造 UI 树或伪造抓包结果，整轮 0 分并必须回退设计。
+
+### 11.5 三项目标的验收硬门槛
+
+目标一必须证明：设备发现、USB/模拟器连接、设备 Ready 状态、页面启动、真实截图 artifact、断开和重连。不能只证明 adb 命令退出码为 0。
+
+目标二必须证明：完整层级获取、稳定 snapshot_id/node_id、节点属性、层级数量和边界、节点查询，以及 snapshot 过期后的安全拒绝。不能把“当前屏幕可见节点”写成“完整 UI 结构”。
+
+目标三必须证明：请求和响应成对关联、方法、URL、传参、脱敏头、状态、响应结构、耗时、错误和请求序号。抓包必须来自通用平台/应用调试观测链路；不能依赖当前项目添加专用日志或修改业务代码。
+
+### 11.6 进度顺序
+
+严格先完成目标一，再完成目标二，最后完成目标三。目标一未通过，不得堆 UI Inspector；目标二未通过，不得宣称 Agent 能可靠操作；目标三未通过，不得宣称网络调试完成。每阶段必须形成测试报告和评分记录。
+
+### 11.7 交付报告必填项
+
+每轮最终报告必须包含：本轮目标、修改文件、依据来源、实际命令、自动化测试结果、真实设备/模拟器型号与系统版本、USB/模拟连接方式、三项目标得分、总分、失败证据、未执行验证、发现的偏离风险、是否存在项目特判，以及下一轮唯一建议动作。
+
+### 11.8 设备发现必须由系统内部完成
+
+USB 真机和模拟机的发现、状态刷新、连接、断开和重连，必须由 DeepAgent Studio 内部实现的设备发现链完成：
+
+```text
+系统启动
+  -> MobileService
+  -> MobileRuntime
+  -> Android/iOS Backend
+  -> 官方设备探测接口
+  -> DeviceRegistry
+  -> MobileEvent
+  -> Tauri/React/Agent 消费
+```
+
+具体规则：
+
+- 系统启动时由 `MobileService` 初始化设备后端并启动受控 discovery loop；
+- USB 插拔、模拟器启动/停止、设备授权变化必须由系统内部 watcher/polling 发现并转换为 `DeviceStateChanged`；
+- `DeviceRegistry` 是设备列表的唯一可信来源，UI、CLI、Agent 和 MCP 只能读取它；
+- Agent 不得自行扫描 USB、猜测 serial/UDID、枚举端口、调用 `adb devices`、`emulator -list-avds`、`simctl list` 或任意 shell；
+- Agent 不得要求开发者在对话中手工复制设备 ID 作为正常发现流程；
+- Agent 只能调用 `mobile_device_list`、`mobile_device_info` 等结构化工具，并使用系统返回的已验证 `device_id`；
+- 设备 ID 必须由系统后端验证归属、平台、连接类型和当前状态，外部传入的未知 ID 必须拒绝；
+- discovery loop 必须支持首次扫描、增量更新、断开、重连、授权变化、模拟器状态变化和进程重启恢复；
+- discovery 失败必须产生稳定错误和诊断事件，不能让 Agent 接管发现工作；
+- 任何新增“让 Agent 自己发现设备”的工具、提示词、示例或降级路径都视为架构违规。
+
+开发期间，Agent 可以读取系统发现链的日志、事件和测试 fixture 来定位问题，但不得替代该链路执行发现。测试必须验证：系统启动后自动发现设备、列表更新可被 UI/CLI/Agent 共同消费、设备断开后自动移除或标记、重连后恢复原设备身份。
