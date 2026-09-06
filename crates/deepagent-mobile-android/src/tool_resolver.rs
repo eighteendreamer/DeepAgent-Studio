@@ -28,8 +28,39 @@ impl ToolResolver {
 
     /// Resolve a tool by name. Checks the cache first, then searches PATH.
     pub fn resolve(&self, name: &str) -> Option<ResolvedTool> {
-        let cache = self.cache.lock().unwrap();
-        cache.get(name).cloned()
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(tool) = cache.get(name) {
+            return Some(tool.clone());
+        }
+        let path = Self::find_in_path(name)?;
+        let tool = ResolvedTool {
+            name: name.to_string(),
+            path,
+            version: None,
+        };
+        cache.insert(name.to_string(), tool.clone());
+        Some(tool)
+    }
+
+    fn find_in_path(name: &str) -> Option<PathBuf> {
+        let path_var = std::env::var_os("PATH")?;
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            if cfg!(windows) {
+                let exe = dir.join(format!("{name}.exe"));
+                if exe.is_file() {
+                    return Some(exe);
+                }
+                let bat = dir.join(format!("{name}.bat"));
+                if bat.is_file() {
+                    return Some(bat);
+                }
+            }
+        }
+        None
     }
 
     /// Insert a resolved tool into the cache (used by probe and tests).
