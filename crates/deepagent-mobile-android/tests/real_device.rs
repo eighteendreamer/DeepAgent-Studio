@@ -225,3 +225,54 @@ async fn real_launch_and_terminate_system_app() {
     // Clean up screenshot
     let _ = std::fs::remove_file(&artifact.storage_path);
 }
+
+#[tokio::test]
+#[ignore = "requires real Android device or emulator"]
+async fn real_ui_snapshot_returns_full_tree() {
+    let backend = real_backend();
+    let devices = backend
+        .list_devices(&ctx())
+        .await
+        .expect("list_devices should succeed");
+    let ready = devices
+        .iter()
+        .find(|d| d.state == DeviceState::Ready)
+        .expect("at least one Ready device required");
+
+    let snapshot = backend
+        .ui_snapshot(&ready.id, &ctx())
+        .await
+        .expect("ui_snapshot should succeed");
+
+    eprintln!(
+        "UI snapshot: id={} nodes={} max_depth={} root={}",
+        snapshot.snapshot_id,
+        snapshot.nodes.len(),
+        snapshot.max_depth(),
+        snapshot.root_node_id
+    );
+
+    assert!(
+        !snapshot.snapshot_id.is_empty(),
+        "snapshot_id should not be empty"
+    );
+    assert!(!snapshot.nodes.is_empty(), "should have at least one node");
+
+    let nodes_with_bounds = snapshot
+        .nodes
+        .iter()
+        .filter(|n| n.bounds.width > 0 && n.bounds.height > 0)
+        .count();
+    assert!(
+        nodes_with_bounds > 0,
+        "at least some nodes should have non-zero bounds"
+    );
+
+    let has_role = snapshot
+        .nodes
+        .iter()
+        .any(|n| n.role != deepagent_mobile_protocol::UiRole::Unknown);
+    assert!(has_role, "at least some nodes should have a known role");
+
+    assert!(snapshot.max_depth() > 0, "tree should have depth > 0");
+}

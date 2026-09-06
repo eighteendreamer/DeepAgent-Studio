@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
-    mobile_service::{AppMobileService, ArtifactRefDto, BackendStatusDto, DeviceDto, UiSnapshotSummaryDto},
+    mobile_service::{AppMobileService, ArtifactRefDto, BackendStatusDto, DeviceDto},
     AppService, ArchiveProjectResultDto, ArchiveService, DirectTerminalSessionBackend,
     ArchivedConversationDto, AttachmentDto, AttachmentIngestDto, AttachmentService, BalanceDto,
     BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary,
@@ -5158,10 +5158,10 @@ async fn mobile_screenshot(
 async fn mobile_ui_snapshot(
     state: State<'_, AppState>,
     device_id: String,
-) -> Result<UiSnapshotSummaryDto, String> {
+) -> Result<deepagent_mobile_protocol::UiSnapshot, String> {
     state
         .mobile
-        .ui_snapshot_summary(&device_id)
+        .ui_snapshot_full(&device_id)
         .await
         .map_err(|e| e.to_string())
 }

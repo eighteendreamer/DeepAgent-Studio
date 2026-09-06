@@ -3893,9 +3893,9 @@ export async function mobileScreenshot(
 
 export async function mobileUiSnapshot(
   deviceId: string,
-): Promise<import("./types").UiSnapshotSummaryDto> {
+): Promise<import("./types").UiSnapshot> {
   const invoke = getInvoke();
-  if (invoke) return invoke<import("./types").UiSnapshotSummaryDto>("mobile_ui_snapshot", { deviceId });
+  if (invoke) return invoke<import("./types").UiSnapshot>("mobile_ui_snapshot", { deviceId });
   throw new Error("mobile UI snapshot requires the desktop app");
 }
 

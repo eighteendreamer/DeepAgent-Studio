@@ -296,13 +296,20 @@ impl MobileBackend for AdbBackend {
                     device_id: device_id.into(),
                 })?;
 
-        let output = self
-            .adb_shell(serial, &["uiautomator", "dump", "/dev/tty"], ctx)
+        let dump_path = "/data/local/tmp/ui_dump.xml";
+
+        let dump_output = self
+            .adb_shell(serial, &["uiautomator", "dump", dump_path], ctx)
             .await?;
-        Self::check_exit(&output, "adb uiautomator dump")?;
+        Self::check_exit(&dump_output, "adb uiautomator dump")?;
+
+        let cat_output = self.adb_exec_out(serial, &["cat", dump_path], ctx).await?;
+        Self::check_exit(&cat_output, "adb cat dump")?;
 
         let snapshot_id = format!("snap-{device_id}-{}", uuid::Uuid::new_v4());
-        let nodes = parse_uiautomator_output(&output.stdout_text());
+        let nodes = parse_uiautomator_output(&cat_output.stdout_text());
+
+        let _ = self.adb_shell(serial, &["rm", dump_path], ctx).await;
 
         Ok(UiSnapshot {
             snapshot_id,

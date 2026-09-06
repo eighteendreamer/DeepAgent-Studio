@@ -282,6 +282,12 @@ impl AppMobileService {
         })
     }
 
+    /// Get the full UI snapshot with all nodes, redacted for sensitive content.
+    pub async fn ui_snapshot_full(&self, device_id: &str) -> MobileResult<UiSnapshot> {
+        let snapshot = self.ui_snapshot(device_id).await?;
+        Ok(snapshot.redact_sensitive())
+    }
+
     /// Install an application.
     pub async fn install(&self, request: &InstallRequest) -> MobileResult<()> {
         let ctx = self.make_context(&request.device_id, "install");

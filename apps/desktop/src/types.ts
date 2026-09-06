@@ -1643,6 +1643,54 @@ export interface UiSnapshotSummaryDto {
   captured_at_ms: number;
 }
 
+export interface Bounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type UiRole =
+  | "page"
+  | "button"
+  | "text"
+  | "text_box"
+  | "password"
+  | "image"
+  | "list"
+  | "list_item"
+  | "checkbox"
+  | "switch"
+  | "dialog"
+  | "web_view"
+  | "unknown";
+
+export type UiNodeSource = "android_ui_automator" | "ios_xctest" | "app_sdk";
+
+export interface UiNode {
+  node_id: string;
+  parent_id: string | null;
+  role: UiRole;
+  text: string | null;
+  label: string | null;
+  accessibility_id: string | null;
+  bounds: Bounds;
+  visible: boolean;
+  enabled: boolean;
+  clickable: boolean;
+  editable: boolean;
+  children: string[];
+  source: UiNodeSource;
+}
+
+export interface UiSnapshot {
+  snapshot_id: string;
+  device_id: string;
+  root_node_id: string;
+  nodes: UiNode[];
+  captured_at_ms: number;
+}
+
 export interface ArtifactRefDto {
   artifact_id: string;
   mime: string;
