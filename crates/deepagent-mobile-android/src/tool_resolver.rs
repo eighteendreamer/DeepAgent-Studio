@@ -26,20 +26,98 @@ impl ToolResolver {
         }
     }
 
-    /// Resolve a tool by name. Checks the cache first, then searches PATH.
+    /// Resolve a tool by name. Checks the cache first, then searches PATH,
+    /// ANDROID_HOME, ANDROID_SDK_ROOT, and well-known SDK installation paths.
     pub fn resolve(&self, name: &str) -> Option<ResolvedTool> {
         let mut cache = self.cache.lock().unwrap();
         if let Some(tool) = cache.get(name) {
             return Some(tool.clone());
         }
-        let path = Self::find_in_path(name)?;
+        let path = Self::find_tool(name)?;
+        let version = None;
         let tool = ResolvedTool {
             name: name.to_string(),
             path,
-            version: None,
+            version,
         };
         cache.insert(name.to_string(), tool.clone());
         Some(tool)
+    }
+
+    fn find_tool(name: &str) -> Option<PathBuf> {
+        if let Some(p) = Self::find_in_path(name) {
+            return Some(p);
+        }
+        let subdir = Self::sdk_subdir(name);
+        if let Some(env) = std::env::var_os("ANDROID_HOME") {
+            let candidate = PathBuf::from(&env).join(&subdir).join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            if cfg!(windows) {
+                let exe = candidate.with_extension("exe");
+                if exe.is_file() {
+                    return Some(exe);
+                }
+            }
+        }
+        if let Some(env) = std::env::var_os("ANDROID_SDK_ROOT") {
+            let candidate = PathBuf::from(&env).join(&subdir).join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            if cfg!(windows) {
+                let exe = candidate.with_extension("exe");
+                if exe.is_file() {
+                    return Some(exe);
+                }
+            }
+        }
+        for dir in Self::well_known_sdk_dirs() {
+            let candidate = dir.join(&subdir).join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            if cfg!(windows) {
+                let exe = candidate.with_extension("exe");
+                if exe.is_file() {
+                    return Some(exe);
+                }
+            }
+        }
+        None
+    }
+
+    fn sdk_subdir(tool_name: &str) -> &'static str {
+        match tool_name {
+            "emulator" => "emulator",
+            _ => "platform-tools",
+        }
+    }
+
+    fn well_known_sdk_dirs() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if cfg!(windows) {
+            if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+                dirs.push(PathBuf::from(local).join("Android").join("Sdk"));
+            }
+            if let Some(home) = std::env::var_os("USERPROFILE") {
+                dirs.push(PathBuf::from(home).join("Android").join("Sdk"));
+            }
+        } else if cfg!(target_os = "macos") {
+            if let Some(home) = std::env::var_os("HOME") {
+                dirs.push(
+                    PathBuf::from(home)
+                        .join("Library")
+                        .join("Android")
+                        .join("sdk"),
+                );
+            }
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(PathBuf::from(home).join("Android").join("Sdk"));
+        }
+        dirs
     }
 
     fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -89,16 +167,17 @@ mod tests {
     #[test]
     fn resolver_cache_round_trip() {
         let resolver = ToolResolver::new();
-        assert!(resolver.resolve("adb").is_none());
+        let fake_name = "adb-test-nonexistent-tool";
+        assert!(resolver.resolve(fake_name).is_none());
 
         resolver.insert(ResolvedTool {
-            name: "adb".into(),
+            name: fake_name.into(),
             path: PathBuf::from("/usr/bin/adb"),
             version: Some("1.0.41".into()),
         });
 
-        let resolved = resolver.resolve("adb").unwrap();
-        assert_eq!(resolved.name, "adb");
+        let resolved = resolver.resolve(fake_name).unwrap();
+        assert_eq!(resolved.name, fake_name);
         assert_eq!(resolved.version.as_deref(), Some("1.0.41"));
     }
 
@@ -106,11 +185,26 @@ mod tests {
     fn resolver_clear() {
         let resolver = ToolResolver::new();
         resolver.insert(ResolvedTool {
-            name: "adb".into(),
+            name: "adb-clear-test".into(),
             path: PathBuf::from("/usr/bin/adb"),
             version: None,
         });
         resolver.clear();
-        assert!(resolver.resolve("adb").is_none());
+        assert!(resolver.resolve("adb.clear-test").is_none());
+    }
+
+    #[test]
+    fn sdk_subdir_maps_emulator_and_adb() {
+        assert_eq!(ToolResolver::sdk_subdir("emulator"), "emulator");
+        assert_eq!(ToolResolver::sdk_subdir("adb"), "platform-tools");
+        assert_eq!(ToolResolver::sdk_subdir("fastboot"), "platform-tools");
+    }
+
+    #[test]
+    fn well_known_dirs_returns_vec() {
+        let dirs = ToolResolver::well_known_sdk_dirs();
+        for dir in &dirs {
+            assert!(dir.ends_with("Android/Sdk") || dir.ends_with("Android/sdk"));
+        }
     }
 }

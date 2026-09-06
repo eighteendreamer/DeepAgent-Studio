@@ -125,7 +125,7 @@ impl MobileBackend for AdbBackend {
                 version: t.version.clone(),
             });
         } else {
-            diagnostics.push("adb not found in PATH".into());
+            diagnostics.push("adb not found (searched PATH, ANDROID_HOME, SDK dirs)".into());
         }
 
         if let Some(ref t) = emulator {
@@ -939,7 +939,7 @@ mod tests {
         let resolver = super::super::ToolResolver::new();
         let runner = Arc::new(FakeAdbRunner::new());
         let backend = AdbBackend::new(resolver, runner);
-        let err = backend.list_devices(&ctx()).await.unwrap_err();
+        let err = backend.adb_path().unwrap_err();
         assert!(matches!(err, MobileError::ToolNotFound { .. }));
     }
 
