@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::discovery::ModelInfo;
+use crate::discovery::{looks_like_high_context_model_id, looks_like_reasoner_model_id, ModelInfo};
 
 /// Where a model capability came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,7 +91,9 @@ impl ModelCapabilityResolver {
             context_window,
             max_output_tokens,
             supports_tools: true,
-            supports_thinking: is_deepseek_v4(model_id) || model_id.contains("reason"),
+            supports_thinking: looks_like_high_context_model_id(model_id)
+                || looks_like_reasoner_model_id(model_id)
+                || model_id.contains("reason"),
             supports_json_output: true,
             capability_source: CapabilitySource::ProviderMetadata,
             fallback_reason: None,
@@ -99,7 +101,7 @@ impl ModelCapabilityResolver {
     }
 
     fn official_snapshot_capability(&self, model_id: &str) -> Option<ModelCapability> {
-        if !is_deepseek_v4(model_id) {
+        if !looks_like_high_context_model_id(model_id) {
             return None;
         }
         Some(ModelCapability {
@@ -131,16 +133,12 @@ impl ModelCapabilityResolver {
     }
 }
 
-fn is_deepseek_v4(model_id: &str) -> bool {
-    matches!(model_id, "deepseek-v4-flash" | "deepseek-v4-pro")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn deepseek_v4_uses_official_snapshot() {
+    fn deepseek_high_context_model_uses_official_snapshot() {
         let cap = ModelCapabilityResolver::new().resolve_model_id("deepseek-v4-flash");
         assert_eq!(cap.context_window, 1_000_000);
         assert_eq!(cap.max_output_tokens, 384_000);

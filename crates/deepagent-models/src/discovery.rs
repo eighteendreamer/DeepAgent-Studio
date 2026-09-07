@@ -11,6 +11,7 @@
 //! is fully testable offline via the mock transport's canned `get_json`.
 
 use std::sync::Arc;
+use std::cmp::Reverse;
 
 use serde::{Deserialize, Serialize};
 
@@ -92,9 +93,10 @@ impl ModelCatalog {
 
     /// Build a catalog by auto-selecting from a discovered model list.
     ///
-    /// Selection heuristic (no network): use current DeepSeek v4 model ids and
-    /// ignore deprecated compatibility aliases. The UI displays the filtered
-    /// discovered set, so users choose from current official model ids only.
+    /// Selection heuristic (no network): score discovered model ids by the
+    /// role they most likely serve, ignore deprecated compatibility aliases,
+    /// and fall back to the first usable model when the provider names do not
+    /// expose a clear chat/reasoner split.
     pub fn auto_select(base_url: impl Into<String>, available: Vec<ModelInfo>) -> Result<Self> {
         let available: Vec<ModelInfo> = available
             .into_iter()
@@ -102,20 +104,17 @@ impl ModelCatalog {
             .collect();
         if available.is_empty() {
             return Err(CoreError::other(
-                "model discovery returned no current DeepSeek v4 models",
+                "model discovery returned no usable DeepSeek models",
             ));
         }
 
-        let ids: Vec<&str> = available.iter().map(|m| m.id.as_str()).collect();
-
-        let chat = pick(&ids, "deepseek-v4-flash")
-            .or_else(|| pick_contains(&ids, &["v4-flash", "flash"]))
-            .map(str::to_string)
-            .ok_or_else(|| CoreError::other("deepseek-v4-flash was not discovered"))?;
-        let reasoner_model = pick(&ids, "deepseek-v4-pro")
-            .or_else(|| pick_contains(&ids, &["v4-pro", "-pro", "_pro"]))
-            .map(str::to_string)
-            .ok_or_else(|| CoreError::other("deepseek-v4-pro was not discovered"))?;
+        let chat = select_role_model(&available, ModelRole::Chat)
+            .or_else(|| available.first())
+            .map(|m| m.id.clone())
+            .ok_or_else(|| CoreError::other("model discovery returned no usable DeepSeek models"))?;
+        let reasoner_model = select_role_model(&available, ModelRole::Reasoner)
+            .map(|m| m.id.clone())
+            .unwrap_or_else(|| chat.clone());
 
         Ok(Self {
             base_url: base_url.into(),
@@ -126,17 +125,92 @@ impl ModelCatalog {
     }
 }
 
-/// Exact-id match helper.
-fn pick<'a>(ids: &[&'a str], target: &str) -> Option<&'a str> {
-    ids.iter().copied().find(|id| *id == target)
+fn select_role_model<'a>(models: &'a [ModelInfo], role: ModelRole) -> Option<&'a ModelInfo> {
+    models.iter().enumerate().max_by_key(|(idx, model)| {
+        let score = role_score(&model.id, role, model);
+        (score, Reverse(*idx))
+    }).map(|(_, model)| model)
 }
 
-/// First id containing any of the needles (case-insensitive).
-fn pick_contains<'a>(ids: &[&'a str], needles: &[&str]) -> Option<&'a str> {
-    ids.iter().copied().find(|id| {
-        let lower = id.to_lowercase();
-        needles.iter().any(|n| lower.contains(n))
-    })
+fn role_score(model_id: &str, role: ModelRole, model: &ModelInfo) -> i64 {
+    let lower = model_id.to_ascii_lowercase();
+    let tokens = model_id_tokens(model_id);
+    let mut score = 0i64;
+
+    match role {
+        ModelRole::Chat => {
+            score += token_bonus(&tokens, &["chat"], 100);
+            score += token_bonus(&tokens, &["flash"], 80);
+            score += token_bonus(&tokens, &["mini", "small", "lite"], 50);
+            score += token_bonus(&tokens, &["base", "general", "default"], 30);
+            score -= token_bonus(&tokens, &["reason", "reasoner", "think", "thinking"], 120);
+            score -= token_bonus(&tokens, &["pro"], 60);
+        }
+        ModelRole::Reasoner => {
+            score += token_bonus(&tokens, &["reason", "reasoner"], 120);
+            score += token_bonus(&tokens, &["think", "thinking"], 100);
+            score += token_bonus(&tokens, &["pro"], 90);
+            score += token_bonus(&tokens, &["deep"], 20);
+            score += token_bonus(&tokens, &["r1", "r2", "o1", "o3"], 40);
+            score -= token_bonus(&tokens, &["chat"], 110);
+            score -= token_bonus(&tokens, &["flash"], 60);
+            score -= token_bonus(&tokens, &["mini", "small", "lite"], 40);
+        }
+    }
+
+    if let Some(context_window) = model.context_window {
+        score += (context_window / 100_000).min(10) as i64;
+    }
+    if let Some(max_output_tokens) = model.max_output_tokens {
+        score += (max_output_tokens / 50_000).min(5) as i64;
+    }
+
+    if lower.contains("deepseek") {
+        score += 3;
+    }
+
+    score
+}
+
+fn token_bonus(tokens: &[String], needles: &[&str], weight: i64) -> i64 {
+    if needles.iter().any(|needle| tokens.iter().any(|token| token == needle)) {
+        weight
+    } else {
+        0
+    }
+}
+
+fn model_id_tokens(model_id: &str) -> Vec<String> {
+    model_id
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_ascii_lowercase())
+        .collect()
+}
+
+pub(crate) fn looks_like_chat_model_id(model_id: &str) -> bool {
+    let tokens = model_id_tokens(model_id);
+    has_any_token(&tokens, &["chat", "flash", "mini", "small", "lite", "base", "general", "default"])
+}
+
+pub(crate) fn looks_like_reasoner_model_id(model_id: &str) -> bool {
+    let tokens = model_id_tokens(model_id);
+    has_any_token(
+        &tokens,
+        &["reason", "reasoner", "think", "thinking", "pro", "deep", "r1", "r2", "o1", "o3"],
+    )
+}
+
+pub(crate) fn looks_like_high_context_model_id(model_id: &str) -> bool {
+    let lower = model_id.to_ascii_lowercase();
+    lower.contains("deepseek")
+        && (looks_like_chat_model_id(model_id) || looks_like_reasoner_model_id(model_id))
+}
+
+fn has_any_token(tokens: &[String], needles: &[&str]) -> bool {
+    needles
+        .iter()
+        .any(|needle| tokens.iter().any(|token| token == needle))
 }
 
 fn is_deprecated_model_id(id: &str) -> bool {
@@ -236,6 +310,17 @@ mod tests {
     }
 
     #[test]
+    fn auto_select_uses_role_hints_without_exact_ids() {
+        let cat = ModelCatalog::auto_select(
+            DEEPSEEK_BASE_URL,
+            models(&["deepseek-umbrella", "deepseek-brainy-pro", "deepseek-fast-flash"]),
+        )
+        .unwrap();
+        assert_eq!(cat.chat_model, "deepseek-fast-flash");
+        assert_eq!(cat.reasoner_model, "deepseek-brainy-pro");
+    }
+
+    #[test]
     fn deprecated_aliases_are_ignored() {
         assert!(ModelCatalog::auto_select(
             DEEPSEEK_BASE_URL,
@@ -245,10 +330,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_required_v4_role_errors() {
-        assert!(
-            ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models(&["deepseek-v4-flash"])).is_err()
-        );
+    fn single_model_reuses_for_both_roles() {
+        let cat = ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models(&["deepseek-vision"])).unwrap();
+        assert_eq!(cat.chat_model, "deepseek-vision");
+        assert_eq!(cat.reasoner_model, "deepseek-vision");
     }
 
     #[test]

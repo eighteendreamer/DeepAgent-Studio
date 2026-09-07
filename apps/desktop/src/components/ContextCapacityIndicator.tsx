@@ -13,8 +13,7 @@ interface Props {
   onPopoverOpenChange?: (open: boolean) => void;
 }
 
-function contextWindowForModel(modelId?: string): number {
-  if (modelId === "deepseek-v4-flash" || modelId === "deepseek-v4-pro") return 1_000_000;
+function contextWindowForModel(_modelId?: string): number {
   return 128_000;
 }
 
