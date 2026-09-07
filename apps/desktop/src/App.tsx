@@ -24,6 +24,7 @@ import {
   clearApiKey,
   getVisionSettings,
   getSettings,
+  refreshModels,
   runChat,
   cancelRun,
   resolveApproval,
@@ -514,6 +515,9 @@ export function App() {
         setShowOnboarding(!configured);
         if (configured) {
           localStorage.setItem("onboarding_complete", "true");
+          refreshModels().catch(() => {
+            // Keep the cached list if the provider is temporarily unreachable.
+          });
         } else {
           localStorage.removeItem("onboarding_complete");
         }

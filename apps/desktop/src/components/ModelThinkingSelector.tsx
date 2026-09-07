@@ -64,26 +64,10 @@ type Props = {
 
 
 function modelLabel(id: string): string {
-
   if (!id) return "";
-
-  if (id.startsWith("deepseek-")) return id.slice("deepseek-".length);
-
   return id;
-
 }
 
-
-
-function compactModelLabel(id: string): string {
-
-  const label = modelLabel(id);
-
-  if (label.startsWith("v4-")) return label;
-
-  return label.length > 18 ? `${label.slice(0, 17)}…` : label;
-
-}
 
 /** 模型/推理浮层 —— px-2 外框 + 药丸贴齐内容区 */
 const MODEL_MENU = {
@@ -131,7 +115,7 @@ export function ModelThinkingSelector({
 
     thinkingOptions.find((option) => option.id === selectedThinking) ?? thinkingOptions[1];
 
-  const pillModel = selectedModel ? compactModelLabel(selectedModel) : selectModelLabel;
+  const pillModel = selectedModel ? modelLabel(selectedModel) : selectModelLabel;
 
   const trigger = (
     <TintButton
@@ -142,7 +126,7 @@ export function ModelThinkingSelector({
       title={`${selectModelLabel} / ${selectedThinkingOption.label}`}
     >
       <FontAwesomeIcon icon={selectedThinkingOption.icon as any} className="mr-1.5 text-[11px] text-text-secondary" />
-      <span className="truncate font-medium">{pillModel}</span>
+      <span className="font-medium">{pillModel}</span>
       <span className="ml-1.5 shrink-0 text-text-secondary">{selectedThinkingOption.label}</span>
       <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[9px] text-text-secondary" />
     </TintButton>
@@ -167,7 +151,7 @@ export function ModelThinkingSelector({
 
               <span className="font-medium text-text-base">模型</span>
 
-              <span className="max-w-[150px] truncate text-text-secondary">{modelLabel(selectedModel) || "未选择"}</span>
+              <span className="text-text-secondary">{modelLabel(selectedModel) || "未选择"}</span>
 
             </div>
 
@@ -208,7 +192,7 @@ export function ModelThinkingSelector({
 
                       >
 
-                        <span className="truncate font-medium">{modelLabel(id)}</span>
+                        <span className="font-medium">{modelLabel(id)}</span>
 
                         {selected && <FontAwesomeIcon icon={["fas", "check"]} className="ml-3 text-[10px] text-text-base" />}
 
