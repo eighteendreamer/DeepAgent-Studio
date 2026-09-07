@@ -36,11 +36,8 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
                 }
             }
             _ => {
-                if let Some(reasoning) = message
-                    .reasoning_content
-                    .as_deref()
-                    .filter(|text| !text.is_empty())
-                {
+                if message.should_persist_reasoning() {
+                    let reasoning = message.reasoning_content.as_deref().unwrap();
                     items.push(ResponseItem::Reasoning {
                         id: None,
                         content: reasoning.to_string(),
@@ -188,6 +185,19 @@ mod tests {
         assert!(
             matches!(&items[2], ResponseItem::FunctionCallOutput { call_id, .. } if call_id == "call-1")
         );
+    }
+
+    #[test]
+    fn drops_plain_reasoning_from_provider_input() {
+        let messages = vec![Message::assistant("hello").with_reasoning("internal")];
+        let (_, items) = response_items_from_messages(&messages);
+        assert!(!items
+            .iter()
+            .any(|item| matches!(item, ResponseItem::Reasoning { .. })));
+        assert!(matches!(
+            &items[0],
+            ResponseItem::Message { role, content } if role == "assistant" && content == "hello"
+        ));
     }
 
     #[test]

@@ -312,11 +312,8 @@ impl ResponseHistory {
                 self.push_tool_output(call_id, message.content.clone());
             }
             _ => {
-                if let Some(reasoning) = message
-                    .reasoning_content
-                    .as_deref()
-                    .filter(|text| !text.is_empty())
-                {
+                if message.should_persist_reasoning() {
+                    let reasoning = message.reasoning_content.as_deref().unwrap();
                     self.items.push(ResponseInputItem::Reasoning {
                         id: None,
                         content: reasoning.to_string(),
@@ -1973,19 +1970,21 @@ impl ModelAgent {
         self.pending_response_items = response.output_items.clone();
 
         // Persist the assistant turn in the agent's running conversation.
-        // Thinking Mode reasoning is preserved for both tool-call and final
-        // turns so the outer session log can replay it after refresh.
+        // Only turns that actually need replayable Thinking Mode context keep
+        // reasoning; plain assistant replies stay text-only.
+        let item_calls = response.tool_invocations_from_items();
         let assistant = {
             let mut message = Message::text(Role::Assistant, response.output_text_projection());
-            message.reasoning_content = response.reasoning_text_projection();
+            if !item_calls.is_empty() {
+                message.reasoning_content = response.reasoning_text_projection();
+            }
             message
         };
         self.push_provider_output_items(assistant, &response.output_items);
 
         // Decide the next action. The model may emit several tool calls in one
-        // turn (parallel tool calling) — carry all of them, each tagged with its
+        // turn (parallel tool calling); carry all of them, each tagged with its
         // own id so results correlate back correctly.
-        let item_calls = response.tool_invocations_from_items();
         if !item_calls.is_empty() {
             let invocations: Vec<ToolInvocation> = item_calls
                 .iter()
@@ -2003,7 +2002,7 @@ impl ModelAgent {
             // Tamper-proof fact for the stall detector's `[runtime_state]` line.
             self.tool_calls_made += invocations.len();
             // Reset the todo-inactivity counter when the model tracks its plan
-            // (§3.1 todo reminder pacing, Claude Code turns-since-TodoWrite).
+            // (todo reminder pacing).
             if invocations.iter().any(|inv| inv.name == "todo_write") {
                 self.turns_since_todo_write = 0;
             }
@@ -2027,18 +2026,14 @@ impl ModelAgent {
                 "model output reached max_tokens before completing the turn",
             )),
             _ => {
-                // §2.3 stall/laziness check (Grok laziness_classifier): a final
-                // answer with an attached classifier gets one advisory audit.
-                // A confident stalled verdict injects a nudge and re-enters the
-                // model turn (bounded by MAX_STALL_NUDGES_PER_RUN); everything
-                // else — including classifier failure — completes normally.
+                // A final answer with an attached classifier gets one advisory
+                // audit; otherwise the turn completes normally.
                 if let Some(nudge) = self.maybe_stall_nudge(step).await {
                     self.push_message(Message::user(nudge));
                     return Box::pin(self.think_inner(step, &[], cancel, tools)).await;
                 }
-                let mut final_message =
+                let final_message =
                     Message::text(Role::Assistant, response.output_text_projection());
-                final_message.reasoning_content = response.reasoning_text_projection();
                 Ok(AgentDecision::CompleteItems {
                     message: final_message,
                     items: response.output_items.clone(),
@@ -3362,7 +3357,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn final_answer_preserves_reasoning_for_replay() {
+    async fn final_answer_drops_reasoning_from_persistent_history() {
         let events = vec![
             response_reasoning_delta("I should inspect the image. "),
             response_text_delta("It shows a compile error."),
@@ -3378,10 +3373,7 @@ mod tests {
         let decision = agent.think(0, &[]).await.unwrap();
         let (message, items) = complete_items(decision);
         assert_eq!(message.content, "It shows a compile error.");
-        assert_eq!(
-            message.reasoning_content.as_deref(),
-            Some("I should inspect the image. ")
-        );
+        assert!(message.reasoning_content.is_none());
         assert!(matches!(
             &items[0],
             ResponseOutputItem::Reasoning { content, .. }
@@ -3393,10 +3385,7 @@ mod tests {
             .iter()
             .find(|m| m.role == Role::Assistant)
             .unwrap();
-        assert_eq!(
-            assistant.reasoning_content.as_deref(),
-            Some("I should inspect the image. ")
-        );
+        assert!(assistant.reasoning_content.is_none());
     }
 
     #[tokio::test]

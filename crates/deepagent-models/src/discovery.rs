@@ -10,8 +10,8 @@
 //! Discovery is transport-agnostic (works through any [`HttpTransport`]), so it
 //! is fully testable offline via the mock transport's canned `get_json`.
 
-use std::sync::Arc;
 use std::cmp::Reverse;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -111,7 +111,9 @@ impl ModelCatalog {
         let chat = select_role_model(&available, ModelRole::Chat)
             .or_else(|| available.first())
             .map(|m| m.id.clone())
-            .ok_or_else(|| CoreError::other("model discovery returned no usable DeepSeek models"))?;
+            .ok_or_else(|| {
+                CoreError::other("model discovery returned no usable DeepSeek models")
+            })?;
         let reasoner_model = select_role_model(&available, ModelRole::Reasoner)
             .map(|m| m.id.clone())
             .unwrap_or_else(|| chat.clone());
@@ -126,10 +128,14 @@ impl ModelCatalog {
 }
 
 fn select_role_model<'a>(models: &'a [ModelInfo], role: ModelRole) -> Option<&'a ModelInfo> {
-    models.iter().enumerate().max_by_key(|(idx, model)| {
-        let score = role_score(&model.id, role, model);
-        (score, Reverse(*idx))
-    }).map(|(_, model)| model)
+    models
+        .iter()
+        .enumerate()
+        .max_by_key(|(idx, model)| {
+            let score = role_score(&model.id, role, model);
+            (score, Reverse(*idx))
+        })
+        .map(|(_, model)| model)
 }
 
 fn role_score(model_id: &str, role: ModelRole, model: &ModelInfo) -> i64 {
@@ -173,7 +179,10 @@ fn role_score(model_id: &str, role: ModelRole, model: &ModelInfo) -> i64 {
 }
 
 fn token_bonus(tokens: &[String], needles: &[&str], weight: i64) -> i64 {
-    if needles.iter().any(|needle| tokens.iter().any(|token| token == needle)) {
+    if needles
+        .iter()
+        .any(|needle| tokens.iter().any(|token| token == needle))
+    {
         weight
     } else {
         0
@@ -190,14 +199,21 @@ fn model_id_tokens(model_id: &str) -> Vec<String> {
 
 pub(crate) fn looks_like_chat_model_id(model_id: &str) -> bool {
     let tokens = model_id_tokens(model_id);
-    has_any_token(&tokens, &["chat", "flash", "mini", "small", "lite", "base", "general", "default"])
+    has_any_token(
+        &tokens,
+        &[
+            "chat", "flash", "mini", "small", "lite", "base", "general", "default",
+        ],
+    )
 }
 
 pub(crate) fn looks_like_reasoner_model_id(model_id: &str) -> bool {
     let tokens = model_id_tokens(model_id);
     has_any_token(
         &tokens,
-        &["reason", "reasoner", "think", "thinking", "pro", "deep", "r1", "r2", "o1", "o3"],
+        &[
+            "reason", "reasoner", "think", "thinking", "pro", "deep", "r1", "r2", "o1", "o3",
+        ],
     )
 }
 
@@ -313,7 +329,11 @@ mod tests {
     fn auto_select_uses_role_hints_without_exact_ids() {
         let cat = ModelCatalog::auto_select(
             DEEPSEEK_BASE_URL,
-            models(&["deepseek-umbrella", "deepseek-brainy-pro", "deepseek-fast-flash"]),
+            models(&[
+                "deepseek-umbrella",
+                "deepseek-brainy-pro",
+                "deepseek-fast-flash",
+            ]),
         )
         .unwrap();
         assert_eq!(cat.chat_model, "deepseek-fast-flash");
@@ -331,7 +351,8 @@ mod tests {
 
     #[test]
     fn single_model_reuses_for_both_roles() {
-        let cat = ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models(&["deepseek-vision"])).unwrap();
+        let cat =
+            ModelCatalog::auto_select(DEEPSEEK_BASE_URL, models(&["deepseek-vision"])).unwrap();
         assert_eq!(cat.chat_model, "deepseek-vision");
         assert_eq!(cat.reasoner_model, "deepseek-vision");
     }
