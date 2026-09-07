@@ -162,7 +162,7 @@ impl Serialize for ResponseRequest {
         if let Some(value) = &self.instructions {
             map.serialize_entry("instructions", &value)?;
         }
-        map.serialize_entry("input", &self.input)?;
+        map.serialize_entry("input", &response_input_items_to_wire(&self.input))?;
         map.serialize_entry("stream", &self.stream)?;
         if let Some(value) = self.temperature {
             map.serialize_entry("temperature", &value)?;
@@ -199,6 +199,83 @@ impl Serialize for ResponseRequest {
         }
         map.end()
     }
+}
+
+fn response_input_items_to_wire(items: &[ResponseInputItem]) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .map(|item| match item {
+            ResponseInputItem::Message { role, content } => {
+                serde_json::json!({
+                    "type": "message",
+                    "role": role,
+                    "content": content,
+                })
+            }
+            ResponseInputItem::Reasoning { id, content } => {
+                let mut value = serde_json::json!({
+                    "type": "reasoning",
+                    "content": [{
+                        "type": "reasoning_text",
+                        "text": content,
+                    }],
+                });
+                if let Some(id) = id {
+                    value["id"] = serde_json::Value::String(id.clone());
+                }
+                value
+            }
+            ResponseInputItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => {
+                serde_json::json!({
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments,
+                })
+            }
+            ResponseInputItem::FunctionCallOutput { call_id, output } => {
+                serde_json::json!({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": output,
+                })
+            }
+            ResponseInputItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+            } => {
+                serde_json::json!({
+                    "type": "custom_tool_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "input": input,
+                })
+            }
+            ResponseInputItem::CustomToolCallOutput { call_id, output } => {
+                serde_json::json!({
+                    "type": "custom_tool_call_output",
+                    "call_id": call_id,
+                    "output": output,
+                })
+            }
+            ResponseInputItem::WebSearchCall { id, status, action } => {
+                let mut value = serde_json::json!({
+                    "type": "web_search_call",
+                    "id": id,
+                    "status": status,
+                });
+                if let Some(action) = action {
+                    value["action"] = action.clone();
+                }
+                value
+            }
+        })
+        .collect()
 }
 
 impl ResponseRequest {
@@ -555,6 +632,37 @@ mod tests {
         assert_eq!(json["input"][0]["type"], "message");
         assert_eq!(json["input"][0]["role"], "user");
         assert_eq!(json["input"][0]["content"], "rm -rf /tmp");
+    }
+
+    #[test]
+    fn serializes_reasoning_input_as_content_parts() {
+        let req = ResponseRequest::from_response_items(
+            "deepseek-v4-flash",
+            Some("sys".into()),
+            vec![
+                ResponseInputItem::Reasoning {
+                    id: Some("rs_1".into()),
+                    content: "The prior assistant thought privately.".into(),
+                },
+                ResponseInputItem::Message {
+                    role: "assistant".into(),
+                    content: "你好，有什么可以帮你？".into(),
+                },
+                ResponseInputItem::Message {
+                    role: "user".into(),
+                    content: "你好".into(),
+                },
+            ],
+        );
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["input"][0]["type"], "reasoning");
+        assert_eq!(json["input"][0]["id"], "rs_1");
+        assert!(json["input"][0]["content"].is_array());
+        assert_eq!(json["input"][0]["content"][0]["type"], "reasoning_text");
+        assert_eq!(
+            json["input"][0]["content"][0]["text"],
+            "The prior assistant thought privately."
+        );
     }
 
     #[test]
