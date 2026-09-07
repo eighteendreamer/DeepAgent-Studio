@@ -39,6 +39,7 @@ import {
   renameSession,
   visionRecognizeImage,
   openStudioCanvasWindow,
+  openWorkflowCanvasWindow,
 } from "./api";
 import type { PreflightToolCall, RuntimeEvent } from "./api";
 import type {
@@ -1976,7 +1977,7 @@ export function App() {
       <div className="flex-1 flex overflow-hidden">
         <>
           {isSidebarOpen && view !== "settings" && (
-            <div className="flex h-full w-[160px] flex-shrink-0 overflow-hidden">
+            <div className="flex h-full w-[220px] flex-shrink-0 overflow-hidden">
               <Sidebar
                 sessions={sessions}
                 projects={projects}
@@ -2007,6 +2008,11 @@ export function App() {
                 onOpenAutomation={() => navigateTo(activeId, "automation")}
                 onOpenCanvas={() => {
                   void openStudioCanvasWindow().catch((error) => {
+                    message.error(`打开无限画板失败：${String(error)}`);
+                  });
+                }}
+                onOpenWorkflowCanvas={() => {
+                  void openWorkflowCanvasWindow().catch((error) => {
                     message.error(`打开无限画布失败：${String(error)}`);
                   });
                 }}

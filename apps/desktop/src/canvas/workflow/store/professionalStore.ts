@@ -1,0 +1,191 @@
+import { create } from "zustand";
+import {
+  addEdge,
+  applyEdgeChanges,
+  applyNodeChanges,
+  type Connection,
+  type EdgeChange,
+  type NodeChange,
+} from "@xyflow/react";
+import type { ProfessionalNodeData, ProfessionalNodeKind, WorkflowEdge, WorkflowNode } from "../types";
+
+const SNAP_GRID = 24;
+
+function createDefaultProfessionalData(kind: ProfessionalNodeKind): ProfessionalNodeData {
+  const base: ProfessionalNodeData = { label: "", kind, status: "idle" };
+  switch (kind) {
+    case "start":
+      return { ...base, label: "开始", inputVariables: [] };
+    case "end":
+      return { ...base, label: "结束", outputMapping: {} };
+    case "if-else":
+      return { ...base, label: "条件分支", conditions: [] };
+    case "iteration":
+      return { ...base, label: "迭代" };
+    case "llm":
+      return { ...base, label: "LLM", llmModel: "deepseek-chat", llmTemperature: 0.7 };
+    case "agent":
+      return { ...base, label: "Agent", agentStrategy: "function-call" };
+    case "question-classifier":
+      return { ...base, label: "问题分类" };
+    case "parameter-extractor":
+      return { ...base, label: "参数提取" };
+    case "knowledge-retrieval":
+      return { ...base, label: "知识检索", knowledgeTopK: 3 };
+    case "code":
+      return { ...base, label: "代码执行", codeLanguage: "javascript", codeScript: "" };
+    case "http-request":
+      return { ...base, label: "HTTP 请求", httpMethod: "GET", httpUrl: "" };
+    case "template-transform":
+      return { ...base, label: "模板转换" };
+    case "variable-aggregator":
+      return { ...base, label: "变量聚合" };
+    case "tool":
+      return { ...base, label: "工具调用" };
+    case "human-input":
+      return { ...base, label: "人工审批" };
+  }
+}
+
+interface ProfessionalState {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+
+  onNodesChange: (changes: NodeChange[]) => void;
+  onEdgesChange: (changes: EdgeChange[]) => void;
+  onConnect: (connection: Connection) => void;
+
+  addNode: (kind: ProfessionalNodeKind, x: number, y: number) => void;
+  removeNode: (id: string) => void;
+  updateNodeData: (id: string, data: Partial<ProfessionalNodeData>) => void;
+  insertNodeBetween: (edgeId: string, kind: ProfessionalNodeKind) => void;
+
+  past: Array<{ nodes: WorkflowNode[]; edges: WorkflowEdge[] }>;
+  future: Array<{ nodes: WorkflowNode[]; edges: WorkflowEdge[] }>;
+  pushHistory: () => void;
+  undo: () => void;
+  redo: () => void;
+}
+
+let _nodeIdCounter = 0;
+function nextNodeId() {
+  return `pro-node-${++_nodeIdCounter}`;
+}
+
+export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
+  nodes: [],
+  edges: [],
+  past: [],
+  future: [],
+
+  onNodesChange: (changes) => {
+    set((s) => ({ nodes: applyNodeChanges(changes, s.nodes) as WorkflowNode[] }));
+  },
+
+  onEdgesChange: (changes) => {
+    set((s) => ({ edges: applyEdgeChanges(changes, s.edges) as WorkflowEdge[] }));
+  },
+
+  onConnect: (connection) => {
+    get().pushHistory();
+    set((s) => ({ edges: addEdge(connection, s.edges) as WorkflowEdge[] }));
+  },
+
+  addNode: (kind, x, y) => {
+    get().pushHistory();
+    const id = nextNodeId();
+    const data = createDefaultProfessionalData(kind);
+    const snappedX = Math.round(x / SNAP_GRID) * SNAP_GRID;
+    const snappedY = Math.round(y / SNAP_GRID) * SNAP_GRID;
+    const node: WorkflowNode = {
+      id,
+      type: `professional-${kind}`,
+      position: { x: snappedX, y: snappedY },
+      data,
+    };
+    set((s) => ({ nodes: [...s.nodes, node] }));
+  },
+
+  removeNode: (id) => {
+    get().pushHistory();
+    set((s) => ({
+      nodes: s.nodes.filter((n) => n.id !== id),
+      edges: s.edges.filter((e) => e.source !== id && e.target !== id),
+    }));
+  },
+
+  updateNodeData: (id, data) => {
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id ? { ...n, data: { ...n.data, ...data } } : n,
+      ),
+    }));
+  },
+
+  insertNodeBetween: (edgeId, kind) => {
+    const state = get();
+    const edge = state.edges.find((e) => e.id === edgeId);
+    if (!edge || !edge.source || !edge.target) return;
+
+    const sourceNode = state.nodes.find((n) => n.id === edge.source);
+    const targetNode = state.nodes.find((n) => n.id === edge.target);
+    if (!sourceNode || !targetNode) return;
+
+    const midX = (sourceNode.position.x + targetNode.position.x) / 2;
+    const midY = (sourceNode.position.y + targetNode.position.y) / 2;
+
+    state.pushHistory();
+    const newId = nextNodeId();
+    const newData = createDefaultProfessionalData(kind);
+    const snappedX = Math.round(midX / SNAP_GRID) * SNAP_GRID;
+    const snappedY = Math.round(midY / SNAP_GRID) * SNAP_GRID;
+    const newNode: WorkflowNode = {
+      id: newId,
+      type: `professional-${kind}`,
+      position: { x: snappedX, y: snappedY },
+      data: newData,
+    };
+
+    set((s) => ({
+      nodes: [...s.nodes, newNode],
+      edges: [
+        ...s.edges.filter((e) => e.id !== edgeId),
+        { id: `e-${edge.source}-${newId}`, source: edge.source, target: newId } as WorkflowEdge,
+        { id: `e-${newId}-${edge.target}`, source: newId, target: edge.target } as WorkflowEdge,
+      ],
+    }));
+  },
+
+  pushHistory: () => {
+    set((s) => ({
+      past: [...s.past.slice(-99), { nodes: s.nodes, edges: s.edges }],
+      future: [],
+    }));
+  },
+
+  undo: () => {
+    set((s) => {
+      if (s.past.length === 0) return s;
+      const prev = s.past[s.past.length - 1];
+      return {
+        nodes: prev.nodes,
+        edges: prev.edges,
+        past: s.past.slice(0, -1),
+        future: [{ nodes: s.nodes, edges: s.edges }, ...s.future],
+      };
+    });
+  },
+
+  redo: () => {
+    set((s) => {
+      if (s.future.length === 0) return s;
+      const next = s.future[0];
+      return {
+        nodes: next.nodes,
+        edges: next.edges,
+        past: [...s.past, { nodes: s.nodes, edges: s.edges }],
+        future: s.future.slice(1),
+      };
+    });
+  },
+}));

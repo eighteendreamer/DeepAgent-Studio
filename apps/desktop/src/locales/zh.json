@@ -14,6 +14,7 @@
     "more": "更多",
     "other": "其他",
     "canvas": "无限画布",
+    "workflowCanvas": "无限画布",
     "newProject": "新建项目",
     "noProjects": "暂无项目",
     "noChats": "暂无对话",
@@ -156,8 +157,8 @@
       "browser": "浏览器",
       "computer": "电脑操控",
       "project_map_debug": "项目地图调试",
-      "archive": "已归档对话"
-      ,"about": "关于"
+      "archive": "已归档对话",
+      "about": "关于"
     },
     "about": {
       "title": "关于 DeepAgent Studio",
@@ -218,14 +219,24 @@
           "role": "全栈开发",
           "bio": "负责 DeepAgent Studio 的全栈开发，构建桌面应用、Agent 运行时和工具生态。",
           "repository": "https://github.com/eighteendreamer",
-          "contact": { "email": "eighteendreamer@gmail.com", "phone": "待配置", "qq": "3273495516", "wechat": "Eighteenth_year" }
+          "contact": {
+            "email": "eighteendreamer@gmail.com",
+            "phone": "待配置",
+            "qq": "3273495516",
+            "wechat": "Eighteenth_year"
+          }
         },
         "designer": {
           "name": "设计师雷师傅",
           "role": "系统设计",
           "bio": "负责系统架构与产品设计，关注 Agent 能力、交互流程和长期可维护性。",
           "repository": "https://github.com/leishifu666",
-          "contact": { "email": "2934546967@qq.com", "phone": "19277413890", "qq": "2934546967@qq.com", "wechat": "Capper2934546967" }
+          "contact": {
+            "email": "2934546967@qq.com",
+            "phone": "19277413890",
+            "qq": "2934546967@qq.com",
+            "wechat": "Capper2934546967"
+          }
         }
       },
       "support": {

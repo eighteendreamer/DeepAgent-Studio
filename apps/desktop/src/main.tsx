@@ -11,13 +11,21 @@ const MainApp = lazy(() => import("./App").then((module) => ({ default: module.A
 const StudioCanvasApp = lazy(() =>
   import("./canvas/CanvasApp").then((module) => ({ default: module.CanvasApp })),
 );
+const StudioWorkflowCanvasApp = lazy(() =>
+  import("./canvas/workflow/WorkflowCanvasApp").then((module) => ({
+    default: module.WorkflowCanvasApp,
+  })),
+);
 
 function resolveRootView() {
   const rawHash = window.location.hash.startsWith("#")
     ? window.location.hash.slice(1)
     : window.location.hash;
   const params = new URLSearchParams(rawHash);
-  return params.get("window") === "canvas" ? <StudioCanvasApp /> : <MainApp />;
+  const windowKind = params.get("window");
+  if (windowKind === "workflow-canvas") return <StudioWorkflowCanvasApp />;
+  if (windowKind === "canvas") return <StudioCanvasApp />;
+  return <MainApp />;
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

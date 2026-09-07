@@ -14,6 +14,7 @@
     "more": "More",
     "other": "Other",
     "canvas": "Infinite Canvas",
+    "workflowCanvas": "Workflow Canvas",
     "newProject": "New Project",
     "noProjects": "No projects",
     "noChats": "No chats",
@@ -156,8 +157,8 @@
       "browser": "Browser",
       "computer": "Computer Control",
       "project_map_debug": "Project Map Debug",
-      "archive": "Archived Chats"
-      ,"about": "About"
+      "archive": "Archived Chats",
+      "about": "About"
     },
     "about": {
       "title": "About DeepAgent Studio",
@@ -167,7 +168,9 @@
         "version": "Desktop v0.0.8",
         "description": "DeepAgent Studio is more than a chat app: it is a verifiable, replayable Agent runtime platform with context engineering, tool execution, permissions, MCP extensions, and desktop workflows."
       },
-      "stack": { "title": "Technology Stack" },
+      "stack": {
+        "title": "Technology Stack"
+      },
       "copyright": {
         "title": "Registration",
         "heading": "Computer Software Copyright Registration Certificate",
@@ -216,14 +219,24 @@
           "role": "Full-stack Development",
           "bio": "Leads full-stack development for DeepAgent Studio, including the desktop app, Agent runtime, and tool ecosystem.",
           "repository": "https://github.com/eighteendreamer",
-          "contact": { "email": "eighteendreamer@gmail.com", "phone": "To be configured", "qq": "3273495516", "wechat": "Eighteenth_year" }
+          "contact": {
+            "email": "eighteendreamer@gmail.com",
+            "phone": "To be configured",
+            "qq": "3273495516",
+            "wechat": "Eighteenth_year"
+          }
         },
         "designer": {
           "name": "Designer Lei Shifu",
           "role": "System Design",
           "bio": "Leads system architecture and product design, with a focus on Agent capabilities, interaction flows, and maintainability.",
           "repository": "https://github.com/leishifu666",
-          "contact": { "email": "2934546967@qq.com", "phone": "19277413890", "qq": "2934546967@qq.com", "wechat": "Capper2934546967" }
+          "contact": {
+            "email": "2934546967@qq.com",
+            "phone": "19277413890",
+            "qq": "2934546967@qq.com",
+            "wechat": "Capper2934546967"
+          }
         }
       },
       "support": {
