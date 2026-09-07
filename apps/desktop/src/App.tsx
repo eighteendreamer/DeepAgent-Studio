@@ -38,6 +38,7 @@ import {
   openSessionInNewWindow,
   renameSession,
   visionRecognizeImage,
+  openStudioCanvasWindow,
 } from "./api";
 import type { PreflightToolCall, RuntimeEvent } from "./api";
 import type {
@@ -2004,6 +2005,11 @@ export function App() {
                 onOpenKnowledge={() => navigateTo(activeId, "knowledge")}
                 onOpenPlugins={() => navigateTo(activeId, "plugins")}
                 onOpenAutomation={() => navigateTo(activeId, "automation")}
+                onOpenCanvas={() => {
+                  void openStudioCanvasWindow().catch((error) => {
+                    message.error(`打开无限画布失败：${String(error)}`);
+                  });
+                }}
                 onOpenSettings={() => navigateTo(activeId, "settings")}
                 onLogout={onLogout}
                 runningSessionIds={runningSessionIds}
