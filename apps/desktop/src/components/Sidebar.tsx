@@ -10,7 +10,27 @@ import { InputSurface } from "./ui/InputSurface";
 import { TintButton } from "./ui/TintButton";
 import { PinThumbtackIcon } from "./ui/PinThumbtackIcon";
 import { cn } from "./shadcn/utils";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "./shadcn/dropdown-menu";
 import type { Project, SessionSummary } from "../types";
+
+type SidebarOverflowSurface = "plugins" | "automation";
+
+/** 侧栏常驻 4 项之后的入口；新增功能页只需往这里追加。 */
+const SIDEBAR_OVERFLOW_NAV: Array<{
+  id: SidebarOverflowSurface;
+  icon: IconProp;
+  labelKey: "plugins" | "automation";
+}> = [
+  { id: "plugins", icon: ["fas", "puzzle-piece"], labelKey: "plugins" },
+  { id: "automation", icon: ["far", "clock"], labelKey: "automation" },
+];
+
+const SIDEBAR_OVERFLOW_IDS = new Set<string>(SIDEBAR_OVERFLOW_NAV.map((item) => item.id));
 
 interface Props {
   sessions: SessionSummary[];
@@ -107,7 +127,30 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   const { t } = useTranslation();
 
   /* 顶部导航滑动药丸（静默着色）：悬停跟随，离开滑回激活项；无 surface 激活时停靠「新对话」 */
-  const activeNavId = activeSurface ?? "new-chat";
+  const overflowSurfaceActive = Boolean(activeSurface && SIDEBAR_OVERFLOW_IDS.has(activeSurface));
+  const activeNavId = overflowSurfaceActive ? "other" : (activeSurface ?? "new-chat");
+  const overflowNavActions: Record<SidebarOverflowSurface, () => void> = {
+    plugins: onOpenPlugins,
+    automation: onOpenAutomation,
+  };
+  const [overflowNavOpen, setOverflowNavOpen] = useState(false);
+  const overflowCloseTimer = useRef<number | null>(null);
+
+  const openOverflowNav = () => {
+    if (overflowCloseTimer.current != null) {
+      window.clearTimeout(overflowCloseTimer.current);
+      overflowCloseTimer.current = null;
+    }
+    setOverflowNavOpen(true);
+  };
+
+  const scheduleCloseOverflowNav = () => {
+    if (overflowCloseTimer.current != null) window.clearTimeout(overflowCloseTimer.current);
+    overflowCloseTimer.current = window.setTimeout(() => {
+      setOverflowNavOpen(false);
+      overflowCloseTimer.current = null;
+    }, 160);
+  };
   const {
     containerRef: topNavRef,
     containerProps: topNavProps,
@@ -148,6 +191,12 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (overflowCloseTimer.current != null) window.clearTimeout(overflowCloseTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -488,8 +537,48 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           <NavButton icon={["fas", "magnifying-glass"]} label={t("sidebar.search")} navId="search" onClick={onOpenSearch} />
           <NavButton icon={["fas", "layer-group"]} label={t("sidebar.skills")} navId="skills" active={activeSurface === "skills"} onClick={onOpenSkills} />
           <NavButton icon={["fas", "book"]} label={t("sidebar.knowledge")} navId="knowledge" active={activeSurface === "knowledge"} onClick={onOpenKnowledge} />
-          <NavButton icon={["fas", "puzzle-piece"]} label={t("sidebar.plugins")} navId="plugins" active={activeSurface === "plugins"} onClick={onOpenPlugins} />
-          <NavButton icon={["far", "clock"]} label={t("sidebar.automation")} navId="automation" active={activeSurface === "automation"} onClick={onOpenAutomation} />
+          <DropdownMenu open={overflowNavOpen} onOpenChange={setOverflowNavOpen} modal={false}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                data-nav="other"
+                className={`relative z-[1] w-full flex items-center px-2.5 py-1.5 rounded-md text-sm text-text-base ${
+                  overflowSurfaceActive ? "font-medium" : ""
+                }`}
+                onPointerEnter={openOverflowNav}
+                onPointerLeave={scheduleCloseOverflowNav}
+              >
+                <FontAwesomeIcon icon={["fas", "ellipsis"]} className="w-5 text-left text-text-secondary" />
+                <span className="ml-0.5">{t("sidebar.other")}</span>
+                <FontAwesomeIcon
+                  icon={["fas", "chevron-right"]}
+                  className="ml-auto text-[10px] text-text-secondary"
+                />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side="right"
+              align="start"
+              sideOffset={6}
+              className="min-w-[10.5rem]"
+              onPointerEnter={openOverflowNav}
+              onPointerLeave={scheduleCloseOverflowNav}
+            >
+              {SIDEBAR_OVERFLOW_NAV.map((item) => (
+                <DropdownMenuItem
+                  key={item.id}
+                  className={cn(
+                    "gap-2 text-sm",
+                    activeSurface === item.id && "font-medium bg-black/5"
+                  )}
+                  onSelect={() => overflowNavActions[item.id]()}
+                >
+                  <FontAwesomeIcon icon={item.icon} className="w-4 text-text-secondary" />
+                  {t(`sidebar.${item.labelKey}`)}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {/* 滑动药丸指示器 */}
