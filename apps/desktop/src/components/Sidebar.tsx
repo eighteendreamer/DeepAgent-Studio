@@ -521,7 +521,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   };
 
   return (
-    <aside className="w-[240px] flex flex-col bg-sidebar-bg h-full no-select flex-shrink-0 pb-2">
+    <aside className="w-[120px] flex flex-col bg-sidebar-bg h-full no-select flex-shrink-0 pb-2">
       {/* Top actions：滑动药丸指示器（同设置侧栏），无 surface 激活时停靠「新对话」 */}
       <div
         ref={topNavRef}

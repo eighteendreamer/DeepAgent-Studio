@@ -1976,7 +1976,7 @@ export function App() {
       <div className="flex-1 flex overflow-hidden">
         <>
           {isSidebarOpen && view !== "settings" && (
-            <div className="flex h-full w-[240px] flex-shrink-0 overflow-hidden">
+            <div className="flex h-full w-[120px] flex-shrink-0 overflow-hidden">
               <Sidebar
                 sessions={sessions}
                 projects={projects}
