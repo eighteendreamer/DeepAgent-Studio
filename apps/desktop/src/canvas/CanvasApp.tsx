@@ -60,12 +60,24 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { isTauri } from "../api";
-import { CanvasTitleBar } from "./CanvasTitleBar";
+import { CanvasTitleBar, type CanvasMode } from "./CanvasTitleBar";
 import {
   DEFAULT_MINIAPP_PREVIEW,
   MiniAppPreviewNode,
   type MiniAppPreviewConfig,
 } from "./MiniAppPreviewNode";
+import { useCanvasStore } from "./workflow/store/canvasStore";
+import { useCreativeStore } from "./workflow/store/creativeStore";
+import { useProfessionalStore } from "./workflow/store/professionalStore";
+import { ModeSwitcher } from "./workflow/components/ModeSwitcher";
+import { BottomBar as WorkflowBottomBar } from "./workflow/components/BottomBar";
+import { NodePicker } from "./workflow/components/NodePicker";
+import { ConfigPanel } from "./workflow/components/ConfigPanel";
+import { ContextMenu as WorkflowContextMenu, useContextMenu as useWorkflowContextMenu } from "./workflow/components/ContextMenu";
+import { WorkflowNodeShell } from "./workflow/components/WorkflowNodeShell";
+import { WorkflowEdge } from "./workflow/components/WorkflowEdge";
+import { useWorkflowPersistence } from "./workflow/hooks/useWorkflowPersistence";
+import { CREATIVE_NODE_CATEGORIES, PROFESSIONAL_NODE_CATEGORIES } from "./workflow/types";
 
 const LEGACY_CANVAS_LAYOUT_KEY = "deepagent:studio-canvas-layout:v1";
 const CANVAS_VIEWPORT_KEY = "deepagent:studio-canvas-viewport:v1";
@@ -74,6 +86,29 @@ const CANVAS_TOOLBAR_COLLAPSED_KEY = "deepagent:studio-canvas-toolbar-collapsed:
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 const SNAP_GRID: [number, number] = [24, 24];
 const HISTORY_LIMIT = 100;
+const CANVAS_MODE_KEY = "deepagent:studio-canvas-mode:v1";
+
+function buildWorkflowNodeTypes(prefix: string, kinds: string[]) {
+  const map: Record<string, React.ComponentType<any>> = {};
+  for (const kind of kinds) {
+    map[`${prefix}-${kind}`] = WorkflowNodeShell;
+  }
+  return map;
+}
+
+const WF_CREATIVE_KINDS = CREATIVE_NODE_CATEGORIES.flatMap((c) => c.items.map((i) => i.kind));
+const WF_PROFESSIONAL_KINDS = PROFESSIONAL_NODE_CATEGORIES.flatMap((c) => c.items.map((i) => i.kind));
+const wfCreativeNodeTypes = buildWorkflowNodeTypes("creative", WF_CREATIVE_KINDS);
+const wfProfessionalNodeTypes = buildWorkflowNodeTypes("professional", WF_PROFESSIONAL_KINDS);
+const wfEdgeTypes = { default: WorkflowEdge };
+
+function readCanvasMode(): CanvasMode {
+  try {
+    const saved = window.localStorage.getItem(CANVAS_MODE_KEY);
+    if (saved === "workflow") return "workflow";
+  } catch { /* ignore */ }
+  return "whiteboard";
+}
 
 type CanvasTool = "select" | "pan" | "rectangle" | "draw" | "lasso" | "eraser";
 type CanvasNodeKind = "note" | "text" | "shape" | "drawing" | "group" | "miniapp-preview";
@@ -190,7 +225,199 @@ function pointInPolygon(point: XYPosition, polygon: XYPosition[]) {
   return inside;
 }
 
-function InfiniteCanvas() {
+interface WorkflowModeViewProps {
+  rfInstanceRef: React.MutableRefObject<ReactFlowInstance | null>;
+  wfMode: "creative" | "professional";
+  wfSelectedNodeId: string | null;
+  wfSetSelectedNodeId: (id: string | null) => void;
+  wfOpenNodePicker: (pos: { x: number; y: number; worldX: number; worldY: number }) => void;
+  wfCloseNodePicker: () => void;
+  wfSetViewport: (vp: Viewport) => void;
+  creativeNodes: Node[];
+  creativeEdges: Edge[];
+  creativeOnNodesChange: (changes: NodeChange[]) => void;
+  creativeOnEdgesChange: (changes: EdgeChange[]) => void;
+  creativeOnConnect: (connection: Connection) => void;
+  proNodes: Node[];
+  proEdges: Edge[];
+  proOnNodesChange: (changes: NodeChange[]) => void;
+  proOnEdgesChange: (changes: EdgeChange[]) => void;
+  proOnConnect: (connection: Connection) => void;
+  wfMenu: { x: number; y: number; worldX: number; worldY: number } | null;
+  wfOpenMenu: (pos: { x: number; y: number; worldX: number; worldY: number }) => void;
+  wfCloseMenu: () => void;
+  isDark: boolean;
+  toggleCanvasFullscreen: () => void;
+  isFullscreen: boolean;
+}
+
+function WorkflowModeView({
+  rfInstanceRef,
+  wfMode,
+  wfSelectedNodeId,
+  wfSetSelectedNodeId,
+  wfOpenNodePicker,
+  wfCloseNodePicker,
+  wfSetViewport,
+  creativeNodes,
+  creativeEdges,
+  creativeOnNodesChange,
+  creativeOnEdgesChange,
+  creativeOnConnect,
+  proNodes,
+  proEdges,
+  proOnNodesChange,
+  proOnEdgesChange,
+  proOnConnect,
+  wfMenu,
+  wfOpenMenu,
+  wfCloseMenu,
+  isDark,
+}: WorkflowModeViewProps) {
+  const [viewport, setLocalViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const nodes = wfMode === "creative" ? creativeNodes : proNodes;
+  const edges = wfMode === "creative" ? creativeEdges : proEdges;
+  const onNodesChange = wfMode === "creative" ? creativeOnNodesChange : proOnNodesChange;
+  const onEdgesChange = wfMode === "creative" ? creativeOnEdgesChange : proOnEdgesChange;
+  const onConnect = wfMode === "creative" ? creativeOnConnect : proOnConnect;
+  const nodeTypes = wfMode === "creative" ? wfCreativeNodeTypes : wfProfessionalNodeTypes;
+
+  const handleViewportChange = useCallback(
+    (vp: Viewport) => {
+      setLocalViewport(vp);
+      wfSetViewport(vp);
+    },
+    [wfSetViewport],
+  );
+
+  const handleDoubleClick = useCallback(
+    (event: React.MouseEvent) => {
+      const rfInstance = rfInstanceRef.current;
+      if (!rfInstance) return;
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const worldPos = rfInstance.screenToFlowPosition({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+      wfOpenNodePicker({ x: event.clientX, y: event.clientY, worldX: worldPos.x, worldY: worldPos.y });
+    },
+    [rfInstanceRef, wfOpenNodePicker],
+  );
+
+  const handleNodeClick = useCallback(
+    (_: React.MouseEvent, node: any) => { wfSetSelectedNodeId(node.id); },
+    [wfSetSelectedNodeId],
+  );
+
+  const handlePaneClick = useCallback(() => {
+    wfSetSelectedNodeId(null);
+    wfCloseNodePicker();
+  }, [wfSetSelectedNodeId, wfCloseNodePicker]);
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      const rfInstance = rfInstanceRef.current;
+      if (!rfInstance) return;
+      e.preventDefault();
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const worldPos = rfInstance.screenToFlowPosition({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      wfOpenMenu({ x: e.clientX, y: e.clientY, worldX: worldPos.x, worldY: worldPos.y });
+    },
+    [rfInstanceRef, wfOpenMenu],
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (wfSelectedNodeId && !isEditableTarget(e.target)) {
+          if (wfMode === "creative") useCreativeStore.getState().removeNode(wfSelectedNodeId);
+          else useProfessionalStore.getState().removeNode(wfSelectedNodeId);
+          wfSetSelectedNodeId(null);
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        if (wfMode === "creative") useCreativeStore.getState().undo();
+        else useProfessionalStore.getState().undo();
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "z" && e.shiftKey || e.key === "y")) {
+        e.preventDefault();
+        if (wfMode === "creative") useCreativeStore.getState().redo();
+        else useProfessionalStore.getState().redo();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [wfMode, wfSelectedNodeId, wfSetSelectedNodeId]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="absolute inset-0"
+      style={{ background: isDark ? "#0a0a0a" : "#fafafa" }}
+      onDoubleClick={handleDoubleClick}
+      onContextMenu={handleContextMenu}
+    >
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
+        onInit={(instance) => { rfInstanceRef.current = instance; }}
+        onNodeClick={handleNodeClick}
+        onPaneClick={handlePaneClick}
+        onMove={(_, vp) => handleViewportChange(vp)}
+        nodeTypes={nodeTypes}
+        edgeTypes={wfEdgeTypes}
+        snapToGrid
+        snapGrid={SNAP_GRID}
+        fitView
+        minZoom={0.2}
+        maxZoom={3}
+        proOptions={{ hideAttribution: true }}
+        style={{ background: "transparent" }}
+        className="studio-workflow-canvas"
+        colorMode={isDark ? "dark" : "light"}
+      >
+        <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="transparent" />
+      </ReactFlow>
+
+      {nodes.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div
+            className="flex flex-col items-center gap-2 px-5 py-3.5 rounded-2xl"
+            style={{
+              background: "rgba(255,255,255,0.04)",
+              color: "rgba(255,255,255,0.72)",
+              border: "1px dashed rgba(255,255,255,0.14)",
+              backdropFilter: "blur(10px)",
+            }}
+          >
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <span style={{ color: "#3b82f6" }}>✦</span>
+              双击屏幕
+              <span className="font-normal" style={{ opacity: 0.68 }}>添加节点</span>
+            </div>
+            <div className="text-xs" style={{ opacity: 0.62 }}>
+              {wfMode === "creative" ? "添加文本、图片、视频等创作节点" : "添加 LLM、代码、HTTP 等工作流节点"}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ModeSwitcher />
+      <WorkflowBottomBar viewport={viewport} onViewportChange={handleViewportChange} rfInstance={rfInstanceRef.current} />
+      <MiniMap className="studio-canvas-minimap" pannable zoomable nodeColor={(node) => node.type?.startsWith("creative") ? "#60a5fa" : "#a78bfa"} />
+      <NodePicker />
+      <ConfigPanel />
+      <WorkflowContextMenu menu={wfMenu} onClose={wfCloseMenu} />
+    </div>
+  );
+}
+
+function InfiniteCanvas({ canvasMode }: { canvasMode: CanvasMode }) {
   const initialViewport = useMemo(readViewport, []);
   const initialDocument = useMemo(readDocument, []);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -222,6 +449,26 @@ function InfiniteCanvas() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [drawDraft, setDrawDraft] = useState<DrawDraft>(null);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
+
+  // Workflow mode state
+  useWorkflowPersistence();
+  const wfMode = useCanvasStore((s) => s.mode);
+  const wfSelectedNodeId = useCanvasStore((s) => s.selectedNodeId);
+  const wfSetSelectedNodeId = useCanvasStore((s) => s.setSelectedNodeId);
+  const wfOpenNodePicker = useCanvasStore((s) => s.openNodePicker);
+  const wfCloseNodePicker = useCanvasStore((s) => s.closeNodePicker);
+  const wfSetViewport = useCanvasStore((s) => s.setViewport);
+  const creativeNodes = useCreativeStore((s) => s.nodes);
+  const creativeEdges = useCreativeStore((s) => s.edges);
+  const creativeOnNodesChange = useCreativeStore((s) => s.onNodesChange);
+  const creativeOnEdgesChange = useCreativeStore((s) => s.onEdgesChange);
+  const creativeOnConnect = useCreativeStore((s) => s.onConnect);
+  const proNodes = useProfessionalStore((s) => s.nodes);
+  const proEdges = useProfessionalStore((s) => s.edges);
+  const proOnNodesChange = useProfessionalStore((s) => s.onNodesChange);
+  const proOnEdgesChange = useProfessionalStore((s) => s.onEdgesChange);
+  const proOnConnect = useProfessionalStore((s) => s.onConnect);
+  const { menu: wfMenu, openMenu: wfOpenMenu, close: wfCloseMenu } = useWorkflowContextMenu();
 
   const notifyCommand = useCallback((message: string) => {
     setCommandNotice(message);
@@ -1141,6 +1388,22 @@ function InfiniteCanvas() {
     [createNode],
   );
 
+  const handleWorkflowDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      if (!instanceRef.current) return;
+      const kind = event.dataTransfer.getData("application/workflow-node-kind");
+      if (!kind) return;
+      const position = instanceRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      if (wfMode === "creative") {
+        useCreativeStore.getState().addNode(kind as any, position.x, position.y);
+      } else {
+        useProfessionalStore.getState().addNode(kind as any, position.x, position.y);
+      }
+    },
+    [wfMode],
+  );
+
   const pointerPosition = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const bounds = wrapperRef.current!.getBoundingClientRect();
     return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
@@ -1208,8 +1471,9 @@ function InfiniteCanvas() {
       ref={wrapperRef}
       className="relative h-full w-full"
       onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }}
-      onDrop={handleDrop}
+      onDrop={canvasMode === "whiteboard" ? handleDrop : handleWorkflowDrop}
     >
+      {canvasMode === "whiteboard" && <>
       <input ref={importInputRef} className="hidden" type="file" accept="application/json,.json" onChange={(event) => void importJson(event)} />
       <ReactFlow<CanvasNode, CanvasEdge>
         className={`studio-infinite-canvas is-tool-${tool}`}
@@ -1382,16 +1646,51 @@ function InfiniteCanvas() {
           {contextMenu.nodeId ? <><button onClick={() => void duplicateSelection()}>创建副本</button><button onClick={toggleSelectedLock}>锁定/解锁</button><button onClick={() => moveSelectionLayer("front")}>置于顶层</button><button onClick={() => deleteByIds(new Set([contextMenu.nodeId!]))}>删除节点</button></> : contextMenu.edgeId ? <><button onClick={() => deleteByIds(new Set(), new Set([contextMenu.edgeId!]))}>删除连线</button></> : <><button onClick={() => createNode("note", instanceRef.current?.screenToFlowPosition({ x: contextMenu.x, y: contextMenu.y }))}>新建便签</button><button onClick={() => createNode("text", instanceRef.current?.screenToFlowPosition({ x: contextMenu.x, y: contextMenu.y }))}>新建文本</button><button onClick={() => void pasteClipboard()}>粘贴</button></>}
         </div>
       )}
+      </>}
+
+      {canvasMode === "workflow" && (
+        <WorkflowModeView
+          rfInstanceRef={instanceRef as React.MutableRefObject<ReactFlowInstance | null>}
+          wfMode={wfMode}
+          wfSelectedNodeId={wfSelectedNodeId}
+          wfSetSelectedNodeId={wfSetSelectedNodeId}
+          wfOpenNodePicker={wfOpenNodePicker}
+          wfCloseNodePicker={wfCloseNodePicker}
+          wfSetViewport={wfSetViewport}
+          creativeNodes={creativeNodes}
+          creativeEdges={creativeEdges}
+          creativeOnNodesChange={creativeOnNodesChange}
+          creativeOnEdgesChange={creativeOnEdgesChange}
+          creativeOnConnect={creativeOnConnect}
+          proNodes={proNodes}
+          proEdges={proEdges}
+          proOnNodesChange={proOnNodesChange}
+          proOnEdgesChange={proOnEdgesChange}
+          proOnConnect={proOnConnect}
+          wfMenu={wfMenu}
+          wfOpenMenu={wfOpenMenu}
+          wfCloseMenu={wfCloseMenu}
+          isDark={isDark}
+          toggleCanvasFullscreen={toggleCanvasFullscreen}
+          isFullscreen={isFullscreen}
+        />
+      )}
     </div>
   );
 }
 
 export function CanvasApp() {
+  const [canvasMode, setCanvasModeRaw] = useState<CanvasMode>(readCanvasMode);
+  const setCanvasMode = useCallback((mode: CanvasMode) => {
+    setCanvasModeRaw(mode);
+    try { window.localStorage.setItem(CANVAS_MODE_KEY, mode); } catch { /* ignore */ }
+  }, []);
+
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-white text-text-base">
-      <CanvasTitleBar />
+      <CanvasTitleBar canvasMode={canvasMode} onModeChange={setCanvasMode} />
       <div className="min-h-0 flex-1">
-        <ReactFlowProvider><InfiniteCanvas /></ReactFlowProvider>
+        <ReactFlowProvider><InfiniteCanvas canvasMode={canvasMode} /></ReactFlowProvider>
       </div>
     </div>
   );

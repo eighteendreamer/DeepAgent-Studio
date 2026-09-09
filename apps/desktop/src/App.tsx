@@ -39,7 +39,6 @@ import {
   renameSession,
   visionRecognizeImage,
   openStudioCanvasWindow,
-  openWorkflowCanvasWindow,
 } from "./api";
 import type { PreflightToolCall, RuntimeEvent } from "./api";
 import type {
@@ -2009,11 +2008,6 @@ export function App() {
                 onOpenCanvas={() => {
                   void openStudioCanvasWindow().catch((error) => {
                     message.error(`打开无限画板失败：${String(error)}`);
-                  });
-                }}
-                onOpenWorkflowCanvas={() => {
-                  void openWorkflowCanvasWindow().catch((error) => {
-                    message.error(`打开无限画布失败：${String(error)}`);
                   });
                 }}
                 onOpenSettings={() => navigateTo(activeId, "settings")}

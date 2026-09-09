@@ -18,18 +18,17 @@ import {
 } from "./shadcn/dropdown-menu";
 import type { Project, SessionSummary } from "../types";
 
-type SidebarOverflowSurface = "plugins" | "automation" | "canvas" | "workflow-canvas";
+type SidebarOverflowSurface = "plugins" | "automation" | "canvas";
 
 /** 侧栏常驻 4 项之后的入口；新增功能页只需往这里追加。 */
 const SIDEBAR_OVERFLOW_NAV: Array<{
   id: SidebarOverflowSurface;
   icon: IconProp;
-  labelKey: "plugins" | "automation" | "canvas" | "workflowCanvas";
+  labelKey: "plugins" | "automation" | "canvas";
 }> = [
   { id: "plugins", icon: ["fas", "puzzle-piece"], labelKey: "plugins" },
   { id: "automation", icon: ["far", "clock"], labelKey: "automation" },
   { id: "canvas", icon: ["fas", "paintbrush"], labelKey: "canvas" },
-  { id: "workflow-canvas", icon: ["fas", "infinity"], labelKey: "workflowCanvas" },
 ];
 
 const SIDEBAR_OVERFLOW_IDS = new Set<string>(SIDEBAR_OVERFLOW_NAV.map((item) => item.id));
@@ -59,7 +58,6 @@ interface Props {
   onOpenPlugins: () => void;
   onOpenAutomation: () => void;
   onOpenCanvas: () => void;
-  onOpenWorkflowCanvas: () => void;
   onOpenSettings: () => void;
   onLogout: () => void;
   /** Session ids with currently-running agent runs (show spinners). */
@@ -127,7 +125,7 @@ function writeExpandedProjects(value: Record<string, boolean>) {
   window.localStorage.setItem(SIDEBAR_EXPANDED_PROJECTS_KEY, JSON.stringify(value));
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenCanvas, onOpenWorkflowCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
 
   /* 顶部导航滑动药丸（静默着色）：悬停跟随，离开滑回激活项；无 surface 激活时停靠「新对话」 */
@@ -137,7 +135,6 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     plugins: onOpenPlugins,
     automation: onOpenAutomation,
     canvas: onOpenCanvas,
-    "workflow-canvas": onOpenWorkflowCanvas,
   };
   const [overflowNavOpen, setOverflowNavOpen] = useState(false);
   const overflowCloseTimer = useRef<number | null>(null);
