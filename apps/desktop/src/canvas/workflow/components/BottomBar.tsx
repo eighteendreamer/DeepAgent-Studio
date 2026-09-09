@@ -115,7 +115,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
 
   return (
     <div
-      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9997] flex items-center gap-1 px-1.5"
+      className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[9997] flex items-center gap-1 px-1.5"
       style={{
         ...BAR_STYLE,
         height: 40,

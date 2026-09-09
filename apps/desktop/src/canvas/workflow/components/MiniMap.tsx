@@ -54,7 +54,7 @@ export function MiniMap() {
   };
 
   return (
-    <div className="fixed left-6 bottom-16 z-[80]" style={{ width: 280, height: 180 }}>
+    <div className="absolute left-6 bottom-16 z-[80]" style={{ width: 280, height: 180 }}>
       <div style={SHELL_STYLE}>
         <svg width="100%" height="100%" viewBox="0 0 268 168">
           {projected.map((n) => (

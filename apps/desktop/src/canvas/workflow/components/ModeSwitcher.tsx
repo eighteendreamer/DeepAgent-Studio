@@ -12,7 +12,7 @@ export function ModeSwitcher() {
 
   return (
     <div
-      className="fixed left-6 top-4 z-[9997] flex items-center gap-0.5 rounded-xl p-1"
+      className="absolute left-6 top-4 z-[9997] flex items-center gap-0.5 rounded-xl p-1"
       style={{
         background: "rgba(76,80,82,0.55)",
         border: "1px solid rgba(255,255,255,0.08)",

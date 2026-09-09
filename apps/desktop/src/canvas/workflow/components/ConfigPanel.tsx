@@ -90,7 +90,7 @@ export function ConfigPanel() {
 
   return (
     <div
-      className="fixed top-0 right-0 bottom-0 z-[9996] flex flex-col"
+      className="absolute top-0 right-0 bottom-0 z-[9996] flex flex-col"
       style={{
         width: mode === "professional" ? 360 : 400,
         background: "rgba(30,30,35,0.85)",
