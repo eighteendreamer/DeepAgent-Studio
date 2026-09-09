@@ -3164,6 +3164,9 @@ async fn test_hook_command(
             timeout: request.action.timeout,
             shell: deepagent_app_core::HookCommandShell::default(),
             env: request.action.env.clone(),
+            status_message: None,
+            async_mode: None,
+            allowed_env_vars: Vec::new(),
         };
         // prompt/agent hooks need a model client; build it from settings the
         // same way chat does. http/mcp don't need one.
