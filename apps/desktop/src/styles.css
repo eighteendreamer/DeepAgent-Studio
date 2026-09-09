@@ -2431,8 +2431,9 @@ html:not(.dark) .reasoning-slider-fill {
 }
 
 .studio-workflow-canvas .react-flow__edge.selected .react-flow__edge-path {
-  stroke: rgba(139, 124, 247, 0.7);
-  stroke-width: 2;
+  stroke: rgba(139, 124, 247, 0.7) !important;
+  stroke-width: 2.4 !important;
+  filter: drop-shadow(0 0 5px rgba(139, 124, 247, 0.3));
 }
 
 .studio-workflow-canvas .react-flow__handle {
@@ -2455,19 +2456,18 @@ html:not(.dark) .reasoning-slider-fill {
 }
 
 .studio-workflow-canvas .react-flow__node:hover {
-  transform: scale(1.02);
   z-index: 15 !important;
 }
 
 .studio-workflow-canvas .react-flow__edge:hover .react-flow__edge-path {
-  stroke: rgba(139, 124, 247, 0.5);
-  stroke-width: 2.5;
-  filter: drop-shadow(0 0 4px rgba(139, 124, 247, 0.3));
+  stroke: rgba(255, 255, 255, 0.48) !important;
+  stroke-width: 2.2 !important;
+  filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.22));
 }
 
 .studio-workflow-canvas .react-flow__edge-path {
-  stroke: rgba(255, 255, 255, 0.15);
-  stroke-width: 1.5;
+  stroke: rgba(255, 255, 255, 0.18);
+  stroke-width: 1.8;
   transition: stroke 0.3s, stroke-width 0.2s, filter 0.3s;
 }
 
@@ -2482,4 +2482,30 @@ html:not(.dark) .reasoning-slider-fill {
   stroke-dasharray: 8 4;
   animation: wfEdgeFlow 0.6s linear infinite;
   filter: drop-shadow(0 0 6px rgba(59, 130, 246, 0.3));
+}
+
+/* Space-pan cursors */
+.studio-workflow-canvas.wf-pan-mode {
+  cursor: grab;
+}
+.studio-workflow-canvas.wf-pan-mode.wf-panning {
+  cursor: grabbing;
+}
+.studio-workflow-canvas.wf-pan-mode .react-flow__node,
+.studio-workflow-canvas.wf-pan-mode .react-flow__handle {
+  cursor: grab;
+}
+.studio-workflow-canvas.wf-pan-mode.wf-panning .react-flow__node,
+.studio-workflow-canvas.wf-pan-mode.wf-panning .react-flow__handle {
+  cursor: grabbing;
+}
+
+/* Selection box */
+.wf-selection-box {
+  position: absolute;
+  border: 2px solid rgba(255, 255, 255, 0.52);
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 50;
 }

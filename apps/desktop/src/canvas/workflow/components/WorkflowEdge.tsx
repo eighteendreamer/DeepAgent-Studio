@@ -70,8 +70,8 @@ function WorkflowEdgeInner({
         className={isRunning ? "wf-edge-running-path" : undefined}
         style={{
           ...style,
-          stroke: isRunning ? "rgba(59,130,246,0.7)" : "rgba(148,163,184,0.25)",
-          strokeWidth: isRunning ? 2 : 1.5,
+          stroke: isRunning ? "rgba(59,130,246,0.7)" : "rgba(255,255,255,0.18)",
+          strokeWidth: isRunning ? 2.4 : 1.8,
           strokeDasharray: isRunning ? "8 4" : undefined,
           animation: isRunning ? "wfEdgeFlow 0.6s linear infinite" : undefined,
           filter: isRunning ? "drop-shadow(0 0 6px rgba(59,130,246,0.3))" : undefined,

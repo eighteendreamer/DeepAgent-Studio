@@ -67,6 +67,10 @@ function WorkflowCanvasInner() {
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
   const [viewport, setLocalViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const containerRef = useRef<HTMLDivElement>(null);
+  const rfWrapperRef = useRef<HTMLDivElement>(null);
+  const isSpaceHeldRef = useRef(false);
+  const [isSpaceHeld, setIsSpaceHeld] = useState(false);
+  const clipboardRef = useRef<{ mode: string; nodes: any[] } | null>(null);
   const { menu, openMenu, close: closeMenu } = useContextMenu();
 
   const nodes = mode === "creative" ? creativeNodes : proNodes;
@@ -149,54 +153,144 @@ function WorkflowCanvasInner() {
   );
 
   useEffect(() => {
+    const updatePanClasses = () => {
+      const el = rfWrapperRef.current?.querySelector(".studio-workflow-canvas");
+      if (!el) return;
+      if (isSpaceHeld) {
+        el.classList.add("wf-pan-mode");
+      } else {
+        el.classList.remove("wf-pan-mode", "wf-panning");
+      }
+    };
+    updatePanClasses();
+  }, [isSpaceHeld]);
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === "Space" && !isEditableTarget(e.target)) {
+        e.preventDefault();
+        if (!isSpaceHeldRef.current) {
+          isSpaceHeldRef.current = true;
+          setIsSpaceHeld(true);
+        }
+        return;
+      }
+
+      if (e.key === "Escape") {
+        setSelectedNodeId(null);
+        closeNodePicker();
+        closeMenu();
+        return;
+      }
+
       if (e.key === "Delete" || e.key === "Backspace") {
         if (selectedNodeId && !isEditableTarget(e.target)) {
           if (mode === "creative") useCreativeStore.getState().removeNode(selectedNodeId);
           else useProfessionalStore.getState().removeNode(selectedNodeId);
           setSelectedNodeId(null);
         }
+        return;
       }
+
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         if (mode === "creative") useCreativeStore.getState().undo();
         else useProfessionalStore.getState().undo();
+        return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && e.shiftKey) {
         e.preventDefault();
         if (mode === "creative") useCreativeStore.getState().redo();
         else useProfessionalStore.getState().redo();
+        return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "y") {
         e.preventDefault();
         if (mode === "creative") useCreativeStore.getState().redo();
         else useProfessionalStore.getState().redo();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === "a" && !isEditableTarget(e.target)) {
+        e.preventDefault();
+        const allIds = nodes.map((n) => n.id);
+        if (mode === "creative") useCreativeStore.getState().setSelectedIds(allIds);
+        else useProfessionalStore.getState().setSelectedIds(allIds);
+        return;
+      }
+
+      if (e.key === "f" && !isEditableTarget(e.target) && !(e.ctrlKey || e.metaKey)) {
+        rfInstance?.fitView({ padding: 0.2, duration: 300 });
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === "c" && !isEditableTarget(e.target)) {
+        const store = mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
+        const selected = store.nodes.filter((n) => n.selected);
+        if (selected.length > 0) {
+          clipboardRef.current = { mode, nodes: selected.map((n) => ({ ...n, data: { ...n.data } })) };
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === "v" && !isEditableTarget(e.target)) {
+        if (!clipboardRef.current || clipboardRef.current.mode !== mode) return;
+        const offset = 40;
+        for (const cn of clipboardRef.current.nodes) {
+          if (mode === "creative") {
+            useCreativeStore.getState().addNodeAt(cn.data.kind, cn.position.x + offset, cn.position.y + offset, cn.data);
+          } else {
+            useProfessionalStore.getState().addNodeAt(cn.data.kind, cn.position.x + offset, cn.position.y + offset, cn.data);
+          }
+        }
+        return;
       }
     };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        isSpaceHeldRef.current = false;
+        setIsSpaceHeld(false);
+      }
+    };
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [mode, selectedNodeId, setSelectedNodeId]);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [mode, selectedNodeId, setSelectedNodeId, closeNodePicker, closeMenu, nodes, rfInstance]);
 
   return (
     <div
       ref={containerRef}
       className="relative h-full w-full overflow-hidden"
-      style={{ background: "var(--theme-bg, #000)" }}
+      style={{ background: "#0a0a0a" }}
       onDoubleClick={handleDoubleClick}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
       onContextMenu={handleContextMenu}
     >
       {gridVisible && (
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            backgroundImage: "radial-gradient(circle, rgba(148,163,184,0.12) 1px, transparent 1px)",
-            backgroundSize: "24px 24px",
-          }}
-        />
+        <>
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.16) 1px, transparent 1px)",
+              backgroundSize: "24px 24px",
+            }}
+          />
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              backgroundImage: "radial-gradient(circle at center, rgba(255,255,255,0.04) 0%, transparent 70%)",
+            }}
+          />
+        </>
       )}
 
+      <div ref={rfWrapperRef} className="absolute inset-0">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -214,12 +308,15 @@ function WorkflowCanvasInner() {
         fitView
         minZoom={0.2}
         maxZoom={3}
+        panOnDrag={isSpaceHeld ? [0, 1, 2] : [1, 2]}
+        nodesDraggable={!isSpaceHeld}
         proOptions={{ hideAttribution: true }}
         style={{ background: "transparent" }}
         className="studio-workflow-canvas"
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="transparent" />
       </ReactFlow>
+      </div>
 
       {nodes.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -258,7 +355,7 @@ function WorkflowCanvasInner() {
 
 export function CanvasApp() {
   return (
-    <div className="flex h-screen w-full flex-col overflow-hidden bg-white text-text-base">
+    <div className="flex h-screen w-full flex-col overflow-hidden text-text-base">
       <CanvasTitleBar />
       <div className="min-h-0 flex-1">
         <ReactFlowProvider>

@@ -28,7 +28,7 @@ import {
 
 const STATUS_BORDER: Record<NodeStatus, string> = {
   idle: "1px solid rgba(255,255,255,0.1)",
-  running: "1px solid rgba(59,130,246,0.7)",
+  running: "1.5px dashed rgba(59,130,246,0.7)",
   completed: "1px solid rgba(34,197,94,0.7)",
   error: "1px solid rgba(239,68,68,0.7)",
 };
@@ -119,33 +119,50 @@ function WorkflowNodeShellInner({ id: _id, data, selected }: NodeProps) {
       className="relative select-none"
       style={{
         width: 240,
-        borderRadius: 12,
-        background: "var(--theme-elevated, rgba(26,26,26,0.95))",
+        borderRadius: 16,
+        background: "#101010",
         border: STATUS_BORDER[nodeStatus],
         boxShadow: selected
-          ? "0 0 0 2px rgba(139,124,247,0.5), 0 8px 24px rgba(0,0,0,0.3)"
+          ? "0 0 0 3px rgba(139,124,247,0.35), 0 14px 44px rgba(0,0,0,0.4)"
           : STATUS_SHADOW[nodeStatus],
         backdropFilter: "blur(12px)",
         transition: "border-color 0.3s, box-shadow 0.3s, transform 0.15s ease",
       }}
     >
-      {/* Selection glow halo */}
+      {/* Selection glow halo — outer ring */}
       {selected && (
-        <div
-          className="absolute pointer-events-none"
-          style={{
-            inset: -3,
-            borderRadius: 15,
-            background:
-              "conic-gradient(from var(--glow-angle, 0deg), #8b7cf7, #a78bfa, transparent 30%, #ff7ec7, #ff9ecf, transparent 60%, #8b7cf7)",
-            WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
-            WebkitMaskComposite: "xor",
-            maskComposite: "exclude",
-            padding: 3,
-            opacity: 0.65,
-            animation: "wfGlowRotate 4s linear infinite",
-          }}
-        />
+        <>
+          <div
+            className="absolute pointer-events-none"
+            style={{
+              inset: -3,
+              borderRadius: 19,
+              background:
+                "conic-gradient(from var(--glow-angle, 0deg), rgba(0,0,0,0) 0%, #8b7cf7 4%, #a78bfa 10%, rgba(0,0,0,0) 22%, rgba(0,0,0,0) 45%, #ff7ec7 55%, #ff9ecf 62%, rgba(0,0,0,0) 75%)",
+              WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+              WebkitMaskComposite: "xor",
+              maskComposite: "exclude",
+              padding: 3,
+              opacity: 0.65,
+              animation: "wfGlowRotate 4s linear infinite",
+            }}
+          />
+          <div
+            className="absolute pointer-events-none"
+            style={{
+              inset: -2,
+              borderRadius: 18,
+              background:
+                "conic-gradient(from var(--glow-angle, 0deg), rgba(0,0,0,0) 0%, #c8bfff 3%, #e0d9ff 8%, rgba(0,0,0,0) 14%, rgba(0,0,0,0) 48%, #ffc0e0 54%, #ffd0e8 60%, rgba(0,0,0,0) 68%)",
+              WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+              WebkitMaskComposite: "xor",
+              maskComposite: "exclude",
+              padding: 2,
+              opacity: 0.75,
+              animation: "wfGlowRotate 4s linear infinite",
+            }}
+          />
+        </>
       )}
 
       {/* Title above node */}

@@ -40,9 +40,11 @@ interface CreativeState {
   onConnect: (connection: Connection) => void;
 
   addNode: (kind: CreativeNodeKind, x: number, y: number) => void;
+  addNodeAt: (kind: CreativeNodeKind, x: number, y: number, data: Partial<CreativeNodeData>) => void;
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<CreativeNodeData>) => void;
   insertNodeBetween: (edgeId: string, kind: CreativeNodeKind) => void;
+  setSelectedIds: (ids: string[]) => void;
 
   past: Array<{ nodes: WorkflowNode[]; edges: WorkflowEdge[] }>;
   future: Array<{ nodes: WorkflowNode[]; edges: WorkflowEdge[] }>;
@@ -86,6 +88,21 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
       type: `creative-${kind}`,
       position: { x: snappedX, y: snappedY },
       data,
+    };
+    set((s) => ({ nodes: [...s.nodes, node] }));
+  },
+
+  addNodeAt: (kind, x, y, extraData) => {
+    get().pushHistory();
+    const id = nextNodeId();
+    const base = createDefaultCreativeData(kind);
+    const snappedX = Math.round(x / SNAP_GRID) * SNAP_GRID;
+    const snappedY = Math.round(y / SNAP_GRID) * SNAP_GRID;
+    const node: WorkflowNode = {
+      id,
+      type: `creative-${kind}`,
+      position: { x: snappedX, y: snappedY },
+      data: { ...base, ...extraData, status: "idle" } as CreativeNodeData,
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
   },
@@ -137,6 +154,13 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
         { id: `e-${edge.source}-${newId}`, source: edge.source, target: newId } as WorkflowEdge,
         { id: `e-${newId}-${edge.target}`, source: newId, target: edge.target } as WorkflowEdge,
       ],
+    }));
+  },
+
+  setSelectedIds: (ids) => {
+    const idSet = new Set(ids);
+    set((s) => ({
+      nodes: s.nodes.map((n) => ({ ...n, selected: idSet.has(n.id) })),
     }));
   },
 
