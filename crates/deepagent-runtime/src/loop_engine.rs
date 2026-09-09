@@ -585,6 +585,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let mut completion_failures = 0usize;
         let mut adversarial_refutes = 0usize;
         let mut raw_responses_usage: Vec<serde_json::Value> = Vec::new();
+        let mut tool_effects: Vec<crate::completion::ToolEffectRecord> = Vec::new();
 
         // Verification state persists across attempts (tracks loop detection).
         let mut reflection_engine = self
@@ -710,7 +711,21 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         }
                     }
 
-                    if let Some(observation) = self.completion_evidence_feedback()? {
+                    let effective_policy = {
+                        let mut policy =
+                            crate::completion::CompletionPolicy::from_tool_effects(&tool_effects);
+                        policy.require_create_or_modify |=
+                            self.config.completion_policy.require_create_or_modify;
+                        policy.require_delete |= self.config.completion_policy.require_delete;
+                        policy.require_move |= self.config.completion_policy.require_move;
+                        policy
+                            .required_paths
+                            .extend(self.config.completion_policy.required_paths.iter().cloned());
+                        policy
+                    };
+                    if let Some(observation) =
+                        self.completion_evidence_feedback(&effective_policy)?
+                    {
                         completion_failures += 1;
                         if completion_failures <= self.config.max_completion_retries {
                             last_observations = vec![observation];
@@ -840,7 +855,21 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         }
                     }
 
-                    if let Some(observation) = self.completion_evidence_feedback()? {
+                    let effective_policy = {
+                        let mut policy =
+                            crate::completion::CompletionPolicy::from_tool_effects(&tool_effects);
+                        policy.require_create_or_modify |=
+                            self.config.completion_policy.require_create_or_modify;
+                        policy.require_delete |= self.config.completion_policy.require_delete;
+                        policy.require_move |= self.config.completion_policy.require_move;
+                        policy
+                            .required_paths
+                            .extend(self.config.completion_policy.required_paths.iter().cloned());
+                        policy
+                    };
+                    if let Some(observation) =
+                        self.completion_evidence_feedback(&effective_policy)?
+                    {
                         completion_failures += 1;
                         if completion_failures <= self.config.max_completion_retries {
                             last_observations = vec![observation];
@@ -911,6 +940,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             self.registry,
                         )?;
                     }
+                    let tool_name = invocation.name.clone();
+                    let tool_args = invocation.arguments.clone();
                     let speculative = streaming_tools.take_speculative(&invocation);
                     let observation = match speculative {
                         Some(speculative) => {
@@ -933,6 +964,12 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             .await?
                         }
                     };
+                    if observation.ok {
+                        tool_effects.push(crate::completion::ToolEffectRecord {
+                            tool_name,
+                            arguments: tool_args,
+                        });
+                    }
                     last_observations = vec![observation];
                 }
 
@@ -940,6 +977,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     if let Some(persistence) = self.config.action_persistence.as_ref() {
                         persistence.register_invocations(&mut invocations, self.registry)?;
                     }
+                    let tool_inputs: Vec<(String, serde_json::Value)> = invocations
+                        .iter()
+                        .map(|inv| (inv.name.clone(), inv.arguments.clone()))
+                        .collect();
                     let speculative = streaming_tools.take_speculative_batch(&invocations);
                     last_observations = self
                         .execute_tools(
@@ -950,6 +991,15 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             provider_items_persisted,
                         )
                         .await?;
+                    for (obs, (name, args)) in last_observations.iter().zip(tool_inputs.into_iter())
+                    {
+                        if obs.ok {
+                            tool_effects.push(crate::completion::ToolEffectRecord {
+                                tool_name: name,
+                                arguments: args,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1077,17 +1127,20 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             .unwrap_or_default()
     }
 
-    fn completion_evidence_feedback(&self) -> Result<Option<Observation>> {
+    fn completion_evidence_feedback(
+        &self,
+        effective_policy: &crate::completion::CompletionPolicy,
+    ) -> Result<Option<Observation>> {
         let mutations = match self.config.checkpoint.as_ref() {
             Some(checkpoint) => checkpoint.mutation_evidence()?,
             None => Vec::new(),
         };
-        if self.config.checkpoint.is_some() || !self.config.completion_policy.is_empty() {
+        if self.config.checkpoint.is_some() || !effective_policy.is_empty() {
             self.emit(RuntimeEvent::CompletionEvidence {
                 mutations: mutations.clone(),
             });
         }
-        match self.config.completion_policy.validate(&mutations) {
+        match effective_policy.validate(&mutations) {
             Ok(()) => Ok(None),
             Err(failure) => {
                 self.emit(RuntimeEvent::Verification {
@@ -1133,7 +1186,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             .await?;
 
         let decision = match outcome {
-            HookOutcome::Continue => PromptDecision::Accept(prompt),
+            HookOutcome::Continue | HookOutcome::AsyncPending { .. } => {
+                PromptDecision::Accept(prompt)
+            }
             HookOutcome::Modify { updated_input, .. } => {
                 // For a prompt, the rewritten text is taken from `updated_input`:
                 // either a bare JSON string or an object with a `text` field.
@@ -1531,7 +1586,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             )
             .await?
         {
-            HookOutcome::Continue | HookOutcome::Modify { .. } => Ok(None),
+            HookOutcome::Continue
+            | HookOutcome::AsyncPending { .. }
+            | HookOutcome::Modify { .. } => Ok(None),
             HookOutcome::Ask { reason, source } => Ok(Some(Observation {
                 tool: "post_tool_batch".to_string(),
                 ok: false,
@@ -1899,7 +1956,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         };
 
         let block_reason: Option<String> = match before {
-            HookOutcome::Continue => None,
+            HookOutcome::Continue | HookOutcome::AsyncPending { .. } => None,
             HookOutcome::Modify {
                 updated_input,
                 source,
@@ -2279,7 +2336,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             )
             .await?;
         let candidate = match before_response {
-            HookOutcome::Continue => candidate,
+            HookOutcome::Continue | HookOutcome::AsyncPending { .. } => candidate,
             HookOutcome::Modify { updated_input, .. } => updated_input
                 .get("content")
                 .and_then(serde_json::Value::as_str)
@@ -2301,9 +2358,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             )
             .await?
         {
-            HookOutcome::Continue | HookOutcome::Modify { .. } => {
-                Ok(CompletionDecision::Accept(candidate))
-            }
+            HookOutcome::Continue
+            | HookOutcome::AsyncPending { .. }
+            | HookOutcome::Modify { .. } => Ok(CompletionDecision::Accept(candidate)),
             HookOutcome::Ask { reason, .. } | HookOutcome::Deny { reason, .. } => {
                 self.fire_stop_failure(session_id, &candidate, &reason)
                     .await?;

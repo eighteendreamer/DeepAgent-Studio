@@ -58,6 +58,43 @@ fn discover_steps(root: &Path) -> Vec<VerificationStep> {
             true,
         ));
     }
+    if root.join("go.mod").exists() {
+        steps.push(VerificationStep::new(
+            "go vet",
+            Command::new("go", ["vet", "./..."].map(String::from)).in_dir(dir.clone()),
+            true,
+        ));
+    }
+    if root.join("pom.xml").exists() {
+        steps.push(VerificationStep::new(
+            "mvn compile",
+            Command::new("mvn", ["compile", "-q"].map(String::from)).in_dir(dir.clone()),
+            true,
+        ));
+    }
+    if root.read_dir().is_ok_and(|entries| {
+        entries.flatten().any(|e| {
+            e.file_name().to_string_lossy().ends_with(".csproj")
+                || e.file_name().to_string_lossy().ends_with(".sln")
+        })
+    }) {
+        steps.push(VerificationStep::new(
+            "dotnet build",
+            Command::new(
+                "dotnet",
+                ["build", "--no-restore", "--nologo", "-v", "q"].map(String::from),
+            )
+            .in_dir(dir.clone()),
+            true,
+        ));
+    }
+    if steps.is_empty() && root.join("package.json").exists() {
+        steps.push(VerificationStep::new(
+            "npm run build",
+            Command::new("npm", ["run", "build"].map(String::from)).in_dir(dir.clone()),
+            true,
+        ));
+    }
     if steps.is_empty()
         && (root.join("pyproject.toml").exists()
             || root.join("requirements.txt").exists()
@@ -102,5 +139,43 @@ mod tests {
         std::fs::write(tmp.path().join("tsconfig.json"), "{}").unwrap();
         let plan = discover_verification_plan(tmp.path()).expect("ts workspace must yield a plan");
         assert_eq!(plan.steps[0].command.program, "tsc");
+    }
+
+    #[test]
+    fn go_workspace_gets_vet_plan() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("go.mod"), "module example").unwrap();
+        let plan = discover_verification_plan(tmp.path()).expect("go workspace must yield a plan");
+        assert_eq!(plan.steps[0].command.program, "go");
+    }
+
+    #[test]
+    fn maven_workspace_gets_compile_plan() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("pom.xml"), "<project/>").unwrap();
+        let plan =
+            discover_verification_plan(tmp.path()).expect("maven workspace must yield a plan");
+        assert_eq!(plan.steps[0].command.program, "mvn");
+    }
+
+    #[test]
+    fn dotnet_workspace_gets_build_plan() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("App.csproj"), "<Project/>").unwrap();
+        let plan =
+            discover_verification_plan(tmp.path()).expect("dotnet workspace must yield a plan");
+        assert_eq!(plan.steps[0].command.program, "dotnet");
+    }
+
+    #[test]
+    fn npm_workspace_gets_build_plan_as_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"scripts":{"build":"tsc"}}"#,
+        )
+        .unwrap();
+        let plan = discover_verification_plan(tmp.path()).expect("npm workspace must yield a plan");
+        assert_eq!(plan.steps[0].command.program, "npm");
     }
 }

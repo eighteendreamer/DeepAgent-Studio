@@ -256,7 +256,7 @@ impl ChatSubagentRunner {
                     ));
                 }
             }
-            HookOutcome::Continue => {}
+            HookOutcome::Continue | HookOutcome::AsyncPending { .. } => {}
         }
         let worktree = provider.create(subagent_id).await?;
         store.set_worktree_path(subagent_id, Some(&worktree.path), subagent_now_ms())?;

@@ -44,7 +44,7 @@ pub use approval::{
 };
 pub use cancellation::CancellationTree;
 pub use checkpoint::CheckpointManager;
-pub use completion::{CompletionFailure, CompletionPolicy};
+pub use completion::{CompletionFailure, CompletionPolicy, ToolEffectRecord};
 pub use events::{
     tool_ui_metadata, ChannelSink, NullEventSink, RuntimeEvent, RuntimeEventSink, ToolUiMetadata,
 };

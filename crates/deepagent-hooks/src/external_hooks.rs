@@ -297,6 +297,16 @@ impl HookCommandShell {
     }
 }
 
+/// How an async hook runs in the background.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookAsyncMode {
+    /// Fire-and-forget: spawn and forget the result.
+    FireAndForget,
+    /// Spawn in background; re-inject result as a synthetic event when done.
+    Rewake,
+}
+
 /// A single declared hook action (`{ "type", "command", "timeout" }`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HookAction {
@@ -337,6 +347,24 @@ pub struct HookAction {
     /// Environment variables injected when this command runs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Custom spinner/status text shown while this hook runs.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "statusMessage"
+    )]
+    pub status_message: Option<String>,
+    /// Run this hook asynchronously in the background.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "async")]
+    pub async_mode: Option<HookAsyncMode>,
+    /// Environment variable names allowed for `${{VAR}}` interpolation in HTTP
+    /// headers. Empty list means no interpolation.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "allowedEnvVars"
+    )]
+    pub allowed_env_vars: Vec<String>,
 }
 
 impl HookAction {
@@ -361,6 +389,9 @@ impl Default for HookAction {
             timeout: None,
             shell: HookCommandShell::Auto,
             env: BTreeMap::new(),
+            status_message: None,
+            async_mode: None,
+            allowed_env_vars: Vec::new(),
         }
     }
 }
@@ -378,6 +409,13 @@ pub struct HookMatcherGroup {
     /// The hook actions in this group.
     #[serde(default)]
     pub hooks: Vec<HookAction>,
+    /// Permission-rule-style condition filter (e.g. `"Bash(git *)"`).
+    /// The hook only fires when the condition matches the current context.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "if")]
+    pub if_condition: Option<String>,
+    /// One-shot hook: auto-skips after the first execution.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub once: bool,
 }
 
 /// A parsed `hooks.json` document.
@@ -453,32 +491,36 @@ impl HookDefinitions {
             };
             for group in groups {
                 for action in &group.hooks {
-                    if action.action_type != HookActionType::Command {
-                        if action.action_type == HookActionType::Http {
-                            let hook = ExternalHttpHook {
-                                event,
-                                matcher: group.matcher.clone(),
-                                action: action.clone(),
-                                client: reqwest::Client::new(),
-                            };
-                            registry.register(event.point(), Arc::new(hook));
-                            registered += 1;
-                        } else {
-                            tracing::warn!(
-                                event = event.label(),
-                                "hook action ('{:?}') requires a host executor; skipping",
-                                action.action_type
-                            );
-                        }
+                    let hook: Arc<dyn Hook> = if action.action_type == HookActionType::Http {
+                        Arc::new(ExternalHttpHook {
+                            event,
+                            matcher: group.matcher.clone(),
+                            if_condition: group.if_condition.clone(),
+                            action: action.clone(),
+                            client: reqwest::Client::new(),
+                        })
+                    } else if action.action_type != HookActionType::Command {
+                        tracing::warn!(
+                            event = event.label(),
+                            "hook action ('{:?}') requires a host executor; skipping",
+                            action.action_type
+                        );
                         continue;
-                    }
-                    let hook = ExternalCommandHook {
-                        event,
-                        matcher: group.matcher.clone(),
-                        action: action.clone(),
-                        runner: runner.clone(),
+                    } else {
+                        Arc::new(ExternalCommandHook {
+                            event,
+                            matcher: group.matcher.clone(),
+                            if_condition: group.if_condition.clone(),
+                            action: action.clone(),
+                            runner: runner.clone(),
+                        })
                     };
-                    registry.register(event.point(), Arc::new(hook));
+                    let hook = if group.once {
+                        OnceHook::new(hook)
+                    } else {
+                        hook
+                    };
+                    registry.register(event.point(), hook);
                     registered += 1;
                 }
             }
@@ -509,12 +551,14 @@ impl HookDefinitions {
                         HookActionType::Command => Arc::new(ExternalCommandHook {
                             event,
                             matcher: group.matcher.clone(),
+                            if_condition: group.if_condition.clone(),
                             action: action.clone(),
                             runner: runner.clone(),
                         }),
                         HookActionType::Http => Arc::new(ExternalHttpHook {
                             event,
                             matcher: group.matcher.clone(),
+                            if_condition: group.if_condition.clone(),
                             action: action.clone(),
                             client: reqwest::Client::new(),
                         }),
@@ -523,9 +567,15 @@ impl HookDefinitions {
                         | HookActionType::Agent => Arc::new(ExternalHostHook {
                             event,
                             matcher: group.matcher.clone(),
+                            if_condition: group.if_condition.clone(),
                             action: action.clone(),
                             host: host.clone(),
                         }),
+                    };
+                    let hook = if group.once {
+                        OnceHook::new(hook)
+                    } else {
+                        hook
                     };
                     registry.register(event.point(), hook);
                     registered += 1;
@@ -1083,10 +1133,44 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// A wrapper that skips execution after the first invocation (one-shot hook).
+pub struct OnceHook {
+    inner: Arc<dyn Hook>,
+    fired: std::sync::atomic::AtomicBool,
+}
+
+impl OnceHook {
+    pub fn new(inner: Arc<dyn Hook>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            fired: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+}
+
+#[async_trait]
+impl Hook for OnceHook {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn dedup_key(&self) -> String {
+        format!("once|{}", self.inner.dedup_key())
+    }
+
+    async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+        if self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(HookOutcome::Continue);
+        }
+        self.inner.run(ctx).await
+    }
+}
+
 /// A [`Hook`] backed by an external command from `hooks.json`.
 pub struct ExternalCommandHook {
     event: HookEvent,
     matcher: Option<String>,
+    if_condition: Option<String>,
     action: HookAction,
     runner: Arc<dyn HookCommandRunner>,
 }
@@ -1176,6 +1260,11 @@ impl ExternalCommandHook {
 
     /// Whether this hook applies to `ctx` (matcher test for tool events).
     fn applies(&self, ctx: &HookContext) -> bool {
+        if let Some(condition) = &self.if_condition {
+            if !evaluate_condition(condition, ctx) {
+                return false;
+            }
+        }
         if !self.event.uses_matcher() {
             return true;
         }
@@ -1231,6 +1320,7 @@ impl Hook for ExternalCommandHook {
 pub struct ExternalHostHook {
     event: HookEvent,
     matcher: Option<String>,
+    if_condition: Option<String>,
     action: HookAction,
     host: Arc<dyn HookActionExecutor>,
 }
@@ -1259,6 +1349,11 @@ impl Hook for ExternalHostHook {
     }
 
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+        if let Some(condition) = &self.if_condition {
+            if !evaluate_condition(condition, ctx) {
+                return Ok(HookOutcome::Continue);
+            }
+        }
         if self.event.uses_matcher() {
             if let (Some(matcher), HookData::Tool { name, .. }) = (&self.matcher, &ctx.data) {
                 if !matcher_matches(matcher, name) {
@@ -1286,6 +1381,7 @@ impl Hook for ExternalHostHook {
 pub struct ExternalHttpHook {
     event: HookEvent,
     matcher: Option<String>,
+    if_condition: Option<String>,
     action: HookAction,
     client: reqwest::Client,
 }
@@ -1306,6 +1402,11 @@ impl Hook for ExternalHttpHook {
     }
 
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+        if let Some(condition) = &self.if_condition {
+            if !evaluate_condition(condition, ctx) {
+                return Ok(HookOutcome::Continue);
+            }
+        }
         if self.event.uses_matcher() {
             if let (Some(matcher), HookData::Tool { name, .. }) = (&self.matcher, &ctx.data) {
                 if !matcher_matches(matcher, name) {
@@ -1327,7 +1428,8 @@ impl Hook for ExternalHttpHook {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(serde_json::to_vec(&build_http_payload(self.event, ctx))?);
         for (name, value) in &self.action.headers {
-            request = request.header(name, value);
+            let resolved = interpolate_env_vars(value, &self.action.allowed_env_vars);
+            request = request.header(name, resolved);
         }
         let response = request
             .send()
@@ -1445,6 +1547,10 @@ fn build_http_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
 
 /// Map a command result to a [`HookOutcome`] (exit code + structured stdout).
 fn interpret_result(result: &HookCommandResult) -> HookOutcome {
+    // Async response protocol takes highest precedence.
+    if let Some(timeout) = parse_async_response_protocol(&result.stdout) {
+        return HookOutcome::AsyncPending { timeout };
+    }
     // A structured stdout decision takes precedence when present.
     if let Some(outcome) = parse_structured_hook_output(&result.stdout) {
         return outcome;
@@ -1582,6 +1688,162 @@ fn alt_matches(alt: &str, tool: &str) -> bool {
             | ("read", "readfile")
             | ("ls", "listdir")
     )
+}
+
+/// Evaluate an `if` condition against a hook context.
+///
+/// Supports the same simplified syntax as Claude Code:
+/// - Bare tool name: `"Bash"` → matches when the tool name equals `Bash`
+///   (with the same alias normalization as [`matcher_matches`]).
+/// - Tool + argument glob: `"Bash(git *)"` → matches tool name AND the
+///   first string argument (or the `command` field) starts with `git `.
+/// - Empty / `"*"` → always matches.
+///
+/// For non-tool events the condition is ignored (returns `true`).
+pub fn evaluate_condition(condition: &str, ctx: &HookContext) -> bool {
+    let condition = condition.trim();
+    if condition.is_empty() || condition == "*" {
+        return true;
+    }
+    let (tool_pattern, arg_glob) = match condition.find('(') {
+        Some(open) => {
+            let tool = &condition[..open];
+            let rest = &condition[open + 1..];
+            let glob = rest.strip_suffix(')').unwrap_or(rest);
+            (tool.trim(), Some(glob.trim()))
+        }
+        None => (condition, None),
+    };
+
+    let HookData::Tool {
+        name, arguments, ..
+    } = &ctx.data
+    else {
+        return true;
+    };
+
+    if !matcher_matches(tool_pattern, name) {
+        return false;
+    }
+
+    if let Some(glob) = arg_glob {
+        let arg_text = extract_first_string_arg(arguments);
+        if !glob_pattern_matches(glob, &arg_text) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn extract_first_string_arg(arguments: &serde_json::Value) -> String {
+    if let Some(cmd) = arguments.get("command").and_then(|v| v.as_str()) {
+        return cmd.to_string();
+    }
+    if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
+        return path.to_string();
+    }
+    if let Some(s) = arguments.as_str() {
+        return s.to_string();
+    }
+    String::new()
+}
+
+fn glob_pattern_matches(glob: &str, text: &str) -> bool {
+    let glob = glob.trim();
+    if glob.is_empty() || glob == "*" {
+        return true;
+    }
+    if let Some(prefix) = glob.strip_suffix('*') {
+        let prefix = prefix.trim();
+        return text
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| first.eq_ignore_ascii_case(prefix));
+    }
+    text.eq_ignore_ascii_case(glob)
+}
+
+/// Check whether an IP address falls within a private/reserved range
+/// (RFC 1918, RFC 4193, loopback, link-local).
+pub fn is_private_ip(addr: &std::net::IpAddr) -> bool {
+    match addr {
+        std::net::IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            // 10.0.0.0/8
+            octets[0] == 10
+            // 172.16.0.0/12
+            || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+            // 192.168.0.0/16
+            || (octets[0] == 192 && octets[1] == 168)
+            // 127.0.0.0/8
+            || octets[0] == 127
+            // 169.254.0.0/16 (link-local)
+            || (octets[0] == 169 && octets[1] == 254)
+            // 0.0.0.0
+            || octets == [0, 0, 0, 0]
+        }
+        std::net::IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            // fc00::/7 (ULA)
+            (segments[0] & 0xfe00) == 0xfc00
+            // ::1 (loopback)
+            || v6.is_loopback()
+            // fe80::/10 (link-local)
+            || (segments[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// Interpolate `${{VAR}}` placeholders in HTTP header values using process
+/// environment variables. Only variables listed in `allowed` are expanded;
+/// unknown or unapproved variables are left as-is.
+pub fn interpolate_env_vars(value: &str, allowed: &[String]) -> String {
+    if allowed.is_empty() || !value.contains("${{") {
+        return value.to_string();
+    }
+    let mut result = String::with_capacity(value.len());
+    let mut remaining = value;
+    while let Some(start) = remaining.find("${{") {
+        result.push_str(&remaining[..start]);
+        let after = &remaining[start + 3..];
+        if let Some(end) = after.find("}}") {
+            let var_name = after[..end].trim();
+            if allowed.iter().any(|a| a.eq_ignore_ascii_case(var_name)) {
+                match std::env::var(var_name) {
+                    Ok(val) => result.push_str(&val),
+                    Err(_) => result.push_str(&remaining[start..start + 3 + end + 2]),
+                }
+            } else {
+                result.push_str(&remaining[start..start + 3 + end + 2]);
+            }
+            remaining = &after[end + 2..];
+        } else {
+            result.push_str(&remaining[start..]);
+            remaining = "";
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Parse the async response protocol from a command's structured stdout.
+/// Returns `Some(timeout)` when the command signals `{"async": true}`.
+fn parse_async_response_protocol(stdout: &str) -> Option<Duration> {
+    let trimmed = stdout.trim();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    if value.get("async").and_then(|v| v.as_bool()) == Some(true) {
+        let timeout_secs = value
+            .get("asyncTimeout")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(DEFAULT_HOOK_TIMEOUT_SECS);
+        Some(Duration::from_secs(timeout_secs))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -1768,6 +2030,7 @@ mod tests {
         let hook = ExternalCommandHook {
             event: HookEvent::PreToolUse,
             matcher: Some("Bash".into()),
+            if_condition: None,
             action: HookAction {
                 action_type: HookActionType::Command,
                 command: "validate".into(),
@@ -1801,6 +2064,7 @@ mod tests {
         let hook = ExternalCommandHook {
             event: HookEvent::PostToolBatch,
             matcher: None,
+            if_condition: None,
             action: HookAction {
                 action_type: HookActionType::Command,
                 command: "observe-batch".into(),
@@ -1853,6 +2117,7 @@ mod tests {
         let hook = ExternalCommandHook {
             event: HookEvent::FileChanged,
             matcher: None,
+            if_condition: None,
             action: HookAction {
                 action_type: HookActionType::Command,
                 command: "observe-file".into(),
@@ -1892,6 +2157,7 @@ mod tests {
         let hook = ExternalCommandHook {
             event: HookEvent::UserPromptSubmit,
             matcher: None,
+            if_condition: None,
             action: HookAction {
                 action_type: HookActionType::Command,
                 command: "validate".into(),
@@ -1920,6 +2186,7 @@ mod tests {
         let hook = ExternalCommandHook {
             event: HookEvent::PreToolUse,
             matcher: Some("Edit|Write".into()),
+            if_condition: None,
             action: HookAction {
                 action_type: HookActionType::Command,
                 command: "validate".into(),
@@ -2150,6 +2417,7 @@ mod tests {
         let hook = ExternalHttpHook {
             event: HookEvent::UserPromptSubmit,
             matcher: None,
+            if_condition: None,
             action: HookAction {
                 action_type: HookActionType::Http,
                 url: format!("http://{address}/hook"),
@@ -2168,5 +2436,158 @@ mod tests {
             .unwrap();
         assert!(outcome.is_ask());
         server.await.unwrap();
+    }
+
+    #[test]
+    fn evaluate_condition_bare_tool_name() {
+        let ctx = HookContext::new(
+            SessionId::nil(),
+            HookPoint::BeforeToolUse,
+            HookData::Tool {
+                name: "shell".into(),
+                arguments: serde_json::json!({"command": "git status"}),
+                ok: None,
+            },
+        );
+        assert!(evaluate_condition("Bash", &ctx));
+        assert!(evaluate_condition("Shell", &ctx));
+        assert!(!evaluate_condition("Edit", &ctx));
+        assert!(evaluate_condition("*", &ctx));
+        assert!(evaluate_condition("", &ctx));
+    }
+
+    #[test]
+    fn evaluate_condition_with_argument_glob() {
+        let ctx = HookContext::new(
+            SessionId::nil(),
+            HookPoint::BeforeToolUse,
+            HookData::Tool {
+                name: "shell".into(),
+                arguments: serde_json::json!({"command": "git status"}),
+                ok: None,
+            },
+        );
+        assert!(evaluate_condition("Bash(git *)", &ctx));
+        assert!(!evaluate_condition("Bash(cargo *)", &ctx));
+    }
+
+    #[test]
+    fn evaluate_condition_non_tool_event_always_passes() {
+        let ctx = HookContext::new(
+            SessionId::nil(),
+            HookPoint::UserPromptSubmit,
+            HookData::Prompt {
+                text: "hello".into(),
+            },
+        );
+        assert!(evaluate_condition("Bash(git *)", &ctx));
+    }
+
+    #[test]
+    fn private_ip_detection() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(is_private_ip(&IpAddr::V4(Ipv4Addr::new(169, 254, 0, 1))));
+        assert!(!is_private_ip(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!is_private_ip(&IpAddr::V4(Ipv4Addr::new(172, 32, 0, 1))));
+        assert!(is_private_ip(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(is_private_ip(&IpAddr::V6(Ipv6Addr::new(
+            0xfc00, 0, 0, 0, 0, 0, 0, 1
+        ))));
+    }
+
+    #[test]
+    fn interpolate_env_vars_expands_allowed_vars() {
+        std::env::set_var("DEEPAGENT_TEST_TOKEN", "secret123");
+        let result = interpolate_env_vars(
+            "Bearer ${{DEEPAGENT_TEST_TOKEN}}",
+            &["DEEPAGENT_TEST_TOKEN".into()],
+        );
+        assert_eq!(result, "Bearer secret123");
+        std::env::remove_var("DEEPAGENT_TEST_TOKEN");
+    }
+
+    #[test]
+    fn interpolate_env_vars_ignores_unapproved_vars() {
+        std::env::set_var("DEEPAGENT_SECRET", "hidden");
+        let result = interpolate_env_vars("Bearer ${{DEEPAGENT_SECRET}}", &[]);
+        assert_eq!(result, "Bearer ${{DEEPAGENT_SECRET}}");
+        std::env::remove_var("DEEPAGENT_SECRET");
+    }
+
+    #[tokio::test]
+    async fn once_hook_fires_only_once() {
+        struct CountHook {
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        #[async_trait]
+        impl Hook for CountHook {
+            fn name(&self) -> &str {
+                "counter"
+            }
+            async fn run(&self, _ctx: &HookContext) -> Result<HookOutcome> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(HookOutcome::Continue)
+            }
+        }
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let inner = Arc::new(CountHook {
+            calls: calls.clone(),
+        });
+        let once = OnceHook::new(inner);
+
+        let ctx = HookContext::new(SessionId::nil(), HookPoint::SessionStart, HookData::None);
+        once.run(&ctx).await.unwrap();
+        once.run(&ctx).await.unwrap();
+        once.run(&ctx).await.unwrap();
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn async_response_protocol_parsed() {
+        let result = HookCommandResult {
+            exit_code: 0,
+            stdout: r#"{"async": true, "asyncTimeout": 120}"#.into(),
+            stderr: String::new(),
+        };
+        let outcome = interpret_result(&result);
+        match outcome {
+            HookOutcome::AsyncPending { timeout } => {
+                assert_eq!(timeout.as_secs(), 120);
+            }
+            other => panic!("expected AsyncPending, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hook_definitions_parse_new_fields() {
+        let json = r#"{
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "if": "Bash(git *)",
+                    "once": true,
+                    "hooks": [{
+                        "type": "command",
+                        "command": "check.sh",
+                        "statusMessage": "Checking...",
+                        "allowedEnvVars": ["CI_TOKEN"]
+                    }]
+                }]
+            }
+        }"#;
+        let defs = HookDefinitions::parse(json).unwrap();
+        let group = &defs.hooks["PreToolUse"][0];
+        assert_eq!(group.if_condition.as_deref(), Some("Bash(git *)"));
+        assert!(group.once);
+        let action = &group.hooks[0];
+        assert_eq!(action.status_message.as_deref(), Some("Checking..."));
+        assert_eq!(action.allowed_env_vars, vec!["CI_TOKEN"]);
     }
 }

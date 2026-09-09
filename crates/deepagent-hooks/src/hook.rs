@@ -84,6 +84,13 @@ pub enum HookOutcome {
         /// Who decided.
         source: DecisionSource,
     },
+    /// The hook is running in the background. The runtime treats this as
+    /// `Continue` for the current dispatch but may receive the result later
+    /// via a synthetic event (rewake) or discard it (fire-and-forget).
+    AsyncPending {
+        /// Maximum time the background hook is allowed to run.
+        timeout: std::time::Duration,
+    },
 }
 
 impl HookOutcome {
@@ -150,10 +157,10 @@ impl HookOutcome {
         }
     }
 
-    /// The decision source, if any (None for plain `Continue`).
+    /// The decision source, if any (None for plain `Continue` / `AsyncPending`).
     pub fn source(&self) -> Option<DecisionSource> {
         match self {
-            HookOutcome::Continue => None,
+            HookOutcome::Continue | HookOutcome::AsyncPending { .. } => None,
             HookOutcome::Modify { source, .. }
             | HookOutcome::Ask { source, .. }
             | HookOutcome::Deny { source, .. } => Some(*source),

@@ -80,7 +80,18 @@ impl HookRegistry {
 
         for (hook, result) in hooks.into_iter().zip(results) {
             let outcome = result?;
-            if matches!(outcome, HookOutcome::Continue) {
+            if matches!(
+                outcome,
+                HookOutcome::Continue | HookOutcome::AsyncPending { .. }
+            ) {
+                if let HookOutcome::AsyncPending { timeout } = &outcome {
+                    tracing::info!(
+                        hook = hook.name(),
+                        point = ctx.point.label(),
+                        timeout_secs = timeout.as_secs(),
+                        "hook running in background (async)"
+                    );
+                }
                 continue;
             }
 
@@ -129,7 +140,9 @@ impl HookRegistry {
                         effective = outcome;
                     }
                 }
-                HookOutcome::Continue => unreachable!("filtered above"),
+                HookOutcome::Continue | HookOutcome::AsyncPending { .. } => {
+                    unreachable!("filtered above")
+                }
             }
         }
         Ok(effective)

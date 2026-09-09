@@ -2,16 +2,19 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 use deepagent_builtins::WorkspaceRoot;
 use deepagent_core::error::Result;
 use deepagent_hooks::{
-    Hook, HookActionExecutor, HookCommandRunner, HookDefinitions, HookPoint, HookRegistry,
-    PermissionRulesHook,
+    DecisionSource, Hook, HookActionExecutor, HookCommandRunner, HookContext, HookData,
+    HookDefinitions, HookOutcome, HookPoint, HookRegistry, PermissionRulesHook,
 };
 use deepagent_models::{ModelClient, ThinkingDepth};
 use deepagent_runtime::RuntimeEventSink;
 use deepagent_tools::ToolRegistry;
 
+use crate::chat_service::InvokedSkillMap;
 use crate::hook_runtime::{build_hook_agent_registry, AppHookActionExecutor, ObservableHookRunner};
 use crate::plugin_runtime::PluginRuntimeProjection;
 use crate::run_config::RunConfigOverlay;
@@ -272,5 +275,131 @@ fn register_plugin_hooks(
                 "plugin runtime projection error"
             );
         }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct OfficeSkillGuardHook {
+    invoked_skills: InvokedSkillMap,
+    enforce_skills: std::collections::HashSet<String>,
+}
+
+impl OfficeSkillGuardHook {
+    pub(crate) fn new(
+        invoked_skills: InvokedSkillMap,
+        enforce_skills: std::collections::HashSet<String>,
+    ) -> Self {
+        Self {
+            invoked_skills,
+            enforce_skills,
+        }
+    }
+
+    pub(crate) fn seed_session(&self, session_id: &str, skills: std::collections::HashSet<String>) {
+        if skills.is_empty() {
+            return;
+        }
+        let mut map = self
+            .invoked_skills
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let entry = map.entry(session_id.to_string()).or_default();
+        entry.extend(skills);
+    }
+
+    fn record_skill(&self, session_id: &str, skill_id: &str) {
+        let skill_id = skill_id.trim();
+        if skill_id.is_empty() {
+            return;
+        }
+        let mut map = self
+            .invoked_skills
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        map.entry(session_id.to_string())
+            .or_default()
+            .insert(skill_id.to_string());
+    }
+
+    fn has_skill(&self, session_id: &str, skill_id: &str) -> bool {
+        let map = self
+            .invoked_skills
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        map.get(session_id)
+            .map(|skills| skills.contains(skill_id))
+            .unwrap_or(false)
+    }
+}
+
+#[async_trait]
+impl Hook for OfficeSkillGuardHook {
+    fn name(&self) -> &str {
+        "office_skill_guard"
+    }
+
+    async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+        let HookData::Tool {
+            name,
+            arguments,
+            ok,
+        } = &ctx.data
+        else {
+            return Ok(HookOutcome::Continue);
+        };
+        let session_id = ctx.session_id.to_string();
+
+        if ctx.point == HookPoint::AfterToolUse && name == deepagent_builtins::SKILL_TOOL_NAME {
+            if ok == &Some(true) {
+                if let Some(id) = arguments.get("id").and_then(|v| v.as_str()) {
+                    self.record_skill(&session_id, id);
+                }
+            }
+            return Ok(HookOutcome::Continue);
+        }
+
+        if ctx.point != HookPoint::BeforeToolUse {
+            return Ok(HookOutcome::Continue);
+        }
+
+        let Some(required) = required_skill_for_office_tool(name, arguments) else {
+            return Ok(HookOutcome::Continue);
+        };
+        if !self.enforce_skills.contains(required) || self.has_skill(&session_id, required) {
+            return Ok(HookOutcome::Continue);
+        }
+
+        Ok(HookOutcome::deny_from(
+            format!(
+                "{name} requires the `{required}` skill. Call the `skill` tool first with {{\"id\":\"{required}\"}}, follow that skill's document-formatting rules, then retry {name}."
+            ),
+            DecisionSource::Policy,
+        ))
+    }
+}
+
+fn required_skill_for_office_tool(name: &str, args: &serde_json::Value) -> Option<&'static str> {
+    match name {
+        deepagent_builtins::OFFICE_DOCX_CREATE_TOOL_NAME => Some("docx"),
+        deepagent_builtins::OFFICE_XLSX_CREATE_TOOL_NAME => Some("xlsx"),
+        deepagent_builtins::OFFICE_READ_TOOL_NAME => {
+            let path = args.get("path").and_then(|v| v.as_str())?;
+            office_skill_for_path(path)
+        }
+        _ => None,
+    }
+}
+
+fn office_skill_for_path(path: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "doc" | "docx" => Some("docx"),
+        "xls" | "xlsx" | "xlsm" | "csv" | "tsv" => Some("xlsx"),
+        "ppt" | "pptx" => Some("pptx"),
+        "pdf" => Some("pdf"),
+        _ => None,
     }
 }

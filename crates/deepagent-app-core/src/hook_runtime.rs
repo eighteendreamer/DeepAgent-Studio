@@ -93,7 +93,9 @@ pub async fn test_hook_action(
     drop(sink);
 
     let (outcome, detail) = match dispatched {
-        Ok(HookOutcome::Continue) => ("continued".to_string(), String::new()),
+        Ok(HookOutcome::Continue | HookOutcome::AsyncPending { .. }) => {
+            ("continued".to_string(), String::new())
+        }
         Ok(HookOutcome::Modify { updated_input, .. }) => (
             "modified".to_string(),
             bounded_hook_text(&updated_input.to_string(), 2_000),
@@ -393,9 +395,11 @@ impl HookActionExecutor for AppHookActionExecutor {
         let result = self.execute_inner(action, payload).await;
         if let Some(events) = self.events.upgrade() {
             let (exit_code, stderr, outcome) = match &result {
-                Ok(HookOutcome::Continue | HookOutcome::Modify { .. }) => {
-                    (0, String::new(), "continued".to_string())
-                }
+                Ok(
+                    HookOutcome::Continue
+                    | HookOutcome::Modify { .. }
+                    | HookOutcome::AsyncPending { .. },
+                ) => (0, String::new(), "continued".to_string()),
                 Ok(HookOutcome::Ask { reason, .. }) => (
                     0,
                     bounded_hook_text(reason, 2_000),

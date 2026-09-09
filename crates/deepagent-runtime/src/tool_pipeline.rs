@@ -445,7 +445,7 @@ impl<'a> ToolExecutionPipeline<'a> {
         };
         let mut approval_granted = false;
         match before {
-            HookOutcome::Continue => {}
+            HookOutcome::Continue | HookOutcome::AsyncPending { .. } => {}
             HookOutcome::Modify { updated_input, .. } => {
                 match self.registry.validate_invocation(&name, updated_input) {
                     Ok(value) => invocation.arguments = value.arguments,
