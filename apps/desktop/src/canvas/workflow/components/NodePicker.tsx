@@ -1,5 +1,6 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import type { Connection } from "@xyflow/react";
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
@@ -13,6 +14,7 @@ import {
 export function NodePicker() {
   const mode = useCanvasStore((s) => s.mode);
   const nodePicker = useCanvasStore((s) => s.nodePicker);
+  const pendingConnection = useCanvasStore((s) => s.pendingConnection);
   const closeNodePicker = useCanvasStore((s) => s.closeNodePicker);
   const addCreativeNode = useCreativeStore((s) => s.addNode);
   const addProfessionalNode = useProfessionalStore((s) => s.addNode);
@@ -20,10 +22,19 @@ export function NodePicker() {
   if (!nodePicker) return null;
 
   const handleSelect = (kind: CreativeNodeKind | ProfessionalNodeKind) => {
+    let newNodeId: string;
     if (mode === "creative") {
-      addCreativeNode(kind as CreativeNodeKind, nodePicker.worldX, nodePicker.worldY);
+      newNodeId = addCreativeNode(kind as CreativeNodeKind, nodePicker.worldX, nodePicker.worldY);
     } else {
-      addProfessionalNode(kind as ProfessionalNodeKind, nodePicker.worldX, nodePicker.worldY);
+      newNodeId = addProfessionalNode(kind as ProfessionalNodeKind, nodePicker.worldX, nodePicker.worldY);
+    }
+    if (pendingConnection) {
+      const connection: Connection =
+        pendingConnection.handleType === "source"
+          ? { source: pendingConnection.nodeId, target: newNodeId, sourceHandle: null, targetHandle: null }
+          : { source: newNodeId, target: pendingConnection.nodeId, sourceHandle: null, targetHandle: null };
+      if (mode === "creative") useCreativeStore.getState().onConnect(connection);
+      else useProfessionalStore.getState().onConnect(connection);
     }
     closeNodePicker();
   };

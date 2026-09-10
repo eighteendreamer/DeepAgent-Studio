@@ -55,8 +55,8 @@ interface ProfessionalState {
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
 
-  addNode: (kind: ProfessionalNodeKind, x: number, y: number) => void;
-  addNodeAt: (kind: ProfessionalNodeKind, x: number, y: number, data: Partial<ProfessionalNodeData>) => void;
+  addNode: (kind: ProfessionalNodeKind, x: number, y: number) => string;
+  addNodeAt: (kind: ProfessionalNodeKind, x: number, y: number, data: Partial<ProfessionalNodeData>) => string;
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<ProfessionalNodeData>) => void;
   insertNodeBetween: (edgeId: string, kind: ProfessionalNodeKind) => void;
@@ -106,6 +106,7 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
       data,
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
+    return id;
   },
 
   addNodeAt: (kind, x, y, extraData) => {
@@ -121,6 +122,7 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
       data: { ...base, ...extraData, status: "idle" } as ProfessionalNodeData,
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
+    return id;
   },
 
   removeNode: (id) => {

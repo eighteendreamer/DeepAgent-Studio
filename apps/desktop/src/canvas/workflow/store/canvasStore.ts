@@ -21,6 +21,9 @@ interface CanvasState {
   nodePicker: NodePickerPosition | null;
   openNodePicker: (pos: NodePickerPosition) => void;
   closeNodePicker: () => void;
+
+  pendingConnection: { nodeId: string; handleType: "source" | "target" } | null;
+  setPendingConnection: (c: { nodeId: string; handleType: "source" | "target" } | null) => void;
 }
 
 export const useCanvasStore = create<CanvasState>((set) => ({
@@ -41,5 +44,8 @@ export const useCanvasStore = create<CanvasState>((set) => ({
 
   nodePicker: null,
   openNodePicker: (pos) => set({ nodePicker: pos }),
-  closeNodePicker: () => set({ nodePicker: null }),
+  closeNodePicker: () => set({ nodePicker: null, pendingConnection: null }),
+
+  pendingConnection: null,
+  setPendingConnection: (c) => set({ pendingConnection: c }),
 }));

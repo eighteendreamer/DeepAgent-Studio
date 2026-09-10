@@ -39,8 +39,8 @@ interface CreativeState {
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
 
-  addNode: (kind: CreativeNodeKind, x: number, y: number) => void;
-  addNodeAt: (kind: CreativeNodeKind, x: number, y: number, data: Partial<CreativeNodeData>) => void;
+  addNode: (kind: CreativeNodeKind, x: number, y: number) => string;
+  addNodeAt: (kind: CreativeNodeKind, x: number, y: number, data: Partial<CreativeNodeData>) => string;
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<CreativeNodeData>) => void;
   insertNodeBetween: (edgeId: string, kind: CreativeNodeKind) => void;
@@ -90,6 +90,7 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
       data,
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
+    return id;
   },
 
   addNodeAt: (kind, x, y, extraData) => {
@@ -105,6 +106,7 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
       data: { ...base, ...extraData, status: "idle" } as CreativeNodeData,
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
+    return id;
   },
 
   removeNode: (id) => {

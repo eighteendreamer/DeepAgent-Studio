@@ -7,6 +7,7 @@ import {
   SelectionMode,
   type ReactFlowInstance,
   type Viewport,
+  type FinalConnectionState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { CanvasTitleBar } from "./CanvasTitleBar";
@@ -50,6 +51,7 @@ function WorkflowCanvasInner() {
   const setSelectedNodeId = useCanvasStore((s) => s.setSelectedNodeId);
   const openNodePicker = useCanvasStore((s) => s.openNodePicker);
   const closeNodePicker = useCanvasStore((s) => s.closeNodePicker);
+  const setPendingConnection = useCanvasStore((s) => s.setPendingConnection);
   const setViewport = useCanvasStore((s) => s.setViewport);
 
   const creativeNodes = useCreativeStore((s) => s.nodes);
@@ -126,6 +128,22 @@ function WorkflowCanvasInner() {
     setSelectedNodeId(null);
     closeNodePicker();
   }, [setSelectedNodeId, closeNodePicker]);
+
+  const handleConnectEnd = useCallback(
+    (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+      // Valid drops create the edge via onConnect; drops on any handle are deliberate, not a miss
+      if (state.isValid || state.toHandle || !state.fromNode || !state.fromHandle) return;
+      if (!rfInstance) return;
+      const clientX = "changedTouches" in event ? event.changedTouches[0].clientX : event.clientX;
+      const clientY = "changedTouches" in event ? event.changedTouches[0].clientY : event.clientY;
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const world = rfInstance.screenToFlowPosition({ x: clientX - rect.left, y: clientY - rect.top });
+      setPendingConnection({ nodeId: state.fromNode.id, handleType: state.fromHandle.type });
+      openNodePicker({ x: clientX, y: clientY, worldX: world.x, worldY: world.y });
+    },
+    [rfInstance, openNodePicker, setPendingConnection],
+  );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -347,6 +365,7 @@ function WorkflowCanvasInner() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onConnectEnd={handleConnectEnd}
         onInit={setRfInstance}
         onNodeClick={handleNodeClick}
         onPaneClick={handlePaneClick}
