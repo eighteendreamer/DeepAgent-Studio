@@ -1,7 +1,7 @@
 import { memo } from "react";
 import {
   BaseEdge,
-  getSmoothStepPath,
+  getBezierPath,
   type EdgeProps,
 } from "@xyflow/react";
 import { useCanvasStore } from "../store/canvasStore";
@@ -28,14 +28,13 @@ function WorkflowEdgeInner({
   const sourceStatus = sourceNode ? (sourceNode.data as { status?: string }).status : undefined;
   const isRunning = sourceStatus === "running";
 
-  const [edgePath] = getSmoothStepPath({
+  const [edgePath] = getBezierPath({
     sourceX,
     sourceY,
     targetX,
     targetY,
     sourcePosition,
     targetPosition,
-    borderRadius: 12,
   });
 
   return (
