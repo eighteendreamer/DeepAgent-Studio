@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import type { Connection } from "@xyflow/react";
@@ -18,6 +19,16 @@ export function NodePicker() {
   const closeNodePicker = useCanvasStore((s) => s.closeNodePicker);
   const addCreativeNode = useCreativeStore((s) => s.addNode);
   const addProfessionalNode = useProfessionalStore((s) => s.addNode);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const el = panelRef.current;
+    if (!el || !nodePicker) return;
+    const { width, height } = el.getBoundingClientRect();
+    const margin = 8;
+    el.style.left = `${Math.max(margin, Math.min(nodePicker.x, window.innerWidth - width - margin))}px`;
+    el.style.top = `${Math.max(margin, Math.min(nodePicker.y, window.innerHeight - height - margin))}px`;
+  }, [nodePicker]);
 
   if (!nodePicker) return null;
 
@@ -45,6 +56,7 @@ export function NodePicker() {
     <>
       <div className="fixed inset-0 z-[9998]" onClick={closeNodePicker} />
       <div
+        ref={panelRef}
         className="fixed z-[9999] overflow-hidden rounded-2xl"
         style={{
           left: nodePicker.x,
