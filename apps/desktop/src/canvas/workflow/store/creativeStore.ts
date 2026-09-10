@@ -50,6 +50,7 @@ interface CreativeState {
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<CreativeNodeData>) => void;
   setNodes: (nodes: WorkflowNode[]) => void;
+  setEdges: (edges: WorkflowEdge[]) => void;
   setSelectedIds: (ids: string[]) => void;
   alignNodes: (mode: NodeAlignMode) => void;
 
@@ -140,6 +141,10 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
 
   setNodes: (nodes) => {
     set({ nodes });
+  },
+
+  setEdges: (edges) => {
+    set({ edges });
   },
 
   setSelectedIds: (ids) => {
