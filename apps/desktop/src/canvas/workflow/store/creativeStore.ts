@@ -43,7 +43,6 @@ interface CreativeState {
   addNodeAt: (kind: CreativeNodeKind, x: number, y: number, data: Partial<CreativeNodeData>) => string;
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<CreativeNodeData>) => void;
-  insertNodeBetween: (edgeId: string, kind: CreativeNodeKind) => void;
   setSelectedIds: (ids: string[]) => void;
 
   past: Array<{ nodes: WorkflowNode[]; edges: WorkflowEdge[] }>;
@@ -122,40 +121,6 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
       nodes: s.nodes.map((n) =>
         n.id === id ? { ...n, data: { ...n.data, ...data } } : n,
       ),
-    }));
-  },
-
-  insertNodeBetween: (edgeId, kind) => {
-    const state = get();
-    const edge = state.edges.find((e) => e.id === edgeId);
-    if (!edge || !edge.source || !edge.target) return;
-
-    const sourceNode = state.nodes.find((n) => n.id === edge.source);
-    const targetNode = state.nodes.find((n) => n.id === edge.target);
-    if (!sourceNode || !targetNode) return;
-
-    const midX = (sourceNode.position.x + targetNode.position.x) / 2;
-    const midY = (sourceNode.position.y + targetNode.position.y) / 2;
-
-    state.pushHistory();
-    const newId = nextNodeId();
-    const newData = createDefaultCreativeData(kind);
-    const snappedX = Math.round(midX / SNAP_GRID) * SNAP_GRID;
-    const snappedY = Math.round(midY / SNAP_GRID) * SNAP_GRID;
-    const newNode: WorkflowNode = {
-      id: newId,
-      type: `creative-${kind}`,
-      position: { x: snappedX, y: snappedY },
-      data: newData,
-    };
-
-    set((s) => ({
-      nodes: [...s.nodes, newNode],
-      edges: [
-        ...s.edges.filter((e) => e.id !== edgeId),
-        { id: `e-${edge.source}-${newId}`, source: edge.source, target: newId } as WorkflowEdge,
-        { id: `e-${newId}-${edge.target}`, source: newId, target: edge.target } as WorkflowEdge,
-      ],
     }));
   },
 
