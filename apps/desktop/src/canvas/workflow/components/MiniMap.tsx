@@ -3,17 +3,16 @@ import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import type { WorkflowNode } from "../types";
 
-const SIZE = 220;
-const PAD = 20;
+const LENS_WIDTH = 268;
+const LENS_HEIGHT = 168;
+const MAP_PADDING = 12;
+const MAP_SCALE_MAX = 0.5;
 const NODE_W = 240;
 const NODE_H = 120;
-// Estimated canvas container size for viewport calculation
-const EST_CONTAINER_W = 1200;
-const EST_CONTAINER_H = 800;
 
 const SHELL_STYLE: React.CSSProperties = {
-  width: SIZE,
-  height: SIZE,
+  width: LENS_WIDTH,
+  height: LENS_HEIGHT,
   background: "rgba(30,30,35,0.45)",
   border: "1px solid rgba(255,255,255,0.08)",
   boxShadow: "0 18px 44px rgba(0,0,0,0.24)",
@@ -22,71 +21,77 @@ const SHELL_STYLE: React.CSSProperties = {
   clipPath: "circle(100% at 0% 100%)",
 };
 
-interface ProjectedNode {
-  id: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  status?: string;
+interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
 }
 
-interface ViewportRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
+interface Projection {
+  mapScale: number;
+  originX: number;
+  originY: number;
+  viewportRect: { left: number; top: number; width: number; height: number };
 }
 
-function projectNodes(
+function finiteOr(value: number, fallback: number) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function computeWorldBounds(
   nodes: WorkflowNode[],
-  viewport: { x: number; y: number; zoom: number },
-): { nodes: ProjectedNode[]; viewport: ViewportRect | null; scale: number; minX: number; minY: number } {
-  if (nodes.length === 0) return { nodes: [], viewport: null, scale: 1, minX: 0, minY: 0 };
-
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  viewportBounds: Bounds,
+): Bounds {
+  let { minX, minY, maxX, maxY } = viewportBounds;
   for (const n of nodes) {
-    minX = Math.min(minX, n.position.x);
-    minY = Math.min(minY, n.position.y);
-    maxX = Math.max(maxX, n.position.x + NODE_W);
-    maxY = Math.max(maxY, n.position.y + NODE_H);
+    const nx = finiteOr(n.position.x, 0);
+    const ny = finiteOr(n.position.y, 0);
+    minX = Math.min(minX, nx);
+    minY = Math.min(minY, ny);
+    maxX = Math.max(maxX, nx + NODE_W);
+    maxY = Math.max(maxY, ny + NODE_H);
   }
-
-  // Add padding around the bounding box
-  const padX = (maxX - minX) * 0.15;
-  const padY = (maxY - minY) * 0.15;
-  minX -= padX;
-  minY -= padY;
-  maxX += padX;
-  maxY += padY;
-
-  const worldW = maxX - minX || 1;
-  const worldH = maxY - minY || 1;
-  const scale = Math.min((SIZE - PAD * 2) / worldW, (SIZE - PAD * 2) / worldH, 0.5);
-
-  const projected = nodes.map((n) => ({
-    id: n.id,
-    x: PAD + (n.position.x - minX) * scale,
-    y: PAD + (n.position.y - minY) * scale,
-    w: NODE_W * scale,
-    h: NODE_H * scale,
-    status: n.data.status,
-  }));
-
-  // Viewport rect in projected coordinates
-  const vpW = EST_CONTAINER_W / viewport.zoom;
-  const vpH = EST_CONTAINER_H / viewport.zoom;
-  const vpRect: ViewportRect = {
-    x: PAD + (viewport.x - minX) * scale,
-    y: PAD + (viewport.y - minY) * scale,
-    w: vpW * scale,
-    h: vpH * scale,
-  };
-
-  return { nodes: projected, viewport: vpRect, scale, minX, minY };
+  const width = Math.max(1, maxX - minX);
+  const height = Math.max(1, maxY - minY);
+  return { minX, minY, maxX: minX + width, maxY: minY + height, width, height };
 }
 
-export function MiniMap() {
+function computeProjection(
+  worldBounds: Bounds,
+  viewportBounds: Bounds,
+  width: number,
+  height: number,
+): Projection {
+  const availW = Math.max(1, width - MAP_PADDING * 2);
+  const availH = Math.max(1, height - MAP_PADDING * 2);
+  const fitted = Math.min(MAP_SCALE_MAX, availW / worldBounds.width, availH / worldBounds.height);
+  const mapScale = Number.isFinite(fitted) && fitted > 0 ? fitted : MAP_SCALE_MAX;
+
+  const originX = (width - worldBounds.width * mapScale) / 2 - worldBounds.minX * mapScale;
+  const originY = (height - worldBounds.height * mapScale) / 2 - worldBounds.minY * mapScale;
+
+  return {
+    mapScale,
+    originX,
+    originY,
+    viewportRect: {
+      left: originX + viewportBounds.minX * mapScale,
+      top: originY + viewportBounds.minY * mapScale,
+      width: viewportBounds.width * mapScale,
+      height: viewportBounds.height * mapScale,
+    },
+  };
+}
+
+interface Props {
+  containerWidth: number;
+  containerHeight: number;
+}
+
+export function MiniMap({ containerWidth, containerHeight }: Props) {
   const mode = useCanvasStore((s) => s.mode);
   const viewport = useCanvasStore((s) => s.viewport);
   const creativeNodes = useCreativeStore((s) => s.nodes);
@@ -94,7 +99,19 @@ export function MiniMap() {
   const selectedNodeId = useCanvasStore((s) => s.selectedNodeId);
 
   const nodes = mode === "creative" ? creativeNodes : professionalNodes;
-  const { nodes: projected, viewport: vpRect } = projectNodes(nodes, viewport);
+
+  const safeZoom = Math.max(viewport.zoom, 0.001);
+  const viewportBounds: Bounds = {
+    minX: -viewport.x / safeZoom,
+    minY: -viewport.y / safeZoom,
+    maxX: -viewport.x / safeZoom + containerWidth / safeZoom,
+    maxY: -viewport.y / safeZoom + containerHeight / safeZoom,
+    width: containerWidth / safeZoom,
+    height: containerHeight / safeZoom,
+  };
+
+  const worldBounds = computeWorldBounds(nodes, viewportBounds);
+  const proj = computeProjection(worldBounds, viewportBounds, LENS_WIDTH, LENS_HEIGHT);
 
   const statusColor: Record<string, string> = {
     idle: "rgba(255,255,255,0.2)",
@@ -104,36 +121,40 @@ export function MiniMap() {
   };
 
   return (
-    <div className="absolute left-0 bottom-0 z-[80]" style={{ width: SIZE, height: SIZE }}>
-      <div style={SHELL_STYLE}>
-        <svg width="100%" height="100%" viewBox={`0 0 ${SIZE} ${SIZE}`}>
-          {/* Node rectangles */}
-          {projected.map((n) => (
-            <rect
-              key={n.id}
-              x={n.x}
-              y={n.y}
-              width={Math.max(n.w, 4)}
-              height={Math.max(n.h, 4)}
-              rx={2}
-              fill={n.id === selectedNodeId ? "rgba(139,124,247,0.6)" : statusColor[n.status ?? "idle"] ?? statusColor.idle}
-              stroke={n.id === selectedNodeId ? "rgba(139,124,247,0.9)" : "transparent"}
-              strokeWidth={n.id === selectedNodeId ? 1.5 : 0}
-            />
-          ))}
-          {/* Viewport indicator */}
-          {vpRect && (
-            <rect
-              x={vpRect.x}
-              y={vpRect.y}
-              width={vpRect.w}
-              height={vpRect.h}
-              rx={2}
-              fill="rgba(139,124,247,0.08)"
-              stroke="rgba(139,124,247,0.5)"
-              strokeWidth={1.5}
-            />
-          )}
+    <div className="absolute left-0 bottom-0 z-[80]" style={{ width: LENS_WIDTH + 20, height: LENS_HEIGHT + 20 }}>
+      <div style={{ ...SHELL_STYLE, marginLeft: 6, marginTop: 6 }}>
+        <svg width="100%" height="100%" viewBox={`0 0 ${LENS_WIDTH} ${LENS_HEIGHT}`}>
+          {nodes.map((n) => {
+            const nx = finiteOr(n.position.x, 0);
+            const ny = finiteOr(n.position.y, 0);
+            const px = proj.originX + nx * proj.mapScale;
+            const py = proj.originY + ny * proj.mapScale;
+            const pw = Math.max(NODE_W * proj.mapScale, 3);
+            const ph = Math.max(NODE_H * proj.mapScale, 3);
+            return (
+              <rect
+                key={n.id}
+                x={px}
+                y={py}
+                width={pw}
+                height={ph}
+                rx={2}
+                fill={n.id === selectedNodeId ? "rgba(139,124,247,0.6)" : statusColor[n.data.status ?? "idle"] ?? statusColor.idle}
+                stroke={n.id === selectedNodeId ? "rgba(139,124,247,0.9)" : "transparent"}
+                strokeWidth={n.id === selectedNodeId ? 1.5 : 0}
+              />
+            );
+          })}
+          <rect
+            x={proj.viewportRect.left}
+            y={proj.viewportRect.top}
+            width={proj.viewportRect.width}
+            height={proj.viewportRect.height}
+            rx={2}
+            fill="rgba(139,124,247,0.06)"
+            stroke="rgba(139,124,247,0.45)"
+            strokeWidth={1.5}
+          />
         </svg>
       </div>
     </div>

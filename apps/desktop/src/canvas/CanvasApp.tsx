@@ -71,7 +71,21 @@ function WorkflowCanvasInner() {
   const isSpaceHeldRef = useRef(false);
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
   const clipboardRef = useRef<{ mode: string; nodes: any[] } | null>(null);
+  const [containerSize, setContainerSize] = useState({ width: 1200, height: 800 });
   const { menu, openMenu, close: closeMenu } = useContextMenu();
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerSize({ width: entry.contentRect.width, height: entry.contentRect.height });
+      }
+    });
+    ro.observe(el);
+    setContainerSize({ width: el.clientWidth, height: el.clientHeight });
+    return () => ro.disconnect();
+  }, []);
 
   const nodes = mode === "creative" ? creativeNodes : proNodes;
   const edges = mode === "creative" ? creativeEdges : proEdges;
@@ -393,7 +407,7 @@ function WorkflowCanvasInner() {
 
       <ModeSwitcher />
       <WorkflowBottomBar viewport={viewport} onViewportChange={handleViewportChange} rfInstance={rfInstance} />
-      <MiniMap />
+      <MiniMap containerWidth={containerSize.width} containerHeight={containerSize.height} />
       <NodePicker />
       <ConfigPanel />
       <ContextMenu menu={menu} onClose={closeMenu} />
