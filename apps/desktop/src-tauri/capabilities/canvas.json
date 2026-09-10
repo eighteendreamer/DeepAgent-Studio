@@ -1,9 +1,11 @@
 {
   "identifier": "studio-canvas-capability",
-  "description": "File dialog access for the isolated Studio Canvas window.",
+  "description": "File dialog and window control access for the isolated Studio Canvas window.",
   "windows": ["studio-canvas"],
   "permissions": [
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "core:window:allow-close",
+    "core:window:allow-destroy"
   ]
 }
