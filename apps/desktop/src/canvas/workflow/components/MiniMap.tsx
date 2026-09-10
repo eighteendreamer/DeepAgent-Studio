@@ -3,20 +3,22 @@ import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import type { WorkflowNode } from "../types";
 
+const SIZE = 220;
+
 const SHELL_STYLE: React.CSSProperties = {
-  width: 280,
-  height: 180,
+  width: SIZE,
+  height: SIZE,
   background: "rgba(30,30,35,0.45)",
   border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: 16,
   boxShadow: "0 18px 44px rgba(0,0,0,0.24)",
   backdropFilter: "blur(16px) saturate(1.18)",
   overflow: "hidden",
+  clipPath: "circle(100% at 0% 100%)",
 };
 
 function projectNodes(nodes: WorkflowNode[], width: number, height: number) {
   if (nodes.length === 0) return [];
-  const pad = 24;
+  const pad = 20;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const n of nodes) {
     minX = Math.min(minX, n.position.x);
@@ -44,7 +46,7 @@ export function MiniMap() {
   const selectedNodeId = useCanvasStore((s) => s.selectedNodeId);
 
   const nodes = mode === "creative" ? creativeNodes : professionalNodes;
-  const projected = projectNodes(nodes, 268, 168);
+  const projected = projectNodes(nodes, SIZE, SIZE);
 
   const statusColor: Record<string, string> = {
     idle: "rgba(255,255,255,0.2)",
@@ -54,9 +56,9 @@ export function MiniMap() {
   };
 
   return (
-    <div className="absolute left-6 bottom-16 z-[80]" style={{ width: 280, height: 180 }}>
+    <div className="absolute left-0 bottom-0 z-[80]" style={{ width: SIZE, height: SIZE }}>
       <div style={SHELL_STYLE}>
-        <svg width="100%" height="100%" viewBox="0 0 268 168">
+        <svg width="100%" height="100%" viewBox={`0 0 ${SIZE} ${SIZE}`}>
           {projected.map((n) => (
             <rect
               key={n.id}
