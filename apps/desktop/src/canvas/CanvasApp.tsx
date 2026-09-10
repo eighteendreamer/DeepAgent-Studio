@@ -4,6 +4,7 @@ import {
   ReactFlowProvider,
   Background,
   BackgroundVariant,
+  SelectionMode,
   type ReactFlowInstance,
   type Viewport,
 } from "@xyflow/react";
@@ -368,7 +369,9 @@ function WorkflowCanvasInner() {
         fitView
         minZoom={0.2}
         maxZoom={3}
-        panOnDrag={[0, 1, 2]}
+        panOnDrag={[1, 2]}
+        selectionOnDrag
+        selectionMode={SelectionMode.Partial}
         nodesDraggable={!isSpaceHeld}
         zoomOnScroll={false}
         panOnScroll={false}
