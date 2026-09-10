@@ -1,18 +1,349 @@
+import { ChevronDown } from "lucide-react";
 import type { CreativeNodeData, ProfessionalNodeData, WorkflowNodeData } from "../types";
 
-const INPUT_STYLE: React.CSSProperties = {
-  width: "100%",
-  padding: "6px 10px",
+// —— Penguin-Magic 图二设计语言：玻璃 chip 参数行 + 无边框提示词区 ——
+const CHIP_STYLE: React.CSSProperties = {
+  height: 32,
+  padding: "0 10px",
   borderRadius: 8,
-  border: "1px solid rgba(255,255,255,0.1)",
-  background: "rgba(255,255,255,0.05)",
+  border: "none",
+  background: "rgba(255,255,255,0.08)",
+  color: "rgba(255,255,255,0.75)",
+  fontSize: 12,
+  fontWeight: 500,
+  outline: "none",
+  cursor: "pointer",
+  appearance: "none" as const,
+};
+
+const MINIMAL_INPUT_STYLE: React.CSSProperties = {
+  width: "100%",
+  padding: "7px 10px",
+  borderRadius: 8,
+  border: "1px solid rgba(255,255,255,0.06)",
+  background: "rgba(255,255,255,0.04)",
   color: "rgba(248,248,248,0.85)",
   fontSize: 12,
   outline: "none",
 };
 
+const TEXT_COLOR = "rgba(255,255,255,0.88)";
+
+function autoGrow(e: React.FormEvent<HTMLTextAreaElement>, max = 100) {
+  const t = e.currentTarget;
+  t.style.height = "auto";
+  t.style.height = `${Math.min(t.scrollHeight, max)}px`;
+}
+
+function PromptArea({
+  value,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  placeholder: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <textarea
+      value={value}
+      placeholder={placeholder}
+      rows={2}
+      onChange={(e) => onChange(e.target.value)}
+      onInput={(e) => autoGrow(e)}
+      className="w-full resize-none bg-transparent outline-none"
+      style={{
+        color: TEXT_COLOR,
+        fontSize: 13,
+        lineHeight: 1.6,
+        maxHeight: 100,
+        scrollbarWidth: "none",
+      }}
+    />
+  );
+}
+
+function ChipSelect({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="relative">
+      <select style={{ ...CHIP_STYLE, paddingRight: 26 }} value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map((o) => (
+          <option key={o.value} value={o.value} style={{ background: "#1c1c1f" }}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown
+        className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2"
+        style={{ color: "rgba(255,255,255,0.5)" }}
+      />
+    </div>
+  );
+}
+
+function SegmentedChips<T extends string>({
+  value,
+  options,
+  onChange,
+  activeColor = "rgba(139,92,246,1)",
+}: {
+  value: T;
+  options: Array<{ value: T; label: string }>;
+  onChange: (v: T) => void;
+  activeColor?: string;
+}) {
+  return (
+    <div className="flex h-8 items-center gap-0.5 rounded-lg px-1" style={{ background: "rgba(255,255,255,0.08)" }}>
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            onClick={() => onChange(o.value)}
+            className="h-6 rounded-md px-2.5 text-[12px] font-medium transition-all duration-200"
+            style={{
+              background: active ? "rgba(255,255,255,0.16)" : "transparent",
+              color: active ? activeColor : "rgba(255,255,255,0.55)",
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function OutputBlock({ text }: { text: string }) {
+  return (
+    <div
+      className="rounded-lg px-3 py-2 text-xs leading-relaxed"
+      style={{ background: "rgba(255,255,255,0.03)", color: "rgba(248,248,248,0.6)", maxHeight: 140, overflowY: "auto" }}
+    >
+      {text}
+    </div>
+  );
+}
+
+interface FormProps {
+  nodeId: string;
+  onUpdate: (patch: Record<string, unknown>) => void;
+}
+
+export function TextGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-center gap-1.5">
+        <ChipSelect
+          value={data.model ?? "deepseek-chat"}
+          options={[
+            { value: "deepseek-chat", label: "DeepSeek Chat" },
+            { value: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+          ]}
+          onChange={(model) => onUpdate({ model })}
+        />
+      </div>
+      <PromptArea
+        value={data.prompt ?? ""}
+        placeholder="描述你想要生成的内容..."
+        onChange={(prompt) => onUpdate({ prompt })}
+      />
+      {data.output && <OutputBlock text={data.output} />}
+    </div>
+  );
+}
+
+export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <PromptArea
+        value={data.imagePrompt ?? ""}
+        placeholder="描述你想要生成的内容..."
+        onChange={(imagePrompt) => onUpdate({ imagePrompt })}
+      />
+      <div className="flex items-center gap-1.5">
+        <ChipSelect
+          value={data.imageModel ?? ""}
+          options={[
+            { value: "", label: "模型" },
+            { value: "dall-e-3", label: "DALL-E 3" },
+            { value: "stable-diffusion-xl", label: "SD XL" },
+            { value: "midjourney-v6", label: "Midjourney V6" },
+          ]}
+          onChange={(imageModel) => onUpdate({ imageModel })}
+        />
+        <ChipSelect
+          value={data.aspectRatio ?? "1:1"}
+          options={[
+            { value: "1:1", label: "1:1" },
+            { value: "16:9", label: "16:9" },
+            { value: "9:16", label: "9:16" },
+            { value: "4:3", label: "4:3" },
+            { value: "3:4", label: "3:4" },
+          ]}
+          onChange={(aspectRatio) => onUpdate({ aspectRatio })}
+        />
+        <ChipSelect
+          value={data.resolution ?? "1024x1024"}
+          options={[
+            { value: "512x512", label: "512" },
+            { value: "1024x1024", label: "1K" },
+            { value: "1792x1024", label: "2K" },
+          ]}
+          onChange={(resolution) => onUpdate({ resolution })}
+        />
+      </div>
+    </div>
+  );
+}
+
+export function VideoGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <SegmentedChips
+        value={data.videoService ?? "sora"}
+        options={[
+          { value: "sora", label: "Sora" },
+          { value: "veo", label: "Veo" },
+          { value: "kling", label: "Kling" },
+        ]}
+        onChange={(videoService) => onUpdate({ videoService })}
+        activeColor="rgba(59,130,246,1)"
+      />
+      <PromptArea
+        value={data.videoPrompt ?? ""}
+        placeholder="描述你想要生成的内容..."
+        onChange={(videoPrompt) => onUpdate({ videoPrompt })}
+      />
+      <div className="flex items-center gap-1.5">
+        <input
+          type="number"
+          min={1}
+          max={60}
+          style={{ ...CHIP_STYLE, width: 72, cursor: "text" }}
+          value={data.videoDuration ?? 5}
+          onChange={(e) => onUpdate({ videoDuration: Number(e.target.value) })}
+        />
+        <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>
+          秒
+        </span>
+      </div>
+    </div>
+  );
+}
+
+export function ScriptGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-center gap-1.5">
+        <ChipSelect
+          value={data.model ?? "deepseek-chat"}
+          options={[
+            { value: "deepseek-chat", label: "DeepSeek Chat" },
+            { value: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+          ]}
+          onChange={(model) => onUpdate({ model })}
+        />
+      </div>
+      <PromptArea
+        value={data.prompt ?? ""}
+        placeholder="描述视频主题和要求..."
+        onChange={(prompt) => onUpdate({ prompt })}
+      />
+    </div>
+  );
+}
+
+export function ImageEditForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <SegmentedChips
+        value={data.editMode ?? "crop"}
+        options={[
+          { value: "crop", label: "裁剪" },
+          { value: "remove-bg", label: "去背景" },
+          { value: "upscale", label: "超分辨率" },
+          { value: "repaint", label: "局部重绘" },
+        ]}
+        onChange={(editMode) => onUpdate({ editMode })}
+      />
+    </div>
+  );
+}
+
+export function ImageCompareForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2">
+      <input
+        style={MINIMAL_INPUT_STYLE}
+        placeholder="图片 A 地址..."
+        value={data.leftImageUrl ?? ""}
+        onChange={(e) => onUpdate({ leftImageUrl: e.target.value })}
+      />
+      <input
+        style={MINIMAL_INPUT_STYLE}
+        placeholder="图片 B 地址..."
+        value={data.rightImageUrl ?? ""}
+        onChange={(e) => onUpdate({ rightImageUrl: e.target.value })}
+      />
+    </div>
+  );
+}
+
+export function VideoStitchForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  const urls = data.inputVideoUrls ?? [];
+  return (
+    <div className="flex flex-col gap-1.5">
+      {urls.map((url, i) => (
+        <div key={i} className="flex items-center gap-1.5">
+          <span className="shrink-0 text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+            #{i + 1}
+          </span>
+          <input
+            style={{ ...MINIMAL_INPUT_STYLE, flex: 1 }}
+            value={url}
+            onChange={(e) => {
+              const next = [...urls];
+              next[i] = e.target.value;
+              onUpdate({ inputVideoUrls: next });
+            }}
+          />
+          <button
+            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors hover:bg-white/10"
+            style={{ color: "rgba(239,68,68,0.7)" }}
+            onClick={() => {
+              const next = urls.filter((_, j) => j !== i);
+              onUpdate({ inputVideoUrls: next });
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      <button
+        className="self-start rounded-lg px-2.5 py-1 text-[11px] transition-all duration-200 hover:bg-white/10"
+        style={{ color: "rgba(59,130,246,0.8)", border: "1px dashed rgba(59,130,246,0.3)" }}
+        onClick={() => onUpdate({ inputVideoUrls: [...urls, ""] })}
+      >
+        + 添加片段
+      </button>
+    </div>
+  );
+}
+
+const INPUT_STYLE: React.CSSProperties = MINIMAL_INPUT_STYLE;
+
 const TEXTAREA_STYLE: React.CSSProperties = {
-  ...INPUT_STYLE,
+  ...MINIMAL_INPUT_STYLE,
   minHeight: 72,
   resize: "vertical",
   fontFamily: "inherit",
@@ -27,7 +358,7 @@ const LABEL_STYLE: React.CSSProperties = {
 };
 
 const SELECT_STYLE: React.CSSProperties = {
-  ...INPUT_STYLE,
+  ...MINIMAL_INPUT_STYLE,
   appearance: "none" as const,
   cursor: "pointer",
 };
@@ -37,265 +368,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div className="flex flex-col gap-1">
       <label style={LABEL_STYLE}>{label}</label>
       {children}
-    </div>
-  );
-}
-
-interface FormProps {
-  nodeId: string;
-  onUpdate: (patch: Record<string, unknown>) => void;
-}
-
-export function TextGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
-  return (
-    <div className="flex flex-col gap-3">
-      <Field label="模型">
-        <select
-          style={SELECT_STYLE}
-          value={data.model ?? "deepseek-chat"}
-          onChange={(e) => onUpdate({ model: e.target.value })}
-        >
-          <option value="deepseek-chat">DeepSeek Chat</option>
-          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
-        </select>
-      </Field>
-      <Field label="提示词">
-        <textarea
-          style={TEXTAREA_STYLE}
-          placeholder="输入提示词..."
-          value={data.prompt ?? ""}
-          onChange={(e) => onUpdate({ prompt: e.target.value })}
-        />
-      </Field>
-      {data.output && (
-        <Field label="输出">
-          <div className="rounded-lg px-2.5 py-2 text-xs" style={{ background: "rgba(255,255,255,0.03)", color: "rgba(248,248,248,0.6)", minHeight: 48 }}>
-            {data.output}
-          </div>
-        </Field>
-      )}
-    </div>
-  );
-}
-
-export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
-  return (
-    <div className="flex flex-col gap-3">
-      <Field label="模型">
-        <select
-          style={SELECT_STYLE}
-          value={data.imageModel ?? ""}
-          onChange={(e) => onUpdate({ imageModel: e.target.value })}
-        >
-          <option value="">选择图片模型</option>
-          <option value="dall-e-3">DALL-E 3</option>
-          <option value="stable-diffusion-xl">Stable Diffusion XL</option>
-          <option value="midjourney-v6">Midjourney V6</option>
-        </select>
-      </Field>
-      <Field label="提示词">
-        <textarea
-          style={TEXTAREA_STYLE}
-          placeholder="描述要生成的图片..."
-          value={data.imagePrompt ?? ""}
-          onChange={(e) => onUpdate({ imagePrompt: e.target.value })}
-        />
-      </Field>
-      <div className="flex gap-2">
-        <div className="flex-1">
-          <Field label="比例">
-            <select
-              style={SELECT_STYLE}
-              value={data.aspectRatio ?? "1:1"}
-              onChange={(e) => onUpdate({ aspectRatio: e.target.value })}
-            >
-              <option value="1:1">1:1</option>
-              <option value="16:9">16:9</option>
-              <option value="9:16">9:16</option>
-              <option value="4:3">4:3</option>
-              <option value="3:4">3:4</option>
-            </select>
-          </Field>
-        </div>
-        <div className="flex-1">
-          <Field label="分辨率">
-            <select
-              style={SELECT_STYLE}
-              value={data.resolution ?? "1024x1024"}
-              onChange={(e) => onUpdate({ resolution: e.target.value })}
-            >
-              <option value="512x512">512×512</option>
-              <option value="1024x1024">1024×1024</option>
-              <option value="1792x1024">1792×1024</option>
-            </select>
-          </Field>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export function VideoGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
-  return (
-    <div className="flex flex-col gap-3">
-      <Field label="服务">
-        <div className="flex gap-1.5">
-          {(["sora", "veo", "kling"] as const).map((svc) => (
-            <button
-              key={svc}
-              className="flex-1 rounded-lg py-1.5 text-[11px] font-medium transition-all duration-200"
-              style={{
-                background: data.videoService === svc ? "rgba(59,130,246,0.25)" : "rgba(255,255,255,0.05)",
-                color: data.videoService === svc ? "rgba(59,130,246,1)" : "rgba(248,248,248,0.5)",
-                border: `1px solid ${data.videoService === svc ? "rgba(59,130,246,0.4)" : "rgba(255,255,255,0.08)"}`,
-              }}
-              onClick={() => onUpdate({ videoService: svc })}
-            >
-              {svc.charAt(0).toUpperCase() + svc.slice(1)}
-            </button>
-          ))}
-        </div>
-      </Field>
-      <Field label="提示词">
-        <textarea
-          style={TEXTAREA_STYLE}
-          placeholder="描述要生成的视频..."
-          value={data.videoPrompt ?? ""}
-          onChange={(e) => onUpdate({ videoPrompt: e.target.value })}
-        />
-      </Field>
-      <Field label="时长 (秒)">
-        <input
-          type="number"
-          style={INPUT_STYLE}
-          min={1}
-          max={60}
-          value={data.videoDuration ?? 5}
-          onChange={(e) => onUpdate({ videoDuration: Number(e.target.value) })}
-        />
-      </Field>
-    </div>
-  );
-}
-
-export function ScriptGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
-  return (
-    <div className="flex flex-col gap-3">
-      <Field label="模型">
-        <select
-          style={SELECT_STYLE}
-          value={data.model ?? "deepseek-chat"}
-          onChange={(e) => onUpdate({ model: e.target.value })}
-        >
-          <option value="deepseek-chat">DeepSeek Chat</option>
-          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
-        </select>
-      </Field>
-      <Field label="脚本要求">
-        <textarea
-          style={TEXTAREA_STYLE}
-          placeholder="描述视频主题和要求..."
-          value={data.prompt ?? ""}
-          onChange={(e) => onUpdate({ prompt: e.target.value })}
-        />
-      </Field>
-    </div>
-  );
-}
-
-export function ImageEditForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
-  const modes: Array<{ value: string; label: string }> = [
-    { value: "crop", label: "裁剪" },
-    { value: "remove-bg", label: "去背景" },
-    { value: "upscale", label: "超分辨率" },
-    { value: "repaint", label: "局部重绘" },
-  ];
-  return (
-    <div className="flex flex-col gap-3">
-      <Field label="编辑模式">
-        <div className="grid grid-cols-2 gap-1.5">
-          {modes.map((m) => (
-            <button
-              key={m.value}
-              className="rounded-lg py-1.5 text-[11px] font-medium transition-all duration-200"
-              style={{
-                background: data.editMode === m.value ? "rgba(139,92,246,0.2)" : "rgba(255,255,255,0.05)",
-                color: data.editMode === m.value ? "rgba(139,92,246,1)" : "rgba(248,248,248,0.5)",
-                border: `1px solid ${data.editMode === m.value ? "rgba(139,92,246,0.35)" : "rgba(255,255,255,0.08)"}`,
-              }}
-              onClick={() => onUpdate({ editMode: m.value })}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-      </Field>
-    </div>
-  );
-}
-
-export function ImageCompareForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
-  return (
-    <div className="flex flex-col gap-3">
-      <Field label="图片 A URL">
-        <input
-          style={INPUT_STYLE}
-          placeholder="输入图片 A 地址..."
-          value={data.leftImageUrl ?? ""}
-          onChange={(e) => onUpdate({ leftImageUrl: e.target.value })}
-        />
-      </Field>
-      <Field label="图片 B URL">
-        <input
-          style={INPUT_STYLE}
-          placeholder="输入图片 B 地址..."
-          value={data.rightImageUrl ?? ""}
-          onChange={(e) => onUpdate({ rightImageUrl: e.target.value })}
-        />
-      </Field>
-    </div>
-  );
-}
-
-export function VideoStitchForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
-  const urls = data.inputVideoUrls ?? [];
-  return (
-    <div className="flex flex-col gap-3">
-      <Field label={`视频片段 (${urls.length})`}>
-        <div className="flex flex-col gap-1.5">
-          {urls.map((url, i) => (
-            <div key={i} className="flex items-center gap-1.5">
-              <span className="text-[10px] shrink-0" style={{ color: "rgba(248,248,248,0.35)" }}>#{i + 1}</span>
-              <input
-                style={{ ...INPUT_STYLE, flex: 1 }}
-                value={url}
-                onChange={(e) => {
-                  const next = [...urls];
-                  next[i] = e.target.value;
-                  onUpdate({ inputVideoUrls: next });
-                }}
-              />
-              <button
-                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors hover:bg-white/10"
-                style={{ color: "rgba(239,68,68,0.7)" }}
-                onClick={() => {
-                  const next = urls.filter((_, j) => j !== i);
-                  onUpdate({ inputVideoUrls: next });
-                }}
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-          <button
-            className="self-start rounded-lg px-2.5 py-1 text-[11px] transition-all duration-200 hover:bg-white/10"
-            style={{ color: "rgba(59,130,246,0.8)", border: "1px dashed rgba(59,130,246,0.3)" }}
-            onClick={() => onUpdate({ inputVideoUrls: [...urls, ""] })}
-          >
-            + 添加片段
-          </button>
-        </div>
-      </Field>
     </div>
   );
 }
@@ -476,7 +548,7 @@ export function AgentForm({ data, onUpdate }: { data: ProfessionalNodeData } & F
         <div className="flex flex-col gap-1">
           {(data.agentTools ?? []).map((tool, i) => (
             <div key={i} className="flex items-center gap-1.5">
-              <span className="text-[10px] flex-1 truncate" style={{ color: "rgba(248,248,248,0.6)" }}>{tool}</span>
+              <span className="flex-1 truncate text-[10px]" style={{ color: "rgba(248,248,248,0.6)" }}>{tool}</span>
               <button
                 className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
                 style={{ color: "rgba(239,68,68,0.7)" }}

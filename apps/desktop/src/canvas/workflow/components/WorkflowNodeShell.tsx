@@ -1,13 +1,12 @@
 import { memo } from "react";
 import { Handle, NodeToolbar, Position, type NodeProps } from "@xyflow/react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faPlay, faTrashCan } from "@fortawesome/free-solid-svg-icons";
 import type { WorkflowNodeData, NodeStatus, CreativeNodeData, ProfessionalNodeData } from "../types";
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import { runWorkflow } from "../utils/workflowExecutor";
 import { NodeConfigForm } from "./NodeConfigForm";
+import { NodeFloatingToolbar } from "./NodeFloatingToolbar";
 import { TextGenContent } from "../nodes/creative/TextGenNode";
 import { ImageGenContent } from "../nodes/creative/ImageGenNode";
 import { ImageCompareContent } from "../nodes/creative/ImageCompareContent";
@@ -116,28 +115,18 @@ function renderContent(nodeData: WorkflowNodeData) {
   }
 }
 
-const TOOLBAR_PILL_STYLE: React.CSSProperties = {
-  background: "rgba(76,80,82,0.55)",
+const EDIT_PANEL_STYLE: React.CSSProperties = {
+  width: 500,
+  maxHeight: 380,
+  overflowY: "auto",
+  background: "rgba(24,24,27,0.92)",
   border: "1px solid rgba(255,255,255,0.08)",
-  boxShadow: "0 6px 24px rgba(0,0,0,0.24)",
+  borderRadius: 12,
+  boxShadow: "0 24px 64px rgba(0,0,0,0.4)",
   backdropFilter: "blur(40px)",
   WebkitBackdropFilter: "blur(40px)",
-  borderRadius: 10,
-};
-
-const EDIT_PANEL_STYLE: React.CSSProperties = {
-  width: 340,
-  maxHeight: 340,
-  overflowY: "auto",
-  background: "#101010",
-  border: "1px solid rgba(255,255,255,0.1)",
-  borderRadius: 16,
-  boxShadow: "0 14px 44px rgba(0,0,0,0.4)",
   padding: 12,
 };
-
-const TOOLBAR_BTN_CLASS =
-  "flex h-6 w-6 items-center justify-center rounded-md transition-colors duration-200 hover:bg-white/10 active:scale-95";
 
 function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
   const nodeData = data as unknown as WorkflowNodeData;
@@ -157,16 +146,9 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
 
   return (
     <>
-      {/* Floating toolbar (single-selected only) */}
+      {/* Floating toolbar (single-selected only) — Penguin-Magic 全量工具栏，功能暂占位 */}
       <NodeToolbar position={Position.Top} offset={34}>
-        <div className="flex items-center gap-0.5 px-1" style={{ ...TOOLBAR_PILL_STYLE, height: 32 }}>
-          <button className={TOOLBAR_BTN_CLASS} onClick={handleRun} title="运行此节点">
-            <FontAwesomeIcon icon={faPlay} style={{ fontSize: 11, color: "rgba(248,248,248,0.7)" }} />
-          </button>
-          <button className={TOOLBAR_BTN_CLASS} onClick={handleDelete} title="删除节点">
-            <FontAwesomeIcon icon={faTrashCan} style={{ fontSize: 11, color: "rgba(248,248,248,0.7)" }} />
-          </button>
-        </div>
+        <NodeFloatingToolbar kind={nodeData.kind} onRun={handleRun} onDelete={handleDelete} />
       </NodeToolbar>
 
       {/* Floating edit panel below node (single-selected only) */}
