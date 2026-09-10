@@ -56,9 +56,10 @@ import type {
   SessionSummary,
   ToolCall,
 } from "./types";
-import { TitleBar } from "./components/TitleBar";
+import { DesktopUpdateController } from "./components/DesktopUpdateController";
 import { TrustDialog } from "./components/TrustDialog";
 import { Sidebar } from "./components/Sidebar";
+import { WorkspaceNavigationControls } from "./components/WorkspaceNavigationControls";
 import { message } from "./components/message";
 
 const StartView = lazy(() =>
@@ -1949,6 +1950,26 @@ export function App() {
     window.localStorage.setItem(LEFT_SIDEBAR_OPEN_KEY, String(isSidebarOpen));
   }, [isSidebarOpen]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      if (event.code === "KeyB") {
+        if (event.repeat) return;
+        event.preventDefault();
+        toggleLeftSidebar();
+      } else if (event.code === "BracketLeft") {
+        event.preventDefault();
+        goBack();
+      } else if (event.code === "BracketRight") {
+        event.preventDefault();
+        goForward();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [goBack, goForward, toggleLeftSidebar]);
+
   const canGoBack = navState.index > 0;
   const canGoForward = navState.index < navState.history.length - 1;
   const activeChatBusy = Boolean(
@@ -1964,14 +1985,7 @@ export function App() {
   return (
     <div className="bg-sidebar-bg text-text-base font-sans h-screen w-full overflow-hidden flex flex-col relative">
       <TrustDialog projectPath={activeProjectPath} />
-      <TitleBar 
-        onToggleSidebar={toggleLeftSidebar}
-        isSidebarOpen={isSidebarOpen} 
-        canGoBack={canGoBack}
-        canGoForward={canGoForward}
-        onBack={goBack}
-        onForward={goForward}
-      />
+      <DesktopUpdateController />
 
       <div className="flex-1 flex overflow-hidden">
         <>
@@ -2032,6 +2046,16 @@ export function App() {
         <main
           className="app-main-surface relative flex flex-1 overflow-hidden bg-white"
         >
+          {!isSidebarOpen && (
+            <WorkspaceNavigationControls
+              className="absolute left-3 top-3 z-20 rounded-lg border border-border-theme bg-white/90 p-1 shadow-sm backdrop-blur"
+              onToggleSidebar={toggleLeftSidebar}
+              canGoBack={canGoBack}
+              canGoForward={canGoForward}
+              onBack={goBack}
+              onForward={goForward}
+            />
+          )}
           <Suspense fallback={<ViewLoading />}>
             {view === "start" && (
               <div key={viewFrameKey} className="view-frame">

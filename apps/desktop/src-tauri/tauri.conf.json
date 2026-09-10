@@ -16,12 +16,8 @@
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
-        "theme": "Dark",
-        "decorations": false,
-        "transparent": true,
-        "windowEffects": {
-          "effects": ["mica"]
-        }
+        "decorations": true,
+        "transparent": false
       }
     ],
     "security": {

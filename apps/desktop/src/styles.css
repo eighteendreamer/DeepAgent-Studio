@@ -851,15 +851,6 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
   }
 }
 
-/* Window control buttons */
-.win-btn:hover {
-  background-color: rgba(0, 0, 0, 0.05);
-}
-.win-btn-close:hover {
-  background-color: #ef4444;
-  color: white;
-}
-
 .studio-infinite-canvas {
   background: var(--theme-bg, #ffffff);
 }
