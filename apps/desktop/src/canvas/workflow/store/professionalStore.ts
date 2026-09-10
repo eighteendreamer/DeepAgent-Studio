@@ -76,8 +76,14 @@ interface ProfessionalState {
 }
 
 let _nodeIdCounter = 0;
-function nextNodeId() {
-  return `pro-node-${++_nodeIdCounter}`;
+// 计数器重载归零，而已持久化节点 id 仍在——必须跳过已占用 id，否则新建节点与旧节点同 id 互相覆盖
+function nextNodeId(existingIds: string[]): string {
+  const taken = new Set(existingIds);
+  let id: string;
+  do {
+    id = `pro-node-${++_nodeIdCounter}`;
+  } while (taken.has(id));
+  return id;
 }
 
 export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
@@ -101,7 +107,7 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
 
   addNode: (kind, x, y) => {
     get().pushHistory();
-    const id = nextNodeId();
+    const id = nextNodeId(get().nodes.map((n: WorkflowNode) => n.id));
     const data = createDefaultProfessionalData(kind);
     const snappedX = Math.round(x / SNAP_GRID) * SNAP_GRID;
     const snappedY = Math.round(y / SNAP_GRID) * SNAP_GRID;
@@ -117,7 +123,7 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
 
   addNodeAt: (kind, x, y, extraData) => {
     get().pushHistory();
-    const id = nextNodeId();
+    const id = nextNodeId(get().nodes.map((n: WorkflowNode) => n.id));
     const base = createDefaultProfessionalData(kind);
     const snappedX = Math.round(x / SNAP_GRID) * SNAP_GRID;
     const snappedY = Math.round(y / SNAP_GRID) * SNAP_GRID;

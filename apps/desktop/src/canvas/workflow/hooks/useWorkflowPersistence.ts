@@ -16,7 +16,11 @@ function loadState(mode: string): PersistedState | null {
   try {
     const raw = localStorage.getItem(`${STORAGE_PREFIX}-${mode}`);
     if (!raw) return null;
-    return JSON.parse(raw) as PersistedState;
+    const state = JSON.parse(raw) as PersistedState;
+    // 旧版本 id 计数器重载后可能写入同 id 节点，恢复时按 id 去重（保留首个）
+    const seen = new Set<string>();
+    const nodes = state.nodes.filter((n) => (seen.has(n.id) ? false : seen.add(n.id)));
+    return { ...state, nodes };
   } catch {
     return null;
   }
