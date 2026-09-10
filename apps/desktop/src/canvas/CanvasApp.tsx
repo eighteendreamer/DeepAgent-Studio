@@ -104,6 +104,11 @@ function WorkflowCanvasInner() {
     [setViewport],
   );
 
+  const handleNodeDragStart = useCallback(() => {
+    // pushHistory snapshots current state, so it must run before the drag mutates positions
+    (mode === "creative" ? useCreativeStore : useProfessionalStore).getState().pushHistory();
+  }, [mode]);
+
   const handleDoubleClick = useCallback(
     (event: React.MouseEvent) => {
       if (!rfInstance) return;
@@ -366,6 +371,7 @@ function WorkflowCanvasInner() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onConnectEnd={handleConnectEnd}
+        onNodeDragStart={handleNodeDragStart}
         onInit={setRfInstance}
         onNodeClick={handleNodeClick}
         onPaneClick={handlePaneClick}
