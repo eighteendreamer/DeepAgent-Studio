@@ -21,9 +21,6 @@ interface CanvasState {
   nodePicker: NodePickerPosition | null;
   openNodePicker: (pos: NodePickerPosition) => void;
   closeNodePicker: () => void;
-
-  configPanelOpen: boolean;
-  setConfigPanelOpen: (open: boolean) => void;
 }
 
 export const useCanvasStore = create<CanvasState>((set) => ({
@@ -40,12 +37,9 @@ export const useCanvasStore = create<CanvasState>((set) => ({
   toggleSnap: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
 
   selectedNodeId: null,
-  setSelectedNodeId: (id) => set({ selectedNodeId: id, configPanelOpen: id != null }),
+  setSelectedNodeId: (id) => set({ selectedNodeId: id }),
 
   nodePicker: null,
   openNodePicker: (pos) => set({ nodePicker: pos }),
   closeNodePicker: () => set({ nodePicker: null }),
-
-  configPanelOpen: false,
-  setConfigPanelOpen: (open) => set({ configPanelOpen: open }),
 }));

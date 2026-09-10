@@ -17,7 +17,6 @@ import { ModeSwitcher } from "./workflow/components/ModeSwitcher";
 import { BottomBar as WorkflowBottomBar } from "./workflow/components/BottomBar";
 import { MiniMap } from "./workflow/components/MiniMap";
 import { NodePicker } from "./workflow/components/NodePicker";
-import { ConfigPanel } from "./workflow/components/ConfigPanel";
 import { ContextMenu, useContextMenu } from "./workflow/components/ContextMenu";
 import { WorkflowNodeShell } from "./workflow/components/WorkflowNodeShell";
 import { WorkflowEdge } from "./workflow/components/WorkflowEdge";
@@ -179,6 +178,7 @@ function WorkflowCanvasInner() {
       }
 
       if (e.key === "Escape") {
+        onNodesChange(nodes.map((n) => ({ id: n.id, type: "select", selected: false })));
         setSelectedNodeId(null);
         closeNodePicker();
         closeMenu();
@@ -262,11 +262,13 @@ function WorkflowCanvasInner() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [mode, selectedNodeId, setSelectedNodeId, closeNodePicker, closeMenu, nodes, rfInstance]);
+  }, [mode, selectedNodeId, setSelectedNodeId, closeNodePicker, closeMenu, nodes, onNodesChange, rfInstance]);
 
   const handleWheel = useCallback(
     (e: WheelEvent) => {
       if (!rfInstance) return;
+      // Floating node panels scroll natively; don't pan the canvas under them
+      if (e.target instanceof HTMLElement && e.target.closest(".react-flow__node-toolbar")) return;
       e.preventDefault();
 
       const vp = rfInstance.getViewport();
@@ -399,7 +401,6 @@ function WorkflowCanvasInner() {
       <WorkflowBottomBar viewport={viewport} onViewportChange={handleViewportChange} rfInstance={rfInstance} />
       <MiniMap containerWidth={containerSize.width} containerHeight={containerSize.height} />
       <NodePicker />
-      <ConfigPanel />
       <ContextMenu menu={menu} onClose={closeMenu} />
     </div>
   );

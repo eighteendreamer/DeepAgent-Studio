@@ -1,6 +1,13 @@
 import { memo } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Handle, NodeToolbar, Position, type NodeProps } from "@xyflow/react";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faPlay, faTrashCan } from "@fortawesome/free-solid-svg-icons";
 import type { WorkflowNodeData, NodeStatus, CreativeNodeData, ProfessionalNodeData } from "../types";
+import { useCanvasStore } from "../store/canvasStore";
+import { useCreativeStore } from "../store/creativeStore";
+import { useProfessionalStore } from "../store/professionalStore";
+import { runWorkflow } from "../utils/workflowExecutor";
+import { NodeConfigForm } from "./NodeConfigForm";
 import { TextGenContent } from "../nodes/creative/TextGenNode";
 import { ImageGenContent } from "../nodes/creative/ImageGenNode";
 import { ImageCompareContent } from "../nodes/creative/ImageCompareContent";
@@ -109,13 +116,67 @@ function renderContent(nodeData: WorkflowNodeData) {
   }
 }
 
-function WorkflowNodeShellInner({ id: _id, data, selected }: NodeProps) {
+const TOOLBAR_PILL_STYLE: React.CSSProperties = {
+  background: "rgba(76,80,82,0.55)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  boxShadow: "0 6px 24px rgba(0,0,0,0.24)",
+  backdropFilter: "blur(40px)",
+  WebkitBackdropFilter: "blur(40px)",
+  borderRadius: 10,
+};
+
+const EDIT_PANEL_STYLE: React.CSSProperties = {
+  width: 340,
+  maxHeight: 340,
+  overflowY: "auto",
+  background: "#101010",
+  border: "1px solid rgba(255,255,255,0.1)",
+  borderRadius: 16,
+  boxShadow: "0 14px 44px rgba(0,0,0,0.4)",
+  padding: 12,
+};
+
+const TOOLBAR_BTN_CLASS =
+  "flex h-6 w-6 items-center justify-center rounded-md transition-colors duration-200 hover:bg-white/10 active:scale-95";
+
+function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
   const nodeData = data as unknown as WorkflowNodeData;
   const nodeStatus = nodeData.status ?? "idle";
   const nodeLabel = nodeData.label ?? "节点";
+  const mode = useCanvasStore((s) => s.mode);
+
+  const handleRun = () => {
+    void runWorkflow(id);
+  };
+
+  const handleDelete = () => {
+    if (mode === "creative") useCreativeStore.getState().removeNode(id);
+    else useProfessionalStore.getState().removeNode(id);
+    useCanvasStore.getState().setSelectedNodeId(null);
+  };
 
   return (
-    <div
+    <>
+      {/* Floating toolbar (single-selected only) */}
+      <NodeToolbar position={Position.Top} offset={34}>
+        <div className="flex items-center gap-0.5 px-1" style={{ ...TOOLBAR_PILL_STYLE, height: 32 }}>
+          <button className={TOOLBAR_BTN_CLASS} onClick={handleRun} title="运行此节点">
+            <FontAwesomeIcon icon={faPlay} style={{ fontSize: 11, color: "rgba(248,248,248,0.7)" }} />
+          </button>
+          <button className={TOOLBAR_BTN_CLASS} onClick={handleDelete} title="删除节点">
+            <FontAwesomeIcon icon={faTrashCan} style={{ fontSize: 11, color: "rgba(248,248,248,0.7)" }} />
+          </button>
+        </div>
+      </NodeToolbar>
+
+      {/* Floating edit panel below node (single-selected only) */}
+      <NodeToolbar position={Position.Bottom} offset={12}>
+        <div style={EDIT_PANEL_STYLE}>
+          <NodeConfigForm nodeId={id} nodeData={nodeData} />
+        </div>
+      </NodeToolbar>
+
+      <div
       className="relative select-none"
       style={{
         width: 240,
@@ -223,6 +284,7 @@ function WorkflowNodeShellInner({ id: _id, data, selected }: NodeProps) {
         </div>
       )}
     </div>
+    </>
   );
 }
 
