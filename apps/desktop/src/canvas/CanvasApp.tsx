@@ -240,7 +240,7 @@ function WorkflowCanvasInner() {
       }
 
       if (e.key === "f" && !isEditableTarget(e.target) && !(e.ctrlKey || e.metaKey)) {
-        rfInstance?.fitView({ padding: 0.2, duration: 300 });
+        rfInstance?.fitView({ padding: 0.2, duration: 300, maxZoom: 0.9 });
         return;
       }
 
@@ -375,6 +375,7 @@ function WorkflowCanvasInner() {
         snapToGrid={snapToGrid}
         snapGrid={[24, 24]}
         fitView
+        fitViewOptions={{ maxZoom: 0.9 }}
         minZoom={0.2}
         maxZoom={3}
         panOnDrag={[1, 2]}

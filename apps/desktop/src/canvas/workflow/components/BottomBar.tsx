@@ -111,7 +111,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
     rfInstance?.setViewport({ ...viewport, zoom: 1 });
   };
   const handleFitScreen = () => {
-    rfInstance?.fitView({ padding: 0.2, duration: 300 });
+    rfInstance?.fitView({ padding: 0.2, duration: 300, maxZoom: 0.9 });
   };
 
   const handleSlider = (e: React.ChangeEvent<HTMLInputElement>) => {
