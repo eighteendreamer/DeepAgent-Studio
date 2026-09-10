@@ -65,7 +65,7 @@ export function CanvasSettingsDialog() {
   return (
     <Dialog open={settingsOpen} onOpenChange={(open) => { if (!open) closeSettings(); }}>
       <DialogContent
-        className="overflow-hidden p-0"
+        className="p-0"
         style={{
           width: 860,
           height: 560,
