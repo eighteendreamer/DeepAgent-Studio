@@ -262,6 +262,52 @@ function WorkflowCanvasInner() {
     };
   }, [mode, selectedNodeId, setSelectedNodeId, closeNodePicker, closeMenu, nodes, rfInstance]);
 
+  const handleWheel = useCallback(
+    (e: WheelEvent) => {
+      if (!rfInstance) return;
+      e.preventDefault();
+
+      const vp = rfInstance.getViewport();
+      const zoomSensitivity = 0.001;
+      const panSensitivity = 1;
+
+      if (e.ctrlKey || e.metaKey) {
+        // Ctrl+scroll: zoom
+        const delta = -e.deltaY * zoomSensitivity;
+        const newZoom = Math.min(Math.max(vp.zoom + delta * vp.zoom, 0.2), 3);
+        // Zoom toward cursor position
+        const rect = containerRef.current?.getBoundingClientRect();
+        if (rect) {
+          const mouseX = e.clientX - rect.left;
+          const mouseY = e.clientY - rect.top;
+          const flowPos = rfInstance.screenToFlowPosition({ x: mouseX, y: mouseY });
+          const zoomRatio = newZoom / vp.zoom;
+          const newX = flowPos.x - (flowPos.x - vp.x) * zoomRatio;
+          const newY = flowPos.y - (flowPos.y - vp.y) * zoomRatio;
+          rfInstance.setViewport({ x: newX, y: newY, zoom: newZoom });
+        } else {
+          rfInstance.setViewport({ ...vp, zoom: newZoom });
+        }
+      } else if (e.shiftKey) {
+        // Shift+scroll: horizontal pan
+        const dx = e.deltaY * panSensitivity;
+        rfInstance.setViewport({ ...vp, x: vp.x - dx });
+      } else {
+        // Plain scroll: vertical pan
+        const dy = e.deltaY * panSensitivity;
+        rfInstance.setViewport({ ...vp, y: vp.y - dy });
+      }
+    },
+    [rfInstance],
+  );
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [handleWheel]);
+
   return (
     <div
       ref={containerRef}
@@ -308,8 +354,10 @@ function WorkflowCanvasInner() {
         fitView
         minZoom={0.2}
         maxZoom={3}
-        panOnDrag={isSpaceHeld ? [0, 1, 2] : [1, 2]}
+        panOnDrag={[0, 1, 2]}
         nodesDraggable={!isSpaceHeld}
+        zoomOnScroll={false}
+        panOnScroll={false}
         proOptions={{ hideAttribution: true }}
         style={{ background: "transparent" }}
         className="studio-workflow-canvas"
