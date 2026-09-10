@@ -10,6 +10,7 @@ import {
   faPlay,
   faStop,
   faChevronUp,
+  faGear,
 } from "@fortawesome/free-solid-svg-icons";
 import {
   AlignHorizontalJustifyCenter,
@@ -268,6 +269,13 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
       >
         <FontAwesomeIcon icon={running ? faStop : faPlay} style={{ fontSize: 10 }} />
         {running ? "停止" : "运行"}
+      </button>
+
+      <div style={DIVIDER_STYLE} />
+
+      {/* Settings */}
+      <button className={BTN_CLASS} title="设置">
+        <FontAwesomeIcon icon={faGear} style={{ fontSize: 14, color: ICON_COLOR }} />
       </button>
           </div>
         </HoverCardContent>
