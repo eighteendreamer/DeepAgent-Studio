@@ -284,9 +284,12 @@ interface NodeFloatingToolbarProps {
   kind: WorkflowNodeKind;
   onRun: () => void;
   onDelete: () => void;
+  onRename: () => void;
+  onDuplicate: () => void;
+  onDownload: () => void;
 }
 
-export function NodeFloatingToolbar({ kind, onRun, onDelete }: NodeFloatingToolbarProps) {
+export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplicate, onDownload }: NodeFloatingToolbarProps) {
   const actions = getActions(kind);
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const [openNestedKey, setOpenNestedKey] = useState<string | null>(null);
@@ -459,7 +462,13 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete }: NodeFloatingToolb
 
   const renderAction = (action: ToolbarAction) => {
     const Icon = action.icon;
-    const wired = action.key === "delete" ? onDelete : undefined;
+    const wired: Record<string, (() => void) | undefined> = {
+      delete: onDelete,
+      rename: onRename,
+      duplicate: onDuplicate,
+      download: onDownload,
+    };
+    const handler = wired[action.key];
     const hasSubmenu = !!action.submenu?.length;
     const isOpen = openSubmenu === action.key;
     return (
@@ -480,7 +489,7 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete }: NodeFloatingToolb
               return;
             }
             setOpenSubmenu(null);
-            wired?.();
+            handler?.();
           }}
         >
           <Icon

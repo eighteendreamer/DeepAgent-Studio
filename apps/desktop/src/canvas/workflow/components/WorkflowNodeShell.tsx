@@ -1,6 +1,13 @@
-import { memo } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Handle, NodeToolbar, Position, type NodeProps } from "@xyflow/react";
-import type { WorkflowNodeData, NodeStatus, CreativeNodeData, ProfessionalNodeData } from "../types";
+import type {
+  WorkflowNodeData,
+  NodeStatus,
+  CreativeNodeData,
+  ProfessionalNodeData,
+  CreativeNodeKind,
+  ProfessionalNodeKind,
+} from "../types";
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
@@ -134,6 +141,30 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
   const nodeLabel = nodeData.label ?? "节点";
   const mode = useCanvasStore((s) => s.mode);
 
+  // 行内重命名态（Penguin _renameMode 语义：Enter/失焦提交、Esc 取消、空值回落默认名）
+  const [renaming, setRenaming] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!renaming) return;
+    const t1 = setTimeout(() => titleInputRef.current?.focus(), 30);
+    const t2 = setTimeout(() => titleInputRef.current?.select(), 60);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [renaming]);
+
+  const commitRename = (commit: boolean) => {
+    const next = titleDraft.trim();
+    if (commit) {
+      const store = mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
+      store.updateNodeData(id, { label: next || "节点" } as never);
+    }
+    setRenaming(false);
+  };
+
   const handleRun = () => {
     void runWorkflow(id);
   };
@@ -144,11 +175,68 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
     useCanvasStore.getState().setSelectedNodeId(null);
   };
 
+  const handleRename = () => {
+    setTitleDraft(nodeData.label ?? "");
+    setRenaming(true);
+  };
+
+  const handleDuplicate = () => {
+    // mode 决定 store 与节点数据同源，按 mode 分支窄化类型（同 CanvasApp 粘贴链路）
+    if (mode === "creative") {
+      const s = useCreativeStore.getState();
+      const node = s.nodes.find((n) => n.id === id);
+      if (!node) return;
+      const newId = s.addNodeAt(
+        nodeData.kind as CreativeNodeKind,
+        node.position.x + 40,
+        node.position.y + 40,
+        node.data as Partial<CreativeNodeData>,
+      );
+      s.setSelectedIds([newId]);
+      useCanvasStore.getState().setSelectedNodeId(newId);
+      return;
+    }
+    const s = useProfessionalStore.getState();
+    const node = s.nodes.find((n) => n.id === id);
+    if (!node) return;
+    const newId = s.addNodeAt(
+      nodeData.kind as ProfessionalNodeKind,
+      node.position.x + 40,
+      node.position.y + 40,
+      node.data as Partial<ProfessionalNodeData>,
+    );
+    s.setSelectedIds([newId]);
+    useCanvasStore.getState().setSelectedNodeId(newId);
+  };
+
+  const handleDownload = () => {
+    const kind = nodeData.kind;
+    if (kind !== "text-gen" && kind !== "script-gen") return;
+    const prompt = (nodeData as CreativeNodeData).prompt ?? "";
+    const md = `# ${nodeLabel}\n\n${prompt}`;
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${nodeLabel}-${Date.now()}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <>
-      {/* Floating toolbar (single-selected only) — Penguin-Magic 全量工具栏，功能暂占位 */}
+      {/* Floating toolbar (single-selected only) — Penguin-Magic 全量工具栏，生成类按钮待后端接入 */}
       <NodeToolbar position={Position.Top} offset={34}>
-        <NodeFloatingToolbar kind={nodeData.kind} onRun={handleRun} onDelete={handleDelete} />
+        <NodeFloatingToolbar
+          kind={nodeData.kind}
+          onRun={handleRun}
+          onDelete={handleDelete}
+          onRename={handleRename}
+          onDuplicate={handleDuplicate}
+          onDownload={handleDownload}
+        />
       </NodeToolbar>
 
       {/* Floating edit panel below node (single-selected only) */}
@@ -213,9 +301,39 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
         className="absolute left-0 flex items-center gap-1.5 select-none"
         style={{ top: -22, color: "rgba(255,255,255,0.8)" }}
       >
-        <span className="text-xs font-semibold" style={{ letterSpacing: "0.3px" }}>
-          {nodeLabel}
-        </span>
+        {renaming ? (
+          <input
+            ref={titleInputRef}
+            value={titleDraft}
+            placeholder="Name"
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitRename(true);
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                commitRename(false);
+              }
+            }}
+            onBlur={() => commitRename(true)}
+            className="outline-none bg-transparent text-xs font-semibold truncate"
+            style={{
+              color: "rgba(255,255,255,0.85)",
+              borderBottom: "1px solid #3b82f6",
+              paddingBottom: 1,
+              maxWidth: 160,
+            }}
+          />
+        ) : (
+          <span className="text-xs font-semibold" style={{ letterSpacing: "0.3px" }}>
+            {nodeLabel}
+          </span>
+        )}
       </div>
 
       {/* Card content */}
