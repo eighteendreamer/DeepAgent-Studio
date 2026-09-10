@@ -14,6 +14,7 @@ import {
   faStar, faPlay, faFolderTree, faMicrophone, faPause, faDownload, faTable, faTableColumns, faAnglesLeft, faAnglesRight, faUpload, faPaperclip,
   faFolder as faFolderSolid, faRotate, faFolderOpen as faFolderOpenSolid, faFileZipper,
   faSpinner, faCodeCommit, faPlug, faWandMagicSparkles, faTags,
+  faImage as faImageSolid, faLeftRight, faVideo, faFilm, faFileCode, faUserCheck,
   faSquare as faSquareSolid, faClock as faClockSolid,
   // FA5 legacy aliases (deprecated names still used in some components)
   faXmark as faTimes, faRotate as faSyncAlt
@@ -38,6 +39,7 @@ const solidIcons = [
   faFileLinesSolid, faEnvelope, faFileExcel, faRobot, faCloud, faCloudArrowDown, faBullseye, faBorderAll, faMinus,
   faSliders, faServer, faAnchor, faLink, faLeaf, faDesktop, faCircleCheckSolid, faLaptop,
   faCompress, faFolderPlus, faFileExport, faClockRotateLeft, faKey, faLock, faMoon, faCircleNotch, faHand, faCircleExclamation, faWrench, faListCheck, faShieldHalved,
+  faImageSolid, faLeftRight, faVideo, faFilm, faFileCode, faUserCheck,
   faBook, faToggleOn, faToggleOff, faTriangleExclamation, faNoteSticky, faTrash, faShareNodes, faList, faInbox, faLightbulb, faStop, faBolt, faCoins, faWallet,
   faStar, faPlay, faFolderTree, faMicrophone, faPause, faDownload, faTable, faTableColumns, faAnglesLeft, faAnglesRight, faUpload, faPaperclip,
   faFolderSolid, faRotate, faFolderOpenSolid, faFileZipper,

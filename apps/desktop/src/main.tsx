@@ -1,6 +1,7 @@
 import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import "./i18n";
+import "./icons";
 import "./styles.css";
 import { bootstrapTheme } from "./theme/themeBootstrap";
 import { ThemeProvider } from "./theme/ThemeProvider";
