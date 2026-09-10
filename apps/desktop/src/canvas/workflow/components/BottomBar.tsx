@@ -1,17 +1,3 @@
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import {
-  faRotateLeft,
-  faRotateRight,
-  faTableColumns,
-  faMagnet,
-  faMagnifyingGlassMinus,
-  faMagnifyingGlassPlus,
-  faMaximize,
-  faPlay,
-  faStop,
-  faChevronUp,
-  faGear,
-} from "@fortawesome/free-solid-svg-icons";
 import {
   AlignHorizontalJustifyCenter,
   AlignHorizontalJustifyEnd,
@@ -19,6 +5,17 @@ import {
   AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd,
   AlignVerticalJustifyStart,
+  ChevronUp,
+  Grid3x3,
+  Magnet,
+  Maximize2,
+  Play,
+  Redo2,
+  Settings,
+  Square,
+  Undo2,
+  ZoomIn,
+  ZoomOut,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -162,7 +159,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
             style={{ ...BAR_STYLE, width: 44, height: 28, borderRadius: 999, cursor: "pointer" }}
             title="工具栏"
           >
-            <FontAwesomeIcon icon={faChevronUp} style={{ fontSize: 12, color: ICON_COLOR }} />
+            <ChevronUp size={12} strokeWidth={2} color={ICON_COLOR} />
           </button>
         </HoverCardTrigger>
         <HoverCardContent
@@ -180,10 +177,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
         title="网格"
         style={{ background: gridVisible ? "rgba(255,255,255,0.15)" : undefined }}
       >
-        <FontAwesomeIcon
-          icon={faTableColumns}
-          style={{ fontSize: 14, color: gridVisible ? ICON_ACTIVE : ICON_COLOR }}
-        />
+        <Grid3x3 size={14} strokeWidth={1.8} color={gridVisible ? ICON_ACTIVE : ICON_COLOR} />
       </button>
       <button
         className={BTN_CLASS}
@@ -191,16 +185,13 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
         title="磁吸"
         style={{ background: snapToGrid ? "rgba(255,255,255,0.15)" : undefined }}
       >
-        <FontAwesomeIcon
-          icon={faMagnet}
-          style={{ fontSize: 14, color: snapToGrid ? ICON_ACTIVE : ICON_COLOR }}
-        />
+        <Magnet size={14} strokeWidth={1.8} color={snapToGrid ? ICON_ACTIVE : ICON_COLOR} />
       </button>
       <button className={BTN_CLASS} onClick={handleUndo} disabled={!canUndo} title="撤销">
-        <FontAwesomeIcon icon={faRotateLeft} style={{ fontSize: 14, color: canUndo ? ICON_COLOR : ICON_MUTED }} />
+        <Undo2 size={14} strokeWidth={1.8} color={canUndo ? ICON_COLOR : ICON_MUTED} />
       </button>
       <button className={BTN_CLASS} onClick={handleRedo} disabled={!canRedo} title="重做">
-        <FontAwesomeIcon icon={faRotateRight} style={{ fontSize: 14, color: canRedo ? ICON_COLOR : ICON_MUTED }} />
+        <Redo2 size={14} strokeWidth={1.8} color={canRedo ? ICON_COLOR : ICON_MUTED} />
       </button>
 
       <div style={DIVIDER_STYLE} />
@@ -222,10 +213,10 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
 
       {/* Fit screen + Zoom */}
       <button className={BTN_CLASS} onClick={handleFitScreen} title="适应屏幕">
-        <FontAwesomeIcon icon={faMaximize} style={{ fontSize: 14, color: ICON_COLOR }} />
+        <Maximize2 size={14} strokeWidth={1.8} color={ICON_COLOR} />
       </button>
       <button className={BTN_CLASS} onClick={handleZoomOut} title="缩小">
-        <FontAwesomeIcon icon={faMagnifyingGlassMinus} style={{ fontSize: 14, color: ICON_COLOR }} />
+        <ZoomOut size={14} strokeWidth={1.8} color={ICON_COLOR} />
       </button>
       <input
         type="range"
@@ -238,7 +229,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
         style={{ accentColor: "rgb(248,248,248)" }}
       />
       <button className={BTN_CLASS} onClick={handleZoomIn} title="放大">
-        <FontAwesomeIcon icon={faMagnifyingGlassPlus} style={{ fontSize: 14, color: ICON_COLOR }} />
+        <ZoomIn size={14} strokeWidth={1.8} color={ICON_COLOR} />
       </button>
       <button
         className="px-1.5 text-xs font-medium transition-colors duration-200"
@@ -267,7 +258,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
         }}
         onClick={handleRun}
       >
-        <FontAwesomeIcon icon={running ? faStop : faPlay} style={{ fontSize: 10 }} />
+        {running ? <Square size={10} fill="currentColor" strokeWidth={0} /> : <Play size={10} fill="currentColor" strokeWidth={0} />}
         {running ? "停止" : "运行"}
       </button>
 
@@ -275,7 +266,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
 
       {/* Settings */}
       <button className={BTN_CLASS} title="设置">
-        <FontAwesomeIcon icon={faGear} style={{ fontSize: 14, color: ICON_COLOR }} />
+        <Settings size={14} strokeWidth={1.8} color={ICON_COLOR} />
       </button>
           </div>
         </HoverCardContent>

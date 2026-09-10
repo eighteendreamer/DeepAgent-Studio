@@ -1,5 +1,4 @@
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faBorderAll, faMinus, faSquare, faXmark } from "@fortawesome/free-solid-svg-icons";
+import { LayoutGrid, Minus, Square, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 function inTauri(): boolean {
@@ -33,7 +32,7 @@ export function CanvasTitleBar() {
     >
       <div data-tauri-drag-region className="flex min-w-0 items-center gap-2.5">
         <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
-          <FontAwesomeIcon icon={faBorderAll} className="text-[12px]" />
+          <LayoutGrid size={12} strokeWidth={2} />
         </div>
         <span data-tauri-drag-region className="truncate text-[13px] font-semibold text-text-base">
           {t("canvas.workflowTitle", { defaultValue: "工作流" })}
@@ -50,7 +49,7 @@ export function CanvasTitleBar() {
           className="win-btn flex h-10 w-10 items-center justify-center text-text-secondary transition-colors"
           aria-label={t("canvas.minimize", { defaultValue: "最小化" })}
         >
-          <FontAwesomeIcon icon={faMinus} className="text-[11px]" />
+          <Minus size={12} strokeWidth={2} />
         </button>
         <button
           type="button"
@@ -58,7 +57,7 @@ export function CanvasTitleBar() {
           className="win-btn flex h-10 w-10 items-center justify-center text-text-secondary transition-colors"
           aria-label={t("canvas.maximize", { defaultValue: "最大化" })}
         >
-          <FontAwesomeIcon icon={faSquare} className="text-[11px]" />
+          <Square size={11} strokeWidth={2} />
         </button>
         <button
           type="button"
@@ -66,7 +65,7 @@ export function CanvasTitleBar() {
           className="win-btn-close flex h-10 w-10 items-center justify-center text-text-secondary transition-colors"
           aria-label={t("canvas.close", { defaultValue: "关闭" })}
         >
-          <FontAwesomeIcon icon={faXmark} className="text-[13px]" />
+          <X size={13} strokeWidth={2} />
         </button>
       </div>
     </div>
