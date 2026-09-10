@@ -75,6 +75,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
   const nodeCount = mode === "creative" ? creativeNodeCount : proNodeCount;
 
   const [running, setRunning] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   useEffect(() => {
     const interval = setInterval(() => setRunning(isWorkflowRunning()), 200);
     return () => clearInterval(interval);
@@ -120,11 +121,13 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
   };
 
   return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[9997]">
-      <HoverCard openDelay={120} closeDelay={300}>
+    <div
+      className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-[9997]${toolsOpen ? " pointer-events-none" : ""}`}
+    >
+      <HoverCard open={toolsOpen} onOpenChange={setToolsOpen} openDelay={120} closeDelay={300}>
         <HoverCardTrigger asChild>
           <button
-            className="flex items-center justify-center outline-none transition-all duration-300 hover:brightness-125 active:scale-95"
+            className="flex items-center justify-center outline-none transition-all duration-300 hover:brightness-125 active:scale-95 data-[state=open]:pointer-events-none data-[state=open]:opacity-0"
             style={{ ...BAR_STYLE, width: 44, height: 28, borderRadius: 999, cursor: "pointer" }}
             title="工具栏"
           >
@@ -134,9 +137,9 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
         <HoverCardContent
           side="top"
           align="center"
-          sideOffset={8}
+          sideOffset={-28}
           className="w-auto"
-          style={{ ...BAR_STYLE, borderRadius: 12 }}
+          style={{ ...BAR_STYLE, borderRadius: 12, padding: 0 }}
         >
           <div className="flex items-center gap-1 px-1.5" style={{ height: 40 }}>
       {/* Undo / Redo */}
