@@ -67,7 +67,7 @@ export function CanvasSettingsDialog() {
       <DialogContent
         className="overflow-hidden p-0"
         style={{
-          width: 760,
+          width: 860,
           height: 560,
           maxWidth: "90vw",
           maxHeight: "85vh",

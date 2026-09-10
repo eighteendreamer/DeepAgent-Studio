@@ -284,7 +284,7 @@ export function ModelSettingsTab() {
                     setScenarioBinding(key, { ...binding, providerId: v || null })
                   }
                 >
-                  <SelectTrigger className="h-8 w-[130px] text-[12px]" style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}>
+                  <SelectTrigger className="h-8 w-[160px] text-[12px]" style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}>
                     <SelectValue placeholder="选择供应商" />
                   </SelectTrigger>
                   <SelectContent>
