@@ -9,7 +9,13 @@ import {
   faMaximize,
   faPlay,
   faStop,
+  faChevronUp,
 } from "@fortawesome/free-solid-svg-icons";
+import {
+  HoverCard,
+  HoverCardTrigger,
+  HoverCardContent,
+} from "../../../components/shadcn/hover-card";
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
@@ -114,15 +120,25 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
   };
 
   return (
-    <div
-      className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[9997] flex items-center gap-1 px-1.5"
-      style={{
-        ...BAR_STYLE,
-        height: 40,
-        borderRadius: 12,
-        maxWidth: "calc(100% - 32px)",
-      }}
-    >
+    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[9997]">
+      <HoverCard openDelay={120} closeDelay={300}>
+        <HoverCardTrigger asChild>
+          <button
+            className="flex items-center justify-center outline-none transition-all duration-300 hover:brightness-125 active:scale-95"
+            style={{ ...BAR_STYLE, width: 44, height: 28, borderRadius: 999, cursor: "pointer" }}
+            title="工具栏"
+          >
+            <FontAwesomeIcon icon={faChevronUp} style={{ fontSize: 12, color: ICON_COLOR }} />
+          </button>
+        </HoverCardTrigger>
+        <HoverCardContent
+          side="top"
+          align="center"
+          sideOffset={8}
+          className="w-auto"
+          style={{ ...BAR_STYLE, borderRadius: 12 }}
+        >
+          <div className="flex items-center gap-1 px-1.5" style={{ height: 40 }}>
       {/* Undo / Redo */}
       <button className={BTN_CLASS} onClick={handleUndo} disabled={!canUndo} title="撤销">
         <FontAwesomeIcon icon={faRotateLeft} style={{ fontSize: 14, color: canUndo ? ICON_COLOR : ICON_MUTED }} />
@@ -211,6 +227,9 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
         <FontAwesomeIcon icon={running ? faStop : faPlay} style={{ fontSize: 10 }} />
         {running ? "停止" : "运行"}
       </button>
+          </div>
+        </HoverCardContent>
+      </HoverCard>
     </div>
   );
 }
