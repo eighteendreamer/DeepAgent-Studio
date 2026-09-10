@@ -2484,20 +2484,17 @@ html:not(.dark) .reasoning-slider-fill {
   filter: drop-shadow(0 0 6px rgba(59, 130, 246, 0.3));
 }
 
-/* Space-pan cursors */
-.studio-workflow-canvas.wf-pan-mode {
-  cursor: grab;
-}
-.studio-workflow-canvas.wf-pan-mode.wf-panning {
-  cursor: grabbing;
-}
-.studio-workflow-canvas.wf-pan-mode .react-flow__node,
-.studio-workflow-canvas.wf-pan-mode .react-flow__handle {
-  cursor: grab;
-}
-.studio-workflow-canvas.wf-pan-mode.wf-panning .react-flow__node,
-.studio-workflow-canvas.wf-pan-mode.wf-panning .react-flow__handle {
-  cursor: grabbing;
+/* System default cursors (ReactFlow defaults to grab/grabbing hand icons) */
+.studio-workflow-canvas .react-flow__pane,
+.studio-workflow-canvas .react-flow__pane.draggable,
+.studio-workflow-canvas .react-flow__pane.dragging,
+.studio-workflow-canvas .react-flow__pane.selection,
+.studio-workflow-canvas .react-flow__node,
+.studio-workflow-canvas .react-flow__node.selectable,
+.studio-workflow-canvas .react-flow__node.draggable,
+.studio-workflow-canvas .react-flow__node.draggable.dragging,
+.studio-workflow-canvas .react-flow__nodesselection-rect {
+  cursor: default;
 }
 
 /* Selection box */

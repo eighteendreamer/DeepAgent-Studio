@@ -168,19 +168,6 @@ function WorkflowCanvasInner() {
   );
 
   useEffect(() => {
-    const updatePanClasses = () => {
-      const el = rfWrapperRef.current?.querySelector(".studio-workflow-canvas");
-      if (!el) return;
-      if (isSpaceHeld) {
-        el.classList.add("wf-pan-mode");
-      } else {
-        el.classList.remove("wf-pan-mode", "wf-panning");
-      }
-    };
-    updatePanClasses();
-  }, [isSpaceHeld]);
-
-  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && !isEditableTarget(e.target)) {
         e.preventDefault();
