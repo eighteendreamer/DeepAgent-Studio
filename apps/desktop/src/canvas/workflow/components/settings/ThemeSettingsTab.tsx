@@ -1,5 +1,6 @@
 import { useTheme, type ThemeMode } from "../../../../hooks/useTheme";
 import { Sun, Moon, Monitor } from "lucide-react";
+import { TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER_COLOR, CARD_BG, ACCENT } from "../CanvasSettingsDialog";
 
 interface ThemeOption {
   mode: ThemeMode;
@@ -19,10 +20,10 @@ export function ThemeSettingsTab() {
 
   return (
     <>
-      <h2 className="text-lg font-semibold mb-1" style={{ color: "var(--theme-fg, #111)" }}>
-        主题设置
+      <h2 className="text-lg font-semibold mb-1" style={{ color: TEXT_PRIMARY }}>
+        主题
       </h2>
-      <p className="text-[12px] mb-6" style={{ color: "var(--theme-text-secondary, #666)" }}>
+      <p className="text-[12px] mb-6" style={{ color: TEXT_MUTED }}>
         与主窗口共享同一套主题状态，切换即时同步到全部窗口。画布节点区保持 Penguin 暗色风格不变。
       </p>
 
@@ -38,27 +39,27 @@ export function ThemeSettingsTab() {
               }}
               className="w-full flex items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors"
               style={{
-                borderColor: active ? "var(--theme-accent, #339CFF)" : "var(--theme-border, rgba(0,0,0,0.08))",
-                background: active ? "rgba(51, 156, 255, 0.06)" : "transparent",
+                borderColor: active ? ACCENT : BORDER_COLOR,
+                background: active ? "rgba(51, 156, 255, 0.1)" : CARD_BG,
               }}
             >
               <Icon
                 size={18}
                 strokeWidth={1.8}
-                style={{ color: active ? "var(--theme-accent, #339CFF)" : "var(--theme-text-secondary, #666)" }}
+                style={{ color: active ? ACCENT : TEXT_SECONDARY }}
               />
               <div className="flex-1">
-                <div className="text-[13px] font-medium" style={{ color: "var(--theme-fg, #111)" }}>
+                <div className="text-[13px] font-medium" style={{ color: TEXT_PRIMARY }}>
                   {label}
                 </div>
-                <div className="text-[11px]" style={{ color: "var(--theme-text-secondary, #999)" }}>
+                <div className="text-[11px]" style={{ color: TEXT_MUTED }}>
                   {desc}
                 </div>
               </div>
               {active && (
                 <div
                   className="rounded-full px-2.5 py-0.5 text-[10px] font-medium"
-                  style={{ background: "var(--theme-accent, #339CFF)", color: "#fff" }}
+                  style={{ background: ACCENT, color: "#fff" }}
                 >
                   当前
                 </div>

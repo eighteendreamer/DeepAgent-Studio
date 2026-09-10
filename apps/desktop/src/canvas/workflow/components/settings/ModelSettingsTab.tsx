@@ -15,6 +15,7 @@ import {
   type ModelProtocol,
   type ScenarioKind,
 } from "../../store/canvasSettingsStore";
+import { TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER_COLOR, CARD_BG, INPUT_BG, ACCENT } from "../CanvasSettingsDialog";
 
 const PROTOCOLS: { value: ModelProtocol; label: string }[] = [
   { value: "openai", label: "OpenAI 兼容" },
@@ -88,21 +89,31 @@ export function ModelSettingsTab() {
 
   return (
     <>
-      <h2 className="text-lg font-semibold mb-1" style={{ color: "var(--theme-fg, #111)" }}>
-        模型设置
+      <h2 className="text-lg font-semibold mb-1" style={{ color: TEXT_PRIMARY }}>
+        模型
       </h2>
-      <p className="text-[12px] mb-6" style={{ color: "var(--theme-text-secondary, #666)" }}>
+      <p className="text-[12px] mb-6" style={{ color: TEXT_MUTED }}>
         添加模型供应商，然后为文本、生图、视频三种场景分配对应的模型。
       </p>
 
       {/* Provider list */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-[13px] font-semibold" style={{ color: "var(--theme-fg, #111)" }}>
+          <h3 className="text-[13px] font-semibold" style={{ color: TEXT_PRIMARY }}>
             供应商
           </h3>
           {!showForm && (
-            <Button variant="outline" size="sm" onClick={handleAdd} className="h-7 text-[12px]">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleAdd}
+              className="h-7 text-[12px]"
+              style={{
+                borderColor: BORDER_COLOR,
+                color: TEXT_SECONDARY,
+                background: "transparent",
+              }}
+            >
               <Plus size={13} className="mr-1" />
               添加
             </Button>
@@ -112,7 +123,7 @@ export function ModelSettingsTab() {
         {providers.length === 0 && !showForm && (
           <div
             className="rounded-lg border border-dashed px-4 py-6 text-center text-[12px]"
-            style={{ borderColor: "var(--theme-border, #ddd)", color: "var(--theme-text-secondary, #999)" }}
+            style={{ borderColor: BORDER_COLOR, color: TEXT_MUTED }}
           >
             暂无供应商，点击上方"添加"按钮配置
           </div>
@@ -123,30 +134,42 @@ export function ModelSettingsTab() {
             <div
               key={p.id}
               className="flex items-center justify-between rounded-lg border px-3 py-2"
-              style={{ borderColor: "var(--theme-border, #ddd)" }}
+              style={{ borderColor: BORDER_COLOR, background: CARD_BG }}
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-[13px] font-medium" style={{ color: "var(--theme-fg, #111)" }}>
+                  <span className="text-[13px] font-medium" style={{ color: TEXT_PRIMARY }}>
                     {p.name}
                   </span>
                   <span
                     className="rounded px-1.5 py-0.5 text-[10px]"
-                    style={{ background: "rgba(0,0,0,0.05)", color: "var(--theme-text-secondary, #666)" }}
+                    style={{ background: INPUT_BG, color: TEXT_SECONDARY }}
                   >
                     {PROTOCOLS.find((x) => x.value === p.protocol)?.label ?? p.protocol}
                   </span>
                 </div>
-                <div className="truncate text-[11px]" style={{ color: "var(--theme-text-secondary, #999)" }}>
+                <div className="truncate text-[11px]" style={{ color: TEXT_MUTED }}>
                   {p.baseUrl || "未设置 Base URL"}
                 </div>
               </div>
               <div className="flex items-center gap-1">
-                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => handleEdit(p.id)}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  onClick={() => handleEdit(p.id)}
+                  style={{ color: TEXT_SECONDARY }}
+                >
                   <Pencil size={12} />
                 </Button>
-                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => removeProvider(p.id)}>
-                  <Trash2 size={12} className="text-red-500" />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  onClick={() => removeProvider(p.id)}
+                  style={{ color: "#ef4444" }}
+                >
+                  <Trash2 size={12} />
                 </Button>
               </div>
             </div>
@@ -156,25 +179,26 @@ export function ModelSettingsTab() {
         {showForm && (
           <div
             className="mt-3 rounded-lg border p-4 space-y-3"
-            style={{ borderColor: "var(--theme-border, #ddd)" }}
+            style={{ borderColor: BORDER_COLOR, background: CARD_BG }}
           >
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label className="text-[11px]">名称</Label>
+                <Label className="text-[11px]" style={{ color: TEXT_SECONDARY }}>名称</Label>
                 <Input
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder="如：DeepSeek 官方"
                   className="h-8 text-[12px]"
+                  style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-[11px]">协议</Label>
+                <Label className="text-[11px]" style={{ color: TEXT_SECONDARY }}>协议</Label>
                 <Select
                   value={form.protocol}
                   onValueChange={(v) => setForm({ ...form, protocol: v as ModelProtocol })}
                 >
-                  <SelectTrigger className="h-8 text-[12px]">
+                  <SelectTrigger className="h-8 text-[12px]" style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -188,29 +212,43 @@ export function ModelSettingsTab() {
               </div>
             </div>
             <div className="space-y-1">
-              <Label className="text-[11px]">Base URL</Label>
+              <Label className="text-[11px]" style={{ color: TEXT_SECONDARY }}>Base URL</Label>
               <Input
                 value={form.baseUrl}
                 onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
                 placeholder="https://api.deepseek.com/v1"
                 className="h-8 text-[12px]"
+                style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-[11px]">API Key</Label>
+              <Label className="text-[11px]" style={{ color: TEXT_SECONDARY }}>API Key</Label>
               <Input
                 type="password"
                 value={form.apiKey}
                 onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
                 placeholder="sk-..."
                 className="h-8 text-[12px]"
+                style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}
               />
             </div>
             <div className="flex justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={handleCancel} className="h-7 text-[12px]">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCancel}
+                className="h-7 text-[12px]"
+                style={{ borderColor: BORDER_COLOR, color: TEXT_SECONDARY, background: "transparent" }}
+              >
                 取消
               </Button>
-              <Button size="sm" onClick={handleSave} className="h-7 text-[12px]" disabled={!form.name.trim()}>
+              <Button
+                size="sm"
+                onClick={handleSave}
+                className="h-7 text-[12px]"
+                disabled={!form.name.trim()}
+                style={{ background: ACCENT, color: "#fff" }}
+              >
                 保存
               </Button>
             </div>
@@ -220,7 +258,7 @@ export function ModelSettingsTab() {
 
       {/* Scenario bindings */}
       <div>
-        <h3 className="text-[13px] font-semibold mb-3" style={{ color: "var(--theme-fg, #111)" }}>
+        <h3 className="text-[13px] font-semibold mb-3" style={{ color: TEXT_PRIMARY }}>
           场景绑定
         </h3>
         <div className="space-y-3">
@@ -230,13 +268,13 @@ export function ModelSettingsTab() {
               <div
                 key={key}
                 className="flex items-center gap-4 rounded-lg border px-3 py-2"
-                style={{ borderColor: "var(--theme-border, #ddd)" }}
+                style={{ borderColor: BORDER_COLOR, background: CARD_BG }}
               >
                 <div className="w-20 flex-shrink-0">
-                  <div className="text-[13px] font-medium" style={{ color: "var(--theme-fg, #111)" }}>
+                  <div className="text-[13px] font-medium" style={{ color: TEXT_PRIMARY }}>
                     {label}
                   </div>
-                  <div className="text-[10px]" style={{ color: "var(--theme-text-secondary, #999)" }}>
+                  <div className="text-[10px]" style={{ color: TEXT_MUTED }}>
                     {desc}
                   </div>
                 </div>
@@ -246,7 +284,7 @@ export function ModelSettingsTab() {
                     setScenarioBinding(key, { ...binding, providerId: v || null })
                   }
                 >
-                  <SelectTrigger className="h-8 w-[160px] text-[12px]">
+                  <SelectTrigger className="h-8 w-[160px] text-[12px]" style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}>
                     <SelectValue placeholder="选择供应商" />
                   </SelectTrigger>
                   <SelectContent>
@@ -264,6 +302,7 @@ export function ModelSettingsTab() {
                   }
                   placeholder="模型名称（如 deepseek-chat）"
                   className="h-8 flex-1 text-[12px]"
+                  style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}
                 />
               </div>
             );

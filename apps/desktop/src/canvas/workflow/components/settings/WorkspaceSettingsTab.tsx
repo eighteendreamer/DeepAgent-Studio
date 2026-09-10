@@ -13,6 +13,7 @@ import {
   parseWorkflowImport,
 } from "../../utils/workflowImportExport";
 import { useRef } from "react";
+import { TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER_COLOR, CARD_BG, INPUT_BG } from "../CanvasSettingsDialog";
 
 async function pickDirectory(): Promise<string | null> {
   if (!isTauri()) return null;
@@ -36,13 +37,13 @@ function DirRow({ label, desc, value, onBrowse, onClear, disabled, disabledHint 
   return (
     <div
       className="rounded-lg border px-3 py-3 space-y-2"
-      style={{ borderColor: "var(--theme-border, #ddd)" }}
+      style={{ borderColor: BORDER_COLOR, background: CARD_BG }}
     >
       <div>
-        <Label className="text-[13px] font-medium" style={{ color: "var(--theme-fg, #111)" }}>
+        <Label className="text-[13px] font-medium" style={{ color: TEXT_PRIMARY }}>
           {label}
         </Label>
-        <div className="text-[11px]" style={{ color: "var(--theme-text-secondary, #999)" }}>
+        <div className="text-[11px]" style={{ color: TEXT_MUTED }}>
           {desc}
         </div>
       </div>
@@ -52,6 +53,7 @@ function DirRow({ label, desc, value, onBrowse, onClear, disabled, disabledHint 
           value={value}
           placeholder={disabled ? disabledHint : "未设置"}
           className="h-8 flex-1 text-[12px]"
+          style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}
         />
         <Button
           variant="outline"
@@ -60,12 +62,19 @@ function DirRow({ label, desc, value, onBrowse, onClear, disabled, disabledHint 
           disabled={disabled}
           title={disabled ? disabledHint : "浏览"}
           onClick={onBrowse}
+          style={{ borderColor: BORDER_COLOR, color: TEXT_SECONDARY, background: "transparent" }}
         >
           <FolderOpen size={13} className="mr-1" />
           浏览
         </Button>
         {value && (
-          <Button variant="ghost" size="sm" className="h-8 text-[12px]" onClick={onClear}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 text-[12px]"
+            onClick={onClear}
+            style={{ color: TEXT_SECONDARY }}
+          >
             清除
           </Button>
         )}
@@ -127,24 +136,36 @@ export function WorkspaceSettingsTab() {
 
   return (
     <>
-      <h2 className="text-lg font-semibold mb-1" style={{ color: "var(--theme-fg, #111)" }}>
-        工作区设置
+      <h2 className="text-lg font-semibold mb-1" style={{ color: TEXT_PRIMARY }}>
+        工作区
       </h2>
-      <p className="text-[12px] mb-6" style={{ color: "var(--theme-text-secondary, #666)" }}>
+      <p className="text-[12px] mb-6" style={{ color: TEXT_MUTED }}>
         指定图片与视频生成结果的本地缓存目录，或导入/导出工作流。
       </p>
 
       {/* Import/Export */}
-      <div className="mb-6 p-4 rounded-lg border" style={{ borderColor: "var(--theme-border, #ddd)" }}>
-        <Label className="text-[13px] font-medium mb-3 block" style={{ color: "var(--theme-fg, #111)" }}>
+      <div className="mb-6 p-4 rounded-lg border" style={{ borderColor: BORDER_COLOR, background: CARD_BG }}>
+        <Label className="text-[13px] font-medium mb-3 block" style={{ color: TEXT_PRIMARY }}>
           工作流导入导出
         </Label>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 text-[12px]" onClick={handleExport}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-[12px]"
+            onClick={handleExport}
+            style={{ borderColor: BORDER_COLOR, color: TEXT_SECONDARY, background: "transparent" }}
+          >
             <Download size={13} className="mr-1" />
             导出
           </Button>
-          <Button variant="outline" size="sm" className="h-8 text-[12px]" onClick={handleImportClick}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-[12px]"
+            onClick={handleImportClick}
+            style={{ borderColor: BORDER_COLOR, color: TEXT_SECONDARY, background: "transparent" }}
+          >
             <Upload size={13} className="mr-1" />
             导入
           </Button>
@@ -156,7 +177,7 @@ export function WorkspaceSettingsTab() {
             onChange={handleImportFile}
           />
         </div>
-        <div className="text-[11px] mt-2" style={{ color: "var(--theme-text-secondary, #999)" }}>
+        <div className="text-[11px] mt-2" style={{ color: TEXT_MUTED }}>
           导出当前画布为 JSON 文件，或从 JSON 文件导入工作流
         </div>
       </div>

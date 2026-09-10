@@ -1,5 +1,6 @@
 import { MousePointer2, Square, Maximize2, Copy, Clipboard, Hand, Undo2, Redo2, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER_COLOR, CARD_BG } from "../CanvasSettingsDialog";
 
 interface CanvasShortcut {
   name: string;
@@ -27,7 +28,7 @@ function KeyCap({ children }: { children: string }) {
       className="inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[10px] font-mono font-medium"
       style={{
         background: "rgba(255,255,255,0.08)",
-        color: "rgba(255,255,255,0.9)",
+        color: TEXT_PRIMARY,
         border: "1px solid rgba(255,255,255,0.12)",
         minWidth: "20px",
       }}
@@ -43,27 +44,27 @@ function ShortcutCard({ shortcut }: { shortcut: CanvasShortcut }) {
     <div
       className="rounded-lg p-3 transition-colors"
       style={{
-        background: "rgba(255,255,255,0.04)",
-        border: "1px solid rgba(255,255,255,0.08)",
+        background: CARD_BG,
+        border: `1px solid ${BORDER_COLOR}`,
       }}
     >
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="flex items-center gap-2">
-          <Icon size={14} strokeWidth={1.8} style={{ color: "rgba(255,255,255,0.5)" }} />
-          <span className="text-[12px] font-medium" style={{ color: "rgba(255,255,255,0.9)" }}>
+          <Icon size={14} strokeWidth={1.8} style={{ color: TEXT_SECONDARY }} />
+          <span className="text-[12px] font-medium" style={{ color: TEXT_PRIMARY }}>
             {name}
           </span>
         </div>
         <div className="flex items-center gap-1">
           {keys.map((k, i) => (
             <span key={i} className="flex items-center gap-1">
-              {i > 0 && <span style={{ color: "rgba(255,255,255,0.3)" }}>+</span>}
+              {i > 0 && <span style={{ color: TEXT_MUTED }}>+</span>}
               <KeyCap>{k}</KeyCap>
             </span>
           ))}
         </div>
       </div>
-      <div className="text-[10px]" style={{ color: "rgba(255,255,255,0.4)" }}>
+      <div className="text-[10px]" style={{ color: TEXT_MUTED }}>
         {desc}
       </div>
     </div>
@@ -76,16 +77,16 @@ export function ShortcutsSettingsTab() {
 
   return (
     <>
-      <h2 className="text-lg font-semibold mb-1" style={{ color: "rgba(255,255,255,0.95)" }}>
+      <h2 className="text-lg font-semibold mb-1" style={{ color: TEXT_PRIMARY }}>
         快捷键
       </h2>
-      <p className="text-[12px] mb-5" style={{ color: "rgba(255,255,255,0.4)" }}>
+      <p className="text-[12px] mb-5" style={{ color: TEXT_MUTED }}>
         画布专属快捷键，系统快捷键请在主窗口设置中查看。
       </p>
 
       <div className="space-y-4">
         <div>
-          <div className="text-[11px] font-medium mb-2 uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.35)" }}>
+          <div className="text-[11px] font-medium mb-2 uppercase tracking-wider" style={{ color: TEXT_MUTED }}>
             画布导航
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -96,7 +97,7 @@ export function ShortcutsSettingsTab() {
         </div>
 
         <div>
-          <div className="text-[11px] font-medium mb-2 uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.35)" }}>
+          <div className="text-[11px] font-medium mb-2 uppercase tracking-wider" style={{ color: TEXT_MUTED }}>
             节点编辑
           </div>
           <div className="grid grid-cols-2 gap-2">
