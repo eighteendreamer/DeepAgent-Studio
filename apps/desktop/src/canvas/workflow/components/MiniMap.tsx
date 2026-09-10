@@ -121,8 +121,8 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
   };
 
   return (
-    <div className="absolute left-0 bottom-0 z-[80]" style={{ width: LENS_WIDTH + 20, height: LENS_HEIGHT + 20 }}>
-      <div style={{ ...SHELL_STYLE, marginLeft: 6, marginTop: 6 }}>
+    <div className="absolute left-0 bottom-0 z-[80]" style={{ width: LENS_WIDTH, height: LENS_HEIGHT }}>
+      <div style={SHELL_STYLE}>
         <svg width="100%" height="100%" viewBox={`0 0 ${LENS_WIDTH} ${LENS_HEIGHT}`}>
           {nodes.map((n) => {
             const nx = finiteOr(n.position.x, 0);
