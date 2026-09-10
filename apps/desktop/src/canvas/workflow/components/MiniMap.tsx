@@ -3,16 +3,15 @@ import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import type { WorkflowNode } from "../types";
 
-const LENS_WIDTH = 268;
-const LENS_HEIGHT = 168;
+const LENS_SIZE = 200;
 const MAP_PADDING = 12;
 const MAP_SCALE_MAX = 0.5;
 const NODE_W = 240;
 const NODE_H = 120;
 
 const SHELL_STYLE: React.CSSProperties = {
-  width: LENS_WIDTH,
-  height: LENS_HEIGHT,
+  width: LENS_SIZE,
+  height: LENS_SIZE,
   background: "rgba(30,30,35,0.45)",
   border: "1px solid rgba(255,255,255,0.08)",
   boxShadow: "0 18px 44px rgba(0,0,0,0.24)",
@@ -111,7 +110,7 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
   };
 
   const worldBounds = computeWorldBounds(nodes, viewportBounds);
-  const proj = computeProjection(worldBounds, viewportBounds, LENS_WIDTH, LENS_HEIGHT);
+  const proj = computeProjection(worldBounds, viewportBounds, LENS_SIZE, LENS_SIZE);
 
   const statusColor: Record<string, string> = {
     idle: "rgba(255,255,255,0.2)",
@@ -121,9 +120,9 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
   };
 
   return (
-    <div className="absolute left-0 bottom-0 z-[80]" style={{ width: LENS_WIDTH, height: LENS_HEIGHT }}>
+    <div className="absolute left-0 bottom-0 z-[80]" style={{ width: LENS_SIZE, height: LENS_SIZE }}>
       <div style={SHELL_STYLE}>
-        <svg width="100%" height="100%" viewBox={`0 0 ${LENS_WIDTH} ${LENS_HEIGHT}`}>
+        <svg width="100%" height="100%" viewBox={`0 0 ${LENS_SIZE} ${LENS_SIZE}`}>
           {nodes.map((n) => {
             const nx = finiteOr(n.position.x, 0);
             const ny = finiteOr(n.position.y, 0);
