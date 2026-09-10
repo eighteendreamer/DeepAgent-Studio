@@ -3,6 +3,8 @@ import type { Node, Edge } from "@xyflow/react";
 export type CanvasMode = "creative" | "professional";
 export type NodeStatus = "idle" | "running" | "completed" | "error";
 
+export type NodeAlignMode = "left" | "center-x" | "right" | "top" | "center-y" | "bottom";
+
 export type CreativeNodeKind =
   | "text-gen"
   | "image-gen"

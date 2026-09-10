@@ -7,7 +7,13 @@ import {
   type EdgeChange,
   type NodeChange,
 } from "@xyflow/react";
-import type { ProfessionalNodeData, ProfessionalNodeKind, WorkflowEdge, WorkflowNode } from "../types";
+import type {
+  NodeAlignMode,
+  ProfessionalNodeData,
+  ProfessionalNodeKind,
+  WorkflowEdge,
+  WorkflowNode,
+} from "../types";
 
 const SNAP_GRID = 24;
 
@@ -60,6 +66,7 @@ interface ProfessionalState {
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<ProfessionalNodeData>) => void;
   setSelectedIds: (ids: string[]) => void;
+  alignNodes: (mode: NodeAlignMode) => void;
 
   past: Array<{ nodes: WorkflowNode[]; edges: WorkflowEdge[] }>;
   future: Array<{ nodes: WorkflowNode[]; edges: WorkflowEdge[] }>;
@@ -144,6 +151,58 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
     const idSet = new Set(ids);
     set((s) => ({
       nodes: s.nodes.map((n) => ({ ...n, selected: idSet.has(n.id) })),
+    }));
+  },
+
+  alignNodes: (mode) => {
+    const state = get();
+    const selected = state.nodes.filter((n) => n.selected);
+    if (selected.length < 2) return;
+
+    const metrics = selected.map((n) => {
+      const width = n.measured?.width ?? n.width ?? 0;
+      const height = n.measured?.height ?? n.height ?? 0;
+      return { id: n.id, width, height, left: n.position.x, top: n.position.y };
+    });
+    const bounds = {
+      left: Math.min(...metrics.map((m) => m.left)),
+      right: Math.max(...metrics.map((m) => m.left + m.width)),
+      top: Math.min(...metrics.map((m) => m.top)),
+      bottom: Math.max(...metrics.map((m) => m.top + m.height)),
+    };
+    const centerX = (bounds.left + bounds.right) / 2;
+    const centerY = (bounds.top + bounds.bottom) / 2;
+    const metricById = new Map(metrics.map((m) => [m.id, m]));
+
+    state.pushHistory();
+    set((s) => ({
+      nodes: s.nodes.map((n) => {
+        const m = metricById.get(n.id);
+        if (!m) return n;
+        let x = n.position.x;
+        let y = n.position.y;
+        switch (mode) {
+          case "left":
+            x = bounds.left;
+            break;
+          case "center-x":
+            x = centerX - m.width / 2;
+            break;
+          case "right":
+            x = bounds.right - m.width;
+            break;
+          case "top":
+            y = bounds.top;
+            break;
+          case "center-y":
+            y = centerY - m.height / 2;
+            break;
+          case "bottom":
+            y = bounds.bottom - m.height;
+            break;
+        }
+        return { ...n, position: { x, y } };
+      }),
     }));
   },
 

@@ -12,6 +12,15 @@ import {
   faChevronUp,
 } from "@fortawesome/free-solid-svg-icons";
 import {
+  AlignHorizontalJustifyCenter,
+  AlignHorizontalJustifyEnd,
+  AlignHorizontalJustifyStart,
+  AlignVerticalJustifyCenter,
+  AlignVerticalJustifyEnd,
+  AlignVerticalJustifyStart,
+  type LucideIcon,
+} from "lucide-react";
+import {
   HoverCard,
   HoverCardTrigger,
   HoverCardContent,
@@ -20,6 +29,7 @@ import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import { runWorkflow, stopWorkflow, resetAllStatus, isWorkflowRunning } from "../utils/workflowExecutor";
+import type { NodeAlignMode } from "../types";
 import type { Viewport } from "@xyflow/react";
 import type { ReactFlowInstance } from "@xyflow/react";
 import { useState, useEffect } from "react";
@@ -51,6 +61,15 @@ const DIVIDER_STYLE: React.CSSProperties = {
   flexShrink: 0,
 };
 
+const ALIGN_BUTTONS: Array<{ mode: NodeAlignMode; title: string; Icon: LucideIcon }> = [
+  { mode: "left", title: "左对齐", Icon: AlignHorizontalJustifyStart },
+  { mode: "center-x", title: "水平居中对齐", Icon: AlignHorizontalJustifyCenter },
+  { mode: "right", title: "右对齐", Icon: AlignHorizontalJustifyEnd },
+  { mode: "top", title: "顶端对齐", Icon: AlignVerticalJustifyStart },
+  { mode: "center-y", title: "垂直居中对齐", Icon: AlignVerticalJustifyCenter },
+  { mode: "bottom", title: "底端对齐", Icon: AlignVerticalJustifyEnd },
+];
+
 export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
   const mode = useCanvasStore((s) => s.mode);
   const gridVisible = useCanvasStore((s) => s.gridVisible);
@@ -63,16 +82,27 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
   const creativePast = useCreativeStore((s) => s.past);
   const creativeFuture = useCreativeStore((s) => s.future);
   const creativeNodeCount = useCreativeStore((s) => s.nodes.length);
+  const creativeSelectedCount = useCreativeStore((s) => s.nodes.filter((n) => n.selected).length);
+  const creativeAlignNodes = useCreativeStore((s) => s.alignNodes);
 
   const proUndo = useProfessionalStore((s) => s.undo);
   const proRedo = useProfessionalStore((s) => s.redo);
   const proPast = useProfessionalStore((s) => s.past);
   const proFuture = useProfessionalStore((s) => s.future);
   const proNodeCount = useProfessionalStore((s) => s.nodes.length);
+  const proSelectedCount = useProfessionalStore((s) => s.nodes.filter((n) => n.selected).length);
+  const proAlignNodes = useProfessionalStore((s) => s.alignNodes);
 
   const canUndo = mode === "creative" ? creativePast.length > 0 : proPast.length > 0;
   const canRedo = mode === "creative" ? creativeFuture.length > 0 : proFuture.length > 0;
   const nodeCount = mode === "creative" ? creativeNodeCount : proNodeCount;
+  const selectedCount = mode === "creative" ? creativeSelectedCount : proSelectedCount;
+  const canAlign = selectedCount >= 2;
+
+  const handleAlign = (alignMode: NodeAlignMode) => {
+    if (mode === "creative") creativeAlignNodes(alignMode);
+    else proAlignNodes(alignMode);
+  };
 
   const [running, setRunning] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -142,16 +172,6 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
           style={{ ...BAR_STYLE, borderRadius: 12, padding: 0 }}
         >
           <div className="flex items-center gap-1 px-1.5" style={{ height: 40 }}>
-      {/* Undo / Redo */}
-      <button className={BTN_CLASS} onClick={handleUndo} disabled={!canUndo} title="撤销">
-        <FontAwesomeIcon icon={faRotateLeft} style={{ fontSize: 14, color: canUndo ? ICON_COLOR : ICON_MUTED }} />
-      </button>
-      <button className={BTN_CLASS} onClick={handleRedo} disabled={!canRedo} title="重做">
-        <FontAwesomeIcon icon={faRotateRight} style={{ fontSize: 14, color: canRedo ? ICON_COLOR : ICON_MUTED }} />
-      </button>
-
-      <div style={DIVIDER_STYLE} />
-
       {/* Grid / Snap */}
       <button
         className={BTN_CLASS}
@@ -175,10 +195,34 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
           style={{ fontSize: 14, color: snapToGrid ? ICON_ACTIVE : ICON_COLOR }}
         />
       </button>
+      <button className={BTN_CLASS} onClick={handleUndo} disabled={!canUndo} title="撤销">
+        <FontAwesomeIcon icon={faRotateLeft} style={{ fontSize: 14, color: canUndo ? ICON_COLOR : ICON_MUTED }} />
+      </button>
+      <button className={BTN_CLASS} onClick={handleRedo} disabled={!canRedo} title="重做">
+        <FontAwesomeIcon icon={faRotateRight} style={{ fontSize: 14, color: canRedo ? ICON_COLOR : ICON_MUTED }} />
+      </button>
 
       <div style={DIVIDER_STYLE} />
 
-      {/* Zoom */}
+      {/* Align */}
+      {ALIGN_BUTTONS.map(({ mode: alignMode, title, Icon }) => (
+        <button
+          key={alignMode}
+          className={BTN_CLASS}
+          onClick={() => handleAlign(alignMode)}
+          disabled={!canAlign}
+          title={canAlign ? title : "选择至少两个节点后可对齐"}
+        >
+          <Icon size={14} strokeWidth={1.8} color={canAlign ? ICON_COLOR : ICON_MUTED} />
+        </button>
+      ))}
+
+      <div style={DIVIDER_STYLE} />
+
+      {/* Fit screen + Zoom */}
+      <button className={BTN_CLASS} onClick={handleFitScreen} title="适应屏幕">
+        <FontAwesomeIcon icon={faMaximize} style={{ fontSize: 14, color: ICON_COLOR }} />
+      </button>
       <button className={BTN_CLASS} onClick={handleZoomOut} title="缩小">
         <FontAwesomeIcon icon={faMagnifyingGlassMinus} style={{ fontSize: 14, color: ICON_COLOR }} />
       </button>
@@ -206,14 +250,9 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
 
       <div style={DIVIDER_STYLE} />
 
-      {/* Fit screen */}
-      <button className={BTN_CLASS} onClick={handleFitScreen} title="适应屏幕">
-        <FontAwesomeIcon icon={faMaximize} style={{ fontSize: 14, color: ICON_COLOR }} />
-      </button>
-
       {/* Node count */}
       <span className="px-1 text-xs whitespace-nowrap" style={{ color: "rgba(248,248,248,0.45)" }}>
-        {nodeCount} 节点
+        {selectedCount > 0 ? `${selectedCount}/${nodeCount}` : `${nodeCount} 节点`}
       </span>
 
       <div style={DIVIDER_STYLE} />
