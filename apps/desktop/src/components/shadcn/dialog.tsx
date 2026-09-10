@@ -99,10 +99,10 @@ const DialogContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTML
         origin={origin}
         onClose={() => setOpen(false)}
         panelClassName={className}
+        panelProps={{ role: "dialog", "aria-modal": true, ...props }}
+        panelRef={ref}
       >
-        <div ref={ref} role="dialog" aria-modal="true" className="flex min-h-0 flex-1 flex-col" {...props}>
-          {children}
-        </div>
+        {children}
       </GlobalModal>
     );
   },

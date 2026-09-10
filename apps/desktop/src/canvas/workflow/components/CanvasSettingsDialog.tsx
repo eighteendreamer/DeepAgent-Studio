@@ -111,7 +111,7 @@ export function CanvasSettingsDialog() {
               );
             })}
           </nav>
-          <div className="min-w-0 flex-1 overflow-y-auto overflow-x-auto px-8 py-6">
+          <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-8 py-6">
             <TabContent tab={activeTab} />
           </div>
         </div>

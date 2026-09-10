@@ -7,7 +7,9 @@ import {
   useState,
   type HTMLAttributes,
   type MouseEvent,
+  type MutableRefObject,
   type ReactNode,
+  type Ref,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -30,6 +32,8 @@ export interface GlobalModalProps {
   origin?: ModalTriggerOrigin | null;
   className?: string;
   panelClassName?: string;
+  panelProps?: Omit<HTMLAttributes<HTMLDivElement>, "children" | "className">;
+  panelRef?: Ref<HTMLDivElement>;
   closeOnBackdrop?: boolean;
   closeOnEscape?: boolean;
   zIndexClass?: string;
@@ -45,13 +49,15 @@ export function GlobalModal({
   origin = null,
   className,
   panelClassName,
+  panelProps,
+  panelRef,
   closeOnBackdrop = true,
   closeOnEscape = true,
   zIndexClass = "z-[200]",
 }: GlobalModalProps) {
   const [mounted, setMounted] = useState(open);
   const backdropRef = useRef<HTMLDivElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
+  const panelElementRef = useRef<HTMLDivElement | null>(null);
   const originRef = useRef<ModalTriggerOrigin | null>(origin);
   const tlRef = useRef<ReturnType<typeof playModalOriginOpen> | null>(null);
   const closingRef = useRef(false);
@@ -73,7 +79,7 @@ export function GlobalModal({
     if (closingRef.current || !mounted) return;
 
     const backdrop = backdropRef.current;
-    const panel = panelRef.current;
+    const panel = panelElementRef.current;
     if (!backdrop || !panel) {
       finishClose();
       return;
@@ -100,7 +106,7 @@ export function GlobalModal({
     if (!mounted || !open || closingRef.current) return;
 
     const backdrop = backdropRef.current;
-    const panel = panelRef.current;
+    const panel = panelElementRef.current;
     if (!backdrop || !panel) return;
 
     tlRef.current?.kill();
@@ -136,6 +142,17 @@ export function GlobalModal({
     }
   };
 
+  const { onMouseDown: onPanelMouseDown, ...restPanelProps } = panelProps ?? {};
+
+  const setPanelRef = (element: HTMLDivElement | null) => {
+    panelElementRef.current = element;
+    if (typeof panelRef === "function") {
+      panelRef(element);
+    } else if (panelRef) {
+      (panelRef as MutableRefObject<HTMLDivElement | null>).current = element;
+    }
+  };
+
   return createPortal(
     <div
       className={cn("fixed inset-0 flex items-center justify-center px-4", zIndexClass, className)}
@@ -143,13 +160,17 @@ export function GlobalModal({
     >
       <div ref={backdropRef} className="absolute inset-0 bg-black/20" aria-hidden="true" />
       <Panel
-        ref={panelRef}
+        ref={setPanelRef}
         menu={false}
+        {...restPanelProps}
         className={cn(
           "relative flex max-h-[88vh] w-full max-w-[620px] flex-col overflow-hidden",
           panelClassName,
         )}
-        onMouseDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => {
+          event.stopPropagation();
+          onPanelMouseDown?.(event);
+        }}
       >
         {children}
       </Panel>
