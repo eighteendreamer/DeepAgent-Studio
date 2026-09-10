@@ -285,8 +285,8 @@ function WorkflowCanvasInner() {
   const handleWheel = useCallback(
     (e: WheelEvent) => {
       if (!rfInstance) return;
-      // Floating node panels scroll natively; don't pan the canvas under them
-      if (e.target instanceof HTMLElement && e.target.closest(".react-flow__node-toolbar")) return;
+      // Floating layers (node toolbar / node picker / context menu) scroll natively; don't pan the canvas under them
+      if (e.target instanceof HTMLElement && e.target.closest(".react-flow__node-toolbar, .wf-floating-layer")) return;
       e.preventDefault();
 
       const vp = rfInstance.getViewport();

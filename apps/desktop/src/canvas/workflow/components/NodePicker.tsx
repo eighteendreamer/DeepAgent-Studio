@@ -54,10 +54,10 @@ export function NodePicker() {
 
   return (
     <>
-      <div className="fixed inset-0 z-[9998]" onClick={closeNodePicker} />
+      <div className="wf-floating-layer fixed inset-0 z-[9998]" onClick={closeNodePicker} />
       <div
         ref={panelRef}
-        className="fixed z-[9999] overflow-hidden rounded-2xl"
+        className="wf-floating-layer fixed z-[9999] overflow-hidden rounded-2xl"
         style={{
           left: nodePicker.x,
           top: nodePicker.y,
@@ -73,7 +73,7 @@ export function NodePicker() {
             添加节点
           </span>
         </div>
-        <div className="max-h-80 overflow-y-auto p-1.5">
+        <div className="max-h-80 overflow-y-auto overscroll-contain p-1.5">
           {categories.map((cat) => (
             <div key={cat.group} className="mb-1">
               <div className="px-2 py-1">

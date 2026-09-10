@@ -58,9 +58,9 @@ export function ContextMenu({ menu, onClose }: Props) {
 
   return (
     <>
-      <div className="fixed inset-0 z-[9998]" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }} />
+      <div className="wf-floating-layer fixed inset-0 z-[9998]" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }} />
       <div
-        className="fixed z-[9999] overflow-hidden rounded-xl"
+        className="wf-floating-layer fixed z-[9999] overflow-hidden rounded-xl"
         style={{
           left: menu.x,
           top: menu.y,
@@ -77,7 +77,7 @@ export function ContextMenu({ menu, onClose }: Props) {
             添加节点
           </span>
         </div>
-        <div className="max-h-72 overflow-y-auto p-1">
+        <div className="max-h-72 overflow-y-auto overscroll-contain p-1">
           {categories.map((cat) => (
             <div key={cat.group} className="mb-0.5">
               <div className="px-2 py-0.5">
