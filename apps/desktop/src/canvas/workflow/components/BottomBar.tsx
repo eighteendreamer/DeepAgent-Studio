@@ -265,7 +265,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
       <div style={DIVIDER_STYLE} />
 
       {/* Settings */}
-      <button className={BTN_CLASS} title="设置">
+      <button className={BTN_CLASS} title="设置" onClick={useCanvasStore.getState().openSettings}>
         <Settings size={14} strokeWidth={1.8} color={ICON_COLOR} />
       </button>
           </div>

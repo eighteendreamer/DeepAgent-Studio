@@ -24,6 +24,10 @@ interface CanvasState {
 
   pendingConnection: { nodeId: string; handleType: "source" | "target" } | null;
   setPendingConnection: (c: { nodeId: string; handleType: "source" | "target" } | null) => void;
+
+  settingsOpen: boolean;
+  openSettings: () => void;
+  closeSettings: () => void;
 }
 
 export const useCanvasStore = create<CanvasState>((set) => ({
@@ -48,4 +52,8 @@ export const useCanvasStore = create<CanvasState>((set) => ({
 
   pendingConnection: null,
   setPendingConnection: (c) => set({ pendingConnection: c }),
+
+  settingsOpen: false,
+  openSettings: () => set({ settingsOpen: true }),
+  closeSettings: () => set({ settingsOpen: false }),
 }));

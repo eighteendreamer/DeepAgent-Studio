@@ -19,6 +19,7 @@ import { BottomBar as WorkflowBottomBar } from "./workflow/components/BottomBar"
 import { MiniMap } from "./workflow/components/MiniMap";
 import { NodePicker } from "./workflow/components/NodePicker";
 import { ContextMenu, useContextMenu } from "./workflow/components/ContextMenu";
+import { CanvasSettingsDialog } from "./workflow/components/CanvasSettingsDialog";
 import { WorkflowNodeShell } from "./workflow/components/WorkflowNodeShell";
 import { WorkflowEdge } from "./workflow/components/WorkflowEdge";
 import { useWorkflowPersistence } from "./workflow/hooks/useWorkflowPersistence";
@@ -428,6 +429,7 @@ function WorkflowCanvasInner() {
       <MiniMap containerWidth={containerSize.width} containerHeight={containerSize.height} />
       <NodePicker />
       <ContextMenu menu={menu} onClose={closeMenu} />
+      <CanvasSettingsDialog />
     </div>
   );
 }
