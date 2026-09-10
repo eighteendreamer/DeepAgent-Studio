@@ -10,7 +10,6 @@ import {
   type FinalConnectionState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { CanvasTitleBar } from "./CanvasTitleBar";
 import { useCanvasStore } from "./workflow/store/canvasStore";
 import { useCreativeStore } from "./workflow/store/creativeStore";
 import { useProfessionalStore } from "./workflow/store/professionalStore";
@@ -436,13 +435,10 @@ function WorkflowCanvasInner() {
 
 export function CanvasApp() {
   return (
-    <div className="flex h-screen w-full flex-col overflow-hidden text-text-base">
-      <CanvasTitleBar />
-      <div className="min-h-0 flex-1">
-        <ReactFlowProvider>
-          <WorkflowCanvasInner />
-        </ReactFlowProvider>
-      </div>
+    <div className="h-screen w-full overflow-hidden text-text-base">
+      <ReactFlowProvider>
+        <WorkflowCanvasInner />
+      </ReactFlowProvider>
     </div>
   );
 }

@@ -2039,7 +2039,7 @@ export async function openStudioCanvasWindow(): Promise<void> {
       height: 820,
       minWidth: 840,
       minHeight: 560,
-      decorations: false,
+      decorations: true,
       shadow: true,
       focus: true,
     });
