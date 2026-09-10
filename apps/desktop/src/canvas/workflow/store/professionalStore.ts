@@ -65,6 +65,7 @@ interface ProfessionalState {
   addNodeAt: (kind: ProfessionalNodeKind, x: number, y: number, data: Partial<ProfessionalNodeData>) => string;
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<ProfessionalNodeData>) => void;
+  setNodes: (nodes: WorkflowNode[]) => void;
   setSelectedIds: (ids: string[]) => void;
   alignNodes: (mode: NodeAlignMode) => void;
 
@@ -151,6 +152,10 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
         n.id === id ? { ...n, data: { ...n.data, ...data } } : n,
       ),
     }));
+  },
+
+  setNodes: (nodes) => {
+    set({ nodes });
   },
 
   setSelectedIds: (ids) => {

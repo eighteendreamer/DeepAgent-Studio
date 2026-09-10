@@ -16,6 +16,7 @@ import {
   Undo2,
   ZoomIn,
   ZoomOut,
+  LayoutGrid,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -27,6 +28,7 @@ import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import { runWorkflow, stopWorkflow, resetAllStatus, isWorkflowRunning } from "../utils/workflowExecutor";
+import { applyDagreLayout } from "../utils/layout";
 import type { NodeAlignMode } from "../types";
 import type { Viewport } from "@xyflow/react";
 import type { ReactFlowInstance } from "@xyflow/react";
@@ -148,6 +150,22 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
     rfInstance?.setViewport({ ...viewport, zoom: next });
   };
 
+  const handleAutoLayout = () => {
+    const store = mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
+    const nodes = store.nodes;
+    const edges = store.edges;
+    if (nodes.length === 0) return;
+
+    store.pushHistory();
+    const laidOut = applyDagreLayout(nodes, edges, { direction: "TB", nodeSpacing: 80, rankSpacing: 120 });
+    store.setNodes(laidOut);
+
+    // Fit view after layout
+    setTimeout(() => {
+      rfInstance?.fitView({ padding: 0.2, duration: 300, maxZoom: 0.9 });
+    }, 50);
+  };
+
   return (
     <div
       className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-[9997]${toolsOpen ? " pointer-events-none" : ""}`}
@@ -208,6 +226,18 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
           <Icon size={14} strokeWidth={1.8} color={canAlign ? ICON_COLOR : ICON_MUTED} />
         </button>
       ))}
+
+      <div style={DIVIDER_STYLE} />
+
+      {/* Auto layout */}
+      <button
+        className={BTN_CLASS}
+        onClick={handleAutoLayout}
+        disabled={nodeCount === 0}
+        title={nodeCount > 0 ? "自动布局" : "画布为空"}
+      >
+        <LayoutGrid size={14} strokeWidth={1.8} color={nodeCount > 0 ? ICON_COLOR : ICON_MUTED} />
+      </button>
 
       <div style={DIVIDER_STYLE} />
 
