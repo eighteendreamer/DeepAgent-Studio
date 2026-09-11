@@ -93,7 +93,7 @@ const SettingsSidebar = lazy(() =>
   import("./components/SettingsSidebar").then((module) => ({ default: module.SettingsSidebar })),
 );
 
-type View = "start" | "chat" | "skills" | "knowledge" | "plugins" | "automation" | "settings";
+type View = "start" | "chat" | "skills" | "knowledge" | "plugins" | "automation" | "remote" | "settings";
 
 const LEFT_SIDEBAR_OPEN_KEY = "deepagent:left-sidebar-open";
 const STREAM_RENDER_INTERVAL_MS = 33;
@@ -2018,7 +2018,11 @@ export function App() {
                 onArchiveProject={onArchiveProject}
                 onOpenSearch={() => setIsSearchOpen(true)}
                 activeSurface={
-                  view === "skills" || view === "knowledge" || view === "plugins" || view === "automation"
+                  view === "skills" ||
+                  view === "knowledge" ||
+                  view === "plugins" ||
+                  view === "automation" ||
+                  view === "remote"
                     ? view
                     : null
                 }
@@ -2026,6 +2030,7 @@ export function App() {
                 onOpenKnowledge={() => navigateTo(activeId, "knowledge")}
                 onOpenPlugins={() => navigateTo(activeId, "plugins")}
                 onOpenAutomation={() => navigateTo(activeId, "automation")}
+                onOpenRemote={() => navigateTo(activeId, "remote")}
                 onOpenCanvas={() => {
                   void openStudioCanvasWindow().catch((error) => {
                     message.error(`打开无限画板失败：${String(error)}`);
@@ -2121,6 +2126,8 @@ export function App() {
                 <AutomationView />
               </div>
             )}
+            {/* 远程连接：路由占位，页面内容待接入 */}
+            {view === "remote" && <div key={viewFrameKey} className="view-frame" />}
             {view === "settings" && (
               <div key={viewFrameKey} className="view-frame">
                 <SettingsView activeCategoryId={activeSettingsCategory} />

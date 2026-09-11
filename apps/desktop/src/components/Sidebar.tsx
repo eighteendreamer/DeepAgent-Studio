@@ -18,17 +18,18 @@ import {
 } from "./shadcn/dropdown-menu";
 import type { Project, SessionSummary } from "../types";
 
-type SidebarOverflowSurface = "plugins" | "automation" | "canvas";
+type SidebarOverflowSurface = "plugins" | "automation" | "canvas" | "remote";
 
 /** 侧栏常驻 4 项之后的入口；新增功能页只需往这里追加。 */
 const SIDEBAR_OVERFLOW_NAV: Array<{
   id: SidebarOverflowSurface;
   icon: IconProp;
-  labelKey: "plugins" | "automation" | "canvas";
+  labelKey: "plugins" | "automation" | "canvas" | "remote";
 }> = [
   { id: "plugins", icon: ["fas", "puzzle-piece"], labelKey: "plugins" },
   { id: "automation", icon: ["far", "clock"], labelKey: "automation" },
   { id: "canvas", icon: ["fas", "paintbrush"], labelKey: "canvas" },
+  { id: "remote", icon: ["fas", "server"], labelKey: "remote" },
 ];
 
 const SIDEBAR_OVERFLOW_IDS = new Set<string>(SIDEBAR_OVERFLOW_NAV.map((item) => item.id));
@@ -52,11 +53,12 @@ interface Props {
   onRenameProject: (path: string, name: string) => void;
   onArchiveProject: (path: string, name: string) => void;
   onOpenSearch: () => void;
-  activeSurface?: "skills" | "knowledge" | "plugins" | "automation" | null;
+  activeSurface?: "skills" | "knowledge" | "plugins" | "automation" | "remote" | null;
   onOpenSkills: () => void;
   onOpenKnowledge: () => void;
   onOpenPlugins: () => void;
   onOpenAutomation: () => void;
+  onOpenRemote: () => void;
   onOpenCanvas: () => void;
   onOpenSettings: () => void;
   onLogout: () => void;
@@ -125,7 +127,7 @@ function writeExpandedProjects(value: Record<string, boolean>) {
   window.localStorage.setItem(SIDEBAR_EXPANDED_PROJECTS_KEY, JSON.stringify(value));
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenRemote, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
 
   /* 顶部导航滑动药丸（静默着色）：悬停跟随，离开滑回激活项；无 surface 激活时停靠「新对话」 */
@@ -135,6 +137,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     plugins: onOpenPlugins,
     automation: onOpenAutomation,
     canvas: onOpenCanvas,
+    remote: onOpenRemote,
   };
   const [overflowNavOpen, setOverflowNavOpen] = useState(false);
   const overflowCloseTimer = useRef<number | null>(null);
