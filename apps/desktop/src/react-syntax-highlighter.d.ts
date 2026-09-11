@@ -16,6 +16,7 @@ declare module "react-syntax-highlighter" {
 
 declare module "react-syntax-highlighter/dist/esm/styles/prism" {
   export const vscDarkPlus: Record<string, import("react").CSSProperties>;
+  export const vs: Record<string, import("react").CSSProperties>;
 }
 
 declare module "react-syntax-highlighter/dist/esm/languages/prism/*" {

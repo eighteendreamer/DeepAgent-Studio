@@ -248,6 +248,7 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
                   <SyntaxHighlightedCode
                     language={languageForFile(activeTab.name)}
                     content={activeState.content}
+                    theme="light"
                   />
                 </div>
               </>

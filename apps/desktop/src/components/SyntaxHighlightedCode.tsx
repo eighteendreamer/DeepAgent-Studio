@@ -1,5 +1,5 @@
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { vs, vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
 import c from "react-syntax-highlighter/dist/esm/languages/prism/c";
 import cpp from "react-syntax-highlighter/dist/esm/languages/prism/cpp";
@@ -45,10 +45,25 @@ Object.entries(LANGUAGES).forEach(([name, grammar]) => {
   SyntaxHighlighter.registerLanguage(name, grammar);
 });
 
-export function SyntaxHighlightedCode({ language, content }: { language: string; content: string }) {
+const THEMES = {
+  dark: vscDarkPlus,
+  light: vs,
+} as const;
+
+export type CodeTheme = keyof typeof THEMES;
+
+export function SyntaxHighlightedCode({
+  language,
+  content,
+  theme = "dark",
+}: {
+  language: string;
+  content: string;
+  theme?: CodeTheme;
+}) {
   return (
     <SyntaxHighlighter
-      style={vscDarkPlus}
+      style={THEMES[theme]}
       language={language || "text"}
       PreTag="div"
       customStyle={{ margin: 0, padding: 0, background: "transparent" }}
