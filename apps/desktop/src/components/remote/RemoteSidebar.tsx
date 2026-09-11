@@ -286,6 +286,14 @@ export function RemoteSidebar({
     await loadDir(current.id, "/");
   };
 
+  // 重进远程视图时本组件重挂载、目录树状态已丢失，而 selected 是 App 级
+  // 持久状态；挂载时复用 handleSelect 重载根目录（含断线重连路径）。
+  useEffect(() => {
+    const conn = selectedRef.current;
+    if (conn) void handleSelect(conn);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const toggleDir = (entry: SshDirEntry) => {
     const next = new Set(expanded);
     if (next.has(entry.path)) {
