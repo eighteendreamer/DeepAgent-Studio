@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Archive, ArrowDown, Book, Check, ChevronRight, ChevronsDownUp, Clock, Ellipsis, Folder, FolderPlus, Layers, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
+import { Archive, ArrowDown, Book, Check, ChevronDown, ChevronRight, Clock, Ellipsis, Folder, FolderPlus, Layers, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import { SidebarProjectMenu } from "./SidebarProjectMenu";
@@ -104,6 +104,7 @@ type SidebarSortCriterion = "updated" | "created";
 const SIDEBAR_ORGANIZE_MODES = ["project", "recent", "time", "down"] as const;
 const SIDEBAR_SORT_CRITERIA = ["updated", "created"] as const;
 const SIDEBAR_EXPANDED_PROJECTS_KEY = "deepagent:sidebar-expanded-projects";
+const SIDEBAR_PROJECTS_COLLAPSED_KEY = "deepagent:sidebar-projects-collapsed";
 
 function readSidebarPreference<T extends string>(key: string, fallback: T, allowed: readonly T[]): T {
   if (typeof window === "undefined") return fallback;
@@ -129,6 +130,16 @@ function readExpandedProjects(): Record<string, boolean> {
 function writeExpandedProjects(value: Record<string, boolean>) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(SIDEBAR_EXPANDED_PROJECTS_KEY, JSON.stringify(value));
+}
+
+function readProjectsCollapsed(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(SIDEBAR_PROJECTS_COLLAPSED_KEY) === "1";
+}
+
+function writeProjectsCollapsed(collapsed: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SIDEBAR_PROJECTS_COLLAPSED_KEY, collapsed ? "1" : "0");
 }
 
 export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenRemote, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
@@ -242,6 +253,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   }, [projects]);
 
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>(() => readExpandedProjects());
+  const [projectsCollapsed, setProjectsCollapsed] = useState<boolean>(readProjectsCollapsed);
 
   // Default only newly discovered projects to expanded; preserve user-collapsed state across view changes.
   // During view switches the sidebar can mount before projects are loaded. Do not treat
@@ -273,22 +285,12 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     });
   };
 
-  const toggleExpandAll = () => {
-    const allExpanded = Object.keys(groupedSessions).every((proj) => expandedProjects[proj]);
-    let next: Record<string, boolean>;
-    if (allExpanded) {
-      next = {};
-      Object.keys(groupedSessions).forEach((proj) => {
-        next[proj] = false;
-      });
-    } else {
-      next = {};
-      Object.keys(groupedSessions).forEach((proj) => {
-        next[proj] = true;
-      });
-    }
-    writeExpandedProjects(next);
-    setExpandedProjects(next);
+  const toggleProjectsSection = () => {
+    setProjectsCollapsed((prev) => {
+      const next = !prev;
+      writeProjectsCollapsed(next);
+      return next;
+    });
   };
 
   const chronologicalSessions = useMemo(
@@ -580,16 +582,18 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
 
         <div className="flex flex-col">
           <div className="flex items-center justify-between px-2 mb-1 text-text-secondary group">
-            <div className="text-[12px]">{t("sidebar.projects")}</div>
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-1 rounded text-left hover:text-text-base"
+              title={projectsCollapsed ? t("sidebar.expandProjects") : t("sidebar.collapseProjects")}
+              onClick={toggleProjectsSection}
+            >
+              <ChevronDown
+                className={cn("h-3 w-3 shrink-0 transition-transform", projectsCollapsed && "-rotate-90")}
+              />
+              <span className="text-[12px]">{t("sidebar.projects")}</span>
+            </button>
             <div className={cn("flex items-center space-x-1 transition-opacity", isMoreMenuOpen || isNewProjectMenuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
-              <button 
-                className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded" 
-                title={t("sidebar.collapseAll")}
-                onClick={toggleExpandAll}
-              >
-                <ChevronsDownUp className="h-3 w-3" />
-              </button>
-              
               <DropdownMenu
                 open={isMoreMenuOpen}
                 onOpenChange={(next) => {
@@ -686,17 +690,19 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               </DropdownMenu>
             </div>
           </div>
-          <div className="space-y-0.5">
-            {projects.length === 0 && projectEntries.length === 0 && (
-              <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noProjects")}</div>
-            )}
-            {organizeMode === "time" && chronologicalSessions.length === 0 && (
-              <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noChats")}</div>
-            )}
-            {organizeMode === "time" &&
-              chronologicalSessions.map((session) => renderSessionItem(session, true))}
-            {projectEntries.map(([proj, projSessions]) => renderProjectGroup(proj, projSessions))}
-          </div>
+          {!projectsCollapsed && (
+            <div className="space-y-0.5">
+              {projects.length === 0 && projectEntries.length === 0 && (
+                <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noProjects")}</div>
+              )}
+              {organizeMode === "time" && chronologicalSessions.length === 0 && (
+                <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noChats")}</div>
+              )}
+              {organizeMode === "time" &&
+                chronologicalSessions.map((session) => renderSessionItem(session, true))}
+              {projectEntries.map(([proj, projSessions]) => renderProjectGroup(proj, projSessions))}
+            </div>
+          )}
         </div>
       </div>
 
