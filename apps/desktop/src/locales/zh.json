@@ -63,9 +63,12 @@
     "logout": "退出登录"
   },
   "remote": {
-    "title": "远程连接",
     "back": "返回主窗口",
     "newConnection": "新建连接",
+    "selectConnection": "选择连接",
+    "backToList": "返回列表",
+    "connecting": "正在连接，即将进入终端...",
+    "reconnectHint": "请从左侧重新选择连接后重试",
     "allConnections": "所有连接",
     "searchFiles": "搜索文件",
     "searchPlaceholder": "搜索已加载的文件...",
@@ -76,9 +79,7 @@
     "createFailed": "创建连接失败",
     "connectFailed": "连接失败",
     "emptyTitle": "未选择连接",
-    "emptyDesc": "从左侧选择一个 SSH 连接，或新建连接开始浏览远程文件",
-    "size": "大小",
-    "modifiedAt": "修改时间"
+    "emptyDesc": "从左侧选择一个 SSH 连接，或新建连接开始浏览远程文件"
   },
   "settings": {
     "general": {

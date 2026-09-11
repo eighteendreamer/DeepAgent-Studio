@@ -63,9 +63,12 @@
     "logout": "Logout"
   },
   "remote": {
-    "title": "Remote Connection",
     "back": "Back to Main",
     "newConnection": "New Connection",
+    "selectConnection": "Select Connection",
+    "backToList": "Back to List",
+    "connecting": "Connecting, entering terminal...",
+    "reconnectHint": "Pick a connection on the left to retry",
     "allConnections": "All Connections",
     "searchFiles": "Search Files",
     "searchPlaceholder": "Search loaded files...",
@@ -76,9 +79,7 @@
     "createFailed": "Failed to create connection",
     "connectFailed": "Failed to connect",
     "emptyTitle": "No connection selected",
-    "emptyDesc": "Pick an SSH connection on the left, or create a new one to browse remote files",
-    "size": "Size",
-    "modifiedAt": "Modified"
+    "emptyDesc": "Pick an SSH connection on the left, or create a new one to browse remote files"
   },
   "settings": {
     "general": {

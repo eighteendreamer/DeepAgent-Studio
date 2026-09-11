@@ -40,12 +40,7 @@ import {
   visionRecognizeImage,
   openStudioCanvasWindow,
 } from "./api";
-import type {
-  PreflightToolCall,
-  RuntimeEvent,
-  SshConnection,
-  SshDirEntry,
-} from "./api";
+import type { PreflightToolCall, RuntimeEvent, SshConnection } from "./api";
 import type {
   ApprovalRequest,
   ChatMessage,
@@ -1947,7 +1942,6 @@ export function App() {
 
   // Remote Connection State
   const [remoteConnection, setRemoteConnection] = useState<SshConnection | null>(null);
-  const [remoteFile, setRemoteFile] = useState<SshDirEntry | null>(null);
 
   const toggleLeftSidebar = useCallback(() => {
     runUiTransition(() => {
@@ -2072,11 +2066,7 @@ export function App() {
               <Suspense fallback={<div className="h-full w-[240px] bg-sidebar-bg" />}>
                 <RemoteSidebar
                   selected={remoteConnection}
-                  onSelect={(conn) => {
-                    setRemoteConnection(conn);
-                    setRemoteFile(null);
-                  }}
-                  onSelectFile={setRemoteFile}
+                  onSelect={setRemoteConnection}
                   onBack={goBack}
                 />
               </Suspense>
@@ -2157,7 +2147,7 @@ export function App() {
             )}
             {view === "remote" && (
               <div key={viewFrameKey} className="view-frame">
-                <RemoteView connection={remoteConnection} file={remoteFile} />
+                <RemoteView connection={remoteConnection} />
               </div>
             )}
             {view === "settings" && (
