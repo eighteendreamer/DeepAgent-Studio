@@ -105,6 +105,7 @@ const SIDEBAR_ORGANIZE_MODES = ["project", "recent", "time", "down"] as const;
 const SIDEBAR_SORT_CRITERIA = ["updated", "created"] as const;
 const SIDEBAR_EXPANDED_PROJECTS_KEY = "deepagent:sidebar-expanded-projects";
 const SIDEBAR_PROJECTS_COLLAPSED_KEY = "deepagent:sidebar-projects-collapsed";
+const SIDEBAR_RECENT_COLLAPSED_KEY = "deepagent:sidebar-recent-collapsed";
 
 function readSidebarPreference<T extends string>(key: string, fallback: T, allowed: readonly T[]): T {
   if (typeof window === "undefined") return fallback;
@@ -140,6 +141,16 @@ function readProjectsCollapsed(): boolean {
 function writeProjectsCollapsed(collapsed: boolean) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(SIDEBAR_PROJECTS_COLLAPSED_KEY, collapsed ? "1" : "0");
+}
+
+function readRecentCollapsed(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(SIDEBAR_RECENT_COLLAPSED_KEY) === "1";
+}
+
+function writeRecentCollapsed(collapsed: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SIDEBAR_RECENT_COLLAPSED_KEY, collapsed ? "1" : "0");
 }
 
 export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenRemote, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
@@ -183,6 +194,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
 
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isNewProjectMenuOpen, setIsNewProjectMenuOpen] = useState(false);
+  const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false);
   const [activeProjectMenu, setActiveProjectMenu] = useState<string | null>(null);
   const [archiveProject, setArchiveProject] = useState<{ path: string; name: string } | null>(null);
   const [renameProject, setRenameProject] = useState<{ path: string; name: string } | null>(null);
@@ -254,6 +266,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
 
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>(() => readExpandedProjects());
   const [projectsCollapsed, setProjectsCollapsed] = useState<boolean>(readProjectsCollapsed);
+  const [recentCollapsed, setRecentCollapsed] = useState<boolean>(readRecentCollapsed);
 
   // Default only newly discovered projects to expanded; preserve user-collapsed state across view changes.
   // During view switches the sidebar can mount before projects are loaded. Do not treat
@@ -289,6 +302,14 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     setProjectsCollapsed((prev) => {
       const next = !prev;
       writeProjectsCollapsed(next);
+      return next;
+    });
+  };
+
+  const toggleRecentSection = () => {
+    setRecentCollapsed((prev) => {
+      const next = !prev;
+      writeRecentCollapsed(next);
       return next;
     });
   };
@@ -703,6 +724,80 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               {organizeMode === "time" &&
                 chronologicalSessions.map((session) => renderSessionItem(session, true))}
               {projectEntries.map(([proj, projSessions]) => renderProjectGroup(proj, projSessions))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col">
+          <div
+            className="flex items-center justify-between px-2 mb-1 text-text-secondary group cursor-pointer select-none"
+            title={recentCollapsed ? t("sidebar.expandRecentChats") : t("sidebar.collapseRecentChats")}
+            onClick={toggleRecentSection}
+          >
+            <span className="flex items-center gap-0.5 text-[12px]">
+              {t("sidebar.recentChats")}
+              <ChevronDown
+                className={cn("h-3 w-3 transition-transform", recentCollapsed && "-rotate-90")}
+              />
+            </span>
+            <div
+              className={cn("flex items-center space-x-1 transition-opacity", isRecentMenuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100")}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <DropdownMenu open={isRecentMenuOpen} onOpenChange={setIsRecentMenuOpen}>
+                <DropdownMenuTrigger asChild title={t("sidebar.more")}>
+                  <button className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded">
+                    <Ellipsis className="h-3 w-3" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-[11rem]">
+                  <DropdownMenuItem className="gap-2" onSelect={() => onArchiveAllSessions()}>
+                    <Archive className="h-4 w-4 shrink-0 text-text-secondary" />
+                    {t("sidebar.archiveAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <span className="flex items-center gap-2">
+                        <Clock className="h-4 w-4 shrink-0 text-text-secondary" />
+                        {t("sidebar.sortCriteria")}
+                      </span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="min-w-[11rem]">
+                      {[
+                        { id: "created" as const, icon: Clock, label: t("sidebar.sortByCreated") },
+                        { id: "updated" as const, icon: Clock, label: t("sidebar.sortByUpdated") },
+                      ].map((item) => (
+                        <DropdownMenuItem
+                          key={item.id}
+                          className="gap-2"
+                          onSelect={() => setSortCriterion(item.id)}
+                        >
+                          <item.icon className="h-4 w-4 shrink-0 text-text-secondary" />
+                          {item.label}
+                          {sortCriterion === item.id && <Check className="ml-auto h-3.5 w-3.5 text-text-secondary" />}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <button
+                type="button"
+                className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded"
+                title={t("sidebar.newChat")}
+                onClick={onNewChat}
+              >
+                <SquarePen className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+          {!recentCollapsed && (
+            <div className="space-y-0.5">
+              {chronologicalSessions.length === 0 && (
+                <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noChats")}</div>
+              )}
+              {chronologicalSessions.map((session) => renderSessionItem(session))}
             </div>
           )}
         </div>

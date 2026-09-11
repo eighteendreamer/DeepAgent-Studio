@@ -1,6 +1,9 @@
 {
   "sidebar": {
     "projects": "Projects",
+    "recentChats": "Recent Chats",
+    "collapseRecentChats": "Collapse recent chats",
+    "expandRecentChats": "Expand recent chats",
     "pinned": "Pinned",
     "search": "Search",
     "skills": "Skills",

@@ -1,6 +1,9 @@
 {
   "sidebar": {
     "projects": "项目",
+    "recentChats": "最近对话",
+    "collapseRecentChats": "收起最近对话",
+    "expandRecentChats": "展开最近对话",
     "pinned": "置顶",
     "search": "搜索",
     "skills": "技能",
