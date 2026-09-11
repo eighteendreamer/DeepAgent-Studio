@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  Check,
   ChevronDown,
   ChevronRight,
   File as FileIcon,
@@ -9,8 +10,10 @@ import {
   Plus,
   Search,
   Server,
+  Upload,
+  X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { message } from "../message";
@@ -21,6 +24,7 @@ import {
   sshCreateConnection,
   sshListConnections,
   sshListDir,
+  sshPushFile,
   type SshConnection,
   type SshDirEntry,
 } from "../../api";
@@ -86,6 +90,17 @@ export function RemoteSidebar({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingDir, setLoadingDir] = useState<string | null>(null);
   const [dirError, setDirError] = useState<string | null>(null);
+  const [uploads, setUploads] = useState<
+    Array<{
+      id: string;
+      name: string;
+      status: "uploading" | "success" | "error";
+      error?: string;
+    }>
+  >([]);
+
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
 
   const loadConnections = () => {
     sshListConnections()
@@ -96,6 +111,129 @@ export function RemoteSidebar({
   useEffect(() => {
     loadConnections();
   }, []);
+
+  // Tauri native drag-drop event handler for file uploads.
+  // Registered once; latest connection is read via selectedRef to avoid
+  // re-registering (which races async setup and leaks duplicate listeners).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+
+    const resolveDropTarget = (position: { x: number; y: number }): string => {
+      const el = document.elementFromPoint(
+        position.x / window.devicePixelRatio,
+        position.y / window.devicePixelRatio,
+      );
+      const target = el?.closest<HTMLElement>("[data-remote-drop-dir]");
+      return target?.dataset.remoteDropDir || "/";
+    };
+
+    const setupDragDrop = async () => {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      if (disposed) return;
+      const unlistenFn = await getCurrentWebview().onDragDropEvent(async (event) => {
+        if (event.payload.type === "drop") {
+          const paths = event.payload.paths;
+          if (paths.length === 0) return;
+
+          const conn = selectedRef.current;
+          if (!conn) {
+            message.error(t("remote.notConnected"));
+            return;
+          }
+
+          const targetDir = resolveDropTarget(event.payload.position);
+
+          const newUploads = paths.map((filePath) => {
+            const fileName = filePath.split(/[\\/]/).pop() || filePath;
+            return {
+              id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+              name: fileName,
+              status: "uploading" as const,
+            };
+          });
+
+          setUploads((prev) => [...prev, ...newUploads]);
+
+          let successCount = 0;
+          let errorCount = 0;
+
+          for (const upload of newUploads) {
+            const localPath = paths.find((p) =>
+              p.split(/[\\/]/).pop() === upload.name,
+            );
+            if (!localPath) {
+              setUploads((prev) =>
+                prev.map((u) =>
+                  u.id === upload.id
+                    ? { ...u, status: "error" as const, error: "无法获取文件路径" }
+                    : u,
+                ),
+              );
+              errorCount++;
+              continue;
+            }
+
+            const remotePath = targetDir.endsWith("/")
+              ? `${targetDir}${upload.name}`
+              : `${targetDir}/${upload.name}`;
+
+            try {
+              await sshPushFile(conn.id, {
+                local_path: localPath,
+                remote_path: remotePath,
+                create_parent: true,
+                overwrite: true,
+                verify_mode: "size",
+              });
+              setUploads((prev) =>
+                prev.map((u) =>
+                  u.id === upload.id ? { ...u, status: "success" as const } : u,
+                ),
+              );
+              successCount++;
+            } catch (error) {
+              const errorMsg =
+                error instanceof Error ? error.message : String(error);
+              setUploads((prev) =>
+                prev.map((u) =>
+                  u.id === upload.id
+                    ? { ...u, status: "error" as const, error: errorMsg }
+                    : u,
+                ),
+              );
+              errorCount++;
+            }
+          }
+
+          await loadDir(conn.id, targetDir);
+
+          if (successCount > 0) {
+            message.success(`已上传 ${successCount} 个文件到 ${targetDir}`);
+          }
+          if (errorCount > 0) {
+            message.error(`${errorCount} 个文件上传失败`);
+          }
+
+          setTimeout(() => {
+            setUploads((prev) => prev.filter((u) => u.status === "uploading"));
+          }, 10000);
+        }
+      });
+      if (disposed) {
+        unlistenFn();
+        return;
+      }
+      unlisten = unlistenFn;
+    };
+
+    void setupDragDrop();
+
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [t]);
 
   const loadDir = async (connectionId: string, path: string) => {
     setLoadingDir(path);
@@ -218,6 +356,7 @@ export function RemoteSidebar({
                 style={{ paddingLeft: 4 + depth * 12 }}
                 title={entry.path}
                 onClick={() => toggleDir(entry)}
+                data-remote-drop-dir={entry.path}
               >
                 {isOpen ? (
                   <ChevronDown className="h-3 w-3 shrink-0 text-text-secondary" />
@@ -340,7 +479,7 @@ export function RemoteSidebar({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3">
         <div className="mb-1 flex items-center gap-1.5 px-2.5 text-[11px] font-medium text-text-secondary">
           <Search className="h-3 w-3" />
           {t("remote.searchFiles")}
@@ -420,6 +559,41 @@ export function RemoteSidebar({
           )}
         </div>
       </div>
+
+      {uploads.length > 0 && (
+        <div className="mx-3 mt-2 border-t border-border-theme pt-2">
+          <div className="mb-1.5 flex items-center gap-1.5 px-2.5 text-[11px] font-medium text-text-secondary">
+            <Upload className="h-3 w-3" />
+            {t("remote.uploads")} ({uploads.length})
+          </div>
+          <div className="max-h-[120px] space-y-1 overflow-y-auto">
+            {uploads.map((upload) => (
+              <div
+                key={upload.id}
+                className="flex items-center gap-2 rounded-md px-2.5 py-1 text-[11px]"
+              >
+                {upload.status === "uploading" && (
+                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-blue-500" />
+                )}
+                {upload.status === "success" && (
+                  <Check className="h-3 w-3 shrink-0 text-green-500" />
+                )}
+                {upload.status === "error" && (
+                  <X className="h-3 w-3 shrink-0 text-red-500" />
+                )}
+                <span className="min-w-0 flex-1 truncate text-text-base">
+                  {upload.name}
+                </span>
+                {upload.status === "error" && upload.error && (
+                  <span className="shrink-0 text-[10px] text-red-400" title={upload.error}>
+                    失败
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {managerOpen &&
         createPortal(

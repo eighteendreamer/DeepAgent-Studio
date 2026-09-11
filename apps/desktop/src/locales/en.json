@@ -83,7 +83,9 @@
     "tabTerminal": "Terminal",
     "previewLoading": "Reading file...",
     "previewTruncated": "Large file — showing first 1 MB",
-    "previewLoadFailed": "Failed to read file"
+    "previewLoadFailed": "Failed to read file",
+    "notConnected": "Please connect to a remote server first",
+    "uploads": "Uploads"
   },
   "settings": {
     "general": {

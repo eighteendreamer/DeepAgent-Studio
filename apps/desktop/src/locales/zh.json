@@ -83,7 +83,9 @@
     "tabTerminal": "终端",
     "previewLoading": "正在读取文件...",
     "previewTruncated": "文件较大，仅显示前 1 MB",
-    "previewLoadFailed": "文件读取失败"
+    "previewLoadFailed": "文件读取失败",
+    "notConnected": "请先连接远程服务器",
+    "uploads": "上传"
   },
   "settings": {
     "general": {
