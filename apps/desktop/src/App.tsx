@@ -59,7 +59,7 @@ import type {
 import { DesktopUpdateController } from "./components/DesktopUpdateController";
 import { TrustDialog } from "./components/TrustDialog";
 import { Sidebar } from "./components/Sidebar";
-import { WorkspaceNavigationControls } from "./components/WorkspaceNavigationControls";
+import { CustomTitleBar } from "./components/CustomTitleBar";
 import { message } from "./components/message";
 
 const StartView = lazy(() =>
@@ -1986,6 +1986,13 @@ export function App() {
     <div className="bg-sidebar-bg text-text-base font-sans h-screen w-full overflow-hidden flex flex-col relative">
       <TrustDialog projectPath={activeProjectPath} />
       <DesktopUpdateController />
+      <CustomTitleBar
+        onToggleSidebar={toggleLeftSidebar}
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
+        onBack={goBack}
+        onForward={goForward}
+      />
 
       <div className="flex-1 flex overflow-hidden">
         <>
@@ -2046,16 +2053,6 @@ export function App() {
         <main
           className="app-main-surface relative flex flex-1 overflow-hidden bg-white"
         >
-          {!isSidebarOpen && (
-            <WorkspaceNavigationControls
-              className="absolute left-3 top-3 z-20 rounded-lg border border-border-theme bg-white/90 p-1 shadow-sm backdrop-blur"
-              onToggleSidebar={toggleLeftSidebar}
-              canGoBack={canGoBack}
-              canGoForward={canGoForward}
-              onBack={goBack}
-              onForward={goForward}
-            />
-          )}
           <Suspense fallback={<ViewLoading />}>
             {view === "start" && (
               <div key={viewFrameKey} className="view-frame">

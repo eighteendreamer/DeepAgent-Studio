@@ -9,6 +9,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "DeepAgent Studio",
@@ -16,7 +17,7 @@
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
-        "decorations": true,
+        "decorations": false,
         "transparent": false
       }
     ],

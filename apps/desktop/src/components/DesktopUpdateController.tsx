@@ -1,5 +1,6 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
   checkForAvailableUpdate,
@@ -7,6 +8,7 @@ import {
   hasDownloadedUpdate,
   installDownloadedUpdate,
 } from "../update";
+import { NAV_ROW_ID, waitForDecorumElement } from "./decorumTitlebar";
 import { message } from "./message";
 import { Button } from "./shadcn/button";
 
@@ -26,6 +28,19 @@ export function DesktopUpdateController() {
   const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
   const [downloadedMB, setDownloadedMB] = useState<number | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [navRow, setNavRow] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    waitForDecorumElement(`#${NAV_ROW_ID}`)
+      .then((el) => {
+        if (!disposed) setNavRow(el);
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!inTauri()) return;
@@ -91,13 +106,14 @@ export function DesktopUpdateController() {
   };
 
   if (!updateAvailable) return null;
+  if (!navRow) return null;
 
-  return (
+  return createPortal(
     <Button
       onClick={downloadUpdate}
       disabled={downloading}
       title={t("titleBar.downloadUpdate")}
-      className="fixed bottom-4 right-4 z-50 inline-flex h-9 min-w-[104px] items-center justify-center gap-2 overflow-hidden rounded-full border border-blue-200 bg-blue-50 px-3 text-[12px] font-medium text-blue-700 shadow-lg transition-colors hover:border-blue-300 hover:bg-blue-100 disabled:cursor-default disabled:border-blue-100 disabled:bg-blue-50 disabled:text-blue-500"
+      className="relative inline-flex h-7 min-w-[104px] items-center justify-center gap-1.5 overflow-hidden rounded-full border border-blue-200 bg-blue-50 px-3 text-[12px] font-medium text-blue-700 transition-colors hover:border-blue-300 hover:bg-blue-100 disabled:cursor-default disabled:border-blue-100 disabled:bg-blue-50 disabled:text-blue-500"
     >
       {downloading && typeof downloadPercent === "number" && (
         <span
@@ -118,6 +134,7 @@ export function DesktopUpdateController() {
               : t("titleBar.downloadingUpdate")
           : t("titleBar.downloadUpdate")}
       </span>
-    </Button>
+    </Button>,
+    navRow,
   );
 }

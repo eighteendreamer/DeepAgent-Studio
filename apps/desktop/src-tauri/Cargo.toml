@@ -54,6 +54,7 @@ zip = { version = "0.6", default-features = false, features = ["deflate"] }
 tempfile = "3.8"
 async-trait = "0.1"
 ignore = "0.4"
+tauri-plugin-decorum = "1.1.1"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

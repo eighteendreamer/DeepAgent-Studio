@@ -2497,3 +2497,24 @@ html:not(.dark) .reasoning-slider-fill {
   pointer-events: none;
   z-index: 50;
 }
+
+/* ===== tauri-plugin-decorum titlebar ===== */
+div[data-tauri-decorum-tb] {
+  background: transparent !important;
+  border-bottom: none !important;
+}
+
+button.decorum-tb-btn {
+  color: color-mix(in srgb, var(--theme-fg) 55%, transparent) !important;
+  transition: background-color 150ms, color 150ms;
+}
+
+button.decorum-tb-btn:hover {
+  color: var(--theme-fg) !important;
+  background-color: color-mix(in srgb, var(--theme-fg) 8%, transparent) !important;
+}
+
+button#decorum-tb-close:hover {
+  color: #fff !important;
+  background-color: #e81123 !important;
+}

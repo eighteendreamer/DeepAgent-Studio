@@ -56,6 +56,7 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use tauri::window::{Effect as WindowEffect, EffectsBuilder};
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_decorum::WebviewWindowExt;
 
 /// Service name used for keychain entries.
 const KEYCHAIN_SERVICE: &str = "deepagent-studio";
@@ -5362,7 +5363,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_decorum::init())
         .setup(|app| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.create_overlay_titlebar();
+            }
             let dir = app
                 .path()
                 .app_data_dir()
