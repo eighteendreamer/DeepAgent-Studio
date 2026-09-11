@@ -69,8 +69,14 @@ pub struct SshDirListing {
     pub entries: Vec<SshDirEntry>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum PtyCommand {
+    Resize { cols: u16, rows: u16 },
+}
+
 pub struct PtyState {
     pub stdin: mpsc::Sender<Vec<u8>>,
+    pub commands: mpsc::UnboundedSender<PtyCommand>,
     pub stdout: Mutex<mpsc::Receiver<Vec<u8>>>,
     pub join: JoinHandle<()>,
     pub cols: u16,
@@ -227,6 +233,11 @@ impl SshSession {
         };
         pty.cols = cols;
         pty.rows = rows;
+        // Shell task 已结束时发送失败属预期（PTY 通道随之关闭），不改变返回语义。
+        let _ = pty.commands.send(PtyCommand::Resize {
+            cols: pty.cols,
+            rows: pty.rows,
+        });
         true
     }
 

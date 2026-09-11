@@ -65,6 +65,11 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// PTY 退出/断开后写入与调尺寸必然失败（真实状态由读循环呈现），忽略该预期错误以免产生未处理 Promise 拒绝
+function ignorePtyError(promise: Promise<unknown>) {
+  promise.catch(() => {});
+}
+
 function buildTerminalTheme(palette: ThemePalette, isDark: boolean) {
   const bg = palette.background;
   const fg = palette.foreground;
@@ -234,9 +239,9 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
 
       lastSentPtySizeRef.current = { cols, rows };
       if (active.kind === "local") {
-        void localPtyResize(active.handle.pty_id, cols, rows);
+        ignorePtyError(localPtyResize(active.handle.pty_id, cols, rows));
       } else {
-        void sshPtyResize(active.handle.connection_id, cols, rows);
+        ignorePtyError(sshPtyResize(active.handle.connection_id, cols, rows));
       }
     }, 120);
   }, []);
@@ -343,9 +348,9 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
         const current = sessionRef.current;
         if (!current) return;
         if (current.kind === "local") {
-          void localPtyWrite(current.handle.pty_id, data);
+          ignorePtyError(localPtyWrite(current.handle.pty_id, data));
         } else {
-          void sshPtyWrite(current.handle.connection_id, data);
+          ignorePtyError(sshPtyWrite(current.handle.connection_id, data));
         }
       });
 

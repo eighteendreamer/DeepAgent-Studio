@@ -9,12 +9,13 @@ use super::remote::{
     RemotePushFileResult, RemoteRequireRequest, RemoteRequireResult, RemoteVerifyMode,
 };
 use super::session::{
-    PtyState, SshDirEntry, SshDirListing, SshExecResult, SshSession, SshStatusSnapshot,
+    PtyCommand, PtyState, SshDirEntry, SshDirListing, SshExecResult, SshSession, SshStatusSnapshot,
     SshTestResult,
 };
 use super::{SshConfigStore, SshServiceHandle};
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
 use async_trait::async_trait;
+use russh::ChannelMsg;
 use russh_sftp::client::SftpSession;
 use sha2::Digest;
 use std::collections::HashMap;
@@ -371,25 +372,83 @@ impl SshServiceImpl {
             .await
             .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
 
-        let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<u8>>(128);
+        // 协议级 PTY + shell（与 OpenSSH 客户端同路径）。不走 execute_io：
+        // 它只能 exec 一条命令，且把 PTY 尺寸硬编码为 80x24、无法转发 resize。
+        let channel = client
+            .get_channel()
+            .await
+            .map_err(|err| SshError::Pty(format!("open shell channel failed: {err}")))?;
+        channel
+            .request_pty(
+                false,
+                "xterm-256color",
+                u32::from(cols),
+                u32::from(rows),
+                0,
+                0,
+                &[],
+            )
+            .await
+            .map_err(|err| SshError::Pty(format!("request pty failed: {err}")))?;
+        channel
+            .request_shell(false)
+            .await
+            .map_err(|err| SshError::Pty(format!("request shell failed: {err}")))?;
+
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(128);
         let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(256);
-        let command = remote_shell_command();
-        let session_for_task = session.clone();
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel::<PtyCommand>();
         let connection_id = handle.connection_id.clone();
         let join = tokio::spawn(async move {
-            let result = client
-                .execute_io(&command, stdout_tx, None, Some(stdin_rx), true, Some(0))
-                .await;
-            if let Err(err) = result {
-                session_for_task
-                    .set_status(SshStatus::Error, Some(err.to_string()))
-                    .await;
-                tracing::warn!(target: "deepagent_ssh", connection_id, error = %err, "ssh pty task ended with error");
+            let (mut channel_rx, channel_tx) = channel.split();
+            loop {
+                tokio::select! {
+                    msg = channel_rx.wait() => match msg {
+                        Some(ChannelMsg::Data { data })
+                        | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                            if stdout_tx.send(data.to_vec()).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(ChannelMsg::ExitStatus { exit_status }) => {
+                            tracing::debug!(target: "deepagent_ssh", connection_id, exit_status, "remote shell exited");
+                        }
+                        Some(ChannelMsg::Failure) => {
+                            tracing::warn!(target: "deepagent_ssh", connection_id, "remote rejected pty/shell request");
+                            break;
+                        }
+                        Some(ChannelMsg::Eof) => {}
+                        _ => break,
+                    },
+                    input = stdin_rx.recv() => match input {
+                        Some(chunk) if !chunk.is_empty() => {
+                            if channel_tx.data(&chunk[..]).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(_) => {}
+                        None => break,
+                    },
+                    command = command_rx.recv() => match command {
+                        Some(PtyCommand::Resize { cols, rows }) => {
+                            if channel_tx
+                                .window_change(u32::from(cols), u32::from(rows), 0, 0)
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        None => break,
+                    },
+                }
             }
+            tracing::debug!(target: "deepagent_ssh", connection_id, "ssh shell channel task ended");
         });
         session
             .replace_pty(Some(PtyState {
                 stdin: stdin_tx,
+                commands: command_tx,
                 stdout: tokio::sync::Mutex::new(stdout_rx),
                 join,
                 cols,
@@ -1785,13 +1844,5 @@ fn build_install_commands(
         "choco" => vec![format!("choco install -y {package_list}")],
         "scoop" => vec![format!("scoop install {package_list}")],
         _ => Vec::new(),
-    }
-}
-
-fn remote_shell_command() -> String {
-    if cfg!(target_os = "windows") {
-        "cmd.exe".to_string()
-    } else {
-        "sh -l".to_string()
     }
 }

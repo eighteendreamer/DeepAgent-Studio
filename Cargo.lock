@@ -1524,6 +1524,7 @@ dependencies = [
  "async-trait",
  "deepagent-terminal",
  "flate2",
+ "russh",
  "russh-sftp",
  "serde",
  "serde_json",
