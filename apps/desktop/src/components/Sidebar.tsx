@@ -581,19 +581,21 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         )}
 
         <div className="flex flex-col">
-          <div className="flex items-center justify-between px-2 mb-1 text-text-secondary group">
-            <span className="text-[12px]">{t("sidebar.projects")}</span>
-            <div className={cn("flex items-center space-x-1 transition-opacity", isMoreMenuOpen || isNewProjectMenuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
-              <button
-                type="button"
-                className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded"
-                title={projectsCollapsed ? t("sidebar.expandProjects") : t("sidebar.collapseProjects")}
-                onClick={toggleProjectsSection}
-              >
-                <ChevronDown
-                  className={cn("h-3 w-3 transition-transform", projectsCollapsed && "-rotate-90")}
-                />
-              </button>
+          <div
+            className="flex items-center justify-between px-2 mb-1 text-text-secondary group cursor-pointer select-none"
+            title={projectsCollapsed ? t("sidebar.expandProjects") : t("sidebar.collapseProjects")}
+            onClick={toggleProjectsSection}
+          >
+            <span className="flex items-center gap-0.5 text-[12px]">
+              {t("sidebar.projects")}
+              <ChevronDown
+                className={cn("h-3 w-3 transition-transform", projectsCollapsed && "-rotate-90")}
+              />
+            </span>
+            <div
+              className={cn("flex items-center space-x-1 transition-opacity", isMoreMenuOpen || isNewProjectMenuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100")}
+              onClick={(e) => e.stopPropagation()}
+            >
               <DropdownMenu
                 open={isMoreMenuOpen}
                 onOpenChange={(next) => {
