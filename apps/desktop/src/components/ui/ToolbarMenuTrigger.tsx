@@ -1,6 +1,5 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { cn } from "../shadcn/utils";
 import { MOTION } from "./motion";
 
@@ -17,7 +16,7 @@ export function ToolbarMenuTrigger({
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   open?: boolean;
-  icon: IconProp;
+  icon: ReactNode;
   label: ReactNode;
   trailing?: ReactNode;
 }) {
@@ -34,7 +33,7 @@ export function ToolbarMenuTrigger({
       {...rest}
     >
       <span className="flex h-4 w-4 shrink-0 items-center justify-center text-text-secondary">
-        <FontAwesomeIcon icon={icon} className="text-[13px]" />
+        {icon}
       </span>
       <span className="min-w-0 truncate">{label}</span>
       {trailing}

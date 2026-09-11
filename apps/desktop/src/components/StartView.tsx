@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useId, useLayoutEffect } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { Cloud, Monitor } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Composer } from "./Composer";
 import { BalanceChip } from "./BalanceChip";
@@ -40,7 +41,6 @@ const PROJECT_MENU = {
 /** 环境模式下拉 —— 同行宽 + 远程子菜单 */
 const ENV_MENU = {
   pad: "px-2 py-1.5",
-  icon: "mr-2 w-3.5 shrink-0 text-[13px] text-text-secondary",
   row: "flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-left text-[13px] text-text-base",
   rowMulti: "flex w-full cursor-pointer items-start justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] text-text-base",
   pill: "left-0 right-0 rounded-lg",
@@ -391,7 +391,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                   setIsDropdownOpen(next);
                 }}
                 layoutId={projectMorphLayoutId}
-                icon={["far", "folder"]}
+                icon={<FontAwesomeIcon icon={["far", "folder"]} className="text-[13px]" />}
                 label={projectName}
                 panelClassName="flex w-[300px] flex-col"
                 zIndex={50}
@@ -480,7 +480,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                   if (!next) setIsRemoteSubmenuOpen(false);
                 }}
                 layoutId={envMorphLayoutId}
-                icon={envMode === "local" ? ["fas", "desktop"] : ["fas", "cloud"]}
+                icon={envMode === "local" ? <Monitor className="h-3.5 w-3.5" /> : <Cloud className="h-3.5 w-3.5" />}
                 label={envLabel}
                 panelClassName="w-[200px] overflow-visible"
                 staggerContent={false}
@@ -501,7 +501,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                         }}
                       >
                         <div className="flex min-w-0 items-center">
-                          <FontAwesomeIcon icon={["fas", "desktop"]} className={ENV_MENU.icon} />
+                          <Monitor className="mr-2 h-3.5 w-3.5 shrink-0 text-text-secondary" />
                           <span className="truncate">{t("chatView.localMode")}</span>
                         </div>
                         {envMode === "local" && (
@@ -520,7 +520,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                         }}
                       >
                         <div className="flex min-w-0 items-center">
-                          <FontAwesomeIcon icon={["fas", "cloud"]} className={ENV_MENU.icon} />
+                          <Cloud className="mr-2 h-3.5 w-3.5 shrink-0 text-text-secondary" />
                           <span className="truncate">{t("chatView.remoteMode")}</span>
                         </div>
                         <div className="ml-2 flex shrink-0 items-center gap-2">

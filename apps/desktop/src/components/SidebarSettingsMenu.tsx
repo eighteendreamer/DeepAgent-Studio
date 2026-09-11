@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { motion, useReducedMotion } from "framer-motion";
 import { useTranslation } from "react-i18next";
+import { CircleUser, LogOut, Settings } from "lucide-react";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 import { MENU_LIST, MOTION } from "./ui/motion";
 import { morphSpringTransition } from "./ui/morphingMenuMotion";
@@ -15,7 +15,7 @@ const PANEL_GAP = 6;
 const SETTINGS_MENU = {
   pad: "px-2 py-1.5",
   row: "relative z-[1] flex w-full cursor-pointer items-center rounded-lg px-2.5 py-2 text-left text-[13px] text-text-base whitespace-nowrap hover:bg-transparent",
-  icon: "mr-2.5 w-4 shrink-0 text-[13px] text-text-secondary",
+  icon: "mr-2.5 h-4 w-4 shrink-0 text-text-secondary",
   pill: "left-0 right-0 rounded-lg",
   account: "flex min-w-0 items-center px-2.5 py-2 text-[13px] font-medium text-text-base",
 } as const;
@@ -105,7 +105,7 @@ export function SidebarSettingsMenu({ onOpenSettings, onLogout }: Props) {
   const menuContent = (
     <div className={SETTINGS_MENU.pad} onClick={(e) => e.stopPropagation()}>
       <div className={SETTINGS_MENU.account}>
-        <FontAwesomeIcon icon={["fas", "circle-user"]} className="mr-2.5 shrink-0 text-base text-text-secondary" />
+        <CircleUser className="mr-2.5 h-4 w-4 shrink-0 text-text-secondary" />
         <span className="truncate">{t("sidebar.loginApi")}</span>
       </div>
       <div className={MENU_LIST.divider} />
@@ -115,7 +115,7 @@ export function SidebarSettingsMenu({ onOpenSettings, onLogout }: Props) {
           className={cn(SETTINGS_MENU.row, MOTION.fast)}
           onClick={() => run(onOpenSettings)}
         >
-          <FontAwesomeIcon icon={["fas", "gear"]} className={SETTINGS_MENU.icon} />
+          <Settings className={SETTINGS_MENU.icon} />
           {t("sidebar.settings")}
         </div>
         <div
@@ -123,7 +123,7 @@ export function SidebarSettingsMenu({ onOpenSettings, onLogout }: Props) {
           className={cn(SETTINGS_MENU.row, MOTION.fast)}
           onClick={() => run(onLogout)}
         >
-          <FontAwesomeIcon icon={["fas", "arrow-right-from-bracket"]} className={SETTINGS_MENU.icon} />
+          <LogOut className={SETTINGS_MENU.icon} />
           {t("sidebar.logout")}
         </div>
       </SlidingMenuList>
@@ -141,7 +141,7 @@ export function SidebarSettingsMenu({ onOpenSettings, onLogout }: Props) {
         )}
         onClick={() => setOpen((v) => !v)}
       >
-        <FontAwesomeIcon icon={["fas", "gear"]} className="w-5 text-left text-text-secondary" />
+        <Settings className="h-[18px] w-[18px] shrink-0 text-text-secondary" />
         <span className="ml-0.5">{t("sidebar.settings")}</span>
       </button>
 

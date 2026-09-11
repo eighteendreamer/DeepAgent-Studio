@@ -143,7 +143,7 @@ export function GitBranchChip({
           open={open}
           onOpenChange={setOpen}
           layoutId={gitMorphLayoutId}
-          icon={["fas", "code-branch"]}
+          icon={<FontAwesomeIcon icon={["fas", "code-branch"]} className="text-[13px]" />}
           label={currentLabel ?? t("git.title")}
           trailing={
             dirty ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden /> : undefined

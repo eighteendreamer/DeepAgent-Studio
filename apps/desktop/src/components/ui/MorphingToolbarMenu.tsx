@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { ToolbarMenuTrigger } from "./ToolbarMenuTrigger";
 import { MorphingMenuShell } from "./MorphingMenuShell";
 
@@ -7,7 +6,7 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   layoutId: string;
-  icon: IconProp;
+  icon: ReactNode;
   label: ReactNode;
   trailing?: ReactNode;
   title?: string;
