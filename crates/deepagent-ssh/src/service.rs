@@ -9,8 +9,8 @@ use super::remote::{
     RemotePushFileResult, RemoteRequireRequest, RemoteRequireResult, RemoteVerifyMode,
 };
 use super::session::{
-    PtyCommand, PtyState, SshDirEntry, SshDirListing, SshExecResult, SshSession, SshStatusSnapshot,
-    SshTestResult,
+    PtyCommand, PtyState, SshDirEntry, SshDirListing, SshExecResult, SshFileContent, SshSession,
+    SshStatusSnapshot, SshTestResult,
 };
 use super::{SshConfigStore, SshServiceHandle};
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{timeout, Duration};
 
@@ -358,6 +358,21 @@ impl SshServiceImpl {
         let listing = sftp_list_dir(&handle.connection_id, &client, path).await?;
         session.touch_keepalive();
         Ok(listing)
+    }
+
+    pub async fn read_file(
+        &self,
+        handle: &SshServiceHandle,
+        path: &str,
+    ) -> SshResult<SshFileContent> {
+        let session = self.connected_session(&handle.connection_id).await?;
+        let client = session
+            .client()
+            .await
+            .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
+        let content = sftp_read_file(&handle.connection_id, &client, path).await?;
+        session.touch_keepalive();
+        Ok(content)
     }
 
     pub async fn pty_spawn(
@@ -1436,6 +1451,61 @@ async fn sftp_list_dir(
         );
     }
     listing
+}
+
+const SFTP_READ_FILE_MAX_BYTES: u64 = 1024 * 1024;
+
+async fn sftp_read_file(
+    connection_id: &str,
+    client: &Client,
+    path: &str,
+) -> SshResult<SshFileContent> {
+    let channel = client.get_channel().await.map_err(map_ssh_error)?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|err| SshError::Internal(err.to_string()))?;
+    let sftp = SftpSession::new_opts(channel.into_stream(), None)
+        .await
+        .map_err(|err| SshError::Internal(err.to_string()))?;
+
+    let content = async {
+        let mut file = sftp
+            .open(path)
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))?;
+        let size = file.metadata().await.ok().and_then(|meta| meta.size);
+        let mut reader = (&mut file).take(SFTP_READ_FILE_MAX_BYTES + 1);
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))?;
+        drop(reader);
+        let truncated = bytes.len() as u64 > SFTP_READ_FILE_MAX_BYTES;
+        bytes.truncate(SFTP_READ_FILE_MAX_BYTES as usize);
+        file.shutdown()
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))?;
+        Ok::<SshFileContent, SshError>(SshFileContent {
+            connection_id: connection_id.to_owned(),
+            path: path.to_owned(),
+            size,
+            truncated,
+            content: String::from_utf8_lossy(&bytes).into_owned(),
+        })
+    }
+    .await;
+
+    if let Err(close_err) = sftp.close().await {
+        tracing::warn!(
+            target: "deepagent_ssh",
+            connection_id,
+            error = %close_err,
+            "sftp session close failed"
+        );
+    }
+    content
 }
 
 const PROBE_CACHE_TTL_MS: u64 = 10 * 60 * 1000;

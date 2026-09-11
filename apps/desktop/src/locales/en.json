@@ -79,7 +79,11 @@
     "createFailed": "Failed to create connection",
     "connectFailed": "Failed to connect",
     "emptyTitle": "No connection selected",
-    "emptyDesc": "Pick an SSH connection on the left, or create a new one to browse remote files"
+    "emptyDesc": "Pick an SSH connection on the left, or create a new one to browse remote files",
+    "tabTerminal": "Terminal",
+    "previewLoading": "Reading file...",
+    "previewTruncated": "Large file — showing first 1 MB",
+    "previewLoadFailed": "Failed to read file"
   },
   "settings": {
     "general": {

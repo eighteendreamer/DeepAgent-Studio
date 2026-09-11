@@ -1942,6 +1942,11 @@ export function App() {
 
   // Remote Connection State
   const [remoteConnection, setRemoteConnection] = useState<SshConnection | null>(null);
+  const [remoteOpenFile, setRemoteOpenFile] = useState<{
+    path: string;
+    name: string;
+    token: number;
+  } | null>(null);
 
   const toggleLeftSidebar = useCallback(() => {
     runUiTransition(() => {
@@ -2067,6 +2072,9 @@ export function App() {
                 <RemoteSidebar
                   selected={remoteConnection}
                   onSelect={setRemoteConnection}
+                  onOpenFile={(path, name) =>
+                    setRemoteOpenFile({ path, name, token: Date.now() })
+                  }
                   onBack={goBack}
                 />
               </Suspense>
@@ -2147,7 +2155,7 @@ export function App() {
             )}
             {view === "remote" && (
               <div key={viewFrameKey} className="view-frame">
-                <RemoteView connection={remoteConnection} />
+                <RemoteView connection={remoteConnection} openFile={remoteOpenFile} />
               </div>
             )}
             {view === "settings" && (

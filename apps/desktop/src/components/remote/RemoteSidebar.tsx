@@ -32,6 +32,7 @@ type ManagerMode = "list" | "create";
 interface RemoteSidebarProps {
   selected: SshConnection | null;
   onSelect: (conn: SshConnection) => void;
+  onOpenFile: (path: string, name: string) => void;
   onBack: () => void;
 }
 
@@ -71,6 +72,7 @@ const statusDotClassName = (status: SshConnection["status"]) => {
 export function RemoteSidebar({
   selected,
   onSelect,
+  onOpenFile,
   onBack,
 }: RemoteSidebarProps) {
   const { t } = useTranslation();
@@ -237,16 +239,18 @@ export function RemoteSidebar({
           );
         }
         return (
-          <div
+          <button
             key={entry.path}
-            className="flex w-full items-center gap-1 rounded-md py-1 pr-1.5 pl-0 text-left text-[12px] text-text-base"
+            type="button"
+            className="flex w-full items-center gap-1 rounded-md py-1 pr-1.5 pl-0 text-left text-[12px] text-text-base hover:bg-black/5"
             style={{ paddingLeft: 4 + depth * 12 }}
             title={entry.path}
+            onClick={() => onOpenFile(entry.path, entry.name)}
           >
             <span className="w-3 shrink-0" />
             <FileIcon className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
             <span className="truncate">{entry.name}</span>
-          </div>
+          </button>
         );
       })}
     </>
@@ -386,10 +390,12 @@ export function RemoteSidebar({
                     </span>
                   </button>
                 ) : (
-                  <div
+                  <button
                     key={`${dir}/${entry.name}`}
-                    className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 text-left"
+                    type="button"
+                    className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 text-left hover:bg-black/5"
                     title={`${dir} · ${entry.path}`}
+                    onClick={() => onOpenFile(entry.path, entry.name)}
                   >
                     <FileIcon className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
                     <span className="min-w-0">
@@ -400,7 +406,7 @@ export function RemoteSidebar({
                         {dir}
                       </span>
                     </span>
-                  </div>
+                  </button>
                 ),
               )
             )

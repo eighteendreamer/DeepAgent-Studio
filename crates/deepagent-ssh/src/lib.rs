@@ -33,8 +33,8 @@ pub use remote::{
     RemoteVerifyMode,
 };
 pub use session::{
-    SshDirEntry, SshDirListing, SshExecResult, SshPtyHandle, SshSession, SshStatusSnapshot,
-    SshTestResult,
+    SshDirEntry, SshDirListing, SshExecResult, SshFileContent, SshPtyHandle, SshSession,
+    SshStatusSnapshot, SshTestResult,
 };
 
 mod config;
@@ -343,6 +343,14 @@ impl SshService {
         path: &str,
     ) -> SshResult<SshDirListing> {
         self.inner.list_dir(handle, path).await
+    }
+
+    pub async fn read_file(
+        &self,
+        handle: &SshServiceHandle,
+        path: &str,
+    ) -> SshResult<SshFileContent> {
+        self.inner.read_file(handle, path).await
     }
 
     pub async fn pty_spawn(

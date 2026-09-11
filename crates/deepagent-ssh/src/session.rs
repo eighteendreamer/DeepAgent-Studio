@@ -69,6 +69,15 @@ pub struct SshDirListing {
     pub entries: Vec<SshDirEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshFileContent {
+    pub connection_id: String,
+    pub path: String,
+    pub size: Option<u64>,
+    pub truncated: bool,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum PtyCommand {
     Resize { cols: u16, rows: u16 },

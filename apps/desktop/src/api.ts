@@ -3892,6 +3892,23 @@ export async function sshPtyResize(
   if (invoke) return invoke<void>("ssh_pty_resize", { connectionId, cols, rows });
 }
 
+export interface SshFileContent {
+  connection_id: string;
+  path: string;
+  size: number | null;
+  truncated: boolean;
+  content: string;
+}
+
+export async function sshReadFile(
+  connectionId: string,
+  path: string,
+): Promise<SshFileContent> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<SshFileContent>("ssh_read_file", { connectionId, path });
+  return { connection_id: connectionId, path, size: null, truncated: false, content: "" };
+}
+
 // ─── Mobile DevTools API ─────────────────────────────────────────────────────
 
 export async function mobileBackendStatus(): Promise<import("./types").BackendStatusDto[]> {

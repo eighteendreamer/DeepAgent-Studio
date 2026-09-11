@@ -79,7 +79,11 @@
     "createFailed": "创建连接失败",
     "connectFailed": "连接失败",
     "emptyTitle": "未选择连接",
-    "emptyDesc": "从左侧选择一个 SSH 连接，或新建连接开始浏览远程文件"
+    "emptyDesc": "从左侧选择一个 SSH 连接，或新建连接开始浏览远程文件",
+    "tabTerminal": "终端",
+    "previewLoading": "正在读取文件...",
+    "previewTruncated": "文件较大，仅显示前 1 MB",
+    "previewLoadFailed": "文件读取失败"
   },
   "settings": {
     "general": {
