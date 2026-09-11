@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
-import { Book, ChevronRight, Clock, Ellipsis, Layers, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
+import { Book, ChevronRight, ChevronsDownUp, Clock, Ellipsis, FolderPlus, Layers, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import { SidebarProjectMenu } from "./SidebarProjectMenu";
@@ -590,7 +590,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
       </div>
 
       {/* Project / session list */}
-      <div className="flex-1 overflow-y-auto px-2 mt-4 space-y-3 pb-2 custom-scrollbar">
+      <div className="stable-scrollbar-gutter flex-1 overflow-y-auto px-2 mt-4 space-y-3 pb-2 custom-scrollbar">
         {/* Pinned projects and sessions */}
         {(pinnedProjectEntries.length > 0 || pinnedSessions.length > 0) && (
           <div className="flex flex-col">
@@ -613,7 +613,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 title={t("sidebar.collapseAll")}
                 onClick={toggleExpandAll}
               >
-                <FontAwesomeIcon icon={["fas", "compress"]} className="text-[10px]" />
+                <ChevronsDownUp className="h-3 w-3" />
               </button>
               
               <div className="relative" ref={moreMenuRef}>
@@ -626,7 +626,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                     setIsNewProjectMenuOpen(false);
                   }}
                 >
-                  <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[10px]" />
+                  <Ellipsis className="h-3 w-3" />
                 </button>
                 {isMoreMenuOpen && (
                   <div className="absolute top-full right-0 mt-1 w-48 bg-elevated-bg rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
@@ -738,7 +738,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   title={t("sidebar.newProject")}
                   onClick={() => { setIsNewProjectMenuOpen(!isNewProjectMenuOpen); setIsMoreMenuOpen(false); }}
                 >
-                  <FontAwesomeIcon icon={["fas", "folder-plus"]} className="text-[10px]" />
+                  <FolderPlus className="h-3 w-3" />
                 </button>
                 {isNewProjectMenuOpen && (
                   <div className="absolute top-full right-0 mt-1 w-40 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
