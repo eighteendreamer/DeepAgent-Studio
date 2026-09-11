@@ -632,6 +632,42 @@ fn preferred_runtime_log_path() -> Result<PathBuf, String> {
         .ok_or_else(|| "failed to resolve install directory for runtime logs".to_string())
 }
 
+fn preferred_data_root() -> Result<PathBuf, String> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("data")))
+        .ok_or_else(|| "failed to resolve install directory for app data".to_string())
+}
+
+/// One-time migration from the legacy `%APPDATA%` root: only when the install
+/// data root has no database yet and the legacy root has one. Missing entries
+/// are copied, existing ones are left untouched; on failure the half-copied
+/// database is removed so the next launch retries the whole migration.
+fn migrate_legacy_data_root(legacy_dir: &Path, data_root: &Path) -> Result<(), String> {
+    if same_path(legacy_dir, data_root) {
+        return Ok(());
+    }
+    if !legacy_dir.join("deepagent.db").exists() || data_root.join("deepagent.db").exists() {
+        return Ok(());
+    }
+    if let Err(error) = copy_dir_missing(legacy_dir, data_root) {
+        let partial_db = data_root.join("deepagent.db");
+        if partial_db.exists() {
+            std::fs::remove_file(&partial_db).map_err(|e| {
+                format!(
+                    "migration failed with '{error}' and partial database '{}' could not be removed: {e}",
+                    partial_db.display()
+                )
+            })?;
+        }
+        return Err(format!(
+            "failed to migrate legacy app data from '{}': {error}",
+            legacy_dir.display()
+        ));
+    }
+    Ok(())
+}
+
 fn same_path(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
@@ -1868,10 +1904,7 @@ fn set_budget(
 }
 
 #[tauri::command]
-async fn run_doctor(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<Vec<DiagnosticResult>, String> {
+async fn run_doctor(state: State<'_, AppState>) -> Result<Vec<DiagnosticResult>, String> {
     let settings = state.settings.clone();
     let db = {
         let svc = state.service.lock().map_err(|e| e.to_string())?;
@@ -1883,11 +1916,8 @@ async fn run_doctor(
         .map_err(|e| e.to_string())?
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(state.workspace.info().path));
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir());
-    Ok(deepagent_app_core::run_diagnostics(&settings, &db, &root, &app_data_dir).await)
+    let data_dir = preferred_data_root().map_err(|e| e.to_string())?;
+    Ok(deepagent_app_core::run_diagnostics(&settings, &db, &root, &data_dir).await)
 }
 
 // ---- chat (streamed) ------------------------------------------------------
@@ -5368,11 +5398,17 @@ pub fn run() {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.create_overlay_titlebar();
             }
-            let dir = app
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| std::env::temp_dir());
-            std::fs::create_dir_all(&dir).ok();
+            let dir = preferred_data_root()?;
+            let legacy_data_dir = app.path().app_data_dir().ok();
+            std::fs::create_dir_all(&dir).map_err(|error| {
+                format!(
+                    "failed to create app data directory '{}': {error}",
+                    dir.display()
+                )
+            })?;
+            if let Some(legacy_dir) = legacy_data_dir.as_deref() {
+                migrate_legacy_data_root(legacy_dir, &dir)?;
+            }
             let files_dir = dir.join("files");
             let attachments_dir = files_dir.join("attachments");
             let recordings_dir = files_dir.join("recordings");
@@ -5422,6 +5458,19 @@ pub fn run() {
                         "fallback": false,
                     })),
             );
+            if let Some(legacy_dir) = legacy_data_dir.as_deref() {
+                if !same_path(legacy_dir, &dir) && dir.join("deepagent.db").exists() {
+                    let _ = runtime_logs.append(
+                        NewRuntimeLogEntry::info("diagnostic", "app_data_root")
+                            .with_source("desktop-tauri")
+                            .with_message(format!(
+                                "app data root resolved to '{}' (legacy app data dir: '{}')",
+                                dir.display(),
+                                legacy_dir.display()
+                            )),
+                    );
+                }
+            }
             if service
                 .shared_database()
                 .take_migration_notice("responses_history_reset_completed")
