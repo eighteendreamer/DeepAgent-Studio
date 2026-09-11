@@ -582,18 +582,18 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
 
         <div className="flex flex-col">
           <div className="flex items-center justify-between px-2 mb-1 text-text-secondary group">
-            <button
-              type="button"
-              className="flex min-w-0 flex-1 items-center gap-1 rounded text-left hover:text-text-base"
-              title={projectsCollapsed ? t("sidebar.expandProjects") : t("sidebar.collapseProjects")}
-              onClick={toggleProjectsSection}
-            >
-              <ChevronDown
-                className={cn("h-3 w-3 shrink-0 transition-transform", projectsCollapsed && "-rotate-90")}
-              />
-              <span className="text-[12px]">{t("sidebar.projects")}</span>
-            </button>
+            <span className="text-[12px]">{t("sidebar.projects")}</span>
             <div className={cn("flex items-center space-x-1 transition-opacity", isMoreMenuOpen || isNewProjectMenuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
+              <button
+                type="button"
+                className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded"
+                title={projectsCollapsed ? t("sidebar.expandProjects") : t("sidebar.collapseProjects")}
+                onClick={toggleProjectsSection}
+              >
+                <ChevronDown
+                  className={cn("h-3 w-3 transition-transform", projectsCollapsed && "-rotate-90")}
+                />
+              </button>
               <DropdownMenu
                 open={isMoreMenuOpen}
                 onOpenChange={(next) => {
