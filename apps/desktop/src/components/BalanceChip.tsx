@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { LoaderCircle, Wallet } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { getBalance, SETTINGS_CHANGED_EVENT, type SettingsChangedDetail } from "../api";
@@ -71,10 +71,11 @@ export function BalanceChip({ popoverSuppressed = false }: { popoverSuppressed?:
         title={tooltipText(balance, error, t)}
         className={`inline-flex items-center text-[12px] font-medium cursor-pointer transition-colors ${tone}`}
       >
-        <FontAwesomeIcon
-          icon={loading ? ["fas", "circle-notch"] : ["fas", "wallet"]}
-          className={`mr-2 text-[12px] ${loading ? "animate-spin" : ""}`}
-        />
+        {loading ? (
+          <LoaderCircle className="mr-2 h-3 w-3 animate-spin" />
+        ) : (
+          <Wallet className="mr-2 h-3 w-3" />
+        )}
         {label}
       </button>
 

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import { Book, ChevronRight, Clock, Ellipsis, Layers, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import { SidebarProjectMenu } from "./SidebarProjectMenu";
@@ -23,13 +24,13 @@ type SidebarOverflowSurface = "plugins" | "automation" | "canvas" | "remote";
 /** 侧栏常驻 4 项之后的入口；新增功能页只需往这里追加。 */
 const SIDEBAR_OVERFLOW_NAV: Array<{
   id: SidebarOverflowSurface;
-  icon: IconProp;
+  icon: LucideIcon;
   labelKey: "plugins" | "automation" | "canvas" | "remote";
 }> = [
-  { id: "plugins", icon: ["fas", "puzzle-piece"], labelKey: "plugins" },
-  { id: "automation", icon: ["far", "clock"], labelKey: "automation" },
-  { id: "canvas", icon: ["fas", "paintbrush"], labelKey: "canvas" },
-  { id: "remote", icon: ["fas", "server"], labelKey: "remote" },
+  { id: "plugins", icon: Puzzle, labelKey: "plugins" },
+  { id: "automation", icon: Clock, labelKey: "automation" },
+  { id: "canvas", icon: Shapes, labelKey: "canvas" },
+  { id: "remote", icon: Server, labelKey: "remote" },
 ];
 
 const SIDEBAR_OVERFLOW_IDS = new Set<string>(SIDEBAR_OVERFLOW_NAV.map((item) => item.id));
@@ -66,7 +67,7 @@ interface Props {
   runningSessionIds?: Set<string>;
 }
 
-function NavButton({ icon, label, active = false, onClick, navId }: { icon: IconProp; label: string; active?: boolean; onClick?: () => void; navId: string }) {
+function NavButton({ icon: Icon, label, active = false, onClick, navId }: { icon: LucideIcon; label: string; active?: boolean; onClick?: () => void; navId: string }) {
   return (
     <button
       data-nav={navId}
@@ -75,7 +76,7 @@ function NavButton({ icon, label, active = false, onClick, navId }: { icon: Icon
       }`}
       onClick={onClick}
     >
-      <FontAwesomeIcon icon={icon} className="w-5 text-left text-text-secondary" />
+      <Icon className="h-[18px] w-[18px] shrink-0 text-text-secondary" />
       <span className="ml-0.5">{label}</span>
     </button>
   );
@@ -537,12 +538,12 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             className="relative z-[1] w-full flex items-center px-2.5 py-1.5 rounded-md text-sm text-text-base"
             onClick={onNewChat}
           >
-            <FontAwesomeIcon icon={["far", "pen-to-square"]} className="w-5 text-left text-text-secondary" />
+            <SquarePen className="h-[18px] w-[18px] shrink-0 text-text-secondary" />
             <span className="ml-0.5">{t("sidebar.newChat")}</span>
           </button>
-          <NavButton icon={["fas", "magnifying-glass"]} label={t("sidebar.search")} navId="search" onClick={onOpenSearch} />
-          <NavButton icon={["fas", "layer-group"]} label={t("sidebar.skills")} navId="skills" active={activeSurface === "skills"} onClick={onOpenSkills} />
-          <NavButton icon={["fas", "book"]} label={t("sidebar.knowledge")} navId="knowledge" active={activeSurface === "knowledge"} onClick={onOpenKnowledge} />
+          <NavButton icon={Search} label={t("sidebar.search")} navId="search" onClick={onOpenSearch} />
+          <NavButton icon={Layers} label={t("sidebar.skills")} navId="skills" active={activeSurface === "skills"} onClick={onOpenSkills} />
+          <NavButton icon={Book} label={t("sidebar.knowledge")} navId="knowledge" active={activeSurface === "knowledge"} onClick={onOpenKnowledge} />
           <DropdownMenu open={overflowNavOpen} onOpenChange={setOverflowNavOpen} modal={false}>
             <DropdownMenuTrigger asChild>
               <button
@@ -554,12 +555,9 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 onPointerEnter={openOverflowNav}
                 onPointerLeave={scheduleCloseOverflowNav}
               >
-                <FontAwesomeIcon icon={["fas", "ellipsis"]} className="w-5 text-left text-text-secondary" />
+                <Ellipsis className="h-[18px] w-[18px] shrink-0 text-text-secondary" />
                 <span className="ml-0.5">{t("sidebar.other")}</span>
-                <FontAwesomeIcon
-                  icon={["fas", "chevron-right"]}
-                  className="ml-auto text-[10px] text-text-secondary"
-                />
+                <ChevronRight className="ml-auto h-3 w-3 text-text-secondary" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -579,7 +577,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   )}
                   onSelect={() => overflowNavActions[item.id]()}
                 >
-                  <FontAwesomeIcon icon={item.icon} className="w-4 text-text-secondary" />
+                  <item.icon className="h-4 w-4 shrink-0 text-text-secondary" />
                   {t(`sidebar.${item.labelKey}`)}
                 </DropdownMenuItem>
               ))}
