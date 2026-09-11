@@ -414,11 +414,15 @@ impl SshServiceImpl {
                             tracing::debug!(target: "deepagent_ssh", connection_id, exit_status, "remote shell exited");
                         }
                         Some(ChannelMsg::Failure) => {
-                            tracing::warn!(target: "deepagent_ssh", connection_id, "remote rejected pty/shell request");
-                            break;
+                            tracing::warn!(target: "deepagent_ssh", connection_id, "remote rejected a channel request");
                         }
-                        Some(ChannelMsg::Eof) => {}
-                        _ => break,
+                        // russh 会把 WINDOW_ADJUST / CHANNEL_SUCCESS / CHANNEL_EOF 等消息
+                        // 一律投递进 wait() 队列（encrypted.rs:555/:605/:375），交互式 shell
+                        // 期间它们会频繁到达；只有 Close/None（通道关闭，客户端侧 CHANNEL_CLOSE
+                        // 由 russh 直接移除 channel 不入队）才代表通道终止。
+                        Some(ChannelMsg::Close) => break,
+                        Some(_) => {}
+                        None => break,
                     },
                     input = stdin_rx.recv() => match input {
                         Some(chunk) if !chunk.is_empty() => {

@@ -30,3 +30,4 @@ flate2 = "1"
 [dev-dependencies]
 tempfile = "3.8"
 tokio = { version = "1", features = ["test-util", "macros"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
