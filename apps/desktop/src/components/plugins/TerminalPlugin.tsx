@@ -6,9 +6,9 @@ import {
   localPtyResize,
   localPtySpawn,
   localPtyWrite,
+  sshPtyRead,
   sshPtyResize,
   sshPtySpawn,
-  sshPtyStream,
   sshPtyWrite,
   sshStatus,
   type LocalPtyHandle,
@@ -38,7 +38,6 @@ type TerminalLayout = {
   rows: number;
 };
 
-// 远程终端输出已改为 Rust 推送（ssh_pty_stream）；以下轮询节奏仅剩本地 PTY 链路使用。
 const PTY_ACTIVE_POLL_MS = 30;
 const PTY_IDLE_POLL_MS = 180;
 const PTY_HIDDEN_POLL_MS = 750;
@@ -46,7 +45,6 @@ const PTY_HIDDEN_POLL_MS = 750;
 type TerminalRuntime = {
   Terminal: typeof import("@xterm/xterm").Terminal;
   FitAddon: typeof import("@xterm/addon-fit").FitAddon;
-  WebglAddon: typeof import("@xterm/addon-webgl").WebglAddon;
 };
 
 let terminalRuntimePromise: Promise<TerminalRuntime> | null = null;
@@ -55,12 +53,10 @@ function loadTerminalRuntime() {
   terminalRuntimePromise ??= Promise.all([
     import("@xterm/xterm"),
     import("@xterm/addon-fit"),
-    import("@xterm/addon-webgl"),
     import("@xterm/xterm/css/xterm.css"),
-  ]).then(([xterm, fit, webgl]) => ({
+  ]).then(([xterm, fit]) => ({
     Terminal: xterm.Terminal,
     FitAddon: fit.FitAddon,
-    WebglAddon: webgl.WebglAddon,
   }));
   return terminalRuntimePromise;
 }
@@ -165,22 +161,18 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
 
       pollRef.current = window.setTimeout(async () => {
         pollRef.current = null;
-        const current = sessionRef.current;
-        if (
-          readingRef.current ||
-          !current ||
-          current.kind !== "local" ||
-          !termRef.current
-        ) {
-          if (sessionRef.current?.kind === "local") {
-            scheduleReadPoll(PTY_IDLE_POLL_MS);
-          }
+        if (readingRef.current || !sessionRef.current || !termRef.current) {
+          if (sessionRef.current) scheduleReadPoll(PTY_IDLE_POLL_MS);
           return;
         }
 
         readingRef.current = true;
         try {
-          const payload = await localPtyRead(current.handle.pty_id);
+          const current = sessionRef.current;
+          const payload =
+            current.kind === "local"
+              ? await localPtyRead(current.handle.pty_id)
+              : await sshPtyRead(current.handle.connection_id);
           if (payload.length > 0) {
             idlePollDelayRef.current = PTY_ACTIVE_POLL_MS;
             termRef.current.write(decoderRef.current.decode(new Uint8Array(payload)));
@@ -194,7 +186,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
           idlePollDelayRef.current = PTY_IDLE_POLL_MS;
         } finally {
           readingRef.current = false;
-          if (sessionRef.current?.kind === "local") {
+          if (sessionRef.current) {
             scheduleReadPoll(document.hidden ? PTY_HIDDEN_POLL_MS : idlePollDelayRef.current);
           }
         }
@@ -327,7 +319,7 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
     let cancelled = false;
     let cleanup: (() => void) | null = null;
 
-    void loadTerminalRuntime().then(({ Terminal, FitAddon, WebglAddon }) => {
+    void loadTerminalRuntime().then(({ Terminal, FitAddon }) => {
       if (cancelled || !containerRef.current || termRef.current) return;
 
       const term = new Terminal({
@@ -345,15 +337,6 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(containerRef.current);
-
-      // WebGL 渲染降低大输出时的主线程压力；环境不支持时抛错，回退默认 DOM 渲染。
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch {
-        // 保留默认渲染器
-      }
 
       termRef.current = term;
       fitRef.current = fit;
@@ -433,12 +416,6 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
           const handle = await sshPtySpawn(connectionId, cols, rows);
           if (cancelled) return;
           sessionRef.current = { kind: "remote", handle };
-          // 输出走推送：spawn 与订阅之间 shell 的输出会先缓存在 Rust mpsc 里，不丢。
-          await sshPtyStream(connectionId, (payload) => {
-            const active = termRef.current;
-            if (active) active.write(new Uint8Array(payload));
-          });
-          if (cancelled) return;
         } else {
           const handle = await localPtySpawn(cols, rows);
           if (cancelled) {
@@ -446,12 +423,13 @@ export function TerminalPlugin({ mode = "local", connectionId = null }: Terminal
             return;
           }
           sessionRef.current = { kind: "local", handle };
-          stopPolling();
-          scheduleReadPoll(PTY_ACTIVE_POLL_MS);
         }
 
         lastSentPtySizeRef.current = { cols, rows };
         scheduleTerminalLayout(false);
+
+        stopPolling();
+        scheduleReadPoll(PTY_ACTIVE_POLL_MS);
       } catch (error) {
         term.writeln("");
         term.writeln(`Terminal failed: ${formatError(error)}`);

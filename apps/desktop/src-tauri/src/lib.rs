@@ -404,12 +404,6 @@ struct AppState {
     office: Arc<OfficeService>,
     /// SSH long-lived connection service.
     ssh: Arc<SshService>,
-    /// 远程终端输出推送转发任务的注册表：connection_id -> 控制通道。
-    /// `ssh_pty_stream` 被前端（重新）挂载时调用：已有转发任务就重挂 Channel，
-    /// 否则接管 PtyState 的 stdout 并 spawn 转发任务；shell 关闭时任务自摘注册项。
-    ssh_pty_streams: tokio::sync::Mutex<
-        HashMap<String, tokio::sync::mpsc::UnboundedSender<SshPtyStreamCtrl>>,
-    >,
     /// Per-project workspace trust (§6.2): grant/query trust; the run hook
     /// gate (opt-in) escalates bash in untrusted projects to approval.
     trust: Arc<TrustService>,
@@ -4541,6 +4535,21 @@ async fn ssh_pty_write(
 }
 
 #[tauri::command]
+async fn ssh_pty_read(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<Vec<u8>, String> {
+    let ssh = state.ssh.clone();
+    let handle = DtoSshServiceHandle {
+        connection_id: connection_id.clone(),
+        token: connection_id.clone(),
+        cols: 80,
+        rows: 24,
+    };
+    ssh.pty_read(&handle).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn ssh_pty_resize(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4557,114 +4566,6 @@ async fn ssh_pty_resize(
     ssh.pty_resize(&handle, cols, rows)
         .await
         .map_err(|e| e.to_string())
-}
-
-/// [`ssh_pty_stream`] 转发任务的控制消息。
-enum SshPtyStreamCtrl {
-    /// 把最近一次挂载的 Channel（及可选的新 stdout 接收端）交给转发任务。
-    Attach {
-        channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
-        rx: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
-    },
-}
-
-/// 把 shell 输出经 Tauri Channel 推送给前端的转发任务。
-///
-/// 终端视图重新挂载时前端会再次调用 `ssh_pty_stream`；此时 stdout 已由本任务
-/// 持有，新 Channel 经控制通道重挂（重挂时若带来新的 stdout 接收端则一并替换）。
-/// shell 通道关闭或连接断开时任务自行移除注册项并退出。
-async fn ssh_pty_stream_forwarder(
-    app: tauri::AppHandle,
-    connection_id: String,
-    mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
-    mut channel: Option<tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>>,
-    mut ctrl: tokio::sync::mpsc::UnboundedReceiver<SshPtyStreamCtrl>,
-) {
-    loop {
-        tokio::select! {
-            chunk = rx.recv() => match chunk {
-                Some(data) => {
-                    // 与旧轮询路径的 64 KiB 消费上限对齐：聚合已就绪数据再推送，
-                    // 降低小包 IPC 条数；只取立即就绪的数据，不引入额外延迟。
-                    let mut payload = data;
-                    while payload.len() < 64 * 1024 {
-                        match rx.try_recv() {
-                            Ok(more) => payload.extend_from_slice(&more),
-                            Err(_) => break,
-                        }
-                    }
-                    if let Some(channel) = &channel {
-                        // 前端卸载/切换页面后 send 失败属预期，静默丢弃即可。
-                        let _ = channel.send(tauri::ipc::InvokeResponseBody::Raw(payload));
-                    }
-                }
-                None => break,
-            },
-            msg = ctrl.recv() => match msg {
-                Some(SshPtyStreamCtrl::Attach { channel: next, rx: new_rx }) => {
-                    channel = Some(next);
-                    if let Some(new_rx) = new_rx {
-                        rx = new_rx;
-                    }
-                }
-                None => break,
-            },
-        }
-    }
-    app.state::<AppState>()
-        .ssh_pty_streams
-        .lock()
-        .await
-        .remove(&connection_id);
-}
-
-#[tauri::command]
-async fn ssh_pty_stream(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    connection_id: String,
-    on_data: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
-) -> Result<(), String> {
-    let ssh = state.ssh.clone();
-    let handle = DtoSshServiceHandle {
-        connection_id: connection_id.clone(),
-        token: connection_id.clone(),
-        cols: 80,
-        rows: 24,
-    };
-    // `Ok(None)` 表示 stdout 已被现有转发任务持有，本次只需重挂 Channel。
-    let taken = ssh.pty_take_stdout(&handle).await.map_err(|e| e.to_string())?;
-
-    let mut streams = state.ssh_pty_streams.lock().await;
-    // 发送失败时 `send` 会把消息原样退回（SendError.0），从中取回 rx 继续走新建分支。
-    let taken = match streams.get(&connection_id).cloned() {
-        Some(ctrl) => match ctrl.send(SshPtyStreamCtrl::Attach {
-            channel: on_data.clone(),
-            rx: taken,
-        }) {
-            Ok(()) => return Ok(()),
-            Err(err) => match err.0 {
-                SshPtyStreamCtrl::Attach { rx, .. } => rx,
-            },
-        },
-        None => taken,
-    };
-    // 控制通道已死（转发任务刚退出）或尚无转发任务。
-    streams.remove(&connection_id);
-    let Some(rx) = taken else {
-        return Err("terminal output stream is unavailable; please respawn the terminal".into());
-    };
-    let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::unbounded_channel();
-    streams.insert(connection_id.clone(), ctrl_tx);
-    drop(streams);
-    tokio::spawn(ssh_pty_stream_forwarder(
-        app,
-        connection_id,
-        rx,
-        Some(on_data),
-        ctrl_rx,
-    ));
-    Ok(())
 }
 
 // ---- git (read-only project/worktree state for the Git Workbench) ---------
@@ -6093,7 +5994,6 @@ pub fn run() {
                 speech,
                 office,
                 ssh,
-                ssh_pty_streams: tokio::sync::Mutex::new(HashMap::new()),
                 trust,
                 mobile: mobile_service,
                 rt,
@@ -6311,8 +6211,8 @@ pub fn run() {
             ssh_remote_install,
             ssh_pty_spawn,
             ssh_pty_write,
+            ssh_pty_read,
             ssh_pty_resize,
-            ssh_pty_stream,
             git_project_status,
             git_projects_status,
             git_branch_list,

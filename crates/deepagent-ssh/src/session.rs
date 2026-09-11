@@ -86,9 +86,7 @@ pub enum PtyCommand {
 pub struct PtyState {
     pub stdin: mpsc::Sender<Vec<u8>>,
     pub commands: mpsc::UnboundedSender<PtyCommand>,
-    /// Shell 输出通道的唯一消费者。轮询模式下为 `Some`；一旦 `pty_take_stdout`
-    /// 将所有权移交给推送转发任务，就变为 `None`，此后轮询读取恒为空。
-    pub stdout: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
+    pub stdout: Mutex<mpsc::Receiver<Vec<u8>>>,
     pub join: JoinHandle<()>,
     pub cols: u16,
     pub rows: u16,
@@ -182,9 +180,6 @@ impl SshSession {
         let pty = self.pty.read().await;
         let pty = pty.as_ref()?;
         let mut rx = pty.stdout.lock().await;
-        let Some(rx) = rx.as_mut() else {
-            return Some(Vec::new());
-        };
         let mut out = Vec::new();
         while let Ok(chunk) = rx.try_recv() {
             out.extend_from_slice(&chunk);
@@ -195,37 +190,26 @@ impl SshSession {
         Some(out)
     }
 
-    /// 将 shell 输出接收端的所有权移交给调用方（推送转发任务）。
-    /// 外层 `None` 表示未建立 PTY；内层 `None` 表示已被移交过（转发任务在运行）。
-    pub async fn pty_take_stdout(&self) -> Option<Option<mpsc::Receiver<Vec<u8>>>> {
-        let pty = self.pty.read().await;
-        let pty = pty.as_ref()?;
-        let mut stdout = pty.stdout.lock().await;
-        Some(stdout.take())
-    }
-
     pub async fn pty_read_with_cursor(&self, after_cursor: u64) -> Option<TerminalReadChunk> {
         let pty = self.pty.read().await;
         let pty = pty.as_ref()?;
         let mut rx = pty.stdout.lock().await;
         let mut history = pty.history.lock().await;
         let mut history_bytes = pty.history_bytes.lock().await;
-        if let Some(rx) = rx.as_mut() {
-            while let Ok(chunk) = rx.try_recv() {
-                if chunk.is_empty() {
-                    continue;
-                }
-                let start = pty
-                    .output_cursor
-                    .fetch_add(chunk.len() as u64, Ordering::AcqRel);
-                *history_bytes += chunk.len();
-                history.push_back((start, chunk));
-                while *history_bytes > 256 * 1024 {
-                    if let Some((_, old)) = history.pop_front() {
-                        *history_bytes = history_bytes.saturating_sub(old.len());
-                    } else {
-                        break;
-                    }
+        while let Ok(chunk) = rx.try_recv() {
+            if chunk.is_empty() {
+                continue;
+            }
+            let start = pty
+                .output_cursor
+                .fetch_add(chunk.len() as u64, Ordering::AcqRel);
+            *history_bytes += chunk.len();
+            history.push_back((start, chunk));
+            while *history_bytes > 256 * 1024 {
+                if let Some((_, old)) = history.pop_front() {
+                    *history_bytes = history_bytes.saturating_sub(old.len());
+                } else {
+                    break;
                 }
             }
         }
@@ -268,98 +252,5 @@ impl SshSession {
 
     pub fn config(&self) -> &SshConnectionConfig {
         &self.config
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::SshAuthType;
-    use std::collections::HashMap;
-
-    fn test_session() -> Arc<SshSession> {
-        SshSession::new(SshConnectionConfig {
-            id: "conn-test".into(),
-            name: "test".into(),
-            host: "127.0.0.1".into(),
-            port: 22,
-            username: "tester".into(),
-            auth_type: SshAuthType::Agent,
-            key_path: None,
-            password: None,
-            extra_options: HashMap::new(),
-            control_path: None,
-            cached_status: SshStatus::Disconnected,
-            cached_last_error: None,
-            cached_latency_ms: None,
-            cached_checked_at_ms: None,
-        })
-    }
-
-    fn make_pty() -> (mpsc::Sender<Vec<u8>>, PtyState) {
-        let (stdin_tx, _stdin_rx) = mpsc::channel::<Vec<u8>>(8);
-        let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(8);
-        let (command_tx, _command_rx) = mpsc::unbounded_channel::<PtyCommand>();
-        let state = PtyState {
-            stdin: stdin_tx,
-            commands: command_tx,
-            stdout: Mutex::new(Some(stdout_rx)),
-            join: tokio::spawn(async {}),
-            cols: 80,
-            rows: 24,
-            output_cursor: AtomicU64::new(0),
-            history: Mutex::new(VecDeque::new()),
-            history_bytes: Mutex::new(0),
-        };
-        (stdout_tx, state)
-    }
-
-    #[tokio::test]
-    async fn pty_read_available_drains_buffered_output() {
-        let session = test_session();
-        assert!(session.pty_read_available().await.is_none());
-
-        let (tx, state) = make_pty();
-        session.replace_pty(Some(state)).await;
-
-        tx.send(b"abc".to_vec()).await.unwrap();
-        assert_eq!(session.pty_read_available().await.unwrap(), b"abc".to_vec());
-        assert_eq!(
-            session.pty_read_available().await.unwrap(),
-            Vec::<u8>::new()
-        );
-    }
-
-    #[tokio::test]
-    async fn pty_take_stdout_transfers_ownership_once() {
-        let session = test_session();
-        assert!(session.pty_take_stdout().await.is_none());
-
-        let (tx, state) = make_pty();
-        session.replace_pty(Some(state)).await;
-
-        tx.send(b"hello".to_vec()).await.unwrap();
-
-        let mut rx = session
-            .pty_take_stdout()
-            .await
-            .expect("pty present")
-            .expect("first take");
-        assert!(
-            session.pty_take_stdout().await.unwrap().is_none(),
-            "second take"
-        );
-
-        // stdout 被移交后，轮询读取恒为空（消费者已换成推送转发任务）。
-        assert_eq!(
-            session.pty_read_available().await.unwrap(),
-            Vec::<u8>::new()
-        );
-
-        // 数据没有丢，仍由新持有者收到。
-        assert_eq!(rx.recv().await.unwrap(), b"hello".to_vec());
-        drop(tx);
-        // 全部发送端关闭后，接收端收到 None。
-        assert_eq!(rx.recv().await, None);
     }
 }
