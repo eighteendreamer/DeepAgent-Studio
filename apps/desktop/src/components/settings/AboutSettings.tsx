@@ -1,5 +1,17 @@
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import {
+  Atom,
+  Bot,
+  CircleUser,
+  Cog,
+  Code2,
+  Database,
+  ExternalLink,
+  Monitor,
+  Star,
+  X,
+  Zap,
+  ZoomIn,
+} from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openExternalUrl } from "../../api";
@@ -20,12 +32,12 @@ const PROJECT_URL = "https://github.com/eighteendreamer/DeepAgent-Studio";
 const COPYRIGHT_CERTIFICATE_SRC = "/certificates/software-copyright.jpg";
 
 const STACK = [
-  { name: "Tauri", version: "v2", icon: ["far", "window-maximize"] as IconProp },
-  { name: "React + TypeScript", version: "18.3 + 5.x", icon: ["fab", "react"] as IconProp },
-  { name: "Rust", version: "stable", icon: ["fas", "gear"] as IconProp },
-  { name: "Vite", version: "v5", icon: ["fas", "bolt"] as IconProp },
-  { name: "DeepSeek API", version: "原生模型层", icon: ["fas", "robot"] as IconProp },
-  { name: "SQLite + MCP", version: "持久化与工具扩展", icon: ["fas", "server"] as IconProp },
+  { name: "Tauri", version: "v2", icon: Monitor },
+  { name: "React + TypeScript", version: "18.3 + 5.x", icon: Atom },
+  { name: "Rust", version: "stable", icon: Cog },
+  { name: "Vite", version: "v5", icon: Zap },
+  { name: "DeepSeek API", version: "原生模型层", icon: Bot },
+  { name: "SQLite + MCP", version: "持久化与工具扩展", icon: Database },
 ];
 
 type DeveloperId = "eighteen" | "designer";
@@ -55,7 +67,7 @@ function ContactDialog({ developer }: { developer: DeveloperId }) {
   return (
     <Dialog>
       <DialogTrigger className="inline-flex items-center gap-2 rounded-md bg-black/5 px-3 py-2 text-xs font-medium text-text-base transition-colors hover:bg-black/10">
-        <FontAwesomeIcon icon={["fas", "circle-user"]} />
+        <CircleUser className="h-4 w-4" />
         {t("settings.about.actions.contact")}
       </DialogTrigger>
       <DialogContent>
@@ -65,7 +77,7 @@ function ContactDialog({ developer }: { developer: DeveloperId }) {
             <DialogDescription>{t(`${prefix}.name`)}</DialogDescription>
           </div>
           <DialogCloseIcon aria-label={t("settings.about.actions.close")}>
-            <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[14px]" />
+            <X className="h-3.5 w-3.5" />
           </DialogCloseIcon>
         </DialogHeader>
         <div className="grid gap-5 px-6 py-6">
@@ -96,7 +108,7 @@ function SupportDialog({ developer }: { developer: DeveloperId }) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger className="inline-flex items-center gap-2 rounded-md bg-black/5 px-3 py-2 text-xs font-medium text-text-base transition-colors hover:bg-black/10">
-        <FontAwesomeIcon icon={["fas", "star"]} />
+        <Star className="h-4 w-4" />
         {t("settings.about.actions.support")}
       </DialogTrigger>
       <DialogContent className="max-w-[520px]">
@@ -106,7 +118,7 @@ function SupportDialog({ developer }: { developer: DeveloperId }) {
             <DialogDescription>{t(`${prefix}.name`)}</DialogDescription>
           </div>
           <DialogCloseIcon aria-label={t("settings.about.actions.close")}>
-            <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[14px]" />
+            <X className="h-3.5 w-3.5" />
           </DialogCloseIcon>
         </DialogHeader>
         <div className="flex flex-col items-center gap-4 px-6 py-7 text-center">
@@ -155,7 +167,7 @@ function DeveloperAvatar({ developer }: { developer: DeveloperId }) {
     <Avatar className="h-12 w-12">
       <AvatarImage src={assets.avatar} alt={name} />
       <AvatarFallback>
-        <FontAwesomeIcon icon={["fas", "circle-user"]} aria-hidden="true" />
+        <CircleUser className="h-6 w-6" aria-hidden="true" />
       </AvatarFallback>
     </Avatar>
   );
@@ -185,9 +197,9 @@ function DeveloperBlock({ developer }: { developer: DeveloperId }) {
         }}
         className="mt-4 inline-flex max-w-full items-center gap-2 truncate text-xs text-text-secondary hover:text-text-base"
       >
-        <FontAwesomeIcon icon={["fab", "github"]} className="shrink-0" />
+        <Code2 className="h-3.5 w-3.5 shrink-0" />
         <span className="truncate">{t("settings.about.contact.repository")}</span>
-        <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} className="shrink-0" />
+        <ExternalLink className="h-3.5 w-3.5 shrink-0" />
       </a>
       <div className="mt-5 flex flex-wrap gap-2">
         <ContactDialog developer={developer} />
@@ -240,7 +252,7 @@ function CopyrightCertificateSection() {
               />
               <figcaption className="flex items-center justify-between gap-3 border-t border-border-theme bg-white px-3 py-2 text-xs text-text-secondary">
                 <span>{t("settings.about.copyright.previewCaption")}</span>
-                <FontAwesomeIcon icon={["fas", "magnifying-glass-plus"]} className="shrink-0" />
+                <ZoomIn className="h-3.5 w-3.5 shrink-0" />
               </figcaption>
             </figure>
           </DialogTrigger>
@@ -251,7 +263,7 @@ function CopyrightCertificateSection() {
                 <DialogDescription>{t("settings.about.copyright.registration")}</DialogDescription>
               </div>
               <DialogCloseIcon aria-label={t("settings.about.actions.close")}>
-                <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[14px]" />
+                <X className="h-3.5 w-3.5" />
               </DialogCloseIcon>
             </DialogHeader>
             <div className="min-h-0 overflow-auto bg-sidebar-bg px-4 py-4">
@@ -285,13 +297,16 @@ export function AboutSettings() {
         <div className="mt-8">
           <h2 className="mb-4 text-lg font-semibold">{t("settings.about.stack.title")}</h2>
           <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
-            {STACK.map((item) => (
-              <div key={item.name} className="flex min-w-0 items-center gap-3 py-1">
-                <FontAwesomeIcon icon={item.icon} className="w-4 shrink-0 text-text-secondary" />
-                <span className="truncate text-sm font-medium">{item.name}</span>
-                <span className="ml-auto shrink-0 text-xs text-text-secondary">{item.version}</span>
-              </div>
-            ))}
+            {STACK.map((item) => {
+              const Icon = item.icon;
+              return (
+                <div key={item.name} className="flex min-w-0 items-center gap-3 py-1">
+                  <Icon className="h-4 w-4 shrink-0 text-text-secondary" />
+                  <span className="truncate text-sm font-medium">{item.name}</span>
+                  <span className="ml-auto shrink-0 text-xs text-text-secondary">{item.version}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>
@@ -314,9 +329,9 @@ export function AboutSettings() {
           }}
           className="mt-10 inline-flex items-center gap-2 text-xs text-text-secondary hover:text-text-base"
         >
-          <FontAwesomeIcon icon={["fab", "github"]} />
+          <Code2 className="h-3.5 w-3.5" />
           {t("settings.about.contact.github")}
-          <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} />
+          <ExternalLink className="h-3.5 w-3.5" />
         </a>
       </section>
     </div>
