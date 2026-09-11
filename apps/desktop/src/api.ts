@@ -3877,10 +3877,22 @@ export async function sshPtyWrite(
   if (invoke) return invoke<void>("ssh_pty_write", { connectionId, data });
 }
 
-export async function sshPtyRead(connectionId: string): Promise<number[]> {
+/**
+ * 订阅远程终端输出推送。Rust 侧转发任务把 shell 输出以二进制 Raw 消息
+ * 经 Tauri Channel 推给 `onData`（payload 为 ArrayBuffer）；终端视图重新
+ * 挂载时再次调用即可重挂 Channel，无需重建 PTY。
+ */
+export async function sshPtyStream(
+  connectionId: string,
+  onData: (payload: ArrayBuffer) => void,
+): Promise<void> {
+  const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
+  if (typeof window === "undefined" || !w.__TAURI_INTERNALS__) return;
+  const { Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<ArrayBuffer>();
+  channel.onmessage = onData;
   const invoke = getInvoke();
-  if (invoke) return invoke<number[]>("ssh_pty_read", { connectionId });
-  return [];
+  if (invoke) await invoke("ssh_pty_stream", { connectionId, onData: channel });
 }
 
 export async function sshPtyResize(

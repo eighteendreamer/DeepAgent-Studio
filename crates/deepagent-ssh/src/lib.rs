@@ -370,6 +370,13 @@ impl SshService {
         self.inner.pty_read(handle).await
     }
 
+    pub async fn pty_take_stdout(
+        &self,
+        handle: &SshServiceHandle,
+    ) -> SshResult<Option<tokio::sync::mpsc::Receiver<Vec<u8>>>> {
+        self.inner.pty_take_stdout(handle).await
+    }
+
     pub async fn pty_read_with_cursor(
         &self,
         handle: &SshServiceHandle,

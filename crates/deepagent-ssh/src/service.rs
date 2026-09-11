@@ -468,7 +468,7 @@ impl SshServiceImpl {
             .replace_pty(Some(PtyState {
                 stdin: stdin_tx,
                 commands: command_tx,
-                stdout: tokio::sync::Mutex::new(stdout_rx),
+                stdout: tokio::sync::Mutex::new(Some(stdout_rx)),
                 join,
                 cols,
                 rows,
@@ -510,6 +510,19 @@ impl SshServiceImpl {
         let session = self.connected_session(&handle.connection_id).await?;
         session
             .pty_read_with_cursor(after_cursor)
+            .await
+            .ok_or_else(|| SshError::Pty("no active PTY session".into()))
+    }
+
+    /// 把 shell 输出接收端的所有权移交给推送转发任务。
+    /// `Ok(None)` 表示 stdout 已被移交（转发任务已在运行），调用方只需重挂 Channel。
+    pub async fn pty_take_stdout(
+        &self,
+        handle: &SshServiceHandle,
+    ) -> SshResult<Option<mpsc::Receiver<Vec<u8>>>> {
+        let session = self.connected_session(&handle.connection_id).await?;
+        session
+            .pty_take_stdout()
             .await
             .ok_or_else(|| SshError::Pty("no active PTY session".into()))
     }
