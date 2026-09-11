@@ -3531,6 +3531,22 @@ export interface SshExecResult {
   duration_ms: number;
 }
 
+export interface SshDirEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  is_symlink: boolean;
+  size?: number;
+  modified_ms?: number;
+}
+
+export interface SshDirListing {
+  connection_id: string;
+  path: string;
+  canonical_path: string;
+  entries: SshDirEntry[];
+}
+
 export interface SshTestResult {
   ok: boolean;
   latency_ms?: number;
@@ -3729,6 +3745,21 @@ export async function sshExec(
     stdout: "[browser preview] ssh commands require the desktop app",
     stderr: "",
     duration_ms: 0,
+  };
+}
+
+export async function sshListDir(
+  connectionId: string,
+  path: string,
+): Promise<SshDirListing> {
+  const invoke = getInvoke();
+  if (invoke)
+    return invoke<SshDirListing>("ssh_list_dir", { connectionId, path });
+  return {
+    connection_id: connectionId,
+    path,
+    canonical_path: path,
+    entries: [],
   };
 }
 

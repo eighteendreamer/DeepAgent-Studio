@@ -62,6 +62,24 @@
     "loginApi": "Logged in via API Key",
     "logout": "Logout"
   },
+  "remote": {
+    "title": "Remote Connection",
+    "back": "Back to Main",
+    "newConnection": "New Connection",
+    "allConnections": "All Connections",
+    "searchFiles": "Search Files",
+    "searchPlaceholder": "Search loaded files...",
+    "noConnections": "No SSH connections yet. Click \"New Connection\" to add one.",
+    "noMatch": "No matching files",
+    "emptyTree": "Remote directories appear after connecting",
+    "loadFailed": "Failed to load directory",
+    "createFailed": "Failed to create connection",
+    "connectFailed": "Failed to connect",
+    "emptyTitle": "No connection selected",
+    "emptyDesc": "Pick an SSH connection on the left, or create a new one to browse remote files",
+    "size": "Size",
+    "modifiedAt": "Modified"
+  },
   "settings": {
     "general": {
       "title": "General",

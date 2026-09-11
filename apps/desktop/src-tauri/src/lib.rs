@@ -4140,9 +4140,10 @@ use deepagent_ssh::{
     RemoteProbeResult as DtoRemoteProbeResult, RemotePushFileRequest as DtoRemotePushFileRequest,
     RemotePushFileResult as DtoRemotePushFileResult,
     RemoteRequireRequest as DtoRemoteRequireRequest, RemoteRequireResult as DtoRemoteRequireResult,
-    SshAuthType as DtoSshAuthType, SshConnectionDto as DtoSshConnectionDto, SshError,
-    SshExecResult as DtoSshExecResult, SshServiceHandle as DtoSshServiceHandle,
-    SshStatus as DtoSshStatus, UpdateSshConnectionRequest as DtoUpdateSshConnectionRequest,
+    SshAuthType as DtoSshAuthType, SshConnectionDto as DtoSshConnectionDto,
+    SshDirListing as DtoSshDirListing, SshError, SshExecResult as DtoSshExecResult,
+    SshServiceHandle as DtoSshServiceHandle, SshStatus as DtoSshStatus,
+    UpdateSshConnectionRequest as DtoUpdateSshConnectionRequest,
 };
 
 fn to_dto_auth_type(t: DtoSshAuthType) -> &'static str {
@@ -4391,6 +4392,24 @@ async fn ssh_exec(
     ssh.exec(&handle, &command)
         .await
         .map(Into::into)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_list_dir(
+    state: State<'_, AppState>,
+    connection_id: String,
+    path: String,
+) -> Result<DtoSshDirListing, String> {
+    let ssh = state.ssh.clone();
+    let handle = DtoSshServiceHandle {
+        connection_id: connection_id.clone(),
+        token: connection_id.clone(),
+        cols: 80,
+        rows: 24,
+    };
+    ssh.list_dir(&handle, &path)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -6165,6 +6184,7 @@ pub fn run() {
             ssh_status,
             ssh_test_connection,
             ssh_exec,
+            ssh_list_dir,
             ssh_remote_probe,
             ssh_push_file,
             ssh_push_bundle,

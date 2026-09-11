@@ -40,7 +40,12 @@ import {
   visionRecognizeImage,
   openStudioCanvasWindow,
 } from "./api";
-import type { PreflightToolCall, RuntimeEvent } from "./api";
+import type {
+  PreflightToolCall,
+  RuntimeEvent,
+  SshConnection,
+  SshDirEntry,
+} from "./api";
 import type {
   ApprovalRequest,
   ChatMessage,
@@ -91,6 +96,12 @@ const OnboardingWizard = lazy(() =>
 );
 const SettingsSidebar = lazy(() =>
   import("./components/SettingsSidebar").then((module) => ({ default: module.SettingsSidebar })),
+);
+const RemoteSidebar = lazy(() =>
+  import("./components/remote/RemoteSidebar").then((module) => ({ default: module.RemoteSidebar })),
+);
+const RemoteView = lazy(() =>
+  import("./components/remote/RemoteView").then((module) => ({ default: module.RemoteView })),
 );
 
 type View = "start" | "chat" | "skills" | "knowledge" | "plugins" | "automation" | "remote" | "settings";
@@ -1934,6 +1945,10 @@ export function App() {
   // Settings State
   const [activeSettingsCategory, setActiveSettingsCategory] = useState("general");
 
+  // Remote Connection State
+  const [remoteConnection, setRemoteConnection] = useState<SshConnection | null>(null);
+  const [remoteFile, setRemoteFile] = useState<SshDirEntry | null>(null);
+
   const toggleLeftSidebar = useCallback(() => {
     runUiTransition(() => {
       setIsSidebarOpen((open) => !open);
@@ -1996,7 +2011,7 @@ export function App() {
 
       <div className="flex-1 flex overflow-hidden">
         <>
-          {isSidebarOpen && view !== "settings" && (
+          {isSidebarOpen && view !== "settings" && view !== "remote" && (
             <div className="flex h-full w-[220px] flex-shrink-0 overflow-hidden">
               <Sidebar
                 sessions={sessions}
@@ -2021,8 +2036,7 @@ export function App() {
                   view === "skills" ||
                   view === "knowledge" ||
                   view === "plugins" ||
-                  view === "automation" ||
-                  view === "remote"
+                  view === "automation"
                     ? view
                     : null
                 }
@@ -2049,6 +2063,21 @@ export function App() {
                   onBack={goBack}
                   activeCategoryId={activeSettingsCategory}
                   onSelectCategory={onSelectSettingsCategory}
+                />
+              </Suspense>
+            </div>
+          )}
+          {isSidebarOpen && view === "remote" && (
+            <div className="flex h-full w-[240px] flex-shrink-0 overflow-hidden">
+              <Suspense fallback={<div className="h-full w-[240px] bg-sidebar-bg" />}>
+                <RemoteSidebar
+                  selected={remoteConnection}
+                  onSelect={(conn) => {
+                    setRemoteConnection(conn);
+                    setRemoteFile(null);
+                  }}
+                  onSelectFile={setRemoteFile}
+                  onBack={goBack}
                 />
               </Suspense>
             </div>
@@ -2126,8 +2155,11 @@ export function App() {
                 <AutomationView />
               </div>
             )}
-            {/* 远程连接：路由占位，页面内容待接入 */}
-            {view === "remote" && <div key={viewFrameKey} className="view-frame" />}
+            {view === "remote" && (
+              <div key={viewFrameKey} className="view-frame">
+                <RemoteView connection={remoteConnection} file={remoteFile} />
+              </div>
+            )}
             {view === "settings" && (
               <div key={viewFrameKey} className="view-frame">
                 <SettingsView activeCategoryId={activeSettingsCategory} />

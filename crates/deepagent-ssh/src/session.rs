@@ -51,6 +51,24 @@ pub struct SshTestResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshDirEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub is_symlink: bool,
+    pub size: Option<u64>,
+    pub modified_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshDirListing {
+    pub connection_id: String,
+    pub path: String,
+    pub canonical_path: String,
+    pub entries: Vec<SshDirEntry>,
+}
+
 pub struct PtyState {
     pub stdin: mpsc::Sender<Vec<u8>>,
     pub stdout: Mutex<mpsc::Receiver<Vec<u8>>>,

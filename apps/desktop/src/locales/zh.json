@@ -62,6 +62,24 @@
     "loginApi": "已通过 API 密钥登录",
     "logout": "退出登录"
   },
+  "remote": {
+    "title": "远程连接",
+    "back": "返回主窗口",
+    "newConnection": "新建连接",
+    "allConnections": "所有连接",
+    "searchFiles": "搜索文件",
+    "searchPlaceholder": "搜索已加载的文件...",
+    "noConnections": "尚无 SSH 连接，点击“新建连接”添加",
+    "noMatch": "无匹配文件",
+    "emptyTree": "连接后展示远程目录",
+    "loadFailed": "目录加载失败",
+    "createFailed": "创建连接失败",
+    "connectFailed": "连接失败",
+    "emptyTitle": "未选择连接",
+    "emptyDesc": "从左侧选择一个 SSH 连接，或新建连接开始浏览远程文件",
+    "size": "大小",
+    "modifiedAt": "修改时间"
+  },
   "settings": {
     "general": {
       "title": "常规",

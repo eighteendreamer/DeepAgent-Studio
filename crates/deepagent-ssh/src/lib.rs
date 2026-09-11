@@ -32,7 +32,10 @@ pub use remote::{
     RemotePushFileResult, RemoteRequireRequest, RemoteRequireResult, RemoteRuntimeRequirement,
     RemoteVerifyMode,
 };
-pub use session::{SshExecResult, SshPtyHandle, SshSession, SshStatusSnapshot, SshTestResult};
+pub use session::{
+    SshDirEntry, SshDirListing, SshExecResult, SshPtyHandle, SshSession, SshStatusSnapshot,
+    SshTestResult,
+};
 
 mod config;
 mod error;
@@ -332,6 +335,14 @@ impl SshService {
 
     pub async fn exec(&self, handle: &SshServiceHandle, command: &str) -> SshResult<SshExecResult> {
         self.inner.exec(handle, command).await
+    }
+
+    pub async fn list_dir(
+        &self,
+        handle: &SshServiceHandle,
+        path: &str,
+    ) -> SshResult<SshDirListing> {
+        self.inner.list_dir(handle, path).await
     }
 
     pub async fn pty_spawn(

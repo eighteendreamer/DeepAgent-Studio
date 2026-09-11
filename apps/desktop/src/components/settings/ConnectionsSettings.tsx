@@ -38,7 +38,7 @@ const emptyForm: FormData = {
 
 type Translate = (key: string) => string;
 
-function normalizeSshError(
+export function normalizeSshError(
   error: string | null | undefined,
   t: Translate,
 ): string {

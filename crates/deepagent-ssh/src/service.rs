@@ -8,10 +8,14 @@ use super::remote::{
     RemoteInstallResult, RemoteManifestEntry, RemoteProbeResult, RemotePushFileRequest,
     RemotePushFileResult, RemoteRequireRequest, RemoteRequireResult, RemoteVerifyMode,
 };
-use super::session::{PtyState, SshExecResult, SshSession, SshStatusSnapshot, SshTestResult};
+use super::session::{
+    PtyState, SshDirEntry, SshDirListing, SshExecResult, SshSession, SshStatusSnapshot,
+    SshTestResult,
+};
 use super::{SshConfigStore, SshServiceHandle};
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
 use async_trait::async_trait;
+use russh_sftp::client::SftpSession;
 use sha2::Digest;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -338,6 +342,21 @@ impl SshServiceImpl {
             stderr: output.stderr,
             duration_ms,
         })
+    }
+
+    pub async fn list_dir(
+        &self,
+        handle: &SshServiceHandle,
+        path: &str,
+    ) -> SshResult<SshDirListing> {
+        let session = self.connected_session(&handle.connection_id).await?;
+        let client = session
+            .client()
+            .await
+            .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
+        let listing = sftp_list_dir(&handle.connection_id, &client, path).await?;
+        session.touch_keepalive();
+        Ok(listing)
     }
 
     pub async fn pty_spawn(
@@ -1294,6 +1313,68 @@ fn map_ssh_error(err: async_ssh2_tokio::Error) -> SshError {
     }
 }
 
+async fn sftp_list_dir(
+    connection_id: &str,
+    client: &Client,
+    path: &str,
+) -> SshResult<SshDirListing> {
+    let channel = client.get_channel().await.map_err(map_ssh_error)?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|err| SshError::Internal(err.to_string()))?;
+    let sftp = SftpSession::new_opts(channel.into_stream(), None)
+        .await
+        .map_err(|err| SshError::Internal(err.to_string()))?;
+
+    let listing = async {
+        let canonical_path = sftp
+            .canonicalize(path)
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))?;
+        let mut entries = Vec::new();
+        for entry in sftp
+            .read_dir(canonical_path.as_str())
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))?
+        {
+            let name = entry.file_name();
+            let file_type = entry.file_type();
+            let metadata = entry.metadata();
+            entries.push(SshDirEntry {
+                path: join_remote_path(&canonical_path, &name),
+                name,
+                is_dir: file_type.is_dir(),
+                is_symlink: file_type.is_symlink(),
+                size: metadata.size,
+                modified_ms: metadata.mtime.map(|value| u64::from(value) * 1000),
+            });
+        }
+        entries.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        Ok::<SshDirListing, SshError>(SshDirListing {
+            connection_id: connection_id.to_owned(),
+            path: path.to_owned(),
+            canonical_path,
+            entries,
+        })
+    }
+    .await;
+
+    if let Err(close_err) = sftp.close().await {
+        tracing::warn!(
+            target: "deepagent_ssh",
+            connection_id,
+            error = %close_err,
+            "sftp session close failed"
+        );
+    }
+    listing
+}
+
 const PROBE_CACHE_TTL_MS: u64 = 10 * 60 * 1000;
 const STATUS_REFRESH_TIMEOUT_SECS: u64 = 12;
 const STATUS_MONITOR_BETWEEN_CHECKS_MS: u64 = 1_500;
@@ -1560,11 +1641,10 @@ fn parent_dir_string(path: &str) -> Option<String> {
 }
 
 fn join_remote_path(base: &str, name: &str) -> String {
-    let base = base.trim_end_matches('/');
-    if base.is_empty() {
-        name.to_string()
+    if base.ends_with('/') {
+        format!("{}{}", base, name)
     } else {
-        format!("{base}/{name}")
+        format!("{}/{}", base, name)
     }
 }
 
