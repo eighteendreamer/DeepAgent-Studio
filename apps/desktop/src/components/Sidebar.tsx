@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
-import { Book, ChevronRight, ChevronsDownUp, Clock, Ellipsis, FolderPlus, Layers, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
+import { Archive, ArrowDown, Book, Check, ChevronRight, ChevronsDownUp, Clock, Ellipsis, Folder, FolderPlus, Layers, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import { SidebarProjectMenu } from "./SidebarProjectMenu";
@@ -15,6 +14,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "./shadcn/dropdown-menu";
 import type { Project, SessionSummary } from "../types";
@@ -168,8 +171,6 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   });
 
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
-  const [activeMoreSubmenu, setActiveMoreSubmenu] = useState<"organize" | "sort" | null>(null);
-  const [moreSubmenuPosition, setMoreSubmenuPosition] = useState({ left: 252, top: 0 });
   const [isNewProjectMenuOpen, setIsNewProjectMenuOpen] = useState(false);
   const [activeProjectMenu, setActiveProjectMenu] = useState<string | null>(null);
   const [archiveProject, setArchiveProject] = useState<{ path: string; name: string } | null>(null);
@@ -183,23 +184,6 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     readSidebarPreference("deepagent:sidebar-sort-criterion", "updated", SIDEBAR_SORT_CRITERIA)
   );
   
-  const moreMenuRef = useRef<HTMLDivElement>(null);
-  const newProjectMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
-        setIsMoreMenuOpen(false);
-        setActiveMoreSubmenu(null);
-      }
-      if (newProjectMenuRef.current && !newProjectMenuRef.current.contains(e.target as Node)) {
-        setIsNewProjectMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
   useEffect(() => {
     return () => {
       if (overflowCloseTimer.current != null) window.clearTimeout(overflowCloseTimer.current);
@@ -213,16 +197,6 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   useEffect(() => {
     window.localStorage.setItem("deepagent:sidebar-sort-criterion", sortCriterion);
   }, [sortCriterion]);
-
-  const openMoreSubmenu = (submenu: "organize" | "sort") => {
-    const rect = moreMenuRef.current?.getBoundingClientRect();
-    const popupTop = (rect?.bottom ?? 0) + 4;
-    setMoreSubmenuPosition({
-      left: (rect?.right ?? 244) + 4,
-      top: popupTop + (submenu === "organize" ? 40 : 76),
-    });
-    setActiveMoreSubmenu(submenu);
-  };
 
   const sessionSortValue = (session: SessionSummary) =>
     sortCriterion === "created" ? session.created_at : session.updated_at;
@@ -607,7 +581,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         <div className="flex flex-col">
           <div className="flex items-center justify-between px-2 mb-1 text-text-secondary group">
             <div className="text-[12px]">{t("sidebar.projects")}</div>
-            <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className={cn("flex items-center space-x-1 transition-opacity", isMoreMenuOpen || isNewProjectMenuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
               <button 
                 className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded" 
                 title={t("sidebar.collapseAll")}
@@ -616,149 +590,100 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 <ChevronsDownUp className="h-3 w-3" />
               </button>
               
-              <div className="relative" ref={moreMenuRef}>
-                <button 
-                  className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded" 
-                  title={t("sidebar.more")}
-                  onClick={() => {
-                    setIsMoreMenuOpen(!isMoreMenuOpen);
-                    setActiveMoreSubmenu(null);
-                    setIsNewProjectMenuOpen(false);
-                  }}
-                >
-                  <Ellipsis className="h-3 w-3" />
-                </button>
-                {isMoreMenuOpen && (
-                  <div className="absolute top-full right-0 mt-1 w-48 bg-elevated-bg rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
-                    <button
-                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-sidebar-highlight transition-colors w-full text-left"
-                      onClick={() => {
-                        setIsMoreMenuOpen(false);
-                        setActiveMoreSubmenu(null);
-                        onArchiveAllSessions();
-                      }}
-                    >
-                      <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-text-secondary mr-2.5 w-4" />
-                      {t("sidebar.archiveAll")}
-                    </button>
-                    <div className="my-1 border-t border-border-theme"></div>
-                    <button
-                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "organize" ? "bg-sidebar-highlight" : "hover:bg-sidebar-highlight"}`}
-                      onClick={() => {
-                        if (activeMoreSubmenu === "organize") setActiveMoreSubmenu(null);
-                        else openMoreSubmenu("organize");
-                      }}
-                    >
-                      <div className="flex items-center">
-                        <FontAwesomeIcon icon={["far", "folder"]} className="text-text-secondary mr-2.5 w-4" />
+              <DropdownMenu
+                open={isMoreMenuOpen}
+                onOpenChange={(next) => {
+                  setIsMoreMenuOpen(next);
+                  if (next) setIsNewProjectMenuOpen(false);
+                }}
+              >
+                <DropdownMenuTrigger asChild title={t("sidebar.more")}>
+                  <button className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded">
+                    <Ellipsis className="h-3 w-3" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-[12rem]">
+                  <DropdownMenuItem className="gap-2" onSelect={() => onArchiveAllSessions()}>
+                    <Archive className="h-4 w-4 shrink-0 text-text-secondary" />
+                    {t("sidebar.archiveAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <span className="flex items-center gap-2">
+                        <Folder className="h-4 w-4 shrink-0 text-text-secondary" />
                         {t("sidebar.organizeSidebar")}
-                      </div>
-                      <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-text-secondary text-[10px]" />
-                    </button>
-                    <button
-                      className={`flex items-center justify-between px-3 py-2 text-[13px] text-text-base transition-colors w-full text-left ${activeMoreSubmenu === "sort" ? "bg-sidebar-highlight" : "hover:bg-sidebar-highlight"}`}
-                      onClick={() => {
-                        if (activeMoreSubmenu === "sort") setActiveMoreSubmenu(null);
-                        else openMoreSubmenu("sort");
-                      }}
-                    >
-                      <div className="flex items-center">
-                        <FontAwesomeIcon icon={["far", "clock"]} className="text-text-secondary mr-2.5 w-4" />
+                      </span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="min-w-[12rem]">
+                      {[
+                        { id: "project" as const, icon: Folder, label: t("sidebar.organizeByProject") },
+                        { id: "recent" as const, icon: Folder, label: t("sidebar.organizeRecentProjects") },
+                        { id: "time" as const, icon: Clock, label: t("sidebar.organizeByTime") },
+                        { id: "down" as const, icon: ArrowDown, label: t("sidebar.organizeMoveDown") },
+                      ].map((item) => (
+                        <DropdownMenuItem
+                          key={item.id}
+                          className="gap-2"
+                          onSelect={() => setOrganizeMode(item.id)}
+                        >
+                          <item.icon className="h-4 w-4 shrink-0 text-text-secondary" />
+                          {item.label}
+                          {organizeMode === item.id && <Check className="ml-auto h-3.5 w-3.5 text-text-secondary" />}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <span className="flex items-center gap-2">
+                        <Clock className="h-4 w-4 shrink-0 text-text-secondary" />
                         {t("sidebar.sortCriteria")}
-                      </div>
-                      <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-text-secondary text-[10px]" />
-                    </button>
-                    {activeMoreSubmenu === "organize" && (
-                      <div
-                        className="fixed w-48 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-[200] flex flex-col"
-                        style={{ left: moreSubmenuPosition.left, top: moreSubmenuPosition.top }}
-                      >
-                        {[
-                          { id: "project" as const, icon: ["far", "folder"] as IconProp, label: t("sidebar.organizeByProject") },
-                          { id: "recent" as const, icon: ["far", "folder"] as IconProp, label: t("sidebar.organizeRecentProjects") },
-                          { id: "time" as const, icon: ["far", "clock"] as IconProp, label: t("sidebar.organizeByTime") },
-                          { id: "down" as const, icon: ["fas", "arrow-down"] as IconProp, label: t("sidebar.organizeMoveDown") },
-                        ].map((item) => (
-                          <button
-                            key={item.id}
-                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-sidebar-highlight transition-colors w-full text-left"
-                            onClick={() => {
-                              setOrganizeMode(item.id);
-                              setIsMoreMenuOpen(false);
-                              setActiveMoreSubmenu(null);
-                            }}
-                          >
-                            <div className="flex items-center">
-                              <FontAwesomeIcon icon={item.icon} className="text-text-secondary mr-2.5 w-4" />
-                              {item.label}
-                            </div>
-                            {organizeMode === item.id && (
-                              <FontAwesomeIcon icon={["fas", "check"]} className="text-text-secondary text-[11px]" />
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {activeMoreSubmenu === "sort" && (
-                      <div
-                        className="fixed w-44 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-[200] flex flex-col"
-                        style={{ left: moreSubmenuPosition.left, top: moreSubmenuPosition.top }}
-                      >
-                        {[
-                          { id: "created" as const, icon: ["far", "clock"] as IconProp, label: t("sidebar.sortByCreated") },
-                          { id: "updated" as const, icon: ["far", "clock"] as IconProp, label: t("sidebar.sortByUpdated") },
-                        ].map((item) => (
-                          <button
-                            key={item.id}
-                            className="flex items-center justify-between px-3 py-2 text-[13px] text-text-base hover:bg-sidebar-highlight transition-colors w-full text-left"
-                            onClick={() => {
-                              setSortCriterion(item.id);
-                              setIsMoreMenuOpen(false);
-                              setActiveMoreSubmenu(null);
-                            }}
-                          >
-                            <div className="flex items-center">
-                              <FontAwesomeIcon icon={item.icon} className="text-text-secondary mr-2.5 w-4" />
-                              {item.label}
-                            </div>
-                            {sortCriterion === item.id && (
-                              <FontAwesomeIcon icon={["fas", "check"]} className="text-text-secondary text-[11px]" />
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+                      </span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="min-w-[11rem]">
+                      {[
+                        { id: "created" as const, icon: Clock, label: t("sidebar.sortByCreated") },
+                        { id: "updated" as const, icon: Clock, label: t("sidebar.sortByUpdated") },
+                      ].map((item) => (
+                        <DropdownMenuItem
+                          key={item.id}
+                          className="gap-2"
+                          onSelect={() => setSortCriterion(item.id)}
+                        >
+                          <item.icon className="h-4 w-4 shrink-0 text-text-secondary" />
+                          {item.label}
+                          {sortCriterion === item.id && <Check className="ml-auto h-3.5 w-3.5 text-text-secondary" />}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                </DropdownMenuContent>
+              </DropdownMenu>
 
-              <div className="relative" ref={newProjectMenuRef}>
-                <button 
-                  className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded" 
-                  title={t("sidebar.newProject")}
-                  onClick={() => { setIsNewProjectMenuOpen(!isNewProjectMenuOpen); setIsMoreMenuOpen(false); }}
-                >
-                  <FolderPlus className="h-3 w-3" />
-                </button>
-                {isNewProjectMenuOpen && (
-                  <div className="absolute top-full right-0 mt-1 w-40 bg-white border border-border-theme rounded-xl shadow-[0_4px_24px_rgb(0,0,0,0.12)] py-1 z-50 flex flex-col">
-                    <button
-                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-sidebar-highlight transition-colors w-full text-left"
-                      onClick={() => { setIsNewProjectMenuOpen(false); onAddProject(); }}
-                    >
-                      <FontAwesomeIcon icon={["fas", "folder-plus"]} className="text-text-secondary mr-2.5 w-4" />
-                      {t("sidebar.newBlankProject")}
-                    </button>
-                    <button
-                      className="flex items-center px-3 py-2 text-[13px] text-text-base hover:bg-sidebar-highlight transition-colors w-full text-left"
-                      onClick={() => { setIsNewProjectMenuOpen(false); onAddProject(); }}
-                    >
-                      <FontAwesomeIcon icon={["fas", "folder-plus"]} className="text-text-secondary mr-2.5 w-4" />
-                      {t("sidebar.useExistingFolder")}
-                    </button>
-                  </div>
-                )}
-              </div>
+              <DropdownMenu
+                open={isNewProjectMenuOpen}
+                onOpenChange={(next) => {
+                  setIsNewProjectMenuOpen(next);
+                  if (next) setIsMoreMenuOpen(false);
+                }}
+              >
+                <DropdownMenuTrigger asChild title={t("sidebar.newProject")}>
+                  <button className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded">
+                    <FolderPlus className="h-3 w-3" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-[10rem]">
+                  <DropdownMenuItem className="gap-2" onSelect={() => onAddProject()}>
+                    <FolderPlus className="h-4 w-4 shrink-0 text-text-secondary" />
+                    {t("sidebar.newBlankProject")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className="gap-2" onSelect={() => onAddProject()}>
+                    <FolderPlus className="h-4 w-4 shrink-0 text-text-secondary" />
+                    {t("sidebar.useExistingFolder")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
           <div className="space-y-0.5">
