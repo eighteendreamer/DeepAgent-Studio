@@ -4,7 +4,6 @@ import {
   ReactFlowProvider,
   Background,
   BackgroundVariant,
-  SelectionMode,
   type ReactFlowInstance,
   type Viewport,
   type FinalConnectionState,
@@ -535,8 +534,6 @@ function WorkflowCanvasInner() {
         minZoom={0.2}
         maxZoom={3}
         panOnDrag={[1, 2]}
-        selectionOnDrag
-        selectionMode={SelectionMode.Partial}
         nodesDraggable={!isSpaceHeld}
         zoomOnScroll={false}
         panOnScroll={false}
