@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, X } from "lucide-react";
+import { Check, Crop, X } from "lucide-react";
 import { Input } from "../../../components/shadcn/input";
 import { cropImageToRect } from "../utils/gridCrop";
 
@@ -254,7 +254,7 @@ export function CropOverlay({ imageUrl, itemName, initialRatio, onConfirm, onCan
       {/* Title bar */}
       <div className="flex items-center justify-between px-6 py-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
         <div className="flex items-center gap-2">
-          <div className="h-3 w-3 rounded-sm" style={{ background: "#3b82f6" }} />
+          <Crop className="h-4 w-4" style={{ color: "#3b82f6" }} />
           <span className="text-sm font-medium" style={{ color: "rgba(255,255,255,0.85)" }}>
             裁剪 · {itemName}
           </span>
