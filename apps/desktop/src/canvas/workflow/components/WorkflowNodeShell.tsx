@@ -12,6 +12,7 @@ import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import { runWorkflow } from "../utils/workflowExecutor";
+import { message } from "../../../components/message";
 import { NodeConfigForm } from "./NodeConfigForm";
 import { NodeFloatingToolbar } from "./NodeFloatingToolbar";
 import { TextGenContent } from "../nodes/creative/TextGenNode";
@@ -138,6 +139,7 @@ const EDIT_PANEL_STYLE: React.CSSProperties = {
 // asset 协议等跨域 URL 会让 <a download> 失效并直接导航打开，必须先转成同源 blob URL
 const triggerFileDownload = async (url: string, filename: string) => {
   let href = url;
+  let converted = false;
   if (!url.startsWith("data:") && !url.startsWith("blob:")) {
     try {
       const blob = await fetch(url).then((r) => {
@@ -145,6 +147,7 @@ const triggerFileDownload = async (url: string, filename: string) => {
         return r.blob();
       });
       href = URL.createObjectURL(blob);
+      converted = true;
     } catch (err) {
       console.error("[WorkflowNodeShell] 下载前拉取资源失败，回退直链:", url, err);
     }
@@ -155,7 +158,8 @@ const triggerFileDownload = async (url: string, filename: string) => {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  if (href !== url) setTimeout(() => URL.revokeObjectURL(href), 1000);
+  if (converted) setTimeout(() => URL.revokeObjectURL(href), 1000);
+  message.success(`已下载 ${filename}`, 2000);
 };
 
 function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
@@ -262,6 +266,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(blobUrl);
+    message.success(`已下载 ${nodeLabel}-${Date.now()}.md`, 2000);
   };
 
   const handleAnnotate = () => {
