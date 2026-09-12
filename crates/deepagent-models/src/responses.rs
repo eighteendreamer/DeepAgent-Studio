@@ -99,7 +99,13 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
     let mut call_ids = HashSet::new();
     let mut call_order = Vec::new();
     let mut custom_call_ids = HashSet::new();
-    let mut output_ids = HashSet::new();
+    let mut outputs = std::collections::HashMap::<String, ResponseInputItem>::new();
+    let mut orphan_outputs = Vec::new();
+
+    // Index calls and retain only the first output for each call.  Indexing
+    // first lets the reconstruction below move an output next to its call,
+    // which DeepSeek requires even though OpenAI Responses accepts
+    // interleaved context items.
     for item in items {
         match item {
             ResponseInputItem::FunctionCall { call_id, .. } => {
@@ -113,58 +119,90 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
                 }
                 custom_call_ids.insert(call_id.clone());
             }
+            ResponseInputItem::FunctionCallOutput { call_id, .. }
+            | ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
+                if outputs.contains_key(call_id) {
+                    tracing::warn!(call_id = %call_id, "dropping duplicate Responses tool output");
+                } else if call_ids.contains(call_id) {
+                    outputs.insert(call_id.clone(), item.clone());
+                } else {
+                    orphan_outputs.push(item.clone());
+                }
+            }
             _ => {}
         }
     }
 
-    let mut repaired = Vec::with_capacity(items.len());
+    let mut repaired = Vec::with_capacity(items.len() + orphan_outputs.len());
+    let mut emitted_calls = HashSet::new();
+    let mut emitted_outputs = HashSet::new();
     for item in items {
         match item {
-            ResponseInputItem::FunctionCallOutput { call_id, .. }
-            | ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
-                // A second result for the same call is invalid.  Keep the
-                // first valid result and discard the rest.  If an older or
-                // partially-written history contains an output without its
-                // call, synthesize a neutral call so the useful result remains
-                // provider-valid instead of poisoning the next request.
-                if !output_ids.insert(call_id.clone()) {
-                    tracing::warn!(call_id = %call_id, "dropping orphan or duplicate Responses tool output");
+            ResponseInputItem::FunctionCall { call_id, .. }
+            | ResponseInputItem::CustomToolCall { call_id, .. } => {
+                // A duplicate call id is invalid; preserve the first call and
+                // its output only.
+                if !emitted_calls.insert(call_id.clone()) {
+                    tracing::warn!(call_id = %call_id, "dropping duplicate Responses tool call");
                     continue;
                 }
-                if !call_ids.contains(call_id) {
-                    tracing::warn!(call_id = %call_id, "missing Responses tool call; synthesizing placeholder call");
-                    if matches!(item, ResponseInputItem::CustomToolCallOutput { .. }) {
-                        repaired.push(ResponseInputItem::CustomToolCall {
+                repaired.push(item.clone());
+                if let Some(output) = outputs.get(call_id) {
+                    repaired.push(output.clone());
+                    emitted_outputs.insert(call_id.clone());
+                } else {
+                    tracing::warn!(call_id = %call_id, "missing Responses tool output; synthesizing failure result");
+                    let output = r#"{"status":"error","error":"tool result missing; the previous tool execution was interrupted or its result was not persisted"}"#.to_string();
+                    if custom_call_ids.contains(call_id) {
+                        repaired.push(ResponseInputItem::CustomToolCallOutput {
                             call_id: call_id.clone(),
-                            name: "apply_patch".to_string(),
-                            input: String::new(),
+                            output,
                         });
                     } else {
-                        repaired.push(ResponseInputItem::FunctionCall {
+                        repaired.push(ResponseInputItem::FunctionCallOutput {
                             call_id: call_id.clone(),
-                            name: "unknown_tool".to_string(),
-                            arguments: "{}".to_string(),
+                            output,
                         });
                     }
-                    call_ids.insert(call_id.clone());
+                    emitted_outputs.insert(call_id.clone());
                 }
-                repaired.push(item.clone());
+            }
+            ResponseInputItem::FunctionCallOutput { call_id, .. }
+            | ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
+                // Outputs are emitted with their call above.  An output that
+                // has no call gets a placeholder pair below.
+                if !emitted_outputs.contains(call_id) {
+                    tracing::debug!(call_id = %call_id, "deferring Responses tool output until its call");
+                }
             }
             _ => repaired.push(item.clone()),
         }
     }
 
-    for call_id in call_order {
-        if output_ids.contains(&call_id) {
+    for item in orphan_outputs {
+        let call_id = match &item {
+            ResponseInputItem::FunctionCallOutput { call_id, .. }
+            | ResponseInputItem::CustomToolCallOutput { call_id, .. } => call_id.clone(),
+            _ => unreachable!("orphan_outputs only contains tool outputs"),
+        };
+        if !emitted_outputs.insert(call_id.clone()) {
             continue;
         }
-        tracing::warn!(call_id = %call_id, "missing Responses tool output; synthesizing failure result");
-        let output = r#"{"status":"error","error":"tool result missing; the previous tool execution was interrupted or its result was not persisted"}"#.to_string();
-        if custom_call_ids.contains(&call_id) {
-            repaired.push(ResponseInputItem::CustomToolCallOutput { call_id, output });
+        tracing::warn!(call_id = %call_id, "missing Responses tool call; synthesizing placeholder call");
+        if matches!(item, ResponseInputItem::CustomToolCallOutput { .. }) {
+            repaired.push(ResponseInputItem::CustomToolCall {
+                call_id: call_id.clone(),
+                name: "apply_patch".to_string(),
+                input: String::new(),
+            });
         } else {
-            repaired.push(ResponseInputItem::FunctionCallOutput { call_id, output });
+            repaired.push(ResponseInputItem::FunctionCall {
+                call_id: call_id.clone(),
+                name: "unknown_tool".to_string(),
+                arguments: "{}".to_string(),
+            });
         }
+        repaired.push(item);
     }
     repaired
 }
@@ -326,6 +364,37 @@ mod tests {
             item,
             ResponseItem::CustomToolCallOutput { call_id, .. } if call_id == "call-patch"
         )));
+    }
+
+    #[test]
+    fn reorders_interleaved_items_to_deepseek_adjacent_pairs() {
+        let items = vec![
+            ResponseItem::FunctionCall {
+                call_id: "call-1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+            ResponseItem::Message {
+                role: "user".into(),
+                content: "hook context".into(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-1".into(),
+                output: "ok".into(),
+            },
+        ];
+        let repaired = repair_tool_call_pairs(&items);
+        assert!(matches!(
+            (&repaired[0], &repaired[1]),
+            (
+                ResponseItem::FunctionCall { call_id: a, .. },
+                ResponseItem::FunctionCallOutput { call_id: b, .. }
+            ) if a == "call-1" && b == "call-1"
+        ));
+        assert!(matches!(
+            &repaired[2],
+            ResponseItem::Message { content, .. } if content == "hook context"
+        ));
     }
 
     #[test]

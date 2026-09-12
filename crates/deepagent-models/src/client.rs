@@ -12,6 +12,7 @@ use deepagent_core::error::Result;
 
 use crate::chat::{Response, ResponseRequest};
 use crate::chat_completions::{ChatCompletionAccumulator, ChatCompletionRequest};
+use crate::responses::ResponseInputItem;
 use crate::stream::ResponseAccumulator;
 use crate::transport::{HttpTransport, TransportRequest};
 
@@ -157,6 +158,7 @@ impl ModelClient {
         }
         request.stream = true;
         self.apply_defaults(&mut request);
+        log_response_input_pairs(&request);
         // Ask the provider to include a final usage chunk in the stream.
         let body = serde_json::to_string(&request)?;
         let transport_req = TransportRequest {
@@ -202,6 +204,7 @@ impl ModelClient {
         }
         request.stream = true;
         self.apply_defaults(&mut request);
+        log_response_input_pairs(&request);
         let body = serde_json::to_string(&request)?;
         let transport_req = TransportRequest {
             url: self.config.endpoint(),
@@ -356,6 +359,70 @@ impl ModelClient {
         if request.user.is_none() {
             request.user = self.config.defaults.user.clone();
         }
+    }
+}
+
+/// Emit a bounded, content-free summary of Responses tool pairing immediately
+/// before serialization.  Runtime/session logs contain the durable events, but
+/// this is the provider-boundary view and therefore catches projection bugs
+/// where the persisted tool result differs from the actual request input.
+fn log_response_input_pairs(request: &ResponseRequest) {
+    use std::collections::{HashMap, HashSet};
+
+    let mut calls = Vec::new();
+    let mut outputs = Vec::new();
+    let mut call_kinds = HashMap::<String, &'static str>::new();
+    for (index, item) in request.input.iter().enumerate() {
+        match item {
+            ResponseInputItem::FunctionCall { call_id, .. } => {
+                calls.push((index, call_id.clone()));
+                call_kinds.insert(call_id.clone(), "function_call");
+            }
+            ResponseInputItem::CustomToolCall { call_id, .. } => {
+                calls.push((index, call_id.clone()));
+                call_kinds.insert(call_id.clone(), "custom_tool_call");
+            }
+            ResponseInputItem::FunctionCallOutput { call_id, .. } => {
+                outputs.push((index, call_id.clone(), "function_call_output"));
+            }
+            ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
+                outputs.push((index, call_id.clone(), "custom_tool_call_output"));
+            }
+            _ => {}
+        }
+    }
+    let call_ids: HashSet<&str> = call_kinds.keys().map(String::as_str).collect();
+    let missing_outputs: Vec<&str> = calls
+        .iter()
+        .filter_map(|(_, id)| {
+            (!outputs.iter().any(|(_, output_id, _)| output_id == id)).then_some(id.as_str())
+        })
+        .collect();
+    let orphan_outputs: Vec<&str> = outputs
+        .iter()
+        .filter_map(|(_, id, _)| (!call_ids.contains(id.as_str())).then_some(id.as_str()))
+        .collect();
+    tracing::info!(
+        model = %request.model,
+        input_items = request.input.len(),
+        call_count = calls.len(),
+        output_count = outputs.len(),
+        missing_outputs = ?missing_outputs,
+        orphan_outputs = ?orphan_outputs,
+        "Responses provider input pairing summary"
+    );
+    for (index, call_id) in calls {
+        let output = outputs
+            .iter()
+            .find(|(_, output_id, _)| output_id == &call_id)
+            .map(|(output_index, _, kind)| (*output_index, *kind));
+        tracing::debug!(
+            input_index = index,
+            call_id = %call_id,
+            call_kind = call_kinds.get(&call_id).copied().unwrap_or("unknown"),
+            output = ?output,
+            "Responses tool pair"
+        );
     }
 }
 
