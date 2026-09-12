@@ -312,7 +312,9 @@ impl ResponseRequest {
         Self {
             model: model.into(),
             instructions,
-            input,
+            // Provider-boundary guard: never resend a dangling Responses tool
+            // call after a crash, cancellation, or partial history replay.
+            input: crate::responses::repair_tool_call_pairs(&input),
             stream: false,
             temperature: None,
             max_output_tokens: None,
