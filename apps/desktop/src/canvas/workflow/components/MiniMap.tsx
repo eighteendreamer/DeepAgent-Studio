@@ -38,7 +38,6 @@ interface Projection {
   mapScale: number;
   originX: number;
   originY: number;
-  viewportRect: { left: number; top: number; width: number; height: number };
 }
 
 function finiteOr(value: number, fallback: number) {
@@ -62,7 +61,6 @@ function computeWorldBounds(nodes: WorkflowNode[], viewportBounds: Bounds): Boun
 
 function computeProjection(
   worldBounds: Bounds,
-  viewportBounds: Bounds,
   width: number,
   height: number,
 ): Projection {
@@ -77,12 +75,6 @@ function computeProjection(
     mapScale,
     originX,
     originY,
-    viewportRect: {
-      left: originX + viewportBounds.minX * mapScale,
-      top: originY + viewportBounds.minY * mapScale,
-      width: viewportBounds.width * mapScale,
-      height: viewportBounds.height * mapScale,
-    },
   };
 }
 
@@ -110,7 +102,7 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
   };
 
   const worldBounds = computeWorldBounds(nodes, viewportBounds);
-  const projection = computeProjection(worldBounds, viewportBounds, LENS_SIZE, LENS_SIZE);
+  const projection = computeProjection(worldBounds, LENS_SIZE, LENS_SIZE);
   const statusColor: Record<string, string> = {
     idle: "rgba(255,255,255,0.2)",
     running: "rgba(59,130,246,0.7)",
@@ -155,16 +147,6 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
               />
             );
           })}
-          <rect
-            x={projection.viewportRect.left}
-            y={projection.viewportRect.top}
-            width={projection.viewportRect.width}
-            height={projection.viewportRect.height}
-            rx={2}
-            fill="rgba(139,124,247,0.06)"
-            stroke="rgba(139,124,247,0.45)"
-            strokeWidth={1.5}
-          />
         </svg>
       </div>
     </div>
