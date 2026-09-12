@@ -965,6 +965,27 @@ fn get_settings(state: State<'_, AppState>) -> Result<Option<SettingsView>, Stri
 }
 
 #[tauri::command]
+async fn remote_assistant_chat(
+    state: State<'_, AppState>,
+    message: String,
+) -> Result<String, String> {
+    let system_prompt = "\
+You are a remote server assistant. The user is connected to a remote Linux server via SSH.
+When the user asks you to do something, respond with the shell commands needed.
+Format commands in code blocks using ```bash ... ```.
+If no command is needed, just respond with text.
+Keep responses concise.";
+
+    let response = state
+        .chat
+        .run_oneshot_streaming(system_prompt, &message, |_| {})
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(response)
+}
+
+#[tauri::command]
 fn get_welcome_name(state: State<'_, AppState>) -> Result<String, String> {
     state.settings.welcome_name().map_err(|e| e.to_string())
 }
@@ -4142,7 +4163,8 @@ use deepagent_ssh::{
     RemoteRequireRequest as DtoRemoteRequireRequest, RemoteRequireResult as DtoRemoteRequireResult,
     SshAuthType as DtoSshAuthType, SshConnectionDto as DtoSshConnectionDto,
     SshDirListing as DtoSshDirListing, SshError, SshExecResult as DtoSshExecResult,
-    SshFileContent as DtoSshFileContent, SshServiceHandle as DtoSshServiceHandle,
+    SshFileBinary as DtoSshFileBinary, SshFileContent as DtoSshFileContent,
+    SshServiceHandle as DtoSshServiceHandle,
     SshStatus as DtoSshStatus, UpdateSshConnectionRequest as DtoUpdateSshConnectionRequest,
 };
 
@@ -4427,6 +4449,86 @@ async fn ssh_read_file(
         rows: 24,
     };
     ssh.read_file(&handle, &path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_read_file_base64(
+    state: State<'_, AppState>,
+    connection_id: String,
+    path: String,
+) -> Result<DtoSshFileBinary, String> {
+    let ssh = state.ssh.clone();
+    let handle = DtoSshServiceHandle {
+        connection_id: connection_id.clone(),
+        token: connection_id.clone(),
+        cols: 80,
+        rows: 24,
+    };
+    ssh.read_file_binary(&handle, &path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn ssh_handle(connection_id: &str) -> DtoSshServiceHandle {
+    DtoSshServiceHandle {
+        connection_id: connection_id.to_owned(),
+        token: connection_id.to_owned(),
+        cols: 80,
+        rows: 24,
+    }
+}
+
+#[tauri::command]
+async fn ssh_create_dir(
+    state: State<'_, AppState>,
+    connection_id: String,
+    path: String,
+) -> Result<(), String> {
+    state
+        .ssh
+        .create_dir(&ssh_handle(&connection_id), &path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_create_file(
+    state: State<'_, AppState>,
+    connection_id: String,
+    path: String,
+) -> Result<(), String> {
+    state
+        .ssh
+        .create_file(&ssh_handle(&connection_id), &path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_rename_path(
+    state: State<'_, AppState>,
+    connection_id: String,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    state
+        .ssh
+        .rename_path(&ssh_handle(&connection_id), &old_path, &new_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ssh_remove_path(
+    state: State<'_, AppState>,
+    connection_id: String,
+    path: String,
+) -> Result<(), String> {
+    state
+        .ssh
+        .remove_path(&ssh_handle(&connection_id), &path)
         .await
         .map_err(|e| e.to_string())
 }
@@ -6019,6 +6121,7 @@ pub fn run() {
             save_binary_file,
             initialize_project,
             get_settings,
+            remote_assistant_chat,
             set_window_translucent,
             get_welcome_name,
             set_welcome_name,
@@ -6204,6 +6307,11 @@ pub fn run() {
             ssh_exec,
             ssh_list_dir,
             ssh_read_file,
+            ssh_read_file_base64,
+            ssh_create_dir,
+            ssh_create_file,
+            ssh_rename_path,
+            ssh_remove_path,
             ssh_remote_probe,
             ssh_push_file,
             ssh_push_bundle,

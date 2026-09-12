@@ -57,6 +57,7 @@ import type {
   ToolCall,
 } from "./types";
 import { DesktopUpdateController } from "./components/DesktopUpdateController";
+import { AppContextMenu } from "./components/AppContextMenu";
 import { TrustDialog } from "./components/TrustDialog";
 import { Sidebar } from "./components/Sidebar";
 import { CustomTitleBar } from "./components/CustomTitleBar";
@@ -1998,6 +1999,7 @@ export function App() {
 
   return (
     <div className="bg-sidebar-bg text-text-base font-sans h-screen w-full overflow-hidden flex flex-col relative">
+      <AppContextMenu />
       <TrustDialog projectPath={activeProjectPath} />
       <DesktopUpdateController />
       <CustomTitleBar

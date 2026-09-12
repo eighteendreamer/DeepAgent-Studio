@@ -83,9 +83,32 @@
     "tabTerminal": "Terminal",
     "previewLoading": "Reading file...",
     "previewTruncated": "Large file — showing first 1 MB",
+    "previewTooLarge": "File exceeds 10 MB — remote preview not supported yet",
     "previewLoadFailed": "Failed to read file",
     "notConnected": "Please connect to a remote server first",
-    "uploads": "Uploads"
+    "treeNewFolder": "New Folder",
+    "treeNewFile": "New File",
+    "treeRefresh": "Refresh",
+    "treeRename": "Rename",
+    "treeDelete": "Delete",
+    "treeConfirmDelete": "Click again to delete",
+    "treeConfirmDeleteDir": "Delete entire folder",
+    "treeNamePlaceholder": "Enter name, press Enter",
+    "treeOpFailed": "Operation failed",
+    "uploads": "Uploads",
+    "connEdit": "Edit",
+    "editConnection": "Edit Connection",
+    "connConfirmDelete": "Click again to delete connection",
+    "editPasswordHint": "Re-enter password to save",
+    "updateFailed": "Save failed",
+    "deleteFailed": "Delete failed",
+    "tabRename": "Rename",
+    "tabClose": "Close",
+    "tabNewTerminal": "New Terminal"
+  },
+  "contextMenu": {
+    "copy": "Copy",
+    "selectAll": "Select All"
   },
   "settings": {
     "general": {

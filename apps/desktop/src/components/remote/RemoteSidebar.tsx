@@ -4,12 +4,17 @@ import {
   ChevronDown,
   ChevronRight,
   File as FileIcon,
+  FilePlus,
   Folder,
   FolderOpen,
+  FolderPlus,
   Loader2,
+  Pencil,
   Plus,
+  RefreshCw,
   Search,
   Server,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
@@ -17,21 +22,34 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { message } from "../message";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "../shadcn/context-menu";
 import { normalizeSshError } from "../settings/ConnectionsSettings";
 import {
   pickSshIdentityFile,
   sshConnect,
   sshCreateConnection,
+  sshCreateDir,
+  sshCreateFile,
   sshListConnections,
   sshListDir,
   sshPushFile,
+  sshRemoveConnection,
+  sshRemovePath,
+  sshRenamePath,
+  sshUpdateConnection,
   type SshConnection,
   type SshDirEntry,
 } from "../../api";
 
 type AuthType = "password" | "file";
 
-type ManagerMode = "list" | "create";
+type ManagerMode = "list" | "create" | "edit";
 
 interface RemoteSidebarProps {
   selected: SshConnection | null;
@@ -73,6 +91,75 @@ const statusDotClassName = (status: SshConnection["status"]) => {
   }
 };
 
+type InlineEdit =
+  | { kind: "create"; parentDir: string; entryType: "dir" | "file" }
+  | { kind: "rename"; entry: SshDirEntry };
+
+const parentDirOf = (path: string, name: string) => {
+  const idx = path.length - name.length - 1;
+  return idx > 0 ? path.slice(0, idx) : "/";
+};
+
+const joinRemotePath = (dir: string, name: string) =>
+  dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
+
+const validateTreeName = (value: string) => {
+  const name = value.trim();
+  return name && !name.includes("/") ? name : null;
+};
+
+// 新建/重命名的行内输入框：Enter 提交，Escape 取消，失焦按提交处理；
+// once-guard 防止 Enter 后紧跟的 blur 造成重复提交。
+function InlineNameInput({
+  defaultValue,
+  placeholder,
+  depth,
+  onCommit,
+  onCancel,
+}: {
+  defaultValue: string;
+  placeholder: string;
+  depth: number;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(defaultValue);
+  const doneRef = useRef(false);
+  const commit = () => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    onCommit(value);
+  };
+  const cancel = () => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    onCancel();
+  };
+  return (
+    <div className="py-0.5 pr-1.5" style={{ paddingLeft: 4 + depth * 12 }}>
+      <input
+        autoFocus
+        type="text"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onFocus={(event) => event.target.select()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            cancel();
+          }
+        }}
+        onBlur={commit}
+        placeholder={placeholder}
+        className="h-[22px] w-full rounded-md border border-blue-500 bg-white px-1.5 text-[12px] text-text-base outline-none"
+      />
+    </div>
+  );
+}
+
 export function RemoteSidebar({
   selected,
   onSelect,
@@ -98,6 +185,9 @@ export function RemoteSidebar({
       error?: string;
     }>
   >([]);
+  const [inlineEdit, setInlineEdit] = useState<InlineEdit | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [editingConn, setEditingConn] = useState<SshConnection | null>(null);
 
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -306,6 +396,106 @@ export function RemoteSidebar({
     if (selected && !tree[entry.path]) void loadDir(selected.id, entry.path);
   };
 
+  const reportTreeError = (error: unknown) => {
+    message.error(
+      `${t("remote.treeOpFailed")}: ${normalizeSshError(
+        error instanceof Error ? error.message : String(error),
+        t,
+      )}`,
+    );
+  };
+
+  const startCreate = (parentDir: string, entryType: "dir" | "file") => {
+    setConfirmingDelete(null);
+    setInlineEdit({ kind: "create", parentDir, entryType });
+  };
+
+  const startRename = (entry: SshDirEntry) => {
+    setConfirmingDelete(null);
+    setInlineEdit({ kind: "rename", entry });
+  };
+
+  const handleCreateConfirm = async (value: string) => {
+    const edit = inlineEdit;
+    const conn = selected;
+    const name = validateTreeName(value);
+    setInlineEdit(null);
+    if (!edit || edit.kind !== "create" || !conn || !name) return;
+    const targetPath = joinRemotePath(edit.parentDir, name);
+    try {
+      if (edit.entryType === "dir") {
+        await sshCreateDir(conn.id, targetPath);
+      } else {
+        await sshCreateFile(conn.id, targetPath);
+      }
+      await loadDir(conn.id, edit.parentDir);
+    } catch (error) {
+      reportTreeError(error);
+    }
+  };
+
+  const handleRenameConfirm = async (value: string) => {
+    const edit = inlineEdit;
+    const conn = selected;
+    const name = validateTreeName(value);
+    setInlineEdit(null);
+    if (
+      !edit ||
+      edit.kind !== "rename" ||
+      !conn ||
+      !name ||
+      name === edit.entry.name
+    )
+      return;
+    const parentDir = parentDirOf(edit.entry.path, edit.entry.name);
+    try {
+      await sshRenamePath(
+        conn.id,
+        edit.entry.path,
+        joinRemotePath(parentDir, name),
+      );
+      setExpanded((prev) => {
+        if (!prev.has(edit.entry.path)) return prev;
+        const next = new Set(prev);
+        next.delete(edit.entry.path);
+        return next;
+      });
+      setTree((prev) => {
+        if (!prev[edit.entry.path]) return prev;
+        const next = { ...prev };
+        delete next[edit.entry.path];
+        return next;
+      });
+      await loadDir(conn.id, parentDir);
+    } catch (error) {
+      reportTreeError(error);
+    }
+  };
+
+  const handleDelete = async (entry: SshDirEntry) => {
+    const conn = selected;
+    if (!conn) return;
+    const parentDir = parentDirOf(entry.path, entry.name);
+    try {
+      await sshRemovePath(conn.id, entry.path);
+      setExpanded((prev) => {
+        if (!prev.has(entry.path)) return prev;
+        const next = new Set(prev);
+        next.delete(entry.path);
+        return next;
+      });
+      setTree((prev) => {
+        if (!prev[entry.path]) return prev;
+        const next = { ...prev };
+        delete next[entry.path];
+        return next;
+      });
+      await loadDir(conn.id, parentDir);
+    } catch (error) {
+      reportTreeError(error);
+    }
+  };
+
   const handlePickKeyFile = async () => {
     const selectedPath = await pickSshIdentityFile();
     if (!selectedPath) return;
@@ -314,26 +504,75 @@ export function RemoteSidebar({
 
   const handleSave = async () => {
     if (!form.name || !form.host || !form.username) return;
+    const isEditing = managerMode === "edit";
+    const authType = form.authType === "file" ? "key_file" : "password";
+    const keyPath = form.authType === "file" ? form.keyPath : undefined;
+    const password = form.authType === "password" ? form.password : undefined;
     try {
-      const created = await sshCreateConnection(
-        form.name,
-        form.host,
-        parseInt(form.port, 10) || 22,
-        form.username,
-        form.authType === "file" ? "key_file" : "password",
-        form.authType === "file" ? form.keyPath : undefined,
-        form.authType === "password" ? form.password : undefined,
-      );
+      if (isEditing && editingConn) {
+        await sshUpdateConnection(
+          editingConn.id,
+          form.name,
+          form.host,
+          parseInt(form.port, 10) || 22,
+          form.username,
+          authType,
+          keyPath,
+          password,
+        );
+      } else {
+        const created = await sshCreateConnection(
+          form.name,
+          form.host,
+          parseInt(form.port, 10) || 22,
+          form.username,
+          authType,
+          keyPath,
+          password,
+        );
+        void handleSelect(created);
+      }
       setForm(emptyForm);
+      setEditingConn(null);
       setManagerMode("list");
       loadConnections();
-      void handleSelect(created);
     } catch (error) {
       const displayError = normalizeSshError(
         error instanceof Error ? error.message : String(error),
         t,
       );
-      message.error(`${t("remote.createFailed")}: ${displayError}`);
+      message.error(
+        `${t(isEditing ? "remote.updateFailed" : "remote.createFailed")}: ${displayError}`,
+      );
+    }
+  };
+
+  // 与设置页 ConnectionsSettings.openEdit 同一预填规则：密码不回显，
+  // 密码型连接保存时必须重填（validate_config 拒绝空密码）。
+  const startEdit = (conn: SshConnection) => {
+    setForm({
+      name: conn.name,
+      host: conn.host,
+      port: String(conn.port),
+      username: conn.username,
+      authType: conn.key_path ? "file" : "password",
+      keyPath: conn.key_path || "",
+      password: "",
+    });
+    setEditingConn(conn);
+    setManagerMode("edit");
+  };
+
+  const handleDeleteConnection = async (conn: SshConnection) => {
+    try {
+      await sshRemoveConnection(conn.id);
+      loadConnections();
+    } catch (error) {
+      const displayError = normalizeSshError(
+        error instanceof Error ? error.message : String(error),
+        t,
+      );
+      message.error(`${t("remote.deleteFailed")}: ${displayError}`);
     }
   };
 
@@ -348,6 +587,65 @@ export function RemoteSidebar({
     }
   };
 
+  // 两步确认删除：第一次点击 preventDefault 保持菜单打开并切换为确认文案。
+  const deleteMenuItem = (entry: SshDirEntry, isDir: boolean) => (
+    <ContextMenuItem
+      className="text-red-500"
+      onSelect={(event) => {
+        if (confirmingDelete !== entry.path) {
+          event.preventDefault();
+          setConfirmingDelete(entry.path);
+          return;
+        }
+        setConfirmingDelete(null);
+        void handleDelete(entry);
+      }}
+    >
+      <Trash2 className="mr-2 h-3.5 w-3.5" />
+      {confirmingDelete === entry.path
+        ? t(isDir ? "remote.treeConfirmDeleteDir" : "remote.treeConfirmDelete")
+        : t("remote.treeDelete")}
+    </ContextMenuItem>
+  );
+
+  const dirMenuItems = (entry: SshDirEntry) => (
+    <>
+      <ContextMenuItem onSelect={() => startCreate(entry.path, "dir")}>
+        <FolderPlus className="mr-2 h-3.5 w-3.5 text-text-secondary" />
+        {t("remote.treeNewFolder")}
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => startCreate(entry.path, "file")}>
+        <FilePlus className="mr-2 h-3.5 w-3.5 text-text-secondary" />
+        {t("remote.treeNewFile")}
+      </ContextMenuItem>
+      <ContextMenuItem
+        onSelect={() => {
+          if (selected) void loadDir(selected.id, entry.path);
+        }}
+      >
+        <RefreshCw className="mr-2 h-3.5 w-3.5 text-text-secondary" />
+        {t("remote.treeRefresh")}
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => startRename(entry)}>
+        <Pencil className="mr-2 h-3.5 w-3.5 text-text-secondary" />
+        {t("remote.treeRename")}
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      {deleteMenuItem(entry, true)}
+    </>
+  );
+
+  const fileMenuItems = (entry: SshDirEntry) => (
+    <>
+      <ContextMenuItem onSelect={() => startRename(entry)}>
+        <Pencil className="mr-2 h-3.5 w-3.5 text-text-secondary" />
+        {t("remote.treeRename")}
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      {deleteMenuItem(entry, false)}
+    </>
+  );
+
   const renderRows = (entries: SshDirEntry[], depth: number) => (
     <>
       {entries.map((entry) => {
@@ -356,48 +654,110 @@ export function RemoteSidebar({
         if (entry.is_dir) {
           const isOpen = expanded.has(entry.path);
           const children = tree[entry.path];
+          const isRenaming =
+            inlineEdit?.kind === "rename" && inlineEdit.entry.path === entry.path;
+          const isCreating =
+            inlineEdit?.kind === "create" && inlineEdit.parentDir === entry.path;
           return (
-            <div key={entry.path}>
-              <button
-                type="button"
-                className={rowClassName}
-                style={{ paddingLeft: 4 + depth * 12 }}
-                title={entry.path}
-                onClick={() => toggleDir(entry)}
-                data-remote-drop-dir={entry.path}
-              >
-                {isOpen ? (
-                  <ChevronDown className="h-3 w-3 shrink-0 text-text-secondary" />
-                ) : (
-                  <ChevronRight className="h-3 w-3 shrink-0 text-text-secondary" />
-                )}
-                {isOpen ? (
-                  <FolderOpen className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
-                ) : (
-                  <Folder className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
-                )}
-                <span className="truncate">{entry.name}</span>
-                {loadingDir === entry.path && (
-                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-text-secondary" />
-                )}
-              </button>
+            <div key={entry.path} data-custom-contextmenu="1">
+              {isRenaming ? (
+                <InlineNameInput
+                  defaultValue={entry.name}
+                  placeholder={t("remote.treeNamePlaceholder")}
+                  depth={depth}
+                  onCommit={(value) => void handleRenameConfirm(value)}
+                  onCancel={() => setInlineEdit(null)}
+                />
+              ) : (
+                <ContextMenu
+                  onOpenChange={(open) => {
+                    if (!open) setConfirmingDelete(null);
+                  }}
+                >
+                  <ContextMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className={rowClassName}
+                      style={{ paddingLeft: 4 + depth * 12 }}
+                      title={entry.path}
+                      onClick={() => toggleDir(entry)}
+                      data-remote-drop-dir={entry.path}
+                    >
+                      {isOpen ? (
+                        <ChevronDown className="h-3 w-3 shrink-0 text-text-secondary" />
+                      ) : (
+                        <ChevronRight className="h-3 w-3 shrink-0 text-text-secondary" />
+                      )}
+                      {isOpen ? (
+                        <FolderOpen className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
+                      ) : (
+                        <Folder className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
+                      )}
+                      <span className="truncate">{entry.name}</span>
+                      {loadingDir === entry.path && (
+                        <Loader2 className="h-3 w-3 shrink-0 animate-spin text-text-secondary" />
+                      )}
+                    </button>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent
+                    onCloseAutoFocus={(event) => event.preventDefault()}
+                  >
+                    {dirMenuItems(entry)}
+                  </ContextMenuContent>
+                </ContextMenu>
+              )}
+              {isCreating && (
+                <InlineNameInput
+                  defaultValue=""
+                  placeholder={t("remote.treeNamePlaceholder")}
+                  depth={depth + 1}
+                  onCommit={(value) => void handleCreateConfirm(value)}
+                  onCancel={() => setInlineEdit(null)}
+                />
+              )}
               {isOpen && children && renderRows(children, depth + 1)}
             </div>
           );
         }
+        const isRenaming =
+          inlineEdit?.kind === "rename" && inlineEdit.entry.path === entry.path;
         return (
-          <button
-            key={entry.path}
-            type="button"
-            className="flex w-full items-center gap-1 rounded-md py-1 pr-1.5 pl-0 text-left text-[12px] text-text-base hover:bg-black/5"
-            style={{ paddingLeft: 4 + depth * 12 }}
-            title={entry.path}
-            onClick={() => onOpenFile(entry.path, entry.name)}
-          >
-            <span className="w-3 shrink-0" />
-            <FileIcon className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
-            <span className="truncate">{entry.name}</span>
-          </button>
+          <div key={entry.path} data-custom-contextmenu="1">
+            {isRenaming ? (
+              <InlineNameInput
+                defaultValue={entry.name}
+                placeholder={t("remote.treeNamePlaceholder")}
+                depth={depth}
+                onCommit={(value) => void handleRenameConfirm(value)}
+                onCancel={() => setInlineEdit(null)}
+              />
+            ) : (
+              <ContextMenu
+                onOpenChange={(open) => {
+                  if (!open) setConfirmingDelete(null);
+                }}
+              >
+                <ContextMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-1 rounded-md py-1 pr-1.5 pl-0 text-left text-[12px] text-text-base hover:bg-black/5"
+                    style={{ paddingLeft: 4 + depth * 12 }}
+                    title={entry.path}
+                    onClick={() => onOpenFile(entry.path, entry.name)}
+                  >
+                    <span className="w-3 shrink-0" />
+                    <FileIcon className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
+                    <span className="truncate">{entry.name}</span>
+                  </button>
+                </ContextMenuTrigger>
+                <ContextMenuContent
+                  onCloseAutoFocus={(event) => event.preventDefault()}
+                >
+                  {fileMenuItems(entry)}
+                </ContextMenuContent>
+              </ContextMenu>
+            )}
+          </div>
         );
       })}
     </>
@@ -413,6 +773,27 @@ export function RemoteSidebar({
       )
     : [];
 
+  // 连接行删除：与目录树删除同一两步确认交互；键用 conn.id（树键以 / 开头，不冲突）。
+  const deleteConnectionMenuItem = (conn: SshConnection) => (
+    <ContextMenuItem
+      className="text-red-500"
+      onSelect={(event) => {
+        if (confirmingDelete !== conn.id) {
+          event.preventDefault();
+          setConfirmingDelete(conn.id);
+          return;
+        }
+        setConfirmingDelete(null);
+        void handleDeleteConnection(conn);
+      }}
+    >
+      <Trash2 className="mr-2 h-3.5 w-3.5" />
+      {confirmingDelete === conn.id
+        ? t("remote.connConfirmDelete")
+        : t("remote.treeDelete")}
+    </ContextMenuItem>
+  );
+
   const connectionRows = (
     <div className="space-y-0.5">
       {connections.length === 0 ? (
@@ -421,33 +802,52 @@ export function RemoteSidebar({
         </div>
       ) : (
         connections.map((conn) => (
-          <button
+          <ContextMenu
             key={conn.id}
-            type="button"
-            disabled={connectingId === conn.id}
-            onClick={() => void handleSelect(conn)}
-            className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-black/5 disabled:opacity-60 ${
-              selected?.id === conn.id ? "bg-sidebar-highlight" : ""
-            }`}
+            onOpenChange={(open) => {
+              if (!open) setConfirmingDelete(null);
+            }}
           >
-            <Server className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[12px] text-text-base">
-                {conn.name}
-              </span>
-              <span className="block truncate text-[10px] text-text-secondary">
-                {conn.username}@{conn.host}:{conn.port}
-              </span>
-            </span>
-            {connectingId === conn.id ? (
-              <Loader2 className="h-3 w-3 shrink-0 animate-spin text-text-secondary" />
-            ) : (
-              <span
-                className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotClassName(conn.status)}`}
-                title={statusLabel(conn.status)}
-              />
-            )}
-          </button>
+            <ContextMenuTrigger asChild>
+              <button
+                type="button"
+                disabled={connectingId === conn.id}
+                onClick={() => void handleSelect(conn)}
+                data-custom-contextmenu="1"
+                className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-black/5 disabled:opacity-60 ${
+                  selected?.id === conn.id ? "bg-sidebar-highlight" : ""
+                }`}
+              >
+                <Server className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12px] text-text-base">
+                    {conn.name}
+                  </span>
+                  <span className="block truncate text-[10px] text-text-secondary">
+                    {conn.username}@{conn.host}:{conn.port}
+                  </span>
+                </span>
+                {connectingId === conn.id ? (
+                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-text-secondary" />
+                ) : (
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotClassName(conn.status)}`}
+                    title={statusLabel(conn.status)}
+                  />
+                )}
+              </button>
+            </ContextMenuTrigger>
+            <ContextMenuContent
+              onCloseAutoFocus={(event) => event.preventDefault()}
+            >
+              <ContextMenuItem onSelect={() => startEdit(conn)}>
+                <Pencil className="mr-2 h-3.5 w-3.5 text-text-secondary" />
+                {t("remote.connEdit")}
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              {deleteConnectionMenuItem(conn)}
+            </ContextMenuContent>
+          </ContextMenu>
         ))
       )}
     </div>
@@ -565,6 +965,37 @@ export function RemoteSidebar({
           ) : (
             renderRows(rootEntries, 0)
           )}
+          {selected && !query && (
+            <ContextMenu
+              onOpenChange={(open) => {
+                if (!open) setConfirmingDelete(null);
+              }}
+            >
+              <ContextMenuTrigger asChild>
+                <div className="min-h-[96px]" data-custom-contextmenu="1" />
+              </ContextMenuTrigger>
+              <ContextMenuContent
+                onCloseAutoFocus={(event) => event.preventDefault()}
+              >
+                <ContextMenuItem onSelect={() => startCreate("/", "dir")}>
+                  <FolderPlus className="mr-2 h-3.5 w-3.5 text-text-secondary" />
+                  {t("remote.treeNewFolder")}
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={() => startCreate("/", "file")}>
+                  <FilePlus className="mr-2 h-3.5 w-3.5 text-text-secondary" />
+                  {t("remote.treeNewFile")}
+                </ContextMenuItem>
+                <ContextMenuItem
+                  onSelect={() => {
+                    if (selected) void loadDir(selected.id, "/");
+                  }}
+                >
+                  <RefreshCw className="mr-2 h-3.5 w-3.5 text-text-secondary" />
+                  {t("remote.treeRefresh")}
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
+          )}
         </div>
       </div>
 
@@ -648,7 +1079,11 @@ export function RemoteSidebar({
                 <>
                   <div className="flex items-start justify-between gap-3 border-b border-border-theme px-5 py-4">
                     <h3 className="text-[18px] font-semibold tracking-tight text-text-base">
-                      {t("remote.newConnection")}
+                      {t(
+                        managerMode === "edit"
+                          ? "remote.editConnection"
+                          : "remote.newConnection",
+                      )}
                     </h3>
                     <button
                       type="button"
@@ -761,6 +1196,11 @@ export function RemoteSidebar({
                               value={form.password}
                               onChange={(event) =>
                                 setForm({ ...form, password: event.target.value })
+                              }
+                              placeholder={
+                                managerMode === "edit"
+                                  ? t("remote.editPasswordHint")
+                                  : undefined
                               }
                               className="h-[34px] w-full rounded-[14px] border border-border-theme bg-white px-3 text-[13px] text-text-base outline-none transition-colors focus:border-blue-500"
                             />

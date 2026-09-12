@@ -220,7 +220,8 @@ export const filePreviewPluginDefinition: PluginDefinition = {
   render: () => <FilePreviewPlugin />,
 };
 
-const PreviewBody = memo(function PreviewBody({
+// 远程文件预览等外部场景复用：接收 Blob + 文件名，走 file-viewer 全格式矩阵。
+export const PreviewBody = memo(function PreviewBody({
   fileBlob,
   fileName,
 }: {

@@ -286,6 +286,13 @@ export async function getSettings(): Promise<SettingsView | null> {
   return null;
 }
 
+/** Call the model for a one-shot remote assistant response. */
+export async function remoteAssistantChat(message: string): Promise<string> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<string>("remote_assistant_chat", { message });
+  return "(mock) no Tauri runtime";
+}
+
 /** Read the user-defined welcome name from the persistent app settings. */
 export async function getWelcomeName(): Promise<string> {
   const invoke = getInvoke();
@@ -3656,6 +3663,34 @@ export async function sshListConnections(): Promise<SshConnection[]> {
   return [];
 }
 
+export async function sshCreateDir(connectionId: string, path: string): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("tauri invoke unavailable");
+  return invoke<void>("ssh_create_dir", { connectionId, path });
+}
+
+export async function sshCreateFile(connectionId: string, path: string): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("tauri invoke unavailable");
+  return invoke<void>("ssh_create_file", { connectionId, path });
+}
+
+export async function sshRenamePath(
+  connectionId: string,
+  oldPath: string,
+  newPath: string,
+): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("tauri invoke unavailable");
+  return invoke<void>("ssh_rename_path", { connectionId, oldPath, newPath });
+}
+
+export async function sshRemovePath(connectionId: string, path: string): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("tauri invoke unavailable");
+  return invoke<void>("ssh_remove_path", { connectionId, path });
+}
+
 export async function sshCreateConnection(
   name: string,
   host: string,
@@ -3897,6 +3932,7 @@ export interface SshFileContent {
   path: string;
   size: number | null;
   truncated: boolean;
+  is_binary: boolean;
   content: string;
 }
 
@@ -3906,7 +3942,33 @@ export async function sshReadFile(
 ): Promise<SshFileContent> {
   const invoke = getInvoke();
   if (invoke) return invoke<SshFileContent>("ssh_read_file", { connectionId, path });
-  return { connection_id: connectionId, path, size: null, truncated: false, content: "" };
+  return {
+    connection_id: connectionId,
+    path,
+    size: null,
+    truncated: false,
+    is_binary: false,
+    content: "",
+  };
+}
+
+export interface SshFileBinary {
+  connection_id: string;
+  path: string;
+  size: number | null;
+  truncated: boolean;
+  data_base64: string;
+}
+
+export async function sshReadFileBase64(
+  connectionId: string,
+  path: string,
+): Promise<SshFileBinary> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<SshFileBinary>("ssh_read_file_base64", { connectionId, path });
+  }
+  return { connection_id: connectionId, path, size: null, truncated: false, data_base64: "" };
 }
 
 // ─── Mobile DevTools API ─────────────────────────────────────────────────────
