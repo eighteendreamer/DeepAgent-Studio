@@ -9,14 +9,16 @@ use super::remote::{
     RemotePushFileResult, RemoteRequireRequest, RemoteRequireResult, RemoteVerifyMode,
 };
 use super::session::{
-    PtyCommand, PtyState, SshDirEntry, SshDirListing, SshExecResult, SshFileContent, SshSession,
-    SshStatusSnapshot, SshTestResult,
+    PtyCommand, PtyState, SshDirEntry, SshDirListing, SshExecResult, SshFileBinary, SshFileContent,
+    SshSession, SshStatusSnapshot, SshTestResult,
 };
 use super::{SshConfigStore, SshServiceHandle};
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
 use async_trait::async_trait;
+use base64::Engine;
 use russh::ChannelMsg;
 use russh_sftp::client::SftpSession;
+use russh_sftp::protocol::OpenFlags;
 use sha2::Digest;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -373,6 +375,70 @@ impl SshServiceImpl {
         let content = sftp_read_file(&handle.connection_id, &client, path).await?;
         session.touch_keepalive();
         Ok(content)
+    }
+
+    pub async fn read_file_binary(
+        &self,
+        handle: &SshServiceHandle,
+        path: &str,
+    ) -> SshResult<SshFileBinary> {
+        let session = self.connected_session(&handle.connection_id).await?;
+        let client = session
+            .client()
+            .await
+            .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
+        let content = sftp_read_file_binary(&handle.connection_id, &client, path).await?;
+        session.touch_keepalive();
+        Ok(content)
+    }
+
+    pub async fn create_dir(&self, handle: &SshServiceHandle, path: &str) -> SshResult<()> {
+        let session = self.connected_session(&handle.connection_id).await?;
+        let client = session
+            .client()
+            .await
+            .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
+        sftp_create_dir(&handle.connection_id, &client, path).await?;
+        session.touch_keepalive();
+        Ok(())
+    }
+
+    pub async fn create_file(&self, handle: &SshServiceHandle, path: &str) -> SshResult<()> {
+        let session = self.connected_session(&handle.connection_id).await?;
+        let client = session
+            .client()
+            .await
+            .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
+        sftp_create_file(&handle.connection_id, &client, path).await?;
+        session.touch_keepalive();
+        Ok(())
+    }
+
+    pub async fn rename_path(
+        &self,
+        handle: &SshServiceHandle,
+        old_path: &str,
+        new_path: &str,
+    ) -> SshResult<()> {
+        let session = self.connected_session(&handle.connection_id).await?;
+        let client = session
+            .client()
+            .await
+            .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
+        sftp_rename_path(&handle.connection_id, &client, old_path, new_path).await?;
+        session.touch_keepalive();
+        Ok(())
+    }
+
+    pub async fn remove_path(&self, handle: &SshServiceHandle, path: &str) -> SshResult<()> {
+        let session = self.connected_session(&handle.connection_id).await?;
+        let client = session
+            .client()
+            .await
+            .ok_or_else(|| SshError::ConnectionLost(handle.connection_id.clone()))?;
+        sftp_remove_path(&handle.connection_id, &client, path).await?;
+        session.touch_keepalive();
+        Ok(())
     }
 
     pub async fn pty_spawn(
@@ -1454,12 +1520,15 @@ async fn sftp_list_dir(
 }
 
 const SFTP_READ_FILE_MAX_BYTES: u64 = 1024 * 1024;
+const SFTP_READ_FILE_BINARY_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
-async fn sftp_read_file(
-    connection_id: &str,
+/// SFTP 读取的公共字节通道：文本与二进制预览共用，仅上限不同。
+/// 返回 (bytes, 远端文件大小, 是否被上限截断)。
+async fn sftp_read_file_bytes(
     client: &Client,
     path: &str,
-) -> SshResult<SshFileContent> {
+    max_bytes: u64,
+) -> SshResult<(Vec<u8>, Option<u64>, bool)> {
     let channel = client.get_channel().await.map_err(map_ssh_error)?;
     channel
         .request_subsystem(true, "sftp")
@@ -1475,28 +1544,81 @@ async fn sftp_read_file(
             .await
             .map_err(|err| SshError::Internal(err.to_string()))?;
         let size = file.metadata().await.ok().and_then(|meta| meta.size);
-        let mut reader = (&mut file).take(SFTP_READ_FILE_MAX_BYTES + 1);
+        let mut reader = (&mut file).take(max_bytes + 1);
         let mut bytes = Vec::new();
         reader
             .read_to_end(&mut bytes)
             .await
             .map_err(|err| SshError::Internal(err.to_string()))?;
         drop(reader);
-        let truncated = bytes.len() as u64 > SFTP_READ_FILE_MAX_BYTES;
-        bytes.truncate(SFTP_READ_FILE_MAX_BYTES as usize);
+        let truncated = bytes.len() as u64 > max_bytes;
+        bytes.truncate(max_bytes as usize);
         file.shutdown()
             .await
             .map_err(|err| SshError::Internal(err.to_string()))?;
-        Ok::<SshFileContent, SshError>(SshFileContent {
-            connection_id: connection_id.to_owned(),
-            path: path.to_owned(),
-            size,
-            truncated,
-            content: String::from_utf8_lossy(&bytes).into_owned(),
-        })
+        Ok::<(Vec<u8>, Option<u64>, bool), SshError>((bytes, size, truncated))
     }
     .await;
 
+    if let Err(close_err) = sftp.close().await {
+        tracing::warn!(
+            target: "deepagent_ssh",
+            error = %close_err,
+            "sftp session close failed"
+        );
+    }
+    content
+}
+
+async fn sftp_read_file(
+    connection_id: &str,
+    client: &Client,
+    path: &str,
+) -> SshResult<SshFileContent> {
+    let (bytes, size, truncated) =
+        sftp_read_file_bytes(client, path, SFTP_READ_FILE_MAX_BYTES).await?;
+    // NUL 字节几乎只出现在二进制格式；UTF-8/GBK 等文本不会在头部出现。
+    let probe_len = bytes.len().min(8 * 1024);
+    let is_binary = bytes[..probe_len].contains(&0);
+    Ok(SshFileContent {
+        connection_id: connection_id.to_owned(),
+        path: path.to_owned(),
+        size,
+        truncated,
+        is_binary,
+        content: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
+async fn sftp_read_file_binary(
+    connection_id: &str,
+    client: &Client,
+    path: &str,
+) -> SshResult<SshFileBinary> {
+    let (bytes, size, truncated) =
+        sftp_read_file_bytes(client, path, SFTP_READ_FILE_BINARY_MAX_BYTES).await?;
+    Ok(SshFileBinary {
+        connection_id: connection_id.to_owned(),
+        path: path.to_owned(),
+        size,
+        truncated,
+        data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    })
+}
+
+/// 打开一次性 SFTP 会话（subsystem 握手），操作结束后必须配对 sftp_close_quiet。
+async fn sftp_open(client: &Client) -> SshResult<SftpSession> {
+    let channel = client.get_channel().await.map_err(map_ssh_error)?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|err| SshError::Internal(err.to_string()))?;
+    SftpSession::new_opts(channel.into_stream(), None)
+        .await
+        .map_err(|err| SshError::Internal(err.to_string()))
+}
+
+async fn sftp_close_quiet(connection_id: &str, sftp: &SftpSession) {
     if let Err(close_err) = sftp.close().await {
         tracing::warn!(
             target: "deepagent_ssh",
@@ -1505,7 +1627,97 @@ async fn sftp_read_file(
             "sftp session close failed"
         );
     }
-    content
+}
+
+async fn sftp_create_dir(connection_id: &str, client: &Client, path: &str) -> SshResult<()> {
+    let sftp = sftp_open(client).await?;
+    let result = sftp
+        .create_dir(path)
+        .await
+        .map_err(|err| SshError::Internal(err.to_string()));
+    sftp_close_quiet(connection_id, &sftp).await;
+    result
+}
+
+/// 新建空文件：CREATE|WRITE|EXCLUDE，同名文件已存在时失败，不覆盖。
+async fn sftp_create_file(connection_id: &str, client: &Client, path: &str) -> SshResult<()> {
+    let sftp = sftp_open(client).await?;
+    let result = async {
+        let flags = OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::EXCLUDE;
+        sftp.open_with_flags(path, flags)
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))?
+            .shutdown()
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))
+    }
+    .await;
+    sftp_close_quiet(connection_id, &sftp).await;
+    result
+}
+
+async fn sftp_rename_path(
+    connection_id: &str,
+    client: &Client,
+    old_path: &str,
+    new_path: &str,
+) -> SshResult<()> {
+    let sftp = sftp_open(client).await?;
+    let result = sftp
+        .rename(old_path, new_path)
+        .await
+        .map_err(|err| SshError::Internal(err.to_string()));
+    sftp_close_quiet(connection_id, &sftp).await;
+    result
+}
+
+/// 递归删除目录条目；symlink 一律只删链接本身，不跟随。
+async fn sftp_remove_entry(
+    sftp: &SftpSession,
+    path: &str,
+    is_dir: bool,
+    is_symlink: bool,
+) -> SshResult<()> {
+    if is_dir && !is_symlink {
+        for entry in sftp
+            .read_dir(path)
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))?
+        {
+            let file_type = entry.file_type();
+            let child = join_remote_path(path, &entry.file_name());
+            Box::pin(sftp_remove_entry(
+                sftp,
+                &child,
+                file_type.is_dir(),
+                file_type.is_symlink(),
+            ))
+            .await?;
+        }
+        sftp.remove_dir(path)
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))
+    } else {
+        sftp.remove_file(path)
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))
+    }
+}
+
+/// 删除文件/符号链接/目录（目录递归删除）。顶层类型以 symlink_metadata 为准。
+async fn sftp_remove_path(connection_id: &str, client: &Client, path: &str) -> SshResult<()> {
+    let sftp = sftp_open(client).await?;
+    let result = async {
+        let meta = sftp
+            .symlink_metadata(path)
+            .await
+            .map_err(|err| SshError::Internal(err.to_string()))?;
+        let file_type = meta.file_type();
+        sftp_remove_entry(&sftp, path, file_type.is_dir(), file_type.is_symlink()).await
+    }
+    .await;
+    sftp_close_quiet(connection_id, &sftp).await;
+    result
 }
 
 const PROBE_CACHE_TTL_MS: u64 = 10 * 60 * 1000;

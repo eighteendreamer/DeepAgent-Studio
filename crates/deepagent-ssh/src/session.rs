@@ -75,7 +75,17 @@ pub struct SshFileContent {
     pub path: String,
     pub size: Option<u64>,
     pub truncated: bool,
+    pub is_binary: bool,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshFileBinary {
+    pub connection_id: String,
+    pub path: String,
+    pub size: Option<u64>,
+    pub truncated: bool,
+    pub data_base64: String,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -33,8 +33,8 @@ pub use remote::{
     RemoteVerifyMode,
 };
 pub use session::{
-    SshDirEntry, SshDirListing, SshExecResult, SshFileContent, SshPtyHandle, SshSession,
-    SshStatusSnapshot, SshTestResult,
+    SshDirEntry, SshDirListing, SshExecResult, SshFileBinary, SshFileContent, SshPtyHandle,
+    SshSession, SshStatusSnapshot, SshTestResult,
 };
 
 mod config;
@@ -351,6 +351,35 @@ impl SshService {
         path: &str,
     ) -> SshResult<SshFileContent> {
         self.inner.read_file(handle, path).await
+    }
+
+    pub async fn read_file_binary(
+        &self,
+        handle: &SshServiceHandle,
+        path: &str,
+    ) -> SshResult<SshFileBinary> {
+        self.inner.read_file_binary(handle, path).await
+    }
+
+    pub async fn create_dir(&self, handle: &SshServiceHandle, path: &str) -> SshResult<()> {
+        self.inner.create_dir(handle, path).await
+    }
+
+    pub async fn create_file(&self, handle: &SshServiceHandle, path: &str) -> SshResult<()> {
+        self.inner.create_file(handle, path).await
+    }
+
+    pub async fn rename_path(
+        &self,
+        handle: &SshServiceHandle,
+        old_path: &str,
+        new_path: &str,
+    ) -> SshResult<()> {
+        self.inner.rename_path(handle, old_path, new_path).await
+    }
+
+    pub async fn remove_path(&self, handle: &SshServiceHandle, path: &str) -> SshResult<()> {
+        self.inner.remove_path(handle, path).await
     }
 
     pub async fn pty_spawn(

@@ -110,11 +110,7 @@ pub(crate) fn select_run_model(
             )));
         }
     }
-    let wire_mode = if provider_override == Some(DEEPSEEK_OFFICIAL_PROVIDER) {
-        WireMode::ChatCompletions
-    } else {
-        WireMode::Responses
-    };
+    let wire_mode = WireMode::Responses;
     let config = ModelConfig::from_catalog(api_key, &loaded.catalog, role)
         .with_defaults(defaults)
         .with_wire_mode(wire_mode);
