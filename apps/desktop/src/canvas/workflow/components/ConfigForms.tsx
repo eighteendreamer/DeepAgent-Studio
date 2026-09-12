@@ -1,4 +1,12 @@
-import { ChevronDown } from "lucide-react";
+import React, { useRef, useState } from "react";
+import { ChevronDown, Maximize2, Plus, X, Square } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle } from "../../../components/shadcn/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "../../../components/shadcn/dropdown-menu";
 import type { CreativeNodeData, ProfessionalNodeData, WorkflowNodeData } from "../types";
 
 // —— Penguin-Magic 图二设计语言：玻璃 chip 参数行 + 无边框提示词区 ——
@@ -39,16 +47,18 @@ function PromptArea({
   value,
   placeholder,
   onChange,
+  rows = 2,
 }: {
   value: string;
   placeholder: string;
   onChange: (v: string) => void;
+  rows?: number;
 }) {
   return (
     <textarea
       value={value}
       placeholder={placeholder}
-      rows={2}
+      rows={rows}
       onChange={(e) => onChange(e.target.value)}
       onInput={(e) => autoGrow(e)}
       className="w-full resize-none bg-transparent outline-none"
@@ -67,25 +77,68 @@ function ChipSelect({
   value,
   options,
   onChange,
+  icon,
+  itemIcons,
 }: {
   value: string;
   options: Array<{ value: string; label: string }>;
   onChange: (v: string) => void;
+  icon?: React.ReactNode;
+  itemIcons?: Record<string, React.ReactNode>;
 }) {
+  // 取选中项的 label 作为 trigger 文案；找不到时回退原 value
+  const currentLabel = options.find((o) => o.value === value)?.label ?? value;
   return (
-    <div className="relative">
-      <select style={{ ...CHIP_STYLE, paddingRight: 26 }} value={value} onChange={(e) => onChange(e.target.value)}>
-        {options.map((o) => (
-          <option key={o.value} value={o.value} style={{ background: "#1c1c1f" }}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-      <ChevronDown
-        className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2"
-        style={{ color: "rgba(255,255,255,0.5)" }}
-      />
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="relative flex h-8 items-center gap-1 rounded-lg text-[12px] font-medium transition-colors hover:bg-white/12 focus:outline-none data-[state=open]:bg-white/12"
+          style={{
+            paddingLeft: icon ? 24 : 10,
+            paddingRight: 8,
+            background: "rgba(255,255,255,0.08)",
+            color: "rgba(255,255,255,0.75)",
+          }}
+        >
+          {icon && (
+            <span
+              className="pointer-events-none absolute left-2 top-1/2 flex -translate-y-1/2 items-center"
+              style={{ color: "rgba(255,255,255,0.7)" }}
+            >
+              {icon}
+            </span>
+          )}
+          <span className="whitespace-nowrap">{currentLabel}</span>
+          <ChevronDown className="h-3 w-3 opacity-60" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        sideOffset={6}
+        className="!min-w-0 !rounded-xl !p-1 !text-[12px] !shadow-[0_6px_24px_rgba(0,0,0,0.4)] !border !border-white/8 !bg-[rgba(24,24,27,0.92)] backdrop-blur-[40px]"
+      >
+        {options.map((o) => {
+          const active = o.value === value;
+          const itemIcon = itemIcons?.[o.value];
+          return (
+            <DropdownMenuItem
+              key={o.value}
+              onSelect={() => onChange(o.value)}
+              className="!rounded-lg !px-2.5 !py-1.5 !text-[12px] data-[highlighted]:!bg-white/10 flex items-center gap-2"
+              style={{ color: active ? "#a78bfa" : "rgba(255,255,255,0.88)" }}
+            >
+              {itemIcon && (
+                <span className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center" style={{ color: active ? "#a78bfa" : "rgba(255,255,255,0.7)" }}>
+                  {itemIcon}
+                </span>
+              )}
+              <span>{o.label}</span>
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -162,46 +215,439 @@ export function TextGenForm({ data, onUpdate }: { data: CreativeNodeData } & For
   );
 }
 
-export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+// —— Image Gen 专用：模型清单 + 能力边界 ——
+const IMAGE_MODELS = [
+  { value: "dall-e-3", label: "DALL-E 3" },
+  { value: "stable-diffusion-xl", label: "SD XL" },
+  { value: "midjourney-v6", label: "Midjourney V6" },
+  { value: "gpt-image-2", label: "GPT-Image-2" },
+] as const;
+
+const ASPECT_RATIOS = [
+  { value: "Auto", label: "Auto" },
+  { value: "21:9", label: "21:9" },
+  { value: "16:9", label: "16:9" },
+  { value: "3:2", label: "3:2" },
+  { value: "4:3", label: "4:3" },
+  { value: "5:4", label: "5:4" },
+  { value: "1:1", label: "1:1" },
+  { value: "4:5", label: "4:5" },
+  { value: "3:4", label: "3:4" },
+  { value: "2:3", label: "2:3" },
+  { value: "9:16", label: "9:16" },
+  { value: "custom", label: "自定义" },
+] as const;
+
+const RESOLUTIONS = [
+  { value: "1K", label: "1K" },
+  { value: "2K", label: "2K" },
+  { value: "4K", label: "4K" },
+] as const;
+
+// Midjourney 不走显式分辨率；其它模型 1K/2K/4K 全档
+const getResolutionsForModel = (model: string | undefined) => {
+  if (model === "midjourney-v6") return [{ value: "Auto", label: "Auto" }] as const;
+  return RESOLUTIONS;
+};
+
+// GPT-Image-2 才显示质量档
+const GPT_IMAGE_2_QUALITIES = [
+  { value: "auto", label: "Auto" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+] as const;
+
+const COUNTS = [1, 2, 3, 4] as const;
+
+function RatioIcon({ ratio, size = 14 }: { ratio?: string; size?: number }) {
+  if (!ratio || ratio === "Auto") {
+    return <Square className="opacity-50" style={{ width: size, height: size }} strokeWidth={1.5} strokeDasharray="2 1.5" />;
+  }
+  if (ratio === "custom") {
+    return (
+      <div
+        className="relative"
+        style={{
+          width: size,
+          height: size,
+          borderRadius: 2,
+          border: "1.5px dashed rgba(255,255,255,0.7)",
+          background: "rgba(255,255,255,0.10)",
+        }}
+      >
+        <span
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[7px] font-semibold leading-none"
+          style={{ color: "rgba(255,255,255,0.85)" }}
+        >
+          W×H
+        </span>
+      </div>
+    );
+  }
+  const parts = ratio.split(":").map(Number);
+  if (parts.length !== 2 || parts[0] <= 0 || parts[1] <= 0) {
+    return <Square className="opacity-50" style={{ width: size, height: size }} strokeWidth={1.5} />;
+  }
+  const aspect = parts[0] / parts[1];
+  let w = size, h = size;
+  if (aspect >= 1) { w = size; h = Math.max(5, Math.round(size / aspect)); }
+  else { h = size; w = Math.max(5, Math.round(size * aspect)); }
   return (
-    <div className="flex flex-col gap-2.5">
-      <PromptArea
-        value={data.imagePrompt ?? ""}
-        placeholder="描述你想要生成的内容..."
-        onChange={(imagePrompt) => onUpdate({ imagePrompt })}
-      />
-      <div className="flex items-center gap-1.5">
-        <ChipSelect
-          value={data.imageModel ?? ""}
-          options={[
-            { value: "", label: "模型" },
-            { value: "dall-e-3", label: "DALL-E 3" },
-            { value: "stable-diffusion-xl", label: "SD XL" },
-            { value: "midjourney-v6", label: "Midjourney V6" },
-          ]}
-          onChange={(imageModel) => onUpdate({ imageModel })}
-        />
-        <ChipSelect
-          value={data.aspectRatio ?? "1:1"}
-          options={[
-            { value: "1:1", label: "1:1" },
-            { value: "16:9", label: "16:9" },
-            { value: "9:16", label: "9:16" },
-            { value: "4:3", label: "4:3" },
-            { value: "3:4", label: "3:4" },
-          ]}
-          onChange={(aspectRatio) => onUpdate({ aspectRatio })}
-        />
-        <ChipSelect
-          value={data.resolution ?? "1024x1024"}
-          options={[
-            { value: "512x512", label: "512" },
-            { value: "1024x1024", label: "1K" },
-            { value: "1792x1024", label: "2K" },
-          ]}
-          onChange={(resolution) => onUpdate({ resolution })}
+    <div
+      style={{
+        width: w,
+        height: h,
+        borderRadius: 2,
+        border: "1.5px solid rgba(255,255,255,0.85)",
+        background: "rgba(255,255,255,0.18)",
+      }}
+    />
+  );
+}
+
+const SUB_COLOR = "rgba(255,255,255,0.5)";
+const TEXT_COLOR_88 = "rgba(255,255,255,0.88)";
+
+export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  const [expanded, setExpanded] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const expandedTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const model = data.imageModel ?? "dall-e-3";
+  const ratio = data.aspectRatio ?? "1:1";
+  const resolution = data.resolution ?? "1K";
+  const count = data.batchCount ?? 1;
+  const quality = data.gptImage2Quality ?? "auto";
+  const isGptImage2 = model === "gpt-image-2";
+  const isMj = model === "midjourney-v6";
+  const inputUrls = data.imageInputUrls ?? [];
+  const hasStoryboardTag = !!data._storyboardLabel;
+  const hasCreativeTag = !hasStoryboardTag && !!data._creativeLabel;
+  const MAX_INPUT_IMAGES = 2;
+  const atMaxInput = inputUrls.length >= MAX_INPUT_IMAGES;
+
+  const resolutionOptions = getResolutionsForModel(model);
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (atMaxInput) {
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      if (typeof ev.target?.result === "string") {
+        onUpdate({ imageInputUrls: [...inputUrls, ev.target.result] });
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  const removeInput = (idx: number) => {
+    onUpdate({ imageInputUrls: inputUrls.filter((_, i) => i !== idx) });
+  };
+
+  const setModel = (next: string) => {
+    const updates: Record<string, unknown> = { imageModel: next };
+    if (next === "midjourney-v6" && resolution !== "Auto") updates.resolution = "Auto";
+    if (next !== "gpt-image-2" && data.gptImage2Quality) updates.gptImage2Quality = undefined;
+    onUpdate(updates);
+  };
+
+  const setRatio = (next: string) => {
+    const updates: Record<string, unknown> = { aspectRatio: next };
+    if (next === "custom" && !data.customSize) {
+      updates.customSize = "1024x1024";
+    }
+    onUpdate(updates);
+  };
+
+  // 每个比例的形状图标映射（下拉项里也要展示）
+  const ratioItemIcons: Record<string, React.ReactNode> = React.useMemo(() => {
+    const m: Record<string, React.ReactNode> = {};
+    for (const r of ASPECT_RATIOS) {
+      m[r.value] = <RatioIcon ratio={r.value} size={12} />;
+    }
+    return m;
+  }, []);
+
+  // 自定义宽高：本地表单态 + 持久化字符串 "WxH"
+  const parseCustomSize = (s: string | undefined): { w: number; h: number } | null => {
+    if (!s) return null;
+    const m = s.match(/^(\d+)\s*[xX×]\s*(\d+)$/);
+    if (!m) return null;
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (!w || !h) return null;
+    return { w, h };
+  };
+  const initCustom = parseCustomSize(data.customSize) ?? { w: 1024, h: 1024 };
+  const [customW, setCustomW] = useState<number>(initCustom.w);
+  const [customH, setCustomH] = useState<number>(initCustom.h);
+
+  // customSize 由外部变化时（粘贴分镜、导入资产等）同步本地态
+  React.useEffect(() => {
+    const parsed = parseCustomSize(data.customSize);
+    if (parsed && (parsed.w !== customW || parsed.h !== customH)) {
+      setCustomW(parsed.w);
+      setCustomH(parsed.h);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.customSize]);
+
+  const commitCustomSize = (w: number, h: number) => {
+    if (!w || !h) return;
+    onUpdate({ customSize: `${w}x${h}` });
+  };
+
+  const isCustomRatio = ratio === "custom";
+
+  return (
+    <div className="relative flex flex-col gap-2">
+      {/* 1. 输入图行（PM：始终显示 + 占位；上限 2 张，满后禁用 + 按钮） */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-[11px] flex-shrink-0" style={{ color: SUB_COLOR }}>
+          输入图{inputUrls.length}/{MAX_INPUT_IMAGES}
+        </span>
+        {inputUrls.map((url, idx) => (
+          <div
+            key={`${idx}-${url.slice(0, 24)}`}
+            className="group relative h-10 w-10 flex-shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-105"
+            style={{ border: "1px solid rgba(255,255,255,0.15)" }}
+          >
+            <img src={url} alt={`输入${idx + 1}`} className="h-full w-full object-cover" draggable={false} />
+            <button
+              type="button"
+              onClick={() => removeInput(idx)}
+              className="absolute right-0 top-0 flex h-4 w-4 items-center justify-center rounded-bl-md opacity-0 transition-opacity group-hover:opacity-100"
+              style={{ background: "rgba(0,0,0,0.6)" }}
+              title="移除输入图"
+            >
+              <X className="h-2.5 w-2.5 text-white" />
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => {
+            if (atMaxInput) return;
+            fileInputRef.current?.click();
+          }}
+          disabled={atMaxInput}
+          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:hover:scale-100"
+          style={{
+            border: atMaxInput ? "1.5px dashed rgba(255,255,255,0.10)" : "1.5px dashed rgba(255,255,255,0.22)",
+            background: atMaxInput ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)",
+            opacity: atMaxInput ? 0.4 : 1,
+          }}
+          title={atMaxInput ? `已达上限 ${MAX_INPUT_IMAGES} 张` : "添加图片"}
+        >
+          <Plus className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.6)" }} />
+        </button>
+        <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
+      </div>
+
+      {/* 2. 分镜大师标签（PM：蓝色圆角 + 一键移除） */}
+      {hasStoryboardTag && (
+        <div className="flex items-center gap-1.5">
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
+            style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}
+          >
+            <span style={{ fontSize: 12 }}>🎬</span>
+            分镜·{data._storyboardLabel}
+            <button
+              type="button"
+              className="flex h-3.5 w-3.5 items-center justify-center rounded-full opacity-70 transition-opacity hover:opacity-100"
+              style={{ background: "rgba(59,130,246,0.25)" }}
+              title="移除分镜模板"
+              onClick={() =>
+                onUpdate({
+                  _storyboardLabel: undefined,
+                  _storyboardKey: undefined,
+                  imagePrompt: "",
+                  status: "idle",
+                })
+              }
+            >
+              <X className="h-2 w-2" />
+            </button>
+          </span>
+        </div>
+      )}
+
+      {/* 3. 创意库模板标签 */}
+      {hasCreativeTag && (
+        <div className="flex items-center gap-1.5">
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
+            style={{ background: "rgba(139,92,246,0.18)", color: "#8b5cf6" }}
+          >
+            <span style={{ fontSize: 12 }}>📚</span>
+            模板·{data._creativeLabel}
+            <button
+              type="button"
+              className="flex h-3.5 w-3.5 items-center justify-center rounded-full opacity-70 transition-opacity hover:opacity-100"
+              style={{ background: "rgba(139,92,246,0.28)" }}
+              title="移除模板"
+              onClick={() =>
+                onUpdate({
+                  _creativeLabel: undefined,
+                  imagePrompt: "",
+                  status: "idle",
+                })
+              }
+            >
+              <X className="h-2 w-2" />
+            </button>
+          </span>
+        </div>
+      )}
+
+      {/* 4. prompt（右上角留 pr-7 给放大编辑按钮让位，避免文字顶到） */}
+      <div className="pr-7">
+        <PromptArea
+          value={data.imagePrompt ?? ""}
+          placeholder={hasStoryboardTag ? "分镜指令已就绪，点击发送开始生成…" : "描述你想要生成的内容..."}
+          onChange={(imagePrompt) => onUpdate({ imagePrompt })}
+          rows={hasStoryboardTag ? 1 : 2}
         />
       </div>
+
+      {/* 4b. 放大编辑按钮（PM：panel 右上角，悬浮于根容器） */}
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="absolute right-1.5 top-1.5 z-10 flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-white/10"
+        style={{ color: "rgba(255,255,255,0.55)" }}
+        title="放大编辑"
+      >
+        <Maximize2 className="h-3 w-3" />
+      </button>
+
+      {/* 5. 参数行：模型 / 比例 / 分辨率 / 质量(gpt) / 数量 */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <ChipSelect
+          value={model}
+          options={IMAGE_MODELS.map((m) => ({ value: m.value, label: m.label }))}
+          onChange={setModel}
+        />
+        <ChipSelect
+          value={ratio}
+          options={ASPECT_RATIOS.map((r) => ({ value: r.value, label: r.label }))}
+          onChange={setRatio}
+          icon={<RatioIcon ratio={ratio} size={12} />}
+          itemIcons={ratioItemIcons}
+        />
+        {!isMj && (
+          <ChipSelect
+            value={resolution}
+            options={resolutionOptions.map((r) => ({ value: r.value, label: r.label }))}
+            onChange={(resolution) => onUpdate({ resolution })}
+          />
+        )}
+        {isGptImage2 && (
+          <ChipSelect
+            value={quality}
+            options={GPT_IMAGE_2_QUALITIES.map((q) => ({ value: q.value, label: q.label }))}
+            onChange={(gptImage2Quality) => onUpdate({ gptImage2Quality })}
+          />
+        )}
+        <ChipSelect
+          value={String(count)}
+          options={COUNTS.map((n) => ({ value: String(n), label: `${n}x` }))}
+          onChange={(v) => onUpdate({ batchCount: Number(v) })}
+        />
+      </div>
+
+      {/* 5b. 自定义比例 W × H（仅 ratio=custom 时展示） */}
+      {isCustomRatio && (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] flex-shrink-0" style={{ color: SUB_COLOR }}>尺寸</span>
+          <input
+            type="number"
+            min={64}
+            max={4096}
+            step={64}
+            value={customW}
+            onChange={(e) => {
+              const v = Math.max(64, Math.min(4096, Number(e.target.value) || 64));
+              setCustomW(v);
+              commitCustomSize(v, customH);
+            }}
+            className="w-16 rounded-md px-2 py-1 text-[12px] outline-none"
+            style={{
+              background: "rgba(255,255,255,0.08)",
+              border: "1px solid rgba(255,255,255,0.10)",
+              color: "rgba(255,255,255,0.88)",
+            }}
+          />
+          <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>×</span>
+          <input
+            type="number"
+            min={64}
+            max={4096}
+            step={64}
+            value={customH}
+            onChange={(e) => {
+              const v = Math.max(64, Math.min(4096, Number(e.target.value) || 64));
+              setCustomH(v);
+              commitCustomSize(customW, v);
+            }}
+            className="w-16 rounded-md px-2 py-1 text-[12px] outline-none"
+            style={{
+              background: "rgba(255,255,255,0.08)",
+              border: "1px solid rgba(255,255,255,0.10)",
+              color: "rgba(255,255,255,0.88)",
+            }}
+          />
+        </div>
+      )}
+
+      {/* 6. 满屏编辑 Dialog（PM：TextEditorModal 风格 + Enter 提交） */}
+      <Dialog open={expanded} onOpenChange={setExpanded}>
+        <DialogContent className="!max-w-[640px]">
+          <div className="mb-3 flex items-center justify-between">
+            <DialogTitle className="text-sm font-medium" style={{ color: TEXT_COLOR_88 }}>
+              提示词编辑
+            </DialogTitle>
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-white/10"
+              style={{ color: "rgba(255,255,255,0.6)" }}
+              title="关闭"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <textarea
+            ref={expandedTextareaRef}
+            autoFocus
+            value={data.imagePrompt ?? ""}
+            placeholder="描述你想要生成的内容..."
+            onChange={(e) => onUpdate({ imagePrompt: e.target.value })}
+            onInput={(e) => {
+              const t = e.currentTarget;
+              t.style.height = "auto";
+              t.style.height = `${Math.min(t.scrollHeight, 360)}px`;
+            }}
+            className="w-full resize-none rounded-lg p-3 outline-none"
+            style={{
+              minHeight: 220,
+              color: TEXT_COLOR_88,
+              fontSize: 14,
+              lineHeight: 1.7,
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              scrollbarWidth: "thin",
+            }}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

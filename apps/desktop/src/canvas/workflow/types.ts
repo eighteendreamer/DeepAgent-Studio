@@ -44,8 +44,15 @@ export interface CreativeNodeData {
   imageModel?: string;
   imagePrompt?: string;
   imageUrl?: string;
+  imageInputUrls?: string[];
   aspectRatio?: string;
   resolution?: string;
+  batchCount?: number;
+  gptImage2Quality?: "low" | "medium" | "high" | "auto";
+  customSize?: string;
+  _storyboardLabel?: string;
+  _storyboardKey?: string;
+  _creativeLabel?: string;
   videoService?: "sora" | "veo" | "kling";
   videoModel?: string;
   videoPrompt?: string;

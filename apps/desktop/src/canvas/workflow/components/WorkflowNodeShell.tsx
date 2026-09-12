@@ -124,9 +124,7 @@ function renderContent(nodeData: WorkflowNodeData) {
 }
 
 const EDIT_PANEL_STYLE: React.CSSProperties = {
-  width: 500,
-  maxHeight: 380,
-  overflowY: "auto",
+  width: 320,
   background: "rgba(24,24,27,0.92)",
   border: "1px solid rgba(255,255,255,0.08)",
   borderRadius: 12,
@@ -283,6 +281,13 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
     setDrawingTarget({ nodeId: id, imageUrl, name: nodeLabel, mode: "erase" });
   };
 
+  const handleOutpaint = () => {
+    const imageUrl = (nodeData as CreativeNodeData).imageUrl;
+    if (!imageUrl) return;
+    const { setOutpaintTarget } = useCanvasStore.getState();
+    setOutpaintTarget({ nodeId: id, imageUrl, name: nodeLabel });
+  };
+
   const handleCreativeLibrary = () => {
     const { setCreativeLibraryOpen } = useCanvasStore.getState();
     setCreativeLibraryOpen(true);
@@ -304,6 +309,8 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
     const label = storyboardLabels[key] ?? key;
     useCreativeStore.getState().updateNodeData(id, {
       imagePrompt: `[${label}] 请基于当前图片生成分镜变体`,
+      _storyboardLabel: label,
+      _storyboardKey: key,
       status: "idle",
     });
   };
@@ -346,6 +353,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
           onCrop={handleCrop}
           onAnnotate={handleAnnotate}
           onErase={handleErase}
+          onOutpaint={handleOutpaint}
           onCreativeLibrary={handleCreativeLibrary}
           onSaveAsset={handleSaveAsset}
           onStoryboardPreset={handleStoryboardPreset}
@@ -476,12 +484,28 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       <Handle
         type="target"
         position={Position.Left}
-        style={{ left: -4 }}
+        style={{
+          left: -6,
+          width: 16,
+          height: 16,
+          background: "rgba(156,163,175,0.8)",
+          border: "2px solid rgba(30,30,35,0.95)",
+          borderRadius: "50%",
+          cursor: "crosshair",
+        }}
       />
       <Handle
         type="source"
         position={Position.Right}
-        style={{ right: -4 }}
+        style={{
+          right: -6,
+          width: 16,
+          height: 16,
+          background: "rgba(156,163,175,0.8)",
+          border: "2px solid rgba(30,30,35,0.95)",
+          borderRadius: "50%",
+          cursor: "crosshair",
+        }}
       />
 
       {/* Running progress bar */}

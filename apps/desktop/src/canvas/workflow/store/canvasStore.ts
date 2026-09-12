@@ -16,6 +16,12 @@ interface DrawingTarget {
   mode: "annotate" | "erase";
 }
 
+interface OutpaintTarget {
+  nodeId: string;
+  imageUrl: string;
+  name: string;
+}
+
 interface CanvasState {
   mode: CanvasMode;
   setMode: (mode: CanvasMode) => void;
@@ -44,6 +50,9 @@ interface CanvasState {
 
   drawingTarget: DrawingTarget | null;
   setDrawingTarget: (t: DrawingTarget | null) => void;
+
+  outpaintTarget: OutpaintTarget | null;
+  setOutpaintTarget: (t: OutpaintTarget | null) => void;
 
   creativeLibraryOpen: boolean;
   setCreativeLibraryOpen: (open: boolean) => void;
@@ -81,6 +90,9 @@ export const useCanvasStore = create<CanvasState>((set) => ({
 
   drawingTarget: null,
   setDrawingTarget: (t) => set({ drawingTarget: t }),
+
+  outpaintTarget: null,
+  setOutpaintTarget: (t) => set({ outpaintTarget: t }),
 
   creativeLibraryOpen: false,
   setCreativeLibraryOpen: (open) => set({ creativeLibraryOpen: open }),

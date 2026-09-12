@@ -5,6 +5,7 @@ import {
   Background,
   BackgroundVariant,
   SelectionMode,
+  useStoreApi,
   type ReactFlowInstance,
   type Viewport,
   type FinalConnectionState,
@@ -21,11 +22,13 @@ import { ContextMenu, useContextMenu } from "./workflow/components/ContextMenu";
 import { CanvasSettingsDialog } from "./workflow/components/CanvasSettingsDialog";
 import { CropOverlay } from "./workflow/components/CropOverlay";
 import { DrawingOverlay } from "./workflow/components/DrawingOverlay";
+import { OutpaintOverlay } from "./workflow/components/OutpaintOverlay";
 import { CreativeLibraryPanel } from "./workflow/components/CreativeLibraryPanel";
 import { WorkflowNodeShell } from "./workflow/components/WorkflowNodeShell";
 import { WorkflowEdge } from "./workflow/components/WorkflowEdge";
 import { useWorkflowPersistence } from "./workflow/hooks/useWorkflowPersistence";
 import { CREATIVE_NODE_CATEGORIES, PROFESSIONAL_NODE_CATEGORIES } from "./workflow/types";
+import { isTauri } from "../api";
 
 function buildNodeTypes(prefix: string, kinds: string[]) {
   const map: Record<string, React.ComponentType<any>> = {};
@@ -60,6 +63,8 @@ function WorkflowCanvasInner() {
   const setCropTarget = useCanvasStore((s) => s.setCropTarget);
   const drawingTarget = useCanvasStore((s) => s.drawingTarget);
   const setDrawingTarget = useCanvasStore((s) => s.setDrawingTarget);
+  const outpaintTarget = useCanvasStore((s) => s.outpaintTarget);
+  const setOutpaintTarget = useCanvasStore((s) => s.setOutpaintTarget);
   const creativeLibraryOpen = useCanvasStore((s) => s.creativeLibraryOpen);
   const setCreativeLibraryOpen = useCanvasStore((s) => s.setCreativeLibraryOpen);
 
@@ -79,12 +84,50 @@ function WorkflowCanvasInner() {
   const [viewport, setLocalViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const containerRef = useRef<HTMLDivElement>(null);
   const rfWrapperRef = useRef<HTMLDivElement>(null);
+  const flowStore = useStoreApi();
   const isSpaceHeldRef = useRef(false);
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
   const clipboardRef = useRef<{ mode: string; nodes: any[] } | null>(null);
   const [containerSize, setContainerSize] = useState({ width: 1200, height: 800 });
   const [isExternalDragOver, setIsExternalDragOver] = useState(false);
   const { menu, openMenu, close: closeMenu } = useContextMenu();
+  const isDesktop = isTauri();
+
+  // WebView2 can end a captured pointer with pointercancel/lostpointercapture.
+  // React Flow releases the DOM capture there, but older versions leave the
+  // selection state active, which blocks every subsequent drag selection.
+  // Keep this compatibility cleanup desktop-only; browser behavior stays on
+  // React Flow's native path.
+  useEffect(() => {
+    if (!isDesktop) return;
+
+    const finishCapturedPointer = (event: PointerEvent) => {
+      window.setTimeout(() => {
+        const pane = rfWrapperRef.current?.querySelector<HTMLElement>(".react-flow__pane");
+        if (pane?.hasPointerCapture(event.pointerId)) {
+          pane.releasePointerCapture(event.pointerId);
+        }
+
+        const state = flowStore.getState();
+        if (state.userSelectionActive || state.userSelectionRect) {
+          flowStore.setState({
+            userSelectionActive: false,
+            userSelectionRect: null,
+            nodesSelectionActive: false,
+          });
+        }
+      }, 0);
+    };
+
+    window.addEventListener("pointerup", finishCapturedPointer, true);
+    window.addEventListener("pointercancel", finishCapturedPointer, true);
+    window.addEventListener("lostpointercapture", finishCapturedPointer, true);
+    return () => {
+      window.removeEventListener("pointerup", finishCapturedPointer, true);
+      window.removeEventListener("pointercancel", finishCapturedPointer, true);
+      window.removeEventListener("lostpointercapture", finishCapturedPointer, true);
+    };
+  }, [flowStore, isDesktop]);
 
   const handleMediaFiles = useCallback(
     async (files: Array<{ name: string; url: string; kind: "image" | "video" }>, dropPoint?: { x: number; y: number }) => {
@@ -534,7 +577,9 @@ function WorkflowCanvasInner() {
         fitViewOptions={{ maxZoom: 0.9 }}
         minZoom={0.2}
         maxZoom={3}
-        panOnDrag={[1, 2]}
+        // 左键拖动交给框选，避免桌面 WebView 的原生 mousedown 被 pan 手势抢走。
+        // 画布平移使用现有滚轮/Shift+滚轮逻辑。
+        panOnDrag={isDesktop ? false : [1, 2]}
         selectionOnDrag
         selectionMode={SelectionMode.Partial}
         nodesDraggable={!isSpaceHeld}
@@ -604,9 +649,26 @@ function WorkflowCanvasInner() {
           onCancel={() => setDrawingTarget(null)}
         />
       )}
+      {outpaintTarget && (
+        <OutpaintOverlay
+          imageUrl={outpaintTarget.imageUrl}
+          itemName={outpaintTarget.name}
+          onCancel={() => setOutpaintTarget(null)}
+        />
+      )}
       {creativeLibraryOpen && (
         <CreativeLibraryPanel
           onClose={() => setCreativeLibraryOpen(false)}
+          onUse={(item) => {
+            if (!selectedNodeId) return;
+            const updates: Record<string, unknown> = {
+              _creativeLabel: item.name,
+              imagePrompt: item.prompt ?? "",
+              status: "idle",
+            };
+            if (item.imageUrl) updates.imageInputUrls = [item.imageUrl];
+            useCreativeStore.getState().updateNodeData(selectedNodeId, updates);
+          }}
         />
       )}
     </div>

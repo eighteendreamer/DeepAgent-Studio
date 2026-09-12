@@ -300,12 +300,13 @@ interface NodeFloatingToolbarProps {
   onCrop?: () => void;
   onAnnotate?: () => void;
   onErase?: () => void;
+  onOutpaint?: () => void;
   onCreativeLibrary?: () => void;
   onSaveAsset?: (categoryKey: string) => void;
   onStoryboardPreset?: (key: string) => void;
 }
 
-export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplicate, onDownload, onCrop, onAnnotate, onErase, onCreativeLibrary, onSaveAsset, onStoryboardPreset }: NodeFloatingToolbarProps) {
+export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplicate, onDownload, onCrop, onAnnotate, onErase, onOutpaint, onCreativeLibrary, onSaveAsset, onStoryboardPreset }: NodeFloatingToolbarProps) {
   const actions = getActions(kind);
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const [openNestedKey, setOpenNestedKey] = useState<string | null>(null);
@@ -537,6 +538,7 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
       crop: onCrop,
       repaint: onAnnotate,
       erase: onErase,
+      outpaint: onOutpaint,
       "creative-library": onCreativeLibrary,
     };
     const handler = wired[action.key];
