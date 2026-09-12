@@ -45,6 +45,11 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuSubContent,
 } from "../../../components/shadcn/dropdown-menu";
+import {
+  HoverCard,
+  HoverCardTrigger,
+  HoverCardContent,
+} from "../../../components/shadcn/hover-card";
 import { CATEGORY_TREE, type CategoryNode } from "../utils/categoryTree";
 import type { WorkflowNodeKind } from "../types";
 
@@ -238,6 +243,12 @@ const DIVIDER_COLOR = "rgba(255,255,255,0.12)";
 const SUB_ITEM_COLOR = "rgba(255,255,255,0.88)";
 const SUB_DESC_COLOR = "rgba(255,255,255,0.5)";
 const OPEN_BG = "rgba(255,255,255,0.1)";
+
+// 与二级菜单同一套暗色玻璃，遮盖 shadcn 默认亮色变量
+const TOOLTIP_CONTENT_CLASS =
+  "!rounded-lg !p-2 !text-[12px] !font-medium !text-[rgba(255,255,255,0.85)] " +
+  "!border !border-white/8 !bg-[rgba(24,24,27,0.92)] backdrop-blur-[40px] " +
+  "!shadow-[0_6px_24px_rgba(0,0,0,0.32)]";
 
 // 二级/三级菜单与主工具栏同一套悬浮玻璃（Penguin getNodeCanvasSecondaryMenuStyle 同材质同圆角）
 const SUBMENU_SURFACE: React.CSSProperties = {
@@ -502,7 +513,6 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              title={action.tooltip ?? action.label}
               disabled={action.disabled}
               className="flex h-7 items-center gap-1.5 rounded-lg px-2 transition-colors duration-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
               onMouseDown={(e) => e.stopPropagation()}
@@ -530,40 +540,52 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
       "creative-library": onCreativeLibrary,
     };
     const handler = wired[action.key];
+    const button = (
+      <button
+        type="button"
+        disabled={action.disabled}
+        className="flex h-7 items-center gap-1.5 rounded-lg px-2 transition-colors duration-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
+        style={{ background: isOpen ? OPEN_BG : undefined }}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (hasSubmenu) {
+            triggerRectRef.current = e.currentTarget.getBoundingClientRect();
+            setOpenNestedKey(null);
+            setOpenSubmenu((prev) => (prev === action.key ? null : action.key));
+            return;
+          }
+          setOpenSubmenu(null);
+          handler?.();
+        }}
+      >
+        <Icon
+          className="h-3.5 w-3.5"
+          strokeWidth={1.8}
+          style={{ color: action.danger ? "rgba(248,113,113,0.9)" : ICON_COLOR }}
+        />
+        <span
+          className="whitespace-nowrap text-xs font-medium"
+          style={{ color: action.danger ? "rgba(248,113,113,0.9)" : LABEL_COLOR }}
+        >
+          {action.label}
+        </span>
+        {hasSubmenu && <ChevronRight className="h-3 w-3" style={{ color: "rgba(255,255,255,0.45)" }} />}
+      </button>
+    );
+    const buttonWithTooltip = action.tooltip ? (
+      <HoverCard openDelay={250} closeDelay={100}>
+        <HoverCardTrigger asChild>{button}</HoverCardTrigger>
+        <HoverCardContent side="bottom" sideOffset={8} className={TOOLTIP_CONTENT_CLASS}>
+          {action.tooltip}
+        </HoverCardContent>
+      </HoverCard>
+    ) : (
+      button
+    );
     return (
       <Fragment key={action.key}>
-        <button
-          type="button"
-          title={action.tooltip ?? action.label}
-          disabled={action.disabled}
-          className="flex h-7 items-center gap-1.5 rounded-lg px-2 transition-colors duration-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
-          style={{ background: isOpen ? OPEN_BG : undefined }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (hasSubmenu) {
-              triggerRectRef.current = e.currentTarget.getBoundingClientRect();
-              setOpenNestedKey(null);
-              setOpenSubmenu((prev) => (prev === action.key ? null : action.key));
-              return;
-            }
-            setOpenSubmenu(null);
-            handler?.();
-          }}
-        >
-          <Icon
-            className="h-3.5 w-3.5"
-            strokeWidth={1.8}
-            style={{ color: action.danger ? "rgba(248,113,113,0.9)" : ICON_COLOR }}
-          />
-          <span
-            className="whitespace-nowrap text-xs font-medium"
-            style={{ color: action.danger ? "rgba(248,113,113,0.9)" : LABEL_COLOR }}
-          >
-            {action.label}
-          </span>
-          {hasSubmenu && <ChevronRight className="h-3 w-3" style={{ color: "rgba(255,255,255,0.45)" }} />}
-        </button>
+        {buttonWithTooltip}
         {renderSubmenuPortal(action)}
       </Fragment>
     );
@@ -588,21 +610,27 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
     >
-      <button
-        type="button"
-        title="运行此节点"
-        className="flex h-7 items-center gap-1.5 rounded-lg px-2 transition-colors duration-200 hover:bg-white/10"
-        onMouseDown={(e) => e.stopPropagation()}
-        onClick={(e) => {
-          e.stopPropagation();
-          onRun();
-        }}
-      >
-        <Play className="h-3.5 w-3.5" strokeWidth={1.8} style={{ color: "#8b7cf7" }} />
-        <span className="whitespace-nowrap text-xs font-medium" style={{ color: LABEL_COLOR }}>
-          运行
-        </span>
-      </button>
+      <HoverCard openDelay={250} closeDelay={100}>
+        <HoverCardTrigger asChild>
+          <button
+            type="button"
+            className="flex h-7 items-center gap-1.5 rounded-lg px-2 transition-colors duration-200 hover:bg-white/10"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRun();
+            }}
+          >
+            <Play className="h-3.5 w-3.5" strokeWidth={1.8} style={{ color: "#8b7cf7" }} />
+            <span className="whitespace-nowrap text-xs font-medium" style={{ color: LABEL_COLOR }}>
+              运行
+            </span>
+          </button>
+        </HoverCardTrigger>
+        <HoverCardContent side="bottom" sideOffset={8} className={TOOLTIP_CONTENT_CLASS}>
+          运行此节点
+        </HoverCardContent>
+      </HoverCard>
       {groups.map((items) => (
         <div key={items[0].group} className="flex items-center gap-px">
           <div className="mx-1 h-4 w-px" style={{ background: DIVIDER_COLOR }} />
