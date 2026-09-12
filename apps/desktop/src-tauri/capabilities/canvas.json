@@ -6,6 +6,8 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "core:window:allow-close",
-    "core:window:allow-destroy"
+    "core:window:allow-destroy",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
   ]
 }

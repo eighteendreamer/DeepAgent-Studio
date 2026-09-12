@@ -22,6 +22,15 @@
   }
 }
 
+/* Hide scrollbar on creative library sidebar */
+.creative-sidebar-scroll::-webkit-scrollbar {
+  display: none;
+}
+.creative-sidebar-scroll {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 .theme-switch-reveal-overlay {
   position: fixed;
   inset: 0;
@@ -429,6 +438,15 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
 .floating-menu-panel {
   animation: floating-menu-panel-in 300ms cubic-bezier(0.4, 0, 0.2, 1);
   will-change: opacity, transform;
+}
+
+/* 入场动画只配 open 态：关闭时必须显式清掉 animation，否则 Radix Presence
+   检测到 animationName 非 none 会一直等 animationend（已播完不再触发），
+   面板永不卸载并持续占据焦点（行内输入框 autoFocus 被吞的根因）。 */
+.popover-menu[data-state="closed"],
+.floating-menu-panel[data-state="closed"] {
+  animation: none;
+  will-change: auto;
 }
 
 .floating-menu-item {

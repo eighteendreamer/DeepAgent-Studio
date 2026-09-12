@@ -135,6 +135,29 @@ const EDIT_PANEL_STYLE: React.CSSProperties = {
   padding: 12,
 };
 
+// asset 协议等跨域 URL 会让 <a download> 失效并直接导航打开，必须先转成同源 blob URL
+const triggerFileDownload = async (url: string, filename: string) => {
+  let href = url;
+  if (!url.startsWith("data:") && !url.startsWith("blob:")) {
+    try {
+      const blob = await fetch(url).then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.blob();
+      });
+      href = URL.createObjectURL(blob);
+    } catch (err) {
+      console.error("[WorkflowNodeShell] 下载前拉取资源失败，回退直链:", url, err);
+    }
+  }
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  if (href !== url) setTimeout(() => URL.revokeObjectURL(href), 1000);
+};
+
 function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
   const nodeData = data as unknown as WorkflowNodeData;
   const nodeStatus = nodeData.status ?? "idle";
@@ -211,18 +234,97 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
 
   const handleDownload = () => {
     const kind = nodeData.kind;
+    const creativeData = nodeData as CreativeNodeData;
+
+    if (kind === "image-gen" || kind === "image-edit" || kind === "image-compare") {
+      const url = creativeData.imageUrl;
+      if (!url) return;
+      void triggerFileDownload(url, `${nodeLabel}-${Date.now()}.png`);
+      return;
+    }
+
+    if (kind === "video-gen" || kind === "video-stitch") {
+      const url = creativeData.videoUrl;
+      if (!url) return;
+      void triggerFileDownload(url, `${nodeLabel}-${Date.now()}.mp4`);
+      return;
+    }
+
     if (kind !== "text-gen" && kind !== "script-gen") return;
-    const prompt = (nodeData as CreativeNodeData).prompt ?? "";
+    const prompt = creativeData.prompt ?? "";
     const md = `# ${nodeLabel}\n\n${prompt}`;
     const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
+    const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
+    a.href = blobUrl;
     a.download = `${nodeLabel}-${Date.now()}.md`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(blobUrl);
+  };
+
+  const handleAnnotate = () => {
+    const imageUrl = (nodeData as CreativeNodeData).imageUrl;
+    if (!imageUrl) return;
+    const { setDrawingTarget } = useCanvasStore.getState();
+    setDrawingTarget({ nodeId: id, imageUrl, name: nodeLabel, mode: "annotate" });
+  };
+
+  const handleErase = () => {
+    const imageUrl = (nodeData as CreativeNodeData).imageUrl;
+    if (!imageUrl) return;
+    const { setDrawingTarget } = useCanvasStore.getState();
+    setDrawingTarget({ nodeId: id, imageUrl, name: nodeLabel, mode: "erase" });
+  };
+
+  const handleCreativeLibrary = () => {
+    const { setCreativeLibraryOpen } = useCanvasStore.getState();
+    setCreativeLibraryOpen(true);
+  };
+
+  const handleStoryboardPreset = (key: string) => {
+    const storyboardLabels: Record<string, string> = {
+      "plot-4": "4宫格剧情推演",
+      "multi-cam-9": "9宫格多机位",
+      "continuous-25": "25宫格连贯分镜",
+      "char-3view": "角色3视图",
+      "char-4view": "角色4视图",
+      "char-design-sheet": "角色设定图",
+      "emoji-grid-9": "9宫格表情包",
+      "scene-after-3": "画面推演·3秒后",
+      "scene-before-5": "画面回推·5秒前",
+      "depth-parallax": "深度视差",
+    };
+    const label = storyboardLabels[key] ?? key;
+    useCreativeStore.getState().updateNodeData(id, {
+      imagePrompt: `[${label}] 请基于当前图片生成分镜变体`,
+      status: "idle",
+    });
+  };
+
+  const handleCrop = () => {
+    const imageUrl = (nodeData as CreativeNodeData).imageUrl;
+    if (!imageUrl) return;
+    const { setCropTarget } = useCanvasStore.getState();
+    setCropTarget({ nodeId: id, imageUrl, name: nodeLabel });
+  };
+
+  const handleSaveAsset = (categoryKey: string) => {
+    const imageUrl = (nodeData as CreativeNodeData).imageUrl;
+    if (!imageUrl) return;
+    try {
+      const raw = localStorage.getItem("canvas-creative-library");
+      const library: Array<{ id: string; name: string; imageUrl: string; category: string; createdAt: string }> = raw ? JSON.parse(raw) : [];
+      library.unshift({
+        id: `asset-${Date.now()}`,
+        name: nodeLabel,
+        imageUrl,
+        category: categoryKey,
+        createdAt: new Date().toISOString(),
+      });
+      localStorage.setItem("canvas-creative-library", JSON.stringify(library));
+    } catch { /* storage full or corrupt */ }
   };
 
   return (
@@ -236,6 +338,12 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
           onRename={handleRename}
           onDuplicate={handleDuplicate}
           onDownload={handleDownload}
+          onCrop={handleCrop}
+          onAnnotate={handleAnnotate}
+          onErase={handleErase}
+          onCreativeLibrary={handleCreativeLibrary}
+          onSaveAsset={handleSaveAsset}
+          onStoryboardPreset={handleStoryboardPreset}
         />
       </NodeToolbar>
 

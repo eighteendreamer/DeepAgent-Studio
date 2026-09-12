@@ -34,9 +34,18 @@ import {
   FastForward,
   Rewind,
   Video,
-  Edit3,
   type LucideIcon,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+} from "../../../components/shadcn/dropdown-menu";
+import { CATEGORY_TREE, type CategoryNode } from "../utils/categoryTree";
 import type { WorkflowNodeKind } from "../types";
 
 interface SubmenuItem {
@@ -155,16 +164,6 @@ const STORYBOARD_SUBMENU: SubmenuItem[] = [
   ]},
 ];
 
-// 裁剪：自由裁剪与宫格裁剪作为二级能力（照抄 Penguin-Magic）
-const CROP_SUBMENU: SubmenuItem[] = [
-  { key: "free", label: "自由裁剪", desc: "自由调整裁剪框与比例", icon: Crop },
-  { key: "4", label: "4宫格裁剪", desc: "2×2 网格", icon: Grid2x2 },
-  { key: "9", label: "9宫格裁剪", desc: "3×3 网格", icon: Grid3x3 },
-  { key: "16", label: "16宫格裁剪", desc: "4×4 网格", icon: LayoutGrid },
-  { key: "25", label: "25宫格裁剪", desc: "5×5 网格", icon: LayoutGrid },
-  { key: "custom", label: "自定义宫格裁剪", desc: "自由拖入横竖线", icon: Edit3 },
-];
-
 const IMAGE_ACTIONS: ToolbarAction[] = [
   { key: "repaint", label: "标注", icon: Paintbrush, group: "edit", tooltip: "在图片上添加矩形、文字、箭头、序号等标注" },
   { key: "erase", label: "擦除", icon: Eraser, group: "edit", tooltip: "点编辑：擦除模式" },
@@ -174,7 +173,7 @@ const IMAGE_ACTIONS: ToolbarAction[] = [
   { key: "storyboard", label: "分镜大师", icon: Clapperboard, group: "creative", tooltip: "一图扩成多机位/分镜组", submenu: STORYBOARD_SUBMENU },
   { key: "angle", label: "角度", icon: Move3d, group: "creative", tooltip: "多角度三视图生成（暂未接入）", disabled: true },
   { key: "lighting", label: "打光", icon: Lightbulb, group: "creative", tooltip: "场景重打光（暂未接入）", disabled: true },
-  { key: "crop", label: "裁剪", icon: Crop, group: "finalize", tooltip: "自由裁剪或宫格裁剪", submenu: CROP_SUBMENU },
+  { key: "crop", label: "裁剪", icon: Crop, group: "finalize", tooltip: "按宽高比裁切图片" },
   { key: "save-asset", label: "存入资产", icon: Images, group: "finalize", tooltip: "把当前图片保存到我的资产" },
   { key: "download", label: "下载", icon: Download, group: "finalize" },
   { key: "rename", label: "重命名", icon: PenLine, group: "system", tooltip: "重命名节点" },
@@ -287,9 +286,15 @@ interface NodeFloatingToolbarProps {
   onRename: () => void;
   onDuplicate: () => void;
   onDownload: () => void;
+  onCrop?: () => void;
+  onAnnotate?: () => void;
+  onErase?: () => void;
+  onCreativeLibrary?: () => void;
+  onSaveAsset?: (categoryKey: string) => void;
+  onStoryboardPreset?: (key: string) => void;
 }
 
-export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplicate, onDownload }: NodeFloatingToolbarProps) {
+export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplicate, onDownload, onCrop, onAnnotate, onErase, onCreativeLibrary, onSaveAsset, onStoryboardPreset }: NodeFloatingToolbarProps) {
   const actions = getActions(kind);
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const [openNestedKey, setOpenNestedKey] = useState<string | null>(null);
@@ -341,6 +346,8 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
         ref={submenuRef}
         data-wf-popover="true"
         className="overflow-hidden"
+        onDoubleClick={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.stopPropagation()}
         style={{
           ...SUBMENU_SURFACE,
           position: "fixed",
@@ -366,6 +373,9 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
                         nestedRectRef.current = e.currentTarget.getBoundingClientRect();
                         setOpenNestedKey((prev) => (prev === child.key ? null : child.key));
                       } else {
+                        if (action.key === "storyboard" && onStoryboardPreset) {
+                          onStoryboardPreset(child.key);
+                        }
                         setOpenSubmenu(null);
                       }
                     }}
@@ -460,17 +470,66 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
     );
   };
 
+  const renderCategoryMenu = (nodes: CategoryNode[]): React.ReactNode =>
+    nodes.map((node) =>
+      node.children && node.children.length > 0 ? (
+        <DropdownMenuSub key={node.key}>
+          <DropdownMenuSubTrigger className="!text-[12px] data-[highlighted]:!bg-white/10">
+            <node.icon className="mr-2 h-3.5 w-3.5" />
+            {node.label}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="!max-h-[60vh] !overflow-y-auto">
+            {renderCategoryMenu(node.children)}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      ) : (
+        <DropdownMenuItem key={node.key} onClick={() => { onSaveAsset?.(node.key); }} className="!text-[12px] data-[highlighted]:!bg-white/10">
+          <node.icon className="mr-2 h-3.5 w-3.5" />
+          {node.label}
+        </DropdownMenuItem>
+      ),
+    );
+
   const renderAction = (action: ToolbarAction) => {
     const Icon = action.icon;
+    const hasSubmenu = !!action.submenu?.length;
+    const isSaveAsset = action.key === "save-asset";
+    const isOpen = openSubmenu === action.key;
+
+    if (isSaveAsset) {
+      return (
+        <DropdownMenu key={action.key}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              title={action.tooltip ?? action.label}
+              disabled={action.disabled}
+              className="flex h-7 items-center gap-1.5 rounded-lg px-2 transition-colors duration-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <Icon className="h-3.5 w-3.5" strokeWidth={1.8} style={{ color: ICON_COLOR }} />
+              <span className="whitespace-nowrap text-xs font-medium" style={{ color: LABEL_COLOR }}>{action.label}</span>
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="!max-h-[70vh] !overflow-y-auto">
+            <div className="px-2 py-1 text-[11px] font-medium" style={{ color: "rgba(255,255,255,0.4)" }}>存入分类</div>
+            {renderCategoryMenu(CATEGORY_TREE)}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      );
+    }
+
     const wired: Record<string, (() => void) | undefined> = {
       delete: onDelete,
       rename: onRename,
       duplicate: onDuplicate,
       download: onDownload,
+      crop: onCrop,
+      repaint: onAnnotate,
+      erase: onErase,
+      "creative-library": onCreativeLibrary,
     };
     const handler = wired[action.key];
-    const hasSubmenu = !!action.submenu?.length;
-    const isOpen = openSubmenu === action.key;
     return (
       <Fragment key={action.key}>
         <button

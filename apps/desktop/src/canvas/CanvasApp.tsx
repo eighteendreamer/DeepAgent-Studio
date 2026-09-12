@@ -19,6 +19,9 @@ import { MiniMap } from "./workflow/components/MiniMap";
 import { NodePicker } from "./workflow/components/NodePicker";
 import { ContextMenu, useContextMenu } from "./workflow/components/ContextMenu";
 import { CanvasSettingsDialog } from "./workflow/components/CanvasSettingsDialog";
+import { CropOverlay } from "./workflow/components/CropOverlay";
+import { DrawingOverlay } from "./workflow/components/DrawingOverlay";
+import { CreativeLibraryPanel } from "./workflow/components/CreativeLibraryPanel";
 import { WorkflowNodeShell } from "./workflow/components/WorkflowNodeShell";
 import { WorkflowEdge } from "./workflow/components/WorkflowEdge";
 import { useWorkflowPersistence } from "./workflow/hooks/useWorkflowPersistence";
@@ -53,6 +56,12 @@ function WorkflowCanvasInner() {
   const closeNodePicker = useCanvasStore((s) => s.closeNodePicker);
   const setPendingConnection = useCanvasStore((s) => s.setPendingConnection);
   const setViewport = useCanvasStore((s) => s.setViewport);
+  const cropTarget = useCanvasStore((s) => s.cropTarget);
+  const setCropTarget = useCanvasStore((s) => s.setCropTarget);
+  const drawingTarget = useCanvasStore((s) => s.drawingTarget);
+  const setDrawingTarget = useCanvasStore((s) => s.setDrawingTarget);
+  const creativeLibraryOpen = useCanvasStore((s) => s.creativeLibraryOpen);
+  const setCreativeLibraryOpen = useCanvasStore((s) => s.setCreativeLibraryOpen);
 
   const creativeNodes = useCreativeStore((s) => s.nodes);
   const creativeEdges = useCreativeStore((s) => s.edges);
@@ -74,7 +83,113 @@ function WorkflowCanvasInner() {
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
   const clipboardRef = useRef<{ mode: string; nodes: any[] } | null>(null);
   const [containerSize, setContainerSize] = useState({ width: 1200, height: 800 });
+  const [isExternalDragOver, setIsExternalDragOver] = useState(false);
   const { menu, openMenu, close: closeMenu } = useContextMenu();
+
+  const handleMediaFiles = useCallback(
+    async (files: Array<{ name: string; url: string; kind: "image" | "video" }>, dropPoint?: { x: number; y: number }) => {
+      if (files.length === 0 || !rfInstance) return;
+
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const baseX = dropPoint
+        ? rfInstance.screenToFlowPosition({ x: dropPoint.x - rect.left, y: dropPoint.y - rect.top }).x
+        : containerSize.width / 2;
+      const baseY = dropPoint
+        ? rfInstance.screenToFlowPosition({ x: dropPoint.x - rect.left, y: dropPoint.y - rect.top }).y
+        : containerSize.height / 2;
+
+      const cols = 3;
+      const spacing = 280;
+      const startOffsetX = -((Math.min(files.length, cols) - 1) * spacing) / 2;
+
+      for (let i = 0; i < files.length; i++) {
+        const row = Math.floor(i / cols);
+        const col = i % cols;
+        const f = files[i];
+        const nodeKind = f.kind === "video" ? "video-gen" : "image-gen";
+        const data = f.kind === "video" ? { label: f.name.replace(/\.[^.]+$/, ""), videoUrl: f.url } : { label: f.name.replace(/\.[^.]+$/, ""), imageUrl: f.url };
+        useCreativeStore.getState().addNodeAt(nodeKind as any, baseX + startOffsetX + col * spacing, baseY + row * spacing, data);
+      }
+    },
+    [rfInstance, containerSize],
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      const kind = e.dataTransfer.getData("application/workflow-node-kind");
+      if (!kind || !rfInstance) return;
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const screenX = e.clientX - rect.left;
+      const screenY = e.clientY - rect.top;
+      const worldPos = rfInstance.screenToFlowPosition({ x: screenX, y: screenY });
+      if (mode === "creative") {
+        useCreativeStore.getState().addNode(kind as any, worldPos.x, worldPos.y);
+      } else {
+        useProfessionalStore.getState().addNode(kind as any, worldPos.x, worldPos.y);
+      }
+    },
+    [rfInstance, mode],
+  );
+
+  // Tauri native drag-drop: OS files dragged onto the webview
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      const { convertFileSrc } = await import("@tauri-apps/api/core");
+      if (disposed) return;
+
+      unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          setIsExternalDragOver(true);
+          return;
+        }
+        if (event.payload.type === "leave") {
+          setIsExternalDragOver(false);
+          return;
+        }
+        if (event.payload.type === "drop") {
+          setIsExternalDragOver(false);
+          const paths = event.payload.paths;
+          if (paths.length === 0) return;
+
+          const imageExts = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"]);
+          const videoExts = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".m4v"]);
+          const entries: Array<{ name: string; url: string; kind: "image" | "video" }> = [];
+          for (const p of paths) {
+            const ext = p.slice(p.lastIndexOf(".")).toLowerCase();
+            const sepIdx = p.replace(/\\/g, "/").lastIndexOf("/");
+            const name = p.slice(sepIdx + 1);
+            if (imageExts.has(ext)) {
+              entries.push({ name, url: convertFileSrc(p), kind: "image" });
+            } else if (videoExts.has(ext)) {
+              entries.push({ name, url: convertFileSrc(p), kind: "video" });
+            }
+          }
+          if (entries.length > 0) {
+            await handleMediaFiles(entries, { x: window.innerWidth / 2, y: window.innerHeight / 2 });
+          }
+        }
+      });
+    };
+
+    void setup();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [handleMediaFiles]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -148,31 +263,6 @@ function WorkflowCanvasInner() {
       openNodePicker({ x: clientX, y: clientY, worldX: world.x, worldY: world.y });
     },
     [rfInstance, openNodePicker, setPendingConnection],
-  );
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      if (!rfInstance) return;
-      const kind = e.dataTransfer.getData("application/workflow-node-kind");
-      if (!kind) return;
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const screenX = e.clientX - rect.left;
-      const screenY = e.clientY - rect.top;
-      const worldPos = rfInstance.screenToFlowPosition({ x: screenX, y: screenY });
-      if (mode === "creative") {
-        useCreativeStore.getState().addNode(kind as any, worldPos.x, worldPos.y);
-      } else {
-        useProfessionalStore.getState().addNode(kind as any, worldPos.x, worldPos.y);
-      }
-    },
-    [rfInstance, mode],
   );
 
   const handleContextMenu = useCallback(
@@ -287,6 +377,35 @@ function WorkflowCanvasInner() {
     };
   }, [mode, selectedNodeId, setSelectedNodeId, closeNodePicker, closeMenu, nodes, onNodesChange, rfInstance]);
 
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+      const items = Array.from(e.clipboardData?.items ?? []);
+      const imageFiles = items
+        .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+        .map((it) => it.getAsFile())
+        .filter((f): f is File => f !== null);
+      if (imageFiles.length === 0) return;
+
+      const toEntries = (files: File[]): Promise<Array<{ name: string; url: string; kind: "image" }>> =>
+        Promise.all(
+          files.map(
+            (f, i) =>
+              new Promise<{ name: string; url: string; kind: "image" }>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve({ name: `clipboard-${Date.now()}-${i}.png`, url: reader.result as string, kind: "image" });
+                reader.onerror = reject;
+                reader.readAsDataURL(f);
+              }),
+          ),
+        );
+
+      void toEntries(imageFiles).then((entries) => handleMediaFiles(entries));
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [handleMediaFiles]);
+
   const handleWheel = useCallback(
     (e: WheelEvent) => {
       if (!rfInstance) return;
@@ -345,6 +464,25 @@ function WorkflowCanvasInner() {
       onDrop={handleDrop}
       onContextMenu={handleContextMenu}
     >
+      {isExternalDragOver && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none"
+          style={{ background: "rgba(59,130,246,0.06)", border: "2px dashed rgba(59,130,246,0.5)" }}
+        >
+          <div
+            className="px-5 py-3 rounded-2xl"
+            style={{
+              background: "rgba(30,30,35,0.9)",
+              border: "1px solid rgba(59,130,246,0.3)",
+              backdropFilter: "blur(10px)",
+            }}
+          >
+            <span className="text-sm font-medium" style={{ color: "rgba(248,248,248,0.85)" }}>
+              释放以添加图片到画布
+            </span>
+          </div>
+        </div>
+      )}
       {gridVisible && (
         <>
           <div
@@ -417,7 +555,7 @@ function WorkflowCanvasInner() {
               </span>
             </div>
             <div className="text-xs" style={{ opacity: 0.62 }}>
-              {mode === "creative" ? "添加文本、图片、视频等创作节点" : "添加 LLM、代码、HTTP 等工作流节点"}
+              {mode === "creative" ? "拖入图片/视频、Ctrl+V 粘贴，或双击添加创作节点" : "添加 LLM、代码、HTTP 等工作流节点"}
             </div>
           </div>
         </div>
@@ -429,6 +567,36 @@ function WorkflowCanvasInner() {
       <NodePicker />
       <ContextMenu menu={menu} onClose={closeMenu} />
       <CanvasSettingsDialog />
+      {cropTarget && (
+        <CropOverlay
+          key={cropTarget.nodeId}
+          imageUrl={cropTarget.imageUrl}
+          itemName={cropTarget.name}
+          initialRatio={cropTarget.ratio}
+          onConfirm={(dataUrl) => {
+            useCreativeStore.getState().updateNodeData(cropTarget.nodeId, { imageUrl: dataUrl });
+            setCropTarget(null);
+          }}
+          onCancel={() => setCropTarget(null)}
+        />
+      )}
+      {drawingTarget && (
+        <DrawingOverlay
+          imageUrl={drawingTarget.imageUrl}
+          itemName={drawingTarget.name}
+          mode={drawingTarget.mode}
+          onConfirm={(dataUrl) => {
+            useCreativeStore.getState().updateNodeData(drawingTarget.nodeId, { imageUrl: dataUrl });
+            setDrawingTarget(null);
+          }}
+          onCancel={() => setDrawingTarget(null)}
+        />
+      )}
+      {creativeLibraryOpen && (
+        <CreativeLibraryPanel
+          onClose={() => setCreativeLibraryOpen(false)}
+        />
+      )}
     </div>
   );
 }

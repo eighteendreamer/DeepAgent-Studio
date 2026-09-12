@@ -2,6 +2,20 @@ import { create } from "zustand";
 import type { CanvasMode, NodePickerPosition } from "../types";
 import type { Viewport } from "@xyflow/react";
 
+interface CropTarget {
+  nodeId: string;
+  imageUrl: string;
+  name: string;
+  ratio?: string;
+}
+
+interface DrawingTarget {
+  nodeId: string;
+  imageUrl: string;
+  name: string;
+  mode: "annotate" | "erase";
+}
+
 interface CanvasState {
   mode: CanvasMode;
   setMode: (mode: CanvasMode) => void;
@@ -24,6 +38,15 @@ interface CanvasState {
 
   pendingConnection: { nodeId: string; handleType: "source" | "target" } | null;
   setPendingConnection: (c: { nodeId: string; handleType: "source" | "target" } | null) => void;
+
+  cropTarget: CropTarget | null;
+  setCropTarget: (t: CropTarget | null) => void;
+
+  drawingTarget: DrawingTarget | null;
+  setDrawingTarget: (t: DrawingTarget | null) => void;
+
+  creativeLibraryOpen: boolean;
+  setCreativeLibraryOpen: (open: boolean) => void;
 
   settingsOpen: boolean;
   openSettings: () => void;
@@ -52,6 +75,15 @@ export const useCanvasStore = create<CanvasState>((set) => ({
 
   pendingConnection: null,
   setPendingConnection: (c) => set({ pendingConnection: c }),
+
+  cropTarget: null,
+  setCropTarget: (t) => set({ cropTarget: t }),
+
+  drawingTarget: null,
+  setDrawingTarget: (t) => set({ drawingTarget: t }),
+
+  creativeLibraryOpen: false,
+  setCreativeLibraryOpen: (open) => set({ creativeLibraryOpen: open }),
 
   settingsOpen: false,
   openSettings: () => set({ settingsOpen: true }),
