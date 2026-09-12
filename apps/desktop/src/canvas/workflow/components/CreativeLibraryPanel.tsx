@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   X, Plus, Search, Trash2, Star, Download, Upload,
   ChevronDown, ChevronRight, Check, FolderOpen, Image as ImageIcon,
-  Folder,
+  Folder, Library,
 } from "lucide-react";
 import { CATEGORY_TREE, type CategoryNode } from "../utils/categoryTree";
 
@@ -262,7 +262,7 @@ export function CreativeLibraryPanel({ onClose, onUse }: Props) {
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
         <div className="flex items-center gap-2">
-          <div className="h-3 w-3 rounded-sm" style={{ background: "#8b5cf6" }} />
+          <Library className="h-4 w-4" style={{ color: "#8b5cf6" }} />
           <span className="text-base font-semibold" style={{ color: "rgba(255,255,255,0.9)" }}>创意库</span>
         </div>
         <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-white/10">
