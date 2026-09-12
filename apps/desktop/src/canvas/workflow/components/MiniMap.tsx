@@ -3,14 +3,14 @@ import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import type { WorkflowNode } from "../types";
 
-const LENS_SIZE = 200;
+const LENS_SIZE = 360;
 const MAP_PADDING = 12;
 const MAP_SCALE_MAX = 0.5;
 const NODE_W = 240;
 const NODE_H = 120;
 
 // 圆心从左下角直角点沿 x=y 方向向右上偏移，避免只露出一个贴边的四分之一圆。
-const CIRCLE_CENTER_OFFSET = 72;
+const CIRCLE_CENTER_OFFSET = 128;
 const CIRCLE_LEFT = CIRCLE_CENTER_OFFSET - LENS_SIZE / 2;
 const CIRCLE_BOTTOM = CIRCLE_CENTER_OFFSET - LENS_SIZE / 2;
 
