@@ -34,6 +34,7 @@ import {
   FastForward,
   Rewind,
   Video,
+  Check,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -299,6 +300,8 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const [openNestedKey, setOpenNestedKey] = useState<string | null>(null);
   const [submenuPos, setSubmenuPos] = useState<{ left: number; top: number } | null>(null);
+  const [downloadConfirmed, setDownloadConfirmed] = useState(false);
+  const downloadTimerRef = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
   const triggerRectRef = useRef<DOMRect | null>(null);
@@ -335,6 +338,10 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
   useEffect(() => {
     if (!openSubmenu) setOpenNestedKey(null);
   }, [openSubmenu]);
+
+  useEffect(() => () => {
+    if (downloadTimerRef.current) window.clearTimeout(downloadTimerRef.current);
+  }, []);
 
   const renderSubmenuPortal = (action: ToolbarAction) => {
     if (!action.submenu?.length || openSubmenu !== action.key) return null;
@@ -530,6 +537,10 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
       "creative-library": onCreativeLibrary,
     };
     const handler = wired[action.key];
+    const showDownloadConfirmed = action.key === "download" && downloadConfirmed;
+    const RenderIcon = showDownloadConfirmed ? Check : Icon;
+    const renderColor = showDownloadConfirmed ? "rgba(134,239,172,0.95)" : action.danger ? "rgba(248,113,113,0.9)" : ICON_COLOR;
+    const renderLabel = showDownloadConfirmed ? "已下载" : action.label;
     return (
       <Fragment key={action.key}>
         <button
@@ -537,7 +548,7 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
           title={action.tooltip ?? action.label}
           disabled={action.disabled}
           className="flex h-7 items-center gap-1.5 rounded-lg px-2 transition-colors duration-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
-          style={{ background: isOpen ? OPEN_BG : undefined }}
+          style={{ background: isOpen || showDownloadConfirmed ? OPEN_BG : undefined }}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
@@ -548,19 +559,30 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
               return;
             }
             setOpenSubmenu(null);
+            if (action.key === "download") {
+              void Promise.resolve(handler?.()).finally(() => {
+                setDownloadConfirmed(true);
+                if (downloadTimerRef.current) window.clearTimeout(downloadTimerRef.current);
+                downloadTimerRef.current = window.setTimeout(() => {
+                  setDownloadConfirmed(false);
+                  downloadTimerRef.current = null;
+                }, 1200);
+              });
+              return;
+            }
             handler?.();
           }}
         >
-          <Icon
+          <RenderIcon
             className="h-3.5 w-3.5"
             strokeWidth={1.8}
-            style={{ color: action.danger ? "rgba(248,113,113,0.9)" : ICON_COLOR }}
+            style={{ color: renderColor }}
           />
           <span
             className="whitespace-nowrap text-xs font-medium"
-            style={{ color: action.danger ? "rgba(248,113,113,0.9)" : LABEL_COLOR }}
+            style={{ color: renderColor }}
           >
-            {action.label}
+            {renderLabel}
           </span>
           {hasSubmenu && <ChevronRight className="h-3 w-3" style={{ color: "rgba(255,255,255,0.45)" }} />}
         </button>
