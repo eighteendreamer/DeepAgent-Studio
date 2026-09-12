@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -209,7 +209,10 @@ function WorkflowCanvasInner() {
   const onNodesChange = mode === "creative" ? creativeOnNodesChange : proOnNodesChange;
   const onEdgesChange = mode === "creative" ? creativeOnEdgesChange : proOnEdgesChange;
   const onConnect = mode === "creative" ? creativeOnConnect : proOnConnect;
-  const nodeTypes = mode === "creative" ? creativeNodeTypes : professionalNodeTypes;
+  const nodeTypes = useMemo(
+    () => (mode === "creative" ? creativeNodeTypes : professionalNodeTypes),
+    [mode],
+  );
 
   const handleViewportChange = useCallback(
     (vp: Viewport) => {
@@ -223,6 +226,14 @@ function WorkflowCanvasInner() {
     // pushHistory snapshots current state, so it must run before the drag mutates positions
     (mode === "creative" ? useCreativeStore : useProfessionalStore).getState().pushHistory();
   }, [mode]);
+
+  const handleNodeDragStop = useCallback(
+    (_: unknown, node: { id: string; position: { x: number; y: number } }) => {
+      // 拖动期间 onNodesChange 已被 rAF 批处理；落点用 React Flow 给的最终（已 snap）位置再补一次，确保 store 拿到精确坐标
+      onNodesChange([{ id: node.id, type: "position", position: node.position }]);
+    },
+    [onNodesChange],
+  );
 
   const handleDoubleClick = useCallback(
     (event: React.MouseEvent) => {
@@ -510,6 +521,7 @@ function WorkflowCanvasInner() {
         onConnect={onConnect}
         onConnectEnd={handleConnectEnd}
         onNodeDragStart={handleNodeDragStart}
+        onNodeDragStop={handleNodeDragStop}
         onInit={setRfInstance}
         onNodeClick={handleNodeClick}
         onPaneClick={handlePaneClick}

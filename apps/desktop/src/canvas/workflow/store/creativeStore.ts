@@ -72,6 +72,11 @@ function nextNodeId(existingIds: string[]): string {
   return id;
 }
 
+// 拖动过程 position change 频次远高于帧率，按 rAF 批处理并按 id 取最后一次位置；
+// 选区/添加/删除/尺寸等其他 change 仍即时落库，避免点击反馈延迟
+let pendingPosChanges: import("@xyflow/react").NodeChange[] = [];
+let posFrame: number | null = null;
+
 export const useCreativeStore = create<CreativeState>((set, get) => ({
   nodes: [],
   edges: [],
@@ -79,7 +84,27 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
   future: [],
 
   onNodesChange: (changes) => {
-    set((s) => ({ nodes: applyNodeChanges(changes, s.nodes) as WorkflowNode[] }));
+    const nonPos: import("@xyflow/react").NodeChange[] = [];
+    for (const c of changes) {
+      if (c.type === "position") pendingPosChanges.push(c);
+      else nonPos.push(c);
+    }
+    if (nonPos.length > 0) {
+      set((s) => ({ nodes: applyNodeChanges(nonPos, s.nodes) as WorkflowNode[] }));
+    }
+    if (pendingPosChanges.length > 0 && posFrame === null) {
+      posFrame = requestAnimationFrame(() => {
+        posFrame = null;
+        const batch = pendingPosChanges;
+        pendingPosChanges = [];
+        if (batch.length === 0) return;
+        const lastById = new Map<string, import("@xyflow/react").NodeChange>();
+        for (const c of batch) {
+          if (c.type === "position") lastById.set(c.id, c);
+        }
+        set((s) => ({ nodes: applyNodeChanges(Array.from(lastById.values()), s.nodes) as WorkflowNode[] }));
+      });
+    }
   },
 
   onEdgesChange: (changes) => {
