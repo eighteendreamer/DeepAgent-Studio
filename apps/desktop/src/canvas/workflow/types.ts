@@ -6,6 +6,7 @@ export type NodeStatus = "idle" | "running" | "completed" | "error";
 export type NodeAlignMode = "left" | "center-x" | "right" | "top" | "center-y" | "bottom";
 
 export type CreativeNodeKind =
+  | "category-picker"
   | "text-gen"
   | "image-gen"
   | "image-compare"
@@ -66,6 +67,7 @@ export interface CreativeNodeData {
   _creativeLabel?: string;
   /** 一级模板和二级动作，用于在节点上保留用户选择的语义。 */
   creativeCategory?: string;
+  creativeCategoryKey?: string;
   creativeAction?: string;
   creativeActionKey?: string;
   videoService?: "sora" | "veo" | "kling";
@@ -323,6 +325,7 @@ export const CREATIVE_NODE_PICKER_CATEGORIES: CreativePickerCategory[] = [
 
 export const CREATIVE_NODE_KINDS: CreativeNodeKind[] = [
   ...CREATIVE_NODE_CATEGORIES.flatMap((category) => category.items.map((item) => item.kind)),
+  "category-picker",
   "camera",
   "lens",
   "focal-length",

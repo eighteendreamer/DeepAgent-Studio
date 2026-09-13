@@ -22,6 +22,7 @@ import { ImageEditContent } from "../nodes/creative/ImageEditContent";
 import { ScriptGenContent } from "../nodes/creative/ScriptGenContent";
 import { VideoGenContent } from "../nodes/creative/VideoGenContent";
 import { VideoStitchContent } from "../nodes/creative/VideoStitchContent";
+import { CategoryPickerContent } from "../nodes/creative/CategoryPickerContent";
 import {
   StartContent,
   EndContent,
@@ -68,12 +69,14 @@ const STATUS_DOT_COLOR: Record<NodeStatus, string> = {
   error: "#ef4444",
 };
 
-function renderContent(nodeData: WorkflowNodeData) {
+function renderContent(nodeData: WorkflowNodeData, nodeId?: string) {
   const kind = nodeData.kind;
   const creativeData = nodeData as CreativeNodeData;
   const professionalData = nodeData as ProfessionalNodeData;
 
   switch (kind) {
+    case "category-picker":
+      return <CategoryPickerContent id={nodeId ?? ""} data={creativeData} />;
     case "text-gen":
       return <TextGenContent data={creativeData} />;
     case "image-gen":
@@ -373,16 +376,18 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       </NodeToolbar>
 
       {/* Floating edit panel below node (single-selected only) */}
-      <NodeToolbar position={Position.Bottom} offset={12}>
-        <div style={EDIT_PANEL_STYLE}>
-          <NodeConfigForm nodeId={id} nodeData={nodeData} />
-        </div>
-      </NodeToolbar>
+      {nodeData.kind !== "category-picker" && (
+        <NodeToolbar position={Position.Bottom} offset={12}>
+          <div style={EDIT_PANEL_STYLE}>
+            <NodeConfigForm nodeId={id} nodeData={nodeData} />
+          </div>
+        </NodeToolbar>
+      )}
 
       <div
       className="relative select-none"
       style={{
-        width: 240,
+        width: nodeData.kind === "category-picker" ? 336 : 240,
         borderRadius: 16,
         background: "#101010",
         border: STATUS_BORDER[nodeStatus],
@@ -472,7 +477,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       {/* Card content */}
       <div className="px-3 py-2.5">
         {/* Node content by kind */}
-        {renderContent(nodeData)}
+        {renderContent(nodeData, id)}
 
         {/* Status line */}
         <div className="mt-2 flex items-center gap-1.5">

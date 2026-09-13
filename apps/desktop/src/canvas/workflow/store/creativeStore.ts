@@ -20,6 +20,8 @@ const SNAP_GRID = 24;
 function createDefaultCreativeData(kind: CreativeNodeKind): CreativeNodeData {
   const base: CreativeNodeData = { label: "", kind, status: "idle" };
   switch (kind) {
+    case "category-picker":
+      return { ...base, label: "选择节点类型" };
     case "text-gen":
       return { ...base, label: "文本生成", prompt: "" };
     case "image-gen":
@@ -69,6 +71,7 @@ interface CreativeState {
 
   addNode: (kind: CreativeNodeKind, x: number, y: number) => string;
   addNodeAt: (kind: CreativeNodeKind, x: number, y: number, data: Partial<CreativeNodeData>) => string;
+  refineNode: (id: string, kind: CreativeNodeKind, data?: Partial<CreativeNodeData>) => void;
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<CreativeNodeData>) => void;
   setNodes: (nodes: WorkflowNode[]) => void;
@@ -168,6 +171,21 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
     return id;
+  },
+
+  refineNode: (id, kind, extraData = {}) => {
+    get().pushHistory();
+    set((s) => ({
+      nodes: s.nodes.map((node) => {
+        if (node.id !== id) return node;
+        const base = createDefaultCreativeData(kind);
+        return {
+          ...node,
+          type: `creative-${kind}`,
+          data: { ...base, ...extraData, status: "idle" } as CreativeNodeData,
+        };
+      }),
+    }));
   },
 
   removeNode: (id) => {

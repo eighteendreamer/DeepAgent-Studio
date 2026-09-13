@@ -1,0 +1,97 @@
+import type { CSSProperties } from "react";
+import {
+  Aperture,
+  ArrowLeftRight,
+  ArrowRight,
+  BookOpen,
+  Bot,
+  Camera,
+  ChevronLeft,
+  ChevronRight,
+  CircleHelp,
+  CircleUserRound,
+  Code2,
+  Columns3,
+  Crop,
+  FileCode2,
+  FileText,
+  Film,
+  FolderTree,
+  GitBranch,
+  Globe2,
+  Image,
+  Layers3,
+  Lightbulb,
+  Mic,
+  Pencil,
+  PenTool,
+  Play,
+  RotateCw,
+  Search,
+  Square,
+  Table2,
+  Tags,
+  Upload,
+  UserCheck,
+  Video,
+  WandSparkles,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
+
+const PICKER_ICONS: Record<string, LucideIcon> = {
+  aperture: Aperture,
+  "arrow-right": ArrowRight,
+  book: BookOpen,
+  bullseye: Camera,
+  camera: Camera,
+  "chevron-left": ChevronLeft,
+  "chevron-right": ChevronRight,
+  code: Code2,
+  "code-branch": GitBranch,
+  "circle-notch": Aperture,
+  "circle-user": CircleUserRound,
+  crop: Crop,
+  "file-code": FileCode2,
+  "file-lines": FileText,
+  film: Film,
+  "folder-tree": FolderTree,
+  globe: Globe2,
+  image: Image,
+  "layer-group": Layers3,
+  lightbulb: Lightbulb,
+  "left-right": ArrowLeftRight,
+  lens: Search,
+  microphone: Mic,
+  pen: PenTool,
+  pencil: Pencil,
+  play: Play,
+  robot: Bot,
+  rotate: RotateCw,
+  stop: Square,
+  table: Table2,
+  "table-columns": Columns3,
+  tags: Tags,
+  upload: Upload,
+  "user-check": UserCheck,
+  video: Video,
+  "wand-magic-sparkles": WandSparkles,
+  wrench: Wrench,
+};
+
+export function PickerIcon({
+  name,
+  size = 14,
+  strokeWidth = 1.8,
+  className,
+  style,
+}: {
+  name?: string;
+  size?: number;
+  strokeWidth?: number;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  const Icon = PICKER_ICONS[name ?? ""] ?? CircleHelp;
+  return <Icon aria-hidden="true" className={className} size={size} strokeWidth={strokeWidth} style={style} />;
+}

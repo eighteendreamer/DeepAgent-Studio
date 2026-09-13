@@ -213,6 +213,12 @@ const PRO_ACTIONS: ToolbarAction[] = [
   { key: "delete", label: "删除", icon: Trash2, group: "system", danger: true },
 ];
 
+const PICKER_ACTIONS: ToolbarAction[] = [
+  { key: "rename", label: "重命名", icon: PenLine, group: "system", tooltip: "重命名节点" },
+  { key: "duplicate", label: "复制", icon: Copy, group: "system", tooltip: "复制节点" },
+  { key: "delete", label: "删除", icon: Trash2, group: "system", danger: true },
+];
+
 const PRO_KINDS: Set<string> = new Set([
   "start", "end", "if-else", "iteration", "llm", "agent", "question-classifier",
   "parameter-extractor", "knowledge-retrieval", "code", "http-request",
@@ -222,6 +228,8 @@ const PRO_KINDS: Set<string> = new Set([
 function getActions(kind: WorkflowNodeKind): ToolbarAction[] {
   if (PRO_KINDS.has(kind)) return PRO_ACTIONS;
   switch (kind) {
+    case "category-picker":
+      return PICKER_ACTIONS;
     case "image-gen":
     case "image-edit":
     case "image-compare":
