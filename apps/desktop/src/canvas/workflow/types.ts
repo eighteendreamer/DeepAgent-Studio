@@ -222,19 +222,19 @@ export const CREATIVE_NODE_PICKER_CATEGORIES: CreativePickerCategory[] = [
   {
     key: "camera",
     label: "摄像机",
-    icon: "camera",
+    icon: "bullseye",
     description: "设置镜头与拍摄参数",
     options: [
-      { key: "camera", label: "摄像机", kind: "camera", icon: "camera" },
-      { key: "lens", label: "镜头", kind: "lens", icon: "circle-dot" },
-      { key: "focal-length", label: "焦距", kind: "focal-length", icon: "arrows-left-right" },
-      { key: "aperture", label: "光圈", kind: "aperture", icon: "circle-half-stroke" },
+      { key: "camera", label: "摄像机", kind: "camera", icon: "bullseye" },
+      { key: "lens", label: "镜头", kind: "lens", icon: "magnifying-glass" },
+      { key: "focal-length", label: "焦距", kind: "focal-length", icon: "left-right" },
+      { key: "aperture", label: "光圈", kind: "aperture", icon: "circle-notch" },
     ],
   },
   {
     key: "director",
     label: "微表情导演",
-    icon: "face-smile",
+    icon: "circle-user",
     description: "设计角色表情与表演",
     directKind: "director",
   },
@@ -250,12 +250,12 @@ export const CREATIVE_NODE_PICKER_CATEGORIES: CreativePickerCategory[] = [
     label: "创意库模板",
     icon: "lightbulb",
     description: "从创意库选择可复用模板",
-    options: [{ key: "select-template", label: "选择创意模板", kind: "creative-template", icon: "folder-open" }],
+    options: [{ key: "select-template", label: "选择创意模板", kind: "creative-template", icon: "folder-tree" }],
   },
   {
     key: "character",
     label: "角色工作室",
-    icon: "user",
+    icon: "circle-user",
     description: "组合角色的面部、身体与风格",
     optionGroups: [
       {
@@ -301,14 +301,14 @@ export const CREATIVE_NODE_PICKER_CATEGORIES: CreativePickerCategory[] = [
   {
     key: "audio",
     label: "音频",
-    icon: "music",
+    icon: "microphone",
     description: "导入或处理音乐与声音",
     directKind: "audio",
   },
   {
     key: "storyboard",
     label: "分镜格子",
-    icon: "table-cells",
+    icon: "table",
     description: "组织镜头、节奏与分镜",
     directKind: "storyboard-grid",
   },

@@ -19,7 +19,13 @@ type PickerView = { category: CreativePickerCategory } | null;
 const ICON_COLOR = "rgba(248,248,248,0.72)";
 const ACCENT = "#9b8afb";
 
-function icon(name: string | undefined, fallback = "circle") {
+const CREATIVE_PICKER_GROUPS = [
+  { label: "基础节点", keys: ["text", "image", "video", "camera", "director", "compare", "template", "character"] },
+  { label: "媒体节点", keys: ["audio", "storyboard"] },
+  { label: "添加资源", keys: ["upload"] },
+] as const;
+
+function icon(name: string | undefined, fallback = "bullseye") {
   return ["fas", name || fallback] as IconProp;
 }
 
@@ -177,12 +183,12 @@ export function NodePicker() {
         style={{
           left: nodePicker.x,
           top: nodePicker.y,
-          width: mode === "creative" && creativeCategory?.optionGroups ? 360 : 300,
-          background: "rgba(30,30,35,0.93)",
-          border: "1px solid rgba(255,255,255,0.1)",
-          backdropFilter: "blur(40px)",
+          width: mode === "creative" ? 336 : 300,
+          background: "rgba(29,30,33,0.96)",
+          border: "1px solid rgba(255,255,255,0.09)",
+          backdropFilter: "blur(36px)",
           WebkitBackdropFilter: "blur(40px)",
-          boxShadow: "0 24px 64px rgba(0,0,0,0.42)",
+          boxShadow: "0 18px 48px rgba(0,0,0,0.48), 0 0 0 1px rgba(255,255,255,0.02)",
         }}
       >
         <input
@@ -193,7 +199,7 @@ export function NodePicker() {
           className="hidden"
           onChange={(event) => handleFiles(event.target.files)}
         />
-        <div className="flex items-center gap-2 px-3 py-2.5" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <div className="flex items-center gap-2 px-3.5 py-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
           {mode === "creative" && creativeCategory && (
             <button
               type="button"
@@ -205,40 +211,38 @@ export function NodePicker() {
             </button>
           )}
           <div className="min-w-0">
-            <div className="text-xs font-semibold" style={{ color: "rgba(248,248,248,0.9)" }}>{panelTitle}</div>
-            {panelSubtitle && <div className="mt-0.5 truncate text-[10px]" style={{ color: "rgba(248,248,248,0.42)" }}>{panelSubtitle}</div>}
+            <div className="text-[13px] font-semibold tracking-wide" style={{ color: "rgba(248,248,248,0.92)" }}>{panelTitle}</div>
+            {panelSubtitle && <div className="mt-0.5 truncate text-[10px]" style={{ color: "rgba(248,248,248,0.38)" }}>{panelSubtitle}</div>}
           </div>
         </div>
 
         {mode === "creative" && !creativeCategory && (
-          <div className="grid max-h-[min(540px,70vh)] grid-cols-2 gap-1.5 overflow-y-auto p-2">
-            {CREATIVE_NODE_PICKER_CATEGORIES.map((category) => (
-              <button
-                key={category.key}
-                type="button"
-                onClick={() => handleCreativeCategory(category)}
-                className="group flex min-h-[70px] flex-col items-start justify-between rounded-xl px-3 py-2.5 text-left transition duration-150 hover:bg-white/[0.08]"
-                style={{ border: "1px solid rgba(255,255,255,0.045)" }}
-              >
-                <span className="flex w-full items-center justify-between">
-                  <FontAwesomeIcon icon={icon(category.icon)} style={{ color: ACCENT, fontSize: 14 }} />
-                  {(category.options || category.optionGroups) && <FontAwesomeIcon icon={icon("arrow-right")} className="opacity-0 transition group-hover:opacity-70" style={{ color: ICON_COLOR, fontSize: 10 }} />}
-                </span>
-                <span className="mt-2 text-xs font-medium" style={{ color: "rgba(248,248,248,0.86)" }}>{category.label}</span>
-              </button>
+          <div className="max-h-[min(650px,78vh)] overflow-y-auto px-2 py-2">
+            {CREATIVE_PICKER_GROUPS.map((group) => (
+              <section key={group.label} className="mb-2 last:mb-0">
+                <div className="px-2 pb-1.5 pt-1 text-[10px] font-semibold tracking-[0.08em]" style={{ color: "rgba(248,248,248,0.38)" }}>
+                  {group.label}
+                </div>
+                <div className="space-y-0.5">
+                  {group.keys.map((key) => {
+                    const category = CREATIVE_NODE_PICKER_CATEGORIES.find((item) => item.key === key);
+                    return category ? <PickerCategoryButton key={category.key} category={category} onClick={() => handleCreativeCategory(category)} /> : null;
+                  })}
+                </div>
+              </section>
             ))}
           </div>
         )}
 
         {mode === "creative" && creativeCategory && (
-          <div className="max-h-[min(560px,72vh)] overflow-y-auto p-2">
+          <div className="max-h-[min(600px,74vh)] overflow-y-auto px-2 py-2">
             {creativeCategory.options?.map((option) => (
               <PickerOptionButton key={option.key} option={option} onClick={() => handleCreativeOption(creativeCategory, option)} />
             ))}
             {creativeCategory.optionGroups?.map((group) => (
               <section key={group.key} className="mb-2 last:mb-0">
                 <div className="px-2 pb-1 pt-1 text-[10px] font-semibold tracking-wide" style={{ color: ACCENT }}>{group.label}</div>
-                <div className="grid grid-cols-2 gap-1">
+                <div className="space-y-0.5">
                   {group.options.map((option) => (
                     <PickerOptionButton key={option.key} option={option} compact onClick={() => handleCreativeOption(creativeCategory, option)} />
                   ))}
@@ -277,6 +281,41 @@ export function NodePicker() {
   );
 }
 
+function PickerCategoryButton({
+  category,
+  onClick,
+}: {
+  category: CreativePickerCategory;
+  onClick: () => void;
+}) {
+  const hasChildren = Boolean(category.options?.length || category.optionGroups?.length);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex min-h-[52px] w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition duration-150 hover:bg-white/[0.075]"
+    >
+      <span
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition duration-150 group-hover:bg-white/[0.1]"
+        style={{ background: "rgba(255,255,255,0.055)", color: ACCENT }}
+      >
+        <FontAwesomeIcon icon={icon(category.icon)} style={{ fontSize: 14 }} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13px] font-medium" style={{ color: "rgba(248,248,248,0.86)" }}>{category.label}</span>
+        <span className="mt-0.5 block truncate text-[10px]" style={{ color: "rgba(248,248,248,0.36)" }}>{category.description}</span>
+      </span>
+      {hasChildren && (
+        <FontAwesomeIcon
+          icon={icon("chevron-right")}
+          className="opacity-35 transition duration-150 group-hover:translate-x-0.5 group-hover:opacity-80"
+          style={{ color: ICON_COLOR, fontSize: 10 }}
+        />
+      )}
+    </button>
+  );
+}
+
 function PickerOptionButton({
   option,
   compact = false,
@@ -299,7 +338,7 @@ function PickerOptionButton({
       className={`group flex w-full items-center gap-2 rounded-lg text-left transition-all duration-150 hover:bg-white/[0.09] ${compact ? "px-2 py-1.5" : "px-2.5 py-2"}`}
     >
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md" style={{ background: "rgba(155,138,251,0.12)", color: ACCENT }}>
-        <FontAwesomeIcon icon={icon(option.icon, "circle-dot")} style={{ fontSize: 11 }} />
+        <FontAwesomeIcon icon={icon(option.icon, "bullseye")} style={{ fontSize: 11 }} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs" style={{ color: "rgba(248,248,248,0.87)" }}>{option.label}</span>

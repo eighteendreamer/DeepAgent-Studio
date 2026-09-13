@@ -18,7 +18,6 @@ import { ModeSwitcher } from "./workflow/components/ModeSwitcher";
 import { BottomBar as WorkflowBottomBar } from "./workflow/components/BottomBar";
 import { MiniMap } from "./workflow/components/MiniMap";
 import { NodePicker } from "./workflow/components/NodePicker";
-import { ContextMenu, useContextMenu } from "./workflow/components/ContextMenu";
 import { CanvasSettingsDialog } from "./workflow/components/CanvasSettingsDialog";
 import { CropOverlay } from "./workflow/components/CropOverlay";
 import { DrawingOverlay } from "./workflow/components/DrawingOverlay";
@@ -90,7 +89,6 @@ function WorkflowCanvasInner() {
   const clipboardRef = useRef<{ mode: string; nodes: any[] } | null>(null);
   const [containerSize, setContainerSize] = useState({ width: 1200, height: 800 });
   const [isExternalDragOver, setIsExternalDragOver] = useState(false);
-  const { menu, openMenu, close: closeMenu } = useContextMenu();
   const isDesktop = isTauri();
 
   // WebView2 can end a captured pointer with pointercancel/lostpointercapture.
@@ -338,20 +336,6 @@ function WorkflowCanvasInner() {
     [rfInstance, openNodePicker, setPendingConnection],
   );
 
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent) => {
-      if (!rfInstance) return;
-      e.preventDefault();
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const screenX = e.clientX - rect.left;
-      const screenY = e.clientY - rect.top;
-      const worldPos = rfInstance.screenToFlowPosition({ x: screenX, y: screenY });
-      openMenu({ x: e.clientX, y: e.clientY, worldX: worldPos.x, worldY: worldPos.y });
-    },
-    [rfInstance, openMenu],
-  );
-
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && !isEditableTarget(e.target)) {
@@ -367,7 +351,6 @@ function WorkflowCanvasInner() {
         onNodesChange(nodes.map((n) => ({ id: n.id, type: "select", selected: false })));
         setSelectedNodeId(null);
         closeNodePicker();
-        closeMenu();
         return;
       }
 
@@ -448,7 +431,7 @@ function WorkflowCanvasInner() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [mode, selectedNodeId, setSelectedNodeId, closeNodePicker, closeMenu, nodes, onNodesChange, rfInstance]);
+  }, [mode, selectedNodeId, setSelectedNodeId, closeNodePicker, nodes, onNodesChange, rfInstance]);
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -482,7 +465,7 @@ function WorkflowCanvasInner() {
   const handleWheel = useCallback(
     (e: WheelEvent) => {
       if (!rfInstance) return;
-      // Floating layers (node toolbar / node picker / context menu) scroll natively; don't pan the canvas under them
+      // Floating layers (node toolbar / node picker) scroll natively; don't pan the canvas under them
       if (e.target instanceof HTMLElement && e.target.closest(".react-flow__node-toolbar, .wf-floating-layer")) return;
       e.preventDefault();
 
@@ -535,7 +518,7 @@ function WorkflowCanvasInner() {
       onDoubleClickCapture={handleDoubleClick}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
-      onContextMenu={handleContextMenu}
+      onContextMenuCapture={(event) => event.preventDefault()}
     >
       {isExternalDragOver && (
         <div
@@ -641,7 +624,6 @@ function WorkflowCanvasInner() {
       <WorkflowBottomBar viewport={viewport} onViewportChange={handleViewportChange} rfInstance={rfInstance} />
       <MiniMap containerWidth={containerSize.width} containerHeight={containerSize.height} />
       <NodePicker />
-      <ContextMenu menu={menu} onClose={closeMenu} />
       <CanvasSettingsDialog />
       {cropTarget && (
         <CropOverlay
