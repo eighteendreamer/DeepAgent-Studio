@@ -27,7 +27,7 @@ import { CreativeLibraryPanel } from "./workflow/components/CreativeLibraryPanel
 import { WorkflowNodeShell } from "./workflow/components/WorkflowNodeShell";
 import { WorkflowEdge } from "./workflow/components/WorkflowEdge";
 import { useWorkflowPersistence } from "./workflow/hooks/useWorkflowPersistence";
-import { CREATIVE_NODE_CATEGORIES, PROFESSIONAL_NODE_CATEGORIES } from "./workflow/types";
+import { CREATIVE_NODE_KINDS, PROFESSIONAL_NODE_CATEGORIES } from "./workflow/types";
 import { isTauri } from "../api";
 
 function buildNodeTypes(prefix: string, kinds: string[]) {
@@ -38,7 +38,7 @@ function buildNodeTypes(prefix: string, kinds: string[]) {
   return map;
 }
 
-const CREATIVE_KINDS = CREATIVE_NODE_CATEGORIES.flatMap((c) => c.items.map((i) => i.kind));
+const CREATIVE_KINDS = CREATIVE_NODE_KINDS;
 const PROFESSIONAL_KINDS = PROFESSIONAL_NODE_CATEGORIES.flatMap((c) => c.items.map((i) => i.kind));
 const creativeNodeTypes = buildNodeTypes("creative", CREATIVE_KINDS);
 const professionalNodeTypes = buildNodeTypes("professional", PROFESSIONAL_KINDS);
@@ -175,7 +175,19 @@ function WorkflowCanvasInner() {
       const screenY = e.clientY - rect.top;
       const worldPos = rfInstance.screenToFlowPosition({ x: screenX, y: screenY });
       if (mode === "creative") {
-        useCreativeStore.getState().addNode(kind as any, worldPos.x, worldPos.y);
+        const newNodeId = useCreativeStore.getState().addNode(kind as any, worldPos.x, worldPos.y);
+        const rawAction = e.dataTransfer.getData("application/workflow-node-action");
+        if (rawAction) {
+          try {
+            const action = JSON.parse(rawAction) as { key?: string; label?: string };
+            useCreativeStore.getState().updateNodeData(newNodeId, {
+              creativeAction: action.label,
+              creativeActionKey: action.key,
+            });
+          } catch {
+            // 拖拽来源可能是外部应用，非法元数据不应阻断节点创建。
+          }
+        }
       } else {
         useProfessionalStore.getState().addNode(kind as any, worldPos.x, worldPos.y);
       }
@@ -280,6 +292,13 @@ function WorkflowCanvasInner() {
 
   const handleDoubleClick = useCallback(
     (event: React.MouseEvent) => {
+      // React Flow 的默认 dblclick 会在 pane 上触发缩放，并可能在冒泡前消费事件。
+      // 捕获阶段只接管空白 pane；节点、边和浮层仍保留各自的双击行为。
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.closest(".react-flow__node, .react-flow__edge, .wf-floating-layer")) return;
+      event.preventDefault();
+      event.stopPropagation();
       if (!rfInstance) return;
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
@@ -513,7 +532,7 @@ function WorkflowCanvasInner() {
       ref={containerRef}
       className="relative h-full w-full overflow-hidden"
       style={{ background: "#0a0a0a" }}
-      onDoubleClick={handleDoubleClick}
+      onDoubleClickCapture={handleDoubleClick}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
       onContextMenu={handleContextMenu}

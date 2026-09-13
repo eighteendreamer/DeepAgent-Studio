@@ -34,6 +34,28 @@ function createDefaultCreativeData(kind: CreativeNodeKind): CreativeNodeData {
       return { ...base, label: "视频生成", videoService: "sora", videoPrompt: "" };
     case "video-stitch":
       return { ...base, label: "视频拼接" };
+    case "camera":
+      return { ...base, label: "摄像机" };
+    case "lens":
+      return { ...base, label: "镜头" };
+    case "focal-length":
+      return { ...base, label: "焦距" };
+    case "aperture":
+      return { ...base, label: "光圈" };
+    case "director":
+      return { ...base, label: "微表情导演" };
+    case "creative-template":
+      return { ...base, label: "创意模板" };
+    case "character-face":
+      return { ...base, label: "角色工作室 · 面部" };
+    case "character-body":
+      return { ...base, label: "角色工作室 · 身体" };
+    case "character-style":
+      return { ...base, label: "角色工作室 · 风格" };
+    case "audio":
+      return { ...base, label: "音频" };
+    case "storyboard-grid":
+      return { ...base, label: "分镜格子" };
   }
 }
 
@@ -160,7 +182,7 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
     set((s) => ({
       nodes: s.nodes.map((n) =>
         n.id === id ? { ...n, data: { ...n.data, ...data } } : n,
-      ),
+      ) as WorkflowNode[],
     }));
   },
 

@@ -119,6 +119,18 @@ function renderContent(nodeData: WorkflowNodeData) {
     case "human-input":
       return <HumanInputContent />;
     default:
+      if (creativeData.creativeAction) {
+        return (
+          <div className="flex flex-col gap-1.5">
+            <div className="rounded-lg px-2.5 py-2 text-xs" style={{ background: "rgba(155,138,251,0.09)", color: "rgba(248,248,248,0.72)" }}>
+              {creativeData.creativeAction}
+            </div>
+            <div className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+              {creativeData.creativeCategory ?? "创作节点"}
+            </div>
+          </div>
+        );
+      }
       return null;
   }
 }

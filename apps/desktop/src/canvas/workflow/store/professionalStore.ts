@@ -175,7 +175,7 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
     set((s) => ({
       nodes: s.nodes.map((n) =>
         n.id === id ? { ...n, data: { ...n.data, ...data } } : n,
-      ),
+      ) as WorkflowNode[],
     }));
   },
 
