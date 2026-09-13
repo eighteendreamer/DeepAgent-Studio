@@ -31,6 +31,16 @@
   scrollbar-width: none;
 }
 
+.node-picker-scroll {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.node-picker-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 .theme-switch-reveal-overlay {
   position: fixed;
   inset: 0;

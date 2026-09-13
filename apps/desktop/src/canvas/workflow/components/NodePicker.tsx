@@ -217,7 +217,7 @@ export function NodePicker() {
         </div>
 
         {mode === "creative" && !creativeCategory && (
-          <div className="max-h-[min(650px,78vh)] overflow-y-auto px-2 py-2">
+          <div className="node-picker-scroll max-h-[min(650px,78vh)] overflow-y-auto px-2 py-2">
             {CREATIVE_PICKER_GROUPS.map((group) => (
               <section key={group.label} className="mb-2 last:mb-0">
                 <div className="px-2 pb-1.5 pt-1 text-[10px] font-semibold tracking-[0.08em]" style={{ color: "rgba(248,248,248,0.38)" }}>
@@ -235,7 +235,7 @@ export function NodePicker() {
         )}
 
         {mode === "creative" && creativeCategory && (
-          <div className="max-h-[min(600px,74vh)] overflow-y-auto px-2 py-2">
+          <div className="node-picker-scroll max-h-[min(600px,74vh)] overflow-y-auto px-2 py-2">
             {creativeCategory.options?.map((option) => (
               <PickerOptionButton key={option.key} option={option} onClick={() => handleCreativeOption(creativeCategory, option)} />
             ))}
@@ -253,7 +253,7 @@ export function NodePicker() {
         )}
 
         {mode === "professional" && (
-          <div className="max-h-80 overflow-y-auto overscroll-contain p-1.5">
+          <div className="node-picker-scroll max-h-80 overflow-y-auto overscroll-contain p-1.5">
             {PROFESSIONAL_NODE_CATEGORIES.map((cat) => (
               <div key={cat.group} className="mb-1">
                 <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: cat.color }}>{cat.group}</div>
