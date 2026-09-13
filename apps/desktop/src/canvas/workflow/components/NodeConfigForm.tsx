@@ -3,8 +3,8 @@ import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import type { WorkflowNodeData, CreativeNodeData, ProfessionalNodeData } from "../types";
+import { TextGenEditorPanel } from "./TextGenEditorPanel";
 import {
-  TextGenForm,
   ImageGenForm,
   VideoGenForm,
   ScriptGenForm,
@@ -40,7 +40,7 @@ export function NodeConfigForm({ nodeId, nodeData }: { nodeId: string; nodeData:
 
   switch (nodeData.kind) {
     case "text-gen":
-      return <TextGenForm data={creativeData} {...formProps} />;
+      return <TextGenEditorPanel nodeId={nodeId} data={creativeData} onUpdate={handleUpdate} />;
     case "image-gen":
       return <ImageGenForm data={creativeData} {...formProps} />;
     case "video-gen":

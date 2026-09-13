@@ -379,9 +379,9 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       </NodeToolbar>
 
       {/* Floating edit panel below node (single-selected only) */}
-      {nodeData.kind !== "category-picker" && nodeData.kind !== "image-input" && nodeData.kind !== "text-gen" && (
+      {nodeData.kind !== "category-picker" && nodeData.kind !== "image-input" && (
         <NodeToolbar position={Position.Bottom} offset={12}>
-          <div style={EDIT_PANEL_STYLE}>
+          <div style={{ ...EDIT_PANEL_STYLE, width: nodeData.kind === "text-gen" ? 380 : EDIT_PANEL_STYLE.width }}>
             <NodeConfigForm nodeId={id} nodeData={nodeData} />
           </div>
         </NodeToolbar>
