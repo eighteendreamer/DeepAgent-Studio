@@ -24,6 +24,8 @@ function createDefaultCreativeData(kind: CreativeNodeKind): CreativeNodeData {
       return { ...base, label: "选择节点类型" };
     case "text-gen":
       return { ...base, label: "文本生成", prompt: "" };
+    case "image-input":
+      return { ...base, label: "图片输入", imageUrl: "" };
     case "image-gen":
       return { ...base, label: "图片生成", imagePrompt: "", aspectRatio: "1:1" };
     case "image-compare":
@@ -72,6 +74,7 @@ interface CreativeState {
   addNode: (kind: CreativeNodeKind, x: number, y: number) => string;
   addNodeAt: (kind: CreativeNodeKind, x: number, y: number, data: Partial<CreativeNodeData>) => string;
   refineNode: (id: string, kind: CreativeNodeKind, data?: Partial<CreativeNodeData>) => void;
+  createImageToPromptPair: (id: string, data?: Partial<CreativeNodeData>) => string | null;
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<CreativeNodeData>) => void;
   setNodes: (nodes: WorkflowNode[]) => void;
@@ -186,6 +189,51 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
         };
       }),
     }));
+  },
+
+  createImageToPromptPair: (id, extraData = {}) => {
+    const state = get();
+    const outputNode = state.nodes.find((node) => node.id === id);
+    if (!outputNode) return null;
+
+    // 一次历史记录完成复合节点创建，撤销时不会留下半成品节点或孤立连线。
+    state.pushHistory();
+    const inputId = nextNodeId(state.nodes.map((node) => node.id));
+    const outputBase = createDefaultCreativeData("text-gen");
+    const inputBase = createDefaultCreativeData("image-input");
+    const inputNode: WorkflowNode = {
+      id: inputId,
+      type: "creative-image-input",
+      position: { x: outputNode.position.x - 288, y: outputNode.position.y },
+      data: {
+        ...inputBase,
+        label: "图片输入",
+        creativeCategory: "文本",
+        creativeCategoryKey: "text",
+        creativeAction: "图片反推提示词",
+        creativeActionKey: "image-to-prompt-input",
+        status: "idle",
+      },
+    };
+    const outputNodeNext: WorkflowNode = {
+      ...outputNode,
+      type: "creative-text-gen",
+      data: {
+        ...outputBase,
+        ...extraData,
+        label: "图片反推提示词",
+        creativeCategory: "文本",
+        creativeCategoryKey: "text",
+        creativeAction: "图片反推提示词",
+        creativeActionKey: "image-to-prompt",
+        status: "idle",
+      } as CreativeNodeData,
+    };
+    set((current) => ({
+      nodes: current.nodes.map((node) => (node.id === id ? outputNodeNext : node)).concat(inputNode),
+      edges: addEdge({ source: inputId, target: id, sourceHandle: null, targetHandle: null }, current.edges) as WorkflowEdge[],
+    }));
+    return inputId;
   },
 
   removeNode: (id) => {

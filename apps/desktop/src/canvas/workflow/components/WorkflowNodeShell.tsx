@@ -16,6 +16,7 @@ import { message } from "../../../components/message";
 import { NodeConfigForm } from "./NodeConfigForm";
 import { NodeFloatingToolbar } from "./NodeFloatingToolbar";
 import { TextGenContent } from "../nodes/creative/TextGenNode";
+import { ImageInputContent } from "../nodes/creative/ImageInputContent";
 import { ImageGenContent } from "../nodes/creative/ImageGenNode";
 import { ImageCompareContent } from "../nodes/creative/ImageCompareContent";
 import { ImageEditContent } from "../nodes/creative/ImageEditContent";
@@ -78,7 +79,9 @@ function renderContent(nodeData: WorkflowNodeData, nodeId?: string) {
     case "category-picker":
       return <CategoryPickerContent id={nodeId ?? ""} data={creativeData} />;
     case "text-gen":
-      return <TextGenContent data={creativeData} />;
+      return <TextGenContent id={nodeId ?? ""} data={creativeData} />;
+    case "image-input":
+      return <ImageInputContent id={nodeId ?? ""} data={creativeData} />;
     case "image-gen":
       return <ImageGenContent data={creativeData} />;
     case "image-compare":
@@ -376,7 +379,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       </NodeToolbar>
 
       {/* Floating edit panel below node (single-selected only) */}
-      {nodeData.kind !== "category-picker" && (
+      {nodeData.kind !== "category-picker" && nodeData.kind !== "image-input" && nodeData.kind !== "text-gen" && (
         <NodeToolbar position={Position.Bottom} offset={12}>
           <div style={EDIT_PANEL_STYLE}>
             <NodeConfigForm nodeId={id} nodeData={nodeData} />
@@ -387,7 +390,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       <div
       className="relative select-none"
       style={{
-        width: nodeData.kind === "category-picker" ? 336 : 240,
+        width: nodeData.kind === "category-picker" ? 336 : nodeData.kind === "text-gen" ? 300 : 240,
         borderRadius: 16,
         background: "#101010",
         border: STATUS_BORDER[nodeStatus],

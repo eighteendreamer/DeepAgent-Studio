@@ -25,6 +25,15 @@ function stopNodeGesture(event: React.SyntheticEvent) {
   event.stopPropagation();
 }
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("读取文件失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
 export function CategoryPickerContent({ id, data }: Props) {
   const category = getCategory(data);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -34,7 +43,12 @@ export function CategoryPickerContent({ id, data }: Props) {
   }
 
   const refine = (option: CreativePickerOption, extraData: Record<string, unknown> = {}) => {
+    if (option.key === "image-to-prompt") {
+      useCreativeStore.getState().createImageToPromptPair(id, extraData);
+      return;
+    }
     useCreativeStore.getState().refineNode(id, option.kind, {
+      label: option.label,
       creativeCategory: category.label,
       creativeCategoryKey: category.key,
       creativeAction: option.label,
@@ -43,9 +57,9 @@ export function CategoryPickerContent({ id, data }: Props) {
     });
   };
 
-  const handleFile = (file: File | undefined, option: CreativePickerOption) => {
+  const handleFile = async (file: File | undefined, option: CreativePickerOption) => {
     if (!file) return;
-    const url = URL.createObjectURL(file);
+    const url = await readFileAsDataUrl(file);
     const mime = file.type || "";
     const kind = option.key === "parse-document"
       ? "text-gen"
@@ -62,7 +76,12 @@ export function CategoryPickerContent({ id, data }: Props) {
     };
     if (kind === "video-gen") extraData.videoUrl = url;
     if (kind === "image-gen") extraData.imageUrl = url;
-    if (kind === "text-gen") extraData.prompt = `待解析文档：${file.name}`;
+    if (kind === "text-gen") {
+      extraData.prompt = `待解析文档：${file.name}`;
+      if (file.type.startsWith("text/") || /\.(txt|md|markdown)$/i.test(file.name)) {
+        extraData.prompt = await file.text();
+      }
+    }
     refine(option, extraData);
   };
 

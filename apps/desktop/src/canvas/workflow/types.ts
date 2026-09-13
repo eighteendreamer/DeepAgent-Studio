@@ -8,6 +8,7 @@ export type NodeAlignMode = "left" | "center-x" | "right" | "top" | "center-y" |
 export type CreativeNodeKind =
   | "category-picker"
   | "text-gen"
+  | "image-input"
   | "image-gen"
   | "image-compare"
   | "image-edit"
@@ -326,6 +327,7 @@ export const CREATIVE_NODE_PICKER_CATEGORIES: CreativePickerCategory[] = [
 export const CREATIVE_NODE_KINDS: CreativeNodeKind[] = [
   ...CREATIVE_NODE_CATEGORIES.flatMap((category) => category.items.map((item) => item.kind)),
   "category-picker",
+  "image-input",
   "camera",
   "lens",
   "focal-length",
