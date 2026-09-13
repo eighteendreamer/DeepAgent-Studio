@@ -6,6 +6,8 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
 } from "../../../components/shadcn/dropdown-menu";
 import type { CreativeNodeData, ProfessionalNodeData, WorkflowNodeData } from "../types";
 import { useCanvasSettingsStore } from "../store/canvasSettingsStore";
@@ -66,12 +68,16 @@ function ChipSelect({
   onChange,
   icon,
   itemIcons,
+  footer,
+  keepOpenOnSelectValues,
 }: {
   value: string;
   options: Array<{ value: string; label: string }>;
   onChange: (v: string) => void;
   icon?: React.ReactNode;
   itemIcons?: Record<string, React.ReactNode>;
+  footer?: React.ReactNode;
+  keepOpenOnSelectValues?: string[];
 }) {
   // 取选中项的 label 作为 trigger 文案；找不到时回退原 value
   const currentLabel = options.find((o) => o.value === value)?.label ?? value;
@@ -111,7 +117,12 @@ function ChipSelect({
           return (
             <DropdownMenuItem
               key={o.value}
-              onSelect={() => onChange(o.value)}
+              onSelect={(event) => {
+                onChange(o.value);
+                if (keepOpenOnSelectValues?.includes(o.value)) {
+                  event.preventDefault();
+                }
+              }}
               className="!rounded-lg !px-2.5 !py-1.5 !text-[12px] data-[highlighted]:!bg-white/10 flex items-center gap-2"
               style={{ color: active ? "#a78bfa" : "rgba(255,255,255,0.88)" }}
             >
@@ -124,6 +135,7 @@ function ChipSelect({
             </DropdownMenuItem>
           );
         })}
+        {footer}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -415,6 +427,52 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
   };
 
   const isCustomRatio = ratio === "custom";
+  const renderCustomSizeControls = () => (
+    <>
+      <DropdownMenuSeparator className="!my-1 !bg-white/[0.08]" />
+      <div
+        className="px-2.5 pb-1.5 pt-1"
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <DropdownMenuLabel className="!px-0 !pb-1.5 !pt-0 !text-[10px] !font-medium !text-white/40">
+          自定义尺寸
+        </DropdownMenuLabel>
+        <div className="flex items-center gap-1.5">
+          <input
+            aria-label="自定义宽度"
+            type="number"
+            min={64}
+            max={4096}
+            step={64}
+            value={customW}
+            onChange={(e) => {
+              const v = Math.max(64, Math.min(4096, Number(e.target.value) || 64));
+              setCustomW(v);
+              commitCustomSize(v, customH);
+            }}
+            className="h-8 w-[76px] rounded-lg border border-white/[0.08] bg-white/[0.08] px-2 text-[12px] font-medium text-white/80 outline-none transition focus:border-white/20 focus:bg-white/[0.11] focus:ring-0"
+          />
+          <span className="text-[11px] text-white/35">×</span>
+          <input
+            aria-label="自定义高度"
+            type="number"
+            min={64}
+            max={4096}
+            step={64}
+            value={customH}
+            onChange={(e) => {
+              const v = Math.max(64, Math.min(4096, Number(e.target.value) || 64));
+              setCustomH(v);
+              commitCustomSize(customW, v);
+            }}
+            className="h-8 w-[76px] rounded-lg border border-white/[0.08] bg-white/[0.08] px-2 text-[12px] font-medium text-white/80 outline-none transition focus:border-white/20 focus:bg-white/[0.11] focus:ring-0"
+          />
+        </div>
+      </div>
+    </>
+  );
 
   const resizeTextarea = (target: HTMLTextAreaElement) => {
     target.style.height = "auto";
@@ -559,49 +617,6 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
           />
         </div>
 
-        {isCustomRatio && (
-          <div className="flex items-center gap-1.5 px-4 pb-2">
-            <span className="shrink-0 text-[11px]" style={{ color: SUB_COLOR }}>尺寸</span>
-            <input
-              type="number"
-              min={64}
-              max={4096}
-              step={64}
-              value={customW}
-              onChange={(e) => {
-                const v = Math.max(64, Math.min(4096, Number(e.target.value) || 64));
-                setCustomW(v);
-                commitCustomSize(v, customH);
-              }}
-              className="w-16 rounded-md px-2 py-1 text-[12px] outline-none"
-              style={{
-                background: "rgba(255,255,255,0.08)",
-                border: "1px solid rgba(255,255,255,0.10)",
-                color: "rgba(255,255,255,0.88)",
-              }}
-            />
-            <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>×</span>
-            <input
-              type="number"
-              min={64}
-              max={4096}
-              step={64}
-              value={customH}
-              onChange={(e) => {
-                const v = Math.max(64, Math.min(4096, Number(e.target.value) || 64));
-                setCustomH(v);
-                commitCustomSize(customW, v);
-              }}
-              className="w-16 rounded-md px-2 py-1 text-[12px] outline-none"
-              style={{
-                background: "rgba(255,255,255,0.08)",
-                border: "1px solid rgba(255,255,255,0.10)",
-                color: "rgba(255,255,255,0.88)",
-              }}
-            />
-          </div>
-        )}
-
         <div className="flex items-center justify-between px-3 pb-3 pt-1">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <ChipSelect
@@ -615,6 +630,8 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
               onChange={setRatio}
               icon={<RatioIcon ratio={ratio} size={12} />}
               itemIcons={ratioItemIcons}
+              keepOpenOnSelectValues={["custom"]}
+              footer={isCustomRatio ? renderCustomSizeControls() : null}
             />
             <ChipSelect
               value={resolution}
@@ -668,6 +685,8 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
                 onChange={setRatio}
                 icon={<RatioIcon ratio={ratio} size={12} />}
                 itemIcons={ratioItemIcons}
+                keepOpenOnSelectValues={["custom"]}
+                footer={isCustomRatio ? renderCustomSizeControls() : null}
               />
               <ChipSelect
                 value={resolution}
