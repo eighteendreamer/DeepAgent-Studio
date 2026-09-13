@@ -21,6 +21,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "../../../../components/shadcn/button";
+import { Dialog, DialogContent, DialogTitle } from "../../../../components/shadcn/dialog";
 import { Input } from "../../../../components/shadcn/input";
 import { Label } from "../../../../components/shadcn/label";
 import {
@@ -493,73 +494,7 @@ export function ModelSettingsTab() {
       </aside>
 
       <main className="min-w-0 flex-1 overflow-y-auto">
-        {isAdding ? (
-          <div className="flex min-h-full flex-col">
-            <div className="flex items-center justify-between border-b px-7 py-5" style={{ borderColor: SOFT_LINE }}>
-              <div>
-                <div className="text-[18px] font-semibold" style={{ color: TEXT_PRIMARY }}>
-                  添加供应商
-                </div>
-                <div className="mt-1 text-[11px]" style={{ color: TEXT_MUTED }}>
-                  配置完成后即可把它绑定到文本、生图或视频场景。
-                </div>
-              </div>
-              <div className="flex gap-2">
-                <ActionButton onClick={handleCancel}>
-                  <X size={13} className="mr-1.5" />
-                  取消
-                </ActionButton>
-                <ActionButton accent onClick={handleSave} disabled={!form.name.trim()}>
-                  <Check size={13} className="mr-1.5" />
-                  保存供应商
-                </ActionButton>
-              </div>
-            </div>
-            <div className="space-y-6 px-7 py-6">
-              <div className="grid grid-cols-2 gap-4">
-                <Field
-                  label="供应商名称"
-                  value={form.name}
-                  placeholder="如：DeepSeek 官方"
-                  onChange={(value) => setForm({ ...form, name: value })}
-                />
-                <div className="space-y-1.5">
-                  <Label className="text-[11px]" style={{ color: TEXT_SECONDARY }}>
-                    协议类型
-                  </Label>
-                  <Select value={form.protocol} onValueChange={(value) => setForm({ ...form, protocol: value as ModelProtocol })}>
-                    <SelectTrigger className="h-9 rounded-xl text-[12px]" style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {PROTOCOLS.map((protocol) => (
-                        <SelectItem key={protocol.value} value={protocol.value}>
-                          {protocol.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Field
-                  label="Base URL"
-                  value={form.baseUrl}
-                  placeholder="https://api.deepseek.com/v1"
-                  onChange={(value) => setForm({ ...form, baseUrl: value })}
-                />
-                <Field
-                  label="API Key"
-                  value={form.apiKey}
-                  placeholder="sk-..."
-                  type="password"
-                  onChange={(value) => setForm({ ...form, apiKey: value })}
-                />
-              </div>
-              <div className="rounded-xl border px-4 py-3 text-[11px] leading-5" style={{ borderColor: SOFT_LINE, background: SURFACE_BG, color: TEXT_MUTED }}>
-                保存后，供应商会出现在左侧目录。模型列表查询和连通性测试需要后端安全代理，不会在浏览器端直接发送 API Key。
-              </div>
-            </div>
-          </div>
-        ) : selectedProvider ? (
+        {selectedProvider ? (
           <div className="min-w-0">
             <header className="border-b px-7 py-5" style={{ borderColor: SOFT_LINE }}>
               <div className="flex items-start justify-between gap-5">
@@ -817,6 +752,83 @@ export function ModelSettingsTab() {
           </div>
         )}
       </main>
+
+      <Dialog
+        open={isAdding}
+        onOpenChange={(open) => {
+          if (!open) handleCancel();
+        }}
+      >
+        <DialogContent
+          zIndexClass="z-[11000]"
+          className="w-[min(640px,calc(100vw-32px))] max-w-none rounded-2xl border border-white/10 bg-[#17181b] p-0 text-white shadow-[0_28px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+        >
+          <DialogTitle className="sr-only">添加供应商</DialogTitle>
+          <div className="border-b px-6 py-5" style={{ borderColor: SOFT_LINE }}>
+            <div className="text-[18px] font-semibold" style={{ color: TEXT_PRIMARY }}>
+              添加供应商
+            </div>
+            <div className="mt-1 text-[11px]" style={{ color: TEXT_MUTED }}>
+              配置完成后即可把它绑定到文本、生图或视频场景。
+            </div>
+          </div>
+
+          <div className="space-y-5 px-6 py-6">
+            <div className="grid grid-cols-2 gap-4">
+              <Field
+                label="供应商名称"
+                value={form.name}
+                placeholder="如：DeepSeek 官方"
+                onChange={(value) => setForm({ ...form, name: value })}
+              />
+              <div className="space-y-1.5">
+                <Label className="text-[11px]" style={{ color: TEXT_SECONDARY }}>
+                  协议类型
+                </Label>
+                <Select value={form.protocol} onValueChange={(value) => setForm({ ...form, protocol: value as ModelProtocol })}>
+                  <SelectTrigger className="h-9 rounded-xl text-[12px]" style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PROTOCOLS.map((protocol) => (
+                      <SelectItem key={protocol.value} value={protocol.value}>
+                        {protocol.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Field
+                label="Base URL"
+                value={form.baseUrl}
+                placeholder="https://api.deepseek.com/v1"
+                onChange={(value) => setForm({ ...form, baseUrl: value })}
+              />
+              <Field
+                label="API Key"
+                value={form.apiKey}
+                placeholder="sk-..."
+                type="password"
+                onChange={(value) => setForm({ ...form, apiKey: value })}
+              />
+            </div>
+            <div className="rounded-xl border px-4 py-3 text-[11px] leading-5" style={{ borderColor: SOFT_LINE, background: SURFACE_BG, color: TEXT_MUTED }}>
+              保存后，供应商会出现在左侧目录。模型列表查询和连通性测试需要后端安全代理，不会在浏览器端直接发送 API Key。
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 border-t px-6 py-4" style={{ borderColor: SOFT_LINE }}>
+            <ActionButton onClick={handleCancel}>
+              <X size={13} className="mr-1.5" />
+              取消
+            </ActionButton>
+            <ActionButton accent onClick={handleSave} disabled={!form.name.trim()}>
+              <Check size={13} className="mr-1.5" />
+              保存供应商
+            </ActionButton>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
