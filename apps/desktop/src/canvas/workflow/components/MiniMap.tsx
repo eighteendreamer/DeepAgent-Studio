@@ -16,8 +16,9 @@ const TICK_RING_GAP = 14;
 const CONTROL_BAR_WIDTH = 136;
 const CONTROL_BAR_HEIGHT = 34;
 
-// 圆心从左下角直角点沿 x=y 方向向右上偏移，避免只露出一个贴边的四分之一圆。
-const CIRCLE_CENTER_OFFSET = 128;
+// 在现有位置的基础上，沿左下对角线移动半个半径（LENS_SIZE / 4）。
+// 这样圆心仍沿 x=y 对角线定位，同时让小地图更多地贴近左下角。
+const CIRCLE_CENTER_OFFSET = 128 - LENS_SIZE / 4;
 const CIRCLE_LEFT = CIRCLE_CENTER_OFFSET - LENS_SIZE / 2;
 const CIRCLE_BOTTOM = CIRCLE_CENTER_OFFSET - LENS_SIZE / 2;
 const TICK_RING_SIZE = LENS_SIZE + TICK_RING_GAP * 2;
@@ -216,7 +217,8 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
         onClick={(event) => event.stopPropagation()}
         style={{
           position: "absolute",
-          left: CIRCLE_CENTER_OFFSET - CONTROL_BAR_WIDTH / 2,
+          // 圆可以继续贴出左下边界，但控制栏保持完整可见，避免左移后按钮被裁掉。
+          left: Math.max(8, CIRCLE_CENTER_OFFSET - CONTROL_BAR_WIDTH / 2),
           bottom: Math.max(14, CIRCLE_BOTTOM + 20),
           width: CONTROL_BAR_WIDTH,
           height: CONTROL_BAR_HEIGHT,
