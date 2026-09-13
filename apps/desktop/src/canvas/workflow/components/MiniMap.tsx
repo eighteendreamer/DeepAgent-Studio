@@ -1,18 +1,28 @@
+import { useState } from "react";
+import { Eye, EyeOff, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { useReactFlow } from "@xyflow/react";
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
-import type { WorkflowNode } from "../types";
+import type { WorkflowEdge, WorkflowNode } from "../types";
 
-const LENS_SIZE = 360;
+const LENS_SIZE = 320;
 const MAP_PADDING = 12;
 const MAP_SCALE_MAX = 0.5;
 const NODE_W = 240;
 const NODE_H = 120;
+const TICK_COUNT = 24;
+const TICK_RING_GAP = 14;
+const CONTROL_BAR_WIDTH = 136;
+const CONTROL_BAR_HEIGHT = 34;
 
 // 圆心从左下角直角点沿 x=y 方向向右上偏移，避免只露出一个贴边的四分之一圆。
 const CIRCLE_CENTER_OFFSET = 128;
 const CIRCLE_LEFT = CIRCLE_CENTER_OFFSET - LENS_SIZE / 2;
 const CIRCLE_BOTTOM = CIRCLE_CENTER_OFFSET - LENS_SIZE / 2;
+const TICK_RING_SIZE = LENS_SIZE + TICK_RING_GAP * 2;
+const TICK_RING_LEFT = CIRCLE_LEFT - TICK_RING_GAP;
+const TICK_RING_BOTTOM = CIRCLE_BOTTOM - TICK_RING_GAP;
 
 const SHELL_STYLE: React.CSSProperties = {
   width: LENS_SIZE,
@@ -84,6 +94,8 @@ interface Props {
 }
 
 export function MiniMap({ containerWidth, containerHeight }: Props) {
+  const { fitView, getViewport, setViewport: setFlowViewport } = useReactFlow<WorkflowNode, WorkflowEdge>();
+  const [minimapVisible, setMinimapVisible] = useState(true);
   const mode = useCanvasStore((s) => s.mode);
   const viewport = useCanvasStore((s) => s.viewport);
   const creativeNodes = useCreativeStore((s) => s.nodes);
@@ -110,23 +122,70 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
     error: "rgba(239,68,68,0.7)",
   };
 
+  const changeZoom = (delta: number) => {
+    const current = getViewport();
+    const zoom = Math.min(3, Math.max(0.2, current.zoom + delta));
+    void setFlowViewport({ ...current, zoom });
+  };
+
+  const handleFitView = () => {
+    void fitView({ padding: 0.2, duration: 300, maxZoom: 0.9 });
+  };
+
   return (
     <div
       className="absolute left-0 bottom-0 z-[80] pointer-events-none"
       style={{ width: LENS_SIZE, height: LENS_SIZE, overflow: "visible" }}
     >
       <div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          left: TICK_RING_LEFT,
+          bottom: TICK_RING_BOTTOM,
+          width: TICK_RING_SIZE,
+          height: TICK_RING_SIZE,
+          opacity: minimapVisible ? 1 : 0,
+          transition: "opacity 180ms ease",
+          pointerEvents: "none",
+        }}
+      >
+        {Array.from({ length: TICK_COUNT }, (_, index) => {
+          const major = index % 6 === 0;
+          return (
+            <span
+              key={index}
+              style={{
+                position: "absolute",
+                left: "50%",
+                top: 0,
+                width: major ? 2 : 1,
+                height: major ? 13 : 7,
+                borderRadius: 999,
+                background: major ? "rgba(255,255,255,0.62)" : "rgba(255,255,255,0.28)",
+                transform: `translateX(-50%) rotate(${index * (360 / TICK_COUNT)}deg)`,
+                transformOrigin: `50% ${TICK_RING_SIZE / 2}px`,
+              }}
+            />
+          );
+        })}
+      </div>
+
+      <div
         style={{
           ...SHELL_STYLE,
           position: "absolute",
           left: CIRCLE_LEFT,
           bottom: CIRCLE_BOTTOM,
-          pointerEvents: "auto",
+          opacity: minimapVisible ? 1 : 0,
+          visibility: minimapVisible ? "visible" : "hidden",
+          pointerEvents: minimapVisible ? "auto" : "none",
+          transition: "opacity 180ms ease",
         }}
         aria-label="画布小地图"
       >
         <svg width="100%" height="100%" viewBox={`0 0 ${LENS_SIZE} ${LENS_SIZE}`}>
-          {nodes.map((node) => {
+          {minimapVisible && nodes.map((node) => {
             const nx = finiteOr(node.position.x, 0);
             const ny = finiteOr(node.position.y, 0);
             const px = projection.originX + nx * projection.mapScale;
@@ -149,6 +208,66 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
           })}
         </svg>
       </div>
+
+      <div
+        role="toolbar"
+        aria-label="小地图控制"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          position: "absolute",
+          left: CIRCLE_CENTER_OFFSET - CONTROL_BAR_WIDTH / 2,
+          bottom: Math.max(14, CIRCLE_BOTTOM + 20),
+          width: CONTROL_BAR_WIDTH,
+          height: CONTROL_BAR_HEIGHT,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-evenly",
+          gap: 2,
+          padding: "3px 5px",
+          boxSizing: "border-box",
+          border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: 999,
+          background: "rgba(36,39,45,0.82)",
+          boxShadow: "0 10px 28px rgba(0,0,0,0.24)",
+          backdropFilter: "blur(14px) saturate(1.2)",
+          pointerEvents: "auto",
+        }}
+      >
+        <button type="button" onClick={() => changeZoom(-0.1)} title="缩小" aria-label="缩小" style={CONTROL_BUTTON_STYLE}>
+          <ZoomOut size={15} strokeWidth={1.8} />
+        </button>
+        <button type="button" onClick={handleFitView} title="适应屏幕" aria-label="适应屏幕" style={CONTROL_BUTTON_STYLE}>
+          <Maximize2 size={15} strokeWidth={1.8} />
+        </button>
+        <button type="button" onClick={() => changeZoom(0.1)} title="放大" aria-label="放大" style={CONTROL_BUTTON_STYLE}>
+          <ZoomIn size={15} strokeWidth={1.8} />
+        </button>
+        <button
+          type="button"
+          onClick={() => setMinimapVisible((visible) => !visible)}
+          title={minimapVisible ? "隐藏小地图" : "显示小地图"}
+          aria-label={minimapVisible ? "隐藏小地图" : "显示小地图"}
+          style={CONTROL_BUTTON_STYLE}
+        >
+          {minimapVisible ? <Eye size={15} strokeWidth={1.8} /> : <EyeOff size={15} strokeWidth={1.8} />}
+        </button>
+      </div>
     </div>
   );
 }
+
+const CONTROL_BUTTON_STYLE: React.CSSProperties = {
+  width: 27,
+  height: 27,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  border: 0,
+  borderRadius: 8,
+  color: "rgba(248,248,248,0.78)",
+  background: "transparent",
+  cursor: "pointer",
+  transition: "background 150ms ease, color 150ms ease, transform 150ms ease",
+};
