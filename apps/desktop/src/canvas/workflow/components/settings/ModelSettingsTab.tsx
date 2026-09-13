@@ -53,10 +53,9 @@ const SUCCESS = "#22c55e";
 const WARNING = "#f59e0b";
 
 const PROTOCOLS: { value: ModelProtocol; label: string; hint: string }[] = [
-  { value: "openai", label: "OpenAI 兼容", hint: "Responses / Chat Completions 兼容供应商" },
-  { value: "deepseek", label: "DeepSeek", hint: "DeepSeek 官方与兼容部署" },
-  { value: "anthropic", label: "Anthropic", hint: "Claude 系列模型供应商" },
-  { value: "custom", label: "自定义", hint: "内部网关、代理或私有模型服务" },
+  { value: "openai", label: "OpenAI", hint: "OpenAI Responses / Chat Completions 协议" },
+  { value: "anthropic", label: "Anthropic", hint: "Anthropic Messages 协议" },
+  { value: "gemini", label: "Gemini", hint: "Google Gemini API 协议" },
 ];
 
 const SCENARIOS: { key: ScenarioKind; label: string; desc: string; Icon: LucideIcon }[] = [
@@ -801,7 +800,7 @@ export function ModelSettingsTab() {
               <Field
                 label="Base URL"
                 value={form.baseUrl}
-                placeholder="https://api.deepseek.com/v1"
+                placeholder="https://api.openai.com/v1"
                 onChange={(value) => setForm({ ...form, baseUrl: value })}
               />
               <Field

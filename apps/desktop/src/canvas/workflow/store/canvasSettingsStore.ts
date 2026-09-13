@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 const STORAGE_KEY = "workflow-settings";
 
-export type ModelProtocol = "openai" | "deepseek" | "anthropic" | "custom";
+export type ModelProtocol = "openai" | "anthropic" | "gemini";
 
 export interface ModelProvider {
   id: string;
@@ -65,10 +65,16 @@ function isValidProvider(v: unknown): v is ModelProvider {
   return (
     typeof o.id === "string" &&
     typeof o.name === "string" &&
-    typeof o.protocol === "string" &&
+    (o.protocol === "openai" || o.protocol === "anthropic" || o.protocol === "gemini" || o.protocol === "deepseek" || o.protocol === "custom") &&
     typeof o.baseUrl === "string" &&
     typeof o.apiKey === "string"
   );
+}
+
+function normalizeProtocol(protocol: string): ModelProtocol {
+  if (protocol === "anthropic" || protocol === "gemini") return protocol;
+  // 旧版本的 DeepSeek/自定义供应商均按 OpenAI 兼容协议保留，避免已有配置失效。
+  return "openai";
 }
 
 function loadPersisted(): Pick<WorkflowSettingsState, "providers" | "scenarioModels" | "workspace"> {
@@ -78,7 +84,13 @@ function loadPersisted(): Pick<WorkflowSettingsState, "providers" | "scenarioMod
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return { providers: [], scenarioModels: defaultBindings(), workspace: { imageDir: "", videoDir: "" } };
 
-    const providers = Array.isArray(parsed.providers) && parsed.providers.every(isValidProvider) ? parsed.providers : [];
+    const providers =
+      Array.isArray(parsed.providers) && parsed.providers.every(isValidProvider)
+        ? parsed.providers.map((provider: ModelProvider) => ({
+            ...provider,
+            protocol: normalizeProtocol(provider.protocol),
+          }))
+        : [];
     providers.forEach((p: ModelProvider) => {
       const n = Number(p.id.replace("provider-", ""));
       if (Number.isFinite(n) && n >= _idCounter) _idCounter = n;
