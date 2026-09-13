@@ -43,7 +43,13 @@ export function TextGenContent({ id, data }: Props) {
       {isImageToPrompt && (
         <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.025] px-2 py-1.5">
           {upstreamImage ? (
-            <img src={upstreamImage} alt="待反推图片" className="h-9 w-9 rounded object-cover" />
+            <img
+              src={upstreamImage}
+              alt="待反推图片"
+              draggable={false}
+              onDragStart={(event) => event.preventDefault()}
+              className="pointer-events-none h-9 w-9 select-none rounded object-cover"
+            />
           ) : (
             <div className="flex h-9 w-9 items-center justify-center rounded bg-white/[0.05] text-white/35">
               <Sparkles className="h-3.5 w-3.5" />

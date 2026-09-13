@@ -50,7 +50,13 @@ export function ImageInputContent({ id, data }: Props) {
 
       {imageUrl ? (
         <div className="relative overflow-hidden rounded-lg" style={{ height: 124, background: "rgba(255,255,255,0.035)" }}>
-          <img src={imageUrl} alt={sourceFileName || "输入图片"} className="h-full w-full object-cover" />
+          <img
+            src={imageUrl}
+            alt={sourceFileName || "输入图片"}
+            draggable={false}
+            onDragStart={(event) => event.preventDefault()}
+            className="pointer-events-none h-full w-full select-none object-cover"
+          />
           <button
             type="button"
             title="替换图片"
