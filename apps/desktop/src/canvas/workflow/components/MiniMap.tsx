@@ -15,6 +15,8 @@ const TICK_COUNT = 24;
 const TICK_RING_GAP = 14;
 const CONTROL_BAR_WIDTH = 136;
 const CONTROL_BAR_HEIGHT = 34;
+const NODE_POINTER_SIZE = 18;
+const NODE_POINTER_RADIUS = LENS_SIZE / 2 + TICK_RING_GAP * 0.65;
 
 // 沿左下对角线移动后的折中位置：相对原始 128px 只保留一半的位移。
 // 圆心仍沿 x=y 对角线定位，同时避免小地图过度贴出左下边界。
@@ -24,6 +26,7 @@ const CIRCLE_BOTTOM = CIRCLE_CENTER_OFFSET - LENS_SIZE / 2;
 const TICK_RING_SIZE = LENS_SIZE + TICK_RING_GAP * 2;
 const TICK_RING_LEFT = CIRCLE_LEFT - TICK_RING_GAP;
 const TICK_RING_BOTTOM = CIRCLE_BOTTOM - TICK_RING_GAP;
+const CIRCLE_CENTER_IN_WRAP_Y = LENS_SIZE - CIRCLE_CENTER_OFFSET;
 
 const SHELL_STYLE: React.CSSProperties = {
   width: LENS_SIZE,
@@ -89,6 +92,28 @@ function computeProjection(
   };
 }
 
+function getNearestNodeToViewport(
+  nodes: WorkflowNode[],
+  viewportBounds: Bounds,
+): WorkflowNode | undefined {
+  const viewportCenterX = viewportBounds.minX + viewportBounds.width / 2;
+  const viewportCenterY = viewportBounds.minY + viewportBounds.height / 2;
+  let nearestNode: WorkflowNode | undefined;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (const node of nodes) {
+    const nx = finiteOr(node.position.x, 0) + NODE_W / 2;
+    const ny = finiteOr(node.position.y, 0) + NODE_H / 2;
+    const distance = (nx - viewportCenterX) ** 2 + (ny - viewportCenterY) ** 2;
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestNode = node;
+    }
+  }
+
+  return nearestNode;
+}
+
 interface Props {
   containerWidth: number;
   containerHeight: number;
@@ -116,6 +141,25 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
 
   const worldBounds = computeWorldBounds(nodes, viewportBounds);
   const projection = computeProjection(worldBounds, LENS_SIZE, LENS_SIZE);
+  const pointerTargetNode = nodes.find((node) => node.id === selectedNodeId)
+    ?? getNearestNodeToViewport(nodes, viewportBounds);
+  const nodePointer = pointerTargetNode ? (() => {
+    const nx = finiteOr(pointerTargetNode.position.x, 0);
+    const ny = finiteOr(pointerTargetNode.position.y, 0);
+    const targetX = projection.originX + (nx + NODE_W / 2) * projection.mapScale;
+    const targetY = projection.originY + (ny + NODE_H / 2) * projection.mapScale;
+    const dx = targetX - LENS_SIZE / 2;
+    const dy = targetY - LENS_SIZE / 2;
+    const angle = Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001
+      ? -Math.PI / 2
+      : Math.atan2(dy, dx);
+
+    return {
+      left: CIRCLE_CENTER_OFFSET + Math.cos(angle) * NODE_POINTER_RADIUS - NODE_POINTER_SIZE / 2,
+      top: CIRCLE_CENTER_IN_WRAP_Y + Math.sin(angle) * NODE_POINTER_RADIUS - NODE_POINTER_SIZE / 2,
+      rotate: angle * 180 / Math.PI + 90,
+    };
+  })() : null;
   const statusColor: Record<string, string> = {
     idle: "rgba(255,255,255,0.2)",
     running: "rgba(59,130,246,0.7)",
@@ -171,6 +215,36 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
           );
         })}
       </div>
+
+      {nodePointer && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: nodePointer.left,
+            top: nodePointer.top,
+            zIndex: 2,
+            width: NODE_POINTER_SIZE,
+            height: NODE_POINTER_SIZE,
+            opacity: minimapVisible ? 1 : 0,
+            visibility: minimapVisible ? "visible" : "hidden",
+            pointerEvents: "none",
+            transform: `rotate(${nodePointer.rotate}deg)`,
+            transition: "opacity 180ms ease, transform 180ms ease",
+            filter: "drop-shadow(0 2px 5px rgba(0,0,0,0.38))",
+          }}
+        >
+          <span
+            style={{
+              position: "absolute",
+              inset: 3,
+              display: "block",
+              background: "rgba(248,248,248,0.9)",
+              clipPath: "polygon(50% 0%, 90% 100%, 50% 78%, 10% 100%)",
+            }}
+          />
+        </div>
+      )}
 
       <div
         style={{
