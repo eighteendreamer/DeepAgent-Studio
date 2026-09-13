@@ -98,6 +98,6 @@ export const useCanvasStore = create<CanvasState>((set) => ({
   setCreativeLibraryOpen: (open) => set({ creativeLibraryOpen: open }),
 
   settingsOpen: false,
-  openSettings: () => set({ settingsOpen: true }),
+  openSettings: () => set({ settingsOpen: true, nodePicker: null, pendingConnection: null }),
   closeSettings: () => set({ settingsOpen: false }),
 }));

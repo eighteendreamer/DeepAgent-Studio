@@ -66,6 +66,7 @@ export function CanvasSettingsDialog() {
     <Dialog open={settingsOpen} onOpenChange={(open) => { if (!open) closeSettings(); }}>
       <DialogContent
         className="p-0"
+        zIndexClass="z-[10000]"
         style={{
           width: 1180,
           height: 760,

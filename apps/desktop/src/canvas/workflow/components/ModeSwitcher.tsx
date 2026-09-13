@@ -9,6 +9,9 @@ const MODES: Array<{ key: CanvasMode; label: string }> = [
 export function ModeSwitcher() {
   const mode = useCanvasStore((s) => s.mode);
   const setMode = useCanvasStore((s) => s.setMode);
+  const settingsOpen = useCanvasStore((s) => s.settingsOpen);
+
+  if (settingsOpen) return null;
 
   return (
     <div

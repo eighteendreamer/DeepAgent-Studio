@@ -50,6 +50,7 @@ function isEditableTarget(target: EventTarget | null) {
 function WorkflowCanvasInner() {
   useWorkflowPersistence();
   const mode = useCanvasStore((s) => s.mode);
+  const settingsOpen = useCanvasStore((s) => s.settingsOpen);
   const gridVisible = useCanvasStore((s) => s.gridVisible);
   const snapToGrid = useCanvasStore((s) => s.snapToGrid);
   const selectedNodeId = useCanvasStore((s) => s.selectedNodeId);
@@ -290,6 +291,8 @@ function WorkflowCanvasInner() {
 
   const handleDoubleClick = useCallback(
     (event: React.MouseEvent) => {
+      if (settingsOpen) return;
+
       // React Flow 的默认 dblclick 会在 pane 上触发缩放，并可能在冒泡前消费事件。
       // 捕获阶段只接管空白 pane；节点、边和浮层仍保留各自的双击行为。
       const target = event.target;
@@ -305,7 +308,7 @@ function WorkflowCanvasInner() {
       const worldPos = rfInstance.screenToFlowPosition({ x: screenX, y: screenY });
       openNodePicker({ x: event.clientX, y: event.clientY, worldX: worldPos.x, worldY: worldPos.y });
     },
-    [rfInstance, openNodePicker],
+    [rfInstance, openNodePicker, settingsOpen],
   );
 
   const handleNodeClick = useCallback(
