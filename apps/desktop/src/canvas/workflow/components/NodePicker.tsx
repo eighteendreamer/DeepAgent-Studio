@@ -1,6 +1,44 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import type { CSSProperties } from "react";
+import {
+  Aperture,
+  ArrowLeftRight,
+  ArrowRight,
+  BookOpen,
+  Bot,
+  Camera,
+  ChevronLeft,
+  ChevronRight,
+  CircleHelp,
+  CircleUserRound,
+  Code2,
+  Columns3,
+  Crop,
+  FileCode2,
+  FileText,
+  Film,
+  FolderTree,
+  GitBranch,
+  Globe2,
+  Image,
+  Layers3,
+  Lightbulb,
+  Mic,
+  Pencil,
+  PenTool,
+  Play,
+  RotateCw,
+  Search,
+  Square,
+  Table2,
+  Tags,
+  Upload,
+  UserCheck,
+  Video,
+  WandSparkles,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 import type { Connection } from "@xyflow/react";
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
@@ -17,7 +55,6 @@ import {
 type PickerView = { category: CreativePickerCategory } | null;
 
 const ICON_COLOR = "rgba(248,248,248,0.72)";
-const ACCENT = "#9b8afb";
 
 const CREATIVE_PICKER_GROUPS = [
   { label: "基础节点", keys: ["text", "image", "video", "camera", "director", "compare", "template", "character"] },
@@ -25,8 +62,61 @@ const CREATIVE_PICKER_GROUPS = [
   { label: "添加资源", keys: ["upload"] },
 ] as const;
 
-function icon(name: string | undefined, fallback = "bullseye") {
-  return ["fas", name || fallback] as IconProp;
+const PICKER_ICONS: Record<string, LucideIcon> = {
+  aperture: Aperture,
+  "arrow-right": ArrowRight,
+  book: BookOpen,
+  bullseye: Camera,
+  camera: Camera,
+  "chevron-left": ChevronLeft,
+  "chevron-right": ChevronRight,
+  code: Code2,
+  "code-branch": GitBranch,
+  "circle-notch": Aperture,
+  "circle-user": CircleUserRound,
+  crop: Crop,
+  "file-code": FileCode2,
+  "file-lines": FileText,
+  film: Film,
+  "folder-tree": FolderTree,
+  globe: Globe2,
+  image: Image,
+  "layer-group": Layers3,
+  lightbulb: Lightbulb,
+  "left-right": ArrowLeftRight,
+  lens: Search,
+  microphone: Mic,
+  pen: PenTool,
+  pencil: Pencil,
+  play: Play,
+  robot: Bot,
+  rotate: RotateCw,
+  stop: Square,
+  table: Table2,
+  "table-columns": Columns3,
+  tags: Tags,
+  upload: Upload,
+  "user-check": UserCheck,
+  video: Video,
+  "wand-magic-sparkles": WandSparkles,
+  wrench: Wrench,
+};
+
+function PickerIcon({
+  name,
+  size = 14,
+  strokeWidth = 1.8,
+  className,
+  style,
+}: {
+  name?: string;
+  size?: number;
+  strokeWidth?: number;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  const Icon = PICKER_ICONS[name ?? ""] ?? CircleHelp;
+  return <Icon aria-hidden="true" className={className} size={size} strokeWidth={strokeWidth} style={style} />;
 }
 
 export function NodePicker() {
@@ -207,7 +297,7 @@ export function NodePicker() {
               onClick={() => setView(null)}
               aria-label="返回节点类型"
             >
-              <FontAwesomeIcon icon={icon("chevron-left")} style={{ fontSize: 11 }} />
+              <PickerIcon name="chevron-left" size={14} />
             </button>
           )}
           <div className="min-w-0">
@@ -241,7 +331,7 @@ export function NodePicker() {
             ))}
             {creativeCategory.optionGroups?.map((group) => (
               <section key={group.key} className="mb-2 last:mb-0">
-                <div className="px-2 pb-1 pt-1 text-[10px] font-semibold tracking-wide" style={{ color: ACCENT }}>{group.label}</div>
+                <div className="px-2 pb-1 pt-1 text-[10px] font-semibold tracking-wide" style={{ color: "rgba(248,248,248,0.42)" }}>{group.label}</div>
                 <div className="space-y-0.5">
                   {group.options.map((option) => (
                     <PickerOptionButton key={option.key} option={option} compact onClick={() => handleCreativeOption(creativeCategory, option)} />
@@ -268,7 +358,7 @@ export function NodePicker() {
                     onClick={() => handleProfessionalSelect(item.kind)}
                     className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-all duration-150 hover:bg-white/10"
                   >
-                    <FontAwesomeIcon icon={icon(item.icon)} style={{ fontSize: 12, color: cat.color, width: 16 }} />
+                    <PickerIcon name={item.icon} size={14} style={{ color: ICON_COLOR, width: 16 }} />
                     <span className="text-xs" style={{ color: "rgba(248,248,248,0.85)" }}>{item.label}</span>
                   </button>
                 ))}
@@ -297,19 +387,21 @@ function PickerCategoryButton({
     >
       <span
         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition duration-150 group-hover:bg-white/[0.1]"
-        style={{ background: "rgba(255,255,255,0.055)", color: ACCENT }}
+        style={{ background: "rgba(255,255,255,0.055)", color: ICON_COLOR }}
       >
-        <FontAwesomeIcon icon={icon(category.icon)} style={{ fontSize: 14 }} />
+        <PickerIcon name={category.icon} size={16} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block text-[13px] font-medium" style={{ color: "rgba(248,248,248,0.86)" }}>{category.label}</span>
         <span className="mt-0.5 block truncate text-[10px]" style={{ color: "rgba(248,248,248,0.36)" }}>{category.description}</span>
       </span>
       {hasChildren && (
-        <FontAwesomeIcon
-          icon={icon("chevron-right")}
+        <PickerIcon
+          name="chevron-right"
           className="opacity-35 transition duration-150 group-hover:translate-x-0.5 group-hover:opacity-80"
-          style={{ color: ICON_COLOR, fontSize: 10 }}
+          size={14}
+          strokeWidth={1.8}
+          style={{ color: ICON_COLOR }}
         />
       )}
     </button>
@@ -337,14 +429,14 @@ function PickerOptionButton({
       onClick={onClick}
       className={`group flex w-full items-center gap-2 rounded-lg text-left transition-all duration-150 hover:bg-white/[0.09] ${compact ? "px-2 py-1.5" : "px-2.5 py-2"}`}
     >
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md" style={{ background: "rgba(155,138,251,0.12)", color: ACCENT }}>
-        <FontAwesomeIcon icon={icon(option.icon, "bullseye")} style={{ fontSize: 11 }} />
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md" style={{ background: "rgba(255,255,255,0.055)", color: ICON_COLOR }}>
+        <PickerIcon name={option.icon ?? "bullseye"} size={13} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs" style={{ color: "rgba(248,248,248,0.87)" }}>{option.label}</span>
         {option.description && <span className="mt-0.5 block truncate text-[10px]" style={{ color: "rgba(248,248,248,0.38)" }}>{option.description}</span>}
       </span>
-      <FontAwesomeIcon icon={icon("arrow-right")} className="opacity-0 transition group-hover:opacity-60" style={{ color: ICON_COLOR, fontSize: 10 }} />
+      <PickerIcon name="arrow-right" className="opacity-0 transition group-hover:opacity-60" size={14} style={{ color: ICON_COLOR }} />
     </button>
   );
 }
