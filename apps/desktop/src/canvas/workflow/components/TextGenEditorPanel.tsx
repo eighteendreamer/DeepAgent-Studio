@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { ChevronDown, Play, Sparkles } from "lucide-react";
+import { ArrowUp, ChevronDown, Sparkles } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -42,23 +42,22 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
 
   return (
     <div
-      className="w-full overflow-hidden rounded-xl border border-white/10 bg-[#202124]/95 shadow-[0_18px_48px_rgba(0,0,0,0.38)] backdrop-blur-2xl"
+      className="w-full overflow-hidden rounded-2xl border border-white/[0.12] bg-[#1c1d20]/95 p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.34)] backdrop-blur-2xl"
       onPointerDown={stopPanelGesture}
       onMouseDown={stopPanelGesture}
     >
       {isImageToPrompt && (
-        <div className="flex items-center gap-2 px-3.5 pt-3">
-          <span className="shrink-0 text-[10px] text-white/40">输入：</span>
+        <div className="flex items-center gap-2 px-2.5 pb-1 pt-2">
           {upstreamImage ? (
             <img
               src={upstreamImage}
               alt="上游图片"
               draggable={false}
               onDragStart={(event) => event.preventDefault()}
-              className="pointer-events-none h-11 w-11 select-none rounded-md object-cover"
+              className="pointer-events-none h-10 w-10 select-none rounded-lg object-cover ring-1 ring-white/10"
             />
           ) : (
-            <div className="flex h-11 w-11 items-center justify-center rounded-md bg-white/[0.06] text-white/35">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/[0.05] text-white/35">
               <Sparkles className="h-4 w-4" />
             </div>
           )}
@@ -66,7 +65,7 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
         </div>
       )}
 
-      <div className="px-3.5 pb-2 pt-3">
+      <div className="px-2.5 pb-1.5 pt-2">
         <Textarea
           value={data.prompt ?? ""}
           placeholder={placeholder}
@@ -89,15 +88,15 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
         />
       </div>
 
-      <div className="flex items-center justify-between border-t border-white/[0.07] px-3 pb-3 pt-2">
+      <div className="flex items-center justify-between px-1.5 pb-1.5 pt-1">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className="flex h-8 max-w-[190px] items-center gap-2 rounded-lg bg-white/[0.08] px-2.5 text-xs text-white/75 outline-none transition hover:bg-white/[0.13] focus-visible:ring-1 focus-visible:ring-white/20 data-[state=open]:bg-white/[0.13]"
+              className="flex h-8 max-w-[190px] items-center gap-2 rounded-xl bg-white/[0.06] px-3 text-xs text-white/70 outline-none transition hover:bg-white/[0.1] focus-visible:ring-1 focus-visible:ring-white/20 data-[state=open]:bg-white/[0.1]"
             >
               <span className="truncate">{selectedModelLabel}</span>
-              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-white/45" />
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-white/40" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
@@ -124,14 +123,14 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
           title="执行节点"
           disabled={!data.prompt?.trim()}
           onClick={() => void runWorkflow(nodeId)}
-          className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.08] text-white/65 transition hover:bg-white/[0.14] hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+          className="flex h-8 w-8 items-center justify-center rounded-full bg-white/[0.08] text-white/65 transition hover:bg-white/[0.14] hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
         >
-          <Play className="h-3.5 w-3.5" />
+          <ArrowUp className="h-4 w-4" />
         </button>
       </div>
 
       {data.output && (
-        <div className="border-t border-white/[0.07] px-3.5 py-3 text-xs leading-relaxed text-white/65">
+        <div className="mx-1.5 mb-1.5 rounded-xl bg-black/[0.12] px-2.5 py-2.5 text-xs leading-relaxed text-white/65">
           {data.output}
         </div>
       )}
