@@ -67,10 +67,10 @@ export function CanvasSettingsDialog() {
       <DialogContent
         className="p-0"
         style={{
-          width: 860,
-          height: 560,
-          maxWidth: "90vw",
-          maxHeight: "85vh",
+          width: 1180,
+          height: 760,
+          maxWidth: "94vw",
+          maxHeight: "90vh",
           background: "#0d0d0d",
           color: TEXT_PRIMARY,
           border: `1px solid ${NAV_BORDER}`,
@@ -111,7 +111,11 @@ export function CanvasSettingsDialog() {
               );
             })}
           </nav>
-          <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-8 py-6">
+          <div
+            className={`min-w-0 flex-1 overflow-y-auto overflow-x-hidden ${
+              activeTab === "model" ? "p-0" : "px-8 py-6"
+            }`}
+          >
             <TabContent tab={activeTab} />
           </div>
         </div>
