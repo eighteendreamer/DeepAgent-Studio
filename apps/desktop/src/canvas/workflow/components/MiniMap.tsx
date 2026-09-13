@@ -16,9 +16,9 @@ const TICK_RING_GAP = 14;
 const CONTROL_BAR_WIDTH = 136;
 const CONTROL_BAR_HEIGHT = 34;
 
-// 在现有位置的基础上，沿左下对角线移动半个半径（LENS_SIZE / 4）。
-// 这样圆心仍沿 x=y 对角线定位，同时让小地图更多地贴近左下角。
-const CIRCLE_CENTER_OFFSET = 128 - LENS_SIZE / 4;
+// 沿左下对角线移动后的折中位置：相对原始 128px 只保留一半的位移。
+// 圆心仍沿 x=y 对角线定位，同时避免小地图过度贴出左下边界。
+const CIRCLE_CENTER_OFFSET = 88;
 const CIRCLE_LEFT = CIRCLE_CENTER_OFFSET - LENS_SIZE / 2;
 const CIRCLE_BOTTOM = CIRCLE_CENTER_OFFSET - LENS_SIZE / 2;
 const TICK_RING_SIZE = LENS_SIZE + TICK_RING_GAP * 2;
