@@ -81,10 +81,10 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
           onInput={(event) => {
             const target = event.currentTarget;
             target.style.height = "auto";
-            target.style.height = `${Math.min(Math.max(target.scrollHeight, 64), 120)}px`;
+            target.style.height = `${Math.min(Math.max(target.scrollHeight, 76), 140)}px`;
           }}
-          className="!min-h-0 !w-full !resize-none !rounded-none !border-0 !bg-transparent !px-0 !py-0 !text-[13px] !leading-relaxed !text-white/85 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!ring-0 placeholder:!text-white/30"
-          style={{ minHeight: 64, maxHeight: 120, scrollbarWidth: "none" }}
+          className="!w-full !resize-none !rounded-none !border-0 !bg-transparent !px-0 !py-0 !text-[13px] !leading-relaxed !text-white/85 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!ring-0 placeholder:!text-white/40"
+          style={{ minHeight: 76, maxHeight: 140, scrollbarWidth: "none" }}
         />
       </div>
 
