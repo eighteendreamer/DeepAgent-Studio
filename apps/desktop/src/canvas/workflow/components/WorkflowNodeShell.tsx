@@ -11,7 +11,6 @@ import type {
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
-import { runWorkflow } from "../utils/workflowExecutor";
 import { message } from "../../../components/message";
 import { NodeConfigForm } from "./NodeConfigForm";
 import { NodeFloatingToolbar } from "./NodeFloatingToolbar";
@@ -208,10 +207,6 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
     setRenaming(false);
   };
 
-  const handleRun = () => {
-    void runWorkflow(id);
-  };
-
   const handleDelete = () => {
     if (mode === "creative") useCreativeStore.getState().removeNode(id);
     else useProfessionalStore.getState().removeNode(id);
@@ -363,7 +358,6 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       <NodeToolbar position={Position.Top} offset={34}>
         <NodeFloatingToolbar
           kind={nodeData.kind}
-          onRun={handleRun}
           onDelete={handleDelete}
           onRename={handleRename}
           onDuplicate={handleDuplicate}
@@ -381,7 +375,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       {/* Floating edit panel below node (single-selected only) */}
       {nodeData.kind !== "category-picker" && nodeData.kind !== "image-input" && (
         <NodeToolbar position={Position.Bottom} offset={12}>
-          <div style={nodeData.kind === "text-gen" || nodeData.kind === "video-gen" ? { width: 480 } : EDIT_PANEL_STYLE}>
+          <div style={nodeData.kind === "text-gen" || nodeData.kind === "image-gen" || nodeData.kind === "video-gen" ? { width: 480 } : EDIT_PANEL_STYLE}>
             <NodeConfigForm nodeId={id} nodeData={nodeData} />
           </div>
         </NodeToolbar>

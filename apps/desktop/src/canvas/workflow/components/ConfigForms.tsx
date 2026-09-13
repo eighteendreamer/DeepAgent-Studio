@@ -325,9 +325,7 @@ function RatioIcon({ ratio, size = 14 }: { ratio?: string; size?: number }) {
 }
 
 const SUB_COLOR = "rgba(255,255,255,0.5)";
-const TEXT_COLOR_88 = "rgba(255,255,255,0.88)";
-
-export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeData } & FormProps) {
   const [expanded, setExpanded] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const expandedTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -335,6 +333,7 @@ export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & Fo
 
   const model = data.imageModel?.trim() || configuredModel;
   const modelOptions = buildModelOptions(configuredModel, model);
+  const prompt = data.imagePrompt ?? "";
   const ratio = data.aspectRatio ?? "1:1";
   const resolution = data.resolution ?? "1K";
   const count = data.batchCount ?? 1;
@@ -417,241 +416,283 @@ export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & Fo
 
   const isCustomRatio = ratio === "custom";
 
+  const resizeTextarea = (target: HTMLTextAreaElement) => {
+    target.style.height = "auto";
+    target.style.height = `${Math.min(Math.max(target.scrollHeight, 76), 120)}px`;
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    event.stopPropagation();
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void runWorkflow(nodeId);
+    }
+  };
+
   return (
-    <div className="relative flex flex-col gap-2">
-      {/* 1. 输入图行（PM：始终显示 + 占位；上限 2 张，满后禁用 + 按钮） */}
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <span className="text-[11px] flex-shrink-0" style={{ color: SUB_COLOR }}>
-          输入图{inputUrls.length}/{MAX_INPUT_IMAGES}
-        </span>
-        {inputUrls.map((url, idx) => (
-          <div
-            key={`${idx}-${url.slice(0, 24)}`}
-            className="group relative h-10 w-10 flex-shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-105"
-            style={{ border: "1px solid rgba(255,255,255,0.15)" }}
-          >
-            <img src={url} alt={`输入${idx + 1}`} className="h-full w-full object-cover" draggable={false} />
-            <button
-              type="button"
-              onClick={() => removeInput(idx)}
-              className="absolute right-0 top-0 flex h-4 w-4 items-center justify-center rounded-bl-md opacity-0 transition-opacity group-hover:opacity-100"
-              style={{ background: "rgba(0,0,0,0.6)" }}
-              title="移除输入图"
-            >
-              <X className="h-2.5 w-2.5 text-white" />
-            </button>
-          </div>
-        ))}
+    <>
+      <div
+        className="relative w-full overflow-hidden rounded-[12px] border border-white/[0.08] shadow-[0_28px_80px_rgba(0,0,0,0.06),0_11.7px_33.4px_rgba(0,0,0,0.04),0_6.3px_17.9px_rgba(0,0,0,0.04),0_3.5px_10px_rgba(0,0,0,0.03)] backdrop-blur-[20px]"
+        style={{
+          background: "linear-gradient(rgba(96,104,108,0.55) 0%, rgba(52,58,60,0.55) 100%)",
+          WebkitBackdropFilter: "blur(20px)",
+        }}
+        onPointerDown={stopPanelGesture}
+        onMouseDown={stopPanelGesture}
+      >
         <button
           type="button"
-          onClick={() => {
-            if (atMaxInput) return;
-            fileInputRef.current?.click();
-          }}
-          disabled={atMaxInput}
-          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:hover:scale-100"
-          style={{
-            border: atMaxInput ? "1.5px dashed rgba(255,255,255,0.10)" : "1.5px dashed rgba(255,255,255,0.22)",
-            background: atMaxInput ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)",
-            opacity: atMaxInput ? 0.4 : 1,
-          }}
-          title={atMaxInput ? `已达上限 ${MAX_INPUT_IMAGES} 张` : "添加图片"}
+          onClick={() => setExpanded(true)}
+          className="absolute right-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded-lg text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
+          title="放大编辑"
         >
-          <Plus className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.6)" }} />
+          <Maximize2 className="h-3.5 w-3.5" />
         </button>
-        <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
-      </div>
 
-      {/* 2. 分镜大师标签（PM：蓝色圆角 + 一键移除） */}
-      {hasStoryboardTag && (
-        <div className="flex items-center gap-1.5">
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
-            style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}
-          >
-            <span style={{ fontSize: 12 }}>🎬</span>
-            分镜·{data._storyboardLabel}
-            <button
-              type="button"
-              className="flex h-3.5 w-3.5 items-center justify-center rounded-full opacity-70 transition-opacity hover:opacity-100"
-              style={{ background: "rgba(59,130,246,0.25)" }}
-              title="移除分镜模板"
-              onClick={() =>
-                onUpdate({
-                  _storyboardLabel: undefined,
-                  _storyboardKey: undefined,
-                  imagePrompt: "",
-                  status: "idle",
-                })
-              }
-            >
-              <X className="h-2 w-2" />
-            </button>
+        <div className="flex flex-wrap items-center gap-1.5 px-4 pb-0 pr-12 pt-3">
+          <span className="shrink-0 text-[11px]" style={{ color: SUB_COLOR }}>
+            输入图{inputUrls.length}/{MAX_INPUT_IMAGES}
           </span>
-        </div>
-      )}
-
-      {/* 3. 创意库模板标签 */}
-      {hasCreativeTag && (
-        <div className="flex items-center gap-1.5">
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
-            style={{ background: "rgba(139,92,246,0.18)", color: "#8b5cf6" }}
-          >
-            <span style={{ fontSize: 12 }}>📚</span>
-            模板·{data._creativeLabel}
-            <button
-              type="button"
-              className="flex h-3.5 w-3.5 items-center justify-center rounded-full opacity-70 transition-opacity hover:opacity-100"
-              style={{ background: "rgba(139,92,246,0.28)" }}
-              title="移除模板"
-              onClick={() =>
-                onUpdate({
-                  _creativeLabel: undefined,
-                  imagePrompt: "",
-                  status: "idle",
-                })
-              }
+          {inputUrls.map((url, idx) => (
+            <div
+              key={`${idx}-${url.slice(0, 24)}`}
+              className="group relative h-10 w-10 shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-105"
+              style={{ border: "1px solid rgba(255,255,255,0.15)" }}
             >
-              <X className="h-2 w-2" />
-            </button>
-          </span>
+              <img src={url} alt={`输入${idx + 1}`} className="h-full w-full object-cover" draggable={false} />
+              <button
+                type="button"
+                onClick={() => removeInput(idx)}
+                className="absolute right-0 top-0 flex h-4 w-4 items-center justify-center rounded-bl-md opacity-0 transition-opacity group-hover:opacity-100"
+                style={{ background: "rgba(0,0,0,0.6)" }}
+                title="移除输入图"
+              >
+                <X className="h-2.5 w-2.5 text-white" />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              if (atMaxInput) return;
+              fileInputRef.current?.click();
+            }}
+            disabled={atMaxInput}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:hover:scale-100"
+            style={{
+              border: atMaxInput ? "1.5px dashed rgba(255,255,255,0.10)" : "1.5px dashed rgba(255,255,255,0.22)",
+              background: atMaxInput ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)",
+              opacity: atMaxInput ? 0.4 : 1,
+            }}
+            title={atMaxInput ? `已达上限 ${MAX_INPUT_IMAGES} 张` : "添加图片"}
+          >
+            <Plus className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.6)" }} />
+          </button>
+          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
         </div>
-      )}
 
-      {/* 4. prompt（右上角留 pr-7 给放大编辑按钮让位，避免文字顶到） */}
-      <div className="pr-7">
-        <PromptArea
-          value={data.imagePrompt ?? ""}
-          placeholder={hasStoryboardTag ? "分镜指令已就绪，点击发送开始生成…" : "描述你想要生成的内容..."}
-          onChange={(imagePrompt) => onUpdate({ imagePrompt })}
-          rows={hasStoryboardTag ? 1 : 2}
-        />
-      </div>
+        {hasStoryboardTag && (
+          <div className="flex items-center gap-1.5 px-4 pt-2">
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
+              style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}
+            >
+              <span style={{ fontSize: 12 }}>🎬</span>
+              分镜·{data._storyboardLabel}
+              <button
+                type="button"
+                className="flex h-3.5 w-3.5 items-center justify-center rounded-full opacity-70 transition-opacity hover:opacity-100"
+                style={{ background: "rgba(59,130,246,0.25)" }}
+                title="移除分镜模板"
+                onClick={() =>
+                  onUpdate({
+                    _storyboardLabel: undefined,
+                    _storyboardKey: undefined,
+                    imagePrompt: "",
+                    status: "idle",
+                  })
+                }
+              >
+                <X className="h-2 w-2" />
+              </button>
+            </span>
+          </div>
+        )}
 
-      {/* 4b. 放大编辑按钮（PM：panel 右上角，悬浮于根容器） */}
-      <button
-        type="button"
-        onClick={() => setExpanded(true)}
-        className="absolute right-1.5 top-1.5 z-10 flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-white/10"
-        style={{ color: "rgba(255,255,255,0.55)" }}
-        title="放大编辑"
-      >
-        <Maximize2 className="h-3 w-3" />
-      </button>
+        {hasCreativeTag && (
+          <div className="flex items-center gap-1.5 px-4 pt-2">
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
+              style={{ background: "rgba(139,92,246,0.18)", color: "#8b5cf6" }}
+            >
+              <span style={{ fontSize: 12 }}>📚</span>
+              模板·{data._creativeLabel}
+              <button
+                type="button"
+                className="flex h-3.5 w-3.5 items-center justify-center rounded-full opacity-70 transition-opacity hover:opacity-100"
+                style={{ background: "rgba(139,92,246,0.28)" }}
+                title="移除模板"
+                onClick={() =>
+                  onUpdate({
+                    _creativeLabel: undefined,
+                    imagePrompt: "",
+                    status: "idle",
+                  })
+                }
+              >
+                <X className="h-2 w-2" />
+              </button>
+            </span>
+          </div>
+        )}
 
-      {/* 5. 参数行：模型 / 比例 / 分辨率 / 质量(gpt) / 数量 */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <ChipSelect
-          value={model}
-          options={modelOptions.length > 0 ? modelOptions : [{ value: "", label: "选择模型" }]}
-          onChange={setModel}
-        />
-        <ChipSelect
-          value={ratio}
-          options={ASPECT_RATIOS.map((r) => ({ value: r.value, label: r.label }))}
-          onChange={setRatio}
-          icon={<RatioIcon ratio={ratio} size={12} />}
-          itemIcons={ratioItemIcons}
-        />
-        <ChipSelect
-          value={resolution}
-          options={RESOLUTIONS.map((r) => ({ value: r.value, label: r.label }))}
-          onChange={(resolution) => onUpdate({ resolution })}
-        />
-        <ChipSelect
-          value={String(count)}
-          options={COUNTS.map((n) => ({ value: String(n), label: `${n}x` }))}
-          onChange={(v) => onUpdate({ batchCount: Number(v) })}
-        />
-      </div>
-
-      {/* 5b. 自定义比例 W × H（仅 ratio=custom 时展示） */}
-      {isCustomRatio && (
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] flex-shrink-0" style={{ color: SUB_COLOR }}>尺寸</span>
-          <input
-            type="number"
-            min={64}
-            max={4096}
-            step={64}
-            value={customW}
-            onChange={(e) => {
-              const v = Math.max(64, Math.min(4096, Number(e.target.value) || 64));
-              setCustomW(v);
-              commitCustomSize(v, customH);
-            }}
-            className="w-16 rounded-md px-2 py-1 text-[12px] outline-none"
-            style={{
-              background: "rgba(255,255,255,0.08)",
-              border: "1px solid rgba(255,255,255,0.10)",
-              color: "rgba(255,255,255,0.88)",
-            }}
-          />
-          <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>×</span>
-          <input
-            type="number"
-            min={64}
-            max={4096}
-            step={64}
-            value={customH}
-            onChange={(e) => {
-              const v = Math.max(64, Math.min(4096, Number(e.target.value) || 64));
-              setCustomH(v);
-              commitCustomSize(customW, v);
-            }}
-            className="w-16 rounded-md px-2 py-1 text-[12px] outline-none"
-            style={{
-              background: "rgba(255,255,255,0.08)",
-              border: "1px solid rgba(255,255,255,0.10)",
-              color: "rgba(255,255,255,0.88)",
-            }}
+        <div className="relative px-4 pb-2 pt-3">
+          <textarea
+            value={prompt}
+            placeholder={hasStoryboardTag ? "分镜指令已就绪，点击发送开始生成…" : "描述你想要生成的内容，并在下方调整生成参数..."}
+            rows={2}
+            onChange={(event) => onUpdate({ imagePrompt: event.target.value })}
+            onKeyDown={handleKeyDown}
+            onInput={(event) => resizeTextarea(event.currentTarget)}
+            className="block min-h-[76px] w-full resize-none border-0 bg-transparent p-0 pr-8 text-[13px] leading-relaxed text-white/[0.88] outline-none placeholder:text-white/40 focus:border-0 focus:outline-none focus:ring-0"
+            style={{ maxHeight: 120, scrollbarWidth: "none" }}
           />
         </div>
-      )}
 
-      {/* 6. 满屏编辑 Dialog（PM：TextEditorModal 风格 + Enter 提交） */}
+        {isCustomRatio && (
+          <div className="flex items-center gap-1.5 px-4 pb-2">
+            <span className="shrink-0 text-[11px]" style={{ color: SUB_COLOR }}>尺寸</span>
+            <input
+              type="number"
+              min={64}
+              max={4096}
+              step={64}
+              value={customW}
+              onChange={(e) => {
+                const v = Math.max(64, Math.min(4096, Number(e.target.value) || 64));
+                setCustomW(v);
+                commitCustomSize(v, customH);
+              }}
+              className="w-16 rounded-md px-2 py-1 text-[12px] outline-none"
+              style={{
+                background: "rgba(255,255,255,0.08)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                color: "rgba(255,255,255,0.88)",
+              }}
+            />
+            <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>×</span>
+            <input
+              type="number"
+              min={64}
+              max={4096}
+              step={64}
+              value={customH}
+              onChange={(e) => {
+                const v = Math.max(64, Math.min(4096, Number(e.target.value) || 64));
+                setCustomH(v);
+                commitCustomSize(customW, v);
+              }}
+              className="w-16 rounded-md px-2 py-1 text-[12px] outline-none"
+              style={{
+                background: "rgba(255,255,255,0.08)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                color: "rgba(255,255,255,0.88)",
+              }}
+            />
+          </div>
+        )}
+
+        <div className="flex items-center justify-between px-3 pb-3 pt-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <ChipSelect
+              value={model}
+              options={modelOptions.length > 0 ? modelOptions : [{ value: "", label: "选择模型" }]}
+              onChange={setModel}
+            />
+            <ChipSelect
+              value={ratio}
+              options={ASPECT_RATIOS.map((r) => ({ value: r.value, label: r.label }))}
+              onChange={setRatio}
+              icon={<RatioIcon ratio={ratio} size={12} />}
+              itemIcons={ratioItemIcons}
+            />
+            <ChipSelect
+              value={resolution}
+              options={RESOLUTIONS.map((r) => ({ value: r.value, label: r.label }))}
+              onChange={(resolution) => onUpdate({ resolution })}
+            />
+            <ChipSelect
+              value={String(count)}
+              options={COUNTS.map((n) => ({ value: String(n), label: `${n}x` }))}
+              onChange={(v) => onUpdate({ batchCount: Number(v) })}
+            />
+          </div>
+          <GlassRunButton disabled={!prompt.trim()} onClick={() => void runWorkflow(nodeId)} />
+        </div>
+      </div>
+
       <Dialog open={expanded} onOpenChange={setExpanded}>
-        <DialogContent className="!max-w-[640px]">
-          <div className="mb-3 flex items-center justify-between">
-            <DialogTitle className="text-sm font-medium" style={{ color: TEXT_COLOR_88 }}>
-              提示词编辑
-            </DialogTitle>
+        <DialogContent className="w-[min(720px,calc(100vw-32px))] max-w-none rounded-2xl border border-white/10 bg-[#1c1d20]/95 p-0 text-white shadow-[0_28px_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
+          <div className="flex items-center justify-between border-b border-white/[0.08] px-5 py-4">
+            <DialogTitle className="text-sm font-medium text-white/85">编辑提示词</DialogTitle>
             <button
               type="button"
               onClick={() => setExpanded(false)}
-              className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-white/10"
-              style={{ color: "rgba(255,255,255,0.6)" }}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-white/50 transition hover:bg-white/[0.08] hover:text-white"
               title="关闭"
             >
-              <X className="h-3.5 w-3.5" />
+              <X className="h-4 w-4" />
             </button>
           </div>
-          <textarea
-            ref={expandedTextareaRef}
-            autoFocus
-            value={data.imagePrompt ?? ""}
-            placeholder="描述你想要生成的内容..."
-            onChange={(e) => onUpdate({ imagePrompt: e.target.value })}
-            onInput={(e) => {
-              const t = e.currentTarget;
-              t.style.height = "auto";
-              t.style.height = `${Math.min(t.scrollHeight, 360)}px`;
-            }}
-            className="w-full resize-none rounded-lg p-3 outline-none"
-            style={{
-              minHeight: 220,
-              color: TEXT_COLOR_88,
-              fontSize: 14,
-              lineHeight: 1.7,
-              background: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              scrollbarWidth: "thin",
-            }}
-          />
+          <div className="px-5 py-4">
+            <textarea
+              ref={expandedTextareaRef}
+              autoFocus
+              value={prompt}
+              placeholder="描述你想要生成的内容，并在下方调整生成参数..."
+              onChange={(e) => onUpdate({ imagePrompt: e.target.value })}
+              onKeyDown={handleKeyDown}
+              className="min-h-[220px] w-full resize-y border-0 bg-transparent text-sm leading-6 text-white/90 outline-none placeholder:text-white/40 focus:ring-0"
+            />
+          </div>
+          <div className="flex items-center justify-between border-t border-white/[0.08] px-5 py-3">
+            <div className="flex items-center gap-1.5">
+              <ChipSelect
+                value={model}
+                options={modelOptions.length > 0 ? modelOptions : [{ value: "", label: "选择模型" }]}
+                onChange={setModel}
+              />
+              <ChipSelect
+                value={ratio}
+                options={ASPECT_RATIOS.map((r) => ({ value: r.value, label: r.label }))}
+                onChange={setRatio}
+                icon={<RatioIcon ratio={ratio} size={12} />}
+                itemIcons={ratioItemIcons}
+              />
+              <ChipSelect
+                value={resolution}
+                options={RESOLUTIONS.map((r) => ({ value: r.value, label: r.label }))}
+                onChange={(resolution) => onUpdate({ resolution })}
+              />
+              <ChipSelect
+                value={String(count)}
+                options={COUNTS.map((n) => ({ value: String(n), label: `${n}x` }))}
+                onChange={(v) => onUpdate({ batchCount: Number(v) })}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => { setExpanded(false); void runWorkflow(nodeId); }}
+              disabled={!prompt.trim()}
+              className="flex h-8 items-center gap-2 rounded-lg bg-white/[0.1] px-3 text-xs text-white/80 transition hover:bg-white/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ArrowUp className="h-3.5 w-3.5" />
+              执行节点
+            </button>
+          </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }
 

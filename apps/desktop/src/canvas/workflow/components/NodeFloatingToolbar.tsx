@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  Play,
   Paintbrush,
   Eraser,
   Sparkles,
@@ -300,7 +299,6 @@ const GROUP_ORDER: Array<ToolbarAction["group"]> = ["edit", "creative", "finaliz
 
 interface NodeFloatingToolbarProps {
   kind: WorkflowNodeKind;
-  onRun: () => void;
   onDelete: () => void;
   onRename: () => void;
   onDuplicate: () => void;
@@ -314,7 +312,7 @@ interface NodeFloatingToolbarProps {
   onStoryboardPreset?: (key: string) => void;
 }
 
-export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplicate, onDownload, onCrop, onAnnotate, onErase, onOutpaint, onCreativeLibrary, onSaveAsset, onStoryboardPreset }: NodeFloatingToolbarProps) {
+export function NodeFloatingToolbar({ kind, onDelete, onRename, onDuplicate, onDownload, onCrop, onAnnotate, onErase, onOutpaint, onCreativeLibrary, onSaveAsset, onStoryboardPreset }: NodeFloatingToolbarProps) {
   const actions = getActions(kind);
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const [openNestedKey, setOpenNestedKey] = useState<string | null>(null);
@@ -620,30 +618,9 @@ export function NodeFloatingToolbar({ kind, onRun, onDelete, onRename, onDuplica
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
     >
-      <HoverCard openDelay={250} closeDelay={100}>
-        <HoverCardTrigger asChild>
-          <button
-            type="button"
-            className="flex h-7 items-center gap-1.5 rounded-lg px-2 transition-colors duration-200 hover:bg-white/10"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              onRun();
-            }}
-          >
-            <Play className="h-3.5 w-3.5" strokeWidth={1.8} style={{ color: "#8b7cf7" }} />
-            <span className="whitespace-nowrap text-xs font-medium" style={{ color: LABEL_COLOR }}>
-              运行
-            </span>
-          </button>
-        </HoverCardTrigger>
-        <HoverCardContent side="bottom" sideOffset={8} className={TOOLTIP_CONTENT_CLASS}>
-          运行此节点
-        </HoverCardContent>
-      </HoverCard>
-      {groups.map((items) => (
+      {groups.map((items, index) => (
         <div key={items[0].group} className="flex items-center gap-px">
-          <div className="mx-1 h-4 w-px" style={{ background: DIVIDER_COLOR }} />
+          {index > 0 && <div className="mx-1 h-4 w-px" style={{ background: DIVIDER_COLOR }} />}
           {items.map(renderAction)}
         </div>
       ))}
