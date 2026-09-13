@@ -1,12 +1,16 @@
-import { useMemo } from "react";
-import { ArrowUp, ChevronDown, Sparkles } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { ArrowUp, ChevronDown, Maximize2, Sparkles, X } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../../../components/shadcn/dropdown-menu";
-import { Textarea } from "../../../components/shadcn/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from "../../../components/shadcn/dialog";
 import type { CreativeNodeData } from "../types";
 import { useCreativeStore } from "../store/creativeStore";
 import { runWorkflow } from "../utils/workflowExecutor";
@@ -22,6 +26,8 @@ function stopPanelGesture(event: React.SyntheticEvent) {
 }
 
 export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
+  const [expanded, setExpanded] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isImageToPrompt = data.creativeActionKey === "image-to-prompt";
   const models = [
     { value: "deepseek-chat", label: "DeepSeek Chat" },
@@ -40,14 +46,36 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
     [isImageToPrompt],
   );
 
+  const resizeTextarea = (target: HTMLTextAreaElement) => {
+    target.style.height = "auto";
+    target.style.height = `${Math.min(Math.max(target.scrollHeight, 76), 120)}px`;
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    event.stopPropagation();
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void runWorkflow(nodeId);
+    }
+  };
+
+  const handleChange = (value: string) => {
+    onUpdate({ prompt: value });
+  };
+
   return (
+    <>
     <div
-      className="w-full overflow-hidden rounded-2xl border border-white/[0.12] bg-[#1c1d20]/95 p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.34)] backdrop-blur-2xl"
+      className="w-full overflow-hidden rounded-[12px] border border-white/[0.08] shadow-[0_28px_80px_rgba(0,0,0,0.06),0_11.7px_33.4px_rgba(0,0,0,0.04),0_6.3px_17.9px_rgba(0,0,0,0.04),0_3.5px_10px_rgba(0,0,0,0.03)] backdrop-blur-[20px]"
+      style={{
+        background: "linear-gradient(rgba(96,104,108,0.55) 0%, rgba(52,58,60,0.55) 100%)",
+        WebkitBackdropFilter: "blur(20px)",
+      }}
       onPointerDown={stopPanelGesture}
       onMouseDown={stopPanelGesture}
     >
       {isImageToPrompt && (
-        <div className="flex items-center gap-2 px-2.5 pb-1 pt-2">
+        <div className="flex items-center gap-2 px-4 pb-0 pt-3">
           {upstreamImage ? (
             <img
               src={upstreamImage}
@@ -65,35 +93,35 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
         </div>
       )}
 
-      <div className="px-2.5 pb-1.5 pt-2">
-        <Textarea
+      <div className="relative px-4 pb-2 pt-3">
+        <button
+          type="button"
+          title="放大编辑"
+          onClick={() => setExpanded(true)}
+          className="absolute right-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded-lg text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
+        >
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
+        <textarea
+          ref={textareaRef}
           value={data.prompt ?? ""}
           placeholder={placeholder}
           rows={2}
-          onChange={(event) => onUpdate({ prompt: event.target.value })}
-          onKeyDown={(event) => {
-            event.stopPropagation();
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void runWorkflow(nodeId);
-            }
-          }}
-          onInput={(event) => {
-            const target = event.currentTarget;
-            target.style.height = "auto";
-            target.style.height = `${Math.min(Math.max(target.scrollHeight, 76), 140)}px`;
-          }}
-          className="!w-full !resize-none !rounded-none !border-0 !bg-transparent !px-0 !py-0 !text-[13px] !leading-relaxed !text-white/85 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!ring-0 placeholder:!text-white/40"
-          style={{ minHeight: 76, maxHeight: 140, scrollbarWidth: "none" }}
+          onChange={(event) => handleChange(event.target.value)}
+          onKeyDown={handleKeyDown}
+          onInput={(event) => resizeTextarea(event.currentTarget)}
+          className="block min-h-[76px] w-full resize-none border-0 bg-transparent p-0 pr-8 text-[13px] leading-relaxed text-white/[0.88] outline-none placeholder:text-white/40 focus:border-0 focus:outline-none focus:ring-0"
+          style={{ maxHeight: 120, scrollbarWidth: "none" }}
         />
       </div>
 
-      <div className="flex items-center justify-between px-1.5 pb-1.5 pt-1">
+      <div className="flex items-center justify-between px-3 pb-3 pt-1">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className="flex h-8 max-w-[190px] items-center gap-2 rounded-xl bg-white/[0.06] px-3 text-xs text-white/70 outline-none transition hover:bg-white/[0.1] focus-visible:ring-1 focus-visible:ring-white/20 data-[state=open]:bg-white/[0.1]"
+              title="选择模型"
+              className="flex h-8 max-w-[260px] items-center gap-2 rounded-lg bg-white/[0.08] px-3 text-xs text-white/75 outline-none transition hover:bg-white/[0.12] focus-visible:ring-1 focus-visible:ring-white/20 data-[state=open]:bg-white/[0.12]"
             >
               <span className="truncate">{selectedModelLabel}</span>
               <ChevronDown className="h-3.5 w-3.5 shrink-0 text-white/40" />
@@ -102,7 +130,7 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
           <DropdownMenuContent
             align="start"
             sideOffset={6}
-            className="!min-w-[168px] !rounded-xl !border !border-white/10 !bg-[rgba(28,29,32,0.96)] !p-1.5 !text-xs !shadow-[0_12px_32px_rgba(0,0,0,0.42)] backdrop-blur-2xl"
+            className="!min-w-[168px] !rounded-xl !border !border-white/10 !bg-[rgba(28,29,32,0.96)] !p-1.5 !text-xs !shadow-[0_18px_48px_rgba(0,0,0,0.34)] backdrop-blur-2xl"
           >
             {models.map((model) => (
               <DropdownMenuItem
@@ -123,17 +151,65 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
           title="执行节点"
           disabled={!data.prompt?.trim()}
           onClick={() => void runWorkflow(nodeId)}
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-white/[0.08] text-white/65 transition hover:bg-white/[0.14] hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+          className="relative flex h-7 w-7 items-center justify-center overflow-hidden rounded-[10px] bg-white/[0.12] text-white/75 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_4px_10px_rgba(0,0,0,0.06)] transition hover:bg-white/[0.18] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
         >
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 rounded-[10px] opacity-40"
+            style={{
+              padding: "0.6px",
+              background: "linear-gradient(135deg,rgba(255,255,255,0.95) 0%,rgba(255,255,255,0.18) 30%,rgba(255,255,255,0.18) 70%,rgba(255,255,255,0.95) 100%)",
+              WebkitMask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+              WebkitMaskComposite: "xor",
+              maskComposite: "exclude",
+            }}
+          />
           <ArrowUp className="h-4 w-4" />
         </button>
       </div>
 
       {data.output && (
-        <div className="mx-1.5 mb-1.5 rounded-xl bg-black/[0.12] px-2.5 py-2.5 text-xs leading-relaxed text-white/65">
+        <div className="mx-4 mb-3 border-t border-white/[0.08] px-0 pt-3 text-xs leading-relaxed text-white/65">
           {data.output}
         </div>
       )}
     </div>
+    <Dialog open={expanded} onOpenChange={setExpanded}>
+      <DialogContent className="w-[min(720px,calc(100vw-32px))] max-w-none rounded-2xl border border-white/10 bg-[#1c1d20]/95 p-0 text-white shadow-[0_28px_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
+        <div className="flex items-center justify-between border-b border-white/[0.08] px-5 py-4">
+          <DialogTitle className="text-sm font-medium text-white/85">编辑提示词</DialogTitle>
+          <button
+            type="button"
+            title="关闭"
+            onClick={() => setExpanded(false)}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-white/50 transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="px-5 py-4">
+          <textarea
+            autoFocus
+            value={data.prompt ?? ""}
+            onChange={(event) => handleChange(event.target.value)}
+            onKeyDown={handleKeyDown}
+            className="min-h-[220px] w-full resize-y border-0 bg-transparent text-sm leading-6 text-white/90 outline-none placeholder:text-white/40 focus:ring-0"
+            placeholder={placeholder}
+          />
+        </div>
+        <div className="flex justify-end border-t border-white/[0.08] px-5 py-3">
+          <button
+            type="button"
+            onClick={() => { setExpanded(false); void runWorkflow(nodeId); }}
+            disabled={!data.prompt?.trim()}
+            className="flex h-8 items-center gap-2 rounded-lg bg-white/[0.1] px-3 text-xs text-white/80 transition hover:bg-white/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <ArrowUp className="h-3.5 w-3.5" />
+            执行节点
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
