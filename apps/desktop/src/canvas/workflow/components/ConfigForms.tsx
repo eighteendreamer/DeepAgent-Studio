@@ -8,6 +8,7 @@ import {
   DropdownMenuItem,
 } from "../../../components/shadcn/dropdown-menu";
 import type { CreativeNodeData, ProfessionalNodeData, WorkflowNodeData } from "../types";
+import { useCanvasSettingsStore } from "../store/canvasSettingsStore";
 
 // —— Penguin-Magic 图二设计语言：玻璃 chip 参数行 + 无边框提示词区 ——
 const CHIP_STYLE: React.CSSProperties = {
@@ -142,6 +143,21 @@ function ChipSelect({
   );
 }
 
+function buildModelOptions(configuredModel: string, selectedModel: string) {
+  return Array.from(
+    new Map(
+      [
+        configuredModel ? { value: configuredModel, label: configuredModel } : null,
+        selectedModel && selectedModel !== configuredModel
+          ? { value: selectedModel, label: selectedModel }
+          : null,
+      ]
+        .filter((item): item is { value: string; label: string } => item !== null)
+        .map((item) => [item.value, item]),
+    ).values(),
+  );
+}
+
 function SegmentedChips<T extends string>({
   value,
   options,
@@ -215,14 +231,6 @@ export function TextGenForm({ data, onUpdate }: { data: CreativeNodeData } & For
   );
 }
 
-// —— Image Gen 专用：模型清单 + 能力边界 ——
-const IMAGE_MODELS = [
-  { value: "dall-e-3", label: "DALL-E 3" },
-  { value: "stable-diffusion-xl", label: "SD XL" },
-  { value: "midjourney-v6", label: "Midjourney V6" },
-  { value: "gpt-image-2", label: "GPT-Image-2" },
-] as const;
-
 const ASPECT_RATIOS = [
   { value: "Auto", label: "Auto" },
   { value: "21:9", label: "21:9" },
@@ -242,20 +250,6 @@ const RESOLUTIONS = [
   { value: "1K", label: "1K" },
   { value: "2K", label: "2K" },
   { value: "4K", label: "4K" },
-] as const;
-
-// Midjourney 不走显式分辨率；其它模型 1K/2K/4K 全档
-const getResolutionsForModel = (model: string | undefined) => {
-  if (model === "midjourney-v6") return [{ value: "Auto", label: "Auto" }] as const;
-  return RESOLUTIONS;
-};
-
-// GPT-Image-2 才显示质量档
-const GPT_IMAGE_2_QUALITIES = [
-  { value: "auto", label: "Auto" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
 ] as const;
 
 const COUNTS = [1, 2, 3, 4] as const;
@@ -313,21 +307,18 @@ export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & Fo
   const [expanded, setExpanded] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const expandedTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const configuredModel = useCanvasSettingsStore((state) => state.scenarioModels.image.model.trim());
 
-  const model = data.imageModel ?? "dall-e-3";
+  const model = data.imageModel?.trim() || configuredModel;
+  const modelOptions = buildModelOptions(configuredModel, model);
   const ratio = data.aspectRatio ?? "1:1";
   const resolution = data.resolution ?? "1K";
   const count = data.batchCount ?? 1;
-  const quality = data.gptImage2Quality ?? "auto";
-  const isGptImage2 = model === "gpt-image-2";
-  const isMj = model === "midjourney-v6";
   const inputUrls = data.imageInputUrls ?? [];
   const hasStoryboardTag = !!data._storyboardLabel;
   const hasCreativeTag = !hasStoryboardTag && !!data._creativeLabel;
   const MAX_INPUT_IMAGES = 2;
   const atMaxInput = inputUrls.length >= MAX_INPUT_IMAGES;
-
-  const resolutionOptions = getResolutionsForModel(model);
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -351,10 +342,7 @@ export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & Fo
   };
 
   const setModel = (next: string) => {
-    const updates: Record<string, unknown> = { imageModel: next };
-    if (next === "midjourney-v6" && resolution !== "Auto") updates.resolution = "Auto";
-    if (next !== "gpt-image-2" && data.gptImage2Quality) updates.gptImage2Quality = undefined;
-    onUpdate(updates);
+    onUpdate({ imageModel: next });
   };
 
   const setRatio = (next: string) => {
@@ -532,7 +520,7 @@ export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & Fo
       <div className="flex flex-wrap items-center gap-1.5">
         <ChipSelect
           value={model}
-          options={IMAGE_MODELS.map((m) => ({ value: m.value, label: m.label }))}
+          options={modelOptions.length > 0 ? modelOptions : [{ value: "", label: "选择模型" }]}
           onChange={setModel}
         />
         <ChipSelect
@@ -542,20 +530,11 @@ export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & Fo
           icon={<RatioIcon ratio={ratio} size={12} />}
           itemIcons={ratioItemIcons}
         />
-        {!isMj && (
-          <ChipSelect
-            value={resolution}
-            options={resolutionOptions.map((r) => ({ value: r.value, label: r.label }))}
-            onChange={(resolution) => onUpdate({ resolution })}
-          />
-        )}
-        {isGptImage2 && (
-          <ChipSelect
-            value={quality}
-            options={GPT_IMAGE_2_QUALITIES.map((q) => ({ value: q.value, label: q.label }))}
-            onChange={(gptImage2Quality) => onUpdate({ gptImage2Quality })}
-          />
-        )}
+        <ChipSelect
+          value={resolution}
+          options={RESOLUTIONS.map((r) => ({ value: r.value, label: r.label }))}
+          onChange={(resolution) => onUpdate({ resolution })}
+        />
         <ChipSelect
           value={String(count)}
           options={COUNTS.map((n) => ({ value: String(n), label: `${n}x` }))}
@@ -653,17 +632,16 @@ export function ImageGenForm({ data, onUpdate }: { data: CreativeNodeData } & Fo
 }
 
 export function VideoGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  const configuredModel = useCanvasSettingsStore((state) => state.scenarioModels.video.model.trim());
+  const selectedModel = data.videoModel?.trim() || configuredModel;
+  const modelOptions = buildModelOptions(configuredModel, selectedModel);
+
   return (
     <div className="flex flex-col gap-2.5">
-      <SegmentedChips
-        value={data.videoService ?? "sora"}
-        options={[
-          { value: "sora", label: "Sora" },
-          { value: "veo", label: "Veo" },
-          { value: "kling", label: "Kling" },
-        ]}
-        onChange={(videoService) => onUpdate({ videoService })}
-        activeColor="rgba(59,130,246,1)"
+      <ChipSelect
+        value={selectedModel}
+        options={modelOptions.length > 0 ? modelOptions : [{ value: "", label: "选择模型" }]}
+        onChange={(videoModel) => onUpdate({ videoModel })}
       />
       <PromptArea
         value={data.videoPrompt ?? ""}

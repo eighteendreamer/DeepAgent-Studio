@@ -71,7 +71,8 @@ export interface CreativeNodeData {
   creativeCategoryKey?: string;
   creativeAction?: string;
   creativeActionKey?: string;
-  videoService?: "sora" | "veo" | "kling";
+  /** @deprecated 旧版供应商分段字段，仅用于兼容历史画布；新逻辑统一使用 videoModel。 */
+  videoService?: string;
   videoModel?: string;
   videoPrompt?: string;
   videoInputUrl?: string;

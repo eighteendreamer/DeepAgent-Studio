@@ -12,6 +12,7 @@ import {
 import { Button } from "../../../components/shadcn/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../../components/shadcn/dropdown-menu";
 import { Textarea } from "../../../components/shadcn/textarea";
+import { useCanvasSettingsStore } from "../store/canvasSettingsStore";
 
 interface Props {
   imageUrl: string;
@@ -59,11 +60,14 @@ function SettingMenu({ label, value, options, onChange }: {
 
 export function OutpaintOverlay({ imageUrl, itemName, onCancel }: Props) {
   const [draft, setDraft] = useState("");
-  const [model, setModel] = useState("GPT Image 2");
+  const configuredImageModel = useCanvasSettingsStore((state) => state.scenarioModels.image.model.trim());
+  const [model, setModel] = useState("");
   const [resolution, setResolution] = useState("4K");
   const [thinkingLevel, setThinkingLevel] = useState("中度");
   const [preset, setPreset] = useState("预设");
   const [messages, setMessages] = useState<Message[]>([]);
+  const selectedModel = model.trim() || configuredImageModel;
+  const modelOptions = selectedModel ? [selectedModel] : ["选择模型"];
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -150,7 +154,12 @@ export function OutpaintOverlay({ imageUrl, itemName, onCancel }: Props) {
           />
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-white/[0.08] pt-2">
-          <SettingMenu label="模型" value={model} options={["GPT Image 2", "DALL-E 3"]} onChange={setModel} />
+          <SettingMenu
+            label="模型"
+            value={selectedModel || "选择模型"}
+            options={modelOptions}
+            onChange={(next) => setModel(next === "选择模型" ? "" : next)}
+          />
           <SettingMenu label="分辨率" value={resolution} options={["1K", "2K", "4K"]} onChange={setResolution} />
           <SettingMenu label="思考等级" value={thinkingLevel} options={["简单", "中度", "深度"]} onChange={setThinkingLevel} />
           <SettingMenu

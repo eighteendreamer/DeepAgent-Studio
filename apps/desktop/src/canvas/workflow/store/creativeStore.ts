@@ -27,7 +27,7 @@ function createDefaultCreativeData(kind: CreativeNodeKind): CreativeNodeData {
     case "image-input":
       return { ...base, label: "图片输入", imageUrl: "" };
     case "image-gen":
-      return { ...base, label: "图片生成", imagePrompt: "", aspectRatio: "1:1" };
+      return { ...base, label: "图片生成", imageModel: "", imagePrompt: "", aspectRatio: "1:1" };
     case "image-compare":
       return { ...base, label: "图片对比" };
     case "image-edit":
@@ -35,7 +35,7 @@ function createDefaultCreativeData(kind: CreativeNodeKind): CreativeNodeData {
     case "script-gen":
       return { ...base, label: "脚本生成", prompt: "" };
     case "video-gen":
-      return { ...base, label: "视频生成", videoService: "sora", videoPrompt: "" };
+      return { ...base, label: "视频生成", videoModel: "", videoPrompt: "" };
     case "video-stitch":
       return { ...base, label: "视频拼接" };
     case "camera":

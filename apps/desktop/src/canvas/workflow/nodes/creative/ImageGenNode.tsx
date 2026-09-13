@@ -5,12 +5,14 @@ interface Props {
 }
 
 export function ImageGenContent({ data }: Props) {
+  const model = data.imageModel?.trim();
+
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1.5">
-        {data.imageModel && (
-          <span className="rounded px-1 py-0.5 text-[9px] font-medium" style={{ background: "rgba(236,72,153,0.2)", color: "rgba(236,72,153,0.9)" }}>
-            {data.imageModel}
+        {model && (
+          <span className="truncate text-[9px] font-medium" style={{ color: "rgba(248,248,248,0.55)" }}>
+            {model}
           </span>
         )}
         {data.aspectRatio && (

@@ -4,21 +4,16 @@ interface Props {
   data: CreativeNodeData;
 }
 
-const SERVICE_COLORS: Record<string, string> = {
-  sora: "rgba(16,185,129,0.9)",
-  veo: "rgba(59,130,246,0.9)",
-  kling: "rgba(245,158,11,0.9)",
-};
-
 export function VideoGenContent({ data }: Props) {
-  const service = data.videoService ?? "sora";
-  const serviceColor = SERVICE_COLORS[service] ?? SERVICE_COLORS.sora;
+  const model = data.videoModel?.trim();
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1.5">
-        <span className="rounded px-1 py-0.5 text-[9px] font-medium uppercase" style={{ background: `${serviceColor}22`, color: serviceColor }}>
-          {service}
-        </span>
+        {model && (
+          <span className="truncate text-[9px] font-medium" style={{ color: "rgba(248,248,248,0.55)" }}>
+            {model}
+          </span>
+        )}
         {data.videoDuration && (
           <span className="text-[9px]" style={{ color: "rgba(248,248,248,0.35)" }}>
             {data.videoDuration}s
