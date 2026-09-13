@@ -1,5 +1,12 @@
 import { useMemo } from "react";
-import { Play, Sparkles } from "lucide-react";
+import { ChevronDown, Play, Sparkles } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../../../components/shadcn/dropdown-menu";
+import { Textarea } from "../../../components/shadcn/textarea";
 import type { CreativeNodeData } from "../types";
 import { useCreativeStore } from "../store/creativeStore";
 import { runWorkflow } from "../utils/workflowExecutor";
@@ -16,6 +23,12 @@ function stopPanelGesture(event: React.SyntheticEvent) {
 
 export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
   const isImageToPrompt = data.creativeActionKey === "image-to-prompt";
+  const models = [
+    { value: "deepseek-chat", label: "DeepSeek Chat" },
+    { value: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+  ];
+  const selectedModel = data.model ?? "deepseek-chat";
+  const selectedModelLabel = models.find((model) => model.value === selectedModel)?.label ?? "DeepSeek Chat";
   const upstreamImage = useCreativeStore((state) => {
     if (!isImageToPrompt) return "";
     const edge = state.edges.find((item) => item.target === nodeId);
@@ -54,7 +67,7 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
       )}
 
       <div className="px-3.5 pb-2 pt-3">
-        <textarea
+        <Textarea
           value={data.prompt ?? ""}
           placeholder={placeholder}
           rows={2}
@@ -71,20 +84,41 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
             target.style.height = "auto";
             target.style.height = `${Math.min(Math.max(target.scrollHeight, 64), 120)}px`;
           }}
-          className="w-full resize-none bg-transparent pr-7 text-[13px] leading-relaxed text-white/85 outline-none placeholder:text-white/30"
+          className="!min-h-0 !w-full !resize-none !rounded-none !border-0 !bg-transparent !px-0 !py-0 !text-[13px] !leading-relaxed !text-white/85 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!ring-0 placeholder:!text-white/30"
           style={{ minHeight: 64, maxHeight: 120, scrollbarWidth: "none" }}
         />
       </div>
 
       <div className="flex items-center justify-between border-t border-white/[0.07] px-3 pb-3 pt-2">
-        <select
-          value={data.model ?? "deepseek-chat"}
-          onChange={(event) => onUpdate({ model: event.target.value })}
-          className="h-8 max-w-[190px] cursor-pointer rounded-lg bg-white/[0.08] px-2.5 text-xs text-white/75 outline-none"
-        >
-          <option value="deepseek-chat">DeepSeek Chat</option>
-          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
-        </select>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="flex h-8 max-w-[190px] items-center gap-2 rounded-lg bg-white/[0.08] px-2.5 text-xs text-white/75 outline-none transition hover:bg-white/[0.13] focus-visible:ring-1 focus-visible:ring-white/20 data-[state=open]:bg-white/[0.13]"
+            >
+              <span className="truncate">{selectedModelLabel}</span>
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-white/45" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            sideOffset={6}
+            className="!min-w-[168px] !rounded-xl !border !border-white/10 !bg-[rgba(28,29,32,0.96)] !p-1.5 !text-xs !shadow-[0_12px_32px_rgba(0,0,0,0.42)] backdrop-blur-2xl"
+          >
+            {models.map((model) => (
+              <DropdownMenuItem
+                key={model.value}
+                onSelect={() => onUpdate({ model: model.value })}
+                className="!rounded-lg !px-2.5 !py-2 !text-xs data-[highlighted]:!bg-white/10"
+                style={{
+                  color: model.value === selectedModel ? "rgba(248,248,248,0.95)" : "rgba(248,248,248,0.65)",
+                }}
+              >
+                {model.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
         <button
           type="button"
           title="执行节点"
