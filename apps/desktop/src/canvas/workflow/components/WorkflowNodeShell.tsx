@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { Handle, NodeToolbar, Position, type NodeProps } from "@xyflow/react";
+import { Plus } from "lucide-react";
 import type {
   WorkflowNodeData,
   NodeStatus,
@@ -570,7 +571,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
         </div>
       </div>
 
-      {/* Connection handles — positioned outside the node card */}
+      {/* Connection handles — invisible Handle for React Flow + visual port button */}
       <Handle
         type="target"
         position={Position.Left}
@@ -578,14 +579,27 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
           left: -20,
           top: "50%",
           transform: "translateY(-50%)",
-          width: 14,
-          height: 14,
-          background: "rgba(156,163,175,0.8)",
-          border: "2px solid rgba(30,30,35,0.95)",
-          borderRadius: "50%",
+          width: 20,
+          height: 20,
+          opacity: 0,
           cursor: "crosshair",
         }}
       />
+      <div
+        className="absolute flex items-center justify-center rounded-full transition-all duration-150"
+        style={{
+          left: -20,
+          top: "50%",
+          transform: "translateY(-50%)",
+          width: 20,
+          height: 20,
+          background: "rgba(30,30,35,0.9)",
+          border: "1.5px solid rgba(156,163,175,0.5)",
+          cursor: "crosshair",
+        }}
+      >
+        <div style={{ width: 6, height: 6, borderRadius: "50%", background: "rgba(156,163,175,0.7)" }} />
+      </div>
       {(() => {
         const handles = getNodeSourceHandles(nodeData.kind ?? "", nodeData as Record<string, unknown>);
         const n = handles.length;
@@ -596,7 +610,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
               {h.label && (
                 <span
                   className="absolute whitespace-nowrap rounded px-1 py-0.5 text-[8px] font-medium"
-                  style={{ right: 10, top: `${pct}%`, transform: "translateY(-50%)", color: "rgba(248,248,248,0.5)", background: "rgba(255,255,255,0.06)" }}
+                  style={{ right: 14, top: `${pct}%`, transform: "translateY(-50%)", color: "rgba(248,248,248,0.5)", background: "rgba(255,255,255,0.06)" }}
                 >
                   {h.label}
                 </span>
@@ -609,14 +623,27 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
                   right: -20,
                   top: `${pct}%`,
                   transform: "translateY(-50%)",
-                  width: 14,
-                  height: 14,
-                  background: "rgba(156,163,175,0.8)",
-                  border: "2px solid rgba(30,30,35,0.95)",
-                  borderRadius: "50%",
+                  width: 20,
+                  height: 20,
+                  opacity: 0,
                   cursor: "crosshair",
                 }}
               />
+              <div
+                className="absolute flex items-center justify-center rounded-full transition-all duration-150 hover:border-[rgba(95,201,209,0.6)] hover:bg-[rgba(95,201,209,0.1)]"
+                style={{
+                  right: -20,
+                  top: `${pct}%`,
+                  transform: "translateY(-50%)",
+                  width: 20,
+                  height: 20,
+                  background: "rgba(30,30,35,0.9)",
+                  border: "1.5px solid rgba(156,163,175,0.5)",
+                  cursor: "crosshair",
+                }}
+              >
+                <Plus style={{ width: 10, height: 10, color: "rgba(156,163,175,0.7)" }} strokeWidth={2.5} />
+              </div>
             </span>
           );
         });
