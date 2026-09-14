@@ -457,6 +457,10 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       className="relative select-none"
       style={{
         width: nodeData.kind === "category-picker" ? 336 : nodeData.kind === "text-gen" ? 300 : 240,
+        minHeight: (() => {
+          const handles = getNodeSourceHandles(nodeData.kind ?? "", nodeData as Record<string, unknown>);
+          return Math.max(64, handles.length * 28 + 16);
+        })(),
         borderRadius: 16,
         background: "#101010",
         border: STATUS_BORDER[nodeStatus],
@@ -582,36 +586,37 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       />
       {(() => {
         const handles = getNodeSourceHandles(nodeData.kind ?? "", nodeData as Record<string, unknown>);
-        const spacing = 28;
-        const totalH = handles.length * spacing;
-        const startY = 50 - totalH / 2 + spacing / 2;
-        return handles.map((h, i) => (
-          <div key={h.id} className="absolute flex items-center" style={{ right: -8, top: `calc(${startY + i * spacing}px - 8px)` }}>
-            {h.label && (
-              <span
-                className="mr-1 whitespace-nowrap rounded px-1 py-0.5 text-[8px] font-medium"
-                style={{ color: "rgba(248,248,248,0.5)", background: "rgba(255,255,255,0.06)" }}
-              >
-                {h.label}
-              </span>
-            )}
-            <Handle
-              type="source"
-              position={Position.Right}
-              id={h.id}
-              style={{
-                position: "relative",
-                right: 0,
-                width: 14,
-                height: 14,
-                background: "rgba(156,163,175,0.8)",
-                border: "2px solid rgba(30,30,35,0.95)",
-                borderRadius: "50%",
-                cursor: "crosshair",
-              }}
-            />
-          </div>
-        ));
+        const n = handles.length;
+        return handles.map((h, i) => {
+          const pct = n === 1 ? 50 : ((i + 1) / (n + 1)) * 100;
+          return (
+            <div key={h.id} className="absolute flex items-center" style={{ right: -8, top: `${pct}%`, transform: "translateY(-50%)" }}>
+              {h.label && (
+                <span
+                  className="mr-1 whitespace-nowrap rounded px-1 py-0.5 text-[8px] font-medium"
+                  style={{ color: "rgba(248,248,248,0.5)", background: "rgba(255,255,255,0.06)" }}
+                >
+                  {h.label}
+                </span>
+              )}
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={h.id}
+                style={{
+                  position: "relative",
+                  right: 0,
+                  width: 14,
+                  height: 14,
+                  background: "rgba(156,163,175,0.8)",
+                  border: "2px solid rgba(30,30,35,0.95)",
+                  borderRadius: "50%",
+                  cursor: "crosshair",
+                }}
+              />
+            </div>
+          );
+        });
       })()}
 
       {/* Running progress bar */}
