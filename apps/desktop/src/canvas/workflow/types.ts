@@ -375,6 +375,74 @@ export const CREATIVE_NODE_KINDS: CreativeNodeKind[] = [
   "storyboard-grid",
 ];
 
+export interface ProfessionalNodePickerTab {
+  label: string;
+  groups: Array<{
+    label?: string;
+    items: Array<{ kind: ProfessionalNodeKind; label: string; icon: string }>;
+  }>;
+}
+
+export const PROFESSIONAL_NODE_PICKER_TABS: ProfessionalNodePickerTab[] = [
+  {
+    label: "节点",
+    groups: [
+      {
+        label: "AI",
+        items: [
+          { kind: "llm", label: "LLM", icon: "wand-magic-sparkles" },
+          { kind: "agent", label: "Agent", icon: "robot" },
+          { kind: "knowledge-retrieval", label: "知识检索", icon: "book" },
+          { kind: "answer", label: "输出", icon: "message-square" },
+          { kind: "question-classifier", label: "问题分类器", icon: "tags" },
+          { kind: "parameter-extractor", label: "参数提取器", icon: "table-columns" },
+        ],
+      },
+      {
+        label: "逻辑",
+        items: [
+          { kind: "if-else", label: "条件分支", icon: "code-branch" },
+          { kind: "human-input", label: "人工介入", icon: "user-check" },
+          { kind: "iteration", label: "迭代", icon: "rotate" },
+          { kind: "loop", label: "循环", icon: "repeat" },
+        ],
+      },
+      {
+        label: "转换",
+        items: [
+          { kind: "code", label: "代码执行", icon: "code" },
+          { kind: "template-transform", label: "模板转换", icon: "file-code" },
+          { kind: "variable-aggregator", label: "变量聚合器", icon: "layer-group" },
+          { kind: "document-extractor", label: "文档提取器", icon: "file-text" },
+          { kind: "variable-assigner", label: "变量赋值", icon: "equal" },
+          { kind: "http-request", label: "HTTP 请求", icon: "globe" },
+          { kind: "list-operator", label: "列表操作", icon: "list" },
+        ],
+      },
+    ],
+  },
+  {
+    label: "工具",
+    groups: [],
+  },
+  {
+    label: "开始",
+    groups: [
+      {
+        items: [
+          { kind: "start", label: "用户输入", icon: "play" },
+          { kind: "trigger-schedule", label: "定时触发器", icon: "clock" },
+          { kind: "trigger-webhook", label: "Webhook 触发器", icon: "webhook" },
+        ],
+      },
+    ],
+  },
+  {
+    label: "Snippets",
+    groups: [],
+  },
+];
+
 export const PROFESSIONAL_NODE_CATEGORIES: ProfessionalNodeCategory[] = [
   {
     group: "流程控制",

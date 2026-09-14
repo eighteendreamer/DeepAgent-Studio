@@ -5,7 +5,7 @@ import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import {
   CREATIVE_NODE_PICKER_CATEGORIES,
-  PROFESSIONAL_NODE_CATEGORIES,
+  PROFESSIONAL_NODE_PICKER_TABS,
   type CreativePickerCategory,
   type CreativeNodeKind,
   type ProfessionalNodeKind,
@@ -35,10 +35,12 @@ export function NodePicker() {
     action: string;
     actionKey: string;
   } | null>(null);
+  const [activeTab, setActiveTab] = useState(0);
 
   useEffect(() => {
     if (!nodePicker) {
       setUploadContext(null);
+      setActiveTab(0);
     }
   }, [nodePicker]);
 
@@ -207,28 +209,64 @@ export function NodePicker() {
         )}
 
         {mode === "professional" && (
-          <div className="node-picker-scroll max-h-80 overflow-y-auto overscroll-contain p-1.5">
-            {PROFESSIONAL_NODE_CATEGORIES.map((cat) => (
-              <div key={cat.group} className="mb-1">
-                <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: cat.color }}>{cat.group}</div>
-                {cat.items.map((item) => (
-                  <button
-                    key={item.kind}
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData("application/workflow-node-kind", item.kind);
-                      e.dataTransfer.effectAllowed = "copy";
-                    }}
-                    onClick={() => handleProfessionalSelect(item.kind)}
-                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-all duration-150 hover:bg-white/10"
-                  >
-                    <PickerIcon name={item.icon} size={14} style={{ color: ICON_COLOR, width: 16 }} />
-                    <span className="text-xs" style={{ color: "rgba(248,248,248,0.85)" }}>{item.label}</span>
-                  </button>
-                ))}
-              </div>
-            ))}
-          </div>
+          <>
+            <div className="flex gap-0.5 px-2 pt-2">
+              {PROFESSIONAL_NODE_PICKER_TABS.map((tab, i) => (
+                <button
+                  key={tab.label}
+                  onClick={() => setActiveTab(i)}
+                  className="rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
+                  style={{
+                    background: activeTab === i ? "rgba(255,255,255,0.12)" : "transparent",
+                    color: activeTab === i ? "rgba(248,248,248,0.92)" : "rgba(248,248,248,0.45)",
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            <div className="node-picker-scroll max-h-80 overflow-y-auto overscroll-contain p-1.5">
+              {(() => {
+                const tab = PROFESSIONAL_NODE_PICKER_TABS[activeTab];
+                if (!tab.groups.length) {
+                  return (
+                    <div className="flex flex-col items-center justify-center py-8">
+                      <span className="text-xs" style={{ color: "rgba(248,248,248,0.3)" }}>
+                        {tab.label}
+                      </span>
+                      <span className="mt-1 text-[10px]" style={{ color: "rgba(248,248,248,0.2)" }}>
+                        即将开放
+                      </span>
+                    </div>
+                  );
+                }
+                return tab.groups.map((group) => (
+                  <div key={group.label ?? "_"} className="mb-1">
+                    {group.label && (
+                      <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "rgba(248,248,248,0.38)" }}>
+                        {group.label}
+                      </div>
+                    )}
+                    {group.items.map((item) => (
+                      <button
+                        key={item.kind}
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData("application/workflow-node-kind", item.kind);
+                          e.dataTransfer.effectAllowed = "copy";
+                        }}
+                        onClick={() => handleProfessionalSelect(item.kind)}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-all duration-150 hover:bg-white/10"
+                      >
+                        <PickerIcon name={item.icon} size={14} style={{ color: ICON_COLOR, width: 16 }} />
+                        <span className="text-xs" style={{ color: "rgba(248,248,248,0.85)" }}>{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                ));
+              })()}
+            </div>
+          </>
         )}
       </div>
     </>
