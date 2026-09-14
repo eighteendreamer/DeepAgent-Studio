@@ -575,9 +575,8 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
         type="target"
         position={Position.Left}
         style={{
-          left: -6,
-          width: 16,
-          height: 16,
+          width: 14,
+          height: 14,
           background: "rgba(156,163,175,0.8)",
           border: "2px solid rgba(30,30,35,0.95)",
           borderRadius: "50%",
