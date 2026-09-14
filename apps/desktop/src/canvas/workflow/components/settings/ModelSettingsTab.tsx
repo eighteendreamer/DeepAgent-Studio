@@ -887,25 +887,6 @@ export function ModelSettingsTab() {
                   </button>
                 </div>
 
-                {/* 快捷添加模板标签 */}
-                <div>
-                  <div className="text-[10px] font-medium text-white/40 mb-1 flex items-center gap-1">
-                    <Sparkles size={10} className="text-[#339CFF]" />
-                    推荐预设:
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {TEMPLATES.slice(0, 4).map((tmpl) => (
-                      <button
-                        key={tmpl.name}
-                        type="button"
-                        onClick={() => handleOpenAddProviderDialog(tmpl)}
-                        className="rounded border border-white/[0.07] bg-white/[0.02] px-1.5 py-0.5 text-[9.5px] text-white/60 hover:border-[#339CFF]/50 hover:bg-[#339CFF]/10 hover:text-white transition-all"
-                      >
-                        + {tmpl.tag}
-                      </button>
-                    ))}
-                  </div>
-                </div>
               </div>
 
               {/* 供应商列表 */}
