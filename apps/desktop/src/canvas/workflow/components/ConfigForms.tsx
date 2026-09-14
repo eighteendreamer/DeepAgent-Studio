@@ -4,13 +4,6 @@ import { Dialog, DialogContent, DialogTitle } from "../../../components/shadcn/d
 import { Input } from "../../../components/shadcn/input";
 import { Textarea } from "../../../components/shadcn/textarea";
 import { Label } from "../../../components/shadcn/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../../components/shadcn/select";
 import { cn } from "../../../components/shadcn/utils";
 import {
   DropdownMenu,
@@ -957,14 +950,8 @@ const CANVAS_FIELD_CN =
 const CANVAS_TEXTAREA_CN =
   "!rounded-lg !border !border-white/[0.08] !bg-white/[0.05] !px-2.5 !py-1.5 !text-[12px] !text-white/85 !shadow-none placeholder:!text-white/30 focus:!border-white/25 focus:!ring-0";
 
-const CANVAS_TRIGGER_CN =
-  "!h-8 !rounded-lg !border !border-white/[0.08] !bg-white/[0.05] !px-2.5 !text-[12px] !text-white/85 data-[placeholder]:!text-white/40 hover:!bg-white/[0.08] focus-visible:!bg-white/[0.08] focus-visible:!ring-0 [&>svg]:!text-white/45";
-
-const CANVAS_SELECT_CONTENT_CN =
-  "!rounded-lg !border !border-white/[0.08] !bg-[rgba(24,24,27,0.96)] !p-1 !text-[12px] !text-white/85 !shadow-[0_8px_28px_rgba(0,0,0,0.45)]";
-
-const CANVAS_SELECT_ITEM_CN =
-  "!rounded-lg !py-1.5 !text-[12px] !text-white/85 data-[highlighted]:!bg-white/10 focus:!bg-white/10";
+const CANVAS_DROPDOWN_CONTENT_CN =
+  "!min-w-0 !rounded-xl !p-1 !text-[12px] !shadow-[0_8px_28px_rgba(0,0,0,0.45)] !border !border-white/[0.08] !bg-[rgba(24,24,27,0.96)] backdrop-blur-[40px]";
 
 function CanvasInput({ className, style, ...props }: React.ComponentProps<typeof Input>) {
   return <Input className={cn(CANVAS_FIELD_CN, className)} style={style} {...props} />;
@@ -985,19 +972,48 @@ function CanvasSelect({
   onChange: (v: string) => void;
   style?: React.CSSProperties;
 }) {
+  const currentLabel = options.find((o) => o.value === value)?.label ?? value;
   return (
-    <Select value={value} onValueChange={onChange}>
-      <SelectTrigger className={CANVAS_TRIGGER_CN} style={style}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent className={CANVAS_SELECT_CONTENT_CN}>
-        {options.map((o) => (
-          <SelectItem key={o.value} value={o.value} className={CANVAS_SELECT_ITEM_CN}>
-            {o.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="relative flex h-8 items-center gap-1 rounded-lg px-2.5 text-[12px] font-medium transition-colors hover:!bg-white/[0.08] focus:outline-none data-[state=open]:!bg-white/[0.08] [&>svg]:opacity-60"
+          style={{
+            background: "rgba(255,255,255,0.08)",
+            color: "rgba(255,255,255,0.85)",
+            ...style,
+          }}
+        >
+          <span className="whitespace-nowrap">{currentLabel}</span>
+          <ChevronDown className="h-3 w-3" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        sideOffset={6}
+        className={CANVAS_DROPDOWN_CONTENT_CN}
+      >
+        {options.map((o) => {
+          const active = o.value === value;
+          return (
+            <DropdownMenuItem
+              key={o.value}
+              onSelect={() => onChange(o.value)}
+              className="!rounded-lg !px-2.5 !py-1.5 !text-[12px] data-[highlighted]:!bg-white/[0.10] flex items-center"
+              style={{ color: active ? "#a78bfa" : "rgba(255,255,255,0.88)" }}
+            >
+              {active ? (
+                <span className="mr-1.5 text-[10px] leading-none" style={{ color: "#a78bfa" }}>✓</span>
+              ) : (
+                <span className="mr-1.5 inline-block h-[10px] w-[10px]" />
+              )}
+              <span>{o.label}</span>
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
