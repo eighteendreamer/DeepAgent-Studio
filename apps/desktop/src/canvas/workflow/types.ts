@@ -46,6 +46,25 @@ export type ProfessionalNodeKind =
 
 export type WorkflowNodeKind = CreativeNodeKind | ProfessionalNodeKind;
 
+export interface NodeOutput {
+  name: string;
+  type: string;
+  description?: string;
+}
+
+export type ExecutorKind = "passthrough" | "model" | "code" | "http" | "retrieval" | "control-flow" | "transform" | "human";
+
+export interface NodeDefinition {
+  kind: ProfessionalNodeKind;
+  label: string;
+  category: string;
+  icon: string;
+  availability: "enabled" | "reserved";
+  executor: ExecutorKind;
+  outputs: NodeOutput[];
+  defaultData: () => Record<string, unknown>;
+}
+
 export interface CreativeNodeData {
   label: string;
   kind: CreativeNodeKind;

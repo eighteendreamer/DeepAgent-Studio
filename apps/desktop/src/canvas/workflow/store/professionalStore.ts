@@ -14,43 +14,12 @@ import type {
   WorkflowEdge,
   WorkflowNode,
 } from "../types";
+import { createDefaultNodeData } from "../utils/nodeRegistry";
 
 const SNAP_GRID = 24;
 
 function createDefaultProfessionalData(kind: ProfessionalNodeKind): ProfessionalNodeData {
-  const base: ProfessionalNodeData = { label: "", kind, status: "idle" };
-  switch (kind) {
-    case "start":
-      return { ...base, label: "开始", inputVariables: [] };
-    case "end":
-      return { ...base, label: "结束", outputMapping: {} };
-    case "if-else":
-      return { ...base, label: "条件分支", conditions: [] };
-    case "iteration":
-      return { ...base, label: "迭代" };
-    case "llm":
-      return { ...base, label: "LLM", llmModel: "deepseek-chat", llmTemperature: 0.7 };
-    case "agent":
-      return { ...base, label: "Agent", agentStrategy: "function-call" };
-    case "question-classifier":
-      return { ...base, label: "问题分类" };
-    case "parameter-extractor":
-      return { ...base, label: "参数提取" };
-    case "knowledge-retrieval":
-      return { ...base, label: "知识检索", knowledgeTopK: 3 };
-    case "code":
-      return { ...base, label: "代码执行", codeLanguage: "javascript", codeScript: "" };
-    case "http-request":
-      return { ...base, label: "HTTP 请求", httpMethod: "GET", httpUrl: "" };
-    case "template-transform":
-      return { ...base, label: "模板转换" };
-    case "variable-aggregator":
-      return { ...base, label: "变量聚合" };
-    case "tool":
-      return { ...base, label: "工具调用" };
-    case "human-input":
-      return { ...base, label: "人工审批" };
-  }
+  return createDefaultNodeData(kind) as ProfessionalNodeData;
 }
 
 interface ProfessionalState {
