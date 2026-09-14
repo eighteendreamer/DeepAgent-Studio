@@ -4,12 +4,22 @@ const STORAGE_KEY = "workflow-settings";
 
 export type ModelProtocol = "openai" | "anthropic" | "gemini";
 
+export interface ProviderModelConfig {
+  id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+}
+
 export interface ModelProvider {
   id: string;
   name: string;
   protocol: ModelProtocol;
   baseUrl: string;
   apiKey: string;
+  enabled?: boolean;
+  models?: ProviderModelConfig[];
+  logo?: string;
 }
 
 export interface ScenarioBinding {
@@ -31,6 +41,11 @@ interface WorkflowSettingsState {
   addProvider: (p: Omit<ModelProvider, "id">) => string;
   updateProvider: (id: string, patch: Partial<Omit<ModelProvider, "id">>) => void;
   removeProvider: (id: string) => void;
+  toggleProviderEnabled: (id: string) => void;
+  updateProviderModels: (id: string, models: ProviderModelConfig[]) => void;
+  addModelToProvider: (providerId: string, model: ProviderModelConfig) => void;
+  toggleModelEnabled: (providerId: string, modelId: string) => void;
+  removeModelFromProvider: (providerId: string, modelId: string) => void;
   setScenarioBinding: (scenario: ScenarioKind, binding: ScenarioBinding) => void;
   setWorkspaceDir: (kind: keyof WorkspaceConfig, dir: string) => void;
 }
@@ -86,9 +101,19 @@ function loadPersisted(): Pick<WorkflowSettingsState, "providers" | "scenarioMod
 
     const providers =
       Array.isArray(parsed.providers) && parsed.providers.every(isValidProvider)
-        ? parsed.providers.map((provider: ModelProvider) => ({
+        ? parsed.providers.map((provider: any) => ({
             ...provider,
             protocol: normalizeProtocol(provider.protocol),
+            enabled: provider.enabled !== false,
+            logo: typeof provider.logo === "string" ? provider.logo : undefined,
+            models: Array.isArray(provider.models)
+              ? provider.models.map((m: any) => ({
+                  id: String(m.id || ""),
+                  name: String(m.name || m.id || ""),
+                  description: typeof m.description === "string" ? m.description : "",
+                  enabled: m.enabled !== false,
+                }))
+              : [],
           }))
         : [];
     providers.forEach((p: ModelProvider) => {
@@ -130,7 +155,17 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
 
   addProvider: (p) => {
     const id = nextProviderId(get().providers.map((x) => x.id));
-    set((s) => ({ providers: [...s.providers, { id, ...p }] }));
+    set((s) => ({
+      providers: [
+        ...s.providers,
+        {
+          id,
+          enabled: p.enabled !== false,
+          models: p.models ?? [],
+          ...p,
+        },
+      ],
+    }));
     return id;
   },
 
@@ -153,6 +188,58 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
         scenarioModels,
       };
     });
+  },
+
+  toggleProviderEnabled: (id) => {
+    set((s) => ({
+      providers: s.providers.map((p) => (p.id === id ? { ...p, enabled: !(p.enabled !== false) } : p)),
+    }));
+  },
+
+  updateProviderModels: (id, models) => {
+    set((s) => ({
+      providers: s.providers.map((p) => (p.id === id ? { ...p, models } : p)),
+    }));
+  },
+
+  addModelToProvider: (providerId, model) => {
+    set((s) => ({
+      providers: s.providers.map((p) => {
+        if (p.id !== providerId) return p;
+        const existing = p.models ?? [];
+        if (existing.some((m) => m.id === model.id)) {
+          return {
+            ...p,
+            models: existing.map((m) => (m.id === model.id ? { ...m, ...model } : m)),
+          };
+        }
+        return { ...p, models: [...existing, model] };
+      }),
+    }));
+  },
+
+  toggleModelEnabled: (providerId, modelId) => {
+    set((s) => ({
+      providers: s.providers.map((p) => {
+        if (p.id !== providerId) return p;
+        return {
+          ...p,
+          models: (p.models ?? []).map((m) => (m.id === modelId ? { ...m, enabled: !m.enabled } : m)),
+        };
+      }),
+    }));
+  },
+
+  removeModelFromProvider: (providerId, modelId) => {
+    set((s) => ({
+      providers: s.providers.map((p) => {
+        if (p.id !== providerId) return p;
+        return {
+          ...p,
+          models: (p.models ?? []).filter((m) => m.id !== modelId),
+        };
+      }),
+    }));
   },
 
   setScenarioBinding: (scenario, binding) => {

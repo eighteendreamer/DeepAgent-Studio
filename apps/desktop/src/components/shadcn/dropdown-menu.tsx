@@ -2,10 +2,7 @@ import * as React from "react";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { FLOATING_MENU, MOTION } from "../ui/motion";
-
-function cn(...classes: Array<string | false | null | undefined>) {
-  return classes.filter(Boolean).join(" ");
-}
+import { cn } from "./utils";
 
 const DropdownMenu = DropdownMenuPrimitive.Root;
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
@@ -15,7 +12,7 @@ const DropdownMenuSub = DropdownMenuPrimitive.Sub;
 const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
 
 const menuPanelClass = cn(
-  "z-[70] min-w-[8rem] overflow-hidden rounded-2xl bg-elevated-bg p-1.5 text-text-base shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
+  "z-[20000] min-w-[8rem] overflow-hidden rounded-2xl bg-elevated-bg p-1.5 text-text-base shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
   FLOATING_MENU.panel,
 );
 

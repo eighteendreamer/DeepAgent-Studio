@@ -85,7 +85,7 @@ const SelectContent = React.forwardRef<
       sideOffset={sideOffset}
       align={align}
       className={cn(
-        "z-[80] min-w-[var(--radix-dropdown-menu-trigger-width)] overflow-hidden rounded-xl bg-elevated-bg p-1 text-text-base shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
+        "z-[20000] min-w-[var(--radix-dropdown-menu-trigger-width)] overflow-hidden rounded-xl bg-elevated-bg p-1 text-text-base shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
         "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
         className,
       )}

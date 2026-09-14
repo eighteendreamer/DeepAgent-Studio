@@ -78,7 +78,7 @@ export function CanvasSettingsDialog() {
         }}
       >
         <DialogTitle className="sr-only">画布设置</DialogTitle>
-        <div className="flex h-full">
+        <div className="flex h-full min-h-0">
           <nav
             style={{
               width: 180,
@@ -113,8 +113,8 @@ export function CanvasSettingsDialog() {
             })}
           </nav>
           <div
-            className={`min-w-0 flex-1 overflow-y-auto overflow-x-hidden ${
-              activeTab === "model" ? "p-0" : "px-8 py-6"
+            className={`min-h-0 min-w-0 flex-1 overflow-x-hidden ${
+              activeTab === "model" ? "overflow-hidden p-0" : "overflow-y-auto px-8 py-6"
             }`}
           >
             <TabContent tab={activeTab} />
