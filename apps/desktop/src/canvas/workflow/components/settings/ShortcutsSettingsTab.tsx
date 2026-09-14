@@ -1,4 +1,14 @@
-import { MousePointer2, Square, Maximize2, Copy, Clipboard, Hand, Undo2, Redo2, Trash2 } from "lucide-react";
+import {
+  MousePointer2,
+  Square,
+  Maximize2,
+  Copy,
+  Clipboard,
+  Hand,
+  Undo2,
+  Redo2,
+  Trash2,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, BORDER_COLOR, CARD_BG } from "../CanvasSettingsDialog";
 
@@ -18,8 +28,20 @@ const CANVAS_SHORTCUTS: CanvasShortcut[] = [
   { name: "复制节点", desc: "复制选中节点", keys: ["Ctrl", "C"], Icon: Copy, group: "edit" },
   { name: "粘贴节点", desc: "粘贴节点（偏移 40px）", keys: ["Ctrl", "V"], Icon: Clipboard, group: "edit" },
   { name: "撤销", desc: "撤销上一步操作", keys: ["Ctrl", "Z"], Icon: Undo2, group: "edit" },
-  { name: "重做", desc: "恢复已撤销的操作", keys: ["Ctrl", "Shift", "Z"], Icon: Redo2, group: "edit" },
-  { name: "删除节点", desc: "删除选中节点", keys: ["Delete"], Icon: Trash2, group: "edit" },
+  {
+    name: "重做",
+    desc: "恢复已撤销的操作（也可使用 Ctrl + Y）",
+    keys: ["Ctrl", "Shift", "Z"],
+    Icon: Redo2,
+    group: "edit",
+  },
+  {
+    name: "删除节点",
+    desc: "删除选中节点",
+    keys: ["Delete / Backspace"],
+    Icon: Trash2,
+    group: "edit",
+  },
 ];
 
 function KeyCap({ children }: { children: string }) {
