@@ -19,7 +19,7 @@ import { createDefaultNodeData } from "../utils/nodeRegistry";
 const SNAP_GRID = 24;
 
 function createDefaultProfessionalData(kind: ProfessionalNodeKind): ProfessionalNodeData {
-  return createDefaultNodeData(kind) as ProfessionalNodeData;
+  return { ...createDefaultNodeData(kind), kind } as ProfessionalNodeData;
 }
 
 interface ProfessionalState {
