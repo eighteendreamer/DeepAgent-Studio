@@ -571,7 +571,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
         </div>
       </div>
 
-      {/* Connection handles — invisible Handle for React Flow + visual port button */}
+      {/* Connection handles — Handle is the interactive layer, visual is nested inside */}
       <Handle
         type="target"
         position={Position.Left}
@@ -581,25 +581,24 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
           transform: "translateY(-50%)",
           width: 20,
           height: 20,
-          opacity: 0,
-          cursor: "crosshair",
-        }}
-      />
-      <div
-        className="absolute flex items-center justify-center rounded-full transition-all duration-150"
-        style={{
-          left: -20,
-          top: "50%",
-          transform: "translateY(-50%)",
-          width: 20,
-          height: 20,
-          background: "rgba(30,30,35,0.9)",
-          border: "1.5px solid rgba(156,163,175,0.5)",
+          background: "transparent",
+          border: "none",
           cursor: "crosshair",
         }}
       >
-        <div style={{ width: 6, height: 6, borderRadius: "50%", background: "rgba(156,163,175,0.7)" }} />
-      </div>
+        <div
+          className="flex items-center justify-center rounded-full"
+          style={{
+            width: 20,
+            height: 20,
+            background: "rgba(30,30,35,0.9)",
+            border: "1.5px solid rgba(156,163,175,0.5)",
+            pointerEvents: "none",
+          }}
+        >
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: "rgba(156,163,175,0.7)", pointerEvents: "none" }} />
+        </div>
+      </Handle>
       {(() => {
         const handles = getNodeSourceHandles(nodeData.kind ?? "", nodeData as Record<string, unknown>);
         const n = handles.length;
@@ -610,7 +609,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
               {h.label && (
                 <span
                   className="absolute whitespace-nowrap rounded px-1 py-0.5 text-[8px] font-medium"
-                  style={{ right: 14, top: `${pct}%`, transform: "translateY(-50%)", color: "rgba(248,248,248,0.5)", background: "rgba(255,255,255,0.06)" }}
+                  style={{ right: 14, top: `${pct}%`, transform: "translateY(-50%)", color: "rgba(248,248,248,0.5)", background: "rgba(255,255,255,0.06)", pointerEvents: "none" }}
                 >
                   {h.label}
                 </span>
@@ -625,25 +624,24 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
                   transform: "translateY(-50%)",
                   width: 20,
                   height: 20,
-                  opacity: 0,
-                  cursor: "crosshair",
-                }}
-              />
-              <div
-                className="absolute flex items-center justify-center rounded-full transition-all duration-150 hover:border-[rgba(95,201,209,0.6)] hover:bg-[rgba(95,201,209,0.1)]"
-                style={{
-                  right: -20,
-                  top: `${pct}%`,
-                  transform: "translateY(-50%)",
-                  width: 20,
-                  height: 20,
-                  background: "rgba(30,30,35,0.9)",
-                  border: "1.5px solid rgba(156,163,175,0.5)",
+                  background: "transparent",
+                  border: "none",
                   cursor: "crosshair",
                 }}
               >
-                <Plus style={{ width: 10, height: 10, color: "rgba(156,163,175,0.7)" }} strokeWidth={2.5} />
-              </div>
+                <div
+                  className="flex items-center justify-center rounded-full transition-all duration-150"
+                  style={{
+                    width: 20,
+                    height: 20,
+                    background: "rgba(30,30,35,0.9)",
+                    border: "1.5px solid rgba(156,163,175,0.5)",
+                    pointerEvents: "none",
+                  }}
+                >
+                  <Plus style={{ width: 10, height: 10, color: "rgba(156,163,175,0.7)", pointerEvents: "none" }} strokeWidth={2.5} />
+                </div>
+              </Handle>
             </span>
           );
         });
