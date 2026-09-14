@@ -19,6 +19,7 @@ import {
   Search,
   Server,
   Shield,
+  Settings2,
   Sparkles,
   Trash2,
   X,
@@ -54,6 +55,7 @@ import {
   useCanvasSettingsStore,
   type ModelProtocol,
   type ModelProvider,
+  type ModelScenario,
 } from "../../store/canvasSettingsStore";
 
 // ============================================================================
@@ -466,6 +468,21 @@ const PROTOCOLS: { value: ModelProtocol; label: string }[] = [
   { value: "gemini", label: "Gemini" },
 ];
 
+const MODEL_SCENARIO_OPTIONS: { value: ModelScenario; label: string }[] = [
+  { value: "text", label: "文本" },
+  { value: "image_generation", label: "生图" },
+  { value: "video_generation", label: "视频生成" },
+  { value: "speech_to_text", label: "语音转文字" },
+  { value: "text_to_speech", label: "文字转语音" },
+];
+
+function scenarioLabels(scenarios?: ModelScenario[]): string[] {
+  const values = scenarios ?? [];
+  return MODEL_SCENARIO_OPTIONS.filter((option) => values.includes(option.value)).map(
+    (option) => option.label,
+  );
+}
+
 type ModelSettingsMode = "providers" | "models";
 
 interface PingStatus {
@@ -483,6 +500,7 @@ export function ModelSettingsTab() {
   const toggleProviderEnabled = useCanvasSettingsStore((s) => s.toggleProviderEnabled);
   const updateProviderModels = useCanvasSettingsStore((s) => s.updateProviderModels);
   const addModelToProvider = useCanvasSettingsStore((s) => s.addModelToProvider);
+  const setModelScenarios = useCanvasSettingsStore((s) => s.setModelScenarios);
   const toggleModelEnabled = useCanvasSettingsStore((s) => s.toggleModelEnabled);
   const removeModelFromProvider = useCanvasSettingsStore((s) => s.removeModelFromProvider);
 
@@ -498,6 +516,7 @@ export function ModelSettingsTab() {
   const [providerSearch, setProviderSearch] = useState("");
   const [modelSearch, setModelSearch] = useState("");
   const [globalProviderFilter, setGlobalProviderFilter] = useState<string>("all");
+  const [globalScenarioFilter, setGlobalScenarioFilter] = useState<ModelScenario | "all">("all");
 
   // API Key 显隐状态
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
@@ -523,6 +542,13 @@ export function ModelSettingsTab() {
   const [addModelDialogOpen, setAddModelDialogOpen] = useState(false);
   const [addModelTargetProviderId, setAddModelTargetProviderId] = useState<string | null>(null);
   const [newModelForm, setNewModelForm] = useState({ id: "", name: "", description: "" });
+
+  const [scenarioDialogTarget, setScenarioDialogTarget] = useState<{
+    providerId: string;
+    modelId: string;
+    modelName: string;
+  } | null>(null);
+  const [draftScenarios, setDraftScenarios] = useState<ModelScenario[]>([]);
 
   const [deleteConfirmProvider, setDeleteConfirmProvider] = useState<ModelProvider | null>(null);
 
@@ -584,6 +610,9 @@ export function ModelSettingsTab() {
     if (globalProviderFilter !== "all") {
       list = list.filter((item) => item.provider.id === globalProviderFilter);
     }
+    if (globalScenarioFilter !== "all") {
+      list = list.filter((item) => (item.scenarios ?? []).includes(globalScenarioFilter));
+    }
     const q = modelSearch.trim().toLowerCase();
     if (!q) return list;
     return list.filter(
@@ -593,7 +622,30 @@ export function ModelSettingsTab() {
         item.provider.name.toLowerCase().includes(q) ||
         (item.description ?? "").toLowerCase().includes(q),
     );
-  }, [allModelsWithProvider, globalProviderFilter, modelSearch]);
+  }, [allModelsWithProvider, globalProviderFilter, globalScenarioFilter, modelSearch]);
+
+  const openScenarioDialog = (providerId: string, modelId: string, modelName: string, scenarios?: ModelScenario[]) => {
+    setScenarioDialogTarget({ providerId, modelId, modelName });
+    setDraftScenarios([...(scenarios ?? [])]);
+  };
+
+  const toggleDraftScenario = (scenario: ModelScenario) => {
+    setDraftScenarios((current) =>
+      current.includes(scenario)
+        ? current.filter((value) => value !== scenario)
+        : [...current, scenario],
+    );
+  };
+
+  const handleSaveScenarios = () => {
+    if (!scenarioDialogTarget) return;
+    setModelScenarios(
+      scenarioDialogTarget.providerId,
+      scenarioDialogTarget.modelId,
+      draftScenarios,
+    );
+    setScenarioDialogTarget(null);
+  };
 
   const totalEnabledModels = useMemo(
     () => allModelsWithProvider.filter((m) => m.enabled).length,
@@ -1257,10 +1309,40 @@ export function ModelSettingsTab() {
                                 <div className="truncate text-[10px] text-white/40 mt-0.2">
                                   {model.description || "通用模型服务"}
                                 </div>
+                                <div className="mt-1 flex min-w-0 items-center gap-1 overflow-hidden">
+                                  {scenarioLabels(model.scenarios).length > 0 ? (
+                                    scenarioLabels(model.scenarios).map((label) => (
+                                      <span
+                                        key={label}
+                                        className="shrink-0 rounded bg-[#339CFF]/10 px-1.5 py-0.5 text-[9px] text-[#7CC2FF]"
+                                      >
+                                        {label}
+                                      </span>
+                                    ))
+                                  ) : (
+                                    <span className="text-[9px] text-white/25">未设置场景</span>
+                                  )}
+                                </div>
                               </div>
                             </div>
 
                             <div className="flex items-center gap-2.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openScenarioDialog(
+                                    selectedProvider.id,
+                                    model.id,
+                                    model.name,
+                                    model.scenarios,
+                                  )
+                                }
+                                className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.02] px-1.5 py-1 text-[10px] text-white/55 transition-colors hover:border-[#339CFF]/40 hover:bg-[#339CFF]/10 hover:text-[#9DD4FF]"
+                                title="设置模型使用场景"
+                              >
+                                <Settings2 size={11} />
+                                设置
+                              </button>
                               <button
                                 type="button"
                                 onClick={() =>
@@ -1426,6 +1508,25 @@ export function ModelSettingsTab() {
                       ))}
                     </SelectContent>
                   </Select>
+
+                  <Select
+                    value={globalScenarioFilter}
+                    onValueChange={(v) => setGlobalScenarioFilter(v as ModelScenario | "all")}
+                  >
+                    <SelectTrigger className="h-7 w-[132px] rounded-lg border-white/[0.08] bg-white/[0.03] text-[11px] text-white/80 shrink-0">
+                      <SelectValue placeholder="全部场景" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[#1a1a1a] border-white/10 text-white">
+                      <SelectItem value="all" className="text-[11px]">
+                        全部使用场景
+                      </SelectItem>
+                      {MODEL_SCENARIO_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value} className="text-[11px]">
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <div className="flex items-center gap-1.5">
@@ -1464,11 +1565,12 @@ export function ModelSettingsTab() {
             {/* 全局模型列表 (表头固定，列表内滚动) */}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-2.5">
               {/* 表头 */}
-              <div className="shrink-0 grid grid-cols-[minmax(180px,1.2fr)_140px_minmax(180px,2fr)_70px] items-center border-b border-white/[0.06] px-3 py-2 text-[10px] font-semibold text-white/40 uppercase tracking-wider">
+              <div className="shrink-0 grid grid-cols-[minmax(170px,1.15fr)_140px_minmax(150px,1.5fr)_minmax(170px,1.5fr)_100px] items-center border-b border-white/[0.06] px-3 py-2 text-[10px] font-semibold text-white/40 uppercase tracking-wider">
                 <span>模型名称</span>
                 <span>来源服务商</span>
                 <span>模型描述 / 能力</span>
-                <span className="text-right">启用</span>
+                <span>使用场景</span>
+                <span className="text-right">操作</span>
               </div>
 
               {/* 真正滚动的表格主体 */}
@@ -1482,7 +1584,7 @@ export function ModelSettingsTab() {
                   filteredGlobalModels.map((item) => (
                     <div
                       key={`${item.provider.id}-${item.id}`}
-                      className="grid grid-cols-[minmax(180px,1.2fr)_140px_minmax(180px,2fr)_70px] items-center px-3 py-2.5 hover:bg-white/[0.025] transition-colors"
+                      className="grid grid-cols-[minmax(170px,1.15fr)_140px_minmax(150px,1.5fr)_minmax(170px,1.5fr)_100px] items-center px-3 py-2.5 hover:bg-white/[0.025] transition-colors"
                     >
                       <div className="flex items-center gap-2.5 min-w-0 pr-2">
                         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#339CFF]/10 text-[#339CFF]">
@@ -1509,7 +1611,37 @@ export function ModelSettingsTab() {
                         {item.description || "通用大模型服务"}
                       </div>
 
-                      <div className="flex justify-end">
+                      <div className="flex min-w-0 flex-wrap gap-1 pr-2">
+                        {scenarioLabels(item.scenarios).length > 0 ? (
+                          scenarioLabels(item.scenarios).map((label) => (
+                            <span
+                              key={label}
+                              className="rounded bg-[#339CFF]/10 px-1.5 py-0.5 text-[9px] text-[#7CC2FF]"
+                            >
+                              {label}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-[10px] text-white/25">未设置场景</span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openScenarioDialog(
+                              item.provider.id,
+                              item.id,
+                              item.name,
+                              item.scenarios,
+                            )
+                          }
+                          className="rounded-md p-1 text-white/40 transition-colors hover:bg-[#339CFF]/10 hover:text-[#9DD4FF]"
+                          title="设置模型使用场景"
+                        >
+                          <Settings2 size={13} />
+                        </button>
                         <ToggleSwitch
                           checked={item.enabled}
                           onChange={() =>
@@ -1620,6 +1752,87 @@ export function ModelSettingsTab() {
               className="h-7 rounded-lg bg-[#339CFF] px-3 text-[11px] text-white hover:bg-[#2563EB]"
             >
               确定添加
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ============================================================= */}
+      {/* 弹窗：设置模型使用场景 */}
+      {/* ============================================================= */}
+      <Dialog
+        open={Boolean(scenarioDialogTarget)}
+        onOpenChange={(open) => {
+          if (!open) setScenarioDialogTarget(null);
+        }}
+      >
+        <DialogContent
+          zIndexClass="z-[11000]"
+          className="w-[min(430px,calc(100vw-32px))] rounded-xl border border-white/10 bg-[#16171a] p-0 text-white shadow-2xl"
+        >
+          <DialogTitle className="sr-only">设置模型使用场景</DialogTitle>
+          <div className="border-b border-white/[0.08] px-5 py-3.5">
+            <div className="text-[14px] font-semibold text-white/95">设置模型使用场景</div>
+            <div className="mt-0.5 truncate text-[11px] text-white/40">
+              {scenarioDialogTarget?.modelName ?? "选择模型"}
+            </div>
+          </div>
+
+          <div className="space-y-2 p-5">
+            <div className="text-[11px] text-white/50">
+              选择该模型可被画布节点调用的能力，可同时选择多个场景。
+            </div>
+            <div className="grid grid-cols-1 gap-2">
+              {MODEL_SCENARIO_OPTIONS.map((option) => {
+                const checked = draftScenarios.includes(option.value);
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="checkbox"
+                    aria-checked={checked}
+                    onClick={() => toggleDraftScenario(option.value)}
+                    className={cn(
+                      "flex items-center justify-between rounded-lg border px-3 py-2.5 text-left text-[12px] transition-colors",
+                      checked
+                        ? "border-[#339CFF]/45 bg-[#339CFF]/10 text-[#B9E1FF]"
+                        : "border-white/[0.08] bg-white/[0.02] text-white/65 hover:border-white/[0.16] hover:bg-white/[0.05]",
+                    )}
+                  >
+                    <span>{option.label}</span>
+                    <span
+                      className={cn(
+                        "flex h-4 w-4 items-center justify-center rounded border",
+                        checked
+                          ? "border-[#339CFF] bg-[#339CFF] text-white"
+                          : "border-white/20 text-transparent",
+                      )}
+                    >
+                      <Check size={11} strokeWidth={2.5} />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-white/[0.08] bg-white/[0.015] px-5 py-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setScenarioDialogTarget(null)}
+              className="h-7 rounded-lg border-white/[0.08] bg-transparent text-[11px] text-white/70 hover:bg-white/[0.05]"
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleSaveScenarios}
+              className="h-7 rounded-lg bg-[#339CFF] px-3 text-[11px] text-white hover:bg-[#2563EB]"
+            >
+              保存
             </Button>
           </div>
         </DialogContent>

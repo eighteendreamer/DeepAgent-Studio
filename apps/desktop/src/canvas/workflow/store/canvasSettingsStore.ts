@@ -4,11 +4,20 @@ const STORAGE_KEY = "workflow-settings";
 
 export type ModelProtocol = "openai" | "anthropic" | "gemini";
 
+/** 模型可被路由到的使用场景。一个模型可以同时支持多个场景。 */
+export type ModelScenario =
+  | "text"
+  | "image_generation"
+  | "video_generation"
+  | "speech_to_text"
+  | "text_to_speech";
+
 export interface ProviderModelConfig {
   id: string;
   name: string;
   description?: string;
   enabled: boolean;
+  scenarios?: ModelScenario[];
 }
 
 export interface ModelProvider {
@@ -44,6 +53,7 @@ interface WorkflowSettingsState {
   toggleProviderEnabled: (id: string) => void;
   updateProviderModels: (id: string, models: ProviderModelConfig[]) => void;
   addModelToProvider: (providerId: string, model: ProviderModelConfig) => void;
+  setModelScenarios: (providerId: string, modelId: string, scenarios: ModelScenario[]) => void;
   toggleModelEnabled: (providerId: string, modelId: string) => void;
   removeModelFromProvider: (providerId: string, modelId: string) => void;
   setScenarioBinding: (scenario: ScenarioKind, binding: ScenarioBinding) => void;
@@ -92,6 +102,21 @@ function normalizeProtocol(protocol: string): ModelProtocol {
   return "openai";
 }
 
+const MODEL_SCENARIOS: ModelScenario[] = [
+  "text",
+  "image_generation",
+  "video_generation",
+  "speech_to_text",
+  "text_to_speech",
+];
+
+function normalizeModelScenarios(value: unknown): ModelScenario[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((scenario): scenario is ModelScenario =>
+    typeof scenario === "string" && MODEL_SCENARIOS.includes(scenario as ModelScenario),
+  );
+}
+
 function loadPersisted(): Pick<WorkflowSettingsState, "providers" | "scenarioModels" | "workspace"> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -112,6 +137,7 @@ function loadPersisted(): Pick<WorkflowSettingsState, "providers" | "scenarioMod
                   name: String(m.name || m.id || ""),
                   description: typeof m.description === "string" ? m.description : "",
                   enabled: m.enabled !== false,
+                  scenarios: normalizeModelScenarios(m.scenarios),
                 }))
               : [],
           }))
@@ -159,10 +185,13 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
       providers: [
         ...s.providers,
         {
+          ...p,
           id,
           enabled: p.enabled !== false,
-          models: p.models ?? [],
-          ...p,
+          models: (p.models ?? []).map((model) => ({
+            ...model,
+            scenarios: model.scenarios ?? [],
+          })),
         },
       ],
     }));
@@ -198,7 +227,17 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
 
   updateProviderModels: (id, models) => {
     set((s) => ({
-      providers: s.providers.map((p) => (p.id === id ? { ...p, models } : p)),
+      providers: s.providers.map((p) =>
+        p.id === id
+          ? {
+              ...p,
+              models: models.map((model) => ({
+                ...model,
+                scenarios: model.scenarios ?? [],
+              })),
+            }
+          : p,
+      ),
     }));
   },
 
@@ -210,11 +249,31 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
         if (existing.some((m) => m.id === model.id)) {
           return {
             ...p,
-            models: existing.map((m) => (m.id === model.id ? { ...m, ...model } : m)),
+            models: existing.map((m) =>
+              m.id === model.id
+                ? { ...m, ...model, scenarios: model.scenarios ?? m.scenarios ?? [] }
+                : m,
+            ),
           };
         }
-        return { ...p, models: [...existing, model] };
+        return { ...p, models: [...existing, { ...model, scenarios: model.scenarios ?? [] }] };
       }),
+    }));
+  },
+
+  setModelScenarios: (providerId, modelId, scenarios) => {
+    const normalized = normalizeModelScenarios(scenarios);
+    set((s) => ({
+      providers: s.providers.map((p) =>
+        p.id !== providerId
+          ? p
+          : {
+              ...p,
+              models: (p.models ?? []).map((m) =>
+                m.id === modelId ? { ...m, scenarios: normalized } : m,
+              ),
+            },
+      ),
     }));
   },
 
