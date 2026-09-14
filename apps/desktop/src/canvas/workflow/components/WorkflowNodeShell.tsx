@@ -590,11 +590,11 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
         return handles.map((h, i) => {
           const pct = n === 1 ? 50 : ((i + 1) / (n + 1)) * 100;
           return (
-            <div key={h.id} className="absolute flex items-center" style={{ right: -8, top: `${pct}%`, transform: "translateY(-50%)" }}>
+            <span key={h.id}>
               {h.label && (
                 <span
-                  className="mr-1 whitespace-nowrap rounded px-1 py-0.5 text-[8px] font-medium"
-                  style={{ color: "rgba(248,248,248,0.5)", background: "rgba(255,255,255,0.06)" }}
+                  className="absolute whitespace-nowrap rounded px-1 py-0.5 text-[8px] font-medium"
+                  style={{ right: 10, top: `${pct}%`, transform: "translateY(-50%)", color: "rgba(248,248,248,0.5)", background: "rgba(255,255,255,0.06)" }}
                 >
                   {h.label}
                 </span>
@@ -604,8 +604,8 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
                 position={Position.Right}
                 id={h.id}
                 style={{
-                  position: "relative",
-                  right: 0,
+                  top: `${pct}%`,
+                  transform: "translateY(-50%)",
                   width: 14,
                   height: 14,
                   background: "rgba(156,163,175,0.8)",
@@ -614,7 +614,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
                   cursor: "crosshair",
                 }}
               />
-            </div>
+            </span>
           );
         });
       })()}
