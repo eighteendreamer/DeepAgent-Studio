@@ -2305,6 +2305,279 @@ export function ListOperatorForm({ data, onUpdate }: { data: ProfessionalNodeDat
   );
 }
 
+export function TriggerScheduleForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <Field label="频率">
+        <select
+          style={INPUT_STYLE}
+          value={(data.scheduleFrequency as string) ?? "daily"}
+          onChange={(e) => onUpdate({ scheduleFrequency: e.target.value })}
+        >
+          <option value="minutely">每分钟</option>
+          <option value="hourly">每小时</option>
+          <option value="daily">每天</option>
+          <option value="weekly">每周</option>
+          <option value="monthly">每月</option>
+          <option value="custom">自定义 Cron</option>
+        </select>
+      </Field>
+      {(data.scheduleFrequency as string) !== "custom" && (
+        <Field label="触发时间">
+          <input
+            type="time"
+            style={INPUT_STYLE}
+            value={(data.scheduleTime as string) ?? "09:00"}
+            onChange={(e) => onUpdate({ scheduleTime: e.target.value })}
+          />
+        </Field>
+      )}
+      {(data.scheduleFrequency as string) === "weekly" && (
+        <Field label="星期">
+          <input
+            type="text"
+            style={INPUT_STYLE}
+            placeholder="例: 1,3,5（周一=1）"
+            value={((data.scheduleDayOfWeek as string[]) ?? []).join(",")}
+            onChange={(e) => onUpdate({ scheduleDayOfWeek: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+          />
+        </Field>
+      )}
+      {(data.scheduleFrequency as string) === "custom" && (
+        <Field label="Cron 表达式">
+          <input
+            type="text"
+            style={INPUT_STYLE}
+            placeholder="0 9 * * 1-5"
+            value={(data.scheduleCron as string) ?? ""}
+            onChange={(e) => onUpdate({ scheduleCron: e.target.value })}
+          />
+        </Field>
+      )}
+      <Field label="时区">
+        <input
+          type="text"
+          style={INPUT_STYLE}
+          value={(data.scheduleTimezone as string) ?? "Asia/Shanghai"}
+          onChange={(e) => onUpdate({ scheduleTimezone: e.target.value })}
+        />
+      </Field>
+    </div>
+  );
+}
+
+export function TriggerWebhookForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <Field label="请求方法">
+        <select
+          style={INPUT_STYLE}
+          value={(data.webhookMethod as string) ?? "POST"}
+          onChange={(e) => onUpdate({ webhookMethod: e.target.value })}
+        >
+          <option value="GET">GET</option>
+          <option value="POST">POST</option>
+          <option value="PUT">PUT</option>
+        </select>
+      </Field>
+      <Field label="路径">
+        <input
+          type="text"
+          style={INPUT_STYLE}
+          placeholder="/webhook/my-endpoint"
+          value={(data.webhookPath as string) ?? ""}
+          onChange={(e) => onUpdate({ webhookPath: e.target.value })}
+        />
+      </Field>
+      <Field label="鉴权方式">
+        <select
+          style={INPUT_STYLE}
+          value={(data.webhookAuthType as string) ?? "none"}
+          onChange={(e) => onUpdate({ webhookAuthType: e.target.value })}
+        >
+          <option value="none">无</option>
+          <option value="bearer">Bearer Token</option>
+          <option value="hmac">HMAC 签名</option>
+          <option value="basic">Basic Auth</option>
+        </select>
+      </Field>
+      {(data.webhookAuthType as string) !== "none" && (
+        <Field label="密钥">
+          <input
+            type="password"
+            style={INPUT_STYLE}
+            placeholder="输入鉴权密钥"
+            value={(data.webhookAuthSecret as string) ?? ""}
+            onChange={(e) => onUpdate({ webhookAuthSecret: e.target.value })}
+          />
+        </Field>
+      )}
+      <label className="flex items-center gap-2 text-xs" style={{ color: "rgba(248,248,248,0.7)" }}>
+        <input
+          type="checkbox"
+          checked={!!data.webhookAsync}
+          onChange={(e) => onUpdate({ webhookAsync: e.target.checked })}
+        />
+        异步模式（立即返回 202）
+      </label>
+    </div>
+  );
+}
+
+export function TriggerPluginForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <Field label="插件 Provider">
+        <input
+          type="text"
+          style={INPUT_STYLE}
+          placeholder="选择或输入插件名称"
+          value={(data.pluginProvider as string) ?? ""}
+          onChange={(e) => onUpdate({ pluginProvider: e.target.value })}
+        />
+      </Field>
+      <Field label="事件">
+        <input
+          type="text"
+          style={INPUT_STYLE}
+          placeholder="插件事件名称"
+          value={(data.pluginEvent as string) ?? ""}
+          onChange={(e) => onUpdate({ pluginEvent: e.target.value })}
+        />
+      </Field>
+      <Field label="凭据 ID">
+        <input
+          type="text"
+          style={INPUT_STYLE}
+          placeholder="关联的凭据标识"
+          value={(data.pluginCredentialId as string) ?? ""}
+          onChange={(e) => onUpdate({ pluginCredentialId: e.target.value })}
+        />
+      </Field>
+      <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.3)" }}>
+        插件参数和输出 Schema 由插件声明，待后端接入后动态加载
+      </span>
+    </div>
+  );
+}
+
+export function DatasourceForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <Field label="数据源类型">
+        <select
+          style={INPUT_STYLE}
+          value={(data.datasourceType as string) ?? "api"}
+          onChange={(e) => onUpdate({ datasourceType: e.target.value })}
+        >
+          <option value="api">API</option>
+          <option value="database">数据库</option>
+          <option value="storage">对象存储</option>
+          <option value="plugin">插件</option>
+        </select>
+      </Field>
+      <Field label="插件 / 连接器">
+        <input
+          type="text"
+          style={INPUT_STYLE}
+          placeholder="数据源插件名称"
+          value={(data.datasourcePlugin as string) ?? ""}
+          onChange={(e) => onUpdate({ datasourcePlugin: e.target.value })}
+        />
+      </Field>
+      <Field label="凭据 ID">
+        <input
+          type="text"
+          style={INPUT_STYLE}
+          placeholder="关联的凭据标识"
+          value={(data.datasourceCredentialId as string) ?? ""}
+          onChange={(e) => onUpdate({ datasourceCredentialId: e.target.value })}
+        />
+      </Field>
+      <Field label="文件扩展名过滤">
+        <input
+          type="text"
+          style={INPUT_STYLE}
+          placeholder="例: .pdf,.docx,.txt"
+          value={((data.datasourceExtensions as string[]) ?? []).join(",")}
+          onChange={(e) => onUpdate({ datasourceExtensions: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+        />
+      </Field>
+      <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.3)" }}>
+        具体参数由数据源插件声明，待后端接入后动态加载
+      </span>
+    </div>
+  );
+}
+
+export function KnowledgeIndexForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <Field label="输入源变量">
+        <input
+          type="text"
+          style={INPUT_STYLE}
+          placeholder="引用上游变量名"
+          value={(data.indexSourceVariable as string) ?? ""}
+          onChange={(e) => onUpdate({ indexSourceVariable: e.target.value })}
+        />
+      </Field>
+      <div className="flex gap-2">
+        <Field label="分块大小">
+          <input
+            type="number"
+            style={INPUT_STYLE}
+            min={100}
+            max={4000}
+            value={(data.indexChunkSize as number) ?? 500}
+            onChange={(e) => onUpdate({ indexChunkSize: Number(e.target.value) })}
+          />
+        </Field>
+        <Field label="重叠大小">
+          <input
+            type="number"
+            style={INPUT_STYLE}
+            min={0}
+            max={1000}
+            value={(data.indexChunkOverlap as number) ?? 50}
+            onChange={(e) => onUpdate({ indexChunkOverlap: Number(e.target.value) })}
+          />
+        </Field>
+      </div>
+      <Field label="Embedding 模型">
+        <input
+          type="text"
+          style={INPUT_STYLE}
+          placeholder="例如 text-embedding-3-small"
+          value={(data.indexEmbeddingModel as string) ?? ""}
+          onChange={(e) => onUpdate({ indexEmbeddingModel: e.target.value })}
+        />
+      </Field>
+      <Field label="检索模式">
+        <select
+          style={INPUT_STYLE}
+          value={(data.indexRetrievalMode as string) ?? "semantic"}
+          onChange={(e) => onUpdate({ indexRetrievalMode: e.target.value })}
+        >
+          <option value="semantic">语义检索</option>
+          <option value="keyword">关键词检索</option>
+          <option value="hybrid">混合检索</option>
+        </select>
+      </Field>
+      <Field label="关键词数量">
+        <input
+          type="number"
+          style={INPUT_STYLE}
+          min={0}
+          max={20}
+          value={(data.indexKeywords as number) ?? 0}
+          onChange={(e) => onUpdate({ indexKeywords: Number(e.target.value) })}
+        />
+      </Field>
+    </div>
+  );
+}
+
 export function GenericConfigForm({ data }: { data: WorkflowNodeData }) {
   return (
     <div

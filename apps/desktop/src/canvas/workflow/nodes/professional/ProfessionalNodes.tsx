@@ -271,3 +271,71 @@ export function ListOperatorContent({ data }: Props) {
     </span>
   );
 }
+
+export function TriggerScheduleContent({ data }: Props) {
+  const freq = data.scheduleFrequency;
+  const labels: Record<string, string> = { minutely: "每分钟", hourly: "每小时", daily: "每天", weekly: "每周", monthly: "每月", custom: "Cron" };
+  return (
+    <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+      {labels[(freq as string) ?? "daily"] ?? "定时触发"}
+    </span>
+  );
+}
+
+export function TriggerWebhookContent({ data }: Props) {
+  const method = (data.webhookMethod as string) ?? "POST";
+  const colors: Record<string, string> = { GET: "#22c55e", POST: "#3b82f6", PUT: "#f59e0b" };
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="rounded px-1 py-0.5 text-[9px] font-bold" style={{ background: `${colors[method]}22`, color: colors[method] }}>
+        {method}
+      </span>
+      {(data.webhookPath as string) && (
+        <span className="text-[10px] truncate" style={{ color: "rgba(248,248,248,0.5)" }}>
+          {data.webhookPath as string}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function TriggerPluginContent({ data }: Props) {
+  const provider = data.pluginProvider;
+  return (
+    <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+      {provider ? `插件: ${provider}` : "选择插件"}
+    </span>
+  );
+}
+
+export function DatasourceContent({ data }: Props) {
+  const type = data.datasourceType;
+  const labels: Record<string, string> = { api: "API", database: "数据库", storage: "存储", plugin: "插件" };
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="rounded px-1 py-0.5 text-[9px] font-medium" style={{ background: "rgba(16,185,129,0.2)", color: "rgba(16,185,129,0.9)" }}>
+        {labels[(type as string) ?? "api"] ?? "数据源"}
+      </span>
+      {(data.datasourcePlugin as string) && (
+        <span className="text-[9px] truncate" style={{ color: "rgba(248,248,248,0.4)" }}>
+          {data.datasourcePlugin as string}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function KnowledgeIndexContent({ data }: Props) {
+  const mode = data.indexRetrievalMode;
+  const labels: Record<string, string> = { semantic: "语义", keyword: "关键词", hybrid: "混合" };
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="rounded px-1 py-0.5 text-[9px] font-medium" style={{ background: "rgba(6,182,212,0.2)", color: "rgba(6,182,212,0.9)" }}>
+        索引
+      </span>
+      <span className="text-[9px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+        {labels[(mode as string) ?? "semantic"] ?? "语义"} · {(data.indexChunkSize as number) ?? 500} 块
+      </span>
+    </div>
+  );
+}

@@ -34,6 +34,11 @@ import {
   DocumentExtractorForm,
   VariableAssignerForm,
   ListOperatorForm,
+  TriggerScheduleForm,
+  TriggerWebhookForm,
+  TriggerPluginForm,
+  DatasourceForm,
+  KnowledgeIndexForm,
   GenericConfigForm,
 } from "./ConfigForms";
 
@@ -116,6 +121,16 @@ export function NodeConfigForm({ nodeId, nodeData }: { nodeId: string; nodeData:
       return <VariableAssignerForm data={professionalData} {...formProps} />;
     case "list-operator":
       return <ListOperatorForm data={professionalData} {...formProps} />;
+    case "trigger-schedule":
+      return <TriggerScheduleForm data={professionalData} {...formProps} />;
+    case "trigger-webhook":
+      return <TriggerWebhookForm data={professionalData} {...formProps} />;
+    case "trigger-plugin":
+      return <TriggerPluginForm data={professionalData} {...formProps} />;
+    case "datasource":
+      return <DatasourceForm data={professionalData} {...formProps} />;
+    case "knowledge-index":
+      return <KnowledgeIndexForm data={professionalData} {...formProps} />;
     default:
       return <GenericConfigForm data={nodeData} />;
   }

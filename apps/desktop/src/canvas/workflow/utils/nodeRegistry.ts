@@ -419,6 +419,112 @@ register({
   }),
 });
 
+register({
+  kind: "trigger-schedule",
+  label: "定时触发",
+  category: "触发器",
+  icon: "clock",
+  availability: "reserved",
+  executor: "passthrough",
+  outputs: [
+    { name: "trigger_time", type: "string", description: "触发时间（ISO 8601）" },
+    { name: "context", type: "object", description: "触发上下文" },
+  ],
+  defaultData: () => ({
+    label: "定时触发",
+    scheduleFrequency: "daily",
+    scheduleTime: "09:00",
+    scheduleTimezone: "Asia/Shanghai",
+    scheduleCron: "",
+    scheduleDayOfWeek: [],
+  }),
+});
+
+register({
+  kind: "trigger-webhook",
+  label: "Webhook",
+  category: "触发器",
+  icon: "webhook",
+  availability: "reserved",
+  executor: "http",
+  outputs: [
+    { name: "body", type: "object", description: "Webhook 请求体" },
+    { name: "headers", type: "object", description: "请求头" },
+    { name: "query", type: "object", description: "查询参数" },
+  ],
+  defaultData: () => ({
+    label: "Webhook",
+    webhookMethod: "POST",
+    webhookPath: "",
+    webhookHeaders: {},
+    webhookAuthType: "none",
+    webhookAuthSecret: "",
+    webhookAsync: false,
+  }),
+});
+
+register({
+  kind: "trigger-plugin",
+  label: "插件触发",
+  category: "触发器",
+  icon: "puzzle",
+  availability: "reserved",
+  executor: "passthrough",
+  outputs: [
+    { name: "event_data", type: "object", description: "插件事件数据" },
+  ],
+  defaultData: () => ({
+    label: "插件触发",
+    pluginProvider: "",
+    pluginEvent: "",
+    pluginParams: {},
+    pluginCredentialId: "",
+  }),
+});
+
+register({
+  kind: "datasource",
+  label: "数据源",
+  category: "数据",
+  icon: "cylinder",
+  availability: "reserved",
+  executor: "retrieval",
+  outputs: [
+    { name: "data", type: "object", description: "数据源返回的数据" },
+    { name: "files", type: "array", description: "关联文件列表" },
+  ],
+  defaultData: () => ({
+    label: "数据源",
+    datasourceType: "api",
+    datasourcePlugin: "",
+    datasourceParams: {},
+    datasourceCredentialId: "",
+    datasourceExtensions: [],
+  }),
+});
+
+register({
+  kind: "knowledge-index",
+  label: "知识库索引",
+  category: "知识",
+  icon: "database",
+  availability: "reserved",
+  executor: "transform",
+  outputs: [
+    { name: "index_id", type: "string", description: "索引 ID" },
+    { name: "chunk_count", type: "number", description: "分块数量" },
+  ],
+  defaultData: () => ({
+    label: "知识库索引",
+    indexSourceVariable: "",
+    indexChunkSize: 500,
+    indexChunkOverlap: 50,
+    indexEmbeddingModel: "",
+    indexRetrievalMode: "semantic",
+    indexKeywords: 0,
+  }),
+});
+
 export function getNodeDefinition(kind: ProfessionalNodeKind): NodeDefinition {
   const def = registry.get(kind);
   if (!def) throw new Error(`Unknown professional node kind: ${kind}`);

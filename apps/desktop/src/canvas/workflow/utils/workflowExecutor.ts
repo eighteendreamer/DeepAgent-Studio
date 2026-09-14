@@ -62,6 +62,14 @@ function getExecutionDelay(node: WorkflowNode): number {
     case "code":
     case "http-request":
       return 1200;
+    case "datasource":
+      return 1200;
+    case "knowledge-index":
+      return 1500;
+    case "trigger-schedule":
+    case "trigger-webhook":
+    case "trigger-plugin":
+      return 300;
     case "llm":
     case "agent":
     case "agent-v2":

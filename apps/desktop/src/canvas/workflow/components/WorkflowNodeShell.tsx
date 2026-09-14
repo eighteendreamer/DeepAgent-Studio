@@ -48,6 +48,11 @@ import {
   DocumentExtractorContent,
   VariableAssignerContent,
   ListOperatorContent,
+  TriggerScheduleContent,
+  TriggerWebhookContent,
+  TriggerPluginContent,
+  DatasourceContent,
+  KnowledgeIndexContent,
 } from "../nodes/professional/ProfessionalNodes";
 
 const STATUS_BORDER: Record<NodeStatus, string> = {
@@ -150,6 +155,16 @@ function renderContent(nodeData: WorkflowNodeData, nodeId?: string) {
       return <VariableAssignerContent data={professionalData} />;
     case "list-operator":
       return <ListOperatorContent data={professionalData} />;
+    case "trigger-schedule":
+      return <TriggerScheduleContent data={professionalData} />;
+    case "trigger-webhook":
+      return <TriggerWebhookContent data={professionalData} />;
+    case "trigger-plugin":
+      return <TriggerPluginContent data={professionalData} />;
+    case "datasource":
+      return <DatasourceContent data={professionalData} />;
+    case "knowledge-index":
+      return <KnowledgeIndexContent data={professionalData} />;
     default:
       if (creativeData.creativeAction) {
         return (

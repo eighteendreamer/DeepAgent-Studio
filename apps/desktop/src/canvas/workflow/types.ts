@@ -43,13 +43,18 @@ export type ProfessionalNodeKind =
   | "question-classifier"
   | "parameter-extractor"
   | "knowledge-retrieval"
+  | "knowledge-index"
   | "document-extractor"
+  | "datasource"
   | "code"
   | "http-request"
   | "template-transform"
   | "variable-aggregator"
   | "variable-assigner"
   | "list-operator"
+  | "trigger-schedule"
+  | "trigger-webhook"
+  | "trigger-plugin"
   | "tool"
   | "human-input";
 
@@ -402,6 +407,7 @@ export const PROFESSIONAL_NODE_CATEGORIES: ProfessionalNodeCategory[] = [
     color: "#06B6D4",
     items: [
       { kind: "knowledge-retrieval", label: "知识检索", icon: "book" },
+      { kind: "knowledge-index", label: "知识库索引", icon: "database" },
       { kind: "document-extractor", label: "文档提取", icon: "file-text" },
     ],
   },
@@ -409,12 +415,22 @@ export const PROFESSIONAL_NODE_CATEGORIES: ProfessionalNodeCategory[] = [
     group: "数据",
     color: "#10B981",
     items: [
+      { kind: "datasource", label: "数据源", icon: "cylinder" },
       { kind: "code", label: "代码执行", icon: "code" },
       { kind: "http-request", label: "HTTP 请求", icon: "globe" },
       { kind: "template-transform", label: "模板转换", icon: "file-code" },
       { kind: "variable-aggregator", label: "变量聚合", icon: "layer-group" },
       { kind: "variable-assigner", label: "变量赋值", icon: "equal" },
       { kind: "list-operator", label: "列表操作", icon: "list" },
+    ],
+  },
+  {
+    group: "触发器",
+    color: "#EC4899",
+    items: [
+      { kind: "trigger-schedule", label: "定时触发", icon: "clock" },
+      { kind: "trigger-webhook", label: "Webhook", icon: "webhook" },
+      { kind: "trigger-plugin", label: "插件触发", icon: "puzzle" },
     ],
   },
   {
