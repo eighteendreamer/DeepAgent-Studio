@@ -83,6 +83,36 @@ const STATUS_DOT_COLOR: Record<NodeStatus, string> = {
   error: "#ef4444",
 };
 
+interface SourceHandleDef {
+  id: string;
+  label: string;
+}
+
+function getNodeSourceHandles(kind: string, data: Record<string, unknown>): SourceHandleDef[] {
+  switch (kind) {
+    case "human-input": {
+      const fields = (data.humanInputFields as Array<{ name: string }>) ?? [];
+      const handles = fields.map((f, i) => ({ id: `action-${i}`, label: (f.name || `action_${i + 1}`).toUpperCase() }));
+      handles.push({ id: "timeout", label: "TIMEOUT" });
+      return handles;
+    }
+    case "if-else": {
+      const conditions = (data.conditions as Array<{ id: string }>) ?? [];
+      if (conditions.length <= 1) return [{ id: "true", label: "是" }, { id: "false", label: "否" }];
+      return conditions.map((c) => ({ id: c.id, label: c.id.toUpperCase() }));
+    }
+    case "question-classifier": {
+      const classes = (data.classifierClasses as Array<{ name: string }>) ?? [];
+      if (!classes.length) return [{ id: "output", label: "输出" }];
+      return classes.map((c, i) => ({ id: `class-${i}`, label: c.name || `分类${i + 1}` }));
+    }
+    case "iteration":
+      return [{ id: "item", label: "ITEM" }, { id: "done", label: "DONE" }];
+    default:
+      return [{ id: "default", label: "" }];
+  }
+}
+
 function renderContent(nodeData: WorkflowNodeData, nodeId?: string) {
   const kind = nodeData.kind;
   const creativeData = nodeData as CreativeNodeData;
@@ -550,19 +580,39 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
           cursor: "crosshair",
         }}
       />
-      <Handle
-        type="source"
-        position={Position.Right}
-        style={{
-          right: -6,
-          width: 16,
-          height: 16,
-          background: "rgba(156,163,175,0.8)",
-          border: "2px solid rgba(30,30,35,0.95)",
-          borderRadius: "50%",
-          cursor: "crosshair",
-        }}
-      />
+      {(() => {
+        const handles = getNodeSourceHandles(nodeData.kind ?? "", nodeData as Record<string, unknown>);
+        const spacing = 28;
+        const totalH = handles.length * spacing;
+        const startY = 50 - totalH / 2 + spacing / 2;
+        return handles.map((h, i) => (
+          <div key={h.id} className="absolute flex items-center" style={{ right: -8, top: `calc(${startY + i * spacing}px - 8px)` }}>
+            {h.label && (
+              <span
+                className="mr-1 whitespace-nowrap rounded px-1 py-0.5 text-[8px] font-medium"
+                style={{ color: "rgba(248,248,248,0.5)", background: "rgba(255,255,255,0.06)" }}
+              >
+                {h.label}
+              </span>
+            )}
+            <Handle
+              type="source"
+              position={Position.Right}
+              id={h.id}
+              style={{
+                position: "relative",
+                right: 0,
+                width: 14,
+                height: 14,
+                background: "rgba(156,163,175,0.8)",
+                border: "2px solid rgba(30,30,35,0.95)",
+                borderRadius: "50%",
+                cursor: "crosshair",
+              }}
+            />
+          </div>
+        ));
+      })()}
 
       {/* Running progress bar */}
       {nodeStatus === "running" && "videoProgress" in nodeData && nodeData.videoProgress != null && (
