@@ -575,7 +575,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
         type="target"
         position={Position.Left}
         style={{
-          left: -7,
+          left: -20,
           top: "50%",
           transform: "translateY(-50%)",
           width: 14,
@@ -606,7 +606,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
                 position={Position.Right}
                 id={h.id}
                 style={{
-                  right: -7,
+                  right: -20,
                   top: `${pct}%`,
                   transform: "translateY(-50%)",
                   width: 14,
