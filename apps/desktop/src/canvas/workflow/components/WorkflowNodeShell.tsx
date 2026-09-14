@@ -570,11 +570,14 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
         </div>
       </div>
 
-      {/* Connection handles */}
+      {/* Connection handles — positioned outside the node card */}
       <Handle
         type="target"
         position={Position.Left}
         style={{
+          left: -7,
+          top: "50%",
+          transform: "translateY(-50%)",
           width: 14,
           height: 14,
           background: "rgba(156,163,175,0.8)",
@@ -603,6 +606,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
                 position={Position.Right}
                 id={h.id}
                 style={{
+                  right: -7,
                   top: `${pct}%`,
                   transform: "translateY(-50%)",
                   width: 14,
