@@ -1,4 +1,4 @@
-import type { NodeDefinition, ProfessionalNodeKind } from "./types";
+import type { NodeDefinition, ProfessionalNodeKind } from "../types";
 
 const registry = new Map<ProfessionalNodeKind, NodeDefinition>();
 

@@ -17,6 +17,14 @@ import {
   AgentForm,
   StartForm,
   KnowledgeForm,
+  EndForm,
+  IfElseForm,
+  IterationForm,
+  QuestionClassifierForm,
+  ParameterExtractorForm,
+  TemplateTransformForm,
+  VariableAggregatorForm,
+  HumanInputForm,
   GenericConfigForm,
 } from "./ConfigForms";
 
@@ -65,6 +73,22 @@ export function NodeConfigForm({ nodeId, nodeData }: { nodeId: string; nodeData:
       return <StartForm data={professionalData} {...formProps} />;
     case "knowledge-retrieval":
       return <KnowledgeForm data={professionalData} {...formProps} />;
+    case "end":
+      return <EndForm data={professionalData} {...formProps} />;
+    case "if-else":
+      return <IfElseForm data={professionalData} {...formProps} />;
+    case "iteration":
+      return <IterationForm data={professionalData} {...formProps} />;
+    case "question-classifier":
+      return <QuestionClassifierForm data={professionalData} {...formProps} />;
+    case "parameter-extractor":
+      return <ParameterExtractorForm data={professionalData} {...formProps} />;
+    case "template-transform":
+      return <TemplateTransformForm data={professionalData} {...formProps} />;
+    case "variable-aggregator":
+      return <VariableAggregatorForm data={professionalData} {...formProps} />;
+    case "human-input":
+      return <HumanInputForm data={professionalData} {...formProps} />;
     default:
       return <GenericConfigForm data={nodeData} />;
   }

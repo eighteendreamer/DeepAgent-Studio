@@ -1270,6 +1270,677 @@ export function KnowledgeForm({ data, onUpdate }: { data: ProfessionalNodeData }
   );
 }
 
+export function EndForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  const vars = (data.outputVariables ?? []) as Array<{ name: string; type: string; value: string }>;
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label={`输出变量 (${vars.length})`}>
+        <div className="flex flex-col gap-1.5">
+          {vars.map((v, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <input
+                style={{ ...INPUT_STYLE, flex: 1 }}
+                placeholder="变量名"
+                value={v.name}
+                onChange={(e) => {
+                  const next = [...vars];
+                  next[i] = { ...next[i], name: e.target.value };
+                  onUpdate({ outputVariables: next });
+                }}
+              />
+              <select
+                style={{ ...SELECT_STYLE, width: 80 }}
+                value={v.type}
+                onChange={(e) => {
+                  const next = [...vars];
+                  next[i] = { ...next[i], type: e.target.value };
+                  onUpdate({ outputVariables: next });
+                }}
+              >
+                <option value="string">文本</option>
+                <option value="number">数字</option>
+                <option value="object">对象</option>
+                <option value="array">数组</option>
+              </select>
+              <button
+                className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
+                style={{ color: "rgba(239,68,68,0.7)" }}
+                onClick={() => {
+                  const next = vars.filter((_, j) => j !== i);
+                  onUpdate({ outputVariables: next });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            className="self-start rounded-lg px-2.5 py-1 text-[11px] hover:bg-white/10"
+            style={{ color: "rgba(59,130,246,0.8)", border: "1px dashed rgba(59,130,246,0.3)" }}
+            onClick={() =>
+              onUpdate({ outputVariables: [...vars, { name: "", type: "string", value: "" }] })
+            }
+          >
+            + 添加输出变量
+          </button>
+        </div>
+      </Field>
+    </div>
+  );
+}
+
+const CONDITION_OPERATORS = [
+  { value: "is", label: "等于" },
+  { value: "is-not", label: "不等于" },
+  { value: "contains", label: "包含" },
+  { value: "not-contains", label: "不包含" },
+  { value: "starts-with", label: "开头是" },
+  { value: "ends-with", label: "结尾是" },
+  { value: "empty", label: "为空" },
+  { value: "not-empty", label: "不为空" },
+  { value: "gt", label: "大于" },
+  { value: "gte", label: "大于等于" },
+  { value: "lt", label: "小于" },
+  { value: "lte", label: "小于等于" },
+];
+
+export function IfElseForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  const conditions = (data.conditions ?? []) as unknown as Array<{
+    id: string;
+    logic: "and" | "or";
+    items: Array<{ variable: string; operator: string; value: string }>;
+  }>;
+  return (
+    <div className="flex flex-col gap-3">
+      {conditions.map((group, gi) => (
+        <div
+          key={group.id}
+          className="flex flex-col gap-2 rounded-lg p-2.5"
+          style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-medium" style={{ color: "rgba(248,248,248,0.45)" }}>
+              {gi === 0 ? "IF" : "ELIF"}
+            </span>
+            <div className="flex items-center gap-1">
+              {(["and", "or"] as const).map((l) => (
+                <button
+                  key={l}
+                  className="rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors"
+                  style={{
+                    background: group.logic === l ? "rgba(59,130,246,0.2)" : "transparent",
+                    color: group.logic === l ? "rgba(59,130,246,1)" : "rgba(248,248,248,0.4)",
+                  }}
+                  onClick={() => {
+                    const next = [...conditions];
+                    next[gi] = { ...group, logic: l };
+                    onUpdate({ conditions: next });
+                  }}
+                >
+                  {l.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+          {group.items.map((item, ii) => (
+            <div key={ii} className="flex items-center gap-1">
+              <input
+                style={{ ...INPUT_STYLE, flex: 2 }}
+                placeholder="变量"
+                value={item.variable}
+                onChange={(e) => {
+                  const next = [...conditions];
+                  const items = [...group.items];
+                  items[ii] = { ...items[ii], variable: e.target.value };
+                  next[gi] = { ...group, items };
+                  onUpdate({ conditions: next });
+                }}
+              />
+              <select
+                style={{ ...SELECT_STYLE, flex: 1.5 }}
+                value={item.operator}
+                onChange={(e) => {
+                  const next = [...conditions];
+                  const items = [...group.items];
+                  items[ii] = { ...items[ii], operator: e.target.value };
+                  next[gi] = { ...group, items };
+                  onUpdate({ conditions: next });
+                }}
+              >
+                {CONDITION_OPERATORS.map((op) => (
+                  <option key={op.value} value={op.value}>{op.label}</option>
+                ))}
+              </select>
+              <input
+                style={{ ...INPUT_STYLE, flex: 2 }}
+                placeholder="值"
+                value={item.value}
+                onChange={(e) => {
+                  const next = [...conditions];
+                  const items = [...group.items];
+                  items[ii] = { ...items[ii], value: e.target.value };
+                  next[gi] = { ...group, items };
+                  onUpdate({ conditions: next });
+                }}
+              />
+              <button
+                className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
+                style={{ color: "rgba(239,68,68,0.7)" }}
+                onClick={() => {
+                  const next = [...conditions];
+                  const items = group.items.filter((_, j) => j !== ii);
+                  next[gi] = { ...group, items };
+                  onUpdate({ conditions: next });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            className="self-start rounded px-2 py-0.5 text-[10px] hover:bg-white/10"
+            style={{ color: "rgba(59,130,246,0.7)" }}
+            onClick={() => {
+              const next = [...conditions];
+              next[gi] = {
+                ...group,
+                items: [...group.items, { variable: "", operator: "is", value: "" }],
+              };
+              onUpdate({ conditions: next });
+            }}
+          >
+            + 条件
+          </button>
+        </div>
+      ))}
+      <button
+        className="self-start rounded-lg px-2.5 py-1 text-[11px] hover:bg-white/10"
+        style={{ color: "rgba(59,130,246,0.8)", border: "1px dashed rgba(59,130,246,0.3)" }}
+        onClick={() => {
+          const next = [
+            ...conditions,
+            {
+              id: conditions.length === 0 ? "if" : `elif-${Date.now()}`,
+              logic: "and" as const,
+              items: [{ variable: "", operator: "is", value: "" }],
+            },
+          ];
+          onUpdate({ conditions: next });
+        }}
+      >
+        + 添加分支
+      </button>
+    </div>
+  );
+}
+
+export function IterationForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="输入数组变量">
+        <input
+          style={INPUT_STYLE}
+          placeholder="引用上游数组变量..."
+          value={(data.inputVariable as string) ?? ""}
+          onChange={(e) => onUpdate({ inputVariable: e.target.value })}
+        />
+      </Field>
+      <Field label="输出变量">
+        <input
+          style={INPUT_STYLE}
+          placeholder="迭代输出变量名..."
+          value={(data.outputVariable as string) ?? ""}
+          onChange={(e) => onUpdate({ outputVariable: e.target.value })}
+        />
+      </Field>
+      <div className="flex items-center justify-between">
+        <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>并行执行</span>
+        <button
+          className="relative h-5 w-9 rounded-full transition-colors"
+          style={{
+            background: data.parallel ? "rgba(16,185,129,0.6)" : "rgba(255,255,255,0.12)",
+          }}
+          onClick={() => onUpdate({ parallel: !data.parallel })}
+        >
+          <span
+            className="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
+            style={{ left: data.parallel ? 18 : 2 }}
+          />
+        </button>
+      </div>
+      {!!data.parallel && (
+        <Field label="最大并发数">
+          <input
+            type="number"
+            style={INPUT_STYLE}
+            min={1}
+            max={50}
+            value={(data.maxConcurrency as number) ?? 1}
+            onChange={(e) => onUpdate({ maxConcurrency: Number(e.target.value) })}
+          />
+        </Field>
+      )}
+      <Field label="错误处理">
+        <select
+          style={SELECT_STYLE}
+          value={(data.errorHandling as string) ?? "terminate"}
+          onChange={(e) => onUpdate({ errorHandling: e.target.value })}
+        >
+          <option value="terminate">终止</option>
+          <option value="continue">跳过并继续</option>
+          <option value="remove">移除异常输出</option>
+        </select>
+      </Field>
+      <div className="flex items-center justify-between">
+        <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>扁平化输出</span>
+        <button
+          className="relative h-5 w-9 rounded-full transition-colors"
+          style={{
+            background: data.flatten ? "rgba(16,185,129,0.6)" : "rgba(255,255,255,0.12)",
+          }}
+          onClick={() => onUpdate({ flatten: !data.flatten })}
+        >
+          <span
+            className="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
+            style={{ left: data.flatten ? 18 : 2 }}
+          />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function QuestionClassifierForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  const classes = (data.classifierClasses ?? []) as Array<{ name: string; description: string }>;
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="模型">
+        <select
+          style={SELECT_STYLE}
+          value={(data.classifierModel as string) ?? "deepseek-chat"}
+          onChange={(e) => onUpdate({ classifierModel: e.target.value })}
+        >
+          <option value="deepseek-chat">DeepSeek Chat</option>
+          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
+        </select>
+      </Field>
+      <Field label="输入查询">
+        <input
+          style={INPUT_STYLE}
+          placeholder="引用输入变量..."
+          value={(data.classifierInput as string) ?? ""}
+          onChange={(e) => onUpdate({ classifierInput: e.target.value })}
+        />
+      </Field>
+      <Field label={`分类 (${classes.length})`}>
+        <div className="flex flex-col gap-1.5">
+          {classes.map((c, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <input
+                style={{ ...INPUT_STYLE, flex: 1 }}
+                placeholder="分类名称"
+                value={c.name}
+                onChange={(e) => {
+                  const next = [...classes];
+                  next[i] = { ...next[i], name: e.target.value };
+                  onUpdate({ classifierClasses: next });
+                }}
+              />
+              <input
+                style={{ ...INPUT_STYLE, flex: 2 }}
+                placeholder="分类描述（可选）"
+                value={c.description}
+                onChange={(e) => {
+                  const next = [...classes];
+                  next[i] = { ...next[i], description: e.target.value };
+                  onUpdate({ classifierClasses: next });
+                }}
+              />
+              <button
+                className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
+                style={{ color: "rgba(239,68,68,0.7)" }}
+                onClick={() => {
+                  const next = classes.filter((_, j) => j !== i);
+                  onUpdate({ classifierClasses: next });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            className="self-start rounded-lg px-2.5 py-1 text-[11px] hover:bg-white/10"
+            style={{ color: "rgba(139,92,246,0.8)", border: "1px dashed rgba(139,92,246,0.3)" }}
+            onClick={() =>
+              onUpdate({ classifierClasses: [...classes, { name: "", description: "" }] })
+            }
+          >
+            + 添加分类
+          </button>
+        </div>
+      </Field>
+      <Field label="分类指令">
+        <textarea
+          style={{ ...TEXTAREA_STYLE, minHeight: 56 }}
+          placeholder="给模型的额外分类指令..."
+          value={(data.classifierInstruction as string) ?? ""}
+          onChange={(e) => onUpdate({ classifierInstruction: e.target.value })}
+        />
+      </Field>
+    </div>
+  );
+}
+
+export function ParameterExtractorForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  const params = (data.extractorParams ?? []) as Array<{
+    name: string;
+    type: string;
+    description: string;
+    required: boolean;
+  }>;
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="模型">
+        <select
+          style={SELECT_STYLE}
+          value={(data.extractorModel as string) ?? "deepseek-chat"}
+          onChange={(e) => onUpdate({ extractorModel: e.target.value })}
+        >
+          <option value="deepseek-chat">DeepSeek Chat</option>
+          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
+        </select>
+      </Field>
+      <Field label="输入变量">
+        <input
+          style={INPUT_STYLE}
+          placeholder="引用输入变量..."
+          value={(data.extractorInput as string) ?? ""}
+          onChange={(e) => onUpdate({ extractorInput: e.target.value })}
+        />
+      </Field>
+      <Field label={`参数 (${params.length})`}>
+        <div className="flex flex-col gap-1.5">
+          {params.map((p, i) => (
+            <div key={i} className="flex items-center gap-1">
+              <input
+                style={{ ...INPUT_STYLE, flex: 1.5 }}
+                placeholder="参数名"
+                value={p.name}
+                onChange={(e) => {
+                  const next = [...params];
+                  next[i] = { ...next[i], name: e.target.value };
+                  onUpdate({ extractorParams: next });
+                }}
+              />
+              <select
+                style={{ ...SELECT_STYLE, width: 70 }}
+                value={p.type}
+                onChange={(e) => {
+                  const next = [...params];
+                  next[i] = { ...next[i], type: e.target.value };
+                  onUpdate({ extractorParams: next });
+                }}
+              >
+                <option value="string">文本</option>
+                <option value="number">数字</option>
+                <option value="boolean">布尔</option>
+                <option value="array">数组</option>
+                <option value="object">对象</option>
+              </select>
+              <button
+                className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
+                style={{ color: "rgba(239,68,68,0.7)" }}
+                onClick={() => {
+                  const next = params.filter((_, j) => j !== i);
+                  onUpdate({ extractorParams: next });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            className="self-start rounded-lg px-2.5 py-1 text-[11px] hover:bg-white/10"
+            style={{ color: "rgba(139,92,246,0.8)", border: "1px dashed rgba(139,92,246,0.3)" }}
+            onClick={() =>
+              onUpdate({
+                extractorParams: [...params, { name: "", type: "string", description: "", required: true }],
+              })
+            }
+          >
+            + 添加参数
+          </button>
+        </div>
+      </Field>
+      <Field label="提取指令">
+        <textarea
+          style={{ ...TEXTAREA_STYLE, minHeight: 56 }}
+          placeholder="给模型的额外提取指令..."
+          value={(data.extractorInstruction as string) ?? ""}
+          onChange={(e) => onUpdate({ extractorInstruction: e.target.value })}
+        />
+      </Field>
+      <div className="flex items-center justify-between">
+        <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>推理模式</span>
+        <button
+          className="relative h-5 w-9 rounded-full transition-colors"
+          style={{
+            background: data.reasoningMode ? "rgba(16,185,129,0.6)" : "rgba(255,255,255,0.12)",
+          }}
+          onClick={() => onUpdate({ reasoningMode: !data.reasoningMode })}
+        >
+          <span
+            className="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
+            style={{ left: data.reasoningMode ? 18 : 2 }}
+          />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function TemplateTransformForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  const vars = (data.templateInputVariables ?? []) as Array<{ name: string; value: string }>;
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label={`输入变量 (${vars.length})`}>
+        <div className="flex flex-col gap-1.5">
+          {vars.map((v, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <input
+                style={{ ...INPUT_STYLE, flex: 1 }}
+                placeholder="变量名"
+                value={v.name}
+                onChange={(e) => {
+                  const next = [...vars];
+                  next[i] = { ...next[i], name: e.target.value };
+                  onUpdate({ templateInputVariables: next });
+                }}
+              />
+              <input
+                style={{ ...INPUT_STYLE, flex: 2 }}
+                placeholder="变量值或引用"
+                value={v.value}
+                onChange={(e) => {
+                  const next = [...vars];
+                  next[i] = { ...next[i], value: e.target.value };
+                  onUpdate({ templateInputVariables: next });
+                }}
+              />
+              <button
+                className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
+                style={{ color: "rgba(239,68,68,0.7)" }}
+                onClick={() => {
+                  const next = vars.filter((_, j) => j !== i);
+                  onUpdate({ templateInputVariables: next });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            className="self-start rounded-lg px-2.5 py-1 text-[11px] hover:bg-white/10"
+            style={{ color: "rgba(16,185,129,0.8)", border: "1px dashed rgba(16,185,129,0.3)" }}
+            onClick={() =>
+              onUpdate({ templateInputVariables: [...vars, { name: "", value: "" }] })
+            }
+          >
+            + 添加变量
+          </button>
+        </div>
+      </Field>
+      <Field label="Jinja 模板">
+        <textarea
+          style={{ ...TEXTAREA_STYLE, fontFamily: "ui-monospace, monospace", minHeight: 100 }}
+          placeholder="Hello {{ name }}, welcome to {{ company }}!"
+          value={(data.templateScript as string) ?? ""}
+          onChange={(e) => onUpdate({ templateScript: e.target.value })}
+        />
+      </Field>
+    </div>
+  );
+}
+
+export function VariableAggregatorForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  const vars = (data.aggregatorVariables ?? []) as string[];
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="输出类型">
+        <select
+          style={SELECT_STYLE}
+          value={(data.aggregatorOutputType as string) ?? "string"}
+          onChange={(e) => onUpdate({ aggregatorOutputType: e.target.value })}
+        >
+          <option value="string">文本</option>
+          <option value="number">数字</option>
+          <option value="array">数组</option>
+          <option value="object">对象</option>
+        </select>
+      </Field>
+      <Field label={`聚合变量 (${vars.length})`}>
+        <div className="flex flex-col gap-1.5">
+          {vars.map((v, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <input
+                style={{ ...INPUT_STYLE, flex: 1 }}
+                placeholder="引用变量..."
+                value={v}
+                onChange={(e) => {
+                  const next = [...vars];
+                  next[i] = e.target.value;
+                  onUpdate({ aggregatorVariables: next });
+                }}
+              />
+              <button
+                className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
+                style={{ color: "rgba(239,68,68,0.7)" }}
+                onClick={() => {
+                  const next = vars.filter((_, j) => j !== i);
+                  onUpdate({ aggregatorVariables: next });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            className="self-start rounded-lg px-2.5 py-1 text-[11px] hover:bg-white/10"
+            style={{ color: "rgba(16,185,129,0.8)", border: "1px dashed rgba(16,185,129,0.3)" }}
+            onClick={() => onUpdate({ aggregatorVariables: [...vars, ""] })}
+          >
+            + 添加变量
+          </button>
+        </div>
+      </Field>
+    </div>
+  );
+}
+
+export function HumanInputForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  const fields = (data.humanInputFields ?? []) as Array<{
+    name: string;
+    type: string;
+    label: string;
+    required: boolean;
+  }>;
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="提示内容">
+        <textarea
+          style={TEXTAREA_STYLE}
+          placeholder="向用户展示的审批说明..."
+          value={(data.humanInputPrompt as string) ?? ""}
+          onChange={(e) => onUpdate({ humanInputPrompt: e.target.value })}
+        />
+      </Field>
+      <Field label={`表单字段 (${fields.length})`}>
+        <div className="flex flex-col gap-1.5">
+          {fields.map((f, i) => (
+            <div key={i} className="flex items-center gap-1">
+              <input
+                style={{ ...INPUT_STYLE, flex: 1 }}
+                placeholder="字段名"
+                value={f.name}
+                onChange={(e) => {
+                  const next = [...fields];
+                  next[i] = { ...next[i], name: e.target.value };
+                  onUpdate({ humanInputFields: next });
+                }}
+              />
+              <input
+                style={{ ...INPUT_STYLE, flex: 1 }}
+                placeholder="显示标签"
+                value={f.label}
+                onChange={(e) => {
+                  const next = [...fields];
+                  next[i] = { ...next[i], label: e.target.value };
+                  onUpdate({ humanInputFields: next });
+                }}
+              />
+              <select
+                style={{ ...SELECT_STYLE, width: 70 }}
+                value={f.type}
+                onChange={(e) => {
+                  const next = [...fields];
+                  next[i] = { ...next[i], type: e.target.value };
+                  onUpdate({ humanInputFields: next });
+                }}
+              >
+                <option value="string">文本</option>
+                <option value="number">数字</option>
+                <option value="boolean">布尔</option>
+                <option value="file">文件</option>
+              </select>
+              <button
+                className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
+                style={{ color: "rgba(239,68,68,0.7)" }}
+                onClick={() => {
+                  const next = fields.filter((_, j) => j !== i);
+                  onUpdate({ humanInputFields: next });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            className="self-start rounded-lg px-2.5 py-1 text-[11px] hover:bg-white/10"
+            style={{ color: "rgba(245,158,11,0.8)", border: "1px dashed rgba(245,158,11,0.3)" }}
+            onClick={() =>
+              onUpdate({
+                humanInputFields: [...fields, { name: "", type: "string", label: "", required: true }],
+              })
+            }
+          >
+            + 添加字段
+          </button>
+        </div>
+      </Field>
+    </div>
+  );
+}
+
 export function GenericConfigForm({ data }: { data: WorkflowNodeData }) {
   return (
     <div
