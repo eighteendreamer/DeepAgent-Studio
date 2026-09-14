@@ -1,6 +1,17 @@
 import React, { useRef, useState } from "react";
 import { ArrowUp, ChevronDown, Maximize2, Plus, X, Square } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "../../../components/shadcn/dialog";
+import { Input } from "../../../components/shadcn/input";
+import { Textarea } from "../../../components/shadcn/textarea";
+import { Label } from "../../../components/shadcn/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../../components/shadcn/select";
+import { cn } from "../../../components/shadcn/utils";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -12,17 +23,6 @@ import {
 import type { CreativeNodeData, ProfessionalNodeData, WorkflowNodeData } from "../types";
 import { useCanvasSettingsStore } from "../store/canvasSettingsStore";
 import { runWorkflow } from "../utils/workflowExecutor";
-
-const MINIMAL_INPUT_STYLE: React.CSSProperties = {
-  width: "100%",
-  padding: "7px 10px",
-  borderRadius: 8,
-  border: "1px solid rgba(255,255,255,0.06)",
-  background: "rgba(255,255,255,0.04)",
-  color: "rgba(248,248,248,0.85)",
-  fontSize: 12,
-  outline: "none",
-};
 
 const TEXT_COLOR = "rgba(255,255,255,0.88)";
 
@@ -896,14 +896,12 @@ export function ImageEditForm({ data, onUpdate }: { data: CreativeNodeData } & F
 export function ImageCompareForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
   return (
     <div className="flex flex-col gap-2">
-      <input
-        style={MINIMAL_INPUT_STYLE}
+      <CanvasInput
         placeholder="图片 A 地址..."
         value={data.leftImageUrl ?? ""}
         onChange={(e) => onUpdate({ leftImageUrl: e.target.value })}
       />
-      <input
-        style={MINIMAL_INPUT_STYLE}
+      <CanvasInput
         placeholder="图片 B 地址..."
         value={data.rightImageUrl ?? ""}
         onChange={(e) => onUpdate({ rightImageUrl: e.target.value })}
@@ -921,8 +919,8 @@ export function VideoStitchForm({ data, onUpdate }: { data: CreativeNodeData } &
           <span className="shrink-0 text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
             #{i + 1}
           </span>
-          <input
-            style={{ ...MINIMAL_INPUT_STYLE, flex: 1 }}
+          <CanvasInput
+            style={{ flex: 1 }}
             value={url}
             onChange={(e) => {
               const next = [...urls];
@@ -953,33 +951,60 @@ export function VideoStitchForm({ data, onUpdate }: { data: CreativeNodeData } &
   );
 }
 
-const INPUT_STYLE: React.CSSProperties = MINIMAL_INPUT_STYLE;
+const CANVAS_FIELD_CN =
+  "!h-8 !rounded-lg !border !border-white/[0.08] !bg-white/[0.05] !px-2.5 !text-[12px] !text-white/85 !shadow-none placeholder:!text-white/30 focus:!border-white/25 focus:!ring-0 disabled:!opacity-40 [color-scheme:dark]";
 
-const TEXTAREA_STYLE: React.CSSProperties = {
-  ...MINIMAL_INPUT_STYLE,
-  minHeight: 72,
-  resize: "vertical",
-  fontFamily: "inherit",
-};
+const CANVAS_TEXTAREA_CN =
+  "!rounded-lg !border !border-white/[0.08] !bg-white/[0.05] !px-2.5 !py-1.5 !text-[12px] !text-white/85 !shadow-none placeholder:!text-white/30 focus:!border-white/25 focus:!ring-0";
 
-const LABEL_STYLE: React.CSSProperties = {
-  fontSize: 11,
-  fontWeight: 500,
-  color: "rgba(248,248,248,0.55)",
-  marginBottom: 4,
-  display: "block",
-};
+const CANVAS_TRIGGER_CN =
+  "!h-8 !rounded-lg !border !border-white/[0.08] !bg-white/[0.05] !px-2.5 !text-[12px] !text-white/85 data-[placeholder]:!text-white/40 hover:!bg-white/[0.08] focus-visible:!bg-white/[0.08] focus-visible:!ring-0 [&>svg]:!text-white/45";
 
-const SELECT_STYLE: React.CSSProperties = {
-  ...MINIMAL_INPUT_STYLE,
-  appearance: "none" as const,
-  cursor: "pointer",
-};
+const CANVAS_SELECT_CONTENT_CN =
+  "!rounded-lg !border !border-white/[0.08] !bg-[rgba(24,24,27,0.96)] !p-1 !text-[12px] !text-white/85 !shadow-[0_8px_28px_rgba(0,0,0,0.45)]";
+
+const CANVAS_SELECT_ITEM_CN =
+  "!rounded-lg !py-1.5 !text-[12px] !text-white/85 data-[highlighted]:!bg-white/10 focus:!bg-white/10";
+
+function CanvasInput({ className, style, ...props }: React.ComponentProps<typeof Input>) {
+  return <Input className={cn(CANVAS_FIELD_CN, className)} style={style} {...props} />;
+}
+
+function CanvasTextarea({ className, style, ...props }: React.ComponentProps<typeof Textarea>) {
+  return <Textarea className={cn(CANVAS_TEXTAREA_CN, className)} style={{ minHeight: 72, ...style }} {...props} />;
+}
+
+function CanvasSelect({
+  value,
+  options,
+  onChange,
+  style,
+}: {
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (v: string) => void;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger className={CANVAS_TRIGGER_CN} style={style}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent className={CANVAS_SELECT_CONTENT_CN}>
+        {options.map((o) => (
+          <SelectItem key={o.value} value={o.value} className={CANVAS_SELECT_ITEM_CN}>
+            {o.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <label style={LABEL_STYLE}>{label}</label>
+      <Label className="!text-[11px] !font-medium !text-white/55">{label}</Label>
       {children}
     </div>
   );
@@ -989,26 +1014,24 @@ export function LLMForm({ data, onUpdate }: { data: ProfessionalNodeData } & For
   return (
     <div className="flex flex-col gap-3">
       <Field label="模型">
-        <select
-          style={SELECT_STYLE}
+        <CanvasSelect
           value={data.llmModel ?? "deepseek-chat"}
-          onChange={(e) => onUpdate({ llmModel: e.target.value })}
-        >
-          <option value="deepseek-chat">DeepSeek Chat</option>
-          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
-        </select>
+          onChange={(llmModel) => onUpdate({ llmModel })}
+          options={[
+            { value: "deepseek-chat", label: "DeepSeek Chat" },
+            { value: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+          ]}
+        />
       </Field>
       <Field label="System Prompt">
-        <textarea
-          style={TEXTAREA_STYLE}
+        <CanvasTextarea
           placeholder="系统提示词..."
           value={data.llmSystemPrompt ?? ""}
           onChange={(e) => onUpdate({ llmSystemPrompt: e.target.value })}
         />
       </Field>
       <Field label="User Prompt">
-        <textarea
-          style={TEXTAREA_STYLE}
+        <CanvasTextarea
           placeholder="用户提示词..."
           value={data.llmPrompt ?? ""}
           onChange={(e) => onUpdate({ llmPrompt: e.target.value })}
@@ -1017,9 +1040,8 @@ export function LLMForm({ data, onUpdate }: { data: ProfessionalNodeData } & For
       <div className="flex gap-2">
         <div className="flex-1">
           <Field label="Temperature">
-            <input
+            <CanvasInput
               type="number"
-              style={INPUT_STYLE}
               min={0}
               max={2}
               step={0.1}
@@ -1030,9 +1052,8 @@ export function LLMForm({ data, onUpdate }: { data: ProfessionalNodeData } & For
         </div>
         <div className="flex-1">
           <Field label="Max Tokens">
-            <input
+            <CanvasInput
               type="number"
-              style={INPUT_STYLE}
               min={1}
               max={128000}
               value={data.llmMaxTokens ?? 4096}
@@ -1067,8 +1088,8 @@ export function CodeForm({ data, onUpdate }: { data: ProfessionalNodeData } & Fo
         </div>
       </Field>
       <Field label="代码">
-        <textarea
-          style={{ ...TEXTAREA_STYLE, fontFamily: "ui-monospace, monospace", minHeight: 120 }}
+        <CanvasTextarea
+          style={{ fontFamily: "ui-monospace, monospace", minHeight: 120 }}
           placeholder="输入代码..."
           value={data.codeScript ?? ""}
           onChange={(e) => onUpdate({ codeScript: e.target.value })}
@@ -1084,22 +1105,21 @@ export function HttpRequestForm({ data, onUpdate }: { data: ProfessionalNodeData
       <div className="flex gap-2">
         <div style={{ width: 100 }}>
           <Field label="方法">
-            <select
-              style={SELECT_STYLE}
+            <CanvasSelect
               value={data.httpMethod ?? "GET"}
-              onChange={(e) => onUpdate({ httpMethod: e.target.value })}
-            >
-              <option value="GET">GET</option>
-              <option value="POST">POST</option>
-              <option value="PUT">PUT</option>
-              <option value="DELETE">DELETE</option>
-            </select>
+              onChange={(httpMethod) => onUpdate({ httpMethod })}
+              options={[
+                { value: "GET", label: "GET" },
+                { value: "POST", label: "POST" },
+                { value: "PUT", label: "PUT" },
+                { value: "DELETE", label: "DELETE" },
+              ]}
+            />
           </Field>
         </div>
         <div className="flex-1">
           <Field label="URL">
-            <input
-              style={INPUT_STYLE}
+            <CanvasInput
               placeholder="https://api.example.com/..."
               value={data.httpUrl ?? ""}
               onChange={(e) => onUpdate({ httpUrl: e.target.value })}
@@ -1108,8 +1128,8 @@ export function HttpRequestForm({ data, onUpdate }: { data: ProfessionalNodeData
         </div>
       </div>
       <Field label="Headers (JSON)">
-        <textarea
-          style={{ ...TEXTAREA_STYLE, fontFamily: "ui-monospace, monospace", minHeight: 56 }}
+        <CanvasTextarea
+          style={{ fontFamily: "ui-monospace, monospace", minHeight: 56 }}
           placeholder='{"Content-Type": "application/json"}'
           value={data.httpHeaders ? JSON.stringify(data.httpHeaders, null, 2) : ""}
           onChange={(e) => {
@@ -1122,8 +1142,8 @@ export function HttpRequestForm({ data, onUpdate }: { data: ProfessionalNodeData
         />
       </Field>
       <Field label="Body">
-        <textarea
-          style={{ ...TEXTAREA_STYLE, fontFamily: "ui-monospace, monospace" }}
+        <CanvasTextarea
+          style={{ fontFamily: "ui-monospace, monospace" }}
           placeholder="请求体..."
           value={data.httpBody ?? ""}
           onChange={(e) => onUpdate({ httpBody: e.target.value })}
@@ -1195,8 +1215,8 @@ export function StartForm({ data, onUpdate }: { data: ProfessionalNodeData } & F
         <div className="flex flex-col gap-1.5">
           {vars.map((v, i) => (
             <div key={i} className="flex items-center gap-1.5">
-              <input
-                style={{ ...INPUT_STYLE, flex: 1 }}
+              <CanvasInput
+                style={{ flex: 1 }}
                 placeholder="变量名"
                 value={v.name}
                 onChange={(e) => {
@@ -1205,19 +1225,20 @@ export function StartForm({ data, onUpdate }: { data: ProfessionalNodeData } & F
                   onUpdate({ inputVariables: next });
                 }}
               />
-              <select
-                style={{ ...SELECT_STYLE, width: 80 }}
+              <CanvasSelect
+                style={{ width: 80 }}
                 value={v.type}
-                onChange={(e) => {
+                onChange={(type) => {
                   const next = [...vars];
-                  next[i] = { ...next[i], type: e.target.value };
+                  next[i] = { ...next[i], type };
                   onUpdate({ inputVariables: next });
                 }}
-              >
-                <option value="string">文本</option>
-                <option value="number">数字</option>
-                <option value="boolean">布尔</option>
-              </select>
+                options={[
+                  { value: "string", label: "文本" },
+                  { value: "number", label: "数字" },
+                  { value: "boolean", label: "布尔" },
+                ]}
+              />
               <button
                 className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
                 style={{ color: "rgba(239,68,68,0.7)" }}
@@ -1249,17 +1270,15 @@ export function KnowledgeForm({ data, onUpdate }: { data: ProfessionalNodeData }
   return (
     <div className="flex flex-col gap-3">
       <Field label="知识库 ID">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="选择知识库..."
           value={data.knowledgeBaseId ?? ""}
           onChange={(e) => onUpdate({ knowledgeBaseId: e.target.value })}
         />
       </Field>
       <Field label="Top K">
-        <input
+        <CanvasInput
           type="number"
-          style={INPUT_STYLE}
           min={1}
           max={20}
           value={data.knowledgeTopK ?? 3}
@@ -1278,8 +1297,8 @@ export function EndForm({ data, onUpdate }: { data: ProfessionalNodeData } & For
         <div className="flex flex-col gap-1.5">
           {vars.map((v, i) => (
             <div key={i} className="flex items-center gap-1.5">
-              <input
-                style={{ ...INPUT_STYLE, flex: 1 }}
+              <CanvasInput
+                style={{ flex: 1 }}
                 placeholder="变量名"
                 value={v.name}
                 onChange={(e) => {
@@ -1288,20 +1307,21 @@ export function EndForm({ data, onUpdate }: { data: ProfessionalNodeData } & For
                   onUpdate({ outputVariables: next });
                 }}
               />
-              <select
-                style={{ ...SELECT_STYLE, width: 80 }}
+              <CanvasSelect
+                style={{ width: 80 }}
                 value={v.type}
-                onChange={(e) => {
+                onChange={(type) => {
                   const next = [...vars];
-                  next[i] = { ...next[i], type: e.target.value };
+                  next[i] = { ...next[i], type };
                   onUpdate({ outputVariables: next });
                 }}
-              >
-                <option value="string">文本</option>
-                <option value="number">数字</option>
-                <option value="object">对象</option>
-                <option value="array">数组</option>
-              </select>
+                options={[
+                  { value: "string", label: "文本" },
+                  { value: "number", label: "数字" },
+                  { value: "object", label: "对象" },
+                  { value: "array", label: "数组" },
+                ]}
+              />
               <button
                 className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
                 style={{ color: "rgba(239,68,68,0.7)" }}
@@ -1384,8 +1404,8 @@ export function IfElseForm({ data, onUpdate }: { data: ProfessionalNodeData } & 
           </div>
           {group.items.map((item, ii) => (
             <div key={ii} className="flex items-center gap-1">
-              <input
-                style={{ ...INPUT_STYLE, flex: 2 }}
+              <CanvasInput
+                style={{ flex: 2 }}
                 placeholder="变量"
                 value={item.variable}
                 onChange={(e) => {
@@ -1396,23 +1416,20 @@ export function IfElseForm({ data, onUpdate }: { data: ProfessionalNodeData } & 
                   onUpdate({ conditions: next });
                 }}
               />
-              <select
-                style={{ ...SELECT_STYLE, flex: 1.5 }}
+              <CanvasSelect
+                style={{ flex: 1.5 }}
                 value={item.operator}
-                onChange={(e) => {
+                onChange={(operator) => {
                   const next = [...conditions];
                   const items = [...group.items];
-                  items[ii] = { ...items[ii], operator: e.target.value };
+                  items[ii] = { ...items[ii], operator };
                   next[gi] = { ...group, items };
                   onUpdate({ conditions: next });
                 }}
-              >
-                {CONDITION_OPERATORS.map((op) => (
-                  <option key={op.value} value={op.value}>{op.label}</option>
-                ))}
-              </select>
-              <input
-                style={{ ...INPUT_STYLE, flex: 2 }}
+                options={CONDITION_OPERATORS}
+              />
+              <CanvasInput
+                style={{ flex: 2 }}
                 placeholder="值"
                 value={item.value}
                 onChange={(e) => {
@@ -1478,23 +1495,21 @@ export function IterationForm({ data, onUpdate }: { data: ProfessionalNodeData }
   return (
     <div className="flex flex-col gap-3">
       <Field label="输入数组变量">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="引用上游数组变量..."
           value={(data.inputVariable as string) ?? ""}
           onChange={(e) => onUpdate({ inputVariable: e.target.value })}
         />
       </Field>
       <Field label="输出变量">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="迭代输出变量名..."
           value={(data.outputVariable as string) ?? ""}
           onChange={(e) => onUpdate({ outputVariable: e.target.value })}
         />
       </Field>
       <div className="flex items-center justify-between">
-        <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>并行执行</span>
+        <span className="text-[11px] font-medium text-white/55">并行执行</span>
         <button
           className="relative h-5 w-9 rounded-full transition-colors"
           style={{
@@ -1510,9 +1525,8 @@ export function IterationForm({ data, onUpdate }: { data: ProfessionalNodeData }
       </div>
       {!!data.parallel && (
         <Field label="最大并发数">
-          <input
+          <CanvasInput
             type="number"
-            style={INPUT_STYLE}
             min={1}
             max={50}
             value={(data.maxConcurrency as number) ?? 1}
@@ -1521,18 +1535,18 @@ export function IterationForm({ data, onUpdate }: { data: ProfessionalNodeData }
         </Field>
       )}
       <Field label="错误处理">
-        <select
-          style={SELECT_STYLE}
+        <CanvasSelect
           value={(data.errorHandling as string) ?? "terminate"}
-          onChange={(e) => onUpdate({ errorHandling: e.target.value })}
-        >
-          <option value="terminate">终止</option>
-          <option value="continue">跳过并继续</option>
-          <option value="remove">移除异常输出</option>
-        </select>
+          onChange={(errorHandling) => onUpdate({ errorHandling })}
+          options={[
+            { value: "terminate", label: "终止" },
+            { value: "continue", label: "跳过并继续" },
+            { value: "remove", label: "移除异常输出" },
+          ]}
+        />
       </Field>
       <div className="flex items-center justify-between">
-        <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>扁平化输出</span>
+        <span className="text-[11px] font-medium text-white/55">扁平化输出</span>
         <button
           className="relative h-5 w-9 rounded-full transition-colors"
           style={{
@@ -1555,18 +1569,17 @@ export function QuestionClassifierForm({ data, onUpdate }: { data: ProfessionalN
   return (
     <div className="flex flex-col gap-3">
       <Field label="模型">
-        <select
-          style={SELECT_STYLE}
+        <CanvasSelect
           value={(data.classifierModel as string) ?? "deepseek-chat"}
-          onChange={(e) => onUpdate({ classifierModel: e.target.value })}
-        >
-          <option value="deepseek-chat">DeepSeek Chat</option>
-          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
-        </select>
+          onChange={(classifierModel) => onUpdate({ classifierModel })}
+          options={[
+            { value: "deepseek-chat", label: "DeepSeek Chat" },
+            { value: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+          ]}
+        />
       </Field>
       <Field label="输入查询">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="引用输入变量..."
           value={(data.classifierInput as string) ?? ""}
           onChange={(e) => onUpdate({ classifierInput: e.target.value })}
@@ -1576,8 +1589,8 @@ export function QuestionClassifierForm({ data, onUpdate }: { data: ProfessionalN
         <div className="flex flex-col gap-1.5">
           {classes.map((c, i) => (
             <div key={i} className="flex items-center gap-1.5">
-              <input
-                style={{ ...INPUT_STYLE, flex: 1 }}
+              <CanvasInput
+                style={{ flex: 1 }}
                 placeholder="分类名称"
                 value={c.name}
                 onChange={(e) => {
@@ -1586,8 +1599,8 @@ export function QuestionClassifierForm({ data, onUpdate }: { data: ProfessionalN
                   onUpdate({ classifierClasses: next });
                 }}
               />
-              <input
-                style={{ ...INPUT_STYLE, flex: 2 }}
+              <CanvasInput
+                style={{ flex: 2 }}
                 placeholder="分类描述（可选）"
                 value={c.description}
                 onChange={(e) => {
@@ -1620,8 +1633,8 @@ export function QuestionClassifierForm({ data, onUpdate }: { data: ProfessionalN
         </div>
       </Field>
       <Field label="分类指令">
-        <textarea
-          style={{ ...TEXTAREA_STYLE, minHeight: 56 }}
+        <CanvasTextarea
+          style={{ minHeight: 56 }}
           placeholder="给模型的额外分类指令..."
           value={(data.classifierInstruction as string) ?? ""}
           onChange={(e) => onUpdate({ classifierInstruction: e.target.value })}
@@ -1641,18 +1654,17 @@ export function ParameterExtractorForm({ data, onUpdate }: { data: ProfessionalN
   return (
     <div className="flex flex-col gap-3">
       <Field label="模型">
-        <select
-          style={SELECT_STYLE}
+        <CanvasSelect
           value={(data.extractorModel as string) ?? "deepseek-chat"}
-          onChange={(e) => onUpdate({ extractorModel: e.target.value })}
-        >
-          <option value="deepseek-chat">DeepSeek Chat</option>
-          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
-        </select>
+          onChange={(extractorModel) => onUpdate({ extractorModel })}
+          options={[
+            { value: "deepseek-chat", label: "DeepSeek Chat" },
+            { value: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+          ]}
+        />
       </Field>
       <Field label="输入变量">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="引用输入变量..."
           value={(data.extractorInput as string) ?? ""}
           onChange={(e) => onUpdate({ extractorInput: e.target.value })}
@@ -1662,8 +1674,8 @@ export function ParameterExtractorForm({ data, onUpdate }: { data: ProfessionalN
         <div className="flex flex-col gap-1.5">
           {params.map((p, i) => (
             <div key={i} className="flex items-center gap-1">
-              <input
-                style={{ ...INPUT_STYLE, flex: 1.5 }}
+              <CanvasInput
+                style={{ flex: 1.5 }}
                 placeholder="参数名"
                 value={p.name}
                 onChange={(e) => {
@@ -1672,21 +1684,22 @@ export function ParameterExtractorForm({ data, onUpdate }: { data: ProfessionalN
                   onUpdate({ extractorParams: next });
                 }}
               />
-              <select
-                style={{ ...SELECT_STYLE, width: 70 }}
+              <CanvasSelect
+                style={{ width: 70 }}
                 value={p.type}
-                onChange={(e) => {
+                onChange={(type) => {
                   const next = [...params];
-                  next[i] = { ...next[i], type: e.target.value };
+                  next[i] = { ...next[i], type };
                   onUpdate({ extractorParams: next });
                 }}
-              >
-                <option value="string">文本</option>
-                <option value="number">数字</option>
-                <option value="boolean">布尔</option>
-                <option value="array">数组</option>
-                <option value="object">对象</option>
-              </select>
+                options={[
+                  { value: "string", label: "文本" },
+                  { value: "number", label: "数字" },
+                  { value: "boolean", label: "布尔" },
+                  { value: "array", label: "数组" },
+                  { value: "object", label: "对象" },
+                ]}
+              />
               <button
                 className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
                 style={{ color: "rgba(239,68,68,0.7)" }}
@@ -1713,15 +1726,15 @@ export function ParameterExtractorForm({ data, onUpdate }: { data: ProfessionalN
         </div>
       </Field>
       <Field label="提取指令">
-        <textarea
-          style={{ ...TEXTAREA_STYLE, minHeight: 56 }}
+        <CanvasTextarea
+          style={{ minHeight: 56 }}
           placeholder="给模型的额外提取指令..."
           value={(data.extractorInstruction as string) ?? ""}
           onChange={(e) => onUpdate({ extractorInstruction: e.target.value })}
         />
       </Field>
       <div className="flex items-center justify-between">
-        <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>推理模式</span>
+        <span className="text-[11px] font-medium text-white/55">推理模式</span>
         <button
           className="relative h-5 w-9 rounded-full transition-colors"
           style={{
@@ -1747,8 +1760,8 @@ export function TemplateTransformForm({ data, onUpdate }: { data: ProfessionalNo
         <div className="flex flex-col gap-1.5">
           {vars.map((v, i) => (
             <div key={i} className="flex items-center gap-1.5">
-              <input
-                style={{ ...INPUT_STYLE, flex: 1 }}
+              <CanvasInput
+                style={{ flex: 1 }}
                 placeholder="变量名"
                 value={v.name}
                 onChange={(e) => {
@@ -1757,8 +1770,8 @@ export function TemplateTransformForm({ data, onUpdate }: { data: ProfessionalNo
                   onUpdate({ templateInputVariables: next });
                 }}
               />
-              <input
-                style={{ ...INPUT_STYLE, flex: 2 }}
+              <CanvasInput
+                style={{ flex: 2 }}
                 placeholder="变量值或引用"
                 value={v.value}
                 onChange={(e) => {
@@ -1791,8 +1804,8 @@ export function TemplateTransformForm({ data, onUpdate }: { data: ProfessionalNo
         </div>
       </Field>
       <Field label="Jinja 模板">
-        <textarea
-          style={{ ...TEXTAREA_STYLE, fontFamily: "ui-monospace, monospace", minHeight: 100 }}
+        <CanvasTextarea
+          style={{ fontFamily: "ui-monospace, monospace", minHeight: 100 }}
           placeholder="Hello {{ name }}, welcome to {{ company }}!"
           value={(data.templateScript as string) ?? ""}
           onChange={(e) => onUpdate({ templateScript: e.target.value })}
@@ -1807,23 +1820,23 @@ export function VariableAggregatorForm({ data, onUpdate }: { data: ProfessionalN
   return (
     <div className="flex flex-col gap-3">
       <Field label="输出类型">
-        <select
-          style={SELECT_STYLE}
+        <CanvasSelect
           value={(data.aggregatorOutputType as string) ?? "string"}
-          onChange={(e) => onUpdate({ aggregatorOutputType: e.target.value })}
-        >
-          <option value="string">文本</option>
-          <option value="number">数字</option>
-          <option value="array">数组</option>
-          <option value="object">对象</option>
-        </select>
+          onChange={(aggregatorOutputType) => onUpdate({ aggregatorOutputType })}
+          options={[
+            { value: "string", label: "文本" },
+            { value: "number", label: "数字" },
+            { value: "array", label: "数组" },
+            { value: "object", label: "对象" },
+          ]}
+        />
       </Field>
       <Field label={`聚合变量 (${vars.length})`}>
         <div className="flex flex-col gap-1.5">
           {vars.map((v, i) => (
             <div key={i} className="flex items-center gap-1.5">
-              <input
-                style={{ ...INPUT_STYLE, flex: 1 }}
+              <CanvasInput
+                style={{ flex: 1 }}
                 placeholder="引用变量..."
                 value={v}
                 onChange={(e) => {
@@ -1867,8 +1880,7 @@ export function HumanInputForm({ data, onUpdate }: { data: ProfessionalNodeData 
   return (
     <div className="flex flex-col gap-3">
       <Field label="提示内容">
-        <textarea
-          style={TEXTAREA_STYLE}
+        <CanvasTextarea
           placeholder="向用户展示的审批说明..."
           value={(data.humanInputPrompt as string) ?? ""}
           onChange={(e) => onUpdate({ humanInputPrompt: e.target.value })}
@@ -1878,8 +1890,8 @@ export function HumanInputForm({ data, onUpdate }: { data: ProfessionalNodeData 
         <div className="flex flex-col gap-1.5">
           {fields.map((f, i) => (
             <div key={i} className="flex items-center gap-1">
-              <input
-                style={{ ...INPUT_STYLE, flex: 1 }}
+              <CanvasInput
+                style={{ flex: 1 }}
                 placeholder="字段名"
                 value={f.name}
                 onChange={(e) => {
@@ -1888,8 +1900,8 @@ export function HumanInputForm({ data, onUpdate }: { data: ProfessionalNodeData 
                   onUpdate({ humanInputFields: next });
                 }}
               />
-              <input
-                style={{ ...INPUT_STYLE, flex: 1 }}
+              <CanvasInput
+                style={{ flex: 1 }}
                 placeholder="显示标签"
                 value={f.label}
                 onChange={(e) => {
@@ -1898,20 +1910,21 @@ export function HumanInputForm({ data, onUpdate }: { data: ProfessionalNodeData 
                   onUpdate({ humanInputFields: next });
                 }}
               />
-              <select
-                style={{ ...SELECT_STYLE, width: 70 }}
+              <CanvasSelect
+                style={{ width: 70 }}
                 value={f.type}
-                onChange={(e) => {
+                onChange={(type) => {
                   const next = [...fields];
-                  next[i] = { ...next[i], type: e.target.value };
+                  next[i] = { ...next[i], type };
                   onUpdate({ humanInputFields: next });
                 }}
-              >
-                <option value="string">文本</option>
-                <option value="number">数字</option>
-                <option value="boolean">布尔</option>
-                <option value="file">文件</option>
-              </select>
+                options={[
+                  { value: "string", label: "文本" },
+                  { value: "number", label: "数字" },
+                  { value: "boolean", label: "布尔" },
+                  { value: "file", label: "文件" },
+                ]}
+              />
               <button
                 className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
                 style={{ color: "rgba(239,68,68,0.7)" }}
@@ -1946,8 +1959,8 @@ export function AnswerForm({ data, onUpdate }: { data: ProfessionalNodeData } & 
   return (
     <div className="flex flex-col gap-3">
       <Field label="回答模板">
-        <textarea
-          style={{ ...TEXTAREA_STYLE, minHeight: 80 }}
+        <CanvasTextarea
+          style={{ minHeight: 80 }}
           placeholder="使用 {{变量名}} 引用上游变量..."
           value={(data.answerTemplate as string) ?? ""}
           onChange={(e) => onUpdate({ answerTemplate: e.target.value })}
@@ -1957,8 +1970,8 @@ export function AnswerForm({ data, onUpdate }: { data: ProfessionalNodeData } & 
         <div className="flex flex-col gap-1.5">
           {vars.map((v, i) => (
             <div key={i} className="flex items-center gap-1.5">
-              <input
-                style={{ ...INPUT_STYLE, flex: 1 }}
+              <CanvasInput
+                style={{ flex: 1 }}
                 placeholder="变量名"
                 value={v.name}
                 onChange={(e) => {
@@ -1967,8 +1980,8 @@ export function AnswerForm({ data, onUpdate }: { data: ProfessionalNodeData } & 
                   onUpdate({ answerVariables: next });
                 }}
               />
-              <input
-                style={{ ...INPUT_STYLE, flex: 2 }}
+              <CanvasInput
+                style={{ flex: 2 }}
                 placeholder="引用值"
                 value={v.value}
                 onChange={(e) => {
@@ -2006,25 +2019,22 @@ export function LoopForm({ data, onUpdate }: { data: ProfessionalNodeData } & Fo
   return (
     <div className="flex flex-col gap-3">
       <Field label="循环变量">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="引用循环变量..."
           value={(data.loopVariable as string) ?? ""}
           onChange={(e) => onUpdate({ loopVariable: e.target.value })}
         />
       </Field>
       <Field label="终止条件">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="满足条件时退出循环..."
           value={(data.loopCondition as string) ?? ""}
           onChange={(e) => onUpdate({ loopCondition: e.target.value })}
         />
       </Field>
       <Field label="最大循环次数">
-        <input
+        <CanvasInput
           type="number"
-          style={INPUT_STYLE}
           min={1}
           max={10000}
           value={(data.loopMaxIterations as number) ?? 100}
@@ -2032,14 +2042,14 @@ export function LoopForm({ data, onUpdate }: { data: ProfessionalNodeData } & Fo
         />
       </Field>
       <Field label="错误处理">
-        <select
-          style={SELECT_STYLE}
+        <CanvasSelect
           value={(data.errorHandling as string) ?? "terminate"}
-          onChange={(e) => onUpdate({ errorHandling: e.target.value })}
-        >
-          <option value="terminate">终止</option>
-          <option value="continue">跳过并继续</option>
-        </select>
+          onChange={(errorHandling) => onUpdate({ errorHandling })}
+          options={[
+            { value: "terminate", label: "终止" },
+            { value: "continue", label: "跳过并继续" },
+          ]}
+        />
       </Field>
     </div>
   );
@@ -2089,18 +2099,17 @@ export function AgentV2Form({ data, onUpdate }: { data: ProfessionalNodeData } &
   return (
     <div className="flex flex-col gap-3">
       <Field label="模型">
-        <select
-          style={SELECT_STYLE}
+        <CanvasSelect
           value={(data.agentV2Model as string) ?? "deepseek-chat"}
-          onChange={(e) => onUpdate({ agentV2Model: e.target.value })}
-        >
-          <option value="deepseek-chat">DeepSeek Chat</option>
-          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
-        </select>
+          onChange={(agentV2Model) => onUpdate({ agentV2Model })}
+          options={[
+            { value: "deepseek-chat", label: "DeepSeek Chat" },
+            { value: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+          ]}
+        />
       </Field>
       <Field label="任务描述">
-        <textarea
-          style={TEXTAREA_STYLE}
+        <CanvasTextarea
           placeholder="描述 Agent 需要完成的任务..."
           value={(data.agentV2Task as string) ?? ""}
           onChange={(e) => onUpdate({ agentV2Task: e.target.value })}
@@ -2110,8 +2119,8 @@ export function AgentV2Form({ data, onUpdate }: { data: ProfessionalNodeData } &
         <div className="flex flex-col gap-1.5">
           {outputs.map((o, i) => (
             <div key={i} className="flex items-center gap-1">
-              <input
-                style={{ ...INPUT_STYLE, flex: 1.2 }}
+              <CanvasInput
+                style={{ flex: 1.2 }}
                 placeholder="输出名"
                 value={o.name}
                 onChange={(e) => {
@@ -2120,20 +2129,21 @@ export function AgentV2Form({ data, onUpdate }: { data: ProfessionalNodeData } &
                   onUpdate({ agentV2Outputs: next });
                 }}
               />
-              <select
-                style={{ ...SELECT_STYLE, width: 70 }}
+              <CanvasSelect
+                style={{ width: 70 }}
                 value={o.type}
-                onChange={(e) => {
+                onChange={(type) => {
                   const next = [...outputs];
-                  next[i] = { ...next[i], type: e.target.value };
+                  next[i] = { ...next[i], type };
                   onUpdate({ agentV2Outputs: next });
                 }}
-              >
-                <option value="string">文本</option>
-                <option value="number">数字</option>
-                <option value="object">对象</option>
-                <option value="array">数组</option>
-              </select>
+                options={[
+                  { value: "string", label: "文本" },
+                  { value: "number", label: "数字" },
+                  { value: "object", label: "对象" },
+                  { value: "array", label: "数组" },
+                ]}
+              />
               <button
                 className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
                 style={{ color: "rgba(239,68,68,0.7)" }}
@@ -2158,7 +2168,7 @@ export function AgentV2Form({ data, onUpdate }: { data: ProfessionalNodeData } &
         </div>
       </Field>
       <div className="flex items-center justify-between">
-        <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>记忆</span>
+        <span className="text-[11px] font-medium text-white/55">记忆</span>
         <button
           className="relative h-5 w-9 rounded-full transition-colors"
           style={{
@@ -2180,15 +2190,14 @@ export function DocumentExtractorForm({ data, onUpdate }: { data: ProfessionalNo
   return (
     <div className="flex flex-col gap-3">
       <Field label="文件变量">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="引用上游文件变量..."
           value={(data.docExtractorFileVariable as string) ?? ""}
           onChange={(e) => onUpdate({ docExtractorFileVariable: e.target.value })}
         />
       </Field>
       <div className="flex items-center justify-between">
-        <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>输入为文件数组</span>
+        <span className="text-[11px] font-medium text-white/55">输入为文件数组</span>
         <button
           className="relative h-5 w-9 rounded-full transition-colors"
           style={{
@@ -2210,32 +2219,30 @@ export function VariableAssignerForm({ data, onUpdate }: { data: ProfessionalNod
   return (
     <div className="flex flex-col gap-3">
       <Field label="目标变量">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="要赋值的变量名..."
           value={(data.assignerTarget as string) ?? ""}
           onChange={(e) => onUpdate({ assignerTarget: e.target.value })}
         />
       </Field>
       <Field label="写入模式">
-        <select
-          style={SELECT_STYLE}
+        <CanvasSelect
           value={(data.assignerMode as string) ?? "set"}
-          onChange={(e) => onUpdate({ assignerMode: e.target.value })}
-        >
-          <option value="set">赋值 (set)</option>
-          <option value="increment">自增 (increment)</option>
-          <option value="decrement">自减 (decrement)</option>
-          <option value="multiply">乘以 (multiply)</option>
-          <option value="divide">除以 (divide)</option>
-          <option value="clear">清空 (clear)</option>
-          <option value="remove-first">移除首项 (remove first)</option>
-          <option value="remove-last">移除末项 (remove last)</option>
-        </select>
+          onChange={(assignerMode) => onUpdate({ assignerMode })}
+          options={[
+            { value: "set", label: "赋值 (set)" },
+            { value: "increment", label: "自增 (increment)" },
+            { value: "decrement", label: "自减 (decrement)" },
+            { value: "multiply", label: "乘以 (multiply)" },
+            { value: "divide", label: "除以 (divide)" },
+            { value: "clear", label: "清空 (clear)" },
+            { value: "remove-first", label: "移除首项 (remove first)" },
+            { value: "remove-last", label: "移除末项 (remove last)" },
+          ]}
+        />
       </Field>
       <Field label="写入值">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="引用变量或输入值..."
           value={(data.assignerValue as string) ?? ""}
           onChange={(e) => onUpdate({ assignerValue: e.target.value })}
@@ -2249,53 +2256,48 @@ export function ListOperatorForm({ data, onUpdate }: { data: ProfessionalNodeDat
   return (
     <div className="flex flex-col gap-3">
       <Field label="输入列表">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="引用上游列表变量..."
           value={(data.listOperatorInput as string) ?? ""}
           onChange={(e) => onUpdate({ listOperatorInput: e.target.value })}
         />
       </Field>
       <Field label="操作">
-        <select
-          style={SELECT_STYLE}
+        <CanvasSelect
           value={(data.listOperatorAction as string) ?? "filter"}
-          onChange={(e) => onUpdate({ listOperatorAction: e.target.value })}
-        >
-          <option value="filter">过滤</option>
-          <option value="map">映射提取</option>
-          <option value="sort">排序</option>
-          <option value="limit">截取</option>
-        </select>
+          onChange={(listOperatorAction) => onUpdate({ listOperatorAction })}
+          options={[
+            { value: "filter", label: "过滤" },
+            { value: "map", label: "映射提取" },
+            { value: "sort", label: "排序" },
+            { value: "limit", label: "截取" },
+          ]}
+        />
       </Field>
       <Field label="过滤/映射条件">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="条件表达式..."
           value={(data.listOperatorCondition as string) ?? ""}
           onChange={(e) => onUpdate({ listOperatorCondition: e.target.value })}
         />
       </Field>
       <Field label="提取字段">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="映射时提取的字段名..."
           value={(data.listOperatorExtractField as string) ?? ""}
           onChange={(e) => onUpdate({ listOperatorExtractField: e.target.value })}
         />
       </Field>
       <Field label="排序依据">
-        <input
-          style={INPUT_STYLE}
+        <CanvasInput
           placeholder="排序字段..."
           value={(data.listOperatorOrderBy as string) ?? ""}
           onChange={(e) => onUpdate({ listOperatorOrderBy: e.target.value })}
         />
       </Field>
       <Field label="数量限制">
-        <input
+        <CanvasInput
           type="number"
-          style={INPUT_STYLE}
           min={0}
           value={(data.listOperatorLimit as number) ?? 0}
           onChange={(e) => onUpdate({ listOperatorLimit: Number(e.target.value) })}
@@ -2309,24 +2311,23 @@ export function TriggerScheduleForm({ data, onUpdate }: { data: ProfessionalNode
   return (
     <div className="flex flex-col gap-2.5">
       <Field label="频率">
-        <select
-          style={INPUT_STYLE}
+        <CanvasSelect
           value={(data.scheduleFrequency as string) ?? "daily"}
-          onChange={(e) => onUpdate({ scheduleFrequency: e.target.value })}
-        >
-          <option value="minutely">每分钟</option>
-          <option value="hourly">每小时</option>
-          <option value="daily">每天</option>
-          <option value="weekly">每周</option>
-          <option value="monthly">每月</option>
-          <option value="custom">自定义 Cron</option>
-        </select>
+          onChange={(scheduleFrequency) => onUpdate({ scheduleFrequency })}
+          options={[
+            { value: "minutely", label: "每分钟" },
+            { value: "hourly", label: "每小时" },
+            { value: "daily", label: "每天" },
+            { value: "weekly", label: "每周" },
+            { value: "monthly", label: "每月" },
+            { value: "custom", label: "自定义 Cron" },
+          ]}
+        />
       </Field>
       {(data.scheduleFrequency as string) !== "custom" && (
         <Field label="触发时间">
-          <input
+          <CanvasInput
             type="time"
-            style={INPUT_STYLE}
             value={(data.scheduleTime as string) ?? "09:00"}
             onChange={(e) => onUpdate({ scheduleTime: e.target.value })}
           />
@@ -2334,9 +2335,8 @@ export function TriggerScheduleForm({ data, onUpdate }: { data: ProfessionalNode
       )}
       {(data.scheduleFrequency as string) === "weekly" && (
         <Field label="星期">
-          <input
+          <CanvasInput
             type="text"
-            style={INPUT_STYLE}
             placeholder="例: 1,3,5（周一=1）"
             value={((data.scheduleDayOfWeek as string[]) ?? []).join(",")}
             onChange={(e) => onUpdate({ scheduleDayOfWeek: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
@@ -2345,9 +2345,8 @@ export function TriggerScheduleForm({ data, onUpdate }: { data: ProfessionalNode
       )}
       {(data.scheduleFrequency as string) === "custom" && (
         <Field label="Cron 表达式">
-          <input
+          <CanvasInput
             type="text"
-            style={INPUT_STYLE}
             placeholder="0 9 * * 1-5"
             value={(data.scheduleCron as string) ?? ""}
             onChange={(e) => onUpdate({ scheduleCron: e.target.value })}
@@ -2355,9 +2354,8 @@ export function TriggerScheduleForm({ data, onUpdate }: { data: ProfessionalNode
         </Field>
       )}
       <Field label="时区">
-        <input
+        <CanvasInput
           type="text"
-          style={INPUT_STYLE}
           value={(data.scheduleTimezone as string) ?? "Asia/Shanghai"}
           onChange={(e) => onUpdate({ scheduleTimezone: e.target.value })}
         />
@@ -2370,42 +2368,40 @@ export function TriggerWebhookForm({ data, onUpdate }: { data: ProfessionalNodeD
   return (
     <div className="flex flex-col gap-2.5">
       <Field label="请求方法">
-        <select
-          style={INPUT_STYLE}
+        <CanvasSelect
           value={(data.webhookMethod as string) ?? "POST"}
-          onChange={(e) => onUpdate({ webhookMethod: e.target.value })}
-        >
-          <option value="GET">GET</option>
-          <option value="POST">POST</option>
-          <option value="PUT">PUT</option>
-        </select>
+          onChange={(webhookMethod) => onUpdate({ webhookMethod })}
+          options={[
+            { value: "GET", label: "GET" },
+            { value: "POST", label: "POST" },
+            { value: "PUT", label: "PUT" },
+          ]}
+        />
       </Field>
       <Field label="路径">
-        <input
+        <CanvasInput
           type="text"
-          style={INPUT_STYLE}
           placeholder="/webhook/my-endpoint"
           value={(data.webhookPath as string) ?? ""}
           onChange={(e) => onUpdate({ webhookPath: e.target.value })}
         />
       </Field>
       <Field label="鉴权方式">
-        <select
-          style={INPUT_STYLE}
+        <CanvasSelect
           value={(data.webhookAuthType as string) ?? "none"}
-          onChange={(e) => onUpdate({ webhookAuthType: e.target.value })}
-        >
-          <option value="none">无</option>
-          <option value="bearer">Bearer Token</option>
-          <option value="hmac">HMAC 签名</option>
-          <option value="basic">Basic Auth</option>
-        </select>
+          onChange={(webhookAuthType) => onUpdate({ webhookAuthType })}
+          options={[
+            { value: "none", label: "无" },
+            { value: "bearer", label: "Bearer Token" },
+            { value: "hmac", label: "HMAC 签名" },
+            { value: "basic", label: "Basic Auth" },
+          ]}
+        />
       </Field>
       {(data.webhookAuthType as string) !== "none" && (
         <Field label="密钥">
-          <input
+          <CanvasInput
             type="password"
-            style={INPUT_STYLE}
             placeholder="输入鉴权密钥"
             value={(data.webhookAuthSecret as string) ?? ""}
             onChange={(e) => onUpdate({ webhookAuthSecret: e.target.value })}
@@ -2428,27 +2424,24 @@ export function TriggerPluginForm({ data, onUpdate }: { data: ProfessionalNodeDa
   return (
     <div className="flex flex-col gap-2.5">
       <Field label="插件 Provider">
-        <input
+        <CanvasInput
           type="text"
-          style={INPUT_STYLE}
           placeholder="选择或输入插件名称"
           value={(data.pluginProvider as string) ?? ""}
           onChange={(e) => onUpdate({ pluginProvider: e.target.value })}
         />
       </Field>
       <Field label="事件">
-        <input
+        <CanvasInput
           type="text"
-          style={INPUT_STYLE}
           placeholder="插件事件名称"
           value={(data.pluginEvent as string) ?? ""}
           onChange={(e) => onUpdate({ pluginEvent: e.target.value })}
         />
       </Field>
       <Field label="凭据 ID">
-        <input
+        <CanvasInput
           type="text"
-          style={INPUT_STYLE}
           placeholder="关联的凭据标识"
           value={(data.pluginCredentialId as string) ?? ""}
           onChange={(e) => onUpdate({ pluginCredentialId: e.target.value })}
@@ -2465,39 +2458,36 @@ export function DatasourceForm({ data, onUpdate }: { data: ProfessionalNodeData 
   return (
     <div className="flex flex-col gap-2.5">
       <Field label="数据源类型">
-        <select
-          style={INPUT_STYLE}
+        <CanvasSelect
           value={(data.datasourceType as string) ?? "api"}
-          onChange={(e) => onUpdate({ datasourceType: e.target.value })}
-        >
-          <option value="api">API</option>
-          <option value="database">数据库</option>
-          <option value="storage">对象存储</option>
-          <option value="plugin">插件</option>
-        </select>
+          onChange={(datasourceType) => onUpdate({ datasourceType })}
+          options={[
+            { value: "api", label: "API" },
+            { value: "database", label: "数据库" },
+            { value: "storage", label: "对象存储" },
+            { value: "plugin", label: "插件" },
+          ]}
+        />
       </Field>
       <Field label="插件 / 连接器">
-        <input
+        <CanvasInput
           type="text"
-          style={INPUT_STYLE}
           placeholder="数据源插件名称"
           value={(data.datasourcePlugin as string) ?? ""}
           onChange={(e) => onUpdate({ datasourcePlugin: e.target.value })}
         />
       </Field>
       <Field label="凭据 ID">
-        <input
+        <CanvasInput
           type="text"
-          style={INPUT_STYLE}
           placeholder="关联的凭据标识"
           value={(data.datasourceCredentialId as string) ?? ""}
           onChange={(e) => onUpdate({ datasourceCredentialId: e.target.value })}
         />
       </Field>
       <Field label="文件扩展名过滤">
-        <input
+        <CanvasInput
           type="text"
-          style={INPUT_STYLE}
           placeholder="例: .pdf,.docx,.txt"
           value={((data.datasourceExtensions as string[]) ?? []).join(",")}
           onChange={(e) => onUpdate({ datasourceExtensions: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
@@ -2514,9 +2504,8 @@ export function KnowledgeIndexForm({ data, onUpdate }: { data: ProfessionalNodeD
   return (
     <div className="flex flex-col gap-2.5">
       <Field label="输入源变量">
-        <input
+        <CanvasInput
           type="text"
-          style={INPUT_STYLE}
           placeholder="引用上游变量名"
           value={(data.indexSourceVariable as string) ?? ""}
           onChange={(e) => onUpdate({ indexSourceVariable: e.target.value })}
@@ -2524,9 +2513,8 @@ export function KnowledgeIndexForm({ data, onUpdate }: { data: ProfessionalNodeD
       </Field>
       <div className="flex gap-2">
         <Field label="分块大小">
-          <input
+          <CanvasInput
             type="number"
-            style={INPUT_STYLE}
             min={100}
             max={4000}
             value={(data.indexChunkSize as number) ?? 500}
@@ -2534,9 +2522,8 @@ export function KnowledgeIndexForm({ data, onUpdate }: { data: ProfessionalNodeD
           />
         </Field>
         <Field label="重叠大小">
-          <input
+          <CanvasInput
             type="number"
-            style={INPUT_STYLE}
             min={0}
             max={1000}
             value={(data.indexChunkOverlap as number) ?? 50}
@@ -2545,29 +2532,27 @@ export function KnowledgeIndexForm({ data, onUpdate }: { data: ProfessionalNodeD
         </Field>
       </div>
       <Field label="Embedding 模型">
-        <input
+        <CanvasInput
           type="text"
-          style={INPUT_STYLE}
           placeholder="例如 text-embedding-3-small"
           value={(data.indexEmbeddingModel as string) ?? ""}
           onChange={(e) => onUpdate({ indexEmbeddingModel: e.target.value })}
         />
       </Field>
       <Field label="检索模式">
-        <select
-          style={INPUT_STYLE}
+        <CanvasSelect
           value={(data.indexRetrievalMode as string) ?? "semantic"}
-          onChange={(e) => onUpdate({ indexRetrievalMode: e.target.value })}
-        >
-          <option value="semantic">语义检索</option>
-          <option value="keyword">关键词检索</option>
-          <option value="hybrid">混合检索</option>
-        </select>
+          onChange={(indexRetrievalMode) => onUpdate({ indexRetrievalMode })}
+          options={[
+            { value: "semantic", label: "语义检索" },
+            { value: "keyword", label: "关键词检索" },
+            { value: "hybrid", label: "混合检索" },
+          ]}
+        />
       </Field>
       <Field label="关键词数量">
-        <input
+        <CanvasInput
           type="number"
-          style={INPUT_STYLE}
           min={0}
           max={20}
           value={(data.indexKeywords as number) ?? 0}
