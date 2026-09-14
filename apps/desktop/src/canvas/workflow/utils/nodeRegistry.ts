@@ -277,6 +277,148 @@ register({
   }),
 });
 
+register({
+  kind: "answer",
+  label: "直接回答",
+  category: "流程控制",
+  icon: "message-square",
+  availability: "enabled",
+  executor: "passthrough",
+  outputs: [{ name: "answer", type: "string", description: "回答内容" }],
+  defaultData: () => ({
+    label: "直接回答",
+    answerTemplate: "",
+    answerVariables: [],
+  }),
+});
+
+register({
+  kind: "iteration-start",
+  label: "迭代开始",
+  category: "流程控制",
+  icon: "log-in",
+  availability: "enabled",
+  executor: "control-flow",
+  outputs: [{ name: "item", type: "object", description: "当前迭代项" }],
+  defaultData: () => ({ label: "迭代开始" }),
+});
+
+register({
+  kind: "loop",
+  label: "循环",
+  category: "流程控制",
+  icon: "repeat",
+  availability: "enabled",
+  executor: "control-flow",
+  outputs: [{ name: "output", type: "object", description: "循环最终输出" }],
+  defaultData: () => ({
+    label: "循环",
+    loopVariable: "",
+    loopCondition: "",
+    loopMaxIterations: 100,
+    errorHandling: "terminate",
+  }),
+});
+
+register({
+  kind: "loop-start",
+  label: "循环开始",
+  category: "流程控制",
+  icon: "log-in",
+  availability: "enabled",
+  executor: "control-flow",
+  outputs: [{ name: "context", type: "object", description: "循环上下文" }],
+  defaultData: () => ({ label: "循环开始" }),
+});
+
+register({
+  kind: "loop-end",
+  label: "循环结束",
+  category: "流程控制",
+  icon: "log-out",
+  availability: "enabled",
+  executor: "control-flow",
+  outputs: [],
+  defaultData: () => ({ label: "循环结束" }),
+});
+
+register({
+  kind: "agent-v2",
+  label: "Agent V2",
+  category: "AI",
+  icon: "bot",
+  availability: "enabled",
+  executor: "model",
+  outputs: [
+    { name: "text", type: "string", description: "Agent 输出文本" },
+    { name: "usage", type: "object", description: "Token 用量" },
+  ],
+  defaultData: () => ({
+    label: "Agent V2",
+    agentV2Model: "deepseek-chat",
+    agentV2Task: "",
+    agentV2Tools: [],
+    agentV2Outputs: [],
+    agentV2Memory: false,
+  }),
+});
+
+register({
+  kind: "document-extractor",
+  label: "文档提取",
+  category: "知识",
+  icon: "file-text",
+  availability: "enabled",
+  executor: "retrieval",
+  outputs: [
+    { name: "text", type: "string", description: "提取的文本内容" },
+  ],
+  defaultData: () => ({
+    label: "文档提取",
+    docExtractorFileVariable: "",
+    docExtractorIsArray: false,
+  }),
+});
+
+register({
+  kind: "variable-assigner",
+  label: "变量赋值",
+  category: "数据",
+  icon: "equal",
+  availability: "enabled",
+  executor: "transform",
+  outputs: [],
+  defaultData: () => ({
+    label: "变量赋值",
+    assignerTarget: "",
+    assignerMode: "set",
+    assignerValue: "",
+  }),
+});
+
+register({
+  kind: "list-operator",
+  label: "列表操作",
+  category: "数据",
+  icon: "list",
+  availability: "enabled",
+  executor: "transform",
+  outputs: [
+    { name: "result", type: "array", description: "操作后的列表" },
+    { name: "first", type: "object", description: "首项" },
+    { name: "last", type: "object", description: "末项" },
+  ],
+  defaultData: () => ({
+    label: "列表操作",
+    listOperatorInput: "",
+    listOperatorAction: "filter",
+    listOperatorCondition: "",
+    listOperatorExtractField: "",
+    listOperatorOrderBy: "",
+    listOperatorLimit: 0,
+  }),
+});
+
 export function getNodeDefinition(kind: ProfessionalNodeKind): NodeDefinition {
   const def = registry.get(kind);
   if (!def) throw new Error(`Unknown professional node kind: ${kind}`);

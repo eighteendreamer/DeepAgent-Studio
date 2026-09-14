@@ -39,6 +39,15 @@ import {
   VariableAggregatorContent,
   ToolContent,
   HumanInputContent,
+  AnswerContent,
+  LoopContent,
+  IterationStartContent,
+  LoopStartContent,
+  LoopEndContent,
+  AgentV2Content,
+  DocumentExtractorContent,
+  VariableAssignerContent,
+  ListOperatorContent,
 } from "../nodes/professional/ProfessionalNodes";
 
 const STATUS_BORDER: Record<NodeStatus, string> = {
@@ -123,6 +132,24 @@ function renderContent(nodeData: WorkflowNodeData, nodeId?: string) {
       return <ToolContent data={professionalData} />;
     case "human-input":
       return <HumanInputContent />;
+    case "answer":
+      return <AnswerContent />;
+    case "loop":
+      return <LoopContent data={professionalData} />;
+    case "iteration-start":
+      return <IterationStartContent />;
+    case "loop-start":
+      return <LoopStartContent />;
+    case "loop-end":
+      return <LoopEndContent />;
+    case "agent-v2":
+      return <AgentV2Content data={professionalData} />;
+    case "document-extractor":
+      return <DocumentExtractorContent />;
+    case "variable-assigner":
+      return <VariableAssignerContent data={professionalData} />;
+    case "list-operator":
+      return <ListOperatorContent data={professionalData} />;
     default:
       if (creativeData.creativeAction) {
         return (

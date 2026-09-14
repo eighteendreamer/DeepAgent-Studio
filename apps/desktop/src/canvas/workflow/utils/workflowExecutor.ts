@@ -48,14 +48,23 @@ function getExecutionDelay(node: WorkflowNode): number {
       return 300;
     case "if-else":
     case "iteration":
+    case "iteration-start":
+    case "loop":
+    case "loop-start":
+    case "loop-end":
     case "variable-aggregator":
+    case "variable-assigner":
+    case "list-operator":
     case "template-transform":
+    case "answer":
+    case "document-extractor":
       return 500;
     case "code":
     case "http-request":
       return 1200;
     case "llm":
     case "agent":
+    case "agent-v2":
     case "text-gen":
     case "script-gen":
       return 2000;

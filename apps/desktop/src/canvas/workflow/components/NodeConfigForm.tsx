@@ -25,6 +25,15 @@ import {
   TemplateTransformForm,
   VariableAggregatorForm,
   HumanInputForm,
+  AnswerForm,
+  LoopForm,
+  IterationStartForm,
+  LoopStartForm,
+  LoopEndForm,
+  AgentV2Form,
+  DocumentExtractorForm,
+  VariableAssignerForm,
+  ListOperatorForm,
   GenericConfigForm,
 } from "./ConfigForms";
 
@@ -89,6 +98,24 @@ export function NodeConfigForm({ nodeId, nodeData }: { nodeId: string; nodeData:
       return <VariableAggregatorForm data={professionalData} {...formProps} />;
     case "human-input":
       return <HumanInputForm data={professionalData} {...formProps} />;
+    case "answer":
+      return <AnswerForm data={professionalData} {...formProps} />;
+    case "loop":
+      return <LoopForm data={professionalData} {...formProps} />;
+    case "iteration-start":
+      return <IterationStartForm data={professionalData} {...formProps} />;
+    case "loop-start":
+      return <LoopStartForm data={professionalData} {...formProps} />;
+    case "loop-end":
+      return <LoopEndForm data={professionalData} {...formProps} />;
+    case "agent-v2":
+      return <AgentV2Form data={professionalData} {...formProps} />;
+    case "document-extractor":
+      return <DocumentExtractorForm data={professionalData} {...formProps} />;
+    case "variable-assigner":
+      return <VariableAssignerForm data={professionalData} {...formProps} />;
+    case "list-operator":
+      return <ListOperatorForm data={professionalData} {...formProps} />;
     default:
       return <GenericConfigForm data={nodeData} />;
   }

@@ -30,17 +30,26 @@ export type CreativeNodeKind =
 export type ProfessionalNodeKind =
   | "start"
   | "end"
+  | "answer"
   | "if-else"
   | "iteration"
+  | "iteration-start"
+  | "loop"
+  | "loop-start"
+  | "loop-end"
   | "llm"
   | "agent"
+  | "agent-v2"
   | "question-classifier"
   | "parameter-extractor"
   | "knowledge-retrieval"
+  | "document-extractor"
   | "code"
   | "http-request"
   | "template-transform"
   | "variable-aggregator"
+  | "variable-assigner"
+  | "list-operator"
   | "tool"
   | "human-input";
 
@@ -368,8 +377,13 @@ export const PROFESSIONAL_NODE_CATEGORIES: ProfessionalNodeCategory[] = [
     items: [
       { kind: "start", label: "开始", icon: "play" },
       { kind: "end", label: "结束", icon: "stop" },
+      { kind: "answer", label: "直接回答", icon: "message-square" },
       { kind: "if-else", label: "条件分支", icon: "code-branch" },
       { kind: "iteration", label: "迭代", icon: "rotate" },
+      { kind: "iteration-start", label: "迭代开始", icon: "log-in" },
+      { kind: "loop", label: "循环", icon: "repeat" },
+      { kind: "loop-start", label: "循环开始", icon: "log-in" },
+      { kind: "loop-end", label: "循环结束", icon: "log-out" },
     ],
   },
   {
@@ -378,6 +392,7 @@ export const PROFESSIONAL_NODE_CATEGORIES: ProfessionalNodeCategory[] = [
     items: [
       { kind: "llm", label: "LLM", icon: "wand-magic-sparkles" },
       { kind: "agent", label: "Agent", icon: "robot" },
+      { kind: "agent-v2", label: "Agent V2", icon: "bot" },
       { kind: "question-classifier", label: "问题分类", icon: "tags" },
       { kind: "parameter-extractor", label: "参数提取", icon: "table-columns" },
     ],
@@ -385,7 +400,10 @@ export const PROFESSIONAL_NODE_CATEGORIES: ProfessionalNodeCategory[] = [
   {
     group: "知识",
     color: "#06B6D4",
-    items: [{ kind: "knowledge-retrieval", label: "知识检索", icon: "book" }],
+    items: [
+      { kind: "knowledge-retrieval", label: "知识检索", icon: "book" },
+      { kind: "document-extractor", label: "文档提取", icon: "file-text" },
+    ],
   },
   {
     group: "数据",
@@ -395,6 +413,8 @@ export const PROFESSIONAL_NODE_CATEGORIES: ProfessionalNodeCategory[] = [
       { kind: "http-request", label: "HTTP 请求", icon: "globe" },
       { kind: "template-transform", label: "模板转换", icon: "file-code" },
       { kind: "variable-aggregator", label: "变量聚合", icon: "layer-group" },
+      { kind: "variable-assigner", label: "变量赋值", icon: "equal" },
+      { kind: "list-operator", label: "列表操作", icon: "list" },
     ],
   },
   {

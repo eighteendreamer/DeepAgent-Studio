@@ -1941,6 +1941,370 @@ export function HumanInputForm({ data, onUpdate }: { data: ProfessionalNodeData 
   );
 }
 
+export function AnswerForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  const vars = (data.answerVariables ?? []) as Array<{ name: string; value: string }>;
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="回答模板">
+        <textarea
+          style={{ ...TEXTAREA_STYLE, minHeight: 80 }}
+          placeholder="使用 {{变量名}} 引用上游变量..."
+          value={(data.answerTemplate as string) ?? ""}
+          onChange={(e) => onUpdate({ answerTemplate: e.target.value })}
+        />
+      </Field>
+      <Field label={`模板变量 (${vars.length})`}>
+        <div className="flex flex-col gap-1.5">
+          {vars.map((v, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <input
+                style={{ ...INPUT_STYLE, flex: 1 }}
+                placeholder="变量名"
+                value={v.name}
+                onChange={(e) => {
+                  const next = [...vars];
+                  next[i] = { ...next[i], name: e.target.value };
+                  onUpdate({ answerVariables: next });
+                }}
+              />
+              <input
+                style={{ ...INPUT_STYLE, flex: 2 }}
+                placeholder="引用值"
+                value={v.value}
+                onChange={(e) => {
+                  const next = [...vars];
+                  next[i] = { ...next[i], value: e.target.value };
+                  onUpdate({ answerVariables: next });
+                }}
+              />
+              <button
+                className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
+                style={{ color: "rgba(239,68,68,0.7)" }}
+                onClick={() => {
+                  const next = vars.filter((_, j) => j !== i);
+                  onUpdate({ answerVariables: next });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            className="self-start rounded-lg px-2.5 py-1 text-[11px] hover:bg-white/10"
+            style={{ color: "rgba(59,130,246,0.8)", border: "1px dashed rgba(59,130,246,0.3)" }}
+            onClick={() => onUpdate({ answerVariables: [...vars, { name: "", value: "" }] })}
+          >
+            + 添加变量
+          </button>
+        </div>
+      </Field>
+    </div>
+  );
+}
+
+export function LoopForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="循环变量">
+        <input
+          style={INPUT_STYLE}
+          placeholder="引用循环变量..."
+          value={(data.loopVariable as string) ?? ""}
+          onChange={(e) => onUpdate({ loopVariable: e.target.value })}
+        />
+      </Field>
+      <Field label="终止条件">
+        <input
+          style={INPUT_STYLE}
+          placeholder="满足条件时退出循环..."
+          value={(data.loopCondition as string) ?? ""}
+          onChange={(e) => onUpdate({ loopCondition: e.target.value })}
+        />
+      </Field>
+      <Field label="最大循环次数">
+        <input
+          type="number"
+          style={INPUT_STYLE}
+          min={1}
+          max={10000}
+          value={(data.loopMaxIterations as number) ?? 100}
+          onChange={(e) => onUpdate({ loopMaxIterations: Number(e.target.value) })}
+        />
+      </Field>
+      <Field label="错误处理">
+        <select
+          style={SELECT_STYLE}
+          value={(data.errorHandling as string) ?? "terminate"}
+          onChange={(e) => onUpdate({ errorHandling: e.target.value })}
+        >
+          <option value="terminate">终止</option>
+          <option value="continue">跳过并继续</option>
+        </select>
+      </Field>
+    </div>
+  );
+}
+
+export function IterationStartForm(_props: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div
+      className="flex flex-col items-center justify-center rounded-xl py-6"
+      style={{ background: "rgba(255,255,255,0.02)", border: "1px dashed rgba(255,255,255,0.08)" }}
+    >
+      <span className="text-[11px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+        迭代开始节点自动接收父迭代的当前项
+      </span>
+    </div>
+  );
+}
+
+export function LoopStartForm(_props: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div
+      className="flex flex-col items-center justify-center rounded-xl py-6"
+      style={{ background: "rgba(255,255,255,0.02)", border: "1px dashed rgba(255,255,255,0.08)" }}
+    >
+      <span className="text-[11px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+        循环开始节点自动继承父循环上下文
+      </span>
+    </div>
+  );
+}
+
+export function LoopEndForm(_props: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div
+      className="flex flex-col items-center justify-center rounded-xl py-6"
+      style={{ background: "rgba(255,255,255,0.02)", border: "1px dashed rgba(255,255,255,0.08)" }}
+    >
+      <span className="text-[11px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+        循环结束节点标记循环体终止位置
+      </span>
+    </div>
+  );
+}
+
+export function AgentV2Form({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  const outputs = (data.agentV2Outputs ?? []) as Array<{ name: string; type: string; description: string }>;
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="模型">
+        <select
+          style={SELECT_STYLE}
+          value={(data.agentV2Model as string) ?? "deepseek-chat"}
+          onChange={(e) => onUpdate({ agentV2Model: e.target.value })}
+        >
+          <option value="deepseek-chat">DeepSeek Chat</option>
+          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
+        </select>
+      </Field>
+      <Field label="任务描述">
+        <textarea
+          style={TEXTAREA_STYLE}
+          placeholder="描述 Agent 需要完成的任务..."
+          value={(data.agentV2Task as string) ?? ""}
+          onChange={(e) => onUpdate({ agentV2Task: e.target.value })}
+        />
+      </Field>
+      <Field label={`声明输出 (${outputs.length})`}>
+        <div className="flex flex-col gap-1.5">
+          {outputs.map((o, i) => (
+            <div key={i} className="flex items-center gap-1">
+              <input
+                style={{ ...INPUT_STYLE, flex: 1.2 }}
+                placeholder="输出名"
+                value={o.name}
+                onChange={(e) => {
+                  const next = [...outputs];
+                  next[i] = { ...next[i], name: e.target.value };
+                  onUpdate({ agentV2Outputs: next });
+                }}
+              />
+              <select
+                style={{ ...SELECT_STYLE, width: 70 }}
+                value={o.type}
+                onChange={(e) => {
+                  const next = [...outputs];
+                  next[i] = { ...next[i], type: e.target.value };
+                  onUpdate({ agentV2Outputs: next });
+                }}
+              >
+                <option value="string">文本</option>
+                <option value="number">数字</option>
+                <option value="object">对象</option>
+                <option value="array">数组</option>
+              </select>
+              <button
+                className="shrink-0 rounded px-1 py-0.5 text-[10px] hover:bg-white/10"
+                style={{ color: "rgba(239,68,68,0.7)" }}
+                onClick={() => {
+                  const next = outputs.filter((_, j) => j !== i);
+                  onUpdate({ agentV2Outputs: next });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            className="self-start rounded-lg px-2.5 py-1 text-[11px] hover:bg-white/10"
+            style={{ color: "rgba(139,92,246,0.8)", border: "1px dashed rgba(139,92,246,0.3)" }}
+            onClick={() =>
+              onUpdate({ agentV2Outputs: [...outputs, { name: "", type: "string", description: "" }] })
+            }
+          >
+            + 声明输出
+          </button>
+        </div>
+      </Field>
+      <div className="flex items-center justify-between">
+        <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>记忆</span>
+        <button
+          className="relative h-5 w-9 rounded-full transition-colors"
+          style={{
+            background: data.agentV2Memory ? "rgba(16,185,129,0.6)" : "rgba(255,255,255,0.12)",
+          }}
+          onClick={() => onUpdate({ agentV2Memory: !data.agentV2Memory })}
+        >
+          <span
+            className="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
+            style={{ left: data.agentV2Memory ? 18 : 2 }}
+          />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function DocumentExtractorForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="文件变量">
+        <input
+          style={INPUT_STYLE}
+          placeholder="引用上游文件变量..."
+          value={(data.docExtractorFileVariable as string) ?? ""}
+          onChange={(e) => onUpdate({ docExtractorFileVariable: e.target.value })}
+        />
+      </Field>
+      <div className="flex items-center justify-between">
+        <span style={{ ...LABEL_STYLE, marginBottom: 0 }}>输入为文件数组</span>
+        <button
+          className="relative h-5 w-9 rounded-full transition-colors"
+          style={{
+            background: data.docExtractorIsArray ? "rgba(16,185,129,0.6)" : "rgba(255,255,255,0.12)",
+          }}
+          onClick={() => onUpdate({ docExtractorIsArray: !data.docExtractorIsArray })}
+        >
+          <span
+            className="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
+            style={{ left: data.docExtractorIsArray ? 18 : 2 }}
+          />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function VariableAssignerForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="目标变量">
+        <input
+          style={INPUT_STYLE}
+          placeholder="要赋值的变量名..."
+          value={(data.assignerTarget as string) ?? ""}
+          onChange={(e) => onUpdate({ assignerTarget: e.target.value })}
+        />
+      </Field>
+      <Field label="写入模式">
+        <select
+          style={SELECT_STYLE}
+          value={(data.assignerMode as string) ?? "set"}
+          onChange={(e) => onUpdate({ assignerMode: e.target.value })}
+        >
+          <option value="set">赋值 (set)</option>
+          <option value="increment">自增 (increment)</option>
+          <option value="decrement">自减 (decrement)</option>
+          <option value="multiply">乘以 (multiply)</option>
+          <option value="divide">除以 (divide)</option>
+          <option value="clear">清空 (clear)</option>
+          <option value="remove-first">移除首项 (remove first)</option>
+          <option value="remove-last">移除末项 (remove last)</option>
+        </select>
+      </Field>
+      <Field label="写入值">
+        <input
+          style={INPUT_STYLE}
+          placeholder="引用变量或输入值..."
+          value={(data.assignerValue as string) ?? ""}
+          onChange={(e) => onUpdate({ assignerValue: e.target.value })}
+        />
+      </Field>
+    </div>
+  );
+}
+
+export function ListOperatorForm({ data, onUpdate }: { data: ProfessionalNodeData } & FormProps) {
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="输入列表">
+        <input
+          style={INPUT_STYLE}
+          placeholder="引用上游列表变量..."
+          value={(data.listOperatorInput as string) ?? ""}
+          onChange={(e) => onUpdate({ listOperatorInput: e.target.value })}
+        />
+      </Field>
+      <Field label="操作">
+        <select
+          style={SELECT_STYLE}
+          value={(data.listOperatorAction as string) ?? "filter"}
+          onChange={(e) => onUpdate({ listOperatorAction: e.target.value })}
+        >
+          <option value="filter">过滤</option>
+          <option value="map">映射提取</option>
+          <option value="sort">排序</option>
+          <option value="limit">截取</option>
+        </select>
+      </Field>
+      <Field label="过滤/映射条件">
+        <input
+          style={INPUT_STYLE}
+          placeholder="条件表达式..."
+          value={(data.listOperatorCondition as string) ?? ""}
+          onChange={(e) => onUpdate({ listOperatorCondition: e.target.value })}
+        />
+      </Field>
+      <Field label="提取字段">
+        <input
+          style={INPUT_STYLE}
+          placeholder="映射时提取的字段名..."
+          value={(data.listOperatorExtractField as string) ?? ""}
+          onChange={(e) => onUpdate({ listOperatorExtractField: e.target.value })}
+        />
+      </Field>
+      <Field label="排序依据">
+        <input
+          style={INPUT_STYLE}
+          placeholder="排序字段..."
+          value={(data.listOperatorOrderBy as string) ?? ""}
+          onChange={(e) => onUpdate({ listOperatorOrderBy: e.target.value })}
+        />
+      </Field>
+      <Field label="数量限制">
+        <input
+          type="number"
+          style={INPUT_STYLE}
+          min={0}
+          value={(data.listOperatorLimit as number) ?? 0}
+          onChange={(e) => onUpdate({ listOperatorLimit: Number(e.target.value) })}
+        />
+      </Field>
+    </div>
+  );
+}
+
 export function GenericConfigForm({ data }: { data: WorkflowNodeData }) {
   return (
     <div

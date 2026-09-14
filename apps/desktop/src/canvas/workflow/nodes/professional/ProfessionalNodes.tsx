@@ -187,3 +187,87 @@ export function HumanInputContent() {
     </span>
   );
 }
+
+export function AnswerContent() {
+  return (
+    <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+      直接输出回答内容
+    </span>
+  );
+}
+
+export function LoopContent({ data }: Props) {
+  const max = data.loopMaxIterations;
+  return (
+    <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+      {max ? `最大 ${max} 次循环` : "设置循环条件"}
+    </span>
+  );
+}
+
+export function IterationStartContent() {
+  return (
+    <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+      当前迭代项入口
+    </span>
+  );
+}
+
+export function LoopStartContent() {
+  return (
+    <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+      循环体入口
+    </span>
+  );
+}
+
+export function LoopEndContent() {
+  return (
+    <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+      循环体结束
+    </span>
+  );
+}
+
+export function AgentV2Content({ data }: Props) {
+  const outputs = (data.agentV2Outputs ?? []) as Array<{ name: string }>;
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="rounded px-1 py-0.5 text-[9px] font-medium" style={{ background: "rgba(139,92,246,0.2)", color: "rgba(139,92,246,0.9)" }}>
+        V2
+      </span>
+      {outputs.length > 0 && (
+        <span className="text-[9px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+          {outputs.length} 输出
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function DocumentExtractorContent() {
+  return (
+    <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+      提取文档文本内容
+    </span>
+  );
+}
+
+export function VariableAssignerContent({ data }: Props) {
+  const target = data.assignerTarget;
+  return (
+    <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+      {target ? `${target} = ...` : "设置变量值"}
+    </span>
+  );
+}
+
+export function ListOperatorContent({ data }: Props) {
+  const action = data.listOperatorAction;
+  const labels: Record<string, string> = { filter: "过滤", map: "映射", sort: "排序", limit: "截取" };
+  return (
+    <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
+      {labels[(action as string) ?? "filter"] ?? "列表操作"}
+    </span>
+  );
+}
