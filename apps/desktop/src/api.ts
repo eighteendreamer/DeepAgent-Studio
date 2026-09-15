@@ -1187,7 +1187,8 @@ export interface RuntimeEvent {
     | "run_completed"
     | "run_awaiting_approval"
     | "run_failed"
-    | "run_cancelled";
+    | "run_cancelled"
+    | "workflow_node";
   // Fields are variant-specific (tagged union); read what each type carries.
   [key: string]: unknown;
 }
