@@ -1,4 +1,5 @@
 import type { ProfessionalNodeData } from "../../types";
+import { getNodeOutputs } from "../../utils/nodeRegistry";
 
 interface Props {
   data: ProfessionalNodeData;
@@ -28,7 +29,7 @@ export function StartContent({ data }: Props) {
 }
 
 export function EndContent({ data }: Props) {
-  const count = Object.keys(data.outputMapping ?? {}).length;
+  const count = getNodeOutputs("end", data).length;
   return (
     <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.35)" }}>
       {count > 0 ? `${count} 个输出` : "定义输出映射"}

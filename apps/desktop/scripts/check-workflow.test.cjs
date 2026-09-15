@@ -20,7 +20,11 @@ function loadTypeScript(relativePath, imports = {}) {
   return loaded.exports;
 }
 
-const registry = loadTypeScript("../src/canvas/workflow/utils/nodeRegistry.ts");
+const schemas = loadTypeScript("../src/canvas/workflow/utils/nodeSchemas.ts");
+const configSchema = loadTypeScript("../src/canvas/workflow/utils/configSchema.ts");
+const registry = loadTypeScript("../src/canvas/workflow/utils/nodeRegistry.ts", { "./nodeSchemas": schemas, "./configSchema": configSchema });
+const variables = loadTypeScript("../src/canvas/workflow/utils/workflowVariables.ts", { "./nodeRegistry": registry });
+const { createSchemaValue, reconcileArrayKeys, validateSchemaValue } = configSchema;
 const {
   createDefaultNodeData,
   getAllNodeDefinitions,
@@ -108,4 +112,89 @@ test("store import, edit, duplicate, new-node and undo paths retain normalized k
   store.undo();
   store.redo();
   assert.ok(useProfessionalStore.getState().nodes.every((n) => n.data.kind && n.data.status));
+});
+
+for (const definition of getAllNodeDefinitions()) {
+  test(`${definition.kind} configuration schema covers every persisted default field`, () => {
+    assert.equal(definition.configSchema.type, "object");
+    for (const key of Object.keys(definition.defaultData())) {
+      if (key !== "label") assert.ok(definition.configSchema.properties[key], `${definition.kind}.${key}`);
+    }
+    assert.ok(definition.configSchema.properties.description);
+    assert.doesNotThrow(() => JSON.stringify(definition.configSchema));
+  });
+}
+
+test("upstream variable choices include transitive declarations but exclude self and unrelated nodes", () => {
+  const node = (id, kind, data = {}) => ({ id, type: `professional-${kind}`, data: { ...createDefaultNodeData(kind), ...data }, position: { x: 0, y: 0 } });
+  const nodes = [
+    node("start", "start", { inputVariables: [{ name: "query", type: "string" }, { name: "files", type: "array" }] }),
+    node("code", "code", { codeOutputVariables: [{ name: "count", type: "number" }] }),
+    node("end", "end"), node("unrelated", "llm"),
+  ];
+  const edges = [{ source: "start", target: "code" }, { source: "code", target: "end" }];
+  const available = variables.getAvailableVariables("end", nodes, edges);
+  assert.deepEqual(available.map((v) => v.reference), ["{{#start.query#}}", "{{#start.files#}}", "{{#code.count#}}"]);
+  assert.deepEqual(variables.getAvailableVariables("end", nodes, edges, ["array"]).map((v) => v.name), ["files"]);
+  assert.equal(variables.getAvailableVariables("start", nodes, edges).length, 0);
+  assert.deepEqual([...variables.getUpstreamNodeIds("end", [...edges, { source: "end", target: "start" }])].sort(), ["code", "start"]);
+  assert.deepEqual(variables.getVariableReferences("Hi {{#start.query#}} / {{#code.count#}}"), [["start", "query"], ["code", "count"]]);
+});
+
+test("dynamic outputs follow edited declarations and do not leak empty fields", () => {
+  assert.deepEqual(registry.getNodeOutputs("start", { inputVariables: [{ name: "", type: "string" }, { name: "new_name", type: "boolean" }] }).map((v) => [v.name, v.type]), [["new_name", "boolean"]]);
+  assert.ok(registry.getNodeOutputs("parameter-extractor", { extractorParams: [{ name: "email", type: "string" }] }).some((v) => v.name === "email"));
+  assert.ok(registry.getNodeOutputs("agent-v2", { agentV2Outputs: [{ name: "items", type: "array" }] }).some((v) => v.name === "items"));
+  assert.equal(registry.getNodeOutputs("variable-aggregator", { aggregatorOutputType: "array" })[0].type, "array");
+});
+
+test("schema validation reports nested required, duplicate-name, type and range failures", () => {
+  const schema = { type: "object", required: ["name"], properties: {
+    name: { type: "string", minLength: 1 }, count: { type: "integer", minimum: 1, maximum: 4 },
+    variables: { type: "array", items: { type: "object", required: ["name"], properties: { name: { type: "string" } } } },
+  } };
+  const issues = validateSchemaValue(schema, { count: 5, variables: [{ name: "same" }, { name: "same" }, {}] });
+  assert.deepEqual(issues.map((i) => i.path).sort(), ["count", "name", "variables.1.name", "variables.2.name"]);
+  assert.equal(validateSchemaValue({ type: "integer" }, 1.2).length, 1);
+  assert.equal(validateSchemaValue({ type: "number" }, NaN).length, 1);
+  assert.equal(validateSchemaValue({ type: "boolean" }, "false").length, 1);
+  assert.equal(validateSchemaValue({ type: "boolean" }, false).length, 0);
+  assert.equal(validateSchemaValue({ type: "number", minimum: 0 }, 0).length, 0);
+});
+
+test("new schema array entries have independent defaults and stable unique IDs", () => {
+  const schema = { type: "object", required: ["id", "items", "enabled"], properties: {
+    id: { type: "string", format: "uuid" }, items: { type: "array", default: [] }, enabled: { type: "boolean", default: false },
+  } };
+  const a = createSchemaValue(schema);
+  const b = createSchemaValue(schema);
+  assert.notEqual(a.id, b.id);
+  assert.equal(a.enabled, false);
+  a.items.push("changed");
+  assert.deepEqual(b.items, []);
+});
+
+test("array row identity stays with its value after deletion and reordering", () => {
+  const a = { name: "a", default: undefined };
+  const b = { name: "b", default: undefined };
+  assert.deepEqual(reconcileArrayKeys([a, b], ["key-a", "key-b"], [b]), ["key-b"]);
+  assert.deepEqual(reconcileArrayKeys([a, b], ["key-a", "key-b"], [b, a]), ["key-b", "key-a"]);
+  const replaced = reconcileArrayKeys([a], ["key-a"], [{ ...a }]);
+  assert.notEqual(replaced[0], "key-a");
+  assert.deepEqual(reconcileArrayKeys(["", ""], ["one", "two"], ["", ""]), ["one", "two"]);
+});
+
+test("built-in output names cannot be shadowed by user declarations", () => {
+  for (const [kind, field, name] of [["agent-v2", "agentV2Outputs", "text"], ["parameter-extractor", "extractorParams", "__usage"], ["human-input", "humanInputFields", "action"]]) {
+    const data = { ...createDefaultNodeData(kind), [field]: [{ name, type: "array", label: "collision", required: true }] };
+    assert.ok(registry.getNodeConfigIssues(kind, data).some((issue) => issue.path === `${field}.0.name` && issue.message.includes("内置输出")));
+    assert.equal(registry.getNodeOutputs(kind, data).filter((output) => output.name === name).length, 1);
+  }
+});
+
+test("non-text model identifiers remain editable and header dictionaries validate types", () => {
+  assert.equal(schemas.NODE_CONFIG_SCHEMAS["knowledge-index"].properties.indexEmbeddingModel["x-widget"], undefined);
+  assert.equal(schemas.NODE_CONFIG_SCHEMAS["knowledge-retrieval"].properties.rerankModel["x-widget"], undefined);
+  assert.equal(validateSchemaValue(schemas.NODE_CONFIG_SCHEMAS["http-request"].properties.httpHeaders, { Accept: 7 }).length, 1);
+  assert.equal(validateSchemaValue(schemas.NODE_CONFIG_SCHEMAS.llm.properties.llmModel, "provider-1::custom-chat").length, 0);
 });

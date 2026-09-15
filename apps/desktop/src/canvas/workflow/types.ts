@@ -68,6 +68,29 @@ export interface NodeOutput {
 
 export type ExecutorKind = "passthrough" | "model" | "code" | "http" | "retrieval" | "control-flow" | "transform" | "human";
 
+export interface NodeConfigSchema {
+  type?: "string" | "number" | "integer" | "boolean" | "object" | "array";
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: Array<string | number | boolean>;
+  properties?: Record<string, NodeConfigSchema>;
+  items?: NodeConfigSchema;
+  required?: string[];
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  minItems?: number;
+  pattern?: string;
+  format?: string;
+  additionalProperties?: boolean | NodeConfigSchema;
+  "x-widget"?: "textarea" | "code" | "variable" | "model" | "tool" | "json" | "password";
+  "x-enum-labels"?: string[];
+  "x-variable-types"?: string[];
+  "x-visible-when"?: { field: string; value: unknown };
+  readOnly?: boolean;
+}
+
 export interface NodeDefinition {
   kind: ProfessionalNodeKind;
   label: string;
@@ -76,6 +99,7 @@ export interface NodeDefinition {
   availability: "enabled" | "reserved";
   executor: ExecutorKind;
   outputs: NodeOutput[];
+  configSchema: NodeConfigSchema;
   defaultData: () => Record<string, unknown>;
 }
 
@@ -122,15 +146,32 @@ export interface CreativeNodeData {
   [key: string]: unknown;
 }
 
+export interface InputVariableDefinition {
+  name: string;
+  type: string;
+  required?: boolean;
+  description?: string;
+  default?: unknown;
+  options?: string[];
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+}
+
 export interface ProfessionalNodeData {
   label: string;
   description?: string;
   kind: ProfessionalNodeKind;
   status: NodeStatus;
   errorMessage?: string;
-  inputVariables?: Array<{ name: string; type: string; required?: boolean }>;
+  inputVariables?: InputVariableDefinition[];
   outputMapping?: Record<string, string>;
-  conditions?: Array<{ variable: string; operator: string; value: string }>;
+  conditions?: Array<{
+    id: string;
+    logic: "and" | "or";
+    items: Array<{ variable: string; operator: string; value: string }>;
+  }>;
   llmModel?: string;
   llmPrompt?: string;
   llmSystemPrompt?: string;

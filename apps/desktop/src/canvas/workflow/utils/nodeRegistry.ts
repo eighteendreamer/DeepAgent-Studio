@@ -1,15 +1,27 @@
 import type {
   NodeDefinition,
+  NodeOutput,
   ProfessionalNodeData,
   ProfessionalNodeKind,
   WorkflowNode,
   WorkflowNodeData,
 } from "../types";
+import { NODE_CONFIG_SCHEMAS } from "./nodeSchemas";
+import { validateSchemaValue } from "./configSchema";
+
+const OUTPUT_DECLARATION_FIELDS: Partial<Record<ProfessionalNodeKind, string>> = {
+  start: "inputVariables",
+  end: "outputVariables",
+  code: "codeOutputVariables",
+  "parameter-extractor": "extractorParams",
+  "agent-v2": "agentV2Outputs",
+  "human-input": "humanInputFields",
+};
 
 const registry = new Map<ProfessionalNodeKind, NodeDefinition>();
 
-function register(def: NodeDefinition) {
-  registry.set(def.kind, def);
+function register(def: Omit<NodeDefinition, "configSchema">) {
+  registry.set(def.kind, { ...def, configSchema: NODE_CONFIG_SCHEMAS[def.kind] });
 }
 
 register({
@@ -553,8 +565,41 @@ export function normalizeProfessionalNode(node: WorkflowNode): WorkflowNode {
   return { ...node, data: normalizeProfessionalData(node.data, node.type) };
 }
 
-export function getNodeOutputs(kind: ProfessionalNodeKind) {
-  return getNodeDefinition(kind).outputs;
+export function getNodeOutputs(kind: ProfessionalNodeKind, data: Record<string, unknown> = {}): NodeOutput[] {
+  const declared = (key: string): NodeOutput[] => {
+    const entries = data[key];
+    if (!Array.isArray(entries)) return [];
+    return entries.flatMap((entry) =>
+      entry && typeof entry.name === "string" && entry.name.trim()
+        ? [{ name: entry.name, type: typeof entry.type === "string" ? entry.type : "string", description: typeof entry.description === "string" ? entry.description : undefined }]
+        : [],
+    );
+  };
+  if (kind === "variable-aggregator") {
+    return [{ name: "output", type: String(data.aggregatorOutputType ?? "string"), description: "所选分支的输出" }];
+  }
+  if (kind === "variable-assigner") {
+    return [{ name: "output", type: "object", description: "赋值后的变量" }];
+  }
+  const outputs = kind === "start" ? [] : getNodeDefinition(kind).outputs;
+  const field = OUTPUT_DECLARATION_FIELDS[kind];
+  const combined = [...outputs, ...(field ? declared(field) : [])];
+  const names = new Set<string>();
+  return combined.filter((output) => names.has(output.name) ? false : (names.add(output.name), true));
+}
+
+export function getNodeConfigIssues(kind: ProfessionalNodeKind, data: Record<string, unknown>) {
+  const definition = getNodeDefinition(kind);
+  const issues = validateSchemaValue(definition.configSchema, data);
+  const field = OUTPUT_DECLARATION_FIELDS[kind];
+  const declarations = field ? data[field] : undefined;
+  const reserved = new Set(kind === "start" ? [] : definition.outputs.map((output) => output.name));
+  if (Array.isArray(declarations)) {
+    declarations.forEach((entry, index) => {
+      if (entry && reserved.has(entry.name)) issues.push({ path: `${field}.${index}.name`, message: `名称与内置输出冲突：${entry.name}` });
+    });
+  }
+  return issues;
 }
 
 export function getAllNodeDefinitions(): NodeDefinition[] {
