@@ -1,4 +1,10 @@
-import type { NodeDefinition, ProfessionalNodeKind } from "../types";
+import type {
+  NodeDefinition,
+  ProfessionalNodeData,
+  ProfessionalNodeKind,
+  WorkflowNode,
+  WorkflowNodeData,
+} from "../types";
 
 const registry = new Map<ProfessionalNodeKind, NodeDefinition>();
 
@@ -531,8 +537,20 @@ export function getNodeDefinition(kind: ProfessionalNodeKind): NodeDefinition {
   return def;
 }
 
-export function createDefaultNodeData(kind: ProfessionalNodeKind): Record<string, unknown> {
-  return getNodeDefinition(kind).defaultData();
+export function createDefaultNodeData(kind: ProfessionalNodeKind): ProfessionalNodeData {
+  const definition = getNodeDefinition(kind);
+  return { label: definition.label, ...definition.defaultData(), kind, status: "idle" };
+}
+
+export function normalizeProfessionalData(data: WorkflowNodeData, nodeType?: string): WorkflowNodeData {
+  const kind = data.kind ?? (nodeType?.startsWith("professional-") ? nodeType.slice(13) : undefined);
+  if (!registry.has(kind as ProfessionalNodeKind)) return data;
+  const defaults = createDefaultNodeData(kind as ProfessionalNodeKind);
+  return { ...defaults, ...data, kind, status: data.status ?? defaults.status } as ProfessionalNodeData;
+}
+
+export function normalizeProfessionalNode(node: WorkflowNode): WorkflowNode {
+  return { ...node, data: normalizeProfessionalData(node.data, node.type) };
 }
 
 export function getNodeOutputs(kind: ProfessionalNodeKind) {

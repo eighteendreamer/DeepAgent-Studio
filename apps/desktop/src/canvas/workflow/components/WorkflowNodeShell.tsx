@@ -12,6 +12,7 @@ import type {
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
+import { normalizeProfessionalData } from "../utils/nodeRegistry";
 import { message } from "../../../components/message";
 import { NodeConfigForm } from "./NodeConfigForm";
 import { NodeFloatingToolbar } from "./NodeFloatingToolbar";
@@ -250,8 +251,8 @@ const triggerFileDownload = async (url: string, filename: string) => {
   message.success(`已下载 ${filename}`, 2000);
 };
 
-function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
-  const nodeData = data as unknown as WorkflowNodeData;
+function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
+  const nodeData = normalizeProfessionalData(data as unknown as WorkflowNodeData, type);
   const nodeStatus = nodeData.status ?? "idle";
   const nodeLabel = nodeData.label ?? "节点";
   const mode = useCanvasStore((s) => s.mode);
@@ -449,7 +450,7 @@ function WorkflowNodeShellInner({ id, data, selected }: NodeProps) {
       {nodeData.kind !== "category-picker" && nodeData.kind !== "image-input" && (
         <NodeToolbar position={Position.Bottom} offset={12}>
           <div style={nodeData.kind === "text-gen" || nodeData.kind === "image-gen" || nodeData.kind === "video-gen" ? { width: 480 } : EDIT_PANEL_STYLE}>
-            <NodeConfigForm nodeId={id} nodeData={nodeData} />
+            <NodeConfigForm nodeId={id} nodeData={nodeData} nodeType={type} />
           </div>
         </NodeToolbar>
       )}

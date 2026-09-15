@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
+import { normalizeProfessionalData } from "../utils/nodeRegistry";
 import type { WorkflowNodeData, CreativeNodeData, ProfessionalNodeData } from "../types";
 import { TextGenEditorPanel } from "./TextGenEditorPanel";
 import {
@@ -42,8 +43,9 @@ import {
   GenericConfigForm,
 } from "./ConfigForms";
 
-export function NodeConfigForm({ nodeId, nodeData }: { nodeId: string; nodeData: WorkflowNodeData }) {
+export function NodeConfigForm({ nodeId, nodeData, nodeType }: { nodeId: string; nodeData: WorkflowNodeData; nodeType?: string }) {
   const mode = useCanvasStore((s) => s.mode);
+  const normalizedData = normalizeProfessionalData(nodeData, nodeType);
 
   const handleUpdate = useCallback(
     (patch: Record<string, unknown>) => {
@@ -56,11 +58,11 @@ export function NodeConfigForm({ nodeId, nodeData }: { nodeId: string; nodeData:
     [mode, nodeId],
   );
 
-  const creativeData = nodeData as CreativeNodeData;
-  const professionalData = nodeData as ProfessionalNodeData;
+  const creativeData = normalizedData as CreativeNodeData;
+  const professionalData = normalizedData as ProfessionalNodeData;
   const formProps = { nodeId, onUpdate: handleUpdate };
 
-  switch (nodeData.kind) {
+  switch (normalizedData.kind) {
     case "text-gen":
       return <TextGenEditorPanel nodeId={nodeId} data={creativeData} onUpdate={handleUpdate} />;
     case "image-gen":

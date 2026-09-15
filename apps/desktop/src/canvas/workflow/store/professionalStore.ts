@@ -14,13 +14,9 @@ import type {
   WorkflowEdge,
   WorkflowNode,
 } from "../types";
-import { createDefaultNodeData } from "../utils/nodeRegistry";
+import { createDefaultNodeData, normalizeProfessionalNode } from "../utils/nodeRegistry";
 
 const SNAP_GRID = 24;
-
-function createDefaultProfessionalData(kind: ProfessionalNodeKind): ProfessionalNodeData {
-  return { ...createDefaultNodeData(kind), kind } as ProfessionalNodeData;
-}
 
 interface ProfessionalState {
   nodes: WorkflowNode[];
@@ -103,7 +99,7 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
   addNode: (kind, x, y) => {
     get().pushHistory();
     const id = nextNodeId(get().nodes.map((n: WorkflowNode) => n.id));
-    const data = createDefaultProfessionalData(kind);
+    const data = createDefaultNodeData(kind);
     const snappedX = Math.round(x / SNAP_GRID) * SNAP_GRID;
     const snappedY = Math.round(y / SNAP_GRID) * SNAP_GRID;
     const node: WorkflowNode = {
@@ -119,14 +115,14 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
   addNodeAt: (kind, x, y, extraData) => {
     get().pushHistory();
     const id = nextNodeId(get().nodes.map((n: WorkflowNode) => n.id));
-    const base = createDefaultProfessionalData(kind);
+    const base = createDefaultNodeData(kind);
     const snappedX = Math.round(x / SNAP_GRID) * SNAP_GRID;
     const snappedY = Math.round(y / SNAP_GRID) * SNAP_GRID;
     const node: WorkflowNode = {
       id,
       type: `professional-${kind}`,
       position: { x: snappedX, y: snappedY },
-      data: { ...base, ...extraData, status: "idle" } as ProfessionalNodeData,
+      data: { ...base, ...extraData, kind, status: "idle" } as ProfessionalNodeData,
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
     return id;
@@ -149,7 +145,7 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
   },
 
   setNodes: (nodes) => {
-    set({ nodes });
+    set({ nodes: nodes.map(normalizeProfessionalNode) });
   },
 
   setEdges: (edges) => {

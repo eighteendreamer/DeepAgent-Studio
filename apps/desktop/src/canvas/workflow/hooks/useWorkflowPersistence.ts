@@ -51,10 +51,9 @@ export function useWorkflowPersistence() {
 
     const proState = loadState("professional");
     if (proState) {
-      useProfessionalStore.setState({
-        nodes: proState.nodes,
-        edges: proState.edges,
-      });
+      const store = useProfessionalStore.getState();
+      store.setNodes(proState.nodes);
+      store.setEdges(proState.edges);
     }
   }, []);
 
