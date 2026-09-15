@@ -906,4 +906,81 @@ mod tests {
         let result = agent.think(0, &[]).await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn workflow_agent_handles_tool_node_without_executor() {
+        let mut tool_config = Map::new();
+        tool_config.insert("toolName".to_string(), Value::String("test_tool".to_string()));
+        tool_config.insert("toolArguments".to_string(), Value::Object(Map::new()));
+
+        let definition = WorkflowDefinition {
+            version: 1,
+            nodes: vec![
+                make_start("start-1"),
+                WorkflowNodeSpec {
+                    id: "tool-1".to_string(),
+                    kind: "tool".to_string(),
+                    config: tool_config,
+                },
+                make_end("end-1"),
+            ],
+            edges: vec![
+                make_edge("e1", "start-1", "tool-1"),
+                make_edge("e2", "tool-1", "end-1"),
+            ],
+        };
+        let compiled = compile(definition).unwrap();
+        let mut agent =
+            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default());
+
+        // Execute start
+        agent.think(0, &[]).await.unwrap();
+
+        // Execute tool (should handle missing executor gracefully)
+        let decision = agent.think(1, &[]).await.unwrap();
+        assert!(matches!(decision, AgentDecision::Continue));
+
+        // Verify tool output indicates no executor
+        let output = agent.outputs.get("tool-1").unwrap();
+        assert_eq!(output.get("success").unwrap().as_bool().unwrap(), false);
+        assert!(output.get("error").unwrap().as_str().unwrap().contains("no tool executor"));
+    }
+
+    #[tokio::test]
+    async fn workflow_agent_handles_knowledge_node_without_retriever() {
+        let mut knowledge_config = Map::new();
+        knowledge_config.insert("queryVariable".to_string(), Value::String("test query".to_string()));
+        knowledge_config.insert("knowledgeTopK".to_string(), Value::Number(3.into()));
+
+        let definition = WorkflowDefinition {
+            version: 1,
+            nodes: vec![
+                make_start("start-1"),
+                WorkflowNodeSpec {
+                    id: "knowledge-1".to_string(),
+                    kind: "knowledge-retrieval".to_string(),
+                    config: knowledge_config,
+                },
+                make_end("end-1"),
+            ],
+            edges: vec![
+                make_edge("e1", "start-1", "knowledge-1"),
+                make_edge("e2", "knowledge-1", "end-1"),
+            ],
+        };
+        let compiled = compile(definition).unwrap();
+        let mut agent =
+            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default());
+
+        // Execute start
+        agent.think(0, &[]).await.unwrap();
+
+        // Execute knowledge retrieval (should handle missing retriever gracefully)
+        let decision = agent.think(1, &[]).await.unwrap();
+        assert!(matches!(decision, AgentDecision::Continue));
+
+        // Verify knowledge output is empty but valid
+        let output = agent.outputs.get("knowledge-1").unwrap();
+        assert!(output.get("documents").unwrap().as_array().unwrap().is_empty());
+    }
 }
