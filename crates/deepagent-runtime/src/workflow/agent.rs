@@ -11,6 +11,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use deepagent_core::message::Message;
+use deepagent_models::chat_completions::ChatCompletionRequest;
+use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
 
 use super::graph::CompiledWorkflow;
@@ -35,6 +38,8 @@ pub struct WorkflowAgent {
     #[allow(dead_code)]
     started_at: Instant,
     cancel: Option<Arc<AtomicBool>>,
+    model: Option<Arc<ModelClient>>,
+    model_name: Option<String>,
     usage: RunUsage,
 }
 
@@ -55,6 +60,8 @@ impl WorkflowAgent {
             step: 0,
             started_at: Instant::now(),
             cancel: None,
+            model: None,
+            model_name: None,
             usage: RunUsage::default(),
         }
     }
@@ -62,6 +69,13 @@ impl WorkflowAgent {
     /// Attach a cancellation flag so the agent can abort mid-execution.
     pub fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
         self.cancel = Some(cancel);
+        self
+    }
+
+    /// Attach a model client so LLM/Agent nodes can make real provider calls.
+    pub fn with_model(mut self, client: Arc<ModelClient>, model_name: String) -> Self {
+        self.model = Some(client);
+        self.model_name = Some(model_name);
         self
     }
 
@@ -94,7 +108,7 @@ impl WorkflowAgent {
         });
     }
 
-    fn execute_node_inline(&mut self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
+    async fn execute_node_inline(&mut self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
         let mut resolved_config = Map::new();
         for (key, value) in config {
             resolved_config.insert(key.clone(), values::resolve(value, &self.outputs)?);
@@ -110,7 +124,9 @@ impl WorkflowAgent {
             "code" => self.execute_code(&resolved_config),
             "template-transform" => self.execute_template_transform(&resolved_config),
             "list-operator" => self.execute_list_operator(&resolved_config),
-            "llm" | "agent" | "agent-v2" => self.execute_llm_stub(kind, &resolved_config),
+            "llm" | "agent" | "agent-v2" => {
+                self.execute_llm(kind, &resolved_config).await
+            }
             "http-request" => self.execute_http_stub(kind),
             "tool" => self.execute_tool_stub(kind),
             "knowledge-retrieval" => self.execute_knowledge_stub(kind),
@@ -345,11 +361,85 @@ impl WorkflowAgent {
         Ok(result)
     }
 
-    fn execute_llm_stub(&self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
-        let _ = config;
+    async fn execute_llm(&mut self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
+        let client = match &self.model {
+            Some(c) => c.clone(),
+            None => {
+                return Ok(serde_json::json!({
+                    "text": format!("[{}] no model client configured for workflow run", kind),
+                    "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+                }));
+            }
+        };
+
+        let model_name = self
+            .model_name
+            .as_deref()
+            .unwrap_or("deepseek-chat");
+
+        let system_prompt = config
+            .get("llmSystemPrompt")
+            .or_else(|| config.get("agentSystemPrompt"))
+            .or_else(|| config.get("agentV2SystemPrompt"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+
+        let user_prompt = config
+            .get("llmPrompt")
+            .or_else(|| config.get("agentTask"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+
+        let temperature = config
+            .get("llmTemperature")
+            .and_then(Value::as_f64)
+            .map(|v| v as f32);
+
+        let max_tokens = config
+            .get("llmMaxTokens")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32);
+
+        let mut messages = Vec::new();
+        if !system_prompt.is_empty() {
+            messages.push(Message::system(system_prompt));
+        }
+        messages.push(Message::user(user_prompt));
+
+        let mut request = ChatCompletionRequest::new(model_name, messages);
+        if let Some(t) = temperature {
+            request.temperature = Some(t);
+        }
+        if let Some(m) = max_tokens {
+            request.max_tokens = Some(m);
+        }
+
+        let response = client.stream_chat_completion(request).await?;
+        let text = response.output_text_projection();
+
+        let usage_json = response
+            .usage
+            .as_ref()
+            .map(|u| {
+                serde_json::json!({
+                    "prompt_tokens": u.prompt_tokens,
+                    "completion_tokens": u.completion_tokens,
+                    "total_tokens": u.total_tokens,
+                })
+            })
+            .unwrap_or_else(|| {
+                serde_json::json!({ "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 })
+            });
+
+        if let Some(u) = &response.usage {
+            self.usage.prompt_tokens += u.prompt_tokens;
+            self.usage.completion_tokens += u.completion_tokens;
+            self.usage.total_tokens += u.total_tokens;
+        }
+
         Ok(serde_json::json!({
-            "text": format!("[{}] LLM execution is not yet connected to a provider", kind),
-            "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+            "text": text,
+            "usage": usage_json
         }))
     }
 
@@ -452,7 +542,7 @@ impl Agent for WorkflowAgent {
         self.emit_status(&node_id, NodeExecutionStatus::Running, 1, 0, None, None);
         let node_start = Instant::now();
 
-        let result = self.execute_node_inline(&node_kind, &node_config);
+        let result = self.execute_node_inline(&node_kind, &node_config).await;
         let elapsed_ms = node_start.elapsed().as_millis() as u64;
 
         match result {

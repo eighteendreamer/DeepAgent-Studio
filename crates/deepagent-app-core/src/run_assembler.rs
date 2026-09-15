@@ -979,6 +979,20 @@ impl<'a> RunAssembler<'a> {
         let compiled = deepagent_runtime::workflow::compile(workflow_request.definition)?;
         let publisher =
             deepagent_runtime::workflow::NodeEventPublisher::new(sink.clone());
+
+        let run_model = select_run_model(
+            self.settings,
+            self.transport.clone(),
+            ModelRole::Chat,
+            ModelRole::Reasoner,
+            None,
+            None,
+            None,
+        )
+        .ok();
+        let wf_client = run_model.as_ref().map(|rm| rm.client.clone());
+        let wf_model_name = run_model.as_ref().map(|rm| rm.model.clone());
+
         let mut agent = deepagent_runtime::workflow::WorkflowAgent::new(
             compiled,
             workflow_request.inputs,
@@ -986,6 +1000,10 @@ impl<'a> RunAssembler<'a> {
             publisher,
         )
         .with_cancel(cancellation.flag());
+
+        if let (Some(client), Some(model_name)) = (wf_client, wf_model_name.clone()) {
+            agent = agent.with_model(client, model_name);
+        }
 
         let session_sequence = deepagent_persistence::event_store::EventStore::new(self.db)
             .load_session(session.id())?
@@ -1050,6 +1068,7 @@ impl<'a> RunAssembler<'a> {
             }
         };
 
+        let finalizer_model_name = wf_model_name.clone();
         AppRunFinalizer::new(
             self.db.clone(),
             self.cost.clone(),
@@ -1064,11 +1083,11 @@ impl<'a> RunAssembler<'a> {
                 discovered_before_run: &empty_discovered,
                 discovered_tools: &empty_toolset,
                 usage: agent.cumulative_usage(),
-                model_name: "workflow",
+                model_name: finalizer_model_name.as_deref().unwrap_or("workflow"),
                 sink: sink.as_ref(),
                 run_succeeded,
-                capture_client: None,
-                capture_model: None,
+                capture_client: run_model.as_ref().map(|rm| rm.client.clone()),
+                capture_model: wf_model_name,
             },
         )?;
 
