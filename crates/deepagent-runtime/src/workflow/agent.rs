@@ -148,7 +148,7 @@ impl WorkflowAgent {
             "http-request" => self.execute_http_request(&resolved_config).await,
             "tool" => self.execute_tool(&resolved_config).await,
             "knowledge-retrieval" => self.execute_knowledge_retrieval(&resolved_config).await,
-            "iteration" | "loop" => self.execute_iteration_stub(kind),
+            "iteration" | "loop" => self.execute_iteration(&resolved_config).await,
             _ => self.execute_passthrough(kind, &resolved_config),
         }
     }
@@ -668,10 +668,59 @@ impl WorkflowAgent {
         }))
     }
 
-    fn execute_iteration_stub(&self, kind: &str) -> Result<Value> {
+    async fn execute_iteration(&self, config: &Map<String, Value>) -> Result<Value> {
+        // Get the collection to iterate over
+        let collection = config
+            .get("iterationCollection")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        if collection.is_empty() {
+            return Ok(serde_json::json!({
+                "output": [],
+                "__note": "empty collection"
+            }));
+        }
+
+        // Get the iterator variable name
+        let iterator_var = config
+            .get("iteratorVariable")
+            .and_then(Value::as_str)
+            .unwrap_or("item");
+
+        // Get the operation to perform on each item
+        // For now, support simple pass-through or template transform
+        let operation = config
+            .get("iterationOperation")
+            .and_then(Value::as_str)
+            .unwrap_or("passthrough");
+
+        let mut results = Vec::new();
+        for item in collection {
+            let result = match operation {
+                "template" => {
+                    // Apply template transform if specified
+                    let template = config
+                        .get("iterationTemplate")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let transformed = template.replace(
+                        &format!("{{{{{}}}}}", iterator_var),
+                        &item.to_string(),
+                    );
+                    Value::String(transformed)
+                }
+                _ => {
+                    // Pass through the item as-is
+                    item.clone()
+                }
+            };
+            results.push(result);
+        }
+
         Ok(serde_json::json!({
-            "output": [],
-            "__note": format!("{} node requires sub-graph execution", kind)
+            "output": results
         }))
     }
 
