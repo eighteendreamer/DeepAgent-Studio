@@ -127,7 +127,7 @@ impl WorkflowAgent {
             "llm" | "agent" | "agent-v2" => {
                 self.execute_llm(kind, &resolved_config).await
             }
-            "http-request" => self.execute_http_stub(kind),
+            "http-request" => self.execute_http_request(&resolved_config).await,
             "tool" => self.execute_tool_stub(kind),
             "knowledge-retrieval" => self.execute_knowledge_stub(kind),
             "iteration" | "loop" => self.execute_iteration_stub(kind),
@@ -443,13 +443,104 @@ impl WorkflowAgent {
         }))
     }
 
-    fn execute_http_stub(&self, kind: &str) -> Result<Value> {
-        Ok(serde_json::json!({
-            "body": null,
-            "status_code": 0,
-            "headers": {},
-            "__note": format!("{} node is not yet connected", kind)
-        }))
+    async fn execute_http_request(&self, config: &Map<String, Value>) -> Result<Value> {
+        let method = config
+            .get("httpMethod")
+            .and_then(Value::as_str)
+            .unwrap_or("GET");
+        let url = config
+            .get("httpUrl")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let body = config
+            .get("httpBody")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let timeout_secs = config
+            .get("httpTimeout")
+            .and_then(Value::as_u64)
+            .unwrap_or(30);
+        let retry_count = config
+            .get("httpRetryCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+
+        let headers: Vec<(String, String)> = config
+            .get("httpHeaders")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if url.is_empty() {
+            return Err(CoreError::invalid("http-request: url is required"));
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .build()
+            .map_err(|e| CoreError::other(format!("http-request: client build failed: {e}")))?;
+
+        let req_method = match method {
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
+            "PATCH" => reqwest::Method::PATCH,
+            _ => reqwest::Method::GET,
+        };
+
+        let mut last_error = String::new();
+        let attempts = retry_count + 1;
+
+        for attempt in 0..attempts {
+            let mut req = client.request(req_method.clone(), url);
+            for (k, v) in &headers {
+                req = req.header(k.as_str(), v.as_str());
+            }
+            if !body.is_empty() && matches!(req_method, reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH) {
+                req = req.body(body.to_string());
+            }
+
+            match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    let resp_headers: serde_json::Map<String, Value> = resp
+                        .headers()
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.as_str().to_string(),
+                                Value::String(v.to_str().unwrap_or("").to_string()),
+                            )
+                        })
+                        .collect();
+                    let resp_body = resp.text().await.unwrap_or_default();
+
+                    let body_json: Value = serde_json::from_str(&resp_body)
+                        .unwrap_or(Value::String(resp_body));
+
+                    return Ok(serde_json::json!({
+                        "body": body_json,
+                        "status_code": status,
+                        "headers": resp_headers,
+                    }));
+                }
+                Err(e) => {
+                    last_error = e.to_string();
+                    if attempt < attempts - 1 {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+
+        Err(CoreError::other(format!(
+            "http-request: failed after {} attempts: {}",
+            attempts, last_error
+        )))
     }
 
     fn execute_tool_stub(&self, kind: &str) -> Result<Value> {
