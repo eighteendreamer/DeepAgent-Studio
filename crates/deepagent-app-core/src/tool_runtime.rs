@@ -904,3 +904,58 @@ fn set_usize(value: &serde_json::Value, key: &str, target: &mut usize) {
         *target = n as usize;
     }
 }
+
+/// Adapts [`ToolRegistry`] to the workflow's [`ToolExecutor`] trait so tool
+/// nodes can execute registered tools. The registry is synchronous; the trait
+/// is async, so each call simply forwards to the sync method.
+pub struct WorkflowToolExecutor {
+    registry: Arc<ToolRegistry>,
+}
+
+impl WorkflowToolExecutor {
+    /// Wrap a shared tool registry.
+    pub fn new(registry: Arc<ToolRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+#[async_trait]
+impl deepagent_runtime::workflow::ToolExecutor for WorkflowToolExecutor {
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<deepagent_runtime::workflow::ToolExecutionResult> {
+        let spec = match self.registry.get(tool_name) {
+            Some(s) => s,
+            None => {
+                return Ok(deepagent_runtime::workflow::ToolExecutionResult {
+                    success: false,
+                    output: serde_json::Value::Null,
+                    error: Some(format!("tool '{}' not found", tool_name)),
+                });
+            }
+        };
+
+        match spec.tool.invoke(arguments).await {
+            Ok(output) => Ok(deepagent_runtime::workflow::ToolExecutionResult {
+                success: true,
+                output: output.value,
+                error: None,
+            }),
+            Err(e) => Ok(deepagent_runtime::workflow::ToolExecutionResult {
+                success: false,
+                output: serde_json::Value::Null,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+
+    async fn list_tools(&self) -> Result<Vec<String>> {
+        Ok(self
+            .registry
+            .iter_specs()
+            .map(|spec| spec.descriptor.name.clone())
+            .collect())
+    }
+}

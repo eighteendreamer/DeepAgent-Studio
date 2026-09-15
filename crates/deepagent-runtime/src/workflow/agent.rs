@@ -19,6 +19,7 @@ use serde_json::{Map, Value};
 use super::graph::CompiledWorkflow;
 use super::knowledge::KnowledgeRetriever;
 use super::node_events::{NodeEventPublisher, NodeExecutionEvent, NodeExecutionStatus};
+use super::tools::ToolExecutor;
 use super::values;
 use crate::agent::{Agent, AgentDecision, Observation, RunUsage};
 use deepagent_core::error::{CoreError, Result};
@@ -42,6 +43,7 @@ pub struct WorkflowAgent {
     model: Option<Arc<ModelClient>>,
     model_name: Option<String>,
     knowledge_retriever: Option<Arc<dyn KnowledgeRetriever>>,
+    tool_executor: Option<Arc<dyn ToolExecutor>>,
     usage: RunUsage,
 }
 
@@ -65,6 +67,7 @@ impl WorkflowAgent {
             model: None,
             model_name: None,
             knowledge_retriever: None,
+            tool_executor: None,
             usage: RunUsage::default(),
         }
     }
@@ -85,6 +88,12 @@ impl WorkflowAgent {
     /// Attach a knowledge retriever so knowledge-retrieval nodes can search.
     pub fn with_knowledge_retriever(mut self, retriever: Arc<dyn KnowledgeRetriever>) -> Self {
         self.knowledge_retriever = Some(retriever);
+        self
+    }
+
+    /// Attach a tool executor so tool nodes can execute registered tools.
+    pub fn with_tool_executor(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
+        self.tool_executor = Some(executor);
         self
     }
 
@@ -137,7 +146,7 @@ impl WorkflowAgent {
                 self.execute_llm(kind, &resolved_config).await
             }
             "http-request" => self.execute_http_request(&resolved_config).await,
-            "tool" => self.execute_tool_stub(kind),
+            "tool" => self.execute_tool(&resolved_config).await,
             "knowledge-retrieval" => self.execute_knowledge_retrieval(&resolved_config).await,
             "iteration" | "loop" => self.execute_iteration_stub(kind),
             _ => self.execute_passthrough(kind, &resolved_config),
@@ -552,10 +561,40 @@ impl WorkflowAgent {
         )))
     }
 
-    fn execute_tool_stub(&self, kind: &str) -> Result<Value> {
+    async fn execute_tool(&self, config: &Map<String, Value>) -> Result<Value> {
+        let executor = match &self.tool_executor {
+            Some(e) => e,
+            None => {
+                return Ok(serde_json::json!({
+                    "success": false,
+                    "output": null,
+                    "error": "no tool executor configured"
+                }));
+            }
+        };
+
+        let tool_name = config
+            .get("toolName")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let arguments = config
+            .get("toolArguments")
+            .cloned()
+            .unwrap_or(Value::Object(Map::new()));
+
+        if tool_name.is_empty() {
+            return Ok(serde_json::json!({
+                "success": false,
+                "output": null,
+                "error": "toolName is required"
+            }));
+        }
+
+        let result = executor.execute(tool_name, arguments).await?;
         Ok(serde_json::json!({
-            "text": format!("[tool] {} is not yet connected", kind),
-            "json": null
+            "success": result.success,
+            "output": result.output,
+            "error": result.error
         }))
     }
 

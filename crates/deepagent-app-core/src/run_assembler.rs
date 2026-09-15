@@ -993,6 +993,8 @@ impl<'a> RunAssembler<'a> {
         let wf_client = run_model.as_ref().map(|rm| rm.client.clone());
         let wf_model_name = run_model.as_ref().map(|rm| rm.model.clone());
 
+        let tool_registry = std::sync::Arc::new(ToolRegistry::new());
+
         let mut agent = deepagent_runtime::workflow::WorkflowAgent::new(
             compiled,
             workflow_request.inputs,
@@ -1010,6 +1012,10 @@ impl<'a> RunAssembler<'a> {
                 crate::knowledge_service::WorkflowKnowledgeRetriever::new(knowledge),
             ));
         }
+
+        agent = agent.with_tool_executor(std::sync::Arc::new(
+            crate::tool_runtime::WorkflowToolExecutor::new(tool_registry.clone()),
+        ));
 
         let session_sequence = deepagent_persistence::event_store::EventStore::new(self.db)
             .load_session(session.id())?
@@ -1041,7 +1047,7 @@ impl<'a> RunAssembler<'a> {
         let empty_discovered = std::collections::HashSet::new();
         let empty_toolset: crate::tool_manifest::DiscoveredToolSet =
             Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-        let registry = ToolRegistry::new();
+        let registry = tool_registry;
 
         let channel_gate =
             ChannelApprovalGate::new(self.coordinator.pending(), Arc::new(on_approval));
