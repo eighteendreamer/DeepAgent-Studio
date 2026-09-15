@@ -1043,7 +1043,9 @@ impl ChatService {
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
         let assembler = self.run_assembler();
-        assembler.run_workflow(workflow_request, on_event, on_approval).await
+        assembler
+            .run_workflow(workflow_request, on_event, on_approval)
+            .await
     }
 
     /// Construct a [`RunAssembler`] borrowing every field the run pipeline

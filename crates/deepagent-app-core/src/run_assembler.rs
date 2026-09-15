@@ -977,8 +977,7 @@ impl<'a> RunAssembler<'a> {
         );
 
         let compiled = deepagent_runtime::workflow::compile(workflow_request.definition)?;
-        let publisher =
-            deepagent_runtime::workflow::NodeEventPublisher::new(sink.clone());
+        let publisher = deepagent_runtime::workflow::NodeEventPublisher::new(sink.clone());
 
         let run_model = select_run_model(
             self.settings,

@@ -206,8 +206,8 @@ pub use deepagent_persistence::run_store::{RunRecord, StoredRunEvent};
 pub use deepagent_persistence::runtime_log_store::{
     NewRuntimeLogEntry, RuntimeLogEntry, RuntimeLogStore,
 };
-pub use deepagent_runtime::{ApprovalDecision, RuntimeEvent};
 pub use deepagent_runtime::workflow::WorkflowRequest;
+pub use deepagent_runtime::{ApprovalDecision, RuntimeEvent};
 pub use hook_runtime::{test_hook_action, HookActionTestResult};
 pub use model_runtime::build_chat_model_client;
 

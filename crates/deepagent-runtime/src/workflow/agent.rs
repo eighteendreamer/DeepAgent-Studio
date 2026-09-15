@@ -126,7 +126,11 @@ impl WorkflowAgent {
         });
     }
 
-    async fn execute_node_inline(&mut self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
+    async fn execute_node_inline(
+        &mut self,
+        kind: &str,
+        config: &Map<String, Value>,
+    ) -> Result<Value> {
         let mut resolved_config = Map::new();
         for (key, value) in config {
             resolved_config.insert(key.clone(), values::resolve(value, &self.outputs)?);
@@ -142,9 +146,7 @@ impl WorkflowAgent {
             "code" => self.execute_code(&resolved_config),
             "template-transform" => self.execute_template_transform(&resolved_config),
             "list-operator" => self.execute_list_operator(&resolved_config),
-            "llm" | "agent" | "agent-v2" => {
-                self.execute_llm(kind, &resolved_config).await
-            }
+            "llm" | "agent" | "agent-v2" => self.execute_llm(kind, &resolved_config).await,
             "http-request" => self.execute_http_request(&resolved_config).await,
             "tool" => self.execute_tool(&resolved_config).await,
             "knowledge-retrieval" => self.execute_knowledge_retrieval(&resolved_config).await,
@@ -390,10 +392,7 @@ impl WorkflowAgent {
             }
         };
 
-        let model_name = self
-            .model_name
-            .as_deref()
-            .unwrap_or("deepseek-chat");
+        let model_name = self.model_name.as_deref().unwrap_or("deepseek-chat");
 
         let system_prompt = config
             .get("llmSystemPrompt")
@@ -466,14 +465,8 @@ impl WorkflowAgent {
             .get("httpMethod")
             .and_then(Value::as_str)
             .unwrap_or("GET");
-        let url = config
-            .get("httpUrl")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let body = config
-            .get("httpBody")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let url = config.get("httpUrl").and_then(Value::as_str).unwrap_or("");
+        let body = config.get("httpBody").and_then(Value::as_str).unwrap_or("");
         let timeout_secs = config
             .get("httpTimeout")
             .and_then(Value::as_u64)
@@ -518,7 +511,12 @@ impl WorkflowAgent {
             for (k, v) in &headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            if !body.is_empty() && matches!(req_method, reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH) {
+            if !body.is_empty()
+                && matches!(
+                    req_method,
+                    reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH
+                )
+            {
                 req = req.body(body.to_string());
             }
 
@@ -537,8 +535,8 @@ impl WorkflowAgent {
                         .collect();
                     let resp_body = resp.text().await.unwrap_or_default();
 
-                    let body_json: Value = serde_json::from_str(&resp_body)
-                        .unwrap_or(Value::String(resp_body));
+                    let body_json: Value =
+                        serde_json::from_str(&resp_body).unwrap_or(Value::String(resp_body));
 
                     return Ok(serde_json::json!({
                         "body": body_json,
@@ -573,10 +571,7 @@ impl WorkflowAgent {
             }
         };
 
-        let tool_name = config
-            .get("toolName")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let tool_name = config.get("toolName").and_then(Value::as_str).unwrap_or("");
         let arguments = config
             .get("toolArguments")
             .cloned()
@@ -705,10 +700,8 @@ impl WorkflowAgent {
                         .get("iterationTemplate")
                         .and_then(Value::as_str)
                         .unwrap_or("");
-                    let transformed = template.replace(
-                        &format!("{{{{{}}}}}", iterator_var),
-                        &item.to_string(),
-                    );
+                    let transformed =
+                        template.replace(&format!("{{{{{}}}}}", iterator_var), &item.to_string());
                     Value::String(transformed)
                 }
                 _ => {
@@ -910,7 +903,10 @@ mod tests {
     #[tokio::test]
     async fn workflow_agent_handles_tool_node_without_executor() {
         let mut tool_config = Map::new();
-        tool_config.insert("toolName".to_string(), Value::String("test_tool".to_string()));
+        tool_config.insert(
+            "toolName".to_string(),
+            Value::String("test_tool".to_string()),
+        );
         tool_config.insert("toolArguments".to_string(), Value::Object(Map::new()));
 
         let definition = WorkflowDefinition {
@@ -943,13 +939,21 @@ mod tests {
         // Verify tool output indicates no executor
         let output = agent.outputs.get("tool-1").unwrap();
         assert_eq!(output.get("success").unwrap().as_bool().unwrap(), false);
-        assert!(output.get("error").unwrap().as_str().unwrap().contains("no tool executor"));
+        assert!(output
+            .get("error")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("no tool executor"));
     }
 
     #[tokio::test]
     async fn workflow_agent_handles_knowledge_node_without_retriever() {
         let mut knowledge_config = Map::new();
-        knowledge_config.insert("queryVariable".to_string(), Value::String("test query".to_string()));
+        knowledge_config.insert(
+            "queryVariable".to_string(),
+            Value::String("test query".to_string()),
+        );
         knowledge_config.insert("knowledgeTopK".to_string(), Value::Number(3.into()));
 
         let definition = WorkflowDefinition {
@@ -981,6 +985,11 @@ mod tests {
 
         // Verify knowledge output is empty but valid
         let output = agent.outputs.get("knowledge-1").unwrap();
-        assert!(output.get("documents").unwrap().as_array().unwrap().is_empty());
+        assert!(output
+            .get("documents")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 }
