@@ -101,7 +101,7 @@ register({
   defaultData: () => ({
     label: "LLM",
     llmModel: "deepseek-chat",
-    llmSystemPrompt: "",
+    llmSystemPrompt: "你是一个有帮助的 AI 助手。请根据用户提供的上下文准确完成任务。",
     llmPrompt: "",
     llmTemperature: 0.7,
     llmMaxTokens: 4096,
@@ -123,6 +123,8 @@ register({
     label: "Agent",
     agentStrategy: "function-call",
     agentTools: [],
+    agentSystemPrompt: "你是一个可以调用工具完成任务的 AI Agent。根据用户需求选择合适的工具，逐步完成目标。",
+    agentTask: "",
   }),
 });
 
@@ -146,7 +148,7 @@ register({
       { name: "分类1", description: "" },
       { name: "分类2", description: "" },
     ],
-    classifierInstruction: "",
+    classifierInstruction: "请根据用户输入的内容，判断其属于哪个分类。",
   }),
 });
 
@@ -167,7 +169,7 @@ register({
     extractorModel: "deepseek-chat",
     extractorInput: "",
     extractorParams: [{ name: "", type: "string", description: "", required: true }],
-    extractorInstruction: "",
+    extractorInstruction: "请从用户输入中提取指定的参数值，以 JSON 格式返回。",
     reasoningMode: false,
   }),
 });
@@ -375,6 +377,7 @@ register({
     label: "Agent V2",
     agentV2Model: "deepseek-chat",
     agentV2Task: "",
+    agentV2SystemPrompt: "你是一个自主 Agent，可以使用可用工具来完成用户指定的任务。",
     agentV2Tools: [],
     agentV2Outputs: [],
     agentV2Memory: false,

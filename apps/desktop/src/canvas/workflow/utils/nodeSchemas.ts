@@ -239,6 +239,8 @@ export const NODE_CONFIG_SCHEMAS: Record<ProfessionalNodeKind, NodeConfigSchema>
   }),
   agent: nodeSchema("智能体", {
     agentStrategy: choice("策略", { "function-call": "函数调用", react: "推理与行动（ReAct）" }, "function-call"),
+    agentSystemPrompt: { ...text("系统提示词"), "x-widget": "textarea" },
+    agentTask: { ...text("任务指令"), "x-widget": "textarea" },
     agentTools: list("工具", TOOL),
   }),
   "question-classifier": nodeSchema("问题分类", {
@@ -345,6 +347,7 @@ export const NODE_CONFIG_SCHEMAS: Record<ProfessionalNodeKind, NodeConfigSchema>
   "loop-end": nodeSchema("循环结束", {}, "循环结束节点标记循环体终止位置。"),
   "agent-v2": nodeSchema("智能体 V2", {
     agentV2Model: CHAT_MODEL,
+    agentV2SystemPrompt: { ...text("系统提示词"), "x-widget": "textarea" },
     agentV2Task: { ...text("任务描述"), "x-widget": "textarea" },
     agentV2Tools: list("工具", TOOL),
     agentV2Outputs: list("声明输出", OUTPUT_DECLARATION),
