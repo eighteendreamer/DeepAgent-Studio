@@ -1031,6 +1031,21 @@ impl ChatService {
             .await
     }
 
+    /// Execute a professional-canvas workflow through the kernel.
+    pub async fn run_workflow<F, A>(
+        &self,
+        workflow_request: deepagent_runtime::workflow::WorkflowRequest,
+        on_event: F,
+        on_approval: A,
+    ) -> Result<String>
+    where
+        F: Fn(RuntimeEvent) + Send + 'static,
+        A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
+    {
+        let assembler = self.run_assembler();
+        assembler.run_workflow(workflow_request, on_event, on_approval).await
+    }
+
     /// Construct a [`RunAssembler`] borrowing every field the run pipeline
     /// needs. The assembler's [`RunAssembler::run`] method contains the full
     /// assembly logic; this service entry-point is a thin wrapper.

@@ -885,13 +885,194 @@ impl<'a> RunAssembler<'a> {
                 model_name: &model_name_for_cost,
                 sink: sink.as_ref(),
                 run_succeeded,
-                capture_client,
-                capture_model,
+                capture_client: Some(capture_client),
+                capture_model: Some(capture_model),
             },
         )?;
 
         drop(agent);
         drop(hooks);
+        drop(sink);
+        let _ = pump.await;
+
+        run_result.map(|_| session_id)
+    }
+
+    /// Execute a professional-canvas workflow through the same kernel pipeline.
+    ///
+    /// Skips chat-specific setup (model selection, tool registry, system prompt,
+    /// hooks) and constructs a [`WorkflowAgent`] instead of [`ModelAgent`]. The
+    /// kernel, event sink, cancellation, persistence and finalizer are shared.
+    pub(crate) async fn run_workflow<F, A>(
+        self,
+        workflow_request: deepagent_runtime::workflow::WorkflowRequest,
+        on_event: F,
+        on_approval: A,
+    ) -> Result<String>
+    where
+        F: Fn(RuntimeEvent) + Send + 'static,
+        A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
+    {
+        let root = self.effective_root();
+        let run_id = format!("run_{}", deepagent_core::id::EventId::new());
+        let cancellation = self.coordinator.register(run_id.clone(), None);
+
+        append_runtime_log(
+            self.runtime_logs,
+            NewRuntimeLogEntry::info("workflow", "workflow_run_requested")
+                .with_run_id(&run_id)
+                .with_source("deepagent-app-core::chat_service")
+                .with_data(serde_json::json!({
+                    "node_count": workflow_request.definition.nodes.len(),
+                    "edge_count": workflow_request.definition.edges.len(),
+                    "input_count": workflow_request.inputs.len(),
+                })),
+        );
+
+        let clock = SystemClock;
+        let project = root.to_string_lossy().into_owned();
+        let normalized_input = deepagent_runtime::InputIngress::normalize(
+            None,
+            root.clone(),
+            format!(
+                "[workflow] {} nodes, {} edges",
+                workflow_request.definition.nodes.len(),
+                workflow_request.definition.edges.len()
+            ),
+            deepagent_runtime::InputMode::Prompt,
+            Vec::new(),
+        )?;
+
+        let accepted_turn = accept_input_turn(
+            self.db,
+            &clock,
+            self.input_leases.clone(),
+            self.runtime_logs.as_ref().map(Arc::clone),
+            &run_id,
+            None,
+            None,
+            &project,
+            normalized_input,
+            cancellation.flag(),
+            |active_run| {
+                self.coordinator
+                    .request_cancel(active_run)
+                    .map(|request| request.accepted)
+                    .unwrap_or(false)
+            },
+        )
+        .await?;
+        let mut session = accepted_turn.session;
+        let session_id = accepted_turn.session_id;
+        let _input_lease = accepted_turn.lease;
+
+        let (sink, rx) = ChannelSink::new();
+        let sink: Arc<dyn RuntimeEventSink> = Arc::new(sink);
+        let pump = spawn_runtime_event_pump(
+            rx,
+            self.runtime_logs.clone(),
+            run_id.clone(),
+            session_id.clone(),
+            on_event,
+        );
+
+        let compiled = deepagent_runtime::workflow::compile(workflow_request.definition)?;
+        let publisher =
+            deepagent_runtime::workflow::NodeEventPublisher::new(sink.clone());
+        let mut agent = deepagent_runtime::workflow::WorkflowAgent::new(
+            compiled,
+            workflow_request.inputs,
+            workflow_request.target_node_id,
+            publisher,
+        )
+        .with_cancel(cancellation.flag());
+
+        let session_sequence = deepagent_persistence::event_store::EventStore::new(self.db)
+            .load_session(session.id())?
+            .last()
+            .map(|event| event.sequence as i64)
+            .unwrap_or(0);
+
+        let plan = self.plan_mode_for_session(&session_id);
+        let todo_store = deepagent_builtins::TodoStore::new();
+
+        let kernel_runtime = build_kernel_runtime_config(KernelRuntimeConfigRequest {
+            db: self.db.clone(),
+            run_id: &run_id,
+            session_sequence,
+            root: &root,
+            tool_results_dir: self.tool_results_dir,
+            plan: plan.clone(),
+            todo_store,
+            verification_policy: crate::settings::VerificationPolicy::default(),
+            fire_session_start: true,
+            granted: PermissionSet::developer(),
+            nested_instructions: None,
+        })?;
+        let config = kernel_runtime.config;
+
+        cancellation.add_alias(session_id.clone());
+        let cancel = cancellation.flag();
+
+        let empty_discovered = std::collections::HashSet::new();
+        let empty_toolset: crate::tool_manifest::DiscoveredToolSet =
+            Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let registry = ToolRegistry::new();
+
+        let channel_gate =
+            ChannelApprovalGate::new(self.coordinator.pending(), Arc::new(on_approval));
+        let gate: Arc<dyn deepagent_runtime::ApprovalGate> = Arc::new(channel_gate);
+        let hooks = deepagent_hooks::HookRegistry::new();
+
+        let (run_result, run_succeeded): (Result<()>, bool) = {
+            let kernel = AgentKernel::<SystemClock>::new(
+                self.db.clone(),
+                &registry,
+                Default::default(),
+                config,
+                run_id.clone(),
+            )
+            .with_events(sink.clone())
+            .with_approvals(gate)
+            .with_hooks(&hooks)
+            .with_cancellation_flag(cancel);
+
+            let task = session.create_task("[workflow run]")?;
+            match kernel
+                .start(RunRequest::new(&mut session, task, &mut agent))
+                .await
+            {
+                Ok(terminal) => {
+                    let succeeded = terminal.succeeded();
+                    (terminal.into_completion_result(), succeeded)
+                }
+                Err(error) => (Err(error), false),
+            }
+        };
+
+        AppRunFinalizer::new(
+            self.db.clone(),
+            self.cost.clone(),
+            self.knowledge.clone(),
+            self.coordinator.cancellation_map(),
+        )
+        .finalize_after_kernel(
+            &mut session,
+            AppRunFinalizerRequest {
+                session_id: &session_id,
+                run_id: &run_id,
+                discovered_before_run: &empty_discovered,
+                discovered_tools: &empty_toolset,
+                usage: agent.cumulative_usage(),
+                model_name: "workflow",
+                sink: sink.as_ref(),
+                run_succeeded,
+                capture_client: None,
+                capture_model: None,
+            },
+        )?;
+
+        drop(agent);
         drop(sink);
         let _ = pump.await;
 

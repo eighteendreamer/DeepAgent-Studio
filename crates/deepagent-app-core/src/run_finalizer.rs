@@ -33,8 +33,8 @@ pub(crate) struct AppRunFinalizerRequest<'a> {
     pub(crate) model_name: &'a str,
     pub(crate) sink: &'a dyn RuntimeEventSink,
     pub(crate) run_succeeded: bool,
-    pub(crate) capture_client: Arc<ModelClient>,
-    pub(crate) capture_model: String,
+    pub(crate) capture_client: Option<Arc<ModelClient>>,
+    pub(crate) capture_model: Option<String>,
 }
 
 impl AppRunFinalizer {
@@ -154,8 +154,8 @@ impl AppRunFinalizer {
         &self,
         run_succeeded: bool,
         session_id: &str,
-        capture_client: Arc<ModelClient>,
-        capture_model: String,
+        capture_client: Option<Arc<ModelClient>>,
+        capture_model: Option<String>,
     ) {
         if !run_succeeded {
             return;
@@ -166,6 +166,12 @@ impl AppRunFinalizer {
         if !knowledge.auto_capture_enabled() {
             return;
         }
+        let Some(client) = capture_client else {
+            return;
+        };
+        let Some(model) = capture_model else {
+            return;
+        };
 
         let knowledge = knowledge.clone();
         let db = self.db.clone();
@@ -188,7 +194,7 @@ impl AppRunFinalizer {
                 }
             };
             if let Some(dto) = knowledge
-                .capture_from_session(capture_client, capture_model, &events, &sid)
+                .capture_from_session(client, model, &events, &sid)
                 .await
             {
                 tracing::info!(id = %dto.id, "auto-captured knowledge");
@@ -252,14 +258,14 @@ mod tests {
                     model_name: "model",
                     sink: &NullEventSink,
                     run_succeeded: false,
-                    capture_client: Arc::new(ModelClient::new(
+                    capture_client: Some(Arc::new(ModelClient::new(
                         Arc::new(deepagent_models::MockTransport::new([
                             r#"{"type":"response.completed","response":{"status":"completed"}}"#
                                 .to_string(),
                         ])),
                         deepagent_models::ModelConfig::deepseek("test"),
-                    )),
-                    capture_model: "model".to_string(),
+                    ))),
+                    capture_model: Some("model".to_string()),
                 },
             )
             .unwrap();

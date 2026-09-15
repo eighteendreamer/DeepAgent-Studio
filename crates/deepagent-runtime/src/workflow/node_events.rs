@@ -58,8 +58,7 @@ impl Default for NodeEventPublisher {
 }
 
 impl NodeEventPublisher {
-    #[allow(dead_code)]
-    pub(crate) fn new(sink: Arc<dyn RuntimeEventSink>) -> Self {
+    pub fn new(sink: Arc<dyn RuntimeEventSink>) -> Self {
         Self { sink }
     }
 
