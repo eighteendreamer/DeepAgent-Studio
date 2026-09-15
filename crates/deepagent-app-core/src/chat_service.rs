@@ -73,8 +73,8 @@ use crate::tool_manifest::{build_visible_tool_schemas, register_tool_search_into
 #[cfg(test)]
 use crate::tool_runtime::register_skill_tool;
 use crate::tool_runtime::{
-    build_base_tool_registry, CommandExecutorFactory, RemoteOpsFactory,
-    RuntimeCommandExecutor, ToolRegistryBuildRequest,
+    build_base_tool_registry, CommandExecutorFactory, RemoteOpsFactory, RuntimeCommandExecutor,
+    ToolRegistryBuildRequest,
 };
 
 /// Orchestrates streamed chat runs over the kernel.

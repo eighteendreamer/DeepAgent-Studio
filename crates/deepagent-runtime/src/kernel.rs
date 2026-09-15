@@ -331,7 +331,8 @@ fn phase_for_event(event: &RuntimeEvent) -> (RunPhase, &'static str) {
         | RuntimeEvent::SubagentCancelled { .. }
         | RuntimeEvent::SubagentNotification { .. }
         | RuntimeEvent::WorktreeCreated { .. }
-        | RuntimeEvent::WorktreeRemoved { .. } => (RunPhase::ExecutingTools, "progress"),
+        | RuntimeEvent::WorktreeRemoved { .. }
+        | RuntimeEvent::WorkflowNode { .. } => (RunPhase::ExecutingTools, "progress"),
         RuntimeEvent::Verification { .. } | RuntimeEvent::CompletionEvidence { .. } => {
             (RunPhase::Verifying, "progress")
         }

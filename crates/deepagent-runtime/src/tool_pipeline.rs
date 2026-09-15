@@ -46,6 +46,9 @@ pub struct ToolPipelineResult {
     pub name: String,
     pub arguments: serde_json::Value,
     pub output: ToolOutput,
+    /// Original tool value, retained only for opted-in internal consumers.
+    /// Events and persistence continue to use the budgeted/decorated `output`.
+    pub raw_output: Option<serde_json::Value>,
     pub duration_ms: u64,
     pub stage: ToolPipelineStage,
 }
@@ -618,6 +621,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             name,
             arguments,
             output: ToolOutput::failure(reason).with_error_type(error_type),
+            raw_output: None,
             duration_ms: 0,
             stage,
         })
@@ -777,6 +781,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             name: prepared.name,
             arguments: prepared.arguments,
             output,
+            raw_output: None,
             duration_ms,
             stage: ToolPipelineStage::Execution,
         })

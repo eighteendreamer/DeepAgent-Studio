@@ -2452,6 +2452,7 @@ mod tests {
         let obs = Observation {
             tool: "adversarial_verification".to_string(),
             ok: false,
+            raw_output: None,
             output: serde_json::json!({"retry": true}),
             call_id: None,
         };
@@ -3488,6 +3489,7 @@ mod tests {
             tool: "add".to_string(),
             ok: true,
             output: serde_json::json!({"sum": 3}),
+            raw_output: None,
             call_id: Some("c1".to_string()),
         };
         agent.think(1, std::slice::from_ref(&obs)).await.unwrap();
@@ -3527,6 +3529,7 @@ mod tests {
             tool: "add".to_string(),
             ok: true,
             output: serde_json::json!({"sum": 3}),
+            raw_output: None,
             call_id: Some("c1".to_string()),
         };
 
@@ -3557,6 +3560,7 @@ mod tests {
         let obs = Observation {
             tool: "apply_patch".to_string(),
             ok: true,
+            raw_output: None,
             output: serde_json::json!({"status": "ok"}),
             call_id: Some("call-patch".to_string()),
         };
@@ -3588,6 +3592,7 @@ mod tests {
         let obs = Observation {
             tool: "web_search".to_string(),
             ok: false,
+            raw_output: None,
             output: serde_json::json!({"error": "search failed: timeout"}),
             call_id: Some("c9".to_string()),
         };
@@ -3616,12 +3621,14 @@ mod tests {
         let fail = |id: &str| Observation {
             tool: "bash".to_string(),
             ok: false,
+            raw_output: None,
             output: serde_json::json!({"exit_code": 1, "stdout": "", "stderr": ""}),
             call_id: Some(id.to_string()),
         };
         let ok = |id: &str| Observation {
             tool: "bash".to_string(),
             ok: true,
+            raw_output: None,
             output: serde_json::json!({"exit_code": 0}),
             call_id: Some(id.to_string()),
         };
@@ -3655,6 +3662,7 @@ mod tests {
         agent.record_observation(&Observation {
             tool: "web_search".to_string(),
             ok: false,
+            raw_output: None,
             output: serde_json::json!({"error": "timeout"}),
             call_id: Some("c6".to_string()),
         });
@@ -3678,6 +3686,7 @@ mod tests {
         let feedback = Observation {
             tool: "completion_gate".to_string(),
             ok: false,
+            raw_output: None,
             output: serde_json::json!({"reason": "missing deletion evidence"}),
             call_id: None,
         };

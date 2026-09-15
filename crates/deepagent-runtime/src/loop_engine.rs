@@ -170,6 +170,9 @@ pub struct RuntimeConfig {
     pub action_persistence: Option<crate::tool_pipeline::ToolActionPersistence>,
     /// Tool result truncation and persistence budget.
     pub tool_result_budget: ToolResultBudgetConfig,
+    /// Retain original tool JSON in observations for internal structured consumers.
+    /// Opt-in data provenance only; does not grant permissions or change events.
+    pub retain_raw_tool_output: bool,
     /// Optional decorator that mutates each tool result after invocation.
     /// Higher-level crates (e.g. `deepagent-app-core`) plug in plan-mode
     /// reminders, todo snapshots, and verification annotations through this
@@ -198,6 +201,7 @@ impl Default for RuntimeConfig {
             artifact_persistence: None,
             action_persistence: None,
             tool_result_budget: ToolResultBudgetConfig::default(),
+            retain_raw_tool_output: false,
             tool_result_decorator: None,
             max_adversarial_retries: 1,
         }
@@ -1001,6 +1005,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         }
                     }
                 }
+                AgentDecision::Continue => {
+                    last_observations = Vec::new();
+                }
             }
         }
 
@@ -1150,6 +1157,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 Ok(Some(Observation {
                     tool: "completion_gate".to_string(),
                     ok: false,
+                    raw_output: None,
                     output: serde_json::json!({
                         "completion_blocked": true,
                         "reason": failure.reason,
@@ -1592,6 +1600,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             HookOutcome::Ask { reason, source } => Ok(Some(Observation {
                 tool: "post_tool_batch".to_string(),
                 ok: false,
+                raw_output: None,
                 output: serde_json::json!({
                     "blocked": true,
                     "needs_approval": true,
@@ -1604,6 +1613,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             HookOutcome::Deny { reason, source } => Ok(Some(Observation {
                 tool: "post_tool_batch".to_string(),
                 ok: false,
+                raw_output: None,
                 output: serde_json::json!({
                     "blocked": true,
                     "needs_approval": false,
@@ -1697,6 +1707,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         Ok(Observation {
             tool: tool_name,
             ok,
+            raw_output: None,
             output: value,
             call_id: Some(call_id),
         })
@@ -1877,6 +1888,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         Ok(Observation {
             tool: result.name,
             ok: result.output.ok,
+            raw_output: None,
             output: result.output.value,
             call_id: Some(result.call_id),
         })
@@ -1933,6 +1945,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 return Ok(Observation {
                     tool: tool_name,
                     ok: false,
+                    raw_output: None,
                     output: value,
                     call_id: Some(call_id),
                 });
@@ -2076,6 +2089,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             return Ok(Observation {
                 tool: tool_name,
                 ok: false,
+                raw_output: None,
                 output: err_value,
                 call_id: Some(call_id),
             });
@@ -2160,6 +2174,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 Observation {
                     tool: tool_name.clone(),
                     ok: out.ok,
+                    raw_output: None,
                     output: out.value,
                     call_id: Some(call_id),
                 }
@@ -2192,6 +2207,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 Observation {
                     tool: tool_name.clone(),
                     ok: false,
+                    raw_output: None,
                     output: err_value,
                     call_id: Some(call_id),
                 }
@@ -2249,6 +2265,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         Ok(Observation {
             tool: tool_name,
             ok: false,
+            raw_output: None,
             output: value,
             call_id: Some(call_id),
         })
@@ -2307,6 +2324,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 Ok(VerifyStep::Retry(Observation {
                     tool: "verification".to_string(),
                     ok: false,
+                    raw_output: None,
                     output: serde_json::json!({
                         "verification_failed": true,
                         "diagnosis": reflection.diagnosis,
@@ -2400,6 +2418,7 @@ fn completion_feedback(reason: String) -> Observation {
     Observation {
         tool: "stop_hook".into(),
         ok: false,
+        raw_output: None,
         output: serde_json::json!({
             "completion_blocked": true,
             "reason": reason,

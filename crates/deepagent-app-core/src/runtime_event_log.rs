@@ -283,6 +283,7 @@ fn runtime_event_category(event: &RuntimeEvent) -> &'static str {
         | RuntimeEvent::WorktreeCreated { .. }
         | RuntimeEvent::WorktreeRemoved { .. } => "subagent",
         RuntimeEvent::RunCancelled => "cancel",
+        RuntimeEvent::WorkflowNode { .. } => "workflow",
         RuntimeEvent::RunStarted { .. }
         | RuntimeEvent::SessionRegistered { .. }
         | RuntimeEvent::TurnStarted { .. }
@@ -319,6 +320,12 @@ fn runtime_event_level(event: &RuntimeEvent) -> &'static str {
         RuntimeEvent::RunCancelled => "warn",
         RuntimeEvent::SubagentCompleted { state, .. } if state == "failed" => "error",
         RuntimeEvent::SubagentCancelled { .. } => "warn",
+        RuntimeEvent::WorkflowNode { event } => match event.status {
+            deepagent_runtime::workflow::NodeExecutionStatus::Failed => "error",
+            deepagent_runtime::workflow::NodeExecutionStatus::Cancelled
+            | deepagent_runtime::workflow::NodeExecutionStatus::Skipped => "warn",
+            _ => "info",
+        },
         _ => "info",
     }
 }
@@ -344,6 +351,7 @@ fn runtime_event_correlation_id(event: &RuntimeEvent) -> Option<String> {
         | RuntimeEvent::SubagentNotification { id, .. } => Some(id.clone()),
         RuntimeEvent::WorktreeCreated { subagent_id, .. }
         | RuntimeEvent::WorktreeRemoved { subagent_id, .. } => Some(subagent_id.clone()),
+        RuntimeEvent::WorkflowNode { event } => Some(event.node_id.clone()),
         _ => None,
     }
 }
@@ -505,6 +513,17 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
             ..
         } => format!("stall nudge injected step={step} category={category} confidence={confidence}"),
         RuntimeEvent::Usage { total_tokens, .. } => format!("usage total_tokens={total_tokens}"),
+        RuntimeEvent::WorkflowNode { event } => {
+            let status = format!("{:?}", event.status).to_ascii_lowercase();
+            let mut message = format!(
+                "workflow node {} status={} attempt={} elapsed={}ms",
+                event.node_id, status, event.attempt, event.elapsed_ms
+            );
+            if let Some(error) = &event.error {
+                message.push_str(&format!(" error={error}"));
+            }
+            message
+        }
         RuntimeEvent::RunCompleted { .. } => "run completed".to_string(),
         RuntimeEvent::RunAwaitingApproval { message } => {
             format!("run awaiting approval: {message}")

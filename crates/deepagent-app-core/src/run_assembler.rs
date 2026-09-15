@@ -59,8 +59,7 @@ use crate::subagent_runner::{
 use crate::tool_manifest::DiscoveredToolSet;
 use crate::tool_runtime::{
     build_base_tool_registry, build_main_run_toolset, CommandExecutorFactory,
-    MainRunToolsetRequest, RemoteOpsFactory, RuntimeCommandExecutor,
-    ToolRegistryBuildRequest,
+    MainRunToolsetRequest, RemoteOpsFactory, RuntimeCommandExecutor, ToolRegistryBuildRequest,
 };
 
 use crate::chat_service::InvokedSkillMap;

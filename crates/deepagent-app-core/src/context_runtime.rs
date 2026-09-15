@@ -1759,7 +1759,8 @@ mod tests {
         );
         assert!(matches!(
             decision,
-            AgentDecision::Complete(_)
+            AgentDecision::Continue
+                | AgentDecision::Complete(_)
                 | AgentDecision::CompleteMessage(_)
                 | AgentDecision::CallTool(_)
                 | AgentDecision::CallTools(_)

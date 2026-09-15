@@ -1,0 +1,568 @@
+//! Workflow execution agent that drives a compiled graph through the kernel.
+//!
+//! [`WorkflowAgent`] implements [`Agent`] so the existing `AgentKernel` loop can
+//! execute professional canvas workflows without a second run center. Each
+//! `think()` call advances one node in topological order, resolving variable
+//! references, executing the node operation, and publishing status events.
+
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
+
+use async_trait::async_trait;
+use serde_json::{Map, Value};
+
+use super::graph::CompiledWorkflow;
+use super::node_events::{NodeEventPublisher, NodeExecutionEvent, NodeExecutionStatus};
+use super::values;
+use crate::agent::{Agent, AgentDecision, Observation, RunUsage};
+use deepagent_core::error::{CoreError, Result};
+
+/// Executes a compiled workflow graph as an [`Agent`].
+///
+/// The agent walks nodes in topological order. Each `think()` call executes one
+/// node, stores its outputs, and emits lifecycle events. When all nodes complete
+/// (or an `end` node is reached), the agent returns `Complete` with the final
+/// output summary.
+pub struct WorkflowAgent {
+    compiled: CompiledWorkflow,
+    inputs: Map<String, Value>,
+    target_node_id: Option<String>,
+    publisher: NodeEventPublisher,
+    outputs: BTreeMap<String, Value>,
+    step: usize,
+    #[allow(dead_code)]
+    started_at: Instant,
+    cancel: Option<Arc<AtomicBool>>,
+    usage: RunUsage,
+}
+
+impl WorkflowAgent {
+    /// Create a new workflow agent from a compiled graph and user inputs.
+    pub fn new(
+        compiled: CompiledWorkflow,
+        inputs: Map<String, Value>,
+        target_node_id: Option<String>,
+        publisher: NodeEventPublisher,
+    ) -> Self {
+        Self {
+            compiled,
+            inputs,
+            target_node_id,
+            publisher,
+            outputs: BTreeMap::new(),
+            step: 0,
+            started_at: Instant::now(),
+            cancel: None,
+            usage: RunUsage::default(),
+        }
+    }
+
+    /// Attach a cancellation flag so the agent can abort mid-execution.
+    pub fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .map(|flag| flag.load(Ordering::Relaxed))
+            .unwrap_or(false)
+    }
+
+    fn emit_status(
+        &self,
+        node_id: &str,
+        status: NodeExecutionStatus,
+        attempt: u32,
+        elapsed_ms: u64,
+        outputs: Option<Value>,
+        error: Option<String>,
+    ) {
+        self.publisher.emit(NodeExecutionEvent {
+            revision: self.compiled.revision.clone(),
+            node_id: node_id.to_string(),
+            status,
+            scope: Vec::new(),
+            attempt,
+            elapsed_ms,
+            outputs,
+            updates: BTreeMap::new(),
+            error,
+        });
+    }
+
+    fn execute_node_inline(&mut self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
+        let mut resolved_config = Map::new();
+        for (key, value) in config {
+            resolved_config.insert(key.clone(), values::resolve(value, &self.outputs)?);
+        }
+
+        match kind {
+            "start" => self.execute_start(&resolved_config),
+            "end" => self.execute_end(&resolved_config),
+            "answer" => self.execute_answer(&resolved_config),
+            "variable-assigner" => self.execute_variable_assigner(&resolved_config),
+            "variable-aggregator" => self.execute_variable_aggregator(&resolved_config),
+            "if-else" => self.execute_if_else(&resolved_config),
+            "code" => self.execute_code(&resolved_config),
+            "template-transform" => self.execute_template_transform(&resolved_config),
+            "list-operator" => self.execute_list_operator(&resolved_config),
+            "llm" | "agent" | "agent-v2" => self.execute_llm_stub(kind, &resolved_config),
+            "http-request" => self.execute_http_stub(kind),
+            "tool" => self.execute_tool_stub(kind),
+            "knowledge-retrieval" => self.execute_knowledge_stub(kind),
+            "iteration" | "loop" => self.execute_iteration_stub(kind),
+            _ => self.execute_passthrough(kind, &resolved_config),
+        }
+    }
+
+    fn execute_start(&mut self, config: &Map<String, Value>) -> Result<Value> {
+        let mut result = Map::new();
+        if let Some(variables) = config.get("inputVariables").and_then(Value::as_array) {
+            for var in variables {
+                let name = var
+                    .get("variable")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    let value = self.inputs.get(name).cloned().unwrap_or(Value::Null);
+                    result.insert(name.to_string(), value);
+                }
+            }
+        }
+        for (key, value) in &self.inputs {
+            result.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+        Ok(Value::Object(result))
+    }
+
+    fn execute_end(&mut self, config: &Map<String, Value>) -> Result<Value> {
+        let mut result = Map::new();
+        if let Some(variables) = config.get("outputVariables").and_then(Value::as_array) {
+            for var in variables {
+                let name = var
+                    .get("variable")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let value = var.get("value").cloned().unwrap_or(Value::Null);
+                if !name.is_empty() {
+                    let resolved = values::resolve(&value, &self.outputs)?;
+                    result.insert(name.to_string(), resolved);
+                }
+            }
+        }
+        Ok(Value::Object(result))
+    }
+
+    fn execute_answer(&self, config: &Map<String, Value>) -> Result<Value> {
+        let text = config
+            .get("text")
+            .cloned()
+            .unwrap_or(Value::String(String::new()));
+        let resolved = values::resolve(&text, &self.outputs)?;
+        let answer = match resolved {
+            Value::String(s) => s,
+            other => other.to_string(),
+        };
+        Ok(serde_json::json!({ "answer": answer }))
+    }
+
+    fn execute_variable_assigner(&self, config: &Map<String, Value>) -> Result<Value> {
+        let assignments = config
+            .get("assignments")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut result = Map::new();
+        for assignment in assignments {
+            let variable = assignment
+                .get("variable")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let input_type = assignment
+                .get("inputType")
+                .and_then(Value::as_str)
+                .unwrap_or("constant");
+            let value = match input_type {
+                "variable" => {
+                    let var_ref = assignment.get("value").cloned().unwrap_or(Value::Null);
+                    values::resolve(&var_ref, &self.outputs)?
+                }
+                _ => assignment.get("value").cloned().unwrap_or(Value::Null),
+            };
+            if !variable.is_empty() {
+                result.insert(variable.to_string(), value);
+            }
+        }
+        Ok(Value::Object(result))
+    }
+
+    fn execute_variable_aggregator(&self, config: &Map<String, Value>) -> Result<Value> {
+        let variables = config
+            .get("variables")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut aggregated = Vec::new();
+        for var in variables {
+            let resolved = values::resolve(&var, &self.outputs)?;
+            aggregated.push(resolved);
+        }
+        Ok(serde_json::json!({ "output": aggregated }))
+    }
+
+    fn execute_if_else(&self, config: &Map<String, Value>) -> Result<Value> {
+        let conditions = config
+            .get("conditions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let logical_operator = config
+            .get("logicalOperator")
+            .and_then(Value::as_str)
+            .unwrap_or("and");
+
+        for group in conditions {
+            let group_id = group.get("id").and_then(Value::as_str).unwrap_or("default");
+            let items = group
+                .get("conditions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let group_op = group
+                .get("logicalOperator")
+                .and_then(Value::as_str)
+                .unwrap_or("and");
+
+            let mut group_result = true;
+            for item in items {
+                let left = item.get("left").cloned().unwrap_or(Value::Null);
+                let operator = item.get("operator").and_then(Value::as_str).unwrap_or("is");
+                let right = item.get("right").cloned().unwrap_or(Value::Null);
+
+                let left_resolved = values::resolve(&left, &self.outputs)?;
+                let right_resolved = values::resolve(&right, &self.outputs)?;
+                let cmp = values::compare(&left_resolved, operator, &right_resolved)?;
+
+                group_result = match group_op {
+                    "or" => group_result || cmp,
+                    _ => group_result && cmp,
+                };
+            }
+
+            if group_result {
+                return Ok(serde_json::json!({ "__branch": group_id }));
+            }
+        }
+
+        let _ = logical_operator;
+        Ok(serde_json::json!({ "__branch": "false" }))
+    }
+
+    fn execute_code(&self, config: &Map<String, Value>) -> Result<Value> {
+        let _code = config.get("code").and_then(Value::as_str).unwrap_or("");
+        let _language = config
+            .get("codeLanguage")
+            .and_then(Value::as_str)
+            .unwrap_or("javascript");
+        let variables = config
+            .get("codeVariables")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let outputs = config
+            .get("codeOutputVariables")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut result = Map::new();
+        for var in variables {
+            let name = var
+                .get("variable")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let value = var.get("value").cloned().unwrap_or(Value::Null);
+            if !name.is_empty() {
+                let resolved = values::resolve(&value, &self.outputs)?;
+                result.insert(name.to_string(), resolved);
+            }
+        }
+        for out in outputs {
+            let name = out
+                .get("variable")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !name.is_empty() && !result.contains_key(name) {
+                let default = match out.get("type").and_then(Value::as_str) {
+                    Some("number") => Value::Number(serde_json::Number::from(0)),
+                    Some("array") => Value::Array(Vec::new()),
+                    Some("object") => Value::Object(Map::new()),
+                    _ => Value::String(String::new()),
+                };
+                result.insert(name.to_string(), default);
+            }
+        }
+        Ok(Value::Object(result))
+    }
+
+    fn execute_template_transform(&self, config: &Map<String, Value>) -> Result<Value> {
+        let template = config.get("template").and_then(Value::as_str).unwrap_or("");
+        let variables = config
+            .get("variables")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let rendered = values::render_template(template, &variables, &self.outputs)?;
+        Ok(serde_json::json!({ "output": rendered }))
+    }
+
+    fn execute_list_operator(&self, config: &Map<String, Value>) -> Result<Value> {
+        let input = config
+            .get("input")
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new()));
+        let action = config
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("passthrough");
+        let condition = config
+            .get("condition")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let field = config.get("field").and_then(Value::as_str).unwrap_or("");
+        let order_by = config
+            .get("orderBy")
+            .and_then(Value::as_str)
+            .unwrap_or("asc");
+        let limit = config.get("limit").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let resolved_input = values::resolve(&input, &self.outputs)?;
+        let result =
+            values::operate_list(&resolved_input, action, condition, field, order_by, limit)?;
+        Ok(result)
+    }
+
+    fn execute_llm_stub(&self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
+        let _ = config;
+        Ok(serde_json::json!({
+            "text": format!("[{}] LLM execution is not yet connected to a provider", kind),
+            "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+        }))
+    }
+
+    fn execute_http_stub(&self, kind: &str) -> Result<Value> {
+        Ok(serde_json::json!({
+            "body": null,
+            "status_code": 0,
+            "headers": {},
+            "__note": format!("{} node is not yet connected", kind)
+        }))
+    }
+
+    fn execute_tool_stub(&self, kind: &str) -> Result<Value> {
+        Ok(serde_json::json!({
+            "text": format!("[tool] {} is not yet connected", kind),
+            "json": null
+        }))
+    }
+
+    fn execute_knowledge_stub(&self, kind: &str) -> Result<Value> {
+        Ok(serde_json::json!({
+            "documents": [],
+            "content": format!("[knowledge-retrieval] {} is not yet connected", kind)
+        }))
+    }
+
+    fn execute_iteration_stub(&self, kind: &str) -> Result<Value> {
+        Ok(serde_json::json!({
+            "output": [],
+            "__note": format!("{} node requires sub-graph execution", kind)
+        }))
+    }
+
+    fn execute_passthrough(&self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
+        let mut result = Map::new();
+        for (key, value) in config {
+            result.insert(key.clone(), value.clone());
+        }
+        if result.is_empty() {
+            result.insert(
+                "__note".to_string(),
+                Value::String(format!("{} node executed as passthrough", kind)),
+            );
+        }
+        Ok(Value::Object(result))
+    }
+
+    fn node_output_value_inline(kind: &str, result: &Value) -> Value {
+        match kind {
+            "if-else" => {
+                let branch = result
+                    .get("__branch")
+                    .cloned()
+                    .unwrap_or(Value::String("false".into()));
+                serde_json::json!({ "branch": branch })
+            }
+            _ => result.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl Agent for WorkflowAgent {
+    async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+        if self.is_cancelled() {
+            return Err(CoreError::other("workflow cancelled"));
+        }
+
+        if self.step >= self.compiled.order.len() {
+            let summary = self
+                .outputs
+                .get("end")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "workflow completed".to_string());
+            return Ok(AgentDecision::Complete(summary));
+        }
+
+        let node_index = self.compiled.order[self.step];
+        let node = &self.compiled.definition.nodes[node_index];
+        let node_id = node.id.clone();
+        let node_kind = node.kind.clone();
+        let node_config = node.config.clone();
+
+        if let Some(target) = &self.target_node_id {
+            if &node_id != target && node_kind != "start" {
+                let ancestors = self
+                    .compiled
+                    .ancestors
+                    .get(&node_id)
+                    .cloned()
+                    .unwrap_or_default();
+                if !ancestors.contains(target) {
+                    self.emit_status(&node_id, NodeExecutionStatus::Skipped, 1, 0, None, None);
+                    self.step += 1;
+                    return Ok(AgentDecision::Continue);
+                }
+            }
+        }
+
+        self.emit_status(&node_id, NodeExecutionStatus::Running, 1, 0, None, None);
+        let node_start = Instant::now();
+
+        let result = self.execute_node_inline(&node_kind, &node_config);
+        let elapsed_ms = node_start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(output) => {
+                let output_value = Self::node_output_value_inline(&node_kind, &output);
+                self.outputs.insert(node_id.clone(), output_value.clone());
+                self.emit_status(
+                    &node_id,
+                    NodeExecutionStatus::Completed,
+                    1,
+                    elapsed_ms,
+                    Some(output_value),
+                    None,
+                );
+                self.step += 1;
+
+                if node_kind == "end" {
+                    let summary = output
+                        .get("output")
+                        .or_else(|| output.as_object().and_then(|m| m.values().next()))
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "workflow completed".to_string());
+                    return Ok(AgentDecision::Complete(summary));
+                }
+
+                Ok(AgentDecision::Continue)
+            }
+            Err(error) => {
+                self.emit_status(
+                    &node_id,
+                    NodeExecutionStatus::Failed,
+                    1,
+                    elapsed_ms,
+                    None,
+                    Some(error.to_string()),
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn cumulative_usage(&self) -> Option<RunUsage> {
+        Some(self.usage)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workflow::graph::{compile, WorkflowDefinition, WorkflowEdgeSpec, WorkflowNodeSpec};
+    use crate::workflow::node_events::NodeEventPublisher;
+
+    fn make_start(id: &str) -> WorkflowNodeSpec {
+        WorkflowNodeSpec {
+            id: id.to_string(),
+            kind: "start".to_string(),
+            config: Map::new(),
+        }
+    }
+
+    fn make_end(id: &str) -> WorkflowNodeSpec {
+        WorkflowNodeSpec {
+            id: id.to_string(),
+            kind: "end".to_string(),
+            config: Map::new(),
+        }
+    }
+
+    fn make_edge(id: &str, source: &str, target: &str) -> WorkflowEdgeSpec {
+        WorkflowEdgeSpec {
+            id: id.to_string(),
+            source: source.to_string(),
+            target: target.to_string(),
+            source_handle: None,
+            target_handle: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_agent_executes_start_to_end() {
+        let definition = WorkflowDefinition {
+            version: 1,
+            nodes: vec![make_start("start-1"), make_end("end-1")],
+            edges: vec![make_edge("e1", "start-1", "end-1")],
+        };
+        let compiled = compile(definition).unwrap();
+        let mut agent =
+            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default());
+
+        let decision = agent.think(0, &[]).await.unwrap();
+        assert!(matches!(decision, AgentDecision::Continue));
+
+        let decision = agent.think(1, &[]).await.unwrap();
+        assert!(matches!(decision, AgentDecision::Complete(_)));
+    }
+
+    #[tokio::test]
+    async fn workflow_agent_respects_cancellation() {
+        let definition = WorkflowDefinition {
+            version: 1,
+            nodes: vec![make_start("start-1"), make_end("end-1")],
+            edges: vec![make_edge("e1", "start-1", "end-1")],
+        };
+        let compiled = compile(definition).unwrap();
+        let cancel = Arc::new(AtomicBool::new(true));
+        let mut agent =
+            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default())
+                .with_cancel(cancel);
+
+        let result = agent.think(0, &[]).await;
+        assert!(result.is_err());
+    }
+}

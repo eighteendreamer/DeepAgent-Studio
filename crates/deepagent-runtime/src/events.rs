@@ -373,6 +373,10 @@ pub enum RuntimeEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         raw_responses_usage: Option<serde_json::Value>,
     },
+    /// A workflow node changed execution status (pending → running → completed/failed/etc.).
+    WorkflowNode {
+        event: crate::workflow::NodeExecutionEvent,
+    },
     /// The run finished.
     RunCompleted {
         /// Final assistant message.
@@ -605,6 +609,7 @@ impl RuntimeEvent {
             RuntimeEvent::RelevantMemoriesInjected { .. } => "relevant_memories_injected",
             RuntimeEvent::StallNudgeInjected { .. } => "stall_nudge_injected",
             RuntimeEvent::Usage { .. } => "usage",
+            RuntimeEvent::WorkflowNode { .. } => "workflow_node",
             RuntimeEvent::RunCompleted { .. } => "run_completed",
             RuntimeEvent::RunAwaitingApproval { .. } => "run_awaiting_approval",
             RuntimeEvent::RunFailed { .. } => "run_failed",
