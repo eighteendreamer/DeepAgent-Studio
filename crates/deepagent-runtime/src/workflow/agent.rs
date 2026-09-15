@@ -938,7 +938,7 @@ mod tests {
 
         // Verify tool output indicates no executor
         let output = agent.outputs.get("tool-1").unwrap();
-        assert_eq!(output.get("success").unwrap().as_bool().unwrap(), false);
+        assert!(!output.get("success").unwrap().as_bool().unwrap());
         assert!(output
             .get("error")
             .unwrap()

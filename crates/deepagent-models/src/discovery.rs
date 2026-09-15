@@ -127,7 +127,7 @@ impl ModelCatalog {
     }
 }
 
-fn select_role_model<'a>(models: &'a [ModelInfo], role: ModelRole) -> Option<&'a ModelInfo> {
+fn select_role_model(models: &[ModelInfo], role: ModelRole) -> Option<&ModelInfo> {
     models
         .iter()
         .enumerate()
