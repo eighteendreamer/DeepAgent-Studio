@@ -11,6 +11,7 @@ import {
   type ProfessionalNodeKind,
 } from "../types";
 import { PickerIcon } from "./PickerIcon";
+import { SnippetsTab } from "./SnippetsTab";
 
 const ICON_COLOR = "rgba(248,248,248,0.72)";
 
@@ -51,7 +52,7 @@ export function NodePicker() {
     const margin = 8;
     el.style.left = `${Math.max(margin, Math.min(nodePicker.x, window.innerWidth - width - margin))}px`;
     el.style.top = `${Math.max(margin, Math.min(nodePicker.y, window.innerHeight - height - margin))}px`;
-  }, [nodePicker]);
+  }, [nodePicker, activeTab]);
 
   const connectNewNode = (newNodeId: string) => {
     if (!pendingConnection) return;
@@ -225,9 +226,10 @@ export function NodePicker() {
                 </button>
               ))}
             </div>
-            <div className="node-picker-scroll max-h-80 overflow-y-auto overscroll-contain p-1.5">
+            <div className={`node-picker-scroll overflow-y-auto overscroll-contain p-1.5 ${activeTab === 3 ? "max-h-[min(520px,65vh)]" : "max-h-80"}`}>
               {(() => {
                 const tab = PROFESSIONAL_NODE_PICKER_TABS[activeTab];
+                if (tab.label === "Snippets") return <SnippetsTab worldX={nodePicker.worldX} worldY={nodePicker.worldY} onInserted={closeNodePicker} />;
                 if (!tab.groups.length) {
                   return (
                     <div className="flex flex-col items-center justify-center py-8">

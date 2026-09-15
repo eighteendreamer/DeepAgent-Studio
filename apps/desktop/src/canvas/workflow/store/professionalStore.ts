@@ -28,6 +28,7 @@ interface ProfessionalState {
 
   addNode: (kind: ProfessionalNodeKind, x: number, y: number) => string;
   addNodeAt: (kind: ProfessionalNodeKind, x: number, y: number, data: Partial<ProfessionalNodeData>) => string;
+  insertFragment: (fragment: { nodes: WorkflowNode[]; edges: WorkflowEdge[] }) => void;
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<ProfessionalNodeData>) => void;
   setNodes: (nodes: WorkflowNode[]) => void;
@@ -126,6 +127,31 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
     return id;
+  },
+
+  insertFragment: (fragment) => {
+    // Clone before committing so neither snippet edits nor callers can mutate history.
+    const inserted = structuredClone(fragment);
+    if (!inserted.nodes.length) throw new Error("片段没有可插入的节点。");
+    const nodes = inserted.nodes.map(normalizeProfessionalNode);
+    set((s) => {
+      const taken = new Set([...s.nodes, ...s.edges].map((item) => item.id));
+      const nodeIds = new Set(nodes.map((node) => node.id));
+      for (const item of [...nodes, ...inserted.edges]) {
+        if (!item.id || taken.has(item.id)) throw new Error("片段 ID 冲突，请重新插入。");
+        taken.add(item.id);
+      }
+      if (inserted.edges.some((edge) => !nodeIds.has(edge.source) || !nodeIds.has(edge.target))
+        || nodes.some((node) => node.parentId !== undefined && !nodeIds.has(node.parentId))) {
+        throw new Error("片段包含外部连线或父节点，请完整选择关联节点。");
+      }
+      return {
+        nodes: [...s.nodes.map((node) => node.selected ? { ...node, selected: false } : node), ...nodes],
+        edges: [...s.edges, ...inserted.edges],
+        past: [...s.past.slice(-99), { nodes: s.nodes, edges: s.edges }],
+        future: [],
+      };
+    });
   },
 
   removeNode: (id) => {
