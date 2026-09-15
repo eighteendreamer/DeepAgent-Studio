@@ -2037,6 +2037,71 @@ fn start_chat_v2(
     Ok(acknowledgement)
 }
 
+/// Start a professional-canvas workflow run. The workflow graph is compiled
+/// and executed through the same kernel pipeline as chat runs. Consumers
+/// follow `chat://event` and `session://completed` for progress.
+#[tauri::command]
+fn start_workflow(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    workflow: deepagent_app_core::WorkflowRequest,
+    session_id: Option<String>,
+) -> Result<StartChatV2Ack, String> {
+    let run_id = format!("run_{}", deepagent_core::id::EventId::new());
+    let acknowledgement = StartChatV2Ack {
+        run_id: run_id.clone(),
+        session_id: session_id.clone(),
+    };
+    let chat = state.chat.clone();
+    let requested_session_id = session_id.clone();
+    let event_emitter = app.clone();
+    let approval_emitter = app.clone();
+    let completion_emitter = app;
+    state.rt.spawn(async move {
+        let event_run_id = run_id.clone();
+        let approval_run_id = run_id.clone();
+        let result = chat
+            .run_workflow(
+                workflow,
+                move |event| {
+                    let _ = event_emitter.emit(
+                        "chat://event",
+                        RunEventEnvelope {
+                            run_id: event_run_id.clone(),
+                            payload: event,
+                        },
+                    );
+                },
+                move |approval| {
+                    let _ = approval_emitter.emit(
+                        "chat://approval",
+                        RunEventEnvelope {
+                            run_id: approval_run_id.clone(),
+                            payload: approval,
+                        },
+                    );
+                },
+            )
+            .await;
+        let completed = match &result {
+            Ok(session_id) => SessionCompletedPayload {
+                run_id: run_id.clone(),
+                session_id: Some(session_id.clone()),
+                status: "completed".to_string(),
+                error: None,
+            },
+            Err(error) => SessionCompletedPayload {
+                run_id: run_id.clone(),
+                session_id: requested_session_id,
+                status: "failed".to_string(),
+                error: Some(error.to_string()),
+            },
+        };
+        let _ = completion_emitter.emit("session://completed", completed);
+    });
+    Ok(acknowledgement)
+}
+
 #[tauri::command]
 fn resolve_approval(
     state: State<'_, AppState>,
@@ -6190,6 +6255,7 @@ pub fn run() {
             set_budget,
             run_doctor,
             start_chat_v2,
+            start_workflow,
             resolve_approval,
             stop_chat,
             cancel_run,
