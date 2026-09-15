@@ -647,6 +647,41 @@ impl deepagent_builtins::KnowledgeBackend for KnowledgeServiceBackend {
     }
 }
 
+/// Adapts [`KnowledgeService`] to the workflow's [`KnowledgeRetriever`] trait so
+/// knowledge retrieval nodes can query the real vault. The service methods are
+/// synchronous (Mutex-backed); the trait is async, so each call simply forwards
+/// to the sync method.
+pub struct WorkflowKnowledgeRetriever {
+    service: std::sync::Arc<KnowledgeService>,
+}
+
+impl WorkflowKnowledgeRetriever {
+    /// Wrap a shared knowledge service.
+    pub fn new(service: std::sync::Arc<KnowledgeService>) -> Self {
+        Self { service }
+    }
+}
+
+#[async_trait::async_trait]
+impl deepagent_runtime::workflow::KnowledgeRetriever for WorkflowKnowledgeRetriever {
+    async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> deepagent_core::error::Result<Vec<deepagent_runtime::workflow::KnowledgeDocument>> {
+        let hits = self.service.search(query, None, limit);
+        Ok(hits
+            .into_iter()
+            .map(|h| deepagent_runtime::workflow::KnowledgeDocument {
+                id: h.id,
+                title: h.title,
+                content: h.excerpt,
+                score: h.score,
+            })
+            .collect())
+    }
+}
+
 /// Minimum relevance for a background-prefetched memory to surface. Set above
 /// the passive-injection threshold (0.30): the background channel supplements
 /// the seeded passive block, so only clearly-relevant entries are worth a

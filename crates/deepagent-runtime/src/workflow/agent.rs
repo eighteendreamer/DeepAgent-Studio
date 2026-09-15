@@ -17,6 +17,7 @@ use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
 
 use super::graph::CompiledWorkflow;
+use super::knowledge::KnowledgeRetriever;
 use super::node_events::{NodeEventPublisher, NodeExecutionEvent, NodeExecutionStatus};
 use super::values;
 use crate::agent::{Agent, AgentDecision, Observation, RunUsage};
@@ -40,6 +41,7 @@ pub struct WorkflowAgent {
     cancel: Option<Arc<AtomicBool>>,
     model: Option<Arc<ModelClient>>,
     model_name: Option<String>,
+    knowledge_retriever: Option<Arc<dyn KnowledgeRetriever>>,
     usage: RunUsage,
 }
 
@@ -62,6 +64,7 @@ impl WorkflowAgent {
             cancel: None,
             model: None,
             model_name: None,
+            knowledge_retriever: None,
             usage: RunUsage::default(),
         }
     }
@@ -76,6 +79,12 @@ impl WorkflowAgent {
     pub fn with_model(mut self, client: Arc<ModelClient>, model_name: String) -> Self {
         self.model = Some(client);
         self.model_name = Some(model_name);
+        self
+    }
+
+    /// Attach a knowledge retriever so knowledge-retrieval nodes can search.
+    pub fn with_knowledge_retriever(mut self, retriever: Arc<dyn KnowledgeRetriever>) -> Self {
+        self.knowledge_retriever = Some(retriever);
         self
     }
 
@@ -129,7 +138,7 @@ impl WorkflowAgent {
             }
             "http-request" => self.execute_http_request(&resolved_config).await,
             "tool" => self.execute_tool_stub(kind),
-            "knowledge-retrieval" => self.execute_knowledge_stub(kind),
+            "knowledge-retrieval" => self.execute_knowledge_retrieval(&resolved_config).await,
             "iteration" | "loop" => self.execute_iteration_stub(kind),
             _ => self.execute_passthrough(kind, &resolved_config),
         }
@@ -550,10 +559,73 @@ impl WorkflowAgent {
         }))
     }
 
-    fn execute_knowledge_stub(&self, kind: &str) -> Result<Value> {
+    async fn execute_knowledge_retrieval(&self, config: &Map<String, Value>) -> Result<Value> {
+        let retriever = match &self.knowledge_retriever {
+            Some(r) => r,
+            None => {
+                return Ok(serde_json::json!({
+                    "documents": [],
+                    "content": "",
+                    "__note": "no knowledge retriever configured"
+                }));
+            }
+        };
+
+        let query = config
+            .get("queryVariable")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let top_k = config
+            .get("knowledgeTopK")
+            .and_then(Value::as_u64)
+            .unwrap_or(3) as usize;
+        let score_threshold = config
+            .get("scoreThreshold")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0) as f32;
+
+        if query.is_empty() {
+            return Ok(serde_json::json!({
+                "documents": [],
+                "content": ""
+            }));
+        }
+
+        let top_k = top_k.clamp(1, 20);
+        let docs = retriever.search(query, top_k).await?;
+
+        let filtered: Vec<_> = docs
+            .into_iter()
+            .filter(|d| d.score >= score_threshold)
+            .collect();
+
+        let content = filtered
+            .iter()
+            .map(|d| {
+                if d.title.is_empty() {
+                    d.content.clone()
+                } else {
+                    format!("## {}\n{}", d.title, d.content)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n");
+
+        let documents: Vec<Value> = filtered
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "id": d.id,
+                    "title": d.title,
+                    "content": d.content,
+                    "score": d.score,
+                })
+            })
+            .collect();
+
         Ok(serde_json::json!({
-            "documents": [],
-            "content": format!("[knowledge-retrieval] {} is not yet connected", kind)
+            "documents": documents,
+            "content": content,
         }))
     }
 

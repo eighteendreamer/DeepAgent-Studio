@@ -1005,6 +1005,12 @@ impl<'a> RunAssembler<'a> {
             agent = agent.with_model(client, model_name);
         }
 
+        if let Some(knowledge) = self.knowledge.clone() {
+            agent = agent.with_knowledge_retriever(std::sync::Arc::new(
+                crate::knowledge_service::WorkflowKnowledgeRetriever::new(knowledge),
+            ));
+        }
+
         let session_sequence = deepagent_persistence::event_store::EventStore::new(self.db)
             .load_session(session.id())?
             .last()
