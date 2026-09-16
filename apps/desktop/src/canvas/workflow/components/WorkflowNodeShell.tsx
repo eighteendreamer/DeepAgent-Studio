@@ -4,6 +4,7 @@ import { Plus } from "lucide-react";
 import type {
   WorkflowNodeData,
   NodeStatus,
+  CanvasMode,
   CreativeNodeData,
   ProfessionalNodeData,
   CreativeNodeKind,
@@ -224,6 +225,17 @@ const EDIT_PANEL_STYLE: React.CSSProperties = {
   WebkitBackdropFilter: "blur(40px)",
   padding: 12,
 };
+
+// 专业模式的 schema 驱动配置面板字段更多，用更宽的画布承载左侧标签 + 右侧控件的行内布局。
+const PROFESSIONAL_PANEL_STYLE: React.CSSProperties = { ...EDIT_PANEL_STYLE, width: 440 };
+
+// 创作类生成节点自带面板底色与固定宽度，不参与专业模式的面板宽度策略。
+const CREATIVE_GEN_KINDS: CreativeNodeKind[] = ["text-gen", "image-gen", "video-gen"];
+
+function editPanelStyle(kind: CreativeNodeKind | ProfessionalNodeKind | undefined, mode: CanvasMode): React.CSSProperties {
+  if (CREATIVE_GEN_KINDS.includes(kind as CreativeNodeKind)) return { width: 480 };
+  return mode === "professional" ? PROFESSIONAL_PANEL_STYLE : EDIT_PANEL_STYLE;
+}
 
 // asset 协议等跨域 URL 会让 <a download> 失效并直接导航打开，必须先转成同源 blob URL
 const triggerFileDownload = async (url: string, filename: string) => {
@@ -449,7 +461,7 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
       {/* Floating edit panel below node (single-selected only) */}
       {nodeData.kind !== "category-picker" && nodeData.kind !== "image-input" && (
         <NodeToolbar position={Position.Bottom} offset={12}>
-          <div style={nodeData.kind === "text-gen" || nodeData.kind === "image-gen" || nodeData.kind === "video-gen" ? { width: 480 } : EDIT_PANEL_STYLE}>
+          <div style={editPanelStyle(nodeData.kind, mode)}>
             <NodeConfigForm nodeId={id} nodeData={nodeData} nodeType={type} />
           </div>
         </NodeToolbar>

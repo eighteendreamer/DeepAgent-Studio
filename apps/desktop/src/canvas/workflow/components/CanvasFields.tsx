@@ -16,10 +16,21 @@ export function CanvasInput({ className, ...props }: ComponentProps<typeof Input
 }
 
 export function CanvasTextarea({ className, style, ...props }: ComponentProps<typeof Textarea>) {
-  return <Textarea className={cn(FIELD_CLASS, "!py-1.5", className)} style={{ minHeight: 72, ...style }} {...props} />;
+  return <Textarea className={cn(FIELD_CLASS, "!py-1.5", className)} style={{ minHeight: 56, ...style }} {...props} />;
 }
 
-export function CanvasField({ label, htmlFor, children }: { label: string; htmlFor?: string; children: ReactNode }) {
+export function CanvasField({ label, htmlFor, children, layout = "stack" }: {
+  label: string;
+  htmlFor?: string;
+  children: ReactNode;
+  layout?: "stack" | "inline";
+}) {
+  if (layout === "inline") {
+    return <div className="flex min-w-0 items-start gap-2">
+      <Label htmlFor={htmlFor} className="!w-[84px] !shrink-0 !pt-1.5 !text-[11px] !font-medium !leading-4 !text-white/55">{label}</Label>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>;
+  }
   return <div className="flex min-w-0 flex-col gap-1.5"><Label htmlFor={htmlFor} className="!text-[11px] !font-medium !text-white/55">{label}</Label>{children}</div>;
 }
 

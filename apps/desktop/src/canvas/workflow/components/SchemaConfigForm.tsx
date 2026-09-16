@@ -23,7 +23,7 @@ function JsonEditor({ value, onChange, schema, path }: EditorProps) {
   const [error, setError] = useState("");
   useEffect(() => { setDraft(serialized); setError(""); }, [serialized]);
   return <>
-    <CanvasTextarea id={path} aria-label={schema.title} aria-invalid={!!error} className="font-mono" value={draft} placeholder="JSON" onChange={(event) => {
+    <CanvasTextarea id={path} aria-label={schema.title} aria-invalid={!!error} className="font-mono" style={{ minHeight: 72 }} value={draft} placeholder="JSON" onChange={(event) => {
       const next = event.target.value;
       setDraft(next);
       if (!next.trim()) { setError(""); onChange(undefined); return; }
@@ -61,7 +61,7 @@ function ArrayEditor(props: EditorProps) {
     onChange(next);
   };
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-1.5">
       {entries.map((entry, index) => (
         <div key={keys[index]} className="flex min-w-0 items-start gap-1 border-l border-white/10 pl-2">
           <div className="min-w-0 flex-1">
@@ -98,7 +98,7 @@ function SchemaEditor(props: EditorProps) {
     return <CanvasSelect id={path} label={schema.title} disabled={schema.readOnly} value={String(value ?? "")} options={values.map((entry, index) => ({ value: String(entry), label: schema["x-enum-labels"]?.[index] ?? (typeof entry === "boolean" ? entry ? "是" : "否" : String(entry)) }))} onChange={(next) => onChange(values.find((entry) => String(entry) === next))} />;
   }
   if (widget === "textarea" || widget === "code") {
-    return <div className="flex flex-col gap-1.5"><CanvasTextarea id={path} aria-label={schema.title} value={String(value ?? "")} className={widget === "code" ? "font-mono" : ""} onChange={(event) => onChange(event.target.value)} />{widget !== "code" && <div className="self-start"><VariablePicker nodeId={nodeId} label={`插入${schema.title ?? "文本"}变量`} onSelect={(reference) => onChange(`${value ?? ""}${reference}`)} /></div>}</div>;
+    return <div className="flex flex-col gap-1"><CanvasTextarea id={path} aria-label={schema.title} value={String(value ?? "")} className={widget === "code" ? "font-mono" : ""} style={widget === "code" ? { minHeight: 120 } : undefined} onChange={(event) => onChange(event.target.value)} />{widget !== "code" && <div className="self-start"><VariablePicker nodeId={nodeId} label={`插入${schema.title ?? "文本"}变量`} onSelect={(reference) => onChange(`${value ?? ""}${reference}`)} /></div>}</div>;
   }
   if (widget === "variable") {
     return <div className="flex min-w-0 items-start gap-1"><CanvasInput id={path} aria-label={schema.title} className="min-w-0 flex-1 font-mono" value={String(value ?? "")} onChange={(event) => onChange(event.target.value)} placeholder="输入值或引用上游变量" /><VariablePicker nodeId={nodeId} types={schema["x-variable-types"]} label={`选择${schema.title ?? ""}变量`} onSelect={onChange} /></div>;
@@ -110,12 +110,12 @@ function SchemaEditor(props: EditorProps) {
 export function SchemaObjectEditor(props: EditorProps) {
   const { schema, value, path, onChange } = props;
   const record = value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-  return <div className="flex min-w-0 flex-col gap-3">
+  return <div className="flex min-w-0 flex-col gap-2">
     {Object.entries(schema.properties ?? {}).map(([key, child]) => {
       const condition = child["x-visible-when"];
       if (condition && record[condition.field] !== condition.value) return null;
       const childPath = `${path}.${key}`;
-      return <CanvasField key={key} htmlFor={childPath} label={`${child.title ?? key}${schema.required?.includes(key) ? " *" : ""}`}>
+      return <CanvasField key={key} layout="inline" htmlFor={childPath} label={`${child.title ?? key}${schema.required?.includes(key) ? " *" : ""}`}>
         <SchemaEditor {...props} path={childPath} schema={child} value={record[key]} onChange={(next) => onChange({ ...record, [key]: next })} />
         {child.description && <p className="text-[10px] leading-relaxed text-white/35">{child.description}</p>}
       </CanvasField>;
@@ -127,9 +127,9 @@ export function SchemaConfigForm({ nodeId, data, onUpdate }: { nodeId: string; d
   const definition = getNodeDefinition(data.kind);
   const issues = getNodeConfigIssues(data.kind, data);
   return <div className="nodrag nopan nowheel max-h-[65vh] overflow-y-auto pr-1" onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
-    {definition.availability === "reserved" && <p className="mb-3 text-[11px] text-amber-200/80">该节点的外部连接尚未启用，配置不会自动启动服务。</p>}
+    {definition.availability === "reserved" && <p className="mb-2 text-[11px] text-amber-200/80">该节点的外部连接尚未启用，配置不会自动启动服务。</p>}
     <SchemaObjectEditor nodeId={nodeId} path={nodeId} schema={definition.configSchema} value={data} onChange={(next) => onUpdate(Object.fromEntries(Object.entries(next as Record<string, unknown>).filter(([key, value]) => !Object.is(value, data[key]))))} />
-    {!!issues.length && <div role="status" className="mt-3 text-[11px] text-amber-200/80">{issues.map((issue) => <p key={`${issue.path}:${issue.message}`}>{issue.path}：{issue.message}</p>)}</div>}
+    {!!issues.length && <div role="status" className="mt-2 text-[11px] text-amber-200/80">{issues.map((issue) => <p key={`${issue.path}:${issue.message}`}>{issue.path}：{issue.message}</p>)}</div>}
     <NodeOutputPanel nodeId={nodeId} data={data} />
   </div>;
 }
