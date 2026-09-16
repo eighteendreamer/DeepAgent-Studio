@@ -9,29 +9,31 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 
 export const CANVAS_MENU_CLASS = "!min-w-0 !max-h-72 overflow-y-auto !rounded-xl !p-1 !text-[12px] !shadow-[0_8px_28px_rgba(0,0,0,0.45)] !border !border-white/[0.08] !bg-[rgba(24,24,27,0.96)] backdrop-blur-[40px]";
 export const CANVAS_BUTTON_CLASS = "!text-white/75 !bg-white/[0.05] hover:!bg-white/[0.10] !border-white/10";
-const FIELD_CLASS = "!rounded-lg !border !border-white/[0.08] !bg-white/[0.05] !px-2.5 !text-[12px] !text-white/85 !shadow-none placeholder:!text-white/30 focus:!border-white/25 focus:!ring-0 disabled:!opacity-40 [color-scheme:dark]";
+const FIELD_CLASS = "canvas-field bg-transparent !rounded-lg !border !border-white/[0.08] !bg-[rgba(255,255,255,0.06)] !px-2.5 !text-[12px] !text-white/85 !shadow-none placeholder:!text-white/30 focus:!border-white/20 focus:!ring-0 disabled:!opacity-40 [color-scheme:dark]";
 
 export function CanvasInput({ className, ...props }: ComponentProps<typeof Input>) {
   return <Input className={cn(FIELD_CLASS, "!h-8", className)} {...props} />;
 }
 
 export function CanvasTextarea({ className, style, ...props }: ComponentProps<typeof Textarea>) {
-  return <Textarea className={cn(FIELD_CLASS, "!py-1.5", className)} style={{ minHeight: 56, ...style }} {...props} />;
+  return <Textarea className={cn(FIELD_CLASS, "!resize-none !py-2", className)} style={{ minHeight: 64, ...style }} {...props} />;
 }
 
-export function CanvasField({ label, htmlFor, children, layout = "stack" }: {
+export function CanvasField({ label, htmlFor, children, action }: {
   label: string;
   htmlFor?: string;
   children: ReactNode;
-  layout?: "stack" | "inline";
+  action?: ReactNode;
 }) {
-  if (layout === "inline") {
-    return <div className="flex min-w-0 items-start gap-2">
-      <Label htmlFor={htmlFor} className="!w-[84px] !shrink-0 !pt-1.5 !text-[11px] !font-medium !leading-4 !text-white/55">{label}</Label>
-      <div className="min-w-0 flex-1">{children}</div>
-    </div>;
-  }
-  return <div className="flex min-w-0 flex-col gap-1.5"><Label htmlFor={htmlFor} className="!text-[11px] !font-medium !text-white/55">{label}</Label>{children}</div>;
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <div className="flex h-6 items-center justify-between gap-2">
+        <Label htmlFor={htmlFor} className="!mb-0 !text-[11px] !font-medium !tracking-wide !text-white/45">{label}</Label>
+        {action}
+      </div>
+      {children}
+    </div>
+  );
 }
 
 export function CanvasSelect({ value, options, onChange, label, disabled, id }: {
@@ -45,7 +47,7 @@ export function CanvasSelect({ value, options, onChange, label, disabled, id }: 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button id={id} size="sm" variant="ghost" disabled={disabled} aria-label={label} className={cn(CANVAS_BUTTON_CLASS, "w-full !justify-between !font-normal")}>
+        <Button id={id} size="sm" variant="ghost" disabled={disabled} aria-label={label} className={cn(CANVAS_BUTTON_CLASS, "!h-8 w-full !justify-between !font-normal")}>
           <span className="truncate">{options.find((option) => option.value === value)?.label ?? (value || "请选择")}</span>
           <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
         </Button>

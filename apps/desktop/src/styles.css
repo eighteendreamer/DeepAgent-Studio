@@ -66,6 +66,7 @@ html.theme-color-transition .text-text-secondary {
 }
 
 .dark .bg-white { background-color: var(--theme-bg) !important; }
+.dark .canvas-field { background-color: rgba(255, 255, 255, 0.06) !important; }
 .dark .text-gray-900, .dark .text-gray-800, .dark .text-black { color: var(--theme-fg) !important; }
 .dark .bg-gray-50, .dark .bg-gray-100 { background-color: var(--theme-sidebar) !important; }
 .dark .hover\:bg-gray-100:hover, .dark .hover\:bg-gray-50:hover { background-color: var(--theme-border) !important; }

@@ -226,8 +226,7 @@ const EDIT_PANEL_STYLE: React.CSSProperties = {
   padding: 12,
 };
 
-// 专业模式的 schema 驱动配置面板字段更多，用更宽的画布承载左侧标签 + 右侧控件的行内布局。
-const PROFESSIONAL_PANEL_STYLE: React.CSSProperties = { ...EDIT_PANEL_STYLE, width: 440 };
+const PROFESSIONAL_PANEL_STYLE: React.CSSProperties = { ...EDIT_PANEL_STYLE, width: 400, padding: 16 };
 
 // 创作类生成节点自带面板底色与固定宽度，不参与专业模式的面板宽度策略。
 const CREATIVE_GEN_KINDS: CreativeNodeKind[] = ["text-gen", "image-gen", "video-gen"];

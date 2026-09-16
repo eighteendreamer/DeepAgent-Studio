@@ -6,11 +6,12 @@ import { useProfessionalStore } from "../store/professionalStore";
 import { getAvailableVariables } from "../utils/workflowVariables";
 import { CANVAS_BUTTON_CLASS, CANVAS_MENU_CLASS, CanvasInput } from "./CanvasFields";
 
-export function VariablePicker({ nodeId, onSelect, types, label = "引用变量" }: {
+export function VariablePicker({ nodeId, onSelect, types, label = "引用变量", compact = false }: {
   nodeId: string;
   onSelect: (reference: string) => void;
   types?: string[];
   label?: string;
+  compact?: boolean;
 }) {
   const nodes = useProfessionalStore((state) => state.nodes);
   const edges = useProfessionalStore((state) => state.edges);
@@ -20,9 +21,9 @@ export function VariablePicker({ nodeId, onSelect, types, label = "引用变量"
   return (
     <DropdownMenu onOpenChange={() => setQuery("")}>
       <DropdownMenuTrigger asChild>
-        <Button size="sm" variant="ghost" className={CANVAS_BUTTON_CLASS} aria-label={label}><Braces className="h-3.5 w-3.5" />{label}</Button>
+        <Button size={compact ? "icon" : "sm"} variant="ghost" className={compact ? `${CANVAS_BUTTON_CLASS} !h-6 !w-6 !border-0 !bg-transparent !text-white/40 hover:!bg-white/[0.08] hover:!text-white/75` : CANVAS_BUTTON_CLASS} aria-label={label}><Braces className="h-3.5 w-3.5" />{compact ? null : label}</Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" sideOffset={6} className={`${CANVAS_MENU_CLASS} !w-72`} onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.stopPropagation()}>
+      <DropdownMenuContent align={compact ? "end" : "start"} sideOffset={6} className={`${CANVAS_MENU_CLASS} !w-72`} onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.stopPropagation()}>
         <div className="flex items-center gap-1 p-1"><Search className="h-3.5 w-3.5 text-white/40" /><CanvasInput autoFocus aria-label="搜索上游变量" placeholder="搜索节点或变量" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.stopPropagation()} /></div>
         {filtered.map((variable) => (
           <DropdownMenuItem key={variable.reference} onSelect={() => onSelect(variable.reference)} className="!flex !items-start !gap-2 !rounded-lg !px-2.5 !py-2 !text-white/85 data-[highlighted]:!bg-white/10">
