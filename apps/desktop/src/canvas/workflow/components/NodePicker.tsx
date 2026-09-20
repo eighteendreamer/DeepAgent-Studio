@@ -12,6 +12,7 @@ import {
 } from "../types";
 import { PickerIcon } from "./PickerIcon";
 import { SnippetsTab } from "./SnippetsTab";
+import { importCanvasMediaFile, type CanvasMediaKind } from "../utils/canvasMedia";
 
 const ICON_COLOR = "rgba(248,248,248,0.72)";
 
@@ -93,35 +94,56 @@ export function NodePicker() {
     }
   };
 
-  const handleFiles = (files: FileList | null) => {
+  const handleFiles = async (files: FileList | null) => {
     if (!nodePicker || !files || files.length === 0) return;
     const context = uploadContext ?? { category: "上传", action: "本地文件", actionKey: "upload" };
-    Array.from(files).forEach((file, index) => {
-      const url = URL.createObjectURL(file);
+    let connected = false;
+    for (const [index, file] of Array.from(files).entries()) {
       const mime = file.type || "";
-      const kind: CreativeNodeKind = context.actionKey === "parse-document"
-        ? "text-gen"
-        : mime.startsWith("video/")
-          ? "video-gen"
-          : mime.startsWith("audio/")
-            ? "audio"
-            : "image-gen";
+      const mediaKind: CanvasMediaKind =
+        context.actionKey === "parse-document"
+          ? "document"
+          : mime.startsWith("video/")
+            ? "video"
+            : mime.startsWith("audio/")
+              ? "audio"
+              : "image";
+      const kind: CreativeNodeKind =
+        mediaKind === "document"
+          ? "text-gen"
+          : mediaKind === "video"
+            ? "video-gen"
+            : mediaKind === "audio"
+              ? "audio"
+              : "image-gen";
+      let reference: string;
+      try {
+        // data URL 只是 webview 到内核的一次性载体，节点上只留 artifact 引用。
+        reference = await importCanvasMediaFile(mediaKind, file);
+      } catch (error) {
+        console.error(`[canvas] ${file.name} 入库失败，已跳过:`, error);
+        continue;
+      }
       const extraData: Record<string, unknown> = {
         label: file.name.replace(/\.[^.]+$/, "") || file.name,
         creativeCategory: context.category,
         creativeAction: context.action,
         creativeActionKey: context.actionKey,
         sourceFileName: file.name,
-        mediaUrl: url,
-        mediaType: kind === "video-gen" ? "video" : kind === "audio" ? "audio" : "image",
+        mediaUrl: reference,
+        mediaType: mediaKind,
       };
-      if (kind === "video-gen") extraData.videoUrl = url;
-      if (kind === "image-gen") extraData.imageUrl = url;
+      if (mediaKind === "video") extraData.videoUrl = reference;
+      if (mediaKind === "audio") extraData.audioReference = reference;
+      if (mediaKind === "image") extraData.imageUrl = reference;
       if (kind === "text-gen") extraData.prompt = `待解析文档：${file.name}`;
       const newNodeId = useCreativeStore.getState().addNode(kind, nodePicker.worldX + index * 264, nodePicker.worldY + index * 24);
       useCreativeStore.getState().updateNodeData(newNodeId, extraData);
-      if (index === 0) connectNewNode(newNodeId);
-    });
+      if (!connected) {
+        connectNewNode(newNodeId);
+        connected = true;
+      }
+    }
     closeNodePicker();
   };
 
@@ -182,7 +204,9 @@ export function NodePicker() {
           multiple
           accept={uploadAccept}
           className="hidden"
-          onChange={(event) => handleFiles(event.target.files)}
+          onChange={(event) => {
+            void handleFiles(event.target.files);
+          }}
         />
         <div className="flex items-center gap-2 px-3.5 py-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
           <div className="min-w-0">

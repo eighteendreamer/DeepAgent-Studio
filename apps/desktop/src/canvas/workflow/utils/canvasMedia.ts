@@ -85,6 +85,31 @@ export async function importCanvasMedia(
 }
 
 /**
+ * Read a webview `File` and store its bytes.
+ *
+ * Callers that start from a File use this instead of handling the data URL
+ * themselves, so an ephemeral `data:`/`blob:` value cannot reach node data.
+ */
+export async function importCanvasMediaFile(
+  kind: CanvasMediaKind,
+  file: File,
+  workspaceId?: string,
+): Promise<string> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error(`读取 ${file.name} 失败`));
+    reader.readAsDataURL(file);
+  });
+  return importCanvasMedia(kind, {
+    dataUrl,
+    fileName: file.name,
+    mediaType: file.type || undefined,
+    workspaceId,
+  });
+}
+
+/**
  * A one-off `data:` URL for the crop / annotation overlays, which need pixels.
  * Never store the result on a node.
  */
