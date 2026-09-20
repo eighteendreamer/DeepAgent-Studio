@@ -16,6 +16,7 @@ use deepagent_models::chat_completions::ChatCompletionRequest;
 
 use super::canvas::{
     CanvasCompletionRequest, CanvasEmbeddingRequest, CanvasImageRequest, CanvasModelBridge,
+    CanvasRouteRequest,
 };
 use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
@@ -165,7 +166,7 @@ impl WorkflowAgent {
             | "character-body" | "character-style" => {
                 self.execute_llm(kind, &resolved_config).await
             }
-            "image-gen" | "image-edit" => self.execute_image_gen(&resolved_config).await,
+            "image-gen" | "image-edit" => self.execute_image_gen(kind, &resolved_config).await,
             "embeddings" => self.execute_embedding(&resolved_config).await,
             // Media kinds without a backend job runner fail loudly instead of
             // reporting a fabricated completion through the passthrough arm.
@@ -579,7 +580,11 @@ impl WorkflowAgent {
     /// Execute a canvas image node. Whether the call generates a new image or
     /// edits a reference image is decided by the resolved inputs, exactly like
     /// the deterministic router prescribes.
-    async fn execute_image_gen(&self, config: &Map<String, Value>) -> Result<Value> {
+    async fn execute_image_gen(
+        &self,
+        node_kind: &str,
+        config: &Map<String, Value>,
+    ) -> Result<Value> {
         let bridge = self.canvas_bridge.clone().ok_or_else(|| {
             deepagent_core::error::CoreError::other(
                 "image nodes need the canvas model bridge; configure the canvas providers first",
@@ -611,6 +616,26 @@ impl WorkflowAgent {
                 "MissingReferenceInput: image node requires a prompt",
             ));
         }
+        // The node contract plus the resolved input facts decide generate vs
+        // edit; the model is never asked to infer it and an explicit but
+        // conflicting operation fails instead of being rerouted.
+        let mut input_kinds = Vec::new();
+        if !prompt.trim().is_empty() {
+            input_kinds.push("Text".to_string());
+        }
+        if !reference_images.is_empty() {
+            input_kinds.push("Image".to_string());
+        }
+        let routed = bridge.route_operation(CanvasRouteRequest {
+            node_kind: node_kind.to_string(),
+            explicit_operation: config
+                .get("operation")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty() && value.trim() != "auto"),
+            input_kinds,
+            has_prompt: true,
+        })?;
         let response = bridge
             .generate_image(CanvasImageRequest {
                 model_ref: config
@@ -626,6 +651,7 @@ impl WorkflowAgent {
                     .get("size")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                operation: routed.operation.clone(),
             })
             .await?;
         Ok(serde_json::json!({
@@ -1134,6 +1160,44 @@ mod tests {
             })
         }
 
+        fn route_operation(
+            &self,
+            request: CanvasRouteRequest,
+        ) -> deepagent_core::error::Result<crate::workflow::CanvasRouteOutcome> {
+            use crate::workflow::CanvasRouteOutcome;
+            let has_image = request.input_kinds.iter().any(|kind| kind == "Image");
+            let operation = match request.explicit_operation.as_deref() {
+                Some("image_generate") if has_image => {
+                    return Err(deepagent_core::error::CoreError::invalid(
+                        "OperationInputConflict: image_generate conflicts with image input",
+                    ));
+                }
+                Some("image_generate") => "image_generate",
+                Some("image_edit") if !has_image => {
+                    return Err(deepagent_core::error::CoreError::invalid(
+                        "MissingReferenceInput: image_edit requires an image artifact",
+                    ));
+                }
+                Some("image_edit") => "image_edit",
+                Some(other) => {
+                    return Err(deepagent_core::error::CoreError::invalid(format!(
+                        "OperationInputConflict: `{other}` is not allowed for `{}`",
+                        request.node_kind
+                    )));
+                }
+                None if has_image => "image_edit",
+                None => "image_generate",
+            };
+            Ok(CanvasRouteOutcome {
+                operation: operation.to_string(),
+                reason: if request.explicit_operation.is_some() {
+                    "explicit_operation".to_string()
+                } else {
+                    "artifact_facts".to_string()
+                },
+            })
+        }
+
         async fn embed(
             &self,
             request: CanvasEmbeddingRequest,
@@ -1259,6 +1323,51 @@ mod tests {
             .await
             .expect_err("empty prompt must fail");
         assert!(error.to_string().contains("MissingReferenceInput"));
+    }
+
+    #[tokio::test]
+    async fn image_node_operation_comes_from_the_contract_route() {
+        let with_image = RecordingBridge::default();
+        let seen = with_image.images.clone();
+        let mut agent = agent_with_bridge(with_image);
+        agent
+            .execute_node_inline(
+                "image-gen",
+                &config(&[
+                    ("prompt", json!("change the sky")),
+                    ("referenceImages", json!(["data:image/png;base64,BB"])),
+                ]),
+            )
+            .await
+            .expect("routed edit");
+        assert_eq!(
+            seen.lock().unwrap()[0].operation,
+            "image_edit",
+            "image input must route to the edit operation"
+        );
+
+        let without_image = RecordingBridge::default();
+        let seen = without_image.images.clone();
+        let mut agent = agent_with_bridge(without_image);
+        agent
+            .execute_node_inline("image-gen", &config(&[("prompt", json!("a cube"))]))
+            .await
+            .expect("routed generation");
+        assert_eq!(seen.lock().unwrap()[0].operation, "image_generate");
+
+        let mut agent = agent_with_bridge(RecordingBridge::default());
+        let conflict = agent
+            .execute_node_inline(
+                "image-gen",
+                &config(&[
+                    ("prompt", json!("a cube")),
+                    ("operation", json!("image_generate")),
+                    ("referenceImages", json!(["data:image/png;base64,BB"])),
+                ]),
+            )
+            .await
+            .expect_err("explicit generate with an image input must conflict");
+        assert!(conflict.to_string().contains("OperationInputConflict"));
     }
 
     #[tokio::test]

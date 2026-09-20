@@ -48,9 +48,13 @@ pub struct CanvasCompletionResponse {
 pub struct CanvasImageRequest {
     pub model_ref: String,
     pub prompt: String,
-    /// Reference images as data URLs. Non-empty selects the edit endpoint.
+    /// Reference images as data URLs.
     pub reference_images: Vec<String>,
     pub size: Option<String>,
+    /// Operation chosen by the router (`image_generate` / `image_edit`). Empty
+    /// means the caller had no router and presence of references decides.
+    #[serde(default)]
+    pub operation: String,
 }
 
 /// Image result. `data_url` keeps the existing canvas node contract
@@ -86,6 +90,31 @@ pub struct CanvasEmbeddingResponse {
     pub vectors: Vec<Vec<f32>>,
 }
 
+/// What the kernel knows about one node when it must decide an operation.
+///
+/// The kernel never guesses: it hands the node kind, the node's explicit
+/// operation and the *resolved* artifact kinds to the app layer, which owns the
+/// node contract registry and the deterministic router.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasRouteRequest {
+    pub node_kind: String,
+    /// `auto` or empty means "decide from the input facts".
+    pub explicit_operation: Option<String>,
+    /// Resolved input kinds, e.g. `Text`, `Image`, `Video`, `Audio`, `Empty`.
+    pub input_kinds: Vec<String>,
+    pub has_prompt: bool,
+}
+
+/// The routed outcome: exactly one operation for this run of the node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasRouteOutcome {
+    pub operation: String,
+    /// Why it was chosen: `explicit_operation`, `artifact_facts` or `contract_default`.
+    pub reason: String,
+}
+
 /// Executes canvas-node model calls through the configured providers.
 #[async_trait]
 pub trait CanvasModelBridge: Send + Sync {
@@ -97,6 +126,10 @@ pub trait CanvasModelBridge: Send + Sync {
 
     /// Text embeddings.
     async fn embed(&self, request: CanvasEmbeddingRequest) -> Result<CanvasEmbeddingResponse>;
+
+    /// Decide the concrete operation for a node from its contract and the
+    /// resolved input facts. Ambiguity is an error, never a silent default.
+    fn route_operation(&self, request: CanvasRouteRequest) -> Result<CanvasRouteOutcome>;
 }
 
 #[cfg(test)]
@@ -137,6 +170,18 @@ mod tests {
             })
         }
 
+        fn route_operation(&self, request: CanvasRouteRequest) -> Result<CanvasRouteOutcome> {
+            self.calls.lock().unwrap().push(request.node_kind.clone());
+            Ok(CanvasRouteOutcome {
+                operation: if request.input_kinds.iter().any(|kind| kind == "Image") {
+                    "image_edit".to_string()
+                } else {
+                    "image_generate".to_string()
+                },
+                reason: "artifact_facts".to_string(),
+            })
+        }
+
         async fn embed(&self, request: CanvasEmbeddingRequest) -> Result<CanvasEmbeddingResponse> {
             Ok(CanvasEmbeddingResponse {
                 dimensions: 2,
@@ -146,6 +191,20 @@ mod tests {
                 vectors: request.texts.iter().map(|_| vec![0.5, 0.25]).collect(),
             })
         }
+    }
+
+    #[test]
+    fn routing_is_part_of_the_bridge_contract() {
+        let request = CanvasRouteRequest {
+            node_kind: "image-gen".to_string(),
+            input_kinds: vec!["Text".to_string(), "Image".to_string()],
+            has_prompt: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(json["nodeKind"], "image-gen");
+        assert_eq!(json["inputKinds"].as_array().expect("kinds").len(), 2);
+        assert!(request.explicit_operation.is_none());
     }
 
     #[tokio::test]

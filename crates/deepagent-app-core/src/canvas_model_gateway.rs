@@ -24,8 +24,10 @@ use deepagent_core::error::Result as CoreResult;
 use deepagent_runtime::workflow::{
     CanvasCompletionRequest, CanvasCompletionResponse, CanvasEmbeddingRequest,
     CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse, CanvasModelBridge,
+    CanvasRouteOutcome, CanvasRouteRequest,
 };
 
+use crate::canvas_node_contract::canvas_node_contract;
 use crate::canvas_provider_service::{
     endpoint_url, CanvasProtocol, CanvasProviderService, CanvasRequestKind, CanvasScenario,
     ResolvedCanvasModel, ANTHROPIC_VERSION,
@@ -1453,10 +1455,21 @@ impl CanvasModelBridge for CanvasModelGateway {
 
     async fn generate_image(&self, request: CanvasImageRequest) -> CoreResult<CanvasImageResponse> {
         let has_reference = !request.reference_images.is_empty();
-        let operation = if has_reference {
-            CanvasOperation::ImageEdit
-        } else {
-            CanvasOperation::ImageGenerate
+        let operation = match request.operation.trim() {
+            "image_generate" => CanvasOperation::ImageGenerate,
+            "image_edit" => CanvasOperation::ImageEdit,
+            "" => {
+                if has_reference {
+                    CanvasOperation::ImageEdit
+                } else {
+                    CanvasOperation::ImageGenerate
+                }
+            }
+            other => {
+                return Err(deepagent_core::error::CoreError::invalid(format!(
+                    "UnsupportedOperation: image node cannot run `{other}`"
+                )))
+            }
         };
         let model_request = CanvasModelRequest {
             operation,
@@ -1497,7 +1510,7 @@ impl CanvasModelBridge for CanvasModelGateway {
                 mime,
                 provider_id,
                 model_id: model_id.clone(),
-                operation: if has_reference {
+                operation: if operation == CanvasOperation::ImageEdit {
                     "edit".to_string()
                 } else {
                     "generate".to_string()
@@ -1507,6 +1520,52 @@ impl CanvasModelBridge for CanvasModelGateway {
                 "image node received a non-image model output: {other:?}"
             ))),
         }
+    }
+
+    fn route_operation(&self, request: CanvasRouteRequest) -> CoreResult<CanvasRouteOutcome> {
+        let contract = canvas_node_contract(&request.node_kind)?;
+        let input_kinds = request
+            .input_kinds
+            .iter()
+            .filter_map(|kind| match kind.trim().to_ascii_lowercase().as_str() {
+                "text" => Some(CanvasInputKind::Text),
+                "json" => Some(CanvasInputKind::Json),
+                "image" => Some(CanvasInputKind::Image),
+                "video" => Some(CanvasInputKind::Video),
+                "audio" => Some(CanvasInputKind::Audio),
+                "document" => Some(CanvasInputKind::Document),
+                "empty" => Some(CanvasInputKind::Empty),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let explicit_operation = match request.explicit_operation.as_deref() {
+            None => None,
+            Some(label) => Some(
+                CanvasOperation::from_label(label)
+                    .ok_or_else(|| {
+                        CanvasError::new(
+                            CanvasErrorCode::UnsupportedOperation,
+                            format!(
+                                "unknown operation `{label}` for node `{}`",
+                                request.node_kind
+                            ),
+                        )
+                    })
+                    .map_err(to_core_error)?,
+            ),
+        };
+        let decision = DeterministicRouteResolver::resolve(&RouteFacts {
+            node_kind: request.node_kind.clone(),
+            allowed_operations: contract.allowed_operations,
+            explicit_operation,
+            input_kinds,
+            has_prompt: request.has_prompt,
+        })
+        .map_err(to_core_error)?;
+        Ok(CanvasRouteOutcome {
+            operation: decision.operation.as_str().to_string(),
+            reason: decision.reason.to_string(),
+        })
     }
 
     async fn embed(&self, request: CanvasEmbeddingRequest) -> CoreResult<CanvasEmbeddingResponse> {
@@ -1915,6 +1974,23 @@ mod tests {
             Some("content policy")
         );
         assert!(provider_error_message(&json!({ "data": [] })).is_none());
+    }
+
+    #[test]
+    fn image_operations_route_to_their_own_endpoints() {
+        let request = CanvasModelRequest {
+            operation: CanvasOperation::ImageGenerate,
+            prompt: "a cube".to_string(),
+            system_prompt: None,
+            images: vec![CanvasImageInput {
+                data_url: "data:image/png;base64,BB".to_string(),
+            }],
+            texts: Vec::new(),
+            size: None,
+            timeout_ms: 1000,
+        };
+        let error = validate_request(&request).expect_err("generate with an image conflicts");
+        assert_eq!(error.code, CanvasErrorCode::OperationInputConflict);
     }
 
     #[test]
