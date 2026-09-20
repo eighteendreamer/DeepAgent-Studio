@@ -138,6 +138,13 @@ pub trait CanvasModelBridge: Send + Sync {
     /// Decide the concrete operation for a node from its contract and the
     /// resolved input facts. Ambiguity is an error, never a silent default.
     fn route_operation(&self, request: CanvasRouteRequest) -> Result<CanvasRouteOutcome>;
+
+    /// Report the real media kind behind each reference (`Text`, `Image`,
+    /// `Video`, `Audio`, `Json` or `Unknown`).
+    ///
+    /// Routing must use what the stored bytes actually are rather than which
+    /// config array a value arrived in.
+    fn inspect_input_kinds(&self, references: &[String]) -> Result<Vec<String>>;
 }
 
 #[cfg(test)]
@@ -189,6 +196,19 @@ mod tests {
                 },
                 reason: "artifact_facts".to_string(),
             })
+        }
+
+        fn inspect_input_kinds(&self, references: &[String]) -> Result<Vec<String>> {
+            Ok(references
+                .iter()
+                .map(|reference| {
+                    if reference.contains("image") || reference.starts_with("artifact://") {
+                        "Image".to_string()
+                    } else {
+                        "Text".to_string()
+                    }
+                })
+                .collect())
         }
 
         async fn embed(&self, request: CanvasEmbeddingRequest) -> Result<CanvasEmbeddingResponse> {

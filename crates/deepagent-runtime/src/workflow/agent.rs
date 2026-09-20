@@ -637,15 +637,19 @@ impl WorkflowAgent {
                 "MissingReferenceInput: image node requires a prompt",
             ));
         }
-        // The node contract plus the resolved input facts decide generate vs
-        // edit; the model is never asked to infer it and an explicit but
-        // conflicting operation fails instead of being rerouted.
-        let mut input_kinds = Vec::new();
-        if !prompt.trim().is_empty() {
-            input_kinds.push("Text".to_string());
-        }
-        if !reference_images.is_empty() {
-            input_kinds.push("Image".to_string());
+        // Route on what the referenced values actually are, not on which config
+        // array they happened to arrive in.
+        let reference_kinds = bridge.inspect_input_kinds(&reference_images)?;
+        let mut input_kinds = vec!["Text".to_string()];
+        for kind in reference_kinds {
+            if kind == "Unknown" {
+                return Err(deepagent_core::error::CoreError::invalid(format!(
+                    "MissingReferenceInput: `{node_kind}` received a reference the store cannot classify"
+                )));
+            }
+            if !input_kinds.contains(&kind) {
+                input_kinds.push(kind);
+            }
         }
         let routed = bridge.route_operation(CanvasRouteRequest {
             node_kind: node_kind.to_string(),
@@ -1204,6 +1208,29 @@ mod tests {
                     "artifact_facts".to_string()
                 },
             })
+        }
+
+        fn inspect_input_kinds(
+            &self,
+            references: &[String],
+        ) -> deepagent_core::error::Result<Vec<String>> {
+            Ok(references
+                .iter()
+                .map(|reference| {
+                    let lowered = reference.to_ascii_lowercase();
+                    if lowered.starts_with("data:video") || lowered.ends_with(".mp4") {
+                        "Video".to_string()
+                    } else if lowered.starts_with("artifact://")
+                        || lowered.contains("image")
+                        || lowered.ends_with(".png")
+                        || lowered.ends_with(".jpg")
+                    {
+                        "Image".to_string()
+                    } else {
+                        "Text".to_string()
+                    }
+                })
+                .collect())
         }
 
         async fn embed(

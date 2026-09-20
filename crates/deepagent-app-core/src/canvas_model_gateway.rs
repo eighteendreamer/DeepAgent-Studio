@@ -1322,6 +1322,30 @@ async fn fetch_binary(url: &str, api_key: Option<&str>) -> CanvasResult<Vec<u8>>
     })
 }
 
+/// Classify a node-stored media reference from its mime, not its config key.
+fn classify_media_reference(value: &str) -> Option<&'static str> {
+    let mime = if let Some(rest) = value.strip_prefix("data:") {
+        rest.split(';').next().unwrap_or_default().to_string()
+    } else if value.starts_with("http://") || value.starts_with("https://") {
+        mime_from_url(value)
+    } else {
+        return None;
+    };
+    if mime.starts_with("image/") {
+        Some("Image")
+    } else if mime.starts_with("video/") {
+        Some("Video")
+    } else if mime.starts_with("audio/") {
+        Some("Audio")
+    } else if mime == "application/json" {
+        Some("Json")
+    } else if mime.starts_with("text/") {
+        Some("Text")
+    } else {
+        None
+    }
+}
+
 /// Detect an image type from its magic bytes.
 ///
 /// Providers label payloads inconsistently, and the type reported here becomes
@@ -1628,6 +1652,31 @@ impl CanvasModelBridge for CanvasModelGateway {
                 "image node received a non-image model output: {other:?}"
             ))),
         }
+    }
+
+    fn inspect_input_kinds(&self, references: &[String]) -> CoreResult<Vec<String>> {
+        references
+            .iter()
+            .map(|reference| {
+                let trimmed = reference.trim();
+                if let Some(id) = crate::canvas_artifact_service::artifact_id_from_uri(trimmed) {
+                    let kind = self
+                        .artifact_store("inspect an input reference")?
+                        .record(id)?
+                        .map(|record| match record.kind {
+                            deepagent_persistence::artifact_store::ArtifactKind::Image => "Image",
+                            deepagent_persistence::artifact_store::ArtifactKind::Video => "Video",
+                            deepagent_persistence::artifact_store::ArtifactKind::Audio => "Audio",
+                            _ => "Document",
+                        })
+                        .unwrap_or("Unknown");
+                    return Ok(kind.to_string());
+                }
+                Ok(classify_media_reference(trimmed)
+                    .unwrap_or("Unknown")
+                    .to_string())
+            })
+            .collect()
     }
 
     fn route_operation(&self, request: CanvasRouteRequest) -> CoreResult<CanvasRouteOutcome> {
@@ -2346,6 +2395,15 @@ mod tests {
             reused.starts_with("data:image/png;base64,"),
             "resolved reference was {reused}"
         );
+
+        let kinds = gateway
+            .inspect_input_kinds(&[
+                image.artifact_uri.clone(),
+                "data:video/mp4;base64,AA".to_string(),
+                "asset://localhost/x".to_string(),
+            ])
+            .expect("inspect kinds");
+        assert_eq!(kinds, vec!["Image", "Video", "Unknown"]);
 
         let captured = received.lock().expect("lock").clone();
         assert_eq!(captured.len(), 3, "all three calls must reach the endpoint");
