@@ -15,39 +15,37 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use deepagent_app_core::{
     mobile_service::{AppMobileService, ArtifactRefDto, BackendStatusDto, DeviceDto},
-    AppService, ArchiveProjectResultDto, ArchiveService, DirectTerminalSessionBackend,
-    ArchivedConversationDto, AttachmentDto, AttachmentIngestDto, AttachmentService, BalanceDto,
-    BudgetConfig, ChatService, CommandDto, ConversationMessageDto, CostService, CostSummary,
-    CreatePluginDraftDto, DiagnosticResult, DiffResult, FilePreviewService, ForkResultDto,
+    AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, AttachmentDto,
+    AttachmentIngestDto, AttachmentService, BalanceDto, BudgetConfig, ChatService, CommandDto,
+    ConversationMessageDto, CostService, CostSummary, CreatePluginDraftDto, DiagnosticResult,
+    DiffResult, DirectTerminalSessionBackend, FilePreviewService, ForkResultDto,
     GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto, GitBatchProjectResultDto, GitBranchDto,
     GitChangesDto, GitCommitMessageDraftDto, GitDiffDto, GitLogEntryDto, GitOperationResultDto,
     GitProjectStatusDto, GitPushPreviewDto, GitPushRiskScanDto, GitRefCompareDto, GitService,
     GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
     KnowledgeService, LocalPtyHandle, ManagedFileInventory, McpServerDto, McpService,
-    NewRuntimeLogEntry, OfficeService,
-    PdfRenderResultDto, PluginAppEntry, PluginDto, PluginMarketplaceDto,
-    PluginMarketplaceEntriesQueryDto, PluginMarketplaceEntryDto, PluginMarketplacePageDto,
-    PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto, PluginScanReportDto,
-    PluginService, PreflightToolCallDto, PreparedPluginInstallDto, PreviewMetadataDto,
-    PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto,
-    ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto, ProjectMapRefreshDto,
-    ProjectMapService, ProjectMapStatusDto, ProjectService, ProjectTrustDto, RecordingService,
-    RecordingSessionDto, RewindResultDto, RuntimeBroker, RuntimeLogEntry, RuntimeLogStore,
-    RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxieExecutor,
-    SandboxieService, SandboxieStatusDto, SecretStore, SessionDetailDto, SessionStateService,
-    SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto,
-    SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService, SqliteSecretStore,
-    StoredRunEvent,
-    PtyReadChunk, TerminalResultDto, TerminalService, TerminalShell, TranscriptDto,
-    TranscriptSegmentDto,
-    TrustService, VisionRecognizeRequestDto, VisionRecognizeResultDto, VisionService,
-    VisionSettings, WebSearchSettings, WorkspaceInfoDto, WorkspaceService,
+    NewRuntimeLogEntry, OfficeService, PdfRenderResultDto, PluginAppEntry, PluginDto,
+    PluginMarketplaceDto, PluginMarketplaceEntriesQueryDto, PluginMarketplaceEntryDto,
+    PluginMarketplacePageDto, PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto,
+    PluginScanReportDto, PluginService, PreflightToolCallDto, PreparedPluginInstallDto,
+    PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
+    ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
+    ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, ProjectTrustDto,
+    PtyReadChunk, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeBroker,
+    RuntimeLogEntry, RuntimeLogStore, RuntimeProgressDto, RuntimeRootsDto, RuntimeService,
+    RuntimeStatusDto, SandboxieExecutor, SandboxieService, SandboxieStatusDto, SecretStore,
+    SessionDetailDto, SessionStateService, SessionSummaryDto, SessionUiPrefsDto, SettingsService,
+    SettingsView, SkillActivationDto, SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService,
+    SpeechService, SqliteSecretStore, StoredRunEvent, TerminalResultDto, TerminalService,
+    TerminalShell, TranscriptDto, TranscriptSegmentDto, TrustService, VisionRecognizeRequestDto,
+    VisionRecognizeResultDto, VisionService, VisionSettings, WebSearchSettings, WorkspaceInfoDto,
+    WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
-use async_trait::async_trait;
 use deepagent_terminal::{
     TerminalInputHolder, TerminalInputLease, TerminalOpenRequest, TerminalReadChunk,
     TerminalRecoveryStatus, TerminalSession, TerminalSessionBackend,
@@ -1463,7 +1461,9 @@ async fn list_plugin_marketplace_entries(
 ) -> Result<Vec<PluginMarketplaceEntryDto>, String> {
     let plugins = Arc::clone(&state.plugins);
     tauri::async_runtime::spawn_blocking(move || {
-        plugins.list_marketplace_entries().map_err(|e| e.to_string())
+        plugins
+            .list_marketplace_entries()
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2084,7 +2084,10 @@ fn canvas_settings_read(
     state: State<'_, AppState>,
     workspace_id: Option<String>,
 ) -> Result<CanvasSettingsDto, String> {
-    let providers = state.canvas_providers.list_providers().map_err(|e| e.to_string())?;
+    let providers = state
+        .canvas_providers
+        .list_providers()
+        .map_err(|e| e.to_string())?;
     let bindings = state
         .canvas_providers
         .bindings(workspace_id.as_deref())
@@ -2149,10 +2152,7 @@ fn canvas_bindings_save(
     state: State<'_, AppState>,
     workspace_id: Option<String>,
     bindings: Vec<deepagent_app_core::canvas_provider_service::CanvasScenarioBinding>,
-) -> Result<
-    Vec<deepagent_app_core::canvas_provider_service::CanvasScenarioBinding>,
-    String,
-> {
+) -> Result<Vec<deepagent_app_core::canvas_provider_service::CanvasScenarioBinding>, String> {
     state
         .canvas_providers
         .save_bindings(workspace_id.as_deref(), bindings)
@@ -2161,14 +2161,19 @@ fn canvas_bindings_save(
 
 /// Masked api-key presence for one provider.
 #[tauri::command]
-fn canvas_secret_status(state: State<'_, AppState>, provider_id: String) -> Result<CanvasSecretStatusDto, String> {
+fn canvas_secret_status(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<CanvasSecretStatusDto, String> {
     let key = state
         .canvas_providers
         .provider_api_key(&provider_id)
         .map_err(|e| e.to_string())?;
     Ok(CanvasSecretStatusDto {
         set: key.is_some(),
-        masked: key.as_deref().map(deepagent_app_core::canvas_provider_service::mask_secret),
+        masked: key
+            .as_deref()
+            .map(deepagent_app_core::canvas_provider_service::mask_secret),
     })
 }
 
@@ -2204,8 +2209,9 @@ async fn canvas_provider_test(
     model_id: String,
     scenario: String,
 ) -> Result<deepagent_app_core::canvas_model_gateway::CanvasConnectionTestResult, String> {
-    let scenario = deepagent_app_core::canvas_provider_service::CanvasScenario::from_label(&scenario)
-        .ok_or_else(|| format!("unknown canvas scenario `{scenario}`"))?;
+    let scenario =
+        deepagent_app_core::canvas_provider_service::CanvasScenario::from_label(&scenario)
+            .ok_or_else(|| format!("unknown canvas scenario `{scenario}`"))?;
     let gateway = state.canvas_gateway.clone();
     Ok(gateway
         .test_connection(&provider_id, &model_id, scenario)
@@ -2256,8 +2262,9 @@ fn canvas_scenario_candidates(
     scenario: String,
     workspace_id: Option<String>,
 ) -> Result<Vec<CanvasCandidateDto>, String> {
-    let scenario = deepagent_app_core::canvas_provider_service::CanvasScenario::from_label(&scenario)
-        .ok_or_else(|| format!("unknown canvas scenario `{scenario}`"))?;
+    let scenario =
+        deepagent_app_core::canvas_provider_service::CanvasScenario::from_label(&scenario)
+            .ok_or_else(|| format!("unknown canvas scenario `{scenario}`"))?;
     let candidates = state
         .canvas_providers
         .candidates_for_scenario(scenario, workspace_id.as_deref())
@@ -4491,8 +4498,13 @@ async fn terminal_session_open(
 }
 
 #[tauri::command]
-fn coordinator_readiness(state: State<'_, AppState>) -> Result<deepagent_app_core::CoordinatorReadiness, String> {
-    state.chat.coordinator_readiness().map_err(|error| error.to_string())
+fn coordinator_readiness(
+    state: State<'_, AppState>,
+) -> Result<deepagent_app_core::CoordinatorReadiness, String> {
+    state
+        .chat
+        .coordinator_readiness()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -4612,8 +4624,8 @@ use deepagent_ssh::{
     SshAuthType as DtoSshAuthType, SshConnectionDto as DtoSshConnectionDto,
     SshDirListing as DtoSshDirListing, SshError, SshExecResult as DtoSshExecResult,
     SshFileBinary as DtoSshFileBinary, SshFileContent as DtoSshFileContent,
-    SshServiceHandle as DtoSshServiceHandle,
-    SshStatus as DtoSshStatus, UpdateSshConnectionRequest as DtoUpdateSshConnectionRequest,
+    SshServiceHandle as DtoSshServiceHandle, SshStatus as DtoSshStatus,
+    UpdateSshConnectionRequest as DtoUpdateSshConnectionRequest,
 };
 
 fn to_dto_auth_type(t: DtoSshAuthType) -> &'static str {
@@ -5746,7 +5758,9 @@ fn office_export_minutes_docx(
 
 /// Probe all mobile backends and return their status.
 #[tauri::command]
-async fn mobile_backend_status(state: State<'_, AppState>) -> Result<Vec<BackendStatusDto>, String> {
+async fn mobile_backend_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<BackendStatusDto>, String> {
     Ok(state.mobile.probe_backends().await)
 }
 
@@ -5762,7 +5776,11 @@ async fn mobile_device_info(
     state: State<'_, AppState>,
     device_id: String,
 ) -> Result<DeviceDto, String> {
-    state.mobile.device_info(&device_id).await.map_err(|e| e.to_string())
+    state
+        .mobile
+        .device_info(&device_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Capture a screenshot from a device.
@@ -5771,7 +5789,11 @@ async fn mobile_screenshot(
     state: State<'_, AppState>,
     device_id: String,
 ) -> Result<ArtifactRefDto, String> {
-    state.mobile.screenshot(&device_id).await.map_err(|e| e.to_string())
+    state
+        .mobile
+        .screenshot(&device_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Capture a UI snapshot summary from a device.
@@ -5824,11 +5846,12 @@ async fn mobile_stop_app(
     device_id: String,
     package: String,
 ) -> Result<(), String> {
-    let target = deepagent_mobile_protocol::AppTarget {
-        device_id,
-        package,
-    };
-    state.mobile.terminate(&target).await.map_err(|e| e.to_string())
+    let target = deepagent_mobile_protocol::AppTarget { device_id, package };
+    state
+        .mobile
+        .terminate(&target)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// List available Android Virtual Devices.
@@ -5852,17 +5875,22 @@ async fn mobile_start_emulator(
         args: args.unwrap_or_default(),
         boot_timeout_ms: boot_timeout_ms.unwrap_or(60_000),
     };
-    state.mobile.start_emulator(&req).await.map_err(|e| e.to_string())
+    state
+        .mobile
+        .start_emulator(&req)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Stop an Android Emulator.
 #[tauri::command]
-async fn mobile_stop_emulator(
-    state: State<'_, AppState>,
-    serial: String,
-) -> Result<(), String> {
+async fn mobile_stop_emulator(state: State<'_, AppState>, serial: String) -> Result<(), String> {
     let req = deepagent_mobile_protocol::StopEmulatorRequest { serial };
-    state.mobile.stop_emulator(&req).await.map_err(|e| e.to_string())
+    state
+        .mobile
+        .stop_emulator(&req)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Perform a UI action (tap, swipe, text input, etc.) on a device.
@@ -5894,7 +5922,11 @@ async fn mobile_read_logs(
         max_lines,
         since_ms,
     };
-    state.mobile.read_logs(&req).await.map_err(|e| e.to_string())
+    state
+        .mobile
+        .read_logs(&req)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Start capturing network traffic for a device.

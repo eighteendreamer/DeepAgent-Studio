@@ -995,8 +995,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             provider_items_persisted,
                         )
                         .await?;
-                    for (obs, (name, args)) in last_observations.iter().zip(tool_inputs)
-                    {
+                    for (obs, (name, args)) in last_observations.iter().zip(tool_inputs) {
                         if obs.ok {
                             tool_effects.push(crate::completion::ToolEffectRecord {
                                 tool_name: name,
