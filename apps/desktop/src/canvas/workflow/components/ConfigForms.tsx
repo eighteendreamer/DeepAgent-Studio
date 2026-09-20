@@ -11,7 +11,7 @@ import {
   DropdownMenuSeparator,
 } from "../../../components/shadcn/dropdown-menu";
 import type { CreativeNodeData, WorkflowNodeData } from "../types";
-import { useCanvasSettingsStore } from "../store/canvasSettingsStore";
+import { useCanvasSettingsStore, useScenarioModelOptions } from "../store/canvasSettingsStore";
 import { runWorkflow } from "../utils/workflowExecutor";
 
 const TEXT_COLOR = "rgba(255,255,255,0.88)";
@@ -235,15 +235,13 @@ interface FormProps {
 }
 
 export function TextGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  const options = useScenarioModelOptions("text", data.model);
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-center gap-1.5">
         <ChipSelect
-          value={data.model ?? "deepseek-chat"}
-          options={[
-            { value: "deepseek-chat", label: "DeepSeek Chat" },
-            { value: "deepseek-reasoner", label: "DeepSeek Reasoner" },
-          ]}
+          value={data.model ?? options[0]?.value ?? ""}
+          options={options}
           onChange={(model) => onUpdate({ model })}
         />
       </div>
@@ -845,15 +843,13 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
 }
 
 export function ScriptGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  const options = useScenarioModelOptions("text", data.model);
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-center gap-1.5">
         <ChipSelect
-          value={data.model ?? "deepseek-chat"}
-          options={[
-            { value: "deepseek-chat", label: "DeepSeek Chat" },
-            { value: "deepseek-reasoner", label: "DeepSeek Reasoner" },
-          ]}
+          value={data.model ?? options[0]?.value ?? ""}
+          options={options}
           onChange={(model) => onUpdate({ model })}
         />
       </div>

@@ -14,6 +14,7 @@ import {
 import type { CreativeNodeData } from "../types";
 import { useCreativeStore } from "../store/creativeStore";
 import { runWorkflow } from "../utils/workflowExecutor";
+import { useScenarioModelOptions } from "../store/canvasSettingsStore";
 
 interface Props {
   nodeId: string;
@@ -29,12 +30,10 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
   const [expanded, setExpanded] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isImageToPrompt = data.creativeActionKey === "image-to-prompt";
-  const models = [
-    { value: "deepseek-chat", label: "DeepSeek Chat" },
-    { value: "deepseek-reasoner", label: "DeepSeek Reasoner" },
-  ];
-  const selectedModel = data.model ?? "deepseek-chat";
-  const selectedModelLabel = models.find((model) => model.value === selectedModel)?.label ?? "DeepSeek Chat";
+  const models = useScenarioModelOptions("text", data.model);
+  const selectedModel = data.model ?? models[0]?.value ?? "";
+  const selectedModelLabel =
+    models.find((model) => model.value === selectedModel)?.label ?? "未配置模型";
   const upstreamImage = useCreativeStore((state) => {
     if (!isImageToPrompt) return "";
     const edge = state.edges.find((item) => item.target === nodeId);

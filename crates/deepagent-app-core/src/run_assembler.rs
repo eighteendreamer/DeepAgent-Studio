@@ -96,6 +96,7 @@ pub(crate) struct RunAssembler<'a> {
     pub(crate) runtime_logs: &'a Option<Arc<RuntimeLogStore>>,
     pub(crate) cost: &'a Option<Arc<CostService>>,
     pub(crate) knowledge: &'a Option<Arc<KnowledgeService>>,
+    pub(crate) canvas_model: &'a Option<Arc<crate::canvas_model_gateway::CanvasModelGateway>>,
     pub(crate) skills: &'a Option<Arc<std::sync::Mutex<SkillsService>>>,
     pub(crate) mcp: &'a Option<Arc<McpService>>,
     pub(crate) plugins: &'a Option<Arc<PluginService>>,
@@ -1004,6 +1005,10 @@ impl<'a> RunAssembler<'a> {
 
         if let (Some(client), Some(model_name)) = (wf_client, wf_model_name.clone()) {
             agent = agent.with_model(client, model_name);
+        }
+
+        if let Some(gateway) = self.canvas_model.clone() {
+            agent = agent.with_canvas_bridge(gateway);
         }
 
         if let Some(knowledge) = self.knowledge.clone() {

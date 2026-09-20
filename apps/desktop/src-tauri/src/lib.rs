@@ -2206,6 +2206,19 @@ async fn canvas_provider_test(
         .await)
 }
 
+/// List a provider's real model catalog (OpenAI-compatible `/models`).
+#[tauri::command]
+async fn canvas_models_discover(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<Vec<String>, String> {
+    let gateway = state.canvas_gateway.clone();
+    gateway
+        .discover_models(&provider_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Candidate models for a scenario in fallback order.
 #[tauri::command]
 fn canvas_scenario_candidates(
@@ -6196,6 +6209,22 @@ pub fn run() {
                 });
             }
 
+            // Canvas model configuration: same database as the main-window
+            // settings, same encrypted secret store for api keys. The gateway is
+            // attached to the chat pipeline below so canvas workflow nodes call
+            // the provider the user configured instead of the chat model.
+            let canvas_providers = Arc::new(
+                deepagent_app_core::canvas_provider_service::CanvasProviderService::new(
+                    service.shared_database(),
+                    sqlite_secrets.clone(),
+                ),
+            );
+            let canvas_gateway = Arc::new(
+                deepagent_app_core::canvas_model_gateway::CanvasModelGateway::new(
+                    canvas_providers.clone(),
+                ),
+            );
+
             // Chat: streamed runs; MCP servers connect + live-register tools, each
             // run is rooted at the active project's folder, the knowledge base
             // is attached for passive injection + active tools, and the skill
@@ -6235,6 +6264,7 @@ pub fn run() {
                     .with_plugins(plugins.clone())
                     .with_projects(projects.clone())
                     .with_knowledge(knowledge.clone())
+                    .with_canvas_model(canvas_gateway.clone())
                     .with_project_map(project_map.clone())
                     .with_cost(cost.clone())
                     .with_runtime_logs(runtime_logs.clone())
@@ -6325,20 +6355,6 @@ pub fn run() {
                     let _ = app_handle.emit("mobile://event", event);
                 });
             });
-
-            // Canvas model configuration: same database as the main-window
-            // settings, same encrypted secret store for api keys.
-            let canvas_providers = Arc::new(
-                deepagent_app_core::canvas_provider_service::CanvasProviderService::new(
-                    service.shared_database(),
-                    sqlite_secrets.clone(),
-                ),
-            );
-            let canvas_gateway = Arc::new(
-                deepagent_app_core::canvas_model_gateway::CanvasModelGateway::new(
-                    canvas_providers.clone(),
-                ),
-            );
 
             app.manage(AppState {
                 service: Mutex::new(service),
@@ -6477,6 +6493,7 @@ pub fn run() {
             canvas_secret_set,
             canvas_secret_clear,
             canvas_provider_test,
+            canvas_models_discover,
             canvas_scenario_candidates,
             resolve_approval,
             stop_chat,

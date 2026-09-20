@@ -108,10 +108,13 @@ pub enum CanvasRequestKind {
     ImageEdit,
     SpeechTranscribe,
     SpeechSynthesize,
+    /// Provider model catalog listing (`GET {base}/models`).
+    Models,
 }
 
 /// Persisted model entry inside a provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CanvasModelConfig {
     /// Provider-scoped model id sent to the provider (may contain `/`).
     pub id: String,
@@ -141,6 +144,9 @@ pub struct CanvasProviderConfig {
     pub base_url: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Optional custom icon (data URL, size-capped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
     #[serde(default)]
     pub models: Vec<CanvasModelConfig>,
 }
@@ -155,6 +161,7 @@ pub struct CanvasProviderState {
 /// UI-facing provider DTO. `api_key` is intentionally absent: the secret never
 /// crosses the backend boundary, only `api_key_set` / `api_key_masked`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CanvasProviderDto {
     pub id: String,
     pub name: String,
@@ -164,11 +171,14 @@ pub struct CanvasProviderDto {
     pub api_key_set: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_masked: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
     pub models: Vec<CanvasModelDto>,
 }
 
 /// UI-facing model DTO.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CanvasModelDto {
     pub id: String,
     pub name: String,
@@ -181,6 +191,7 @@ pub struct CanvasModelDto {
 /// Scenario → provider/model binding row. The list order of
 /// [`CanvasScenarioBinding`]s for one scenario is the candidate fallback order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CanvasScenarioBinding {
     pub scenario: String,
     pub provider_id: String,
@@ -198,6 +209,7 @@ pub struct CanvasBindingState {
 /// Input for `save_provider`. `api_key` is write-only: `Some(text)` stores it,
 /// `None` leaves the existing secret untouched.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CanvasProviderInput {
     #[serde(default)]
     pub id: String,
@@ -209,6 +221,8 @@ pub struct CanvasProviderInput {
     pub enabled: bool,
     #[serde(default)]
     pub models: Vec<CanvasModelConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
 }
@@ -244,6 +258,7 @@ impl CanvasProviderConfig {
             enabled: self.enabled,
             api_key_set: api_key.is_some(),
             api_key_masked: api_key.map(mask_secret),
+            logo: self.logo.clone(),
             models: self.models.iter().map(|m| m.to_dto()).collect(),
         }
     }
@@ -292,6 +307,7 @@ pub fn endpoint_url(
             CanvasRequestKind::ImageEdit => format!("{base}/images/edits"),
             CanvasRequestKind::SpeechTranscribe => format!("{base}/audio/transcriptions"),
             CanvasRequestKind::SpeechSynthesize => format!("{base}/audio/speech"),
+            CanvasRequestKind::Models => format!("{base}/models"),
         },
         CanvasProtocol::Anthropic => match kind {
             CanvasRequestKind::Chat => format!("{base}/v1/messages"),
@@ -334,6 +350,7 @@ fn kind_label(kind: CanvasRequestKind) -> &'static str {
         CanvasRequestKind::ImageEdit => "image_edit",
         CanvasRequestKind::SpeechTranscribe => "speech_transcribe",
         CanvasRequestKind::SpeechSynthesize => "speech_synthesize",
+        CanvasRequestKind::Models => "models",
     }
 }
 
@@ -390,6 +407,22 @@ fn normalize_model(model: CanvasModelConfig) -> Result<CanvasModelConfig> {
     })
 }
 
+/// Largest accepted custom provider icon, counted in data-URL characters.
+const MAX_LOGO_CHARS: usize = 512 * 1024;
+
+fn normalize_logo(logo: Option<&str>) -> Result<Option<String>> {
+    let Some(logo) = logo.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if logo.len() > MAX_LOGO_CHARS {
+        return Err(CoreError::invalid(format!(
+            "provider icon is too large ({} characters, limit {MAX_LOGO_CHARS})",
+            logo.len()
+        )));
+    }
+    Ok(Some(logo.to_string()))
+}
+
 /// Validate + normalize provider input before persistence.
 fn normalize_provider_input(
     input: CanvasProviderInput,
@@ -436,6 +469,7 @@ fn normalize_provider_input(
         protocol: CanvasProtocol::from_label(&input.protocol),
         base_url,
         enabled: input.enabled,
+        logo: normalize_logo(input.logo.as_deref())?,
         models,
     })
 }
@@ -1053,6 +1087,7 @@ mod tests {
                 base_url: "http://127.0.0.1:8045".to_string(),
                 enabled: false,
                 models: vec![],
+                logo: None,
                 api_key: None,
             })
             .expect("rename");
@@ -1071,6 +1106,7 @@ mod tests {
                 base_url: "https://toloveu.asia/v1".to_string(),
                 enabled: true,
                 models: vec![],
+                logo: None,
                 api_key: Some("sk-abcdef123456".to_string()),
                 ..Default::default()
             })

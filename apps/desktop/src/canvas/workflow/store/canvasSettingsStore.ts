@@ -1,6 +1,16 @@
+import { useMemo } from "react";
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 
-const STORAGE_KEY = "workflow-settings";
+/**
+ * Canvas model-provider state.
+ *
+ * The backend is the single source of truth: providers, models and scenario
+ * bindings live in the application database (same store the main-window
+ * DeepSeek settings use) and api keys live in its encrypted secret store.
+ * Nothing model-related is written to localStorage here, and a plaintext key
+ * never comes back from the backend — only `apiKeySet` + a masked preview.
+ */
 
 export type ModelProtocol = "openai" | "anthropic" | "gemini";
 
@@ -10,7 +20,17 @@ export type ModelScenario =
   | "image_generation"
   | "video_generation"
   | "speech_to_text"
-  | "text_to_speech";
+  | "text_to_speech"
+  | "embedding";
+
+export const MODEL_SCENARIOS: ModelScenario[] = [
+  "text",
+  "image_generation",
+  "video_generation",
+  "speech_to_text",
+  "text_to_speech",
+  "embedding",
+];
 
 export interface ProviderModelConfig {
   id: string;
@@ -18,6 +38,7 @@ export interface ProviderModelConfig {
   description?: string;
   enabled: boolean;
   scenarios?: ModelScenario[];
+  priority?: number;
 }
 
 export interface ModelProvider {
@@ -25,10 +46,24 @@ export interface ModelProvider {
   name: string;
   protocol: ModelProtocol;
   baseUrl: string;
-  apiKey: string;
+  /** 密钥是否已保存在后端密钥库中（前端永远拿不到明文）。 */
+  apiKeySet: boolean;
+  /** 后端返回的掩码预览，只用于展示。 */
+  apiKeyMasked?: string;
   enabled?: boolean;
   models?: ProviderModelConfig[];
   logo?: string;
+}
+
+/** 表单草稿：`apiKey` 只在提交那一刻写给后端，不落到任何本地存储。 */
+export interface ProviderDraft {
+  name: string;
+  protocol: ModelProtocol;
+  baseUrl: string;
+  apiKey?: string;
+  logo?: string;
+  enabled?: boolean;
+  models?: ProviderModelConfig[];
 }
 
 export interface ScenarioBinding {
@@ -36,288 +71,627 @@ export interface ScenarioBinding {
   model: string;
 }
 
-export type ScenarioKind = "text" | "image" | "video";
+export type ScenarioKind =
+  | "text"
+  | "image"
+  | "video"
+  | "speech_to_text"
+  | "text_to_speech"
+  | "embedding";
 
 export interface WorkspaceConfig {
   imageDir: string;
   videoDir: string;
 }
 
+interface ProviderModelDto {
+  id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  scenarios: string[];
+  priority: number;
+}
+
+interface ProviderDto {
+  id: string;
+  name: string;
+  protocol: string;
+  baseUrl: string;
+  enabled: boolean;
+  apiKeySet: boolean;
+  apiKeyMasked?: string;
+  logo?: string;
+  models: ProviderModelDto[];
+}
+
+interface BindingDto {
+  scenario: string;
+  providerId: string;
+  modelId: string;
+  enabled: boolean;
+}
+
+interface CanvasSettingsDto {
+  providers: ProviderDto[];
+  bindings: BindingDto[];
+}
+
+export interface ConnectionTestResult {
+  ok: boolean;
+  code: string;
+  message: string;
+  endpoint: string;
+  modelId: string;
+  latencyMs: number;
+}
+
+/** 节点上选择的模型：`providerId::modelId`。 */
+export const MODEL_REF_SEPARATOR = "::";
+
+export function encodeModelRef(providerId: string, modelId: string): string {
+  return `${providerId}${MODEL_REF_SEPARATOR}${modelId}`;
+}
+
+export function decodeModelRef(ref: string): { providerId: string; modelId: string } | null {
+  const index = ref.indexOf(MODEL_REF_SEPARATOR);
+  if (index <= 0) return null;
+  const providerId = ref.slice(0, index);
+  const modelId = ref.slice(index + MODEL_REF_SEPARATOR.length);
+  return modelId ? { providerId, modelId } : null;
+}
+
+/**
+ * 某个场景下可选择模型的列表（供应商名 / 模型名）。
+ *
+ * `current` 用于把历史遗留的裸模型名（如 `deepseek-chat`）保留成可见选项，
+ * 避免切换数据源后节点上已存的值凭空消失。
+ */
+export function scenarioModelOptions(
+  providers: ModelProvider[],
+  scenario: ModelScenario,
+  current?: string,
+): Array<{ value: string; label: string }> {
+  const options = providers
+    .filter((provider) => provider.enabled !== false)
+    .flatMap((provider) =>
+      (provider.models ?? [])
+        .filter((model) => model.enabled && (model.scenarios ?? []).includes(scenario))
+        .map((model) => ({
+          value: encodeModelRef(provider.id, model.id),
+          label: `${provider.name} / ${model.name || model.id}`,
+        })),
+    );
+  if (current && !options.some((option) => option.value === current)) {
+    options.unshift({ value: current, label: current });
+  }
+  return options;
+}
+
 interface WorkflowSettingsState {
   providers: ModelProvider[];
   scenarioModels: Record<ScenarioKind, ScenarioBinding>;
   workspace: WorkspaceConfig;
-  addProvider: (p: Omit<ModelProvider, "id">) => string;
-  updateProvider: (id: string, patch: Partial<Omit<ModelProvider, "id">>) => void;
-  removeProvider: (id: string) => void;
-  toggleProviderEnabled: (id: string) => void;
-  updateProviderModels: (id: string, models: ProviderModelConfig[]) => void;
-  addModelToProvider: (providerId: string, model: ProviderModelConfig) => void;
-  setModelScenarios: (providerId: string, modelId: string, scenarios: ModelScenario[]) => void;
-  toggleModelEnabled: (providerId: string, modelId: string) => void;
-  removeModelFromProvider: (providerId: string, modelId: string) => void;
-  setScenarioBinding: (scenario: ScenarioKind, binding: ScenarioBinding) => void;
+  loaded: boolean;
+  loading: boolean;
+  /** 最近一次后端写入失败的原因，用于在界面上如实提示。 */
+  lastError: string | null;
+  loadFromBackend: () => Promise<void>;
+  clearError: () => void;
+  addProvider: (draft: ProviderDraft) => Promise<string>;
+  updateProvider: (id: string, patch: Partial<Omit<ProviderDraft, "apiKey">>) => Promise<void>;
+  removeProvider: (id: string) => Promise<void>;
+  toggleProviderEnabled: (id: string) => Promise<void>;
+  saveProviderApiKey: (id: string, apiKey: string) => Promise<void>;
+  clearProviderApiKey: (id: string) => Promise<void>;
+  updateProviderModels: (id: string, models: ProviderModelConfig[]) => Promise<void>;
+  addModelToProvider: (providerId: string, model: ProviderModelConfig) => Promise<void>;
+  setModelScenarios: (
+    providerId: string,
+    modelId: string,
+    scenarios: ModelScenario[],
+  ) => Promise<void>;
+  toggleModelEnabled: (providerId: string, modelId: string) => Promise<void>;
+  removeModelFromProvider: (providerId: string, modelId: string) => Promise<void>;
+  discoverModels: (providerId: string) => Promise<string[]>;
+  setScenarioBinding: (scenario: ScenarioKind, binding: ScenarioBinding) => Promise<void>;
+  testConnection: (
+    providerId: string,
+    modelId: string,
+    scenario: ModelScenario,
+  ) => Promise<ConnectionTestResult>;
   setWorkspaceDir: (kind: keyof WorkspaceConfig, dir: string) => void;
 }
 
-let _idCounter = 0;
-function nextProviderId(existing: string[]): string {
-  const taken = new Set(existing);
-  let id: string;
-  do {
-    id = `provider-${++_idCounter}`;
-  } while (taken.has(id));
-  return id;
-}
+const WORKSPACE_STORAGE_KEY = "workflow-workspace";
+
+/** 连续输入合并写库的等待时间。 */
+const PERSIST_DEBOUNCE_MS = 400;
+
+const SCENARIO_KIND_TO_BACKEND: Record<ScenarioKind, ModelScenario> = {
+  text: "text",
+  image: "image_generation",
+  video: "video_generation",
+  speech_to_text: "speech_to_text",
+  text_to_speech: "text_to_speech",
+  embedding: "embedding",
+};
+
+const BACKEND_SCENARIO_TO_KIND: Record<string, ScenarioKind> = {
+  text: "text",
+  image_generation: "image",
+  video_generation: "video",
+  speech_to_text: "speech_to_text",
+  text_to_speech: "text_to_speech",
+  embedding: "embedding",
+};
 
 function defaultBindings(): Record<ScenarioKind, ScenarioBinding> {
   return {
     text: { providerId: null, model: "" },
     image: { providerId: null, model: "" },
     video: { providerId: null, model: "" },
+    speech_to_text: { providerId: null, model: "" },
+    text_to_speech: { providerId: null, model: "" },
+    embedding: { providerId: null, model: "" },
   };
 }
 
-function isValidBinding(v: unknown): v is ScenarioBinding {
-  if (!v || typeof v !== "object") return false;
-  const o = v as Record<string, unknown>;
-  return (o.providerId === null || typeof o.providerId === "string") && typeof o.model === "string";
-}
-
-function isValidProvider(v: unknown): v is ModelProvider {
-  if (!v || typeof v !== "object") return false;
-  const o = v as Record<string, unknown>;
-  return (
-    typeof o.id === "string" &&
-    typeof o.name === "string" &&
-    (o.protocol === "openai" || o.protocol === "anthropic" || o.protocol === "gemini" || o.protocol === "deepseek" || o.protocol === "custom") &&
-    typeof o.baseUrl === "string" &&
-    typeof o.apiKey === "string"
-  );
+function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 function normalizeProtocol(protocol: string): ModelProtocol {
   if (protocol === "anthropic" || protocol === "gemini") return protocol;
-  // 旧版本的 DeepSeek/自定义供应商均按 OpenAI 兼容协议保留，避免已有配置失效。
+  // 旧版 DeepSeek / 自定义供应商都按 OpenAI 兼容协议保留。
   return "openai";
 }
 
-const MODEL_SCENARIOS: ModelScenario[] = [
-  "text",
-  "image_generation",
-  "video_generation",
-  "speech_to_text",
-  "text_to_speech",
-];
-
-function normalizeModelScenarios(value: unknown): ModelScenario[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((scenario): scenario is ModelScenario =>
-    typeof scenario === "string" && MODEL_SCENARIOS.includes(scenario as ModelScenario),
+function normalizeScenarios(values: unknown): ModelScenario[] {
+  if (!Array.isArray(values)) return [];
+  return values.filter((value): value is ModelScenario =>
+    typeof value === "string" && (MODEL_SCENARIOS as string[]).includes(value),
   );
 }
 
-function loadPersisted(): Pick<WorkflowSettingsState, "providers" | "scenarioModels" | "workspace"> {
+function modelFromDto(dto: ProviderModelDto): ProviderModelConfig {
+  return {
+    id: dto.id,
+    name: dto.name || dto.id,
+    description: dto.description ?? "",
+    enabled: dto.enabled,
+    scenarios: normalizeScenarios(dto.scenarios),
+    priority: dto.priority ?? 0,
+  };
+}
+
+function providerFromDto(dto: ProviderDto): ModelProvider {
+  return {
+    id: dto.id,
+    name: dto.name,
+    protocol: normalizeProtocol(dto.protocol),
+    baseUrl: dto.baseUrl,
+    apiKeySet: dto.apiKeySet,
+    apiKeyMasked: dto.apiKeyMasked,
+    enabled: dto.enabled,
+    logo: dto.logo,
+    models: dto.models.map(modelFromDto),
+  };
+}
+
+function toWireModel(model: ProviderModelConfig) {
+  return {
+    id: model.id,
+    name: model.name || model.id,
+    description: model.description ?? "",
+    enabled: model.enabled !== false,
+    scenarios: model.scenarios ?? [],
+    priority: model.priority ?? 0,
+  };
+}
+
+function toWireProvider(id: string, draft: ProviderDraft) {
+  return {
+    id,
+    name: draft.name.trim(),
+    protocol: draft.protocol,
+    baseUrl: draft.baseUrl.trim(),
+    enabled: draft.enabled !== false,
+    logo: draft.logo?.trim() || null,
+    apiKey: draft.apiKey?.trim() ? draft.apiKey.trim() : null,
+    models: (draft.models ?? []).map(toWireModel),
+  };
+}
+
+function draftOf(provider: ModelProvider): ProviderDraft {
+  return {
+    name: provider.name,
+    protocol: provider.protocol,
+    baseUrl: provider.baseUrl,
+    logo: provider.logo,
+    enabled: provider.enabled,
+    models: provider.models ?? [],
+  };
+}
+
+function bindingsToWire(scenarioModels: Record<ScenarioKind, ScenarioBinding>): BindingDto[] {
+  return (Object.keys(SCENARIO_KIND_TO_BACKEND) as ScenarioKind[])
+    .filter((kind) => scenarioModels[kind]?.providerId && scenarioModels[kind]?.model)
+    .map((kind) => ({
+      scenario: SCENARIO_KIND_TO_BACKEND[kind],
+      providerId: scenarioModels[kind].providerId as string,
+      modelId: scenarioModels[kind].model,
+      enabled: true,
+    }));
+}
+
+/** 每个供应商一行 workspace 级目录配置，属于本机路径而非模型资产。 */
+function loadWorkspace(): WorkspaceConfig {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { providers: [], scenarioModels: defaultBindings(), workspace: { imageDir: "", videoDir: "" } };
+    const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
+    if (!raw) return { imageDir: "", videoDir: "" };
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return { providers: [], scenarioModels: defaultBindings(), workspace: { imageDir: "", videoDir: "" } };
-
-    const providers =
-      Array.isArray(parsed.providers) && parsed.providers.every(isValidProvider)
-        ? parsed.providers.map((provider: any) => ({
-            ...provider,
-            protocol: normalizeProtocol(provider.protocol),
-            enabled: provider.enabled !== false,
-            logo: typeof provider.logo === "string" ? provider.logo : undefined,
-            models: Array.isArray(provider.models)
-              ? provider.models.map((m: any) => ({
-                  id: String(m.id || ""),
-                  name: String(m.name || m.id || ""),
-                  description: typeof m.description === "string" ? m.description : "",
-                  enabled: m.enabled !== false,
-                  scenarios: normalizeModelScenarios(m.scenarios),
-                }))
-              : [],
-          }))
-        : [];
-    providers.forEach((p: ModelProvider) => {
-      const n = Number(p.id.replace("provider-", ""));
-      if (Number.isFinite(n) && n >= _idCounter) _idCounter = n;
-    });
-
-    const sm = parsed.scenarioModels;
-    const scenarioModels: Record<ScenarioKind, ScenarioBinding> =
-      sm && typeof sm === "object" && isValidBinding(sm.text) && isValidBinding(sm.image) && isValidBinding(sm.video)
-        ? { text: sm.text, image: sm.image, video: sm.video }
-        : defaultBindings();
-
-    const ws = parsed.workspace;
-    const workspace: WorkspaceConfig =
-      ws && typeof ws === "object" && typeof ws.imageDir === "string" && typeof ws.videoDir === "string"
-        ? { imageDir: ws.imageDir, videoDir: ws.videoDir }
-        : { imageDir: "", videoDir: "" };
-
-    return { providers, scenarioModels, workspace };
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof parsed.imageDir === "string" &&
+      typeof parsed.videoDir === "string"
+    ) {
+      return { imageDir: parsed.imageDir, videoDir: parsed.videoDir };
+    }
   } catch {
-    return { providers: [], scenarioModels: defaultBindings(), workspace: { imageDir: "", videoDir: "" } };
+    // 存储不可用时退回默认目录
+  }
+  return { imageDir: "", videoDir: "" };
+}
+
+function saveWorkspace(workspace: WorkspaceConfig): void {
+  try {
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(workspace));
+  } catch {
+    // 存储不可用时忽略
   }
 }
 
-function serialize(state: WorkflowSettingsState): string {
-  return JSON.stringify({
-    schemaVersion: 1,
-    providers: state.providers,
-    scenarioModels: state.scenarioModels,
-    workspace: state.workspace,
-  });
+interface PendingWrite {
+  timer: ReturnType<typeof setTimeout>;
+  resolvers: Array<() => void>;
 }
 
-const persisted = loadPersisted();
+export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) => {
+  /** 尚未落库的编辑草稿。 */
+  const drafts = new Map<string, ProviderDraft>();
+  /** 每个供应商一个防抖写入。 */
+  const pending = new Map<string, PendingWrite>();
 
-export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) => ({
-  ...persisted,
+  const reportFailure = (action: string, error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[canvas] ${action}失败:`, error);
+    set({ lastError: message });
+  };
 
-  addProvider: (p) => {
-    const id = nextProviderId(get().providers.map((x) => x.id));
-    set((s) => ({
-      providers: [
-        ...s.providers,
-        {
-          ...p,
-          id,
-          enabled: p.enabled !== false,
-          models: (p.models ?? []).map((model) => ({
-            ...model,
-            scenarios: model.scenarios ?? [],
-          })),
-        },
-      ],
-    }));
-    return id;
-  },
-
-  updateProvider: (id, patch) => {
-    set((s) => ({
-      providers: s.providers.map((p) => (p.id === id ? { ...p, ...patch } : p)),
-    }));
-  },
-
-  removeProvider: (id) => {
-    set((s) => {
-      const scenarioModels = { ...s.scenarioModels };
-      (["text", "image", "video"] as ScenarioKind[]).forEach((k) => {
-        if (scenarioModels[k].providerId === id) {
-          scenarioModels[k] = { providerId: null, model: "" };
-        }
+  const persistProvider = async (id: string) => {
+    const draft = drafts.get(id);
+    if (!draft) return;
+    try {
+      const saved = await invoke<ProviderDto>("canvas_provider_save", {
+        provider: toWireProvider(id, draft),
       });
-      return {
-        providers: s.providers.filter((p) => p.id !== id),
-        scenarioModels,
-      };
+      drafts.delete(id);
+      set((state) => ({
+        providers: state.providers.map((p) =>
+          p.id === id ? providerFromDto(saved) : p,
+        ),
+      }));
+    } catch (error) {
+      reportFailure(`保存供应商 ${draft.name}`, error);
+    }
+  };
+
+  const schedulePersist = (id: string) =>
+    new Promise<void>((resolve) => {
+      const existing = pending.get(id);
+      if (existing) {
+        clearTimeout(existing.timer);
+        existing.resolvers.push(resolve);
+        pending.set(id, {
+          timer: setTimeout(() => {
+            pending.delete(id);
+            void persistProvider(id).finally(() =>
+              existing.resolvers.forEach((done) => done()),
+            );
+          }, PERSIST_DEBOUNCE_MS),
+          resolvers: existing.resolvers,
+        });
+        return;
+      }
+      const resolvers = [resolve];
+      pending.set(id, {
+        timer: setTimeout(() => {
+          pending.delete(id);
+          void persistProvider(id).finally(() => resolvers.forEach((done) => done()));
+        }, PERSIST_DEBOUNCE_MS),
+        resolvers,
+      });
     });
-  },
 
-  toggleProviderEnabled: (id) => {
-    set((s) => ({
-      providers: s.providers.map((p) => (p.id === id ? { ...p, enabled: !(p.enabled !== false) } : p)),
-    }));
-  },
+  return {
+    providers: [],
+    scenarioModels: defaultBindings(),
+    workspace: loadWorkspace(),
+    loaded: false,
+    loading: false,
+    lastError: null,
 
-  updateProviderModels: (id, models) => {
-    set((s) => ({
-      providers: s.providers.map((p) =>
-        p.id === id
-          ? {
-              ...p,
-              models: models.map((model) => ({
-                ...model,
-                scenarios: model.scenarios ?? [],
-              })),
-            }
-          : p,
-      ),
-    }));
-  },
+    clearError: () => set({ lastError: null }),
 
-  addModelToProvider: (providerId, model) => {
-    set((s) => ({
-      providers: s.providers.map((p) => {
-        if (p.id !== providerId) return p;
-        const existing = p.models ?? [];
-        if (existing.some((m) => m.id === model.id)) {
+    loadFromBackend: async () => {
+      if (!isTauriRuntime()) {
+        set({ loaded: true });
+        return;
+      }
+      if (get().loading) return;
+      set({ loading: true });
+      try {
+        const dto = await invoke<CanvasSettingsDto>("canvas_settings_read", {
+          workspaceId: null,
+        });
+        const scenarioModels = defaultBindings();
+        for (const binding of dto.bindings) {
+          const kind = BACKEND_SCENARIO_TO_KIND[binding.scenario];
+          if (!kind) continue;
+          scenarioModels[kind] = { providerId: binding.providerId, model: binding.modelId };
+        }
+        const providers = dto.providers.map(providerFromDto);
+        // 保留未落库的输入草稿，避免刷新覆盖用户正在编辑的文本。
+        const mergedProviders = providers.map((p) => {
+          const draft = drafts.get(p.id);
+          if (!draft) return p;
           return {
             ...p,
-            models: existing.map((m) =>
-              m.id === model.id
-                ? { ...m, ...model, scenarios: model.scenarios ?? m.scenarios ?? [] }
-                : m,
-            ),
+            name: draft.name,
+            protocol: draft.protocol,
+            baseUrl: draft.baseUrl,
+            logo: draft.logo,
+            enabled: draft.enabled,
+            models: draft.models ?? p.models,
           };
-        }
-        return { ...p, models: [...existing, { ...model, scenarios: model.scenarios ?? [] }] };
-      }),
-    }));
-  },
+        });
+        set({
+          providers: mergedProviders,
+          scenarioModels,
+          loaded: true,
+        });
+      } catch (error) {
+        reportFailure("读取模型供应商配置", error);
+        set({ loaded: true });
+      } finally {
+        set({ loading: false });
+      }
+    },
 
-  setModelScenarios: (providerId, modelId, scenarios) => {
-    const normalized = normalizeModelScenarios(scenarios);
-    set((s) => ({
-      providers: s.providers.map((p) =>
-        p.id !== providerId
-          ? p
-          : {
-              ...p,
-              models: (p.models ?? []).map((m) =>
-                m.id === modelId ? { ...m, scenarios: normalized } : m,
-              ),
-            },
-      ),
-    }));
-  },
+    addProvider: async (draft) => {
+      try {
+        const saved = await invoke<ProviderDto>("canvas_provider_save", {
+          provider: toWireProvider("", draft),
+        });
+        set((state) => ({ providers: [...state.providers, providerFromDto(saved)] }));
+        return saved.id;
+      } catch (error) {
+        reportFailure("新增供应商", error);
+        return "";
+      }
+    },
 
-  toggleModelEnabled: (providerId, modelId) => {
-    set((s) => ({
-      providers: s.providers.map((p) => {
-        if (p.id !== providerId) return p;
+    updateProvider: async (id, patch) => {
+      const current = get().providers.find((p) => p.id === id);
+      if (!current) return;
+      const merged: ProviderDraft = {
+        ...(drafts.get(id) ?? draftOf(current)),
+        ...patch,
+        models: patch.models ?? (drafts.get(id) ?? draftOf(current)).models ?? [],
+      };
+      drafts.set(id, merged);
+      set((state) => ({
+        providers: state.providers.map((p) =>
+          p.id === id
+            ? {
+                ...p,
+                name: merged.name,
+                protocol: merged.protocol,
+                baseUrl: merged.baseUrl,
+                logo: merged.logo,
+                enabled: merged.enabled,
+                models: merged.models ?? [],
+              }
+            : p,
+        ),
+      }));
+      await schedulePersist(id);
+    },
+
+    removeProvider: async (id) => {
+      drafts.delete(id);
+      pending.delete(id);
+      try {
+        await invoke("canvas_provider_remove", { providerId: id });
+      } catch (error) {
+        reportFailure("删除供应商", error);
+        return;
+      }
+      set((state) => {
+        const scenarioModels = { ...state.scenarioModels };
+        (Object.keys(scenarioModels) as ScenarioKind[]).forEach((kind) => {
+          if (scenarioModels[kind].providerId === id) {
+            scenarioModels[kind] = { providerId: null, model: "" };
+          }
+        });
         return {
-          ...p,
-          models: (p.models ?? []).map((m) => (m.id === modelId ? { ...m, enabled: !m.enabled } : m)),
+          providers: state.providers.filter((p) => p.id !== id),
+          scenarioModels,
         };
-      }),
-    }));
-  },
+      });
+    },
 
-  removeModelFromProvider: (providerId, modelId) => {
-    set((s) => ({
-      providers: s.providers.map((p) => {
-        if (p.id !== providerId) return p;
+    toggleProviderEnabled: async (id) => {
+      const current = get().providers.find((p) => p.id === id);
+      if (!current) return;
+      await get().updateProvider(id, { enabled: !(current.enabled !== false) });
+    },
+
+    saveProviderApiKey: async (id, apiKey) => {
+      const trimmed = apiKey.trim();
+      if (!trimmed) return;
+      try {
+        const status = await invoke<{ set: boolean; masked?: string }>("canvas_secret_set", {
+          providerId: id,
+          apiKey: trimmed,
+        });
+        set((state) => ({
+          providers: state.providers.map((p) =>
+            p.id === id ? { ...p, apiKeySet: status.set, apiKeyMasked: status.masked } : p,
+          ),
+        }));
+      } catch (error) {
+        reportFailure("保存 APIKey", error);
+      }
+    },
+
+    clearProviderApiKey: async (id) => {
+      try {
+        await invoke("canvas_secret_clear", { providerId: id });
+        set((state) => ({
+          providers: state.providers.map((p) =>
+            p.id === id ? { ...p, apiKeySet: false, apiKeyMasked: undefined } : p,
+          ),
+        }));
+      } catch (error) {
+        reportFailure("清除 APIKey", error);
+      }
+    },
+
+    updateProviderModels: async (id, models) => {
+      await get().updateProvider(id, { models });
+    },
+
+    addModelToProvider: async (providerId, model) => {
+      try {
+        const saved = await invoke<ProviderDto>("canvas_model_save", {
+          providerId,
+          model: toWireModel(model),
+        });
+        drafts.delete(providerId);
+        set((state) => ({
+          providers: state.providers.map((p) =>
+            p.id === providerId ? providerFromDto(saved) : p,
+          ),
+        }));
+      } catch (error) {
+        reportFailure("保存模型", error);
+      }
+    },
+
+    setModelScenarios: async (providerId, modelId, scenarios) => {
+      const provider = get().providers.find((p) => p.id === providerId);
+      if (!provider) return;
+      const normalized = normalizeScenarios(scenarios);
+      const models = (provider.models ?? []).map((model) =>
+        model.id === modelId ? { ...model, scenarios: normalized } : model,
+      );
+      await get().updateProviderModels(providerId, models);
+    },
+
+    toggleModelEnabled: async (providerId, modelId) => {
+      const provider = get().providers.find((p) => p.id === providerId);
+      if (!provider) return;
+      const models = (provider.models ?? []).map((model) =>
+        model.id === modelId ? { ...model, enabled: !model.enabled } : model,
+      );
+      await get().updateProviderModels(providerId, models);
+    },
+
+    removeModelFromProvider: async (providerId, modelId) => {
+      try {
+        await invoke("canvas_model_remove", { providerId, modelId });
+        drafts.delete(providerId);
+        set((state) => ({
+          providers: state.providers.map((p) =>
+            p.id === providerId
+              ? { ...p, models: (p.models ?? []).filter((m) => m.id !== modelId) }
+              : p,
+          ),
+        }));
+      } catch (error) {
+        reportFailure("删除模型", error);
+      }
+    },
+
+    discoverModels: async (providerId) => {
+      try {
+        return await invoke<string[]>("canvas_models_discover", { providerId });
+      } catch (error) {
+        reportFailure("获取模型清单", error);
+        return [];
+      }
+    },
+
+    setScenarioBinding: async (scenario, binding) => {
+      const scenarioModels = { ...get().scenarioModels, [scenario]: binding };
+      set({ scenarioModels });
+      try {
+        await invoke("canvas_bindings_save", {
+          workspaceId: null,
+          bindings: bindingsToWire(scenarioModels),
+        });
+      } catch (error) {
+        reportFailure("保存场景绑定", error);
+      }
+    },
+
+    testConnection: async (providerId, modelId, scenario) => {
+      try {
+        return await invoke<ConnectionTestResult>("canvas_provider_test", {
+          providerId,
+          modelId,
+          scenario,
+        });
+      } catch (error) {
+        reportFailure("测试连接", error);
         return {
-          ...p,
-          models: (p.models ?? []).filter((m) => m.id !== modelId),
+          ok: false,
+          code: "InvokeFailed",
+          message: error instanceof Error ? error.message : String(error),
+          endpoint: "",
+          modelId,
+          latencyMs: 0,
         };
-      }),
-    }));
-  },
+      }
+    },
 
-  setScenarioBinding: (scenario, binding) => {
-    set((s) => ({
-      scenarioModels: { ...s.scenarioModels, [scenario]: binding },
-    }));
-  },
-
-  setWorkspaceDir: (kind, dir) => {
-    set((s) => ({
-      workspace: { ...s.workspace, [kind]: dir },
-    }));
-  },
-}));
-
-useCanvasSettingsStore.subscribe((state) => {
-  try {
-    localStorage.setItem(STORAGE_KEY, serialize(state));
-  } catch {
-    // storage full or unavailable
-  }
+    setWorkspaceDir: (kind, dir) => {
+      const workspace = { ...get().workspace, [kind]: dir };
+      set({ workspace });
+      saveWorkspace(workspace);
+    },
+  };
 });
+
+// 画布窗口一启动就向内核拉取一次真实配置。
+void useCanvasSettingsStore.getState().loadFromBackend();
+
+/**
+ * 节点配置面板用：某个场景下可选的模型列表。
+ *
+ * 后端还没有配置任何该场景的模型时，返回一个明确的“未配置模型”占位，
+ * 不再写死 DeepSeek 之类的默认模型名。
+ */
+export function useScenarioModelOptions(
+  scenario: ModelScenario,
+  current?: string,
+): Array<{ value: string; label: string }> {
+  const providers = useCanvasSettingsStore((state) => state.providers);
+  return useMemo(() => {
+    const options = scenarioModelOptions(providers, scenario, current);
+    return options.length > 0 ? options : [{ value: "", label: "未配置模型" }];
+  }, [providers, scenario, current]);
+}

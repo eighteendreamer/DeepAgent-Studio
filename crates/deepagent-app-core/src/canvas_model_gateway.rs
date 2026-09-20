@@ -15,9 +15,16 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+use deepagent_core::error::Result as CoreResult;
+use deepagent_runtime::workflow::{
+    CanvasCompletionRequest, CanvasCompletionResponse, CanvasEmbeddingRequest,
+    CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse, CanvasModelBridge,
+};
 
 use crate::canvas_provider_service::{
     endpoint_url, CanvasProtocol, CanvasProviderService, CanvasRequestKind, CanvasScenario,
@@ -512,6 +519,7 @@ pub enum CanvasModelOutput {
 
 /// Result of a connectivity probe, safe to show in the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CanvasConnectionTestResult {
     pub ok: bool,
     pub code: String,
@@ -680,6 +688,78 @@ impl CanvasModelGateway {
             return Err(CanvasError::new(CanvasErrorCode::ProviderFailure, err));
         }
         parse_output(candidate, kind, &value).await
+    }
+
+    /// List the provider's real model catalog through `GET {base}/models`.
+    ///
+    /// Only the OpenAI-compatible protocol exposes a catalog endpoint; other
+    /// protocols surface `UnsupportedCapability` rather than a fake preset list.
+    pub async fn discover_models(&self, provider_id: &str) -> CanvasResult<Vec<String>> {
+        let provider = self
+            .providers
+            .provider(provider_id)
+            .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?;
+        let api_key = self
+            .providers
+            .provider_api_key(provider_id)
+            .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?
+            .filter(|k| !k.trim().is_empty())
+            .ok_or_else(|| {
+                CanvasError::new(
+                    CanvasErrorCode::SecretMissing,
+                    format!("provider `{}` has no stored api key", provider.name),
+                )
+            })?;
+        let endpoint = endpoint_url(
+            provider.protocol,
+            &provider.base_url,
+            CanvasRequestKind::Models,
+            None,
+        )
+        .map_err(|e| CanvasError::new(CanvasErrorCode::UnsupportedCapability, e.to_string()))?;
+        let request = apply_auth_headers(
+            self.http.get(&endpoint).timeout(Duration::from_secs(30)),
+            provider.protocol,
+            &api_key,
+        );
+        let resp = request.send().await.map_err(|e| {
+            CanvasError::new(
+                CanvasErrorCode::TransientFailure,
+                format!("model discovery failed: {e}"),
+            )
+        })?;
+        let status = resp.status();
+        let raw = resp.text().await.map_err(|e| {
+            CanvasError::new(
+                CanvasErrorCode::TransientFailure,
+                format!("reading model catalog: {e}"),
+            )
+        })?;
+        if !status.is_success() {
+            return Err(classify_status(status.as_u16(), &raw));
+        }
+        let value: Value = serde_json::from_str(&raw).map_err(|e| {
+            CanvasError::new(
+                CanvasErrorCode::ProviderFailure,
+                format!("model catalog is not valid JSON: {e}"),
+            )
+        })?;
+        let items = value
+            .get("data")
+            .and_then(Value::as_array)
+            .or_else(|| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut ids: Vec<String> = Vec::new();
+        for item in items {
+            if let Some(id) = item.get("id").and_then(Value::as_str) {
+                let id = id.trim().to_string();
+                if !id.is_empty() && !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        Ok(ids)
     }
 
     /// Probe a saved provider/model with a minimal chat or embeddings call.
@@ -921,6 +1001,7 @@ fn build_request_body(
                 CanvasRequestKind::ImageEdit => "image_edit",
                 CanvasRequestKind::SpeechTranscribe => "speech_transcribe",
                 CanvasRequestKind::SpeechSynthesize => "speech_synthesize",
+                CanvasRequestKind::Models => "models",
             };
             return Err(CanvasError::new(
                 CanvasErrorCode::UnsupportedCapability,
@@ -1113,6 +1194,10 @@ async fn parse_output(
                 model_id,
             })
         }
+        CanvasRequestKind::Models => Err(CanvasError::new(
+            CanvasErrorCode::ProviderFailure,
+            "model catalogs are parsed by discover_models".to_string(),
+        )),
         CanvasRequestKind::SpeechTranscribe | CanvasRequestKind::SpeechSynthesize => {
             Err(CanvasError::new(
                 CanvasErrorCode::UnsupportedCapability,
@@ -1243,6 +1328,172 @@ fn content_to_text(value: &Value) -> Option<String> {
             (!text.is_empty()).then_some(text)
         }
         _ => None,
+    }
+}
+
+/// The separator the canvas UI uses to address one model of one provider.
+pub const MODEL_REF_SEPARATOR: &str = "::";
+
+/// Split a `providerId::modelId` reference. A bare legacy name (no separator)
+/// yields `None`, which means "route by scenario candidates".
+pub fn decode_model_ref(model_ref: &str) -> Option<(&str, &str)> {
+    let index = model_ref.find(MODEL_REF_SEPARATOR)?;
+    if index == 0 {
+        return None;
+    }
+    let provider_id = model_ref[..index].trim();
+    let model_id = model_ref[index + MODEL_REF_SEPARATOR.len()..].trim();
+    if provider_id.is_empty() || model_id.is_empty() {
+        return None;
+    }
+    Some((provider_id, model_id))
+}
+
+fn to_core_error(error: CanvasError) -> deepagent_core::error::CoreError {
+    deepagent_core::error::CoreError::other(error.to_string())
+}
+
+#[async_trait]
+impl CanvasModelBridge for CanvasModelGateway {
+    async fn complete(
+        &self,
+        request: CanvasCompletionRequest,
+    ) -> CoreResult<CanvasCompletionResponse> {
+        let model_request = CanvasModelRequest {
+            operation: CanvasOperation::TextGenerate,
+            prompt: request.prompt.clone(),
+            system_prompt: request.system_prompt.clone(),
+            images: request
+                .images
+                .iter()
+                .map(|url| CanvasImageInput {
+                    data_url: url.clone(),
+                })
+                .collect(),
+            texts: Vec::new(),
+            size: None,
+            timeout_ms: 120_000,
+        };
+        validate_request(&model_request).map_err(to_core_error)?;
+        let output = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref) {
+            self.execute_on(provider_id, model_id, &model_request)
+                .await
+                .map_err(to_core_error)?
+        } else {
+            self.execute(&model_request, None)
+                .await
+                .map_err(to_core_error)?
+        };
+        match output {
+            CanvasModelOutput::Text {
+                text,
+                provider_id,
+                model_id,
+            } => Ok(CanvasCompletionResponse {
+                text,
+                provider_id,
+                model_id,
+            }),
+            other => Err(deepagent_core::error::CoreError::other(format!(
+                "text node received a non-text model output: {other:?}"
+            ))),
+        }
+    }
+
+    async fn generate_image(&self, request: CanvasImageRequest) -> CoreResult<CanvasImageResponse> {
+        let has_reference = !request.reference_images.is_empty();
+        let operation = if has_reference {
+            CanvasOperation::ImageEdit
+        } else {
+            CanvasOperation::ImageGenerate
+        };
+        let model_request = CanvasModelRequest {
+            operation,
+            prompt: request.prompt.clone(),
+            system_prompt: None,
+            images: request
+                .reference_images
+                .iter()
+                .map(|url| CanvasImageInput {
+                    data_url: url.clone(),
+                })
+                .collect(),
+            texts: Vec::new(),
+            size: request.size.clone(),
+            timeout_ms: 300_000,
+        };
+        validate_request(&model_request).map_err(to_core_error)?;
+        let output = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref) {
+            self.execute_on(provider_id, model_id, &model_request)
+                .await
+                .map_err(to_core_error)?
+        } else {
+            self.execute(&model_request, None)
+                .await
+                .map_err(to_core_error)?
+        };
+        match output {
+            CanvasModelOutput::Image {
+                mime,
+                bytes,
+                provider_id,
+                model_id,
+            } => Ok(CanvasImageResponse {
+                data_url: format!(
+                    "data:{mime};base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(&bytes)
+                ),
+                mime,
+                provider_id,
+                model_id: model_id.clone(),
+                operation: if has_reference {
+                    "edit".to_string()
+                } else {
+                    "generate".to_string()
+                },
+            }),
+            other => Err(deepagent_core::error::CoreError::other(format!(
+                "image node received a non-image model output: {other:?}"
+            ))),
+        }
+    }
+
+    async fn embed(&self, request: CanvasEmbeddingRequest) -> CoreResult<CanvasEmbeddingResponse> {
+        let model_request = CanvasModelRequest {
+            operation: CanvasOperation::Embedding,
+            prompt: request.texts.first().cloned().unwrap_or_default(),
+            system_prompt: None,
+            images: Vec::new(),
+            texts: request.texts.clone(),
+            size: None,
+            timeout_ms: 120_000,
+        };
+        let output = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref) {
+            self.execute_on(provider_id, model_id, &model_request)
+                .await
+                .map_err(to_core_error)?
+        } else {
+            self.execute(&model_request, None)
+                .await
+                .map_err(to_core_error)?
+        };
+        match output {
+            CanvasModelOutput::Embedding {
+                vector,
+                dimensions,
+                provider_id,
+                model_id,
+            } => Ok(CanvasEmbeddingResponse {
+                dimensions,
+                count: 1,
+                provider_id,
+                model_id,
+                vectors: vec![vector],
+            }),
+            other => Err(deepagent_core::error::CoreError::other(format!(
+                "embedding node received a non-vector model output: {other:?}"
+            ))),
+        }
     }
 }
 
@@ -1500,6 +1751,7 @@ mod tests {
                 protocol: CanvasProtocol::OpenAi,
                 base_url: "https://x".to_string(),
                 enabled: true,
+                logo: None,
                 models: vec![],
             },
             model: CanvasModelConfig {

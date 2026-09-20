@@ -13,6 +13,10 @@ use std::time::Instant;
 use async_trait::async_trait;
 use deepagent_core::message::Message;
 use deepagent_models::chat_completions::ChatCompletionRequest;
+
+use super::canvas::{
+    CanvasCompletionRequest, CanvasEmbeddingRequest, CanvasImageRequest, CanvasModelBridge,
+};
 use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
 
@@ -44,6 +48,7 @@ pub struct WorkflowAgent {
     model_name: Option<String>,
     knowledge_retriever: Option<Arc<dyn KnowledgeRetriever>>,
     tool_executor: Option<Arc<dyn ToolExecutor>>,
+    canvas_bridge: Option<Arc<dyn CanvasModelBridge>>,
     usage: RunUsage,
 }
 
@@ -68,6 +73,7 @@ impl WorkflowAgent {
             model_name: None,
             knowledge_retriever: None,
             tool_executor: None,
+            canvas_bridge: None,
             usage: RunUsage::default(),
         }
     }
@@ -88,6 +94,14 @@ impl WorkflowAgent {
     /// Attach a knowledge retriever so knowledge-retrieval nodes can search.
     pub fn with_knowledge_retriever(mut self, retriever: Arc<dyn KnowledgeRetriever>) -> Self {
         self.knowledge_retriever = Some(retriever);
+        self
+    }
+
+    /// Attach the canvas model bridge so nodes can call the provider model the
+    /// user configured in the canvas settings (database-backed). Without it,
+    /// model nodes keep using the run-level chat model.
+    pub fn with_canvas_bridge(mut self, bridge: Arc<dyn CanvasModelBridge>) -> Self {
+        self.canvas_bridge = Some(bridge);
         self
     }
 
@@ -146,7 +160,11 @@ impl WorkflowAgent {
             "code" => self.execute_code(&resolved_config),
             "template-transform" => self.execute_template_transform(&resolved_config),
             "list-operator" => self.execute_list_operator(&resolved_config),
-            "llm" | "agent" | "agent-v2" => self.execute_llm(kind, &resolved_config).await,
+            "llm" | "agent" | "agent-v2" | "text-gen" | "script-gen" => {
+                self.execute_llm(kind, &resolved_config).await
+            }
+            "image-gen" => self.execute_image_gen(&resolved_config).await,
+            "embeddings" => self.execute_embedding(&resolved_config).await,
             "http-request" => self.execute_http_request(&resolved_config).await,
             "tool" => self.execute_tool(&resolved_config).await,
             "knowledge-retrieval" => self.execute_knowledge_retrieval(&resolved_config).await,
@@ -382,6 +400,58 @@ impl WorkflowAgent {
     }
 
     async fn execute_llm(&mut self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
+        let model_ref = config
+            .get("llmModel")
+            .or_else(|| config.get("model"))
+            .or_else(|| config.get("classifierModel"))
+            .or_else(|| config.get("extractorModel"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let user_prompt = config
+            .get("llmPrompt")
+            .or_else(|| config.get("agentTask"))
+            .or_else(|| config.get("prompt"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let system_prompt = config
+            .get("llmSystemPrompt")
+            .or_else(|| config.get("agentSystemPrompt"))
+            .or_else(|| config.get("agentV2SystemPrompt"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if let Some(bridge) = self.canvas_bridge.clone() {
+            if !model_ref.is_empty() || self.model.is_none() {
+                let response = bridge
+                    .complete(CanvasCompletionRequest {
+                        model_ref: model_ref.clone(),
+                        system_prompt: (!system_prompt.is_empty()).then(|| system_prompt.clone()),
+                        prompt: user_prompt.clone(),
+                        temperature: config
+                            .get("llmTemperature")
+                            .or_else(|| config.get("temperature"))
+                            .and_then(Value::as_f64)
+                            .map(|value| value as f32),
+                        max_tokens: config
+                            .get("llmMaxTokens")
+                            .or_else(|| config.get("maxTokens"))
+                            .and_then(Value::as_u64)
+                            .map(|value| value as u32),
+                        images: Vec::new(),
+                    })
+                    .await?;
+                return Ok(serde_json::json!({
+                    "text": response.text,
+                    "providerId": response.provider_id,
+                    "modelId": response.model_id,
+                    "model": if model_ref.is_empty() { response.model_id.clone() } else { model_ref },
+                }));
+            }
+        }
+
         let client = match &self.model {
             Some(c) => c.clone(),
             None => {
@@ -393,19 +463,6 @@ impl WorkflowAgent {
         };
 
         let model_name = self.model_name.as_deref().unwrap_or("deepseek-chat");
-
-        let system_prompt = config
-            .get("llmSystemPrompt")
-            .or_else(|| config.get("agentSystemPrompt"))
-            .or_else(|| config.get("agentV2SystemPrompt"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-
-        let user_prompt = config
-            .get("llmPrompt")
-            .or_else(|| config.get("agentTask"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
 
         let temperature = config
             .get("llmTemperature")
@@ -457,6 +514,109 @@ impl WorkflowAgent {
         Ok(serde_json::json!({
             "text": text,
             "usage": usage_json
+        }))
+    }
+
+    /// Execute a canvas image node. Whether the call generates a new image or
+    /// edits a reference image is decided by the resolved inputs, exactly like
+    /// the deterministic router prescribes.
+    async fn execute_image_gen(&self, config: &Map<String, Value>) -> Result<Value> {
+        let bridge = self.canvas_bridge.clone().ok_or_else(|| {
+            deepagent_core::error::CoreError::other(
+                "image nodes need the canvas model bridge; configure the canvas providers first",
+            )
+        })?;
+        let prompt = config
+            .get("prompt")
+            .or_else(|| config.get("imagePrompt"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let reference_images: Vec<String> = config
+            .get("referenceImages")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        item.as_str()
+                            .map(str::to_string)
+                            .or_else(|| item.get("url").and_then(Value::as_str).map(str::to_string))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if prompt.trim().is_empty() {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "MissingReferenceInput: image node requires a prompt",
+            ));
+        }
+        let response = bridge
+            .generate_image(CanvasImageRequest {
+                model_ref: config
+                    .get("imageModel")
+                    .or_else(|| config.get("model"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                prompt,
+                reference_images,
+                size: config
+                    .get("size")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+            .await?;
+        Ok(serde_json::json!({
+            "imageUrl": response.data_url,
+            "imageDataUrl": response.data_url,
+            "mime": response.mime,
+            "operation": response.operation,
+            "providerId": response.provider_id,
+            "modelId": response.model_id,
+        }))
+    }
+
+    async fn execute_embedding(&self, config: &Map<String, Value>) -> Result<Value> {
+        let bridge = self.canvas_bridge.clone().ok_or_else(|| {
+            deepagent_core::error::CoreError::other(
+                "embedding nodes need the canvas model bridge; configure a vector model first",
+            )
+        })?;
+        let texts: Vec<String> = config
+            .get("texts")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+            .or_else(|| {
+                config
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|one| vec![one.to_string()])
+            })
+            .unwrap_or_default();
+        let response = bridge
+            .embed(CanvasEmbeddingRequest {
+                model_ref: config
+                    .get("embeddingModel")
+                    .or_else(|| config.get("model"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                texts,
+            })
+            .await?;
+        Ok(serde_json::json!({
+            "count": response.count,
+            "dimensions": response.dimensions,
+            "providerId": response.provider_id,
+            "modelId": response.model_id,
         }))
     }
 
@@ -863,6 +1023,193 @@ mod tests {
             source_handle: None,
             target_handle: None,
         }
+    }
+
+    use crate::workflow::canvas::{
+        CanvasCompletionResponse, CanvasEmbeddingResponse, CanvasImageResponse,
+    };
+    use async_trait::async_trait;
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct RecordingBridge {
+        completions: Arc<Mutex<Vec<CanvasCompletionRequest>>>,
+        images: Arc<Mutex<Vec<CanvasImageRequest>>>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl CanvasModelBridge for RecordingBridge {
+        async fn complete(
+            &self,
+            request: CanvasCompletionRequest,
+        ) -> deepagent_core::error::Result<CanvasCompletionResponse> {
+            self.completions.lock().unwrap().push(request);
+            if self.fail {
+                return Err(deepagent_core::error::CoreError::other(
+                    "SecretMissing: provider has no api key",
+                ));
+            }
+            Ok(CanvasCompletionResponse {
+                text: "from canvas provider".to_string(),
+                provider_id: "cvp-1".to_string(),
+                model_id: "gpt-5.6-sol".to_string(),
+            })
+        }
+
+        async fn generate_image(
+            &self,
+            request: CanvasImageRequest,
+        ) -> deepagent_core::error::Result<CanvasImageResponse> {
+            let edited = !request.reference_images.is_empty();
+            self.images.lock().unwrap().push(request);
+            Ok(CanvasImageResponse {
+                data_url: "data:image/png;base64,AA".to_string(),
+                mime: "image/png".to_string(),
+                provider_id: "cvp-1".to_string(),
+                model_id: "gpt-image-2".to_string(),
+                operation: if edited { "edit" } else { "generate" }.to_string(),
+            })
+        }
+
+        async fn embed(
+            &self,
+            request: CanvasEmbeddingRequest,
+        ) -> deepagent_core::error::Result<CanvasEmbeddingResponse> {
+            Ok(CanvasEmbeddingResponse {
+                dimensions: 3,
+                count: request.texts.len(),
+                provider_id: "cvp-2".to_string(),
+                model_id: "Qwen/Qwen3-VL-Embedding-8B".to_string(),
+                vectors: Vec::new(),
+            })
+        }
+    }
+
+    fn config(pairs: &[(&str, Value)]) -> Map<String, Value> {
+        let mut config = Map::new();
+        for (key, value) in pairs {
+            config.insert((*key).to_string(), value.clone());
+        }
+        config
+    }
+
+    fn agent_with_bridge(bridge: RecordingBridge) -> WorkflowAgent {
+        let definition = WorkflowDefinition {
+            version: 1,
+            nodes: vec![make_start("start-1"), make_end("end-1")],
+            edges: vec![make_edge("e1", "start-1", "end-1")],
+        };
+        let compiled = compile(definition).unwrap();
+        WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default())
+            .with_canvas_bridge(Arc::new(bridge))
+    }
+
+    #[tokio::test]
+    async fn llm_node_with_explicit_canvas_model_uses_the_bridge() {
+        let bridge = RecordingBridge::default();
+        let records = bridge.completions.clone();
+        let mut agent = agent_with_bridge(bridge);
+        let outcome = agent
+            .execute_node_inline(
+                "llm",
+                &config(&[
+                    ("llmModel", json!("cvp-1::gpt-5.6-sol")),
+                    ("llmPrompt", json!("write a tagline")),
+                    ("llmSystemPrompt", json!("be brief")),
+                ]),
+            )
+            .await
+            .expect("bridge call succeeds");
+        assert_eq!(outcome["text"], "from canvas provider");
+        assert_eq!(outcome["providerId"], "cvp-1");
+        assert_eq!(outcome["modelId"], "gpt-5.6-sol");
+        let recorded = records.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].model_ref, "cvp-1::gpt-5.6-sol");
+        assert_eq!(recorded[0].prompt, "write a tagline");
+        assert_eq!(recorded[0].system_prompt.as_deref(), Some("be brief"));
+    }
+
+    #[tokio::test]
+    async fn bridge_failure_surfaces_instead_of_falling_back() {
+        let bridge = RecordingBridge {
+            fail: true,
+            ..Default::default()
+        };
+        let mut agent = agent_with_bridge(bridge);
+        let error = agent
+            .execute_node_inline(
+                "llm",
+                &config(&[
+                    ("llmModel", json!("cvp-1::gpt-5.6-sol")),
+                    ("llmPrompt", json!("hi")),
+                ]),
+            )
+            .await
+            .expect_err("no silent fallback");
+        assert!(error.to_string().contains("SecretMissing"));
+    }
+
+    #[tokio::test]
+    async fn creative_text_gen_node_reads_plain_prompt_field() {
+        let bridge = RecordingBridge::default();
+        let mut agent = agent_with_bridge(bridge);
+        let outcome = agent
+            .execute_node_inline(
+                "text-gen",
+                &config(&[
+                    ("model", json!("cvp-1::gpt-5.6-sol")),
+                    ("prompt", json!("hello")),
+                ]),
+            )
+            .await
+            .expect("creative text node");
+        assert_eq!(outcome["text"], "from canvas provider");
+    }
+
+    #[tokio::test]
+    async fn image_node_with_reference_reports_edit_operation() {
+        let bridge = RecordingBridge::default();
+        let mut agent = agent_with_bridge(bridge);
+        let outcome = agent
+            .execute_node_inline(
+                "image-gen",
+                &config(&[
+                    ("imageModel", json!("cvp-1::gpt-image-2")),
+                    ("prompt", json!("make it night")),
+                    ("referenceImages", json!(["data:image/png;base64,BB"])),
+                ]),
+            )
+            .await
+            .expect("image edit");
+        assert_eq!(outcome["operation"], "edit");
+        assert_eq!(outcome["imageUrl"], "data:image/png;base64,AA");
+    }
+
+    #[tokio::test]
+    async fn image_node_without_prompt_fails_with_missing_reference_input() {
+        let bridge = RecordingBridge::default();
+        let mut agent = agent_with_bridge(bridge);
+        let error = agent
+            .execute_node_inline("image-gen", &config(&[("prompt", json!("  "))]))
+            .await
+            .expect_err("empty prompt must fail");
+        assert!(error.to_string().contains("MissingReferenceInput"));
+    }
+
+    #[tokio::test]
+    async fn embedding_node_returns_dimensions_without_vectors() {
+        let bridge = RecordingBridge::default();
+        let mut agent = agent_with_bridge(bridge);
+        let outcome = agent
+            .execute_node_inline("embeddings", &config(&[("texts", json!(["a", "b"]))]))
+            .await
+            .expect("embedding node");
+        assert_eq!(outcome["dimensions"], 3);
+        assert_eq!(outcome["count"], 2);
+        assert!(outcome.get("vectors").is_none());
     }
 
     #[tokio::test]

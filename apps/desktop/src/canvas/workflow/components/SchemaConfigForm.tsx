@@ -4,7 +4,7 @@ import { Button } from "../../../components/shadcn/button";
 import type { NodeConfigSchema, ProfessionalNodeData } from "../types";
 import { getNodeConfigIssues, getNodeDefinition } from "../utils/nodeRegistry";
 import { createSchemaValue, reconcileArrayKeys, validateSchemaValue } from "../utils/configSchema";
-import { useCanvasSettingsStore } from "../store/canvasSettingsStore";
+import { scenarioModelOptions, useCanvasSettingsStore } from "../store/canvasSettingsStore";
 import { CANVAS_BUTTON_CLASS, CanvasField, CanvasInput, CanvasSelect, CanvasTextarea } from "./CanvasFields";
 import { VariablePicker } from "./VariablePicker";
 import { NodeOutputPanel } from "./NodeOutputPanel";
@@ -40,12 +40,9 @@ function JsonEditor({ value, onChange, schema, path }: EditorProps) {
 
 function ModelEditor({ schema, value, onChange, path }: EditorProps) {
   const providers = useCanvasSettingsStore((state) => state.providers);
-  const options = providers.filter((provider) => provider.enabled !== false).flatMap((provider) =>
-    (provider.models ?? []).filter((model) => model.enabled && model.scenarios?.includes("text")).map((model) => ({
-      value: `${provider.id}::${model.id}`, label: `${provider.name} / ${model.name}`,
-    })),
-  );
-  return <CanvasSelect id={path} label={schema.title} value={String(value ?? "")} onChange={onChange} options={[{ value: "", label: "使用默认文本模型" }, ...options]} />;
+  const current = String(value ?? "");
+  const options = scenarioModelOptions(providers, "text", current || undefined);
+  return <CanvasSelect id={path} label={schema.title} value={current} onChange={onChange} options={[{ value: "", label: "使用默认文本模型" }, ...options]} />;
 }
 
 function ArrayEditor(props: EditorProps) {

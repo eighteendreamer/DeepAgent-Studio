@@ -104,6 +104,9 @@ pub struct ChatService {
     /// are registered. When unset, behavior is identical to before the feature
     /// (no injection, no tools) — preserving backward compatibility.
     knowledge: Option<Arc<crate::knowledge_service::KnowledgeService>>,
+    /// Canvas provider gateway. When set, canvas workflow nodes call the
+    /// model the user configured in canvas settings instead of the chat model.
+    canvas_model: Option<Arc<crate::canvas_model_gateway::CanvasModelGateway>>,
     /// Optional project-map reader. When set, read-only `code_map_*` tools are
     /// registered for the active project so the model can locate code before
     /// broad file reads.
@@ -239,6 +242,7 @@ impl ChatService {
             plugins: None,
             projects: None,
             knowledge: None,
+            canvas_model: None,
             project_map: None,
             office: None,
             cost: None,
@@ -388,6 +392,16 @@ impl ChatService {
         knowledge: Arc<crate::knowledge_service::KnowledgeService>,
     ) -> Self {
         self.knowledge = Some(knowledge);
+        self
+    }
+
+    /// Attach the canvas model gateway so workflow nodes can use the providers
+    /// stored in the application database.
+    pub fn with_canvas_model(
+        mut self,
+        gateway: Arc<crate::canvas_model_gateway::CanvasModelGateway>,
+    ) -> Self {
+        self.canvas_model = Some(gateway);
         self
     }
 
@@ -1067,6 +1081,7 @@ impl ChatService {
             runtime_logs: &self.runtime_logs,
             cost: &self.cost,
             knowledge: &self.knowledge,
+            canvas_model: &self.canvas_model,
             skills: &self.skills,
             mcp: &self.mcp,
             plugins: &self.plugins,

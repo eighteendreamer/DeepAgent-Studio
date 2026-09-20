@@ -1,4 +1,5 @@
 mod agent;
+pub mod canvas;
 mod graph;
 pub mod knowledge;
 mod node_events;
@@ -6,6 +7,10 @@ pub mod tools;
 pub mod values;
 
 pub use agent::WorkflowAgent;
+pub use canvas::{
+    CanvasCompletionRequest, CanvasCompletionResponse, CanvasEmbeddingRequest,
+    CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse, CanvasModelBridge,
+};
 pub use graph::{
     compile, CompiledWorkflow, WorkflowDefinition, WorkflowEdgeSpec, WorkflowNodeSpec,
     WorkflowRequest,

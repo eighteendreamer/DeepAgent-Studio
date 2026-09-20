@@ -4,7 +4,6 @@ import {
   Bot,
   CheckCircle2,
   CircleAlert,
-  Copy,
   Cpu,
   Eye,
   EyeOff,
@@ -393,75 +392,6 @@ export function ProviderLogo({
   }
 }
 
-interface ProviderTemplate {
-  name: string;
-  protocol: ModelProtocol;
-  baseUrl: string;
-  tag: string;
-  logo?: string;
-  defaultModels: Array<{ id: string; name: string; description: string }>;
-}
-
-const TEMPLATES: ProviderTemplate[] = [
-  {
-    name: "DeepSeek 官方",
-    protocol: "openai",
-    baseUrl: "https://api.deepseek.com/v1",
-    tag: "DeepSeek",
-    logo: "deepseek",
-    defaultModels: [
-      { id: "deepseek-chat", name: "DeepSeek V3", description: "通用对话与全能编码 (128K 上下文)" },
-      { id: "deepseek-reasoner", name: "DeepSeek R1", description: "深度推理与高难度逻辑思考 (64K)" },
-    ],
-  },
-  {
-    name: "OpenAI 官方",
-    protocol: "openai",
-    baseUrl: "https://api.openai.com/v1",
-    tag: "OpenAI",
-    logo: "openai",
-    defaultModels: [
-      { id: "gpt-4o", name: "GPT-4o", description: "全模态高智力旗舰 (128K)" },
-      { id: "gpt-4o-mini", name: "GPT-4o Mini", description: "高速轻量经济模型 (128K)" },
-      { id: "o3-mini", name: "o3-mini", description: "高效科学推理与数学 (200K)" },
-    ],
-  },
-  {
-    name: "Anthropic Claude",
-    protocol: "anthropic",
-    baseUrl: "https://api.anthropic.com/v1",
-    tag: "Claude",
-    logo: "anthropic",
-    defaultModels: [
-      { id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet", description: "混合推理与编码旗舰 (200K)" },
-      { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet", description: "经典代码与指令遵循模型 (200K)" },
-      { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku", description: "极速日常响应轻量版 (200K)" },
-    ],
-  },
-  {
-    name: "SiliconFlow 硅基流动",
-    protocol: "openai",
-    baseUrl: "https://api.siliconflow.cn/v1",
-    tag: "SiliconFlow",
-    logo: "siliconflow",
-    defaultModels: [
-      { id: "deepseek-ai/DeepSeek-V3", name: "DeepSeek-V3 (云托管)", description: "满血高并发通用模型" },
-      { id: "deepseek-ai/DeepSeek-R1", name: "DeepSeek-R1 (云托管)", description: "满血深度推理模型" },
-    ],
-  },
-  {
-    name: "Ollama (本地)",
-    protocol: "openai",
-    baseUrl: "http://localhost:11434/v1",
-    tag: "Ollama",
-    logo: "ollama",
-    defaultModels: [
-      { id: "deepseek-r1:8b", name: "DeepSeek-R1 8B", description: "本地离线推理轻量版" },
-      { id: "qwen2.5-coder:7b", name: "Qwen 2.5 Coder 7B", description: "本地高性价比代码模型" },
-    ],
-  },
-];
-
 const PROTOCOLS: { value: ModelProtocol; label: string }[] = [
   { value: "openai", label: "OpenAI" },
   { value: "anthropic", label: "Anthropic" },
@@ -474,6 +404,7 @@ const MODEL_SCENARIO_OPTIONS: { value: ModelScenario; label: string }[] = [
   { value: "video_generation", label: "视频生成" },
   { value: "speech_to_text", label: "语音转文字" },
   { value: "text_to_speech", label: "文字转语音" },
+  { value: "embedding", label: "向量" },
 ];
 
 function scenarioLabels(scenarios?: ModelScenario[]): string[] {
@@ -503,6 +434,10 @@ export function ModelSettingsTab() {
   const setModelScenarios = useCanvasSettingsStore((s) => s.setModelScenarios);
   const toggleModelEnabled = useCanvasSettingsStore((s) => s.toggleModelEnabled);
   const removeModelFromProvider = useCanvasSettingsStore((s) => s.removeModelFromProvider);
+  const saveProviderApiKey = useCanvasSettingsStore((s) => s.saveProviderApiKey);
+  const clearProviderApiKey = useCanvasSettingsStore((s) => s.clearProviderApiKey);
+  const testConnection = useCanvasSettingsStore((s) => s.testConnection);
+  const discoverModels = useCanvasSettingsStore((s) => s.discoverModels);
 
   // 模式切换：AI 服务商 vs 模型管理
   const [mode, setMode] = useState<ModelSettingsMode>("providers");
@@ -520,7 +455,9 @@ export function ModelSettingsTab() {
 
   // API Key 显隐状态
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
-  const [copiedKey, setCopiedKey] = useState(false);
+    // 密钥草稿：只在点“保存”时提交给后端，随后即从本地状态丢弃
+  const [keyDraft, setKeyDraft] = useState<Record<string, string>>({});
+  const [discoveringProviderId, setDiscoveringProviderId] = useState<string | null>(null);
 
   // 连接测试状态
   const [pingStatus, setPingStatus] = useState<Record<string, PingStatus>>({});
@@ -653,127 +590,95 @@ export function ModelSettingsTab() {
   );
 
   // 打开添加供应商弹窗
-  const handleOpenAddProviderDialog = (tmpl?: ProviderTemplate) => {
+  const handleOpenAddProviderDialog = () => {
     setProviderForm({
-      name: tmpl?.name ?? "",
-      protocol: tmpl?.protocol ?? "openai",
-      baseUrl: tmpl?.baseUrl ?? "",
+      name: "",
+      protocol: "openai",
+      baseUrl: "",
       apiKey: "",
-      logo: tmpl?.logo ?? "",
+      logo: "",
     });
     setAddProviderDialogOpen(true);
   };
 
-  // 确认添加供应商
-  const handleConfirmAddProvider = () => {
+    // 确认添加供应商（配置写进后端数据库，密钥写进加密密钥库）
+  const handleConfirmAddProvider = async () => {
     const trimmedName = providerForm.name.trim();
     const trimmedUrl = providerForm.baseUrl.trim();
     if (!trimmedName || !trimmedUrl) return;
 
-    // 寻找预设推荐模型
-    const tmpl = TEMPLATES.find((t) => t.name === trimmedName);
-    const defaultModels = (tmpl?.defaultModels ?? []).map((m) => ({
-      ...m,
-      enabled: true,
-    }));
-
-    const newId = addProvider({
+    const newId = await addProvider({
       name: trimmedName,
       protocol: providerForm.protocol,
       baseUrl: trimmedUrl,
-      apiKey: providerForm.apiKey.trim(),
       logo: providerForm.logo.trim() || undefined,
       enabled: true,
-      models: defaultModels,
+      models: [],
     });
+    if (!newId) return;
+    const apiKey = providerForm.apiKey.trim();
+    if (apiKey) await saveProviderApiKey(newId, apiKey);
 
     setSelectedProviderId(newId);
     setAddProviderDialogOpen(false);
   };
 
-  // 测试连通性
+    // 测试连通性：请求由内核发出，密钥不回到渲染进程
   const handleTestConnection = async (provider: ModelProvider) => {
-    setPingStatus((s) => ({
-      ...s,
-      [provider.id]: { testing: true, message: "正在测试连接..." },
-    }));
-
-    const start = performance.now();
-    try {
-      const trimmedUrl = provider.baseUrl.trim().replace(/\/+$/, "");
-      const testUrl = `${trimmedUrl}/models`;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
-      const headers: Record<string, string> = {};
-      if (provider.apiKey.trim()) {
-        if (provider.protocol === "anthropic") {
-          headers["x-api-key"] = provider.apiKey.trim();
-          headers["anthropic-version"] = "2023-06-01";
-        } else {
-          headers["Authorization"] = `Bearer ${provider.apiKey.trim()}`;
-        }
-      }
-
-      const res = await fetch(testUrl, {
-        method: "GET",
-        headers,
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      const ms = Math.round(performance.now() - start);
-
-      if (res.ok) {
-        setPingStatus((s) => ({
-          ...s,
-          [provider.id]: { testing: false, ok: true, message: `连接正常 (${res.status} OK · ${ms}ms)`, latency: ms },
-        }));
-      } else {
-        setPingStatus((s) => ({
-          ...s,
-          [provider.id]: { testing: false, ok: false, message: `服务返回状态 ${res.status} (${res.statusText} · ${ms}ms)`, latency: ms },
-        }));
-      }
-    } catch (err: any) {
-      const ms = Math.round(performance.now() - start);
-      const isTimeout = err.name === "AbortError";
-      setPingStatus((s) => ({
-        ...s,
+    const models = provider.models ?? [];
+    const target = models.find((model) => model.enabled) ?? models[0];
+    if (!target) {
+      setPingStatus((state) => ({
+        ...state,
         [provider.id]: {
           testing: false,
           ok: false,
-          message: isTimeout ? "连接超时 (>6000ms)" : `连接受阻: ${err.message || "网络异常"} (${ms}ms)`,
-          latency: ms,
+          message: "该供应商还没有模型，请先添加模型",
         },
       }));
+      return;
+    }
+    setPingStatus((state) => ({
+      ...state,
+      [provider.id]: { testing: true, message: "正在通过内核测试连接..." },
+    }));
+    const scenario = (target.scenarios ?? [])[0] ?? "text";
+    const result = await testConnection(provider.id, target.id, scenario);
+    setPingStatus((state) => ({
+      ...state,
+      [provider.id]: {
+        testing: false,
+        ok: result.ok,
+        message: result.ok
+          ? `连接正常 (${result.latencyMs}ms)`
+          : `${result.code}: ${result.message}`,
+        latency: result.latencyMs,
+      },
+    }));
+  };
+
+    // 获取模型：读取服务商真实的 /models 清单，只追加本地还没有的模型
+  const handleDiscoverModels = async (provider: ModelProvider) => {
+    setDiscoveringProviderId(provider.id);
+    try {
+      const discovered = await discoverModels(provider.id);
+      if (!discovered.length) return;
+      const existing = new Set((provider.models ?? []).map((model) => model.id));
+      const additions = discovered
+        .filter((id) => !existing.has(id))
+        .map((id) => ({ id, name: id, description: "", enabled: true }));
+      if (!additions.length) return;
+      await updateProviderModels(provider.id, [...(provider.models ?? []), ...additions]);
+    } finally {
+      setDiscoveringProviderId(null);
     }
   };
 
-  // 一键同步/获取推荐模型
-  const handleFetchPresetModels = (provider: ModelProvider) => {
-    const matched = TEMPLATES.find(
-      (t) =>
-        provider.baseUrl.toLowerCase().includes(new URL(t.baseUrl).hostname.toLowerCase()) ||
-        provider.name.toLowerCase().includes(t.tag.toLowerCase()),
-    );
-    if (matched) {
-      const existingIds = new Set((provider.models ?? []).map((m) => m.id));
-      const newModels = [
-        ...(provider.models ?? []),
-        ...matched.defaultModels.filter((m) => !existingIds.has(m.id)).map((m) => ({ ...m, enabled: true })),
-      ];
-      updateProviderModels(provider.id, newModels);
-    } else {
-      const genericOpenAi = [
-        { id: "gpt-4o", name: "GPT-4o", description: "通用全模态主力模型", enabled: true },
-        { id: "gpt-4o-mini", name: "GPT-4o Mini", description: "轻量高速经济模型", enabled: true },
-      ];
-      const existingIds = new Set((provider.models ?? []).map((m) => m.id));
-      const newModels = [
-        ...(provider.models ?? []),
-        ...genericOpenAi.filter((m) => !existingIds.has(m.id)),
-      ];
-      updateProviderModels(provider.id, newModels);
-    }
+  const handleSaveApiKey = async (providerId: string) => {
+    const draft = (keyDraft[providerId] ?? "").trim();
+    if (!draft) return;
+    await saveProviderApiKey(providerId, draft);
+    setKeyDraft((state) => ({ ...state, [providerId]: "" }));
   };
 
   // 批量启用/禁用模型
@@ -782,14 +687,6 @@ export function ModelSettingsTab() {
     if (!provider) return;
     const updated = (provider.models ?? []).map((m) => ({ ...m, enabled: enableAll }));
     updateProviderModels(providerId, updated);
-  };
-
-  // 复制 Key
-  const handleCopyKey = (key: string) => {
-    if (!key) return;
-    navigator.clipboard.writeText(key);
-    setCopiedKey(true);
-    setTimeout(() => setCopiedKey(false), 1500);
   };
 
   // 提交新建模型
@@ -907,7 +804,7 @@ export function ModelSettingsTab() {
                 ) : (
                   filteredProviders.map((p) => {
                     const active = selectedProviderId === p.id;
-                    const isConfigured = Boolean(p.baseUrl && p.apiKey);
+                    const isConfigured = Boolean(p.baseUrl && p.apiKeySet);
                     const enabledCount = (p.models ?? []).filter((m) => m.enabled).length;
                     const isMasterEnabled = p.enabled !== false;
 
@@ -1063,35 +960,44 @@ export function ModelSettingsTab() {
                   {/* 2. 凭证配置区 (轻量化无卡片包裹，透明底+底部分割线) */}
                   <div className="shrink-0 py-3 border-b border-white/[0.06] space-y-2.5">
                     <div className="grid grid-cols-1 md:grid-cols-[1fr_1.2fr_140px] gap-3 items-end">
-                      {/* API Key */}
+                      {/* API Key：明文只进不出，界面回显掩码 */}
                       <div className="space-y-1">
                         <div className="flex items-center justify-between">
                           <Label className="text-[11px] text-white/50">APIKey</Label>
-                          {copiedKey && (
-                            <span className="text-[10px] text-emerald-400">已复制!</span>
-                          )}
+                          <span className="text-[10px] text-white/35">
+                            {selectedProvider.apiKeySet
+                              ? `已保存 ${selectedProvider.apiKeyMasked ?? ""}`
+                              : "未配置"}
+                          </span>
                         </div>
                         <div className="relative flex items-center">
                           <Input
                             type={showApiKey[selectedProvider.id] ? "text" : "password"}
-                            value={selectedProvider.apiKey}
-                            onChange={(e) =>
-                              updateProvider(selectedProvider.id, { apiKey: e.target.value })
+                            value={keyDraft[selectedProvider.id] ?? ""}
+                            onChange={(event) =>
+                              setKeyDraft((state) => ({
+                                ...state,
+                                [selectedProvider.id]: event.target.value,
+                              }))
                             }
-                            placeholder="请输入 APIKey (sk-...)"
-                            className="h-8 rounded-lg pr-14 text-[11px] bg-white/[0.03] border-white/[0.08] text-white/90 focus-visible:ring-1 focus-visible:ring-[#339CFF]"
+                            placeholder={
+                              selectedProvider.apiKeySet
+                                ? "输入新密钥以覆盖"
+                                : "请输入 APIKey (sk-...)"
+                            }
+                            className="h-8 rounded-lg pr-24 text-[11px] bg-white/[0.03] border-white/[0.08] text-white/90 focus-visible:ring-1 focus-visible:ring-[#339CFF]"
                           />
-                          <div className="absolute right-1 flex items-center">
+                          <div className="absolute right-1 flex items-center gap-0.5">
                             <button
                               type="button"
                               onClick={() =>
-                                setShowApiKey((s) => ({
-                                  ...s,
-                                  [selectedProvider.id]: !s[selectedProvider.id],
+                                setShowApiKey((state) => ({
+                                  ...state,
+                                  [selectedProvider.id]: !state[selectedProvider.id],
                                 }))
                               }
                               className="p-1 text-white/40 hover:text-white/80 transition-colors"
-                              title={showApiKey[selectedProvider.id] ? "隐藏 Key" : "显示 Key"}
+                              title={showApiKey[selectedProvider.id] ? "隐藏输入内容" : "显示输入内容"}
                             >
                               {showApiKey[selectedProvider.id] ? (
                                 <EyeOff size={12} />
@@ -1099,14 +1005,27 @@ export function ModelSettingsTab() {
                                 <Eye size={12} />
                               )}
                             </button>
-                            <button
+                            <Button
                               type="button"
-                              onClick={() => handleCopyKey(selectedProvider.apiKey)}
-                              className="p-1 text-white/40 hover:text-white/80 transition-colors"
-                              title="复制 Key"
+                              variant="ghost"
+                              size="sm"
+                              disabled={!(keyDraft[selectedProvider.id] ?? "").trim()}
+                              onClick={() => handleSaveApiKey(selectedProvider.id)}
+                              className="h-6 px-1.5 text-[10.5px] text-[#339CFF] hover:bg-[#339CFF]/10 hover:text-[#339CFF]"
                             >
-                              <Copy size={12} />
-                            </button>
+                              保存
+                            </Button>
+                            {selectedProvider.apiKeySet && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => clearProviderApiKey(selectedProvider.id)}
+                                className="h-6 px-1.5 text-[10.5px] text-white/45 hover:bg-white/[0.06] hover:text-red-400"
+                              >
+                                清除
+                              </Button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1211,10 +1130,17 @@ export function ModelSettingsTab() {
                             type="button"
                             variant="outline"
                             size="sm"
-                            onClick={() => handleFetchPresetModels(selectedProvider)}
+                            disabled={discoveringProviderId === selectedProvider.id}
+                            onClick={() => handleDiscoverModels(selectedProvider)}
                             className="h-7 rounded-lg border-white/[0.08] bg-white/[0.03] text-[11px] text-white/80 hover:bg-white/[0.07] px-2.5"
                           >
-                            <RefreshCw size={11} className="mr-1 text-[#339CFF]" />
+                            <RefreshCw
+                              size={11}
+                              className={cn(
+                                "mr-1 text-[#339CFF]",
+                                discoveringProviderId === selectedProvider.id && "animate-spin",
+                              )}
+                            />
                             获取模型
                           </Button>
                           <Button
@@ -1256,16 +1182,16 @@ export function ModelSettingsTab() {
                             暂无模型配置
                           </div>
                           <div className="text-[10px] text-white/40 mt-1">
-                            点击上方【获取模型】载入推荐模型清单
+                            还没有模型，点击上方按钮从服务商拉取真实模型清单
                           </div>
                           <Button
                             type="button"
                             size="sm"
-                            onClick={() => handleFetchPresetModels(selectedProvider)}
+                            onClick={() => handleDiscoverModels(selectedProvider)}
                             className="mt-3 h-7 rounded-lg bg-white/[0.08] text-[11px] text-white hover:bg-white/[0.14]"
                           >
                             <RefreshCw size={11} className="mr-1.5 text-[#339CFF]" />
-                            一键载入推荐模型清单
+                            拉取该服务商的模型清单
                           </Button>
                         </div>
                       ) : (
