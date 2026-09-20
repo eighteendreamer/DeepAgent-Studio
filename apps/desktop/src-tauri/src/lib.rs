@@ -373,6 +373,11 @@ struct AppState {
     chat: Arc<ChatService>,
     plugins: Arc<PluginService>,
     mcp: Arc<McpService>,
+    /// Infinite-canvas provider/model configuration (SQLite documents +
+    /// encrypted api keys).
+    canvas_providers: Arc<deepagent_app_core::canvas_provider_service::CanvasProviderService>,
+    /// Canvas operation routing and cross-protocol model calls.
+    canvas_gateway: Arc<deepagent_app_core::canvas_model_gateway::CanvasModelGateway>,
     knowledge: Arc<KnowledgeService>,
     cost: Arc<CostService>,
     runtime_logs: Arc<RuntimeLogStore>,
@@ -2035,6 +2040,196 @@ fn start_chat_v2(
         }
     });
     Ok(acknowledgement)
+}
+
+/// Canvas settings payload handed to the canvas window. Contains no secret
+/// material: provider entries carry only masked key presence.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanvasSettingsDto {
+    providers: Vec<deepagent_app_core::canvas_provider_service::CanvasProviderDto>,
+    bindings: Vec<deepagent_app_core::canvas_provider_service::CanvasScenarioBinding>,
+}
+
+/// Masked api-key presence for one canvas provider.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanvasSecretStatusDto {
+    set: bool,
+    masked: Option<String>,
+}
+
+/// One selectable candidate model for a scenario.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanvasCandidateDto {
+    provider_id: String,
+    provider_name: String,
+    protocol: String,
+    model_id: String,
+    model_name: String,
+    has_api_key: bool,
+}
+
+/// Read the full canvas model configuration: providers (with masked key
+/// status only) plus the workspace's scenario bindings.
+#[tauri::command]
+fn canvas_settings_read(
+    state: State<'_, AppState>,
+    workspace_id: Option<String>,
+) -> Result<CanvasSettingsDto, String> {
+    let providers = state.canvas_providers.list_providers().map_err(|e| e.to_string())?;
+    let bindings = state
+        .canvas_providers
+        .bindings(workspace_id.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(CanvasSettingsDto {
+        providers,
+        bindings,
+    })
+}
+
+/// Insert or update a canvas provider. An empty / absent `api_key` leaves the
+/// stored secret untouched; a non-empty one replaces it in the secret store.
+#[tauri::command]
+fn canvas_provider_save(
+    state: State<'_, AppState>,
+    provider: deepagent_app_core::canvas_provider_service::CanvasProviderInput,
+) -> Result<deepagent_app_core::canvas_provider_service::CanvasProviderDto, String> {
+    state
+        .canvas_providers
+        .save_provider(provider)
+        .map_err(|e| e.to_string())
+}
+
+/// Remove a provider together with its stored api key.
+#[tauri::command]
+fn canvas_provider_remove(state: State<'_, AppState>, provider_id: String) -> Result<bool, String> {
+    state
+        .canvas_providers
+        .remove_provider(&provider_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Add or replace one model under a provider.
+#[tauri::command]
+fn canvas_model_save(
+    state: State<'_, AppState>,
+    provider_id: String,
+    model: deepagent_app_core::canvas_provider_service::CanvasModelConfig,
+) -> Result<deepagent_app_core::canvas_provider_service::CanvasProviderDto, String> {
+    state
+        .canvas_providers
+        .save_model(&provider_id, model)
+        .map_err(|e| e.to_string())
+}
+
+/// Remove one model from a provider.
+#[tauri::command]
+fn canvas_model_remove(
+    state: State<'_, AppState>,
+    provider_id: String,
+    model_id: String,
+) -> Result<bool, String> {
+    state
+        .canvas_providers
+        .remove_model(&provider_id, &model_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Persist the scenario → model candidate order for a workspace.
+#[tauri::command]
+fn canvas_bindings_save(
+    state: State<'_, AppState>,
+    workspace_id: Option<String>,
+    bindings: Vec<deepagent_app_core::canvas_provider_service::CanvasScenarioBinding>,
+) -> Result<
+    Vec<deepagent_app_core::canvas_provider_service::CanvasScenarioBinding>,
+    String,
+> {
+    state
+        .canvas_providers
+        .save_bindings(workspace_id.as_deref(), bindings)
+        .map_err(|e| e.to_string())
+}
+
+/// Masked api-key presence for one provider.
+#[tauri::command]
+fn canvas_secret_status(state: State<'_, AppState>, provider_id: String) -> Result<CanvasSecretStatusDto, String> {
+    let key = state
+        .canvas_providers
+        .provider_api_key(&provider_id)
+        .map_err(|e| e.to_string())?;
+    Ok(CanvasSecretStatusDto {
+        set: key.is_some(),
+        masked: key.as_deref().map(deepagent_app_core::canvas_provider_service::mask_secret),
+    })
+}
+
+/// Store a provider api key in the encrypted secret store.
+#[tauri::command]
+fn canvas_secret_set(
+    state: State<'_, AppState>,
+    provider_id: String,
+    api_key: String,
+) -> Result<CanvasSecretStatusDto, String> {
+    state
+        .canvas_providers
+        .set_provider_api_key(&provider_id, &api_key)
+        .map_err(|e| e.to_string())?;
+    canvas_secret_status(state, provider_id)
+}
+
+/// Drop a provider api key.
+#[tauri::command]
+fn canvas_secret_clear(state: State<'_, AppState>, provider_id: String) -> Result<(), String> {
+    state
+        .canvas_providers
+        .clear_provider_api_key(&provider_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Probe a saved provider/model. The renderer never sees the key and never
+/// issues the request itself.
+#[tauri::command]
+async fn canvas_provider_test(
+    state: State<'_, AppState>,
+    provider_id: String,
+    model_id: String,
+    scenario: String,
+) -> Result<deepagent_app_core::canvas_model_gateway::CanvasConnectionTestResult, String> {
+    let scenario = deepagent_app_core::canvas_provider_service::CanvasScenario::from_label(&scenario)
+        .ok_or_else(|| format!("unknown canvas scenario `{scenario}`"))?;
+    let gateway = state.canvas_gateway.clone();
+    Ok(gateway
+        .test_connection(&provider_id, &model_id, scenario)
+        .await)
+}
+
+/// Candidate models for a scenario in fallback order.
+#[tauri::command]
+fn canvas_scenario_candidates(
+    state: State<'_, AppState>,
+    scenario: String,
+    workspace_id: Option<String>,
+) -> Result<Vec<CanvasCandidateDto>, String> {
+    let scenario = deepagent_app_core::canvas_provider_service::CanvasScenario::from_label(&scenario)
+        .ok_or_else(|| format!("unknown canvas scenario `{scenario}`"))?;
+    let candidates = state
+        .canvas_providers
+        .candidates_for_scenario(scenario, workspace_id.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(candidates
+        .into_iter()
+        .map(|candidate| CanvasCandidateDto {
+            provider_id: candidate.provider.id,
+            provider_name: candidate.provider.name,
+            protocol: candidate.provider.protocol.as_str().to_string(),
+            model_id: candidate.model.id,
+            model_name: candidate.model.name,
+            has_api_key: candidate.api_key.is_some(),
+        })
+        .collect())
 }
 
 /// Start a professional-canvas workflow run. The workflow graph is compiled
@@ -6131,6 +6326,20 @@ pub fn run() {
                 });
             });
 
+            // Canvas model configuration: same database as the main-window
+            // settings, same encrypted secret store for api keys.
+            let canvas_providers = Arc::new(
+                deepagent_app_core::canvas_provider_service::CanvasProviderService::new(
+                    service.shared_database(),
+                    sqlite_secrets.clone(),
+                ),
+            );
+            let canvas_gateway = Arc::new(
+                deepagent_app_core::canvas_model_gateway::CanvasModelGateway::new(
+                    canvas_providers.clone(),
+                ),
+            );
+
             app.manage(AppState {
                 service: Mutex::new(service),
                 settings: settings_arc,
@@ -6141,6 +6350,8 @@ pub fn run() {
                 chat,
                 plugins,
                 mcp,
+                canvas_providers,
+                canvas_gateway,
                 knowledge,
                 cost,
                 runtime_logs,
@@ -6256,6 +6467,17 @@ pub fn run() {
             run_doctor,
             start_chat_v2,
             start_workflow,
+            canvas_settings_read,
+            canvas_provider_save,
+            canvas_provider_remove,
+            canvas_model_save,
+            canvas_model_remove,
+            canvas_bindings_save,
+            canvas_secret_status,
+            canvas_secret_set,
+            canvas_secret_clear,
+            canvas_provider_test,
+            canvas_scenario_candidates,
             resolve_approval,
             stop_chat,
             cancel_run,
