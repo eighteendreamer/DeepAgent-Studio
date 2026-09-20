@@ -1110,21 +1110,7 @@ impl CanvasModelGateway {
                 format!("model catalog is not valid JSON: {e}"),
             )
         })?;
-        let items = value
-            .get("data")
-            .and_then(Value::as_array)
-            .or_else(|| value.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let mut ids: Vec<String> = Vec::new();
-        for item in items {
-            if let Some(id) = item.get("id").and_then(Value::as_str) {
-                let id = id.trim().to_string();
-                if !id.is_empty() && !ids.contains(&id) {
-                    ids.push(id);
-                }
-            }
-        }
+        let ids = model_ids_from_catalog(&value);
         Ok(ids)
     }
 
@@ -1229,6 +1215,36 @@ fn request_kind(operation: CanvasOperation) -> CanvasResult<CanvasRequestKind> {
             ))
         }
     })
+}
+
+/// Provider model catalog → usable model ids.
+///
+/// OpenAI-compatible hosts answer with `{"data":[{"id":...}]}`, a Gemini
+/// gateway with `{"models":[{"name":"models/x"}]}`. Any other id is kept
+/// exactly as the provider spelled it, because the id is what the request body
+/// must echo back.
+fn model_ids_from_catalog(value: &Value) -> Vec<String> {
+    let items = value
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| value.get("models").and_then(Value::as_array))
+        .or_else(|| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut ids: Vec<String> = Vec::new();
+    for item in items {
+        let raw = item
+            .get("id")
+            .and_then(Value::as_str)
+            .or_else(|| item.get("name").and_then(Value::as_str));
+        let Some(raw) = raw else { continue };
+        let raw = raw.trim();
+        let id = raw.strip_prefix("models/").unwrap_or(raw).to_string();
+        if !id.is_empty() && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 fn apply_auth_headers(
@@ -2815,6 +2831,7 @@ mod tests {
                 CanvasRequestKind::Chat
                     | CanvasRequestKind::Embeddings
                     | CanvasRequestKind::ImageGenerate
+                    | CanvasRequestKind::Models
             ),
         };
 
@@ -2865,6 +2882,49 @@ mod tests {
             assert_eq!(err.code, CanvasErrorCode::UnsupportedCapability, "{kind:?}");
             assert!(!err.code.is_transient(), "{kind:?} must not reroute");
         }
+    }
+
+    #[test]
+    fn model_catalog_endpoints_and_shapes_match_the_measured_gateways() {
+        use crate::canvas_provider_service::endpoint_url;
+
+        assert_eq!(
+            endpoint_url(
+                CanvasProtocol::Gemini,
+                "http://127.0.0.1:8045",
+                CanvasRequestKind::Models,
+                None
+            )
+            .expect("gemini serves a catalog"),
+            "http://127.0.0.1:8045/v1beta/models"
+        );
+        // 实测：这台 Anthropic 代理的 /v1/models 返回 404，所以只能显式报不支持。
+        let anthropic = endpoint_url(
+            CanvasProtocol::Anthropic,
+            "https://api.deepseek.com/anthropic",
+            CanvasRequestKind::Models,
+            None,
+        );
+        assert!(
+            anthropic.is_err(),
+            "anthropic must not pretend to list models"
+        );
+
+        let openai =
+            json!({ "data": [{ "id": "gpt-image-2" }, { "id": " Qwen/Qwen3-VL-Embedding-8B " }] });
+        assert_eq!(
+            model_ids_from_catalog(&openai),
+            vec!["gpt-image-2", "Qwen/Qwen3-VL-Embedding-8B"],
+            "a slash inside a model id stays inside the id"
+        );
+        let gemini =
+            json!({ "models": [{ "name": "models/claude" }, { "name": "models/claude" }] });
+        assert_eq!(model_ids_from_catalog(&gemini), vec!["claude"]);
+        assert_eq!(
+            model_ids_from_catalog(&json!([])),
+            Vec::<String>::new(),
+            "a bare array is still a catalog"
+        );
     }
 
     #[test]

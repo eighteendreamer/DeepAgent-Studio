@@ -347,6 +347,9 @@ pub fn endpoint_url(
                 let model = gemini_path_segment(model_id)?;
                 format!("{base}/v1beta/models/{model}:generateContent")
             }
+            // Measured against a real Gemini gateway: the catalog is a plain
+            // collection under the version prefix, with no model segment.
+            CanvasRequestKind::Models => format!("{base}/v1beta/models"),
             other => {
                 return Err(CoreError::invalid(format!(
                     "gemini protocol does not support {} (UnsupportedCapability)",
