@@ -115,6 +115,9 @@ export interface CreativeNodeData {
   imagePrompt?: string;
   imageUrl?: string;
   imageInputUrls?: string[];
+  /** 内核提示词档案引用；系统提示词正文只留在后端档案里。 */
+  promptProfileId?: string;
+  promptProfileVersion?: number;
   aspectRatio?: string;
   resolution?: string;
   batchCount?: number;

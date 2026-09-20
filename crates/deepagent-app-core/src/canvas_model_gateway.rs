@@ -1400,6 +1400,50 @@ pub fn decode_model_ref(model_ref: &str) -> Option<(&str, &str)> {
     Some((provider_id, model_id))
 }
 
+/// Assemble the system prompt for a canvas node call.
+///
+/// A creative node owns only a profile reference, so the profile's system
+/// prompt plus its allowed skill blocks are resolved here. A professional node
+/// keeps its own system prompt unchanged, which preserves existing workflows.
+pub fn assemble_system_prompt(
+    node_kind: &str,
+    node_system_prompt: Option<&str>,
+    skill_ids: &[String],
+) -> CoreResult<Option<String>> {
+    if node_kind.trim().is_empty() {
+        return Ok(node_system_prompt
+            .map(str::to_string)
+            .filter(|value| !value.trim().is_empty()));
+    }
+    let contract = canvas_node_contract(node_kind)?;
+    let profile = deepagent_prompts::canvas_prompt::creative_profile(node_kind)?;
+    let allowed: std::collections::BTreeSet<&str> = contract
+        .allowed_skill_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut selected: Vec<String> = Vec::new();
+    for skill_id in skill_ids {
+        if !allowed.contains(skill_id.as_str()) {
+            return Err(deepagent_core::error::CoreError::invalid(format!(
+                "UnsupportedOperation: skill `{skill_id}` is not allowed for node `{node_kind}`"
+            )));
+        }
+        if !selected.iter().any(|existing| existing == skill_id) {
+            selected.push(skill_id.clone());
+        }
+    }
+    let _ = node_system_prompt;
+    let mut blocks = vec![profile.system_prompt.clone()];
+    for skill_id in &selected {
+        let skill = deepagent_prompts::canvas_prompt::canvas_skill(skill_id).ok_or_else(|| {
+            deepagent_core::error::CoreError::invalid(format!("unknown canvas skill `{skill_id}`"))
+        })?;
+        blocks.push(skill.system_prompt.clone());
+    }
+    Ok(Some(blocks.join("\n\n")))
+}
+
 fn to_core_error(error: CanvasError) -> deepagent_core::error::CoreError {
     deepagent_core::error::CoreError::other(error.to_string())
 }
@@ -1410,10 +1454,15 @@ impl CanvasModelBridge for CanvasModelGateway {
         &self,
         request: CanvasCompletionRequest,
     ) -> CoreResult<CanvasCompletionResponse> {
+        let system_prompt = assemble_system_prompt(
+            &request.node_kind,
+            request.system_prompt.as_deref(),
+            &request.skill_ids,
+        )?;
         let model_request = CanvasModelRequest {
             operation: CanvasOperation::TextGenerate,
             prompt: request.prompt.clone(),
-            system_prompt: request.system_prompt.clone(),
+            system_prompt,
             images: request
                 .images
                 .iter()
@@ -1991,6 +2040,49 @@ mod tests {
         };
         let error = validate_request(&request).expect_err("generate with an image conflicts");
         assert_eq!(error.code, CanvasErrorCode::OperationInputConflict);
+    }
+
+    #[test]
+    fn creative_text_node_prompt_comes_from_its_profile() {
+        let assembled = assemble_system_prompt("text-gen", None, &[])
+            .expect("profile prompt")
+            .expect("text-gen must have a system prompt");
+        assert!(assembled.contains("你是通用文本创作节点"));
+        assert!(!assembled.contains("通用图片提示词优化器"));
+    }
+
+    #[test]
+    fn skill_blocks_are_allowlisted_and_appended() {
+        let style: Vec<String> = vec!["image.style.extract.v1".to_string()];
+        let assembled = assemble_system_prompt("character-style", None, &style)
+            .expect("allowed skill")
+            .expect("prompt present");
+        assert!(assembled.contains("你是角色视觉风格节点"));
+        assert!(assembled.contains("通用视觉风格提炼助手"));
+
+        let error = assemble_system_prompt("text-gen", None, &style)
+            .expect_err("text-gen does not allow that skill");
+        assert!(error.to_string().contains("not allowed for node"));
+    }
+
+    #[test]
+    fn professional_nodes_keep_their_own_system_prompt() {
+        let kept = assemble_system_prompt("", Some("自定义专业节点提示词"), &[])
+            .expect("professional prompt")
+            .expect("present");
+        assert_eq!(kept, "自定义专业节点提示词");
+        assert!(assemble_system_prompt("", None, &[])
+            .expect("no prompt")
+            .is_none());
+    }
+
+    #[test]
+    fn creative_nodes_cannot_override_their_profile_prompt() {
+        let assembled = assemble_system_prompt("text-gen", Some("节点自己写的系统提示词"), &[])
+            .expect("profile prompt")
+            .expect("present");
+        assert!(assembled.contains("你是通用文本创作节点"));
+        assert!(!assembled.contains("节点自己写的系统提示词"));
     }
 
     #[test]

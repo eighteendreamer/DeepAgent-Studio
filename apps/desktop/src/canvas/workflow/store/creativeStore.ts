@@ -14,8 +14,24 @@ import type {
   WorkflowEdge,
   WorkflowNode,
 } from "../types";
+import { canvasPromptProfilePatch } from "../utils/canvasPromptProfile";
 
 const SNAP_GRID = 24;
+
+/**
+ * Bind a freshly created node to its backend prompt profile: keep the profile
+ * reference, and while the user text is still empty show the profile's default
+ * prompt. An already edited prompt is never overwritten.
+ */
+async function bindPromptProfile(
+  nodeId: string,
+  kind: CreativeNodeKind,
+  data: CreativeNodeData,
+): Promise<void> {
+  const patchData = await canvasPromptProfilePatch(kind, data);
+  if (!patchData) return;
+  useCreativeStore.getState().updateNodeData(nodeId, patchData);
+}
 
 function createDefaultCreativeData(kind: CreativeNodeKind): CreativeNodeData {
   const base: CreativeNodeData = { label: "", kind, status: "idle" };
@@ -157,6 +173,7 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
       data,
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
+    void bindPromptProfile(id, kind, data);
     return id;
   },
 
@@ -173,6 +190,7 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
       data: { ...base, ...extraData, status: "idle" } as CreativeNodeData,
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
+    void bindPromptProfile(id, kind, node.data as CreativeNodeData);
     return id;
   },
 

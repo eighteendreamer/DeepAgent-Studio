@@ -484,6 +484,18 @@ impl WorkflowAgent {
                 let response = bridge
                     .complete(CanvasCompletionRequest {
                         model_ref: model_ref.clone(),
+                        node_kind: kind.to_string(),
+                        skill_ids: config
+                            .get("skillIds")
+                            .or_else(|| config.get("skill_ids"))
+                            .and_then(Value::as_array)
+                            .map(|items| {
+                                items
+                                    .iter()
+                                    .filter_map(|item| item.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                         system_prompt: (!system_prompt.is_empty()).then(|| system_prompt.clone()),
                         prompt: composed_prompt.clone(),
                         temperature: config

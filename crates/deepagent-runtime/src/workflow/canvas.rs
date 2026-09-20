@@ -21,6 +21,13 @@ use serde::{Deserialize, Serialize};
 pub struct CanvasCompletionRequest {
     /// `providerId::modelId`; empty means "use the scenario default models".
     pub model_ref: String,
+    /// Canvas node kind, so the app layer can assemble the node's bound prompt
+    /// profile. Empty for professional nodes that carry their own system prompt.
+    #[serde(default)]
+    pub node_kind: String,
+    /// Skills requested for this node; validated against the node contract.
+    #[serde(default)]
+    pub skill_ids: Vec<String>,
     pub system_prompt: Option<String>,
     pub prompt: String,
     pub temperature: Option<f32>,
@@ -148,6 +155,7 @@ mod tests {
             request: CanvasCompletionRequest,
         ) -> Result<CanvasCompletionResponse> {
             self.calls.lock().unwrap().push(request.model_ref);
+            let _ = (&request.node_kind, &request.skill_ids);
             Ok(CanvasCompletionResponse {
                 text: "fake".to_string(),
                 reasoning: None,
