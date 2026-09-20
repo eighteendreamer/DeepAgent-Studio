@@ -35,6 +35,9 @@ pub struct CanvasCompletionRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CanvasCompletionResponse {
     pub text: String,
+    /// Provider-side reasoning, preserved as its own field when returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
     pub provider_id: String,
     pub model_id: String,
 }
@@ -114,6 +117,7 @@ mod tests {
             self.calls.lock().unwrap().push(request.model_ref);
             Ok(CanvasCompletionResponse {
                 text: "fake".to_string(),
+                reasoning: None,
                 provider_id: "p".to_string(),
                 model_id: "m".to_string(),
             })

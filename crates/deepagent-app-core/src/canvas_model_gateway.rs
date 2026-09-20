@@ -494,6 +494,9 @@ impl CanvasModelRequest {
 pub enum CanvasModelOutput {
     Text {
         text: String,
+        /// Provider-side reasoning (Anthropic thinking / Gemini thought) kept
+        /// structured instead of being flattened into the answer text.
+        reasoning: Option<String>,
         provider_id: String,
         model_id: String,
     },
@@ -971,23 +974,37 @@ fn build_request_body(
                     format!("anthropic accepts at most {MAX_ANTHROPIC_IMAGES} reference images"),
                 ));
             }
-            json!({
+            let mut body = json!({
                 "model": model_id,
                 "max_tokens": 4096,
-                "system": request.system_prompt.clone().unwrap_or_default(),
                 "messages": [{ "role": "user", "content": anthropic_user_content(request) }],
-            })
+            });
+            if let Some(system) = request
+                .system_prompt
+                .as_ref()
+                .filter(|s| !s.trim().is_empty())
+            {
+                body["system"] = json!(system);
+            }
+            body
         }
         (CanvasProtocol::Gemini, CanvasRequestKind::Chat)
-        | (CanvasProtocol::Gemini, CanvasRequestKind::ImageGenerate) => json!({
-            "contents": [{
-                "role": "user",
-                "parts": gemini_parts(request),
-            }],
-            "systemInstruction": {
-                "parts": [{ "text": request.system_prompt.clone().unwrap_or_default() }],
-            },
-        }),
+        | (CanvasProtocol::Gemini, CanvasRequestKind::ImageGenerate) => {
+            let mut body = json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": gemini_parts(request),
+                }],
+            });
+            if let Some(system) = request
+                .system_prompt
+                .as_ref()
+                .filter(|s| !s.trim().is_empty())
+            {
+                body["systemInstruction"] = json!({ "parts": [{ "text": system }] });
+            }
+            body
+        }
         (CanvasProtocol::Gemini, CanvasRequestKind::Embeddings) => json!({
             "model": model_id,
             "content": { "parts": [{ "text": request.prompt }] },
@@ -1099,6 +1116,7 @@ async fn parse_output(
             })?;
             Ok(CanvasModelOutput::Text {
                 text,
+                reasoning: extract_reasoning(candidate.provider.protocol, value),
                 provider_id,
                 model_id,
             })
@@ -1160,11 +1178,12 @@ async fn parse_output(
                         "image response contained no image".to_string(),
                     )
                 })?;
-            if let Some(b64) = first
+            let inline = first
                 .get("b64_json")
                 .or_else(|| first.get("data"))
                 .and_then(Value::as_str)
-            {
+                .filter(|value| !value.trim().is_empty());
+            if let Some(b64) = inline {
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(b64.trim())
                     .map_err(|e| {
@@ -1180,12 +1199,16 @@ async fn parse_output(
                     model_id,
                 });
             }
-            let url = first.get("url").and_then(Value::as_str).ok_or_else(|| {
-                CanvasError::new(
-                    CanvasErrorCode::ProviderFailure,
-                    "image response contained neither b64_json nor url".to_string(),
-                )
-            })?;
+            let url = first
+                .get("url")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    CanvasError::new(
+                        CanvasErrorCode::ProviderFailure,
+                        "image response contained neither b64_json nor url".to_string(),
+                    )
+                })?;
             let bytes = fetch_binary(url, None).await?;
             Ok(CanvasModelOutput::Image {
                 mime: mime_from_url(url),
@@ -1267,6 +1290,33 @@ fn mime_from_url(url: &str) -> String {
     .to_string()
 }
 
+/// Pull the provider's reasoning block out of a response, when it returns one.
+fn extract_reasoning(protocol: CanvasProtocol, value: &Value) -> Option<String> {
+    match protocol {
+        CanvasProtocol::Anthropic => Some(
+            value
+                .get("content")?
+                .as_array()?
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("thinking"))
+                .filter_map(|part| part.get("thinking").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .and_then(non_empty),
+        CanvasProtocol::OpenAi => value
+            .get("choices")?
+            .as_array()?
+            .first()?
+            .get("message")?
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .map(ToString::to_string),
+        CanvasProtocol::Gemini => None,
+    }
+}
+
 /// Pull assistant text out of any supported protocol's response shape.
 fn extract_text(protocol: CanvasProtocol, value: &Value) -> Option<String> {
     match protocol {
@@ -1277,38 +1327,37 @@ fn extract_text(protocol: CanvasProtocol, value: &Value) -> Option<String> {
             .get("message")?
             .get("content")
             .and_then(content_to_text),
-        CanvasProtocol::Anthropic => value
-            .get("content")?
-            .as_array()?
-            .iter()
-            .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
-            .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("")
-            .pipe_nonempty(),
-        CanvasProtocol::Gemini => value
-            .get("candidates")?
-            .as_array()?
-            .first()?
-            .get("content")?
-            .get("parts")?
-            .as_array()?
-            .iter()
-            .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("")
-            .pipe_nonempty(),
+        CanvasProtocol::Anthropic => Some(
+            value
+                .get("content")?
+                .as_array()?
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(""),
+        )
+        .and_then(non_empty),
+        CanvasProtocol::Gemini => Some(
+            value
+                .get("candidates")?
+                .as_array()?
+                .first()?
+                .get("content")?
+                .get("parts")?
+                .as_array()?
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(""),
+        )
+        .and_then(non_empty),
     }
 }
 
-trait PipeNonEmpty: Sized {
-    fn pipe_nonempty(self) -> Option<String>;
-}
-
-impl PipeNonEmpty for String {
-    fn pipe_nonempty(self) -> Option<String> {
-        (!self.trim().is_empty()).then_some(self)
-    }
+/// Keep provider text only when it is not blank.
+fn non_empty(text: String) -> Option<String> {
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// OpenAI chat content is either a plain string or a part list.
@@ -1387,10 +1436,12 @@ impl CanvasModelBridge for CanvasModelGateway {
         match output {
             CanvasModelOutput::Text {
                 text,
+                reasoning,
                 provider_id,
                 model_id,
             } => Ok(CanvasCompletionResponse {
                 text,
+                reasoning,
                 provider_id,
                 model_id,
             }),
@@ -1721,6 +1772,56 @@ mod tests {
         )
         .expect_err("anthropic has no embeddings");
         assert_eq!(err.code, CanvasErrorCode::UnsupportedCapability);
+    }
+
+    #[test]
+    fn anthropic_thinking_blocks_stay_out_of_the_answer_text() {
+        let value = json!({
+            "content": [
+                { "type": "thinking", "thinking": "用户只要 pong" },
+                { "type": "text", "text": "pong" },
+            ]
+        });
+        assert_eq!(
+            extract_text(CanvasProtocol::Anthropic, &value).as_deref(),
+            Some("pong")
+        );
+        assert_eq!(
+            extract_reasoning(CanvasProtocol::Anthropic, &value).as_deref(),
+            Some("用户只要 pong")
+        );
+    }
+
+    #[test]
+    fn empty_b64_payload_is_not_accepted_as_an_inline_image() {
+        let resolved = ResolvedCanvasModel {
+            provider: crate::canvas_provider_service::CanvasProviderConfig {
+                id: "p".to_string(),
+                name: "P".to_string(),
+                protocol: CanvasProtocol::OpenAi,
+                base_url: "https://x".to_string(),
+                enabled: true,
+                logo: None,
+                models: vec![],
+            },
+            model: CanvasModelConfig {
+                id: "gpt-image-2".to_string(),
+                name: String::new(),
+                description: String::new(),
+                enabled: true,
+                scenarios: vec![CanvasScenario::ImageGeneration],
+                priority: 0,
+            },
+            api_key: Some("sk".to_string()),
+        };
+        let payload = json!({ "data": [{ "b64_json": "", "url": "" }] });
+        let error = futures::executor::block_on(parse_output(
+            &resolved,
+            CanvasRequestKind::ImageGenerate,
+            &payload,
+        ))
+        .expect_err("empty b64 and empty url must not produce an image");
+        assert!(error.message.contains("b64_json"));
     }
 
     #[test]

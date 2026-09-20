@@ -443,12 +443,16 @@ impl WorkflowAgent {
                         images: Vec::new(),
                     })
                     .await?;
-                return Ok(serde_json::json!({
+                let mut outcome = serde_json::json!({
                     "text": response.text,
                     "providerId": response.provider_id,
                     "modelId": response.model_id,
                     "model": if model_ref.is_empty() { response.model_id.clone() } else { model_ref },
-                }));
+                });
+                if let Some(reasoning) = response.reasoning {
+                    outcome["reasoning"] = serde_json::Value::String(reasoning);
+                }
+                return Ok(outcome);
             }
         }
 
@@ -1053,6 +1057,7 @@ mod tests {
             }
             Ok(CanvasCompletionResponse {
                 text: "from canvas provider".to_string(),
+                reasoning: Some("thinking about the tagline".to_string()),
                 provider_id: "cvp-1".to_string(),
                 model_id: "gpt-5.6-sol".to_string(),
             })
@@ -1125,6 +1130,7 @@ mod tests {
         assert_eq!(outcome["text"], "from canvas provider");
         assert_eq!(outcome["providerId"], "cvp-1");
         assert_eq!(outcome["modelId"], "gpt-5.6-sol");
+        assert_eq!(outcome["reasoning"], "thinking about the tagline");
         let recorded = records.lock().unwrap();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].model_ref, "cvp-1::gpt-5.6-sol");
