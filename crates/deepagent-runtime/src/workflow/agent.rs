@@ -179,7 +179,16 @@ impl WorkflowAgent {
             "tool" => self.execute_tool(&resolved_config).await,
             "knowledge-retrieval" => self.execute_knowledge_retrieval(&resolved_config).await,
             "iteration" | "loop" => self.execute_iteration(&resolved_config).await,
-            _ => self.execute_passthrough(kind, &resolved_config),
+            // These nodes have nothing to compute: an input node's own config
+            // *is* its output, the loop markers only carry their context, and
+            // the ContractOnly constraint nodes exist to hold their settings.
+            "image-input" | "iteration-start" | "loop-start" | "loop-end" | "camera" | "lens"
+            | "focal-length" | "aperture" => Ok(Value::Object(resolved_config)),
+            // Anything else must fail loudly. Forwarding its config would make
+            // an unimplemented node look like it had produced real results.
+            _ => Err(deepagent_core::error::CoreError::invalid(format!(
+                "UnsupportedNode: kernel has no executor for node kind `{kind}`"
+            ))),
         }
     }
 
@@ -975,20 +984,6 @@ impl WorkflowAgent {
         }))
     }
 
-    fn execute_passthrough(&self, kind: &str, config: &Map<String, Value>) -> Result<Value> {
-        let mut result = Map::new();
-        for (key, value) in config {
-            result.insert(key.clone(), value.clone());
-        }
-        if result.is_empty() {
-            result.insert(
-                "__note".to_string(),
-                Value::String(format!("{} node executed as passthrough", kind)),
-            );
-        }
-        Ok(Value::Object(result))
-    }
-
     fn node_output_value_inline(kind: &str, result: &Value) -> Value {
         match kind {
             "if-else" => {
@@ -1436,6 +1431,50 @@ mod tests {
                 "{kind} reported {error}"
             );
         }
+    }
+
+    /// The graph registry accepts these kinds, so without a real executor the
+    /// run must say so rather than echo the node config back as a result.
+    #[tokio::test]
+    async fn registered_kinds_without_an_executor_report_unsupported_node() {
+        let mut agent = agent_with_bridge(RecordingBridge::default());
+        for kind in [
+            "parameter-extractor",
+            "question-classifier",
+            "document-extractor",
+            "human-input",
+            "datasource",
+            "knowledge-index",
+            "trigger-schedule",
+        ] {
+            let error = agent
+                .execute_node_inline(kind, &config(&[("prompt", json!("run me"))]))
+                .await
+                .expect_err("no executor for this kind");
+            assert!(
+                error.to_string().contains("UnsupportedNode"),
+                "{kind} reported {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn carrier_nodes_publish_their_own_config() {
+        let mut agent = agent_with_bridge(RecordingBridge::default());
+        let imported = agent
+            .execute_node_inline(
+                "image-input",
+                &config(&[("imageUrl", json!("artifact://img-1"))]),
+            )
+            .await
+            .expect("input node carries its image");
+        assert_eq!(imported["imageUrl"], json!("artifact://img-1"));
+
+        let settings = agent
+            .execute_node_inline("camera", &config(&[("cameraModel", json!("a7iv"))]))
+            .await
+            .expect("constraint node carries its settings");
+        assert_eq!(settings["cameraModel"], json!("a7iv"));
     }
 
     #[tokio::test]
