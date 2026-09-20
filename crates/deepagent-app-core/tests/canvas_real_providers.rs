@@ -66,6 +66,7 @@ fn model(id: &str, scenarios: Vec<CanvasScenario>) -> CanvasModelConfig {
         enabled: true,
         scenarios,
         priority: 0,
+        max_reference_images: None,
     }
 }
 

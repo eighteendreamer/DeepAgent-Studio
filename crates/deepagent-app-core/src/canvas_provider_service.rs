@@ -135,6 +135,10 @@ pub struct CanvasModelConfig {
     /// Tie-break inside a scenario candidate list (higher wins).
     #[serde(default)]
     pub priority: i32,
+    /// Declared ceiling on reference images (`ModelCapabilities` in the plan).
+    /// `None` means the user did not declare one, so nothing is enforced here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_reference_images: Option<u32>,
 }
 
 /// Persisted provider entry with its nested model list.
@@ -191,6 +195,10 @@ pub struct CanvasModelDto {
     pub enabled: bool,
     pub scenarios: Vec<String>,
     pub priority: i32,
+    /// Ceiling the user declared for this model; round-trips so editing a
+    /// provider from the list never silently clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_reference_images: Option<u32>,
 }
 
 /// Scenario → provider/model binding row. The list order of
@@ -249,6 +257,7 @@ impl CanvasModelConfig {
                 .map(|s| s.as_str().to_string())
                 .collect(),
             priority: self.priority,
+            max_reference_images: self.max_reference_images,
         }
     }
 }
@@ -413,6 +422,7 @@ fn normalize_model(model: CanvasModelConfig) -> Result<CanvasModelConfig> {
         enabled: model.enabled,
         scenarios: model.scenarios,
         priority: model.priority,
+        max_reference_images: model.max_reference_images,
     })
 }
 
@@ -878,6 +888,7 @@ mod tests {
             enabled: true,
             scenarios,
             priority: 0,
+            max_reference_images: None,
         }
     }
 

@@ -45,6 +45,8 @@ export interface ProviderModelConfig {
   enabled: boolean;
   scenarios?: ModelScenario[];
   priority?: number;
+  /** Declared ceiling on reference images; carried so an edit never drops it. */
+  maxReferenceImages?: number;
 }
 
 export interface ModelProvider {
@@ -97,6 +99,7 @@ interface ProviderModelDto {
   enabled: boolean;
   scenarios: string[];
   priority: number;
+  maxReferenceImages?: number;
 }
 
 interface ProviderDto {
@@ -266,6 +269,7 @@ function modelFromDto(dto: ProviderModelDto): ProviderModelConfig {
     enabled: dto.enabled,
     scenarios: normalizeScenarios(dto.scenarios),
     priority: dto.priority ?? 0,
+    maxReferenceImages: dto.maxReferenceImages,
   };
 }
 
@@ -291,6 +295,7 @@ function toWireModel(model: ProviderModelConfig) {
     enabled: model.enabled !== false,
     scenarios: model.scenarios ?? [],
     priority: model.priority ?? 0,
+    maxReferenceImages: model.maxReferenceImages,
   };
 }
 

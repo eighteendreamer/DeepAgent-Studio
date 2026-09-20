@@ -30,8 +30,8 @@ use deepagent_runtime::workflow::{
 
 use crate::canvas_node_contract::canvas_node_contract;
 use crate::canvas_provider_service::{
-    endpoint_url, CanvasProtocol, CanvasProviderService, CanvasRequestKind, CanvasScenario,
-    ResolvedCanvasModel, ANTHROPIC_VERSION,
+    endpoint_url, CanvasModelConfig, CanvasProtocol, CanvasProviderService, CanvasRequestKind,
+    CanvasScenario, ResolvedCanvasModel, ANTHROPIC_VERSION,
 };
 
 /// Stable error codes surfaced to the UI, CLI and events.
@@ -757,6 +757,9 @@ impl CanvasModelGateway {
             .providers
             .resolve_model(provider_id, model_id)
             .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?;
+        // An explicit model is not swapped out, so exceeding its declared limit
+        // is the user's error to see rather than a silent reroute.
+        reference_limit_error(&resolved.model, request.images.len())?;
         self.call(&resolved, request).await
     }
 
@@ -789,6 +792,22 @@ impl CanvasModelGateway {
                 ),
             ));
         }
+        // 参数能力过滤（方案第十三节）：声明了上限又装不下的模型直接不参与。
+        let images = request.images.len();
+        let viable: Vec<ResolvedCanvasModel> = candidates
+            .into_iter()
+            .filter(|model| reference_limit_error(&model.model, images).is_ok())
+            .collect();
+        let candidates = if viable.is_empty() {
+            return Err(CanvasError::new(
+                CanvasErrorCode::TooManyReferences,
+                format!(
+                    "{images} reference image(s) exceed the declared limit of every candidate model"
+                ),
+            ));
+        } else {
+            viable
+        };
         let mut last_error = None;
         for candidate in candidates {
             match self.call(&candidate, request).await {
@@ -1259,6 +1278,26 @@ pub(crate) fn provider_api_key(candidate: &ResolvedCanvasModel) -> CanvasResult<
                 ),
             )
         })
+}
+
+/// Reject input beyond the reference-image ceiling a model declares.
+///
+/// An undeclared limit is not a guess: the request goes out and the provider
+/// answers for it.
+fn reference_limit_error(model: &CanvasModelConfig, images: usize) -> CanvasResult<()> {
+    let Some(limit) = model.max_reference_images else {
+        return Ok(());
+    };
+    if images <= limit as usize {
+        return Ok(());
+    }
+    Err(CanvasError::new(
+        CanvasErrorCode::TooManyReferences,
+        format!(
+            "model `{}` accepts at most {limit} reference image(s), the node has {images}",
+            model.id
+        ),
+    ))
 }
 
 /// Read one string field of a media job payload.
@@ -2787,6 +2826,7 @@ mod tests {
                 enabled: true,
                 scenarios: vec![CanvasScenario::ImageGeneration],
                 priority: 0,
+                max_reference_images: None,
             },
             api_key: Some("sk".to_string()),
         };
@@ -2838,6 +2878,7 @@ mod tests {
                 enabled: true,
                 scenarios: vec![CanvasScenario::Embedding],
                 priority: 0,
+                max_reference_images: None,
             },
             api_key: Some("sk".to_string()),
         };
@@ -2873,6 +2914,76 @@ mod tests {
             CanvasModelOutput::Image { bytes, .. } => assert_eq!(bytes, b"hi"),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn declared_reference_limit_governs_and_undeclared_does_not_guess() {
+        let model = |limit: Option<u32>| CanvasModelConfig {
+            id: "img-model".to_string(),
+            name: "img".to_string(),
+            description: String::new(),
+            enabled: true,
+            scenarios: vec![CanvasScenario::ImageGeneration],
+            priority: 0,
+            max_reference_images: limit,
+        };
+        assert!(reference_limit_error(&model(None), 40).is_ok());
+        assert!(reference_limit_error(&model(Some(2)), 2).is_ok());
+        let err = reference_limit_error(&model(Some(1)), 2).expect_err("over the ceiling");
+        assert_eq!(err.code, CanvasErrorCode::TooManyReferences);
+        assert!(err.message.contains("at most 1"), "reported {err}");
+    }
+
+    #[test]
+    fn scenario_candidates_without_room_for_the_references_fail_closed() {
+        // 候选全都不够装时不许偷偷截断输入，也不许发请求。
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::secret_store::MemorySecretStore::default()),
+        ));
+        providers
+            .save_provider(CanvasProviderInput {
+                name: "Limited".to_string(),
+                protocol: "openai".to_string(),
+                base_url: "http://127.0.0.1:1/v1".to_string(),
+                enabled: true,
+                models: vec![CanvasModelConfig {
+                    id: "one-image-only".to_string(),
+                    name: "one".to_string(),
+                    description: String::new(),
+                    enabled: true,
+                    scenarios: vec![CanvasScenario::ImageGeneration],
+                    priority: 0,
+                    max_reference_images: Some(1),
+                }],
+                api_key: Some("sk-local".to_string()),
+                ..Default::default()
+            })
+            .expect("provider");
+        let gateway = CanvasModelGateway::new(providers);
+        let request = CanvasModelRequest {
+            operation: CanvasOperation::ImageEdit,
+            prompt: "把两张图合成".to_string(),
+            system_prompt: None,
+            images: vec![
+                CanvasImageInput {
+                    data_url: "artifact://a".to_string(),
+                },
+                CanvasImageInput {
+                    data_url: "artifact://b".to_string(),
+                },
+            ],
+            texts: Vec::new(),
+            size: None,
+            audio: Default::default(),
+            timeout_ms: 1_000,
+        };
+        let err = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(gateway.execute(&request, None))
+            .expect_err("no candidate declares room");
+        assert_eq!(err.code, CanvasErrorCode::TooManyReferences);
     }
 
     #[test]
@@ -3059,6 +3170,7 @@ mod tests {
                         enabled: true,
                         scenarios: vec![CanvasScenario::Text],
                         priority: 0,
+                        max_reference_images: None,
                     },
                     CanvasModelConfig {
                         id: "gpt-image-2".to_string(),
@@ -3067,6 +3179,7 @@ mod tests {
                         enabled: true,
                         scenarios: vec![CanvasScenario::ImageGeneration],
                         priority: 0,
+                        max_reference_images: None,
                     },
                     CanvasModelConfig {
                         id: "Qwen/Qwen3-VL-Embedding-8B".to_string(),
@@ -3075,6 +3188,7 @@ mod tests {
                         enabled: true,
                         scenarios: vec![CanvasScenario::Embedding],
                         priority: 0,
+                        max_reference_images: None,
                     },
                 ],
                 api_key: Some("sk-local".to_string()),
@@ -3273,6 +3387,7 @@ mod tests {
             enabled: true,
             scenarios: vec![CanvasScenario::Text],
             priority: 0,
+            max_reference_images: None,
         };
         let created = providers
             .save_provider(CanvasProviderInput {
@@ -3400,6 +3515,7 @@ mod tests {
             enabled: true,
             scenarios: vec![scenario],
             priority: 0,
+            max_reference_images: None,
         };
         let created = providers
             .save_provider(CanvasProviderInput {
@@ -3575,6 +3691,7 @@ mod tests {
                     enabled: true,
                     scenarios: vec![CanvasScenario::VideoGeneration],
                     priority: 0,
+                    max_reference_images: None,
                 }],
                 api_key: Some("sk-local".to_string()),
                 ..Default::default()
