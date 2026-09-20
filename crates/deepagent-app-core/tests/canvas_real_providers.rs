@@ -187,6 +187,36 @@ async fn anthropic_messages_answer_and_keep_reasoning() {
 
 #[ignore = "需要真实供应商密钥与网络；用 --ignored 显式运行"]
 #[tokio::test]
+async fn gemini_model_discovery_lists_the_real_catalog() {
+    let key = env("CANVAS_TEST_GEMINI_KEY")
+        .expect("CANVAS_TEST_GEMINI_KEY must be set to run this live provider test");
+    let base = env("CANVAS_TEST_GEMINI_BASE").unwrap_or_else(|| "http://127.0.0.1:8045".into());
+    let model_id = env("CANVAS_TEST_GEMINI_MODEL").unwrap_or_else(|| "gemini-3.8-flash-low".into());
+    let providers = gateway();
+    let provider_id = add_provider(
+        &providers,
+        "gemini-local",
+        "gemini",
+        &base,
+        &key,
+        vec![model(&model_id, vec![CanvasScenario::Text])],
+    );
+    let gateway = CanvasModelGateway::new(providers);
+    let catalog = gateway
+        .discover_models(&provider_id)
+        .await
+        .expect("gemini gateway must serve its model catalog");
+    assert!(!catalog.is_empty(), "empty catalog for {base}");
+    assert!(
+        catalog
+            .iter()
+            .all(|id| !id.trim().is_empty() && !id.starts_with("models/")),
+        "ids must be usable as-is, got {catalog:?}"
+    );
+}
+
+#[ignore = "需要真实供应商密钥与网络；用 --ignored 显式运行"]
+#[tokio::test]
 async fn gemini_generate_content_answers() {
     let key = env("CANVAS_TEST_GEMINI_KEY")
         .expect("CANVAS_TEST_GEMINI_KEY must be set to run this live provider test");

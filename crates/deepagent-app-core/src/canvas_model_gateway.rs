@@ -1056,10 +1056,11 @@ impl CanvasModelGateway {
         })
     }
 
-    /// List the provider's real model catalog through `GET {base}/models`.
+    /// List the provider's real model catalog.
     ///
-    /// Only the OpenAI-compatible protocol exposes a catalog endpoint; other
-    /// protocols surface `UnsupportedCapability` rather than a fake preset list.
+    /// Measured: OpenAI-compatible hosts answer `GET {base}/models` and Gemini
+    /// gateways answer `GET {base}/v1beta/models`; a protocol with no catalog
+    /// endpoint surfaces `UnsupportedCapability` rather than a fake preset list.
     pub async fn discover_models(&self, provider_id: &str) -> CanvasResult<Vec<String>> {
         let provider = self
             .providers
