@@ -378,6 +378,8 @@ struct AppState {
     canvas_providers: Arc<deepagent_app_core::canvas_provider_service::CanvasProviderService>,
     /// Canvas operation routing and cross-protocol model calls.
     canvas_gateway: Arc<deepagent_app_core::canvas_model_gateway::CanvasModelGateway>,
+    /// Canvas workflow graphs (live canvas per mode + saved library).
+    canvas_workflows: Arc<deepagent_app_core::canvas_workflow_store::CanvasWorkflowStore>,
     knowledge: Arc<KnowledgeService>,
     cost: Arc<CostService>,
     runtime_logs: Arc<RuntimeLogStore>,
@@ -2267,6 +2269,84 @@ fn canvas_scenario_candidates(
             has_api_key: candidate.api_key.is_some(),
         })
         .collect())
+}
+
+/// Read the live canvas graph for one mode (and optionally one workspace).
+/// The graph JSON is opaque to the backend on purpose: node shapes belong to
+/// the canvas UI, storage location belongs to the kernel.
+#[tauri::command]
+fn canvas_workflow_state_read(
+    state: State<'_, AppState>,
+    mode: String,
+    workspace_id: Option<String>,
+) -> Result<Option<serde_json::Value>, String> {
+    state
+        .canvas_workflows
+        .read_current(&mode, workspace_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// Persist the live canvas graph for one mode.
+#[tauri::command]
+fn canvas_workflow_state_write(
+    state: State<'_, AppState>,
+    mode: String,
+    workspace_id: Option<String>,
+    graph: serde_json::Value,
+) -> Result<deepagent_app_core::canvas_workflow_store::CanvasWorkflowMeta, String> {
+    state
+        .canvas_workflows
+        .write_current(&mode, workspace_id.as_deref(), &graph)
+        .map_err(|e| e.to_string())
+}
+
+/// List saved workflows (newest first, live slots excluded).
+#[tauri::command]
+fn canvas_workflow_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<deepagent_app_core::canvas_workflow_store::CanvasWorkflowMeta>, String> {
+    state
+        .canvas_workflows
+        .list_workflows()
+        .map_err(|e| e.to_string())
+}
+
+/// Save or overwrite a named workflow in the library.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+fn canvas_workflow_save(
+    state: State<'_, AppState>,
+    id: Option<String>,
+    name: String,
+    mode: String,
+    workspace_id: Option<String>,
+    graph: serde_json::Value,
+) -> Result<deepagent_app_core::canvas_workflow_store::CanvasWorkflowMeta, String> {
+    state
+        .canvas_workflows
+        .save_workflow(id.as_deref(), &name, &mode, workspace_id.as_deref(), &graph)
+        .map_err(|e| e.to_string())
+}
+
+/// Load one saved workflow, graph included.
+#[tauri::command]
+fn canvas_workflow_load(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<deepagent_app_core::canvas_workflow_store::CanvasWorkflowDoc>, String> {
+    state
+        .canvas_workflows
+        .load_workflow(&id)
+        .map_err(|e| e.to_string())
+}
+
+/// Remove one saved workflow.
+#[tauri::command]
+fn canvas_workflow_delete(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    state
+        .canvas_workflows
+        .delete_workflow(&id)
+        .map_err(|e| e.to_string())
 }
 
 /// Start a professional-canvas workflow run. The workflow graph is compiled
@@ -6248,6 +6328,11 @@ pub fn run() {
                     canvas_providers.clone(),
                 ),
             );
+            let canvas_workflows = Arc::new(
+                deepagent_app_core::canvas_workflow_store::CanvasWorkflowStore::new(
+                    service.shared_database(),
+                ),
+            );
 
             // Chat: streamed runs; MCP servers connect + live-register tools, each
             // run is rooted at the active project's folder, the knowledge base
@@ -6392,6 +6477,7 @@ pub fn run() {
                 mcp,
                 canvas_providers,
                 canvas_gateway,
+                canvas_workflows,
                 knowledge,
                 cost,
                 runtime_logs,
@@ -6521,6 +6607,12 @@ pub fn run() {
             canvas_prompt_profiles_read,
             canvas_prompt_resolve,
             canvas_scenario_candidates,
+            canvas_workflow_state_read,
+            canvas_workflow_state_write,
+            canvas_workflow_list,
+            canvas_workflow_save,
+            canvas_workflow_load,
+            canvas_workflow_delete,
             resolve_approval,
             stop_chat,
             cancel_run,
