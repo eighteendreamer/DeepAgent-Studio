@@ -1,14 +1,23 @@
 //! Real-provider checks for the canvas model gateway.
 //!
-//! These tests hit live vendor endpoints and are therefore skipped unless the
-//! matching api key is present in the environment. Nothing here runs in the
-//! default offline test pass, and no key is ever stored in the repository:
+//! Every case here is `#[ignore]`d: the default offline pass lists them as
+//! ignored instead of green, because a missing key used to `return` early and
+//! the suite reported "8 passed" without a single network call. A missing key
+//! is now a hard failure that names the variable. No key is ever stored in the
+//! repository — they are process environment variables only.
 //!
 //! ```text
-//! CANVAS_TEST_OPENAI_KEY=...      CANVAS_TEST_OPENAI_BASE=...     CANVAS_TEST_OPENAI_MODEL=...
-//! CANVAS_TEST_ANTHROPIC_KEY=...   CANVAS_TEST_ANTHROPIC_MODEL=...
-//! CANVAS_TEST_GEMINI_KEY=...      CANVAS_TEST_GEMINI_MODEL=...
-//! CANVAS_TEST_EMBED_KEY=...       CANVAS_TEST_EMBED_MODEL=...
+//! cargo test -p deepagent-app-core --test canvas_real_providers -- --ignored
+//! ```
+//!
+//! Add `--skip video` to avoid spending media quota. Variables read:
+//!
+//! ```text
+//! CANVAS_TEST_OPENAI_KEY=...     CANVAS_TEST_OPENAI_BASE=...    CANVAS_TEST_OPENAI_MODEL=...   CANVAS_TEST_IMAGE_MODEL=...
+//! CANVAS_TEST_ANTHROPIC_KEY=...  CANVAS_TEST_ANTHROPIC_BASE=... CANVAS_TEST_ANTHROPIC_MODEL=...
+//! CANVAS_TEST_GEMINI_KEY=...     CANVAS_TEST_GEMINI_BASE=...    CANVAS_TEST_GEMINI_MODEL=...
+//! CANVAS_TEST_EMBED_KEY=...      CANVAS_TEST_EMBED_BASE=...     CANVAS_TEST_EMBED_MODEL=...
+//! CANVAS_TEST_VIDEO=1            CANVAS_TEST_VIDEO_BASE=...     CANVAS_TEST_VIDEO_MODEL=...
 //! ```
 
 use std::sync::Arc;
