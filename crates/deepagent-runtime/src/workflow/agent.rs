@@ -160,17 +160,70 @@ impl WorkflowAgent {
             "code" => self.execute_code(&resolved_config),
             "template-transform" => self.execute_template_transform(&resolved_config),
             "list-operator" => self.execute_list_operator(&resolved_config),
-            "llm" | "agent" | "agent-v2" | "text-gen" | "script-gen" => {
+            "llm" | "agent" | "agent-v2" | "text-gen" | "script-gen" | "director"
+            | "creative-template" | "storyboard-grid" | "category-picker" | "character-face"
+            | "character-body" | "character-style" => {
                 self.execute_llm(kind, &resolved_config).await
             }
-            "image-gen" => self.execute_image_gen(&resolved_config).await,
+            "image-gen" | "image-edit" => self.execute_image_gen(&resolved_config).await,
             "embeddings" => self.execute_embedding(&resolved_config).await,
+            // Media kinds without a backend job runner fail loudly instead of
+            // reporting a fabricated completion through the passthrough arm.
+            "video-gen" | "video-stitch" | "image-compare" | "audio" => {
+                Err(deepagent_core::error::CoreError::invalid(format!(
+                    "UnsupportedOperation: canvas node `{kind}` has no executor yet"
+                )))
+            }
             "http-request" => self.execute_http_request(&resolved_config).await,
             "tool" => self.execute_tool(&resolved_config).await,
             "knowledge-retrieval" => self.execute_knowledge_retrieval(&resolved_config).await,
             "iteration" | "loop" => self.execute_iteration(&resolved_config).await,
             _ => self.execute_passthrough(kind, &resolved_config),
         }
+    }
+
+    /// Merge upstream node text into a node's own prompt.
+    ///
+    /// Creative nodes carry their inputs on edges, which the frontend serializes
+    /// as `upstreamTexts` references; the generic value resolver has already
+    /// turned those into upstream values by the time this runs. The text and
+    /// image executors share this one implementation.
+    fn upstream_texts(config: &Map<String, Value>) -> Vec<String> {
+        config
+            .get("upstreamTexts")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Value::String(text) => Some(text.clone()),
+                        Value::Number(number) => Some(number.to_string()),
+                        Value::Bool(flag) => Some(flag.to_string()),
+                        other => other
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .or_else(|| serde_json::to_string_pretty(other).ok()),
+                    })
+                    .filter(|text| !text.trim().is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn compose_prompt(config: &Map<String, Value>, own_prompt: &str) -> String {
+        let upstream = Self::upstream_texts(config);
+        if upstream.is_empty() {
+            return own_prompt.to_string();
+        }
+        if own_prompt.trim().is_empty() {
+            return format!("上游内容：\n{}", upstream.join("\n---\n"));
+        }
+        format!(
+            "上游内容：\n{}\n\n当前要求：\n{}",
+            upstream.join("\n---\n"),
+            own_prompt
+        )
     }
 
     fn execute_start(&mut self, config: &Map<String, Value>) -> Result<Value> {
@@ -423,13 +476,15 @@ impl WorkflowAgent {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        let composed_prompt = Self::compose_prompt(config, &user_prompt);
+
         if let Some(bridge) = self.canvas_bridge.clone() {
             if !model_ref.is_empty() || self.model.is_none() {
                 let response = bridge
                     .complete(CanvasCompletionRequest {
                         model_ref: model_ref.clone(),
                         system_prompt: (!system_prompt.is_empty()).then(|| system_prompt.clone()),
-                        prompt: user_prompt.clone(),
+                        prompt: composed_prompt.clone(),
                         temperature: config
                             .get("llmTemperature")
                             .or_else(|| config.get("temperature"))
@@ -550,6 +605,7 @@ impl WorkflowAgent {
                     .collect()
             })
             .unwrap_or_default();
+        let prompt = Self::compose_prompt(config, &prompt);
         if prompt.trim().is_empty() {
             return Err(deepagent_core::error::CoreError::invalid(
                 "MissingReferenceInput: image node requires a prompt",
@@ -1206,6 +1262,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn image_node_prompt_carries_the_upstream_text() {
+        let bridge = RecordingBridge::default();
+        let records = bridge.images.clone();
+        let mut agent = agent_with_bridge(bridge);
+        agent
+            .execute_node_inline(
+                "image-gen",
+                &config(&[
+                    ("prompt", json!("画成海报")),
+                    ("upstreamTexts", json!(["一只戴帽子的橘猫"])),
+                ]),
+            )
+            .await
+            .expect("image generation");
+        let sent = records
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("one image call");
+        assert!(
+            sent.prompt.contains("一只戴帽子的橘猫") && sent.prompt.contains("画成海报"),
+            "prompt sent to the image endpoint was {:?}",
+            sent.prompt
+        );
+    }
+
+    #[tokio::test]
     async fn embedding_node_returns_dimensions_without_vectors() {
         let bridge = RecordingBridge::default();
         let mut agent = agent_with_bridge(bridge);
@@ -1216,6 +1300,47 @@ mod tests {
         assert_eq!(outcome["dimensions"], 3);
         assert_eq!(outcome["count"], 2);
         assert!(outcome.get("vectors").is_none());
+    }
+
+    #[tokio::test]
+    async fn creative_media_nodes_fail_instead_of_faking_completion() {
+        let mut agent = agent_with_bridge(RecordingBridge::default());
+        for kind in ["video-gen", "video-stitch", "image-compare", "audio"] {
+            let error = agent
+                .execute_node_inline(kind, &config(&[("prompt", json!("make a clip"))]))
+                .await
+                .expect_err("no executor yet");
+            assert!(
+                error.to_string().contains("UnsupportedOperation"),
+                "{kind} reported {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn creative_responses_nodes_run_on_the_shared_llm_executor() {
+        for kind in [
+            "director",
+            "storyboard-grid",
+            "character-face",
+            "creative-template",
+        ] {
+            let bridge = RecordingBridge::default();
+            let records = bridge.completions.clone();
+            let mut agent = agent_with_bridge(bridge);
+            let outcome = agent
+                .execute_node_inline(
+                    kind,
+                    &config(&[
+                        ("model", json!("cvp-1::gpt-5.6-sol")),
+                        ("prompt", json!("story about a cube")),
+                    ]),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{kind} failed: {error}"));
+            assert_eq!(outcome["text"], "from canvas provider");
+            assert_eq!(records.lock().unwrap().len(), 1, "{kind} must call once");
+        }
     }
 
     #[tokio::test]

@@ -346,9 +346,28 @@ fn output_contract(kind: &str) -> Result<(&'static [&'static str], Option<&'stat
         "trigger-plugin" => (&["event_data"], None),
         "datasource" => (&["data", "files"], None),
         "knowledge-index" => (&["index_id", "chunk_count"], None),
+        // Creative-mode canvas nodes. They share this registry, compile(), the
+        // reference resolver and the event stream with professional nodes, so
+        // both canvas modes execute through one chain instead of two.
+        // Every creative kind that runs on a text model answers in `text`,
+        // matching what the shared LLM executor emits.
+        "category-picker" | "text-gen" | "script-gen" | "director" | "creative-template"
+        | "storyboard-grid" | "character-face" | "character-body" | "character-style" => {
+            (&["text"], None)
+        }
+        "image-input" | "image-gen" | "image-edit" => (&["imageUrl"], None),
+        "image-compare" => (&["summary", "differences"], None),
+        "video-gen" => (&["videoUrl"], None),
+        "video-stitch" => (&["videoUrl"], None),
+        "camera" => (&["cameraSettings"], None),
+        "lens" => (&["lensSettings"], None),
+        "focal-length" => (&["focalLengthConstraints"], None),
+        "aperture" => (&["apertureConstraints"], None),
+
+        "audio" => (&["text", "audioUrl"], None),
         _ => {
             return Err(CoreError::invalid(
-                "unknown professional workflow node kind",
+                "unknown workflow node kind (neither professional nor creative)",
             ))
         }
     })
@@ -576,14 +595,59 @@ mod tests {
         definition.version = 2;
         assert_invalid(definition, "version");
         let mut definition = valid_graph();
-        definition.nodes[1].kind = "text-gen".into();
-        assert_invalid(definition, "unknown professional");
+        definition.nodes[1].kind = "mystery-node".into();
+        assert_invalid(definition, "unknown workflow node kind");
         let mut definition = valid_graph();
         definition.nodes[1].id = "start".into();
         assert_invalid(definition, "duplicate node ID");
         let mut definition = valid_graph();
         definition.edges[1].id = "e1".into();
         assert_invalid(definition, "duplicate edge ID");
+    }
+
+    #[test]
+    fn creative_canvas_node_kinds_compile_through_the_same_registry() {
+        // Both canvas modes must go through this registry; a creative kind that
+        // is not declared here would fail compile() and force a second chain.
+        for kind in [
+            "category-picker",
+            "text-gen",
+            "image-input",
+            "image-gen",
+            "image-compare",
+            "image-edit",
+            "script-gen",
+            "video-gen",
+            "video-stitch",
+            "camera",
+            "lens",
+            "focal-length",
+            "aperture",
+            "director",
+            "creative-template",
+            "character-face",
+            "character-body",
+            "character-style",
+            "storyboard-grid",
+            "audio",
+        ] {
+            let definition = WorkflowDefinition {
+                version: 1,
+                nodes: vec![WorkflowNodeSpec {
+                    id: "gen-1".to_string(),
+                    kind: kind.to_string(),
+                    config: Map::new(),
+                }],
+                edges: vec![],
+            };
+            let compiled = compile(definition)
+                .unwrap_or_else(|error| panic!("creative kind {kind} must be registered: {error}"));
+            assert!(
+                output_contract(kind).is_ok(),
+                "creative kind {kind} has no output contract"
+            );
+            assert_eq!(compiled.order.len(), 1);
+        }
     }
 
     #[test]

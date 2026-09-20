@@ -21,6 +21,14 @@ use deepagent_app_core::canvas_provider_service::{
 };
 use deepagent_app_core::secret_store::MemorySecretStore;
 use deepagent_persistence::Database;
+use deepagent_runtime::agent::Agent;
+use deepagent_runtime::events::{RuntimeEvent, RuntimeEventSink};
+use deepagent_runtime::workflow::{
+    compile, NodeEventPublisher, WorkflowAgent, WorkflowDefinition, WorkflowEdgeSpec,
+    WorkflowNodeSpec,
+};
+use serde_json::{json, Map, Value};
+use std::sync::Mutex;
 
 fn env(name: &str) -> Option<String> {
     std::env::var(name)
@@ -246,6 +254,136 @@ async fn embedding_model_returns_a_real_vector() {
         }
         other => panic!("unexpected output {other:?}"),
     }
+}
+
+/// Captures what the run actually published, because node outputs travel on
+/// events rather than in the agent's terminal message.
+#[derive(Default)]
+struct CapturingSink {
+    events: Mutex<Vec<String>>,
+}
+
+impl RuntimeEventSink for CapturingSink {
+    fn emit(&self, event: RuntimeEvent) {
+        self.events
+            .lock()
+            .expect("sink lock")
+            .push(serde_json::to_string(&event).unwrap_or_default());
+    }
+}
+
+/// The creative-mode golden path end to end: a text node feeds a generated
+/// prompt into an image node through one edge, executed by the real
+/// `WorkflowAgent` against the real providers.
+#[tokio::test]
+async fn creative_text_then_image_graph_runs_on_real_providers() {
+    let Some(text_key) = env("CANVAS_TEST_ANTHROPIC_KEY") else {
+        eprintln!("skip: CANVAS_TEST_ANTHROPIC_KEY not set");
+        return;
+    };
+    let Some(image_key) = env("CANVAS_TEST_OPENAI_KEY") else {
+        eprintln!("skip: CANVAS_TEST_OPENAI_KEY not set");
+        return;
+    };
+    let text_model = "deepseek-flash".to_string();
+    let image_model = "gpt-image-2".to_string();
+    let providers = gateway();
+    let text_provider = add_provider(
+        &providers,
+        "deepseek-anthropic",
+        "anthropic",
+        "https://api.deepseek.com/anthropic",
+        &text_key,
+        vec![model(&text_model, vec![CanvasScenario::Text])],
+    );
+    let image_provider = add_provider(
+        &providers,
+        "toloveu",
+        "openai",
+        "https://toloveu.asia/v1",
+        &image_key,
+        vec![model(&image_model, vec![CanvasScenario::ImageGeneration])],
+    );
+    let gateway = Arc::new(CanvasModelGateway::new(providers));
+
+    let node = |id: &str, kind: &str, config: Value| WorkflowNodeSpec {
+        id: id.to_string(),
+        kind: kind.to_string(),
+        config: config.as_object().cloned().unwrap_or_default(),
+    };
+    let definition = WorkflowDefinition {
+        version: 1,
+        nodes: vec![
+            node(
+                "script-1",
+                "script-gen",
+                json!({
+                    "model": format!("{text_provider}::{text_model}"),
+                    "prompt": "给出一个适合画成海报的中文画面描述，控制在30字以内，只输出描述本身。",
+                }),
+            ),
+            node(
+                "image-1",
+                "image-gen",
+                json!({
+                    "imageModel": format!("{image_provider}::{image_model}"),
+                    "prompt": "把上游描述画成一张竖版海报",
+                    "upstreamTexts": ["{{#script-1.text#}}"],
+                    "size": "1024x1024",
+                }),
+            ),
+        ],
+        edges: vec![WorkflowEdgeSpec {
+            id: "e1".to_string(),
+            source: "script-1".to_string(),
+            target: "image-1".to_string(),
+            source_handle: None,
+            target_handle: None,
+        }],
+    };
+
+    let sink = Arc::new(CapturingSink::default());
+    let mut agent = WorkflowAgent::new(
+        compile(definition).expect("creative graph compiles"),
+        Map::new(),
+        None,
+        NodeEventPublisher::new(sink.clone()),
+    )
+    .with_canvas_bridge(gateway.clone());
+
+    // Drive the agent exactly like a run does: think once per step until it
+    // reports completion, then read the node outputs back off the events.
+    let mut steps = 0usize;
+    loop {
+        steps += 1;
+        assert!(steps < 10, "agent did not converge in {steps} steps");
+        match agent.think(steps, &[]).await.expect("step") {
+            deepagent_runtime::agent::AgentDecision::Complete(_) => break,
+            deepagent_runtime::agent::AgentDecision::Continue => {}
+            other => panic!("unexpected decision {other:?}"),
+        }
+    }
+
+    // Evidence lives on the node events: both creative nodes must report a
+    // completed status, the text node an answer and the image node inline bytes.
+    let events = sink.events.lock().expect("sink lock").join("\n");
+    assert!(
+        events.contains("\"node_id\":\"script-1\"") && events.contains("\"node_id\":\"image-1\""),
+        "missing node events, got: {events}"
+    );
+    assert!(
+        events.contains("data:image"),
+        "image node produced no inline image, got: {events}"
+    );
+    assert!(
+        events.contains("\"status\":\"completed\""),
+        "no completed node event, got: {events}"
+    );
+    assert!(
+        events.len() > 4096,
+        "image payload suspiciously small: {} bytes of events",
+        events.len()
+    );
 }
 
 #[tokio::test]

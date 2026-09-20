@@ -4,6 +4,17 @@ import { useProfessionalStore } from "../store/professionalStore";
 import { useCanvasStore } from "../store/canvasStore";
 import type { CreativeNodeData, ProfessionalNodeData } from "../types";
 
+/**
+ * Workflow execution for both canvas modes.
+ *
+ * Professional and creative graphs compile into the same version-1
+ * `WorkflowDefinition` and run through one backend chain (`start_workflow` →
+ * kernel → `chat://event`). Creative nodes express their inputs through edges,
+ * so the edges are translated into the reference syntax the kernel's value
+ * resolver already understands (`{{#nodeId.output#}}`) rather than inventing a
+ * second data-flow mechanism.
+ */
+
 let _abortController: AbortController | null = null;
 let _eventUnlisten: (() => void) | null = null;
 let _completionUnlisten: (() => void) | null = null;
@@ -21,16 +32,75 @@ const UI_META_KEYS = new Set([
   "conditions",
 ]);
 
-function serializeNodes(nodes: WorkflowNode[]) {
-  return nodes.map((n) => {
-    const data = n.data as Record<string, unknown>;
-    const config: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(data)) {
-      if (!UI_META_KEYS.has(key) && value !== undefined) {
-        config[key] = value;
-      }
+/** 创作节点种类 → 该节点对外输出的字段（与内核 output_contract 对齐）。 */
+const CREATIVE_OUTPUT_FIELD: Record<string, string> = {
+  "text-gen": "text",
+  "script-gen": "text",
+  director: "text",
+  "creative-template": "text",
+  "image-gen": "imageUrl",
+  "image-edit": "imageUrl",
+  "image-input": "imageUrl",
+  "video-gen": "videoUrl",
+  "video-stitch": "videoUrl",
+};
+
+/** 创作节点之间靠连线传递数据，这里把入边翻译成内核引用。 */
+function creativeConfig(
+  node: WorkflowNode,
+  incoming: WorkflowEdge[],
+  outputFieldByNode: Map<string, string>,
+): Record<string, unknown> {
+  const data = node.data as Record<string, unknown>;
+  const config: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (!UI_META_KEYS.has(key) && value !== undefined) config[key] = value;
+  }
+  const texts: string[] = [];
+  const images: string[] = [];
+  const audios: string[] = [];
+  for (const edge of incoming) {
+    const field = outputFieldByNode.get(edge.source);
+    if (!field) continue;
+    const reference = `{{#${edge.source}.${field}#}}`;
+    if (field === "imageUrl") images.push(reference);
+    else if (field === "videoUrl") continue;
+    else if (field === "audioUrl") audios.push(reference);
+    else texts.push(reference);
+  }
+  if (texts.length) config.upstreamTexts = texts;
+  if (images.length) config.referenceImages = images;
+  if (audios.length) config.audioInputs = audios;
+  return config;
+}
+
+function serializeNodes(nodes: WorkflowNode[], edges: WorkflowEdge[], mode: "creative" | "professional") {
+  const outputFieldByNode = new Map<string, string>();
+  if (mode === "creative") {
+    for (const node of nodes) {
+      const kind = String((node.data as { kind?: string }).kind ?? "");
+      const field = CREATIVE_OUTPUT_FIELD[kind];
+      if (field) outputFieldByNode.set(node.id, field);
     }
-    return { id: n.id, kind: String(data.kind ?? ""), config };
+  }
+  return nodes.map((node) => {
+    const kind = String((node.data as { kind?: string }).kind ?? "");
+    const config =
+      mode === "creative"
+        ? creativeConfig(
+            node,
+            edges.filter((edge) => edge.target === node.id),
+            outputFieldByNode,
+          )
+        : (() => {
+            const data = node.data as Record<string, unknown>;
+            const plain: Record<string, unknown> = {};
+            for (const [key, value] of Object.entries(data)) {
+              if (!UI_META_KEYS.has(key) && value !== undefined) plain[key] = value;
+            }
+            return plain;
+          })();
+    return { id: node.id, kind, config };
   });
 }
 
@@ -73,89 +143,6 @@ function mapBackendStatus(backend: string): NodeStatus {
   }
 }
 
-function topologicalSort(nodes: WorkflowNode[], edges: WorkflowEdge[]): string[] {
-  const adj = new Map<string, string[]>();
-  const inDegree = new Map<string, number>();
-
-  for (const node of nodes) {
-    adj.set(node.id, []);
-    inDegree.set(node.id, 0);
-  }
-  for (const edge of edges) {
-    if (edge.source && edge.target) {
-      adj.get(edge.source)?.push(edge.target);
-      inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
-    }
-  }
-
-  const queue: string[] = [];
-  for (const [id, deg] of inDegree) {
-    if (deg === 0) queue.push(id);
-  }
-
-  const result: string[] = [];
-  while (queue.length > 0) {
-    const id = queue.shift()!;
-    result.push(id);
-    for (const neighbor of adj.get(id) ?? []) {
-      const newDeg = (inDegree.get(neighbor) ?? 1) - 1;
-      inDegree.set(neighbor, newDeg);
-      if (newDeg === 0) queue.push(neighbor);
-    }
-  }
-
-  return result;
-}
-
-function getExecutionDelay(node: WorkflowNode): number {
-  const kind = (node.data as { kind: string }).kind;
-  switch (kind) {
-    case "start":
-    case "end":
-      return 300;
-    case "if-else":
-    case "iteration":
-    case "iteration-start":
-    case "loop":
-    case "loop-start":
-    case "loop-end":
-    case "variable-aggregator":
-    case "variable-assigner":
-    case "list-operator":
-    case "template-transform":
-    case "answer":
-    case "document-extractor":
-      return 500;
-    case "code":
-    case "http-request":
-      return 1200;
-    case "datasource":
-      return 1200;
-    case "knowledge-index":
-      return 1500;
-    case "trigger-schedule":
-    case "trigger-webhook":
-    case "trigger-plugin":
-      return 300;
-    case "llm":
-    case "agent":
-    case "agent-v2":
-    case "text-gen":
-    case "script-gen":
-      return 2000;
-    case "image-gen":
-    case "image-edit":
-    case "image-compare":
-      return 2500;
-    case "video-gen":
-      return 4000;
-    case "video-stitch":
-      return 3000;
-    default:
-      return 1000;
-  }
-}
-
 function setNodeStatus(
   mode: "creative" | "professional",
   nodeId: string,
@@ -179,17 +166,32 @@ function getNodesAndEdges(mode: "creative" | "professional") {
   return { nodes: s.nodes, edges: s.edges };
 }
 
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => {
-      clearTimeout(timer);
-      reject(new DOMException("Aborted", "AbortError"));
-    });
-  });
+/** 内核节点输出回写到画布节点上，界面按现有字段读取。 */
+function applyNodeOutputs(
+  mode: "creative" | "professional",
+  outputs: unknown,
+): Record<string, unknown> {
+  if (!outputs || typeof outputs !== "object") return {};
+  const record = outputs as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  const text =
+    typeof record.text === "string"
+      ? record.text
+      : typeof record.answer === "string"
+        ? record.answer
+        : undefined;
+  if (text !== undefined) {
+    if (mode === "creative") patch.output = text;
+    else patch.result = text;
+  }
+  if (typeof record.imageUrl === "string") patch.imageUrl = record.imageUrl;
+  if (typeof record.videoUrl === "string") patch.videoUrl = record.videoUrl;
+  if (typeof record.modelId === "string") patch.usedModel = record.modelId;
+  return patch;
 }
 
-async function runProfessionalBackend(
+async function runBackendWorkflow(
+  mode: "creative" | "professional",
   nodes: WorkflowNode[],
   edges: WorkflowEdge[],
   targetNodeId: string | undefined,
@@ -197,7 +199,7 @@ async function runProfessionalBackend(
 ): Promise<void> {
   const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
   if (!w.__TAURI_INTERNALS__) {
-    throw new Error("Tauri runtime not available — use creative mode preview");
+    throw new Error("当前窗口不是 Tauri 运行时，无法调用内核执行链");
   }
 
   const core = await import("@tauri-apps/api/core");
@@ -206,7 +208,7 @@ async function runProfessionalBackend(
   const workflow = {
     definition: {
       version: 1,
-      nodes: serializeNodes(nodes),
+      nodes: serializeNodes(nodes, edges, mode),
       edges: serializeEdges(edges),
     },
     inputs: collectInputs(nodes),
@@ -241,6 +243,7 @@ async function runProfessionalBackend(
       .listen<Record<string, unknown>>("chat://event", (e) => {
         const raw = e.payload;
         const envelope = raw as { run_id?: string; payload?: Record<string, unknown> };
+        if (envelope?.run_id && envelope.run_id !== ack.run_id) return;
         const event =
           envelope?.run_id && envelope?.payload ? envelope.payload : raw;
         if (event?.type !== "workflow_node") return;
@@ -250,7 +253,7 @@ async function runProfessionalBackend(
         if (!nodeId || !backendStatus) return;
 
         const mapped = mapBackendStatus(backendStatus);
-        setNodeStatus("professional", nodeId, mapped, {
+        setNodeStatus(mode, nodeId, mapped, {
           executionTime:
             typeof inner.elapsed_ms === "number" ? inner.elapsed_ms : undefined,
           errorMessage:
@@ -259,6 +262,7 @@ async function runProfessionalBackend(
             inner.outputs !== undefined && inner.outputs !== null
               ? { success: mapped === "completed", outputs: inner.outputs }
               : undefined,
+          ...applyNodeOutputs(mode, inner.outputs),
         });
       })
       .then((unlisten) => {
@@ -274,44 +278,7 @@ async function runProfessionalBackend(
       .then((unlisten) => {
         _completionUnlisten = unlisten;
       });
-
-    void ack;
   });
-}
-
-async function runCreativeSimulation(
-  nodes: WorkflowNode[],
-  signal: AbortSignal,
-  nodeId?: string,
-): Promise<void> {
-  let executionOrder: string[];
-  if (nodeId) {
-    executionOrder = [nodeId];
-  } else {
-    executionOrder = topologicalSort(nodes, []);
-  }
-
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-
-  for (const id of executionOrder) {
-    const node = nodeMap.get(id);
-    if (!node) continue;
-    if (signal.aborted) break;
-
-    setNodeStatus("creative", id, "running");
-    try {
-      await sleep(getExecutionDelay(node), signal);
-      setNodeStatus("creative", id, "completed", {
-        executionTime: getExecutionDelay(node),
-        result: { success: true, timestamp: Date.now() },
-      });
-    } catch {
-      setNodeStatus("creative", id, "error", {
-        errorMessage: "执行被取消",
-      });
-      break;
-    }
-  }
 }
 
 export async function runWorkflow(nodeId?: string) {
@@ -325,25 +292,28 @@ export async function runWorkflow(nodeId?: string) {
   const { nodes, edges } = getNodesAndEdges(mode);
 
   try {
-    if (mode === "professional") {
-      resetAllStatus();
-      await runProfessionalBackend(nodes, edges, nodeId, signal);
-    } else {
-      await runCreativeSimulation(nodes, signal, nodeId);
-    }
+    resetAllStatus();
+    await runBackendWorkflow(mode, nodes, edges, nodeId, signal);
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       return;
     }
     const msg = err instanceof Error ? err.message : String(err);
-    const allIds = nodeId ? [nodeId] : topologicalSort(nodes, edges);
-    for (const id of allIds) {
+    const affected = nodeId ? [nodeId] : nodes.map((node) => node.id);
+    for (const id of affected) {
       const current =
         mode === "professional"
           ? useProfessionalStore.getState().nodes.find((n) => n.id === id)
           : useCreativeStore.getState().nodes.find((n) => n.id === id);
       if (current && (current.data as { status?: NodeStatus }).status === "running") {
         setNodeStatus(mode, id, "error", { errorMessage: msg });
+      }
+    }
+    if (nodeId === undefined) {
+      // 整图提交失败时（例如缺少 Tauri 运行时），把原因落到第一个节点，避免静默无反馈。
+      const first = nodes[0];
+      if (first && !(first.data as { status?: NodeStatus }).status) {
+        setNodeStatus(mode, first.id, "error", { errorMessage: msg });
       }
     }
   } finally {
