@@ -155,6 +155,7 @@ async fn anthropic_messages_answer_and_keep_reasoning() {
     );
     let gateway = CanvasModelGateway::new(providers);
     let request = CanvasModelRequest {
+        audio: Default::default(),
         operation: CanvasOperation::TextGenerate,
         prompt: "回答且只回答：pong".to_string(),
         system_prompt: Some("你是一个只输出一个词的助手".to_string()),
@@ -241,6 +242,7 @@ async fn embedding_model_returns_a_real_vector() {
     );
     let gateway = CanvasModelGateway::new(providers);
     let request = CanvasModelRequest {
+        audio: Default::default(),
         operation: CanvasOperation::Embedding,
         prompt: "画布向量测试".to_string(),
         system_prompt: None,
@@ -449,6 +451,7 @@ async fn image_generation_returns_downloadable_bytes() {
     );
     let gateway = CanvasModelGateway::new(providers);
     let request = CanvasModelRequest {
+        audio: Default::default(),
         operation: CanvasOperation::ImageGenerate,
         prompt: "一个红色小立方体放在白色背景上".to_string(),
         system_prompt: None,
@@ -472,6 +475,87 @@ async fn image_generation_returns_downloadable_bytes() {
                 bytes.len()
             );
             assert!(mime.starts_with("image/"), "unexpected mime {mime}");
+        }
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+/// 16 kHz 单声道 16 bit 的 440 Hz 单音，够用且不含版权素材。
+fn tone_wav_data_url() -> String {
+    use base64::Engine as _;
+    let rate = 16_000u32;
+    let samples: Vec<i16> = (0..6_400)
+        .map(|i| {
+            let t = i as f32 / rate as f32;
+            (8_000.0 * (2.0 * std::f32::consts::PI * 440.0 * t).sin()) as i16
+        })
+        .collect();
+    let data_len = (samples.len() * 2) as u32;
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&rate.to_le_bytes());
+    bytes.extend_from_slice(&(rate * 2).to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    format!(
+        "data:audio/wav;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
+#[tokio::test]
+async fn speech_transcription_uploads_audio_and_returns_text() {
+    // 语音模型与向量模型在同一供应商账号下。
+    let Some(key) = env("CANVAS_TEST_EMBED_KEY") else {
+        eprintln!("skip: CANVAS_TEST_EMBED_KEY not set");
+        return;
+    };
+    let base = env("CANVAS_TEST_EMBED_BASE")
+        .unwrap_or_else(|| "https://api.siliconflow.cn/v1".to_string());
+    let model_id = env("CANVAS_TEST_SPEECH_MODEL")
+        .unwrap_or_else(|| "FunAudioLLM/SenseVoiceSmall".to_string());
+    let providers = gateway();
+    let provider_id = add_provider(
+        &providers,
+        "siliconflow-speech",
+        "openai",
+        &base,
+        &key,
+        vec![model(&model_id, vec![CanvasScenario::SpeechToText])],
+    );
+    let gateway = CanvasModelGateway::new(providers);
+    let request = CanvasModelRequest {
+        operation: CanvasOperation::SpeechTranscribe,
+        prompt: String::new(),
+        system_prompt: None,
+        images: Vec::new(),
+        texts: Vec::new(),
+        size: None,
+        audio: deepagent_app_core::canvas_model_gateway::CanvasAudioInput {
+            reference: Some(tone_wav_data_url()),
+            voice: None,
+            format: None,
+        },
+        timeout_ms: 120_000,
+    };
+    let answer = gateway
+        .execute_on(&provider_id, &model_id, &request)
+        .await
+        .expect("audio/transcriptions");
+    match answer {
+        deepagent_app_core::canvas_model_gateway::CanvasModelOutput::Text { text, .. } => {
+            // 纯单音没有词，转写为空是合法结果；这里要证明的是整条线跑通。
+            eprintln!("transcribed {model_id}: {text:?}");
         }
         other => panic!("unexpected output {other:?}"),
     }

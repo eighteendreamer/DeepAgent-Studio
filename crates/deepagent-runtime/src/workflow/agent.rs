@@ -15,8 +15,8 @@ use deepagent_core::message::Message;
 use deepagent_models::chat_completions::ChatCompletionRequest;
 
 use super::canvas::{
-    CanvasCompletionRequest, CanvasEmbeddingRequest, CanvasImageRequest, CanvasModelBridge,
-    CanvasRouteRequest,
+    CanvasAudioRequest, CanvasCompletionRequest, CanvasEmbeddingRequest, CanvasImageRequest,
+    CanvasModelBridge, CanvasRouteRequest,
 };
 use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
@@ -167,10 +167,11 @@ impl WorkflowAgent {
                 self.execute_llm(kind, &resolved_config).await
             }
             "image-gen" | "image-edit" => self.execute_image_gen(kind, &resolved_config).await,
+            "audio" => self.execute_audio(&resolved_config).await,
             "embeddings" => self.execute_embedding(&resolved_config).await,
             // Media kinds without a backend job runner fail loudly instead of
             // reporting a fabricated completion through the passthrough arm.
-            "video-gen" | "video-stitch" | "image-compare" | "audio" => {
+            "video-gen" | "video-stitch" | "image-compare" => {
                 Err(deepagent_core::error::CoreError::invalid(format!(
                     "UnsupportedOperation: canvas node `{kind}` has no executor yet"
                 )))
@@ -690,6 +691,100 @@ impl WorkflowAgent {
         }))
     }
 
+    /// Audio node: either direction of speech, never guessed by the node.
+    ///
+    /// The contract requires an explicit operation, so the only fact this
+    /// executor adds to the route is what the referenced value really is.
+    async fn execute_audio(&self, config: &Map<String, Value>) -> Result<Value> {
+        let bridge = self.canvas_bridge.clone().ok_or_else(|| {
+            deepagent_core::error::CoreError::other(
+                "audio nodes need the canvas model bridge; configure the canvas providers first",
+            )
+        })?;
+        let text = Self::compose_prompt(
+            config,
+            config
+                .get("prompt")
+                .or_else(|| config.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
+        let audio_reference = config
+            .get("audioReference")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let mut input_kinds = Vec::new();
+        if !text.trim().is_empty() {
+            input_kinds.push("Text".to_string());
+        }
+        if let Some(reference) = audio_reference.clone() {
+            match bridge
+                .inspect_input_kinds(&[reference])?
+                .first()
+                .map(String::as_str)
+            {
+                Some("Audio") => input_kinds.push("Audio".to_string()),
+                Some(other) => {
+                    return Err(deepagent_core::error::CoreError::invalid(format!(
+                        "OperationInputConflict: `audio` node expects an audio reference, got `{other}`"
+                    )))
+                }
+                None => {
+                    return Err(deepagent_core::error::CoreError::invalid(
+                        "MissingReferenceInput: `audio` received a reference the store cannot classify",
+                    ))
+                }
+            }
+        }
+        if input_kinds.is_empty() {
+            input_kinds.push("Empty".to_string());
+        }
+        let routed = bridge.route_operation(CanvasRouteRequest {
+            node_kind: "audio".to_string(),
+            explicit_operation: config
+                .get("operation")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty() && value.trim() != "auto"),
+            input_kinds,
+            has_prompt: !text.trim().is_empty(),
+        })?;
+        let response = bridge
+            .run_audio(CanvasAudioRequest {
+                model_ref: config
+                    .get("audioModel")
+                    .or_else(|| config.get("model"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                operation: routed.operation.clone(),
+                text,
+                audio_reference,
+                voice: config
+                    .get("audioVoice")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .filter(|value| !value.trim().is_empty()),
+                format: config
+                    .get("audioFormat")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .filter(|value| !value.trim().is_empty()),
+                timeout_ms: 300_000,
+            })
+            .await?;
+        Ok(serde_json::json!({
+            "operation": response.operation,
+            "audioUrl": response.audio_url,
+            "text": response.text,
+            "providerId": response.provider_id,
+            "modelId": response.model_id,
+        }))
+    }
+
     async fn execute_embedding(&self, config: &Map<String, Value>) -> Result<Value> {
         let bridge = self.canvas_bridge.clone().ok_or_else(|| {
             deepagent_core::error::CoreError::other(
@@ -1124,7 +1219,8 @@ mod tests {
     }
 
     use crate::workflow::canvas::{
-        CanvasCompletionResponse, CanvasEmbeddingResponse, CanvasImageResponse,
+        CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionResponse, CanvasEmbeddingResponse,
+        CanvasImageResponse,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -1134,6 +1230,7 @@ mod tests {
     struct RecordingBridge {
         completions: Arc<Mutex<Vec<CanvasCompletionRequest>>>,
         images: Arc<Mutex<Vec<CanvasImageRequest>>>,
+        audios: Arc<Mutex<Vec<CanvasAudioRequest>>>,
         fail: bool,
     }
 
@@ -1172,6 +1269,33 @@ mod tests {
             })
         }
 
+        async fn run_audio(
+            &self,
+            request: CanvasAudioRequest,
+        ) -> deepagent_core::error::Result<CanvasAudioResponse> {
+            let transcribe = request.audio_reference.is_some();
+            self.audios.lock().unwrap().push(request);
+            Ok(CanvasAudioResponse {
+                operation: if transcribe {
+                    "speech_transcribe".to_string()
+                } else {
+                    "speech_synthesize".to_string()
+                },
+                audio_url: if transcribe {
+                    None
+                } else {
+                    Some("artifact://art_voice".to_string())
+                },
+                text: if transcribe {
+                    Some("转写出来的文本".to_string())
+                } else {
+                    None
+                },
+                provider_id: "cvp-1".to_string(),
+                model_id: "CosyVoice2-0.5B".to_string(),
+            })
+        }
+
         fn route_operation(
             &self,
             request: CanvasRouteRequest,
@@ -1191,6 +1315,8 @@ mod tests {
                     ));
                 }
                 Some("image_edit") => "image_edit",
+                // 音频节点必须显式给 operation；真实校验在网关契约里，这里透传。
+                Some(op @ ("speech_synthesize" | "speech_transcribe")) => op,
                 Some(other) => {
                     return Err(deepagent_core::error::CoreError::invalid(format!(
                         "OperationInputConflict: `{other}` is not allowed for `{}`",
@@ -1218,7 +1344,12 @@ mod tests {
                 .iter()
                 .map(|reference| {
                     let lowered = reference.to_ascii_lowercase();
-                    if lowered.starts_with("data:video") || lowered.ends_with(".mp4") {
+                    if lowered.starts_with("data:audio")
+                        || lowered.ends_with(".mp3")
+                        || lowered.ends_with(".wav")
+                    {
+                        "Audio".to_string()
+                    } else if lowered.starts_with("data:video") || lowered.ends_with(".mp4") {
                         "Video".to_string()
                     } else if lowered.starts_with("artifact://")
                         || lowered.contains("image")
@@ -1462,7 +1593,7 @@ mod tests {
     #[tokio::test]
     async fn creative_media_nodes_fail_instead_of_faking_completion() {
         let mut agent = agent_with_bridge(RecordingBridge::default());
-        for kind in ["video-gen", "video-stitch", "image-compare", "audio"] {
+        for kind in ["video-gen", "video-stitch", "image-compare"] {
             let error = agent
                 .execute_node_inline(kind, &config(&[("prompt", json!("make a clip"))]))
                 .await
@@ -1472,6 +1603,94 @@ mod tests {
                 "{kind} reported {error}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn audio_node_synthesizes_into_an_artifact_reference() {
+        let bridge = RecordingBridge::default();
+        let records = bridge.audios.clone();
+        let mut agent = agent_with_bridge(bridge);
+        let outcome = agent
+            .execute_node_inline(
+                "audio",
+                &config(&[
+                    ("operation", json!("speech_synthesize")),
+                    ("audioModel", json!("cvp-1::CosyVoice2-0.5B")),
+                    ("prompt", json!("把这句话念出来")),
+                    ("audioVoice", json!("voice-42")),
+                    ("audioFormat", json!("mp3")),
+                ]),
+            )
+            .await
+            .expect("synthesis");
+        assert_eq!(outcome["audioUrl"], "artifact://art_voice");
+        assert_eq!(outcome["operation"], "speech_synthesize");
+        let sent = records
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("one audio call");
+        assert_eq!(sent.text, "把这句话念出来");
+        assert_eq!(sent.model_ref, "cvp-1::CosyVoice2-0.5B");
+        // 音色与容器由节点配置原样透传，内核不补默认值。
+        assert_eq!(sent.voice.as_deref(), Some("voice-42"));
+        assert_eq!(sent.format.as_deref(), Some("mp3"));
+        assert_eq!(sent.audio_reference, None);
+        assert!(
+            !outcome.to_string().contains("base64"),
+            "audio output must not carry inline bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_node_transcribes_the_referenced_audio() {
+        let bridge = RecordingBridge::default();
+        let records = bridge.audios.clone();
+        let mut agent = agent_with_bridge(bridge);
+        let outcome = agent
+            .execute_node_inline(
+                "audio",
+                &config(&[
+                    ("operation", json!("speech_transcribe")),
+                    ("audioModel", json!("cvp-1::SenseVoiceSmall")),
+                    ("audioReference", json!("data:audio/wav;base64,AA")),
+                ]),
+            )
+            .await
+            .expect("transcription");
+        assert_eq!(outcome["text"], "转写出来的文本");
+        assert_eq!(outcome["operation"], "speech_transcribe");
+        assert!(outcome["audioUrl"].is_null());
+        let sent = records
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("one audio call");
+        assert_eq!(
+            sent.audio_reference.as_deref(),
+            Some("data:audio/wav;base64,AA")
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_node_rejects_a_non_audio_reference() {
+        let mut agent = agent_with_bridge(RecordingBridge::default());
+        let error = agent
+            .execute_node_inline(
+                "audio",
+                &config(&[
+                    ("operation", json!("speech_transcribe")),
+                    ("audioReference", json!("artifact://img-1")),
+                ]),
+            )
+            .await
+            .expect_err("an image cannot be transcribed");
+        assert!(
+            error.to_string().contains("OperationInputConflict"),
+            "got {error}"
+        );
     }
 
     /// The graph registry accepts these kinds, so without a real executor the

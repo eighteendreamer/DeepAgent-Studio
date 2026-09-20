@@ -22,9 +22,9 @@ use serde_json::{json, Value};
 
 use deepagent_core::error::Result as CoreResult;
 use deepagent_runtime::workflow::{
-    CanvasCompletionRequest, CanvasCompletionResponse, CanvasEmbeddingRequest,
-    CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse, CanvasModelBridge,
-    CanvasRouteOutcome, CanvasRouteRequest,
+    CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest, CanvasCompletionResponse,
+    CanvasEmbeddingRequest, CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse,
+    CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest,
 };
 
 use crate::canvas_node_contract::canvas_node_contract;
@@ -459,6 +459,19 @@ pub struct CanvasImageInput {
     pub data_url: String,
 }
 
+/// Speech payload. `reference` points at the audio to transcribe and the two
+/// options are handed to the provider verbatim: the kernel never invents a
+/// voice id, so an unset `voice` surfaces the provider's own error.
+#[derive(Debug, Clone, Default)]
+pub struct CanvasAudioInput {
+    /// `artifact://`, `data:` or `http(s)` reference to the audio.
+    pub reference: Option<String>,
+    /// Provider voice id for synthesis.
+    pub voice: Option<String>,
+    /// Requested container, e.g. `mp3` or `wav`.
+    pub format: Option<String>,
+}
+
 /// A resolved canvas model call.
 #[derive(Debug, Clone)]
 pub struct CanvasModelRequest {
@@ -468,6 +481,7 @@ pub struct CanvasModelRequest {
     pub images: Vec<CanvasImageInput>,
     pub texts: Vec<String>,
     pub size: Option<String>,
+    pub audio: CanvasAudioInput,
     pub timeout_ms: u64,
 }
 
@@ -480,6 +494,7 @@ impl CanvasModelRequest {
             images: Vec::new(),
             texts: Vec::new(),
             size: None,
+            audio: CanvasAudioInput::default(),
             timeout_ms: 60_000,
         }
     }
@@ -575,6 +590,83 @@ impl CanvasModelGateway {
             ))
         })?;
         Ok(service.as_ref())
+    }
+
+    /// Bytes, container type and upload filename behind `audio.reference`.
+    ///
+    /// `artifact://` reads the managed blob, `data:` decodes inline bytes and
+    /// `http(s)` downloads it, so an audio node works with every reference
+    /// shape an existing graph may already carry.
+    async fn audio_input(
+        &self,
+        request: &CanvasModelRequest,
+    ) -> CanvasResult<(Vec<u8>, String, String)> {
+        let reference = request
+            .audio
+            .reference
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if reference.is_empty() {
+            return Err(CanvasError::new(
+                CanvasErrorCode::MissingReferenceInput,
+                "speech_transcribe requires one audio artifact".to_string(),
+            ));
+        }
+        let (bytes, mime) =
+            if let Some(id) = crate::canvas_artifact_service::artifact_id_from_uri(&reference) {
+                let store = self
+                    .artifact_store("read an audio input")
+                    .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?;
+                let record = store
+                    .record(id)
+                    .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?
+                    .ok_or_else(|| {
+                        CanvasError::new(
+                            CanvasErrorCode::InvalidInput,
+                            format!("audio artifact `{id}` is missing from the store"),
+                        )
+                    })?;
+                let bytes = store
+                    .read_bytes(id)
+                    .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?
+                    .ok_or_else(|| {
+                        CanvasError::new(
+                            CanvasErrorCode::InvalidInput,
+                            format!("audio artifact `{id}` has no stored bytes"),
+                        )
+                    })?;
+                let mime = record.media_type.unwrap_or_else(|| "audio/wav".to_string());
+                (bytes, mime)
+            } else if let Some((head, payload)) = reference.split_once(";base64,") {
+                use base64::Engine as _;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(payload.trim())
+                    .map_err(|e| {
+                        CanvasError::new(
+                            CanvasErrorCode::InvalidInput,
+                            format!("decode inline audio: {e}"),
+                        )
+                    })?;
+                let mime = head.strip_prefix("data:").unwrap_or(head).to_string();
+                (bytes, mime)
+            } else {
+                (
+                    fetch_binary(&reference, None).await?,
+                    mime_from_url(&reference),
+                )
+            };
+        if bytes.is_empty() {
+            return Err(CanvasError::new(
+                CanvasErrorCode::MissingReferenceInput,
+                "audio input contains no bytes".to_string(),
+            ));
+        }
+        // 魔数优先：供应商会按文件内容校验，声明与实际容器不一致时必须以字节为准。
+        let mime = sniff_audio_mime(&bytes).unwrap_or(mime);
+        let extension = mime.rsplit('/').next().unwrap_or("bin");
+        Ok((bytes, mime.clone(), format!("audio.{extension}")))
     }
 
     /// Turn node-stored image references into what a provider can fetch:
@@ -691,20 +783,33 @@ impl CanvasModelGateway {
         )
         .map_err(|e| CanvasError::new(CanvasErrorCode::UnsupportedCapability, e.to_string()))?;
 
-        let body = build_request_body(
-            candidate.provider.protocol,
-            kind,
-            &candidate.model.id,
-            request,
-        )
-        .map(|v| v.to_string())?;
+        let (content_type, body) = match kind {
+            CanvasRequestKind::SpeechTranscribe => {
+                let (bytes, mime, filename) = self.audio_input(request).await?;
+                (
+                    format!("multipart/form-data; boundary={AUDIO_FORM_BOUNDARY}"),
+                    transcription_form(&candidate.model.id, &bytes, &filename, &mime)?,
+                )
+            }
+            _ => (
+                "application/json".to_string(),
+                build_request_body(
+                    candidate.provider.protocol,
+                    kind,
+                    &candidate.model.id,
+                    request,
+                )?
+                .to_string()
+                .into_bytes(),
+            ),
+        };
 
         let timeout = Duration::from_millis(request.timeout_ms.max(1_000));
         let mut req = self
             .http
             .post(&endpoint)
             .timeout(timeout)
-            .header(reqwest::header::CONTENT_TYPE, "application/json");
+            .header(reqwest::header::CONTENT_TYPE, content_type);
         req = apply_auth_headers(req, candidate.provider.protocol, &api_key);
         let resp = req.body(body).send().await.map_err(|e| {
             CanvasError::new(
@@ -716,7 +821,8 @@ impl CanvasModelGateway {
             )
         })?;
         let status = resp.status();
-        let raw = resp.text().await.map_err(|e| {
+        // 语音合成回二进制，其余回 JSON，所以先按字节取再分流。
+        let bytes = resp.bytes().await.map_err(|e| {
             CanvasError::new(
                 CanvasErrorCode::TransientFailure,
                 format!(
@@ -725,8 +831,25 @@ impl CanvasModelGateway {
                 ),
             )
         })?;
+        let raw = String::from_utf8_lossy(&bytes).to_string();
         if !status.is_success() {
             return Err(classify_status(status.as_u16(), &raw));
+        }
+        if kind == CanvasRequestKind::SpeechSynthesize {
+            if bytes.is_empty() {
+                return Err(CanvasError::new(
+                    CanvasErrorCode::ProviderFailure,
+                    "speech synthesis returned an empty body".to_string(),
+                ));
+            }
+            return Ok(CanvasModelOutput::Audio {
+                mime: sniff_audio_mime(&bytes)
+                    .or_else(|| request.audio.format.as_ref().map(|f| format!("audio/{f}")))
+                    .unwrap_or_else(|| "application/octet-stream".to_string()),
+                bytes: bytes.to_vec(),
+                provider_id: candidate.provider.id.clone(),
+                model_id: candidate.model.id.clone(),
+            });
         }
         let value: Value = serde_json::from_str(&raw).map_err(|e| {
             CanvasError::new(
@@ -849,6 +972,7 @@ impl CanvasModelGateway {
         );
         let endpoint = endpoint_result.unwrap_or_default();
         let request = CanvasModelRequest {
+            audio: Default::default(),
             operation: match scenario {
                 CanvasScenario::Embedding => CanvasOperation::Embedding,
                 _ => CanvasOperation::TextGenerate,
@@ -1060,6 +1184,36 @@ fn build_request_body(
             "content": { "parts": [{ "text": request.prompt }] },
             "outputDimensionality": 1024,
         }),
+        (CanvasProtocol::OpenAi, CanvasRequestKind::SpeechSynthesize) => {
+            if request.prompt.trim().is_empty() {
+                return Err(CanvasError::new(
+                    CanvasErrorCode::MissingReferenceInput,
+                    "text_to_speech requires text to speak".to_string(),
+                ));
+            }
+            let mut body = json!({
+                "model": model_id,
+                "input": request.prompt,
+            });
+            // 音色由供应商定义，缺省时把供应商自己的报错原样交回，而不是挑一个默认值。
+            if let Some(voice) = request
+                .audio
+                .voice
+                .as_ref()
+                .filter(|v| !v.trim().is_empty())
+            {
+                body["voice"] = json!(voice);
+            }
+            if let Some(format) = request
+                .audio
+                .format
+                .as_ref()
+                .filter(|f| !f.trim().is_empty())
+            {
+                body["response_format"] = json!(format);
+            }
+            body
+        }
         (_, other) => {
             let label = match other {
                 CanvasRequestKind::Chat => "chat",
@@ -1271,20 +1425,29 @@ async fn parse_output(
             CanvasErrorCode::ProviderFailure,
             "model catalogs are parsed by discover_models".to_string(),
         )),
-        CanvasRequestKind::SpeechTranscribe | CanvasRequestKind::SpeechSynthesize => {
-            Err(CanvasError::new(
-                CanvasErrorCode::UnsupportedCapability,
-                format!(
-                    "speech {} is not enabled for provider protocol `{}`",
-                    if kind == CanvasRequestKind::SpeechTranscribe {
-                        "transcription"
-                    } else {
-                        "synthesis"
-                    },
-                    candidate.provider.protocol.as_str()
-                ),
-            ))
+        CanvasRequestKind::SpeechTranscribe => {
+            let text = value
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    CanvasError::new(
+                        CanvasErrorCode::ProviderFailure,
+                        "transcription response contained no text field".to_string(),
+                    )
+                })?;
+            Ok(CanvasModelOutput::Text {
+                text,
+                reasoning: None,
+                provider_id,
+                model_id,
+            })
         }
+        // 合成响应是二进制，call 在 JSON 解析前就返回了；走到这里说明接线错了。
+        CanvasRequestKind::SpeechSynthesize => Err(CanvasError::new(
+            CanvasErrorCode::ProviderFailure,
+            "speech synthesis payloads are binary and handled before JSON parsing".to_string(),
+        )),
     }
 }
 
@@ -1344,6 +1507,59 @@ fn classify_media_reference(value: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Boundary for the hand-written `multipart/form-data` transcription body.
+///
+/// `reqwest`'s `multipart` feature is not enabled anywhere in this workspace,
+/// and the transcription request only ever carries two fields, so the bytes
+/// are assembled here rather than pulling in another feature.
+const AUDIO_FORM_BOUNDARY: &str = "----deepagentCanvasAudioBoundary";
+
+/// `multipart/form-data` payload for `/audio/transcriptions` (`model` + `file`).
+fn transcription_form(
+    model_id: &str,
+    bytes: &[u8],
+    filename: &str,
+    mime: &str,
+) -> CanvasResult<Vec<u8>> {
+    // 模型 id 来自用户录入的供应商配置，任何引号或换行都会改写表单结构。
+    if model_id.contains(['"', '\r', '\n']) {
+        return Err(CanvasError::new(
+            CanvasErrorCode::InvalidInput,
+            "model id cannot be sent as form data".to_string(),
+        ));
+    }
+    let mut body = Vec::with_capacity(bytes.len() + 256);
+    body.extend_from_slice(
+        format!(
+            "--{AUDIO_FORM_BOUNDARY}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model_id}\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{AUDIO_FORM_BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{AUDIO_FORM_BOUNDARY}--\r\n").as_bytes());
+    Ok(body)
+}
+
+/// Sniff the audio container from magic bytes; declared types lie.
+fn sniff_audio_mime(bytes: &[u8]) -> Option<String> {
+    let mime = match bytes {
+        [b'I', b'D', b'3', ..] => "audio/mpeg",
+        [0xff, 0xf2 | 0xf3 | 0xfb, ..] => "audio/mpeg",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => "audio/wav",
+        [b'O', b'g', b'g', b'S', ..] => "audio/ogg",
+        [b'f', b'L', b'a', b'C', ..] => "audio/flac",
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => "audio/mp4",
+        _ => return None,
+    };
+    Some(mime.to_string())
 }
 
 /// Detect an image type from its magic bytes.
@@ -1548,6 +1764,7 @@ impl CanvasModelBridge for CanvasModelGateway {
             &request.skill_ids,
         )?;
         let model_request = CanvasModelRequest {
+            audio: Default::default(),
             operation: CanvasOperation::TextGenerate,
             prompt: request.prompt.clone(),
             system_prompt,
@@ -1603,6 +1820,7 @@ impl CanvasModelBridge for CanvasModelGateway {
             }
         };
         let model_request = CanvasModelRequest {
+            audio: Default::default(),
             operation,
             prompt: request.prompt.clone(),
             system_prompt: None,
@@ -1650,6 +1868,91 @@ impl CanvasModelBridge for CanvasModelGateway {
             }
             other => Err(deepagent_core::error::CoreError::other(format!(
                 "image node received a non-image model output: {other:?}"
+            ))),
+        }
+    }
+
+    async fn run_audio(&self, request: CanvasAudioRequest) -> CoreResult<CanvasAudioResponse> {
+        let operation = match request.operation.trim() {
+            "speech_synthesize" => CanvasOperation::SpeechSynthesize,
+            "speech_transcribe" => CanvasOperation::SpeechTranscribe,
+            other => {
+                return Err(deepagent_core::error::CoreError::invalid(format!(
+                    "UnsupportedOperation: audio node cannot run `{other}`"
+                )))
+            }
+        };
+        let model_request = CanvasModelRequest {
+            operation,
+            prompt: request.text.clone(),
+            system_prompt: None,
+            images: Vec::new(),
+            texts: Vec::new(),
+            size: None,
+            audio: CanvasAudioInput {
+                reference: request.audio_reference.clone(),
+                voice: request.voice.clone(),
+                format: request.format.clone(),
+            },
+            timeout_ms: if request.timeout_ms == 0 {
+                300_000
+            } else {
+                request.timeout_ms
+            },
+        };
+        validate_request(&model_request).map_err(to_core_error)?;
+        let output = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref) {
+            self.execute_on(provider_id, model_id, &model_request)
+                .await
+                .map_err(to_core_error)?
+        } else {
+            self.execute(&model_request, None)
+                .await
+                .map_err(to_core_error)?
+        };
+        match (operation, output) {
+            (
+                CanvasOperation::SpeechSynthesize,
+                CanvasModelOutput::Audio {
+                    mime,
+                    bytes,
+                    provider_id,
+                    model_id,
+                },
+            ) => {
+                let stored = self
+                    .artifact_store("store a synthesized voice")?
+                    .import_bytes(
+                        deepagent_persistence::artifact_store::ArtifactKind::Audio,
+                        Some(&mime),
+                        &bytes,
+                        None,
+                    )?;
+                Ok(CanvasAudioResponse {
+                    operation: "speech_synthesize".to_string(),
+                    audio_url: Some(stored.uri),
+                    text: None,
+                    provider_id,
+                    model_id,
+                })
+            }
+            (
+                CanvasOperation::SpeechTranscribe,
+                CanvasModelOutput::Text {
+                    text,
+                    provider_id,
+                    model_id,
+                    ..
+                },
+            ) => Ok(CanvasAudioResponse {
+                operation: "speech_transcribe".to_string(),
+                audio_url: None,
+                text: Some(text),
+                provider_id,
+                model_id,
+            }),
+            (_, other) => Err(deepagent_core::error::CoreError::other(format!(
+                "audio node received an unexpected model output: {other:?}"
             ))),
         }
     }
@@ -1727,6 +2030,7 @@ impl CanvasModelBridge for CanvasModelGateway {
 
     async fn embed(&self, request: CanvasEmbeddingRequest) -> CoreResult<CanvasEmbeddingResponse> {
         let model_request = CanvasModelRequest {
+            audio: Default::default(),
             operation: CanvasOperation::Embedding,
             prompt: request.texts.first().cloned().unwrap_or_default(),
             system_prompt: None,
@@ -1778,6 +2082,14 @@ pub fn validate_request(request: &CanvasModelRequest) -> CanvasResult<()> {
                 .iter()
                 .map(|_| CanvasInputKind::Image)
                 .chain(request.texts.iter().map(|_| CanvasInputKind::Text))
+                .chain(
+                    request
+                        .audio
+                        .reference
+                        .iter()
+                        .filter(|reference| !reference.trim().is_empty())
+                        .map(|_| CanvasInputKind::Audio),
+                )
                 .collect(),
             has_prompt: !request.prompt.trim().is_empty(),
         },
@@ -1934,6 +2246,7 @@ mod tests {
     #[test]
     fn body_builders_put_the_model_only_in_the_body() {
         let request = CanvasModelRequest {
+            audio: Default::default(),
             operation: CanvasOperation::Embedding,
             prompt: "hello".to_string(),
             system_prompt: None,
@@ -1956,6 +2269,7 @@ mod tests {
     #[test]
     fn image_edit_body_requires_reference_images() {
         let request = CanvasModelRequest {
+            audio: Default::default(),
             operation: CanvasOperation::ImageEdit,
             prompt: "change the sky".to_string(),
             system_prompt: None,
@@ -2136,6 +2450,7 @@ mod tests {
     #[test]
     fn image_operations_route_to_their_own_endpoints() {
         let request = CanvasModelRequest {
+            audio: Default::default(),
             operation: CanvasOperation::ImageGenerate,
             prompt: "a cube".to_string(),
             system_prompt: None,
@@ -2335,6 +2650,7 @@ mod tests {
         }
 
         let embed_req = CanvasModelRequest {
+            audio: Default::default(),
             operation: CanvasOperation::Embedding,
             prompt: "ping".to_string(),
             system_prompt: None,
@@ -2569,6 +2885,160 @@ mod tests {
             vec!["denied-first"],
             "a non-transient failure must not leak the request to another model"
         );
+    }
+
+    /// 语音两端必须真的走线：合成回二进制并存成音频制品，转写把制品字节按
+    /// multipart 上传并回文本；节点侧永远只拿到引用。
+    #[test]
+    fn audio_endpoints_round_trip_through_the_artifact_store() {
+        use std::io::{Read, Write};
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let voice_bytes: Vec<u8> = b"ID3\x03\x00fake-voice-payload".to_vec();
+        let received: Arc<std::sync::Mutex<Vec<(String, String, String)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = received.clone();
+        let spoken = voice_bytes.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let mut text = String::new();
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            text.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            if body_complete(&text) {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let head_end = text.find("\r\n\r\n").unwrap_or(text.len());
+                let head = text[..head_end].to_lowercase();
+                let request_line = text.lines().next().unwrap_or_default().to_string();
+                let body = text[head_end + 4..].to_string();
+                let (content_type, payload) = if request_line.contains("/audio/speech") {
+                    ("audio/mpeg", String::from_utf8_lossy(&spoken).to_string())
+                } else {
+                    ("application/json", "{\"text\":\"你好世界\"}".to_string())
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                sink.lock().expect("lock").push((request_line, head, body));
+            }
+        });
+
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let artifact_root =
+            std::env::temp_dir().join(format!("deepagent-gateway-audio-{}", std::process::id()));
+        let artifacts = Arc::new(
+            crate::canvas_artifact_service::CanvasArtifactService::new(&artifact_root, db.clone())
+                .expect("artifact service"),
+        );
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::secret_store::MemorySecretStore::default()),
+        ));
+        let config = |id: &str, scenario| CanvasModelConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            enabled: true,
+            scenarios: vec![scenario],
+            priority: 0,
+        };
+        let created = providers
+            .save_provider(CanvasProviderInput {
+                name: "Local".to_string(),
+                protocol: "openai".to_string(),
+                base_url: format!("http://127.0.0.1:{port}/v1"),
+                enabled: true,
+                models: vec![
+                    config("CosyVoice2-0.5B", CanvasScenario::TextToSpeech),
+                    config("SenseVoiceSmall", CanvasScenario::SpeechToText),
+                ],
+                api_key: Some("sk-local".to_string()),
+                ..Default::default()
+            })
+            .expect("provider");
+        let gateway = CanvasModelGateway::new(providers).with_artifacts(artifacts.clone());
+
+        let spoken = rt
+            .block_on(gateway.run_audio(CanvasAudioRequest {
+                model_ref: format!("{}::CosyVoice2-0.5B", created.id),
+                operation: "speech_synthesize".to_string(),
+                text: "你好".to_string(),
+                audio_reference: None,
+                voice: Some("voice-42".to_string()),
+                format: Some("mp3".to_string()),
+                timeout_ms: 5_000,
+            }))
+            .expect("synthesize");
+        let uri = spoken.audio_url.clone().expect("artifact reference");
+        assert!(uri.starts_with("artifact://"), "synthesize gave {uri}");
+        assert!(spoken.text.is_none());
+        let id = uri.trim_start_matches("artifact://");
+        let record = artifacts.record(id).expect("record").expect("row");
+        assert_eq!(
+            record.kind,
+            deepagent_persistence::artifact_store::ArtifactKind::Audio
+        );
+        assert_eq!(record.media_type.as_deref(), Some("audio/mpeg"));
+        assert_eq!(
+            artifacts.read_bytes(id).expect("read").expect("bytes"),
+            voice_bytes
+        );
+
+        let heard = rt
+            .block_on(gateway.run_audio(CanvasAudioRequest {
+                model_ref: format!("{}::SenseVoiceSmall", created.id),
+                operation: "speech_transcribe".to_string(),
+                text: String::new(),
+                audio_reference: Some(uri.clone()),
+                voice: None,
+                format: None,
+                timeout_ms: 5_000,
+            }))
+            .expect("transcribe");
+        assert_eq!(heard.text.as_deref(), Some("你好世界"));
+        assert!(heard.audio_url.is_none());
+
+        let captured = received.lock().expect("lock").clone();
+        assert_eq!(captured.len(), 2, "both speech endpoints must be reached");
+        let (speech_line, speech_head, speech_body) = &captured[0];
+        assert!(
+            speech_line.contains("POST /v1/audio/speech"),
+            "speech line was {speech_line}"
+        );
+        assert!(speech_head.contains("content-type: application/json"));
+        assert!(speech_body.contains("\"input\":\"你好\""));
+        assert!(speech_body.contains("voice-42"));
+        assert!(speech_body.contains("mp3"));
+        let (asr_line, asr_head, asr_body) = &captured[1];
+        assert!(
+            asr_line.contains("POST /v1/audio/transcriptions"),
+            "transcription line was {asr_line}"
+        );
+        assert!(
+            asr_head.contains("multipart/form-data; boundary="),
+            "transcription head was {asr_head}"
+        );
+        assert!(asr_body.contains("name=\"file\""));
+        assert!(asr_body.contains("SenseVoiceSmall"));
+        // 制品字节必须真的进表单，而不是把 artifact:// 引用发给供应商。
+        assert!(
+            asr_body.contains("fake-voice-payload"),
+            "audio bytes missing from the upload"
+        );
+        let _ = std::fs::remove_dir_all(&artifact_root);
     }
 
     /// True once the headers plus the declared body length have been received.

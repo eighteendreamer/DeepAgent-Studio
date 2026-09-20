@@ -8,9 +8,9 @@ pub mod values;
 
 pub use agent::WorkflowAgent;
 pub use canvas::{
-    CanvasCompletionRequest, CanvasCompletionResponse, CanvasEmbeddingRequest,
-    CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse, CanvasModelBridge,
-    CanvasRouteOutcome, CanvasRouteRequest,
+    CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest, CanvasCompletionResponse,
+    CanvasEmbeddingRequest, CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse,
+    CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest,
 };
 pub use graph::{
     compile, CompiledWorkflow, WorkflowDefinition, WorkflowEdgeSpec, WorkflowNodeSpec,

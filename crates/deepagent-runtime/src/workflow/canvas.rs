@@ -78,6 +78,43 @@ pub struct CanvasImageResponse {
     pub operation: String,
 }
 
+/// A speech request for one canvas audio node.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasAudioRequest {
+    pub model_ref: String,
+    /// `speech_synthesize` or `speech_transcribe`, as chosen by the router.
+    #[serde(default)]
+    pub operation: String,
+    /// Text to speak.
+    pub text: String,
+    /// Audio to transcribe: `artifact://<id>`, a `data:` URL or an http URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_reference: Option<String>,
+    /// Provider voice id. `None` leaves the choice to the provider, which
+    /// rejects the call with its own error; the kernel never invents one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+    /// Requested container, e.g. `mp3`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    pub timeout_ms: u64,
+}
+
+/// Speech result. Synthesis reports an artifact reference, transcription the
+/// recognized text; raw audio bytes never leave the gateway.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasAudioResponse {
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub provider_id: String,
+    pub model_id: String,
+}
+
 /// An embedding request for one canvas node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,6 +169,9 @@ pub trait CanvasModelBridge: Send + Sync {
     /// Image generation or editing, decided by whether references are present.
     async fn generate_image(&self, request: CanvasImageRequest) -> Result<CanvasImageResponse>;
 
+    /// Text-to-speech or speech-to-text for the audio node.
+    async fn run_audio(&self, request: CanvasAudioRequest) -> Result<CanvasAudioResponse>;
+
     /// Text embeddings.
     async fn embed(&self, request: CanvasEmbeddingRequest) -> Result<CanvasEmbeddingResponse>;
 
@@ -183,6 +223,25 @@ mod tests {
                 } else {
                     "edit".to_string()
                 },
+            })
+        }
+
+        async fn run_audio(&self, request: CanvasAudioRequest) -> Result<CanvasAudioResponse> {
+            self.calls.lock().unwrap().push(request.model_ref);
+            Ok(CanvasAudioResponse {
+                operation: request.operation,
+                audio_url: if request.audio_reference.is_some() {
+                    None
+                } else {
+                    Some("artifact://art_voice_fake".to_string())
+                },
+                text: if request.audio_reference.is_some() {
+                    Some("fake transcription".to_string())
+                } else {
+                    None
+                },
+                provider_id: "p".to_string(),
+                model_id: "m".to_string(),
             })
         }
 
