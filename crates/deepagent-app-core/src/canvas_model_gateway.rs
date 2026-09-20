@@ -2789,6 +2789,84 @@ mod tests {
         assert_eq!(err.code, CanvasErrorCode::UnsupportedCapability);
     }
 
+    /// 方案第十二节：每家协议只声明实际可用的能力，其余必须显式失败，
+    /// 而且不能是瞬时错误——否则候选循环会把它当成换模型的时机静默绕行。
+    #[test]
+    fn each_protocol_declares_only_the_capabilities_it_implements() {
+        use crate::canvas_provider_service::endpoint_url;
+
+        let declared = [
+            CanvasRequestKind::Chat,
+            CanvasRequestKind::Embeddings,
+            CanvasRequestKind::ImageGenerate,
+            CanvasRequestKind::ImageEdit,
+            CanvasRequestKind::SpeechTranscribe,
+            CanvasRequestKind::SpeechSynthesize,
+            CanvasRequestKind::VideoSubmit,
+            CanvasRequestKind::VideoStatus,
+            CanvasRequestKind::Models,
+        ];
+        let supported = |protocol: CanvasProtocol, kind: CanvasRequestKind| match protocol {
+            CanvasProtocol::OpenAi => true,
+            // Messages only; vision rides the same messages call.
+            CanvasProtocol::Anthropic => kind == CanvasRequestKind::Chat,
+            CanvasProtocol::Gemini => matches!(
+                kind,
+                CanvasRequestKind::Chat
+                    | CanvasRequestKind::Embeddings
+                    | CanvasRequestKind::ImageGenerate
+            ),
+        };
+
+        for protocol in [
+            CanvasProtocol::OpenAi,
+            CanvasProtocol::Anthropic,
+            CanvasProtocol::Gemini,
+        ] {
+            for kind in declared {
+                let outcome = endpoint_url(
+                    protocol,
+                    "https://example.test/v1",
+                    kind,
+                    Some("Qwen/Qwen3-VL-Embedding-8B"),
+                );
+                let label = format!("{protocol:?}/{kind:?}");
+                if supported(protocol, kind) {
+                    let url =
+                        outcome.unwrap_or_else(|error| panic!("{label} must map a url: {error}"));
+                    assert!(
+                        !url.contains("Qwen%2FQwen3") || matches!(protocol, CanvasProtocol::Gemini),
+                        "{label} leaked a model id into the route: {url}"
+                    );
+                } else {
+                    let error =
+                        outcome.expect_err(&format!("{label} must be UnsupportedCapability")[..]);
+                    assert!(
+                        error.to_string().contains("UnsupportedCapability"),
+                        "{label} reported a vague error: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn capability_errors_never_advance_the_candidate_list() {
+        let request = CanvasModelRequest::text("hi");
+        for kind in [
+            CanvasRequestKind::Embeddings,
+            CanvasRequestKind::ImageGenerate,
+            CanvasRequestKind::SpeechSynthesize,
+            CanvasRequestKind::VideoSubmit,
+        ] {
+            let err =
+                build_request_body(CanvasProtocol::Anthropic, kind, "deepseek-flash", &request)
+                    .expect_err("anthropic implements none of these");
+            assert_eq!(err.code, CanvasErrorCode::UnsupportedCapability, "{kind:?}");
+            assert!(!err.code.is_transient(), "{kind:?} must not reroute");
+        }
+    }
+
     #[test]
     fn anthropic_thinking_blocks_stay_out_of_the_answer_text() {
         let value = json!({
