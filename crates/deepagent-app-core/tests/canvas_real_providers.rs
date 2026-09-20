@@ -94,12 +94,11 @@ fn add_provider(
         .id
 }
 
+#[ignore = "需要真实供应商密钥与网络；用 --ignored 显式运行"]
 #[tokio::test]
 async fn openai_compatible_chat_answers() {
-    let Some(key) = env("CANVAS_TEST_OPENAI_KEY") else {
-        eprintln!("skip: CANVAS_TEST_OPENAI_KEY not set");
-        return;
-    };
+    let key = env("CANVAS_TEST_OPENAI_KEY")
+        .expect("CANVAS_TEST_OPENAI_KEY must be set to run this live provider test");
     let base = env("CANVAS_TEST_OPENAI_BASE").unwrap_or_else(|| "https://toloveu.asia/v1".into());
     let model_id = env("CANVAS_TEST_OPENAI_MODEL").unwrap_or_else(|| "gpt-5.6-sol".into());
     let providers = gateway();
@@ -136,12 +135,11 @@ async fn openai_compatible_chat_answers() {
     );
 }
 
+#[ignore = "需要真实供应商密钥与网络；用 --ignored 显式运行"]
 #[tokio::test]
 async fn anthropic_messages_answer_and_keep_reasoning() {
-    let Some(key) = env("CANVAS_TEST_ANTHROPIC_KEY") else {
-        eprintln!("skip: CANVAS_TEST_ANTHROPIC_KEY not set");
-        return;
-    };
+    let key = env("CANVAS_TEST_ANTHROPIC_KEY")
+        .expect("CANVAS_TEST_ANTHROPIC_KEY must be set to run this live provider test");
     let base = env("CANVAS_TEST_ANTHROPIC_BASE")
         .unwrap_or_else(|| "https://api.deepseek.com/anthropic".into());
     let model_id = env("CANVAS_TEST_ANTHROPIC_MODEL").unwrap_or_else(|| "deepseek-flash".into());
@@ -187,12 +185,11 @@ async fn anthropic_messages_answer_and_keep_reasoning() {
     }
 }
 
+#[ignore = "需要真实供应商密钥与网络；用 --ignored 显式运行"]
 #[tokio::test]
 async fn gemini_generate_content_answers() {
-    let Some(key) = env("CANVAS_TEST_GEMINI_KEY") else {
-        eprintln!("skip: CANVAS_TEST_GEMINI_KEY not set");
-        return;
-    };
+    let key = env("CANVAS_TEST_GEMINI_KEY")
+        .expect("CANVAS_TEST_GEMINI_KEY must be set to run this live provider test");
     let base = env("CANVAS_TEST_GEMINI_BASE").unwrap_or_else(|| "http://127.0.0.1:8045".into());
     let model_id = env("CANVAS_TEST_GEMINI_MODEL").unwrap_or_else(|| "gemini-3.8-flash-low".into());
     let providers = gateway();
@@ -221,12 +218,11 @@ async fn gemini_generate_content_answers() {
     }
 }
 
+#[ignore = "需要真实供应商密钥与网络；用 --ignored 显式运行"]
 #[tokio::test]
 async fn embedding_model_returns_a_real_vector() {
-    let Some(key) = env("CANVAS_TEST_EMBED_KEY") else {
-        eprintln!("skip: CANVAS_TEST_EMBED_KEY not set");
-        return;
-    };
+    let key = env("CANVAS_TEST_EMBED_KEY")
+        .expect("CANVAS_TEST_EMBED_KEY must be set to run this live provider test");
     let base =
         env("CANVAS_TEST_EMBED_BASE").unwrap_or_else(|| "https://api.siliconflow.cn/v1".into());
     // 模型名里带斜杠，只能出现在请求体里。
@@ -291,16 +287,13 @@ impl RuntimeEventSink for CapturingSink {
 /// The creative-mode golden path end to end: a text node feeds a generated
 /// prompt into an image node through one edge, executed by the real
 /// `WorkflowAgent` against the real providers.
+#[ignore = "需要真实供应商密钥与网络；用 --ignored 显式运行"]
 #[tokio::test]
 async fn creative_text_then_image_graph_runs_on_real_providers() {
-    let Some(text_key) = env("CANVAS_TEST_ANTHROPIC_KEY") else {
-        eprintln!("skip: CANVAS_TEST_ANTHROPIC_KEY not set");
-        return;
-    };
-    let Some(image_key) = env("CANVAS_TEST_OPENAI_KEY") else {
-        eprintln!("skip: CANVAS_TEST_OPENAI_KEY not set");
-        return;
-    };
+    let text_key = env("CANVAS_TEST_ANTHROPIC_KEY")
+        .expect("CANVAS_TEST_ANTHROPIC_KEY must be set to run this live provider test");
+    let image_key = env("CANVAS_TEST_OPENAI_KEY")
+        .expect("CANVAS_TEST_OPENAI_KEY must be set to run this live provider test");
     let text_model = "deepseek-flash".to_string();
     let image_model = "gpt-image-2".to_string();
     let providers = gateway();
@@ -433,12 +426,11 @@ async fn creative_text_then_image_graph_runs_on_real_providers() {
     let _ = std::fs::remove_dir_all(&artifact_root);
 }
 
+#[ignore = "需要真实供应商密钥与网络；用 --ignored 显式运行"]
 #[tokio::test]
 async fn image_generation_returns_downloadable_bytes() {
-    let Some(key) = env("CANVAS_TEST_OPENAI_KEY") else {
-        eprintln!("skip: CANVAS_TEST_OPENAI_KEY not set");
-        return;
-    };
+    let key = env("CANVAS_TEST_OPENAI_KEY")
+        .expect("CANVAS_TEST_OPENAI_KEY must be set to run this live provider test");
     let base = env("CANVAS_TEST_OPENAI_BASE").unwrap_or_else(|| "https://toloveu.asia/v1".into());
     let model_id = env("CANVAS_TEST_IMAGE_MODEL").unwrap_or_else(|| "gpt-image-2".into());
     let providers = gateway();
@@ -483,16 +475,11 @@ async fn image_generation_returns_downloadable_bytes() {
 
 /// 真实视频作业：会排队几分钟并消耗额度，因此默认跳过。
 /// 需要验证时显式设 `CANVAS_TEST_VIDEO=1`。
+#[ignore = "需要真实供应商密钥与网络；用 --ignored 显式运行"]
 #[tokio::test]
 async fn video_job_submits_polls_and_downloads() {
-    if env("CANVAS_TEST_VIDEO").is_none() {
-        eprintln!("skip: CANVAS_TEST_VIDEO not set (a real video job costs quota)");
-        return;
-    }
-    let Some(key) = env("CANVAS_TEST_EMBED_KEY") else {
-        eprintln!("skip: CANVAS_TEST_EMBED_KEY not set");
-        return;
-    };
+    let key = env("CANVAS_TEST_EMBED_KEY")
+        .expect("CANVAS_TEST_EMBED_KEY must be set to run this live provider test");
     let base =
         env("CANVAS_TEST_VIDEO_BASE").unwrap_or_else(|| "https://api.siliconflow.cn/v1".into());
     let model_id =
@@ -575,13 +562,12 @@ fn tone_wav_data_url() -> String {
     )
 }
 
+#[ignore = "需要真实供应商密钥与网络；用 --ignored 显式运行"]
 #[tokio::test]
 async fn speech_transcription_uploads_audio_and_returns_text() {
     // 语音模型与向量模型在同一供应商账号下。
-    let Some(key) = env("CANVAS_TEST_EMBED_KEY") else {
-        eprintln!("skip: CANVAS_TEST_EMBED_KEY not set");
-        return;
-    };
+    let key = env("CANVAS_TEST_EMBED_KEY")
+        .expect("CANVAS_TEST_EMBED_KEY must be set to run this live provider test");
     let base = env("CANVAS_TEST_EMBED_BASE")
         .unwrap_or_else(|| "https://api.siliconflow.cn/v1".to_string());
     let model_id = env("CANVAS_TEST_SPEECH_MODEL")
