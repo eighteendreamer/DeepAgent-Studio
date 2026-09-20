@@ -25,8 +25,8 @@ use deepagent_persistence::Database;
 use deepagent_runtime::agent::Agent;
 use deepagent_runtime::events::{RuntimeEvent, RuntimeEventSink};
 use deepagent_runtime::workflow::{
-    compile, NodeEventPublisher, WorkflowAgent, WorkflowDefinition, WorkflowEdgeSpec,
-    WorkflowNodeSpec,
+    compile, CanvasModelBridge, CanvasVideoRequest, NodeEventPublisher, WorkflowAgent,
+    WorkflowDefinition, WorkflowEdgeSpec, WorkflowNodeSpec,
 };
 use serde_json::{json, Map, Value};
 use std::sync::Mutex;
@@ -478,6 +478,66 @@ async fn image_generation_returns_downloadable_bytes() {
         }
         other => panic!("unexpected output {other:?}"),
     }
+}
+
+/// 真实视频作业：会排队几分钟并消耗额度，因此默认跳过。
+/// 需要验证时显式设 `CANVAS_TEST_VIDEO=1`。
+#[tokio::test]
+async fn video_job_submits_polls_and_downloads() {
+    if env("CANVAS_TEST_VIDEO").is_none() {
+        eprintln!("skip: CANVAS_TEST_VIDEO not set (a real video job costs quota)");
+        return;
+    }
+    let Some(key) = env("CANVAS_TEST_EMBED_KEY") else {
+        eprintln!("skip: CANVAS_TEST_EMBED_KEY not set");
+        return;
+    };
+    let base =
+        env("CANVAS_TEST_VIDEO_BASE").unwrap_or_else(|| "https://api.siliconflow.cn/v1".into());
+    let model_id =
+        env("CANVAS_TEST_VIDEO_MODEL").unwrap_or_else(|| "Wan-AI/Wan2.2-T2V-A14B".into());
+    let providers = gateway();
+    let provider_id = add_provider(
+        &providers,
+        "siliconflow-video",
+        "openai",
+        &base,
+        &key,
+        vec![model(&model_id, vec![CanvasScenario::VideoGeneration])],
+    );
+    let (_root, artifacts) = artifact_store();
+    let gateway = CanvasModelGateway::new(providers).with_artifacts(artifacts.clone());
+    let answer = gateway
+        .generate_video(CanvasVideoRequest {
+            model_ref: format!("{provider_id}::{model_id}"),
+            prompt: "一只橘猫在雨夜的霓虹街道慢步步走过，电影感".to_string(),
+            image_url: None,
+            size: Some("832x480".to_string()),
+            resume_task_id: None,
+            timeout_ms: 600_000,
+            cancel: None,
+        })
+        .await
+        .expect("video job");
+    assert!(
+        answer.artifact_uri.starts_with("artifact://"),
+        "video node saw {}",
+        answer.artifact_uri
+    );
+    assert!(
+        !answer.task_id.trim().is_empty(),
+        "provider task id missing"
+    );
+    let id = answer.artifact_uri.trim_start_matches("artifact://");
+    let bytes = artifacts
+        .read_bytes(id)
+        .expect("read")
+        .expect("the expiring provider url must have been downloaded");
+    assert!(
+        bytes.len() > 10_000,
+        "downloaded video only {} bytes",
+        bytes.len()
+    );
 }
 
 /// 16 kHz 单声道 16 bit 的 440 Hz 单音，够用且不含版权素材。

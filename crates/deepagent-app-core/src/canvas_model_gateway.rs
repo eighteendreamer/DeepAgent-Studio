@@ -24,7 +24,8 @@ use deepagent_core::error::Result as CoreResult;
 use deepagent_runtime::workflow::{
     CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest, CanvasCompletionResponse,
     CanvasEmbeddingRequest, CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse,
-    CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest,
+    CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest, CanvasVideoRequest,
+    CanvasVideoResponse,
 };
 
 use crate::canvas_node_contract::canvas_node_contract;
@@ -537,6 +538,26 @@ pub enum CanvasModelOutput {
     },
 }
 
+/// State of an asynchronous provider media job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanvasJobStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+/// One poll result of a submitted media job.
+#[derive(Debug, Clone)]
+pub struct CanvasMediaJob {
+    pub request_id: String,
+    pub status: CanvasJobStatus,
+    /// Temporary provider-hosted URL; the gateway downloads it into the
+    /// artifact store because vendors expire these links quickly.
+    pub video_url: Option<String>,
+    pub reason: Option<String>,
+}
+
 /// Result of a connectivity probe, safe to show in the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -761,19 +782,7 @@ impl CanvasModelGateway {
         candidate: &ResolvedCanvasModel,
         request: &CanvasModelRequest,
     ) -> CanvasResult<CanvasModelOutput> {
-        let api_key = candidate
-            .api_key
-            .clone()
-            .filter(|k| !k.trim().is_empty())
-            .ok_or_else(|| {
-                CanvasError::new(
-                    CanvasErrorCode::SecretMissing,
-                    format!(
-                        "provider `{}` has no stored api key",
-                        candidate.provider.name
-                    ),
-                )
-            })?;
+        let api_key = provider_api_key(candidate)?;
         let kind = request_kind(request.operation)?;
         let endpoint = endpoint_url(
             candidate.provider.protocol,
@@ -864,6 +873,132 @@ impl CanvasModelGateway {
             return Err(CanvasError::new(CanvasErrorCode::ProviderFailure, err));
         }
         parse_output(candidate, kind, &value).await
+    }
+
+    /// Send a small JSON control-plane request and return the parsed body.
+    ///
+    /// Media jobs need repeated plain JSON round-trips (submit, then poll);
+    /// `call` handles the payload shapes that differ per capability.
+    async fn post_json(
+        &self,
+        candidate: &ResolvedCanvasModel,
+        endpoint: &str,
+        api_key: &str,
+        body: Value,
+        timeout_ms: u64,
+    ) -> CanvasResult<Value> {
+        let mut req = self
+            .http
+            .post(endpoint)
+            .timeout(Duration::from_millis(timeout_ms.max(1_000)))
+            .header(reqwest::header::CONTENT_TYPE, "application/json");
+        req = apply_auth_headers(req, candidate.provider.protocol, api_key);
+        let resp = req.body(body.to_string()).send().await.map_err(|e| {
+            CanvasError::new(
+                CanvasErrorCode::TransientFailure,
+                format!(
+                    "{} {endpoint} failed: {e}",
+                    candidate.provider.protocol.as_str()
+                ),
+            )
+        })?;
+        let status = resp.status();
+        let raw = resp.text().await.map_err(|e| {
+            CanvasError::new(
+                CanvasErrorCode::TransientFailure,
+                format!("reading {endpoint} response: {e}"),
+            )
+        })?;
+        if !status.is_success() {
+            return Err(classify_status(status.as_u16(), &raw));
+        }
+        let value: Value = serde_json::from_str(&raw).map_err(|e| {
+            CanvasError::new(
+                CanvasErrorCode::ProviderFailure,
+                format!("{endpoint} returned non-JSON body: {e}"),
+            )
+        })?;
+        if let Some(err) = provider_error_message(&value) {
+            return Err(CanvasError::new(CanvasErrorCode::ProviderFailure, err));
+        }
+        Ok(value)
+    }
+
+    /// Submit an asynchronous media job and return the provider task id.
+    async fn submit_media_job(
+        &self,
+        candidate: &ResolvedCanvasModel,
+        request: &CanvasModelRequest,
+    ) -> CanvasResult<String> {
+        let api_key = provider_api_key(candidate)?;
+        let endpoint = endpoint_url(
+            candidate.provider.protocol,
+            &candidate.provider.base_url,
+            CanvasRequestKind::VideoSubmit,
+            Some(&candidate.model.id),
+        )
+        .map_err(|e| CanvasError::new(CanvasErrorCode::UnsupportedCapability, e.to_string()))?;
+        let mut body = json!({
+            "model": candidate.model.id,
+            "prompt": request.prompt,
+        });
+        if let Some(image) = request.images.first() {
+            body["image"] = json!(image.data_url);
+        }
+        if let Some(size) = request
+            .size
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            body["image_size"] = json!(size);
+        }
+        let value = self
+            .post_json(candidate, &endpoint, &api_key, body, request.timeout_ms)
+            .await?;
+        job_field(&value, "requestId").ok_or_else(|| {
+            CanvasError::new(
+                CanvasErrorCode::ProviderFailure,
+                "video submit returned no request id".to_string(),
+            )
+        })
+    }
+
+    /// Ask the provider once about a submitted media job.
+    async fn poll_media_job(
+        &self,
+        candidate: &ResolvedCanvasModel,
+        request_id: &str,
+        timeout_ms: u64,
+    ) -> CanvasResult<CanvasMediaJob> {
+        let api_key = provider_api_key(candidate)?;
+        let endpoint = endpoint_url(
+            candidate.provider.protocol,
+            &candidate.provider.base_url,
+            CanvasRequestKind::VideoStatus,
+            Some(&candidate.model.id),
+        )
+        .map_err(|e| CanvasError::new(CanvasErrorCode::UnsupportedCapability, e.to_string()))?;
+        let value = self
+            .post_json(
+                candidate,
+                &endpoint,
+                &api_key,
+                json!({ "requestId": request_id }),
+                timeout_ms,
+            )
+            .await?;
+        Ok(CanvasMediaJob {
+            request_id: request_id.to_string(),
+            status: parse_job_status(value.get("status").and_then(Value::as_str)),
+            video_url: value
+                .pointer("/results/videos/0/url")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            reason: value
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
     }
 
     /// List the provider's real model catalog through `GET {base}/models`.
@@ -1028,6 +1163,7 @@ fn request_kind(operation: CanvasOperation) -> CanvasResult<CanvasRequestKind> {
         CanvasOperation::Embedding => CanvasRequestKind::Embeddings,
         CanvasOperation::SpeechTranscribe => CanvasRequestKind::SpeechTranscribe,
         CanvasOperation::SpeechSynthesize => CanvasRequestKind::SpeechSynthesize,
+        CanvasOperation::VideoGenerate => CanvasRequestKind::VideoSubmit,
         other => {
             return Err(CanvasError::new(
                 CanvasErrorCode::UnsupportedOperation,
@@ -1070,6 +1206,79 @@ fn classify_status(status: u16, raw: &str) -> CanvasError {
         _ => CanvasErrorCode::ProviderFailure,
     };
     CanvasError::new(code, message)
+}
+
+/// The api key of a resolved candidate, or the stable error saying it is gone.
+pub(crate) fn provider_api_key(candidate: &ResolvedCanvasModel) -> CanvasResult<String> {
+    candidate
+        .api_key
+        .clone()
+        .filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| {
+            CanvasError::new(
+                CanvasErrorCode::SecretMissing,
+                format!(
+                    "provider `{}` has no stored api key",
+                    candidate.provider.name
+                ),
+            )
+        })
+}
+
+/// Read one string field of a media job payload.
+///
+/// The vendor documents the submit response as `requestId` while the rest of
+/// its payloads use `request_id`; both spellings are accepted here and nowhere
+/// else, so no field-name guessing leaks into routing or the node protocol.
+fn job_field(value: &Value, key: &str) -> Option<String> {
+    // requestId -> request_id
+    let snake: String = key
+        .chars()
+        .flat_map(|ch| {
+            if ch.is_ascii_uppercase() {
+                vec!['_', ch.to_ascii_lowercase()]
+            } else {
+                vec![ch]
+            }
+        })
+        .collect();
+    for name in [key, snake.as_str()] {
+        if let Some(found) = value.get(name).and_then(Value::as_str) {
+            let trimmed = found.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Map a provider status word onto our job states. An unrecognised word stays
+/// non-terminal so the poll loop keeps working until the deadline says so.
+fn parse_job_status(raw: Option<&str>) -> CanvasJobStatus {
+    match raw.unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+        "succeed" | "succeeded" | "success" | "completed" | "finished" => {
+            CanvasJobStatus::Succeeded
+        }
+        "failed" | "error" => CanvasJobStatus::Failed,
+        "inqueue" | "queued" | "pending" | "created" | "waiting" => CanvasJobStatus::Queued,
+        other => {
+            if !other.is_empty() {
+                tracing::debug!("unknown media job status `{other}`; treating as running");
+            }
+            CanvasJobStatus::Running
+        }
+    }
+}
+
+/// Back off between polls: first immediately, then 1s, 2s, capped at 5s.
+fn poll_delay(round: u32) -> Duration {
+    match round {
+        0 => Duration::ZERO,
+        1 => Duration::from_secs(1),
+        2 => Duration::from_secs(2),
+        _ => Duration::from_secs(5),
+    }
 }
 
 /// Providers may answer 200 with an embedded error object.
@@ -1222,6 +1431,8 @@ fn build_request_body(
                 CanvasRequestKind::ImageEdit => "image_edit",
                 CanvasRequestKind::SpeechTranscribe => "speech_transcribe",
                 CanvasRequestKind::SpeechSynthesize => "speech_synthesize",
+                CanvasRequestKind::VideoSubmit => "video_submit",
+                CanvasRequestKind::VideoStatus => "video_status",
                 CanvasRequestKind::Models => "models",
             };
             return Err(CanvasError::new(
@@ -1448,6 +1659,11 @@ async fn parse_output(
             CanvasErrorCode::ProviderFailure,
             "speech synthesis payloads are binary and handled before JSON parsing".to_string(),
         )),
+        // 视频是异步作业：提交与轮询各有专门通道，不经一次性响应解析。
+        CanvasRequestKind::VideoSubmit | CanvasRequestKind::VideoStatus => Err(CanvasError::new(
+            CanvasErrorCode::ProviderFailure,
+            "media jobs are parsed by submit_media_job and poll_media_job".to_string(),
+        )),
     }
 }
 
@@ -1546,6 +1762,18 @@ fn transcription_form(
     body.extend_from_slice(bytes);
     body.extend_from_slice(format!("\r\n--{AUDIO_FORM_BOUNDARY}--\r\n").as_bytes());
     Ok(body)
+}
+
+/// Detect a video container from its magic bytes.
+fn sniff_video_mime(bytes: &[u8]) -> Option<String> {
+    let mime = match bytes {
+        // ISO-BMFF: 4-byte box size, then the `ftyp` fourcc at offset 4.
+        [_, _, _, _, b'f', b't', b'y', b'p', b'q', b't', b' ', b' ', ..] => "video/quicktime",
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => "video/mp4",
+        [0x1a, 0x45, 0xdf, 0xa3, ..] => "video/webm",
+        _ => return None,
+    };
+    Some(mime.to_string())
 }
 
 /// Sniff the audio container from magic bytes; declared types lie.
@@ -1955,6 +2183,127 @@ impl CanvasModelBridge for CanvasModelGateway {
                 "audio node received an unexpected model output: {other:?}"
             ))),
         }
+    }
+
+    async fn generate_video(&self, request: CanvasVideoRequest) -> CoreResult<CanvasVideoResponse> {
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+
+        if request.prompt.trim().is_empty() && request.image_url.is_none() {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "MissingReferenceInput: video node needs a prompt or a first frame",
+            ));
+        }
+        let candidate = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref)
+        {
+            self.providers.resolve_model(provider_id, model_id)?
+        } else {
+            self.providers
+                .candidates_for_scenario(CanvasScenario::VideoGeneration, None)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    deepagent_core::error::CoreError::invalid(
+                        "NoCandidateModel: no enabled model serves video generation",
+                    )
+                })?
+        };
+        let images = match request
+            .image_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            Some(reference) => self.resolve_image_inputs(&[reference.to_string()])?,
+            None => Vec::new(),
+        };
+        let model_request = CanvasModelRequest {
+            operation: CanvasOperation::VideoGenerate,
+            prompt: request.prompt.clone(),
+            system_prompt: None,
+            images,
+            texts: Vec::new(),
+            size: request.size.clone(),
+            audio: CanvasAudioInput::default(),
+            timeout_ms: 120_000,
+        };
+        // 提交与轮询用同一个供应商：作业 id 只在该账号内有效，切换候选模型无意义。
+        let task_id = match request
+            .resume_task_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            Some(existing) => existing.trim().to_string(),
+            None => self
+                .submit_media_job(&candidate, &model_request)
+                .await
+                .map_err(to_core_error)?,
+        };
+        let timeout_ms = request.timeout_ms.max(1_000);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut round = 0u32;
+        let job = loop {
+            if request
+                .cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+            {
+                return Err(deepagent_core::error::CoreError::other(format!(
+                    "Cancelled: video job `{task_id}` interrupted; rerun the node with the same task id to keep polling"
+                )));
+            }
+            let job = self
+                .poll_media_job(&candidate, &task_id, 60_000)
+                .await
+                .map_err(to_core_error)?;
+            if matches!(
+                job.status,
+                CanvasJobStatus::Succeeded | CanvasJobStatus::Failed
+            ) {
+                break job;
+            }
+            if Instant::now() >= deadline {
+                return Err(deepagent_core::error::CoreError::other(format!(
+                    "TransientFailure: video job `{task_id}` did not finish within {timeout_ms} ms"
+                )));
+            }
+            tokio::time::sleep(poll_delay(round)).await;
+            round += 1;
+        };
+        if job.status == CanvasJobStatus::Failed {
+            return Err(deepagent_core::error::CoreError::other(format!(
+                "ProviderFailure: video job `{task_id}` failed: {}",
+                job.reason
+                    .unwrap_or_else(|| "no reason reported".to_string())
+            )));
+        }
+        let url = job.video_url.ok_or_else(|| {
+            deepagent_core::error::CoreError::other(format!(
+                "ProviderFailure: video job `{task_id}` succeeded without a video url"
+            ))
+        })?;
+        // 供应商链接通常一小时过期，必须当场下载入库，节点只留 artifact 引用。
+        let bytes = fetch_binary(&url, None).await.map_err(to_core_error)?;
+        if bytes.is_empty() {
+            return Err(deepagent_core::error::CoreError::other(
+                "ProviderFailure: downloaded video is empty".to_string(),
+            ));
+        }
+        let mime = sniff_video_mime(&bytes).unwrap_or_else(|| mime_from_url(&url));
+        let stored = self
+            .artifact_store("store a generated video")?
+            .import_bytes(
+                deepagent_persistence::artifact_store::ArtifactKind::Video,
+                Some(&mime),
+                &bytes,
+                None,
+            )?;
+        Ok(CanvasVideoResponse {
+            artifact_uri: stored.uri,
+            mime,
+            provider_id: candidate.provider.id.clone(),
+            model_id: candidate.model.id.clone(),
+            task_id,
+        })
     }
 
     fn inspect_input_kinds(&self, references: &[String]) -> CoreResult<Vec<String>> {
@@ -3039,6 +3388,218 @@ mod tests {
             "audio bytes missing from the upload"
         );
         let _ = std::fs::remove_dir_all(&artifact_root);
+    }
+
+    /// 视频作业整链走线：提交拿 requestId、轮询到 Succeed、把一小时内失效的
+    /// 供应商 URL 当场下载成 Video 制品；带 resume 任务 id 时不再重复提交。
+    #[test]
+    fn video_job_polls_until_success_and_stores_the_download() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let mp4: Vec<u8> = b"\x00\x00\x00\x14ftypmp42mp4-payload".to_vec();
+        let received: Arc<std::sync::Mutex<Vec<(String, String)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = received.clone();
+        let thread_polls = Arc::new(AtomicUsize::new(0));
+        let payload = mp4.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let mut text = String::new();
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            text.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            if body_complete(&text) {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let head_end = text.find("\r\n\r\n").unwrap_or(text.len());
+                let request_line = text.lines().next().unwrap_or_default().to_string();
+                let body = text[head_end + 4..].to_string();
+                let response = if request_line.contains("GET /v1/clip.mp4") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        payload.len()
+                    ) + &String::from_utf8_lossy(&payload)
+                } else if request_line.contains("/video/submit") {
+                    let payload = "{\"requestId\":\"job-77\"}".to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                        payload.len()
+                    )
+                } else {
+                    let payload = if thread_polls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        "{\"status\":\"InQueue\"}".to_string()
+                    } else {
+                        "{\"status\":\"Succeed\",\"results\":{\"videos\":[{\"url\":\"http://127.0.0.1:__PORT__/v1/clip.mp4\"}]}}"
+                            .replace("__PORT__", &port.to_string())
+                    };
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                        payload.len()
+                    )
+                };
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                sink.lock().expect("lock").push((request_line, body));
+            }
+        });
+
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let artifact_root =
+            std::env::temp_dir().join(format!("deepagent-gateway-video-{}", std::process::id()));
+        let artifacts = Arc::new(
+            crate::canvas_artifact_service::CanvasArtifactService::new(&artifact_root, db.clone())
+                .expect("artifact service"),
+        );
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::secret_store::MemorySecretStore::default()),
+        ));
+        let created = providers
+            .save_provider(CanvasProviderInput {
+                name: "Local".to_string(),
+                protocol: "openai".to_string(),
+                base_url: format!("http://127.0.0.1:{port}/v1"),
+                enabled: true,
+                models: vec![CanvasModelConfig {
+                    id: "Wan2.2-T2V-A14B".to_string(),
+                    name: "wan".to_string(),
+                    description: String::new(),
+                    enabled: true,
+                    scenarios: vec![CanvasScenario::VideoGeneration],
+                    priority: 0,
+                }],
+                api_key: Some("sk-local".to_string()),
+                ..Default::default()
+            })
+            .expect("provider");
+        let gateway = CanvasModelGateway::new(providers).with_artifacts(artifacts.clone());
+        let base = CanvasVideoRequest {
+            model_ref: format!("{}::Wan2.2-T2V-A14B", created.id),
+            prompt: "一只橘猫在雨里走路".to_string(),
+            image_url: None,
+            size: Some("720p".to_string()),
+            resume_task_id: None,
+            timeout_ms: 20_000,
+            cancel: None,
+        };
+
+        let done = rt
+            .block_on(gateway.generate_video(base.clone()))
+            .expect("video job");
+        assert_eq!(done.task_id, "job-77");
+        assert_eq!(done.mime, "video/mp4");
+        assert!(
+            done.artifact_uri.starts_with("artifact://"),
+            "node saw {:?}",
+            done.artifact_uri
+        );
+        let id = done.artifact_uri.trim_start_matches("artifact://");
+        let record = artifacts.record(id).expect("record").expect("row");
+        assert_eq!(
+            record.kind,
+            deepagent_persistence::artifact_store::ArtifactKind::Video
+        );
+        assert_eq!(record.media_type.as_deref(), Some("video/mp4"));
+        assert_eq!(
+            artifacts.read_bytes(id).expect("read").expect("bytes"),
+            mp4,
+            "the expiring provider url must be downloaded into the store"
+        );
+
+        let captured = received.lock().expect("lock").clone();
+        let lines: Vec<&str> = captured.iter().map(|(line, _)| line.as_str()).collect();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("POST /v1/video/submit")),
+            "submit missing from {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("POST /v1/video/status"))
+                .count(),
+            2,
+            "queued status must be polled again, got {lines:?}"
+        );
+        let submit_body = &captured
+            .iter()
+            .find(|(line, _)| line.contains("/video/submit"))
+            .expect("submit")
+            .1;
+        assert!(submit_body.contains("Wan2.2-T2V-A14B"));
+        assert!(submit_body.contains("720p"));
+        let status_body = &captured
+            .iter()
+            .find(|(line, _)| line.contains("/video/status"))
+            .expect("status")
+            .1;
+        assert!(
+            status_body.contains("job-77"),
+            "poll must carry the submitted task id, got {status_body}"
+        );
+
+        // 恢复：带着任务 id 再跑一次时不得再提交新作业。
+        let submits_before = captured_submits(&received);
+        let resumed = rt
+            .block_on(gateway.generate_video(CanvasVideoRequest {
+                resume_task_id: Some("job-42".to_string()),
+                ..base
+            }))
+            .expect("resumed job");
+        assert_eq!(resumed.task_id, "job-42");
+        assert_eq!(
+            captured_submits(&received),
+            submits_before,
+            "a resumed job must not submit a second generation"
+        );
+        let _ = std::fs::remove_dir_all(&artifact_root);
+    }
+
+    #[test]
+    fn media_containers_come_from_their_magic_bytes() {
+        assert_eq!(
+            sniff_video_mime(b"\x00\x00\x00\x14ftypmp42mp4-payload".as_slice()).as_deref(),
+            Some("video/mp4")
+        );
+        assert_eq!(
+            sniff_video_mime(b"\x00\x00\x00\x14ftypqt  quicktime".as_slice()).as_deref(),
+            Some("video/quicktime")
+        );
+        assert_eq!(
+            sniff_video_mime(b"\x1a\x45\xdf\xa3\x01\x00webm".as_slice()).as_deref(),
+            Some("video/webm")
+        );
+        assert_eq!(sniff_video_mime(b"not-a-container".as_slice()), None);
+        assert_eq!(
+            sniff_audio_mime(b"ID3\x03\x00mp3-payload".as_slice()).as_deref(),
+            Some("audio/mpeg")
+        );
+        assert_eq!(
+            sniff_audio_mime(b"RIFF\x00\x00\x00\x00WAVEfmt ".as_slice()).as_deref(),
+            Some("audio/wav")
+        );
+        assert_eq!(sniff_audio_mime(b"\x89PNG\x00\x00".as_slice()), None);
+    }
+
+    fn captured_submits(received: &Arc<std::sync::Mutex<Vec<(String, String)>>>) -> usize {
+        received
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(line, _)| line.contains("/video/submit"))
+            .count()
     }
 
     /// True once the headers plus the declared body length have been received.

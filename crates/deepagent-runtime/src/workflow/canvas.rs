@@ -14,6 +14,8 @@
 use async_trait::async_trait;
 use deepagent_core::error::Result;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 /// A text (or vision) completion request for one canvas node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -115,6 +117,38 @@ pub struct CanvasAudioResponse {
     pub model_id: String,
 }
 
+/// A video job request for one canvas video node.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasVideoRequest {
+    pub model_ref: String,
+    pub prompt: String,
+    /// Optional first frame for image-to-video: `artifact://<id>`, `data:` or http.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+    /// Provider-side frame size hint, e.g. `720p`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    /// Re-poll an already submitted job instead of submitting a second one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_task_id: Option<String>,
+    pub timeout_ms: u64,
+    /// Run cancellation flag; polled between status requests.
+    #[serde(skip)]
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+/// Video result: the stored artifact plus the provider task id kept for resume.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasVideoResponse {
+    pub artifact_uri: String,
+    pub mime: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub task_id: String,
+}
+
 /// An embedding request for one canvas node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,6 +205,9 @@ pub trait CanvasModelBridge: Send + Sync {
 
     /// Text-to-speech or speech-to-text for the audio node.
     async fn run_audio(&self, request: CanvasAudioRequest) -> Result<CanvasAudioResponse>;
+
+    /// Submit or resume an asynchronous video job and wait for its artifact.
+    async fn generate_video(&self, request: CanvasVideoRequest) -> Result<CanvasVideoResponse>;
 
     /// Text embeddings.
     async fn embed(&self, request: CanvasEmbeddingRequest) -> Result<CanvasEmbeddingResponse>;
@@ -242,6 +279,17 @@ mod tests {
                 },
                 provider_id: "p".to_string(),
                 model_id: "m".to_string(),
+            })
+        }
+
+        async fn generate_video(&self, request: CanvasVideoRequest) -> Result<CanvasVideoResponse> {
+            self.calls.lock().unwrap().push(request.model_ref);
+            Ok(CanvasVideoResponse {
+                artifact_uri: "artifact://art_video_fake".to_string(),
+                mime: "video/mp4".to_string(),
+                provider_id: "p".to_string(),
+                model_id: "m".to_string(),
+                task_id: "job-fake".to_string(),
             })
         }
 

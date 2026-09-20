@@ -202,6 +202,8 @@ function applyNodeOutputs(
   }
   if (typeof record.imageUrl === "string") patch.imageUrl = record.imageUrl;
   if (typeof record.videoUrl === "string") patch.videoUrl = record.videoUrl;
+  // 供应商作业 id 留在节点上：中断后重跑继续轮询同一个任务。
+  if (typeof record.videoTaskId === "string") patch.videoTaskId = record.videoTaskId;
   if (typeof record.audioUrl === "string") patch.audioUrl = record.audioUrl;
   if (typeof record.modelId === "string") patch.usedModel = record.modelId;
   return patch;

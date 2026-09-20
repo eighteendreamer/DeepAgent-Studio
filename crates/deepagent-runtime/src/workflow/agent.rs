@@ -16,7 +16,7 @@ use deepagent_models::chat_completions::ChatCompletionRequest;
 
 use super::canvas::{
     CanvasAudioRequest, CanvasCompletionRequest, CanvasEmbeddingRequest, CanvasImageRequest,
-    CanvasModelBridge, CanvasRouteRequest,
+    CanvasModelBridge, CanvasRouteRequest, CanvasVideoRequest,
 };
 use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
@@ -168,14 +168,13 @@ impl WorkflowAgent {
             }
             "image-gen" | "image-edit" => self.execute_image_gen(kind, &resolved_config).await,
             "audio" => self.execute_audio(&resolved_config).await,
+            "video-gen" => self.execute_video(&resolved_config).await,
             "embeddings" => self.execute_embedding(&resolved_config).await,
             // Media kinds without a backend job runner fail loudly instead of
             // reporting a fabricated completion through the passthrough arm.
-            "video-gen" | "video-stitch" | "image-compare" => {
-                Err(deepagent_core::error::CoreError::invalid(format!(
-                    "UnsupportedOperation: canvas node `{kind}` has no executor yet"
-                )))
-            }
+            "video-stitch" | "image-compare" => Err(deepagent_core::error::CoreError::invalid(
+                format!("UnsupportedOperation: canvas node `{kind}` has no executor yet"),
+            )),
             "http-request" => self.execute_http_request(&resolved_config).await,
             "tool" => self.execute_tool(&resolved_config).await,
             "knowledge-retrieval" => self.execute_knowledge_retrieval(&resolved_config).await,
@@ -691,6 +690,107 @@ impl WorkflowAgent {
         }))
     }
 
+    /// Video node: one asynchronous provider job, resumable by task id.
+    async fn execute_video(&self, config: &Map<String, Value>) -> Result<Value> {
+        let bridge = self.canvas_bridge.clone().ok_or_else(|| {
+            deepagent_core::error::CoreError::other(
+                "video nodes need the canvas model bridge; configure the canvas providers first",
+            )
+        })?;
+        let prompt = Self::compose_prompt(
+            config,
+            config
+                .get("prompt")
+                .or_else(|| config.get("videoPrompt"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
+        let image_url = config
+            .get("videoInputUrl")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let mut input_kinds = Vec::new();
+        if !prompt.trim().is_empty() {
+            input_kinds.push("Text".to_string());
+        }
+        if let Some(reference) = image_url.clone() {
+            match bridge
+                .inspect_input_kinds(&[reference])?
+                .first()
+                .map(String::as_str)
+            {
+                Some("Image") => input_kinds.push("Image".to_string()),
+                Some(other) => {
+                    return Err(deepagent_core::error::CoreError::invalid(format!(
+                        "OperationInputConflict: `video-gen` first frame must be an image, got `{other}`"
+                    )))
+                }
+                None => {
+                    return Err(deepagent_core::error::CoreError::invalid(
+                        "MissingReferenceInput: `video-gen` received a reference the store cannot classify",
+                    ))
+                }
+            }
+        }
+        if input_kinds.is_empty() {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "MissingReferenceInput: video node requires a prompt or an input frame",
+            ));
+        }
+        let routed = bridge.route_operation(CanvasRouteRequest {
+            node_kind: "video-gen".to_string(),
+            explicit_operation: config
+                .get("operation")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty() && value.trim() != "auto"),
+            input_kinds,
+            has_prompt: !prompt.trim().is_empty(),
+        })?;
+        if routed.operation != "video_generate" {
+            return Err(deepagent_core::error::CoreError::invalid(format!(
+                "UnsupportedOperation: no provider job is wired for video operation `{}`",
+                routed.operation
+            )));
+        }
+        let response = bridge
+            .generate_video(CanvasVideoRequest {
+                model_ref: config
+                    .get("videoModel")
+                    .or_else(|| config.get("model"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                prompt,
+                image_url,
+                size: config
+                    .get("videoResolution")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .filter(|value| !value.trim().is_empty()),
+                // 上次中断留下的任务 id：继续轮询，不再提交一次生成。
+                resume_task_id: config
+                    .get("videoTaskId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .filter(|value| !value.trim().is_empty()),
+                timeout_ms: 600_000,
+                cancel: self.cancel.clone(),
+            })
+            .await?;
+        Ok(serde_json::json!({
+            "videoUrl": response.artifact_uri,
+            "videoTaskId": response.task_id,
+            "mime": response.mime,
+            "operation": routed.operation,
+            "providerId": response.provider_id,
+            "modelId": response.model_id,
+        }))
+    }
+
     /// Audio node: either direction of speech, never guessed by the node.
     ///
     /// The contract requires an explicit operation, so the only fact this
@@ -735,9 +835,11 @@ impl WorkflowAgent {
         let audio_reference = match references.len() {
             0 => None,
             1 => Some(references.remove(0)),
-            count => return Err(deepagent_core::error::CoreError::invalid(format!(
+            count => {
+                return Err(deepagent_core::error::CoreError::invalid(format!(
                 "OperationInputConflict: `audio` node takes exactly one audio input, got {count}"
-            ))),
+            )))
+            }
         };
         let mut input_kinds = Vec::new();
         if !text.trim().is_empty() {
@@ -1244,7 +1346,7 @@ mod tests {
 
     use crate::workflow::canvas::{
         CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionResponse, CanvasEmbeddingResponse,
-        CanvasImageResponse,
+        CanvasImageResponse, CanvasVideoRequest, CanvasVideoResponse,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -1255,6 +1357,7 @@ mod tests {
         completions: Arc<Mutex<Vec<CanvasCompletionRequest>>>,
         images: Arc<Mutex<Vec<CanvasImageRequest>>>,
         audios: Arc<Mutex<Vec<CanvasAudioRequest>>>,
+        videos: Arc<Mutex<Vec<CanvasVideoRequest>>>,
         fail: bool,
     }
 
@@ -1320,11 +1423,31 @@ mod tests {
             })
         }
 
+        async fn generate_video(
+            &self,
+            request: CanvasVideoRequest,
+        ) -> deepagent_core::error::Result<CanvasVideoResponse> {
+            self.videos.lock().unwrap().push(request);
+            Ok(CanvasVideoResponse {
+                artifact_uri: "artifact://art_video".to_string(),
+                mime: "video/mp4".to_string(),
+                provider_id: "cvp-1".to_string(),
+                model_id: "Wan2.2-T2V-A14B".to_string(),
+                task_id: "job-77".to_string(),
+            })
+        }
+
         fn route_operation(
             &self,
             request: CanvasRouteRequest,
         ) -> deepagent_core::error::Result<crate::workflow::CanvasRouteOutcome> {
             use crate::workflow::CanvasRouteOutcome;
+            if request.node_kind == "video-gen" {
+                return Ok(CanvasRouteOutcome {
+                    operation: "video_generate".to_string(),
+                    reason: "artifact_facts".to_string(),
+                });
+            }
             let has_image = request.input_kinds.iter().any(|kind| kind == "Image");
             let operation = match request.explicit_operation.as_deref() {
                 Some("image_generate") if has_image => {
@@ -1617,9 +1740,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn video_node_runs_one_job_and_keeps_the_task_id() {
+        let bridge = RecordingBridge::default();
+        let records = bridge.videos.clone();
+        let mut agent = agent_with_bridge(bridge);
+        let outcome = agent
+            .execute_node_inline(
+                "video-gen",
+                &config(&[
+                    ("videoModel", json!("cvp-1::Wan2.2-T2V-A14B")),
+                    ("prompt", json!("一只橘猫在雨里走路")),
+                    ("videoResolution", json!("720p")),
+                ]),
+            )
+            .await
+            .expect("video job");
+        assert_eq!(outcome["videoUrl"], "artifact://art_video");
+        assert_eq!(outcome["videoTaskId"], "job-77");
+        assert_eq!(outcome["operation"], "video_generate");
+        assert!(
+            !outcome.to_string().contains("base64"),
+            "video output must not carry inline bytes"
+        );
+        let sent = records
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("one video call");
+        assert_eq!(sent.model_ref, "cvp-1::Wan2.2-T2V-A14B");
+        assert_eq!(sent.size.as_deref(), Some("720p"));
+        assert_eq!(sent.resume_task_id, None);
+    }
+
+    #[tokio::test]
+    async fn video_node_resumes_the_task_id_left_on_the_node() {
+        let bridge = RecordingBridge::default();
+        let records = bridge.videos.clone();
+        let mut agent = agent_with_bridge(bridge);
+        agent
+            .execute_node_inline(
+                "video-gen",
+                &config(&[
+                    ("videoModel", json!("cvp-1::Wan2.2-T2V-A14B")),
+                    ("prompt", json!("继续上次那条")),
+                    ("videoTaskId", json!("job-42")),
+                ]),
+            )
+            .await
+            .expect("resumed video job");
+        let sent = records
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("one video call");
+        // 中断后重跑要接着轮询同一个作业，不能再花一次额度提交新任务。
+        assert_eq!(sent.resume_task_id.as_deref(), Some("job-42"));
+    }
+
+    #[tokio::test]
+    async fn video_node_forwards_the_run_cancellation_flag() {
+        let bridge = RecordingBridge::default();
+        let records = bridge.videos.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut agent = agent_with_bridge(bridge).with_cancel(cancel.clone());
+        agent
+            .execute_node_inline(
+                "video-gen",
+                &config(&[
+                    ("videoModel", json!("cvp-1::Wan2.2-T2V-A14B")),
+                    ("prompt", json!("一段短片")),
+                ]),
+            )
+            .await
+            .expect("video job");
+        let sent = records.lock().unwrap().first().cloned().expect("call");
+        // 长作业必须能被打断：桥接拿到的是同一次运行的标志。
+        let flag = sent
+            .cancel
+            .expect("video jobs must receive the cancel flag");
+        assert!(Arc::ptr_eq(&flag, &cancel));
+    }
+
+    #[tokio::test]
     async fn creative_media_nodes_fail_instead_of_faking_completion() {
         let mut agent = agent_with_bridge(RecordingBridge::default());
-        for kind in ["video-gen", "video-stitch", "image-compare"] {
+        for kind in ["video-stitch", "image-compare"] {
             let error = agent
                 .execute_node_inline(kind, &config(&[("prompt", json!("make a clip"))]))
                 .await

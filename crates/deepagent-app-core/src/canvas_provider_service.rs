@@ -108,6 +108,11 @@ pub enum CanvasRequestKind {
     ImageEdit,
     SpeechTranscribe,
     SpeechSynthesize,
+    /// Submit a media job (video generation is asynchronous on every provider
+    /// we support: submit returns a task id, then the status endpoint is polled).
+    VideoSubmit,
+    /// Poll a submitted media job.
+    VideoStatus,
     /// Provider model catalog listing (`GET {base}/models`).
     Models,
 }
@@ -307,6 +312,8 @@ pub fn endpoint_url(
             CanvasRequestKind::ImageEdit => format!("{base}/images/edits"),
             CanvasRequestKind::SpeechTranscribe => format!("{base}/audio/transcriptions"),
             CanvasRequestKind::SpeechSynthesize => format!("{base}/audio/speech"),
+            CanvasRequestKind::VideoSubmit => format!("{base}/video/submit"),
+            CanvasRequestKind::VideoStatus => format!("{base}/video/status"),
             CanvasRequestKind::Models => format!("{base}/models"),
         },
         CanvasProtocol::Anthropic => match kind {
@@ -350,6 +357,8 @@ fn kind_label(kind: CanvasRequestKind) -> &'static str {
         CanvasRequestKind::ImageEdit => "image_edit",
         CanvasRequestKind::SpeechTranscribe => "speech_transcribe",
         CanvasRequestKind::SpeechSynthesize => "speech_synthesize",
+        CanvasRequestKind::VideoSubmit => "video_submit",
+        CanvasRequestKind::VideoStatus => "video_status",
         CanvasRequestKind::Models => "models",
     }
 }
