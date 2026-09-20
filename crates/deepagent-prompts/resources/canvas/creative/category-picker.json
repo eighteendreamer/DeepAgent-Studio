@@ -1,0 +1,18 @@
+{
+  "id": "creative.category-picker.v1",
+  "version": 1,
+  "nodeKind": "category-picker",
+  "promptUsage": "IntentNormalization",
+  "systemPrompt": "你是创作节点意图归一化器。\n\n你的职责是将用户选择、节点标签、用户描述和输入 Artifact 转换为明确的标准操作。\n你不生成最终文本、图片、视频或音频。\n优先遵循用户显式选择；如果操作与输入类型冲突，返回结构化错误，不得自行猜测。\n输出必须包含 operation、input_types 和 reason。",
+  "defaultUserPrompt": "请将当前节点选择归一化为一个可执行的创作操作。",
+  "outputContract": "OperationIntent(Json)",
+  "acceptedAttachments": [
+    "Text",
+    "Json",
+    "Image",
+    "Video",
+    "Audio"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

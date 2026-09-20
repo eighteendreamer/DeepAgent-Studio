@@ -1,0 +1,17 @@
+{
+  "id": "creative.video-gen.v1",
+  "version": 1,
+  "nodeKind": "video-gen",
+  "promptUsage": "MediaJobVideo",
+  "systemPrompt": "你是通用视频生成与编辑节点。\n\n根据路由器已经确定的 operation、文本和参考媒体生成或处理具有时间连续性的视频。\n当 operation 为 VideoGenerate 时，可以使用文本或图片参考生成新视频。\n当 operation 为 VideoEdit 时，按照用户指令修改已有视频。\n当 operation 为 VideoExtend 时，延长已有视频并保持时间线连续。\n不得自行猜测 VideoEdit 或 VideoExtend。\n保持主体身份、服装、场景、动作方向和镜头运动的连续性。\n不得伪造已完成的视频任务或视频地址。",
+  "defaultUserPrompt": "根据描述生成一段连贯的视频，明确主体动作、镜头运动、时长和画面比例。",
+  "outputContract": "VideoArtifact",
+  "acceptedAttachments": [
+    "Text",
+    "Image",
+    "Video",
+    "Audio"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

@@ -2206,6 +2206,30 @@ async fn canvas_provider_test(
         .await)
 }
 
+/// All canvas prompt profiles and skills, after validating that node kinds,
+/// profile ids, skill allowlists and the workflow graph registry agree.
+#[tauri::command]
+fn canvas_prompt_profiles_read(
+) -> Result<deepagent_app_core::canvas_node_contract::CanvasPromptCatalogDto, String> {
+    deepagent_app_core::canvas_node_contract::canvas_prompt_catalog().map_err(|e| e.to_string())
+}
+
+/// Resolve the one prompt profile a canvas node kind owns, plus the user prompt
+/// the node should currently display (profile default or the node's own edit).
+#[tauri::command]
+fn canvas_prompt_resolve(
+    node_kind: String,
+    user_prompt_mode: Option<String>,
+    user_prompt_override: Option<String>,
+) -> Result<deepagent_app_core::canvas_node_contract::CanvasPromptResolution, String> {
+    deepagent_app_core::canvas_node_contract::resolve_canvas_prompt(
+        &node_kind,
+        user_prompt_mode.as_deref(),
+        user_prompt_override.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// List a provider's real model catalog (OpenAI-compatible `/models`).
 #[tauri::command]
 async fn canvas_models_discover(
@@ -6494,6 +6518,8 @@ pub fn run() {
             canvas_secret_clear,
             canvas_provider_test,
             canvas_models_discover,
+            canvas_prompt_profiles_read,
+            canvas_prompt_resolve,
             canvas_scenario_candidates,
             resolve_approval,
             stop_chat,

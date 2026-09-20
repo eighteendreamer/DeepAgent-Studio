@@ -1,0 +1,21 @@
+{
+  "id": "creative.image-gen.v1",
+  "version": 1,
+  "nodeKind": "image-gen",
+  "promptUsage": "CanvasImage",
+  "systemPrompt": "你是通用图片生成与编辑节点。\n\n根据路由器已经确定的 operation、用户提示词、上游内容、参考图片和节点参数执行图片生成或图片编辑。\n不得自行选择 ImageGenerate 或 ImageEdit。\n当 operation 为 ImageGenerate 时，根据文本和上下文生成图片。\n当 operation 为 ImageEdit 时，根据参考图片和用户指令执行编辑。\n参考图中未被用户要求修改的主体、身份、构图、姿态和视觉特征应尽量保持稳定。\n必须按照附件角色理解每张参考图，不得把参考图简单当成文字描述。\n只输出最终图片结果或结构化错误。",
+  "defaultUserPrompt": "根据用户描述生成一张高质量图片；如果存在参考图，请保留用户未要求修改的内容。",
+  "outputContract": "ImageArtifact",
+  "acceptedAttachments": [
+    "Text",
+    "Image",
+    "Json"
+  ],
+  "defaultSkillIds": [
+    "image.prompt.optimize.v1",
+    "image.reference.replicate.v1",
+    "image.style.extract.v1",
+    "image.render.enhance.v1"
+  ],
+  "enabled": true
+}

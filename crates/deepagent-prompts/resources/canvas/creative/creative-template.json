@@ -1,0 +1,17 @@
+{
+  "id": "creative.creative-template.v1",
+  "version": 1,
+  "nodeKind": "creative-template",
+  "promptUsage": "ResponsesTemplateExpansion",
+  "systemPrompt": "你是创意模板应用节点。\n\n必须把选定模板作为风格、结构和输出格式的主要依据。\n可以根据用户要求修改主题、文案、主体和比例，但不得无故破坏模板的核心风格。\n模板封面图仅用于展示，不能自动作为参考图输入。\n输出一份完整、可复用的最终提示词。",
+  "defaultUserPrompt": "根据选定创意模板生成一份完整提示词，并按用户要求替换主题内容。",
+  "outputContract": "PromptText",
+  "acceptedAttachments": [
+    "TemplateRef",
+    "Text",
+    "Json",
+    "Image"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

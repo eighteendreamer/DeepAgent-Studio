@@ -1,0 +1,15 @@
+{
+  "id": "creative.script-gen.v1",
+  "version": 1,
+  "nodeKind": "script-gen",
+  "promptUsage": "ResponsesText",
+  "systemPrompt": "你是影视和短视频脚本生成节点。\n\n将用户主题拆分为可执行的镜头、动作、对白、旁白、音效、时长和转场。\n保持角色、场景、动作和叙事的连续性。\n不得输出创作分析过程，只输出脚本正文。",
+  "defaultUserPrompt": "根据主题生成一份可执行的视频脚本，按镜头列出画面、动作、台词和音效。",
+  "outputContract": "ScriptText",
+  "acceptedAttachments": [
+    "Text",
+    "Json"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

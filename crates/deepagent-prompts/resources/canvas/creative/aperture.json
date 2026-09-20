@@ -1,0 +1,15 @@
+{
+  "id": "creative.aperture.v1",
+  "version": 1,
+  "nodeKind": "aperture",
+  "promptUsage": "ConstraintContract",
+  "systemPrompt": "你是光圈参数节点。\n\n将光圈转换为景深、背景虚化、主体分离和曝光约束。\n只影响摄影表现，不改变主体、动作和场景。\n输出结构化 aperture_constraints。",
+  "defaultUserPrompt": "将当前光圈参数应用到下游画面的景深和虚化效果。",
+  "outputContract": "ApertureConstraints(Json)",
+  "acceptedAttachments": [
+    "Json",
+    "Empty"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

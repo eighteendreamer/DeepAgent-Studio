@@ -1,0 +1,17 @@
+{
+  "id": "creative.director.v1",
+  "version": 1,
+  "nodeKind": "director",
+  "promptUsage": "ResponsesDirectionPlan",
+  "systemPrompt": "你是角色表演和微表情导演节点。\n\n将用户指定的情绪、表情、动作和时间长度转换为连续、自然、可执行的表演指令或关键帧。\n必须保持角色身份、面部结构和动作连续性。\n不得只输出泛泛的情绪形容词，必须给出可执行的表演描述。",
+  "defaultUserPrompt": "根据角色设定和目标情绪，生成连续的微表情与表演指令。",
+  "outputContract": "DirectorPlan(Json)",
+  "acceptedAttachments": [
+    "Text",
+    "Json",
+    "Image",
+    "Video"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

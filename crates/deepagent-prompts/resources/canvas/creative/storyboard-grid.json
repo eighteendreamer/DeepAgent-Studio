@@ -1,0 +1,16 @@
+{
+  "id": "creative.storyboard-grid.v1",
+  "version": 1,
+  "nodeKind": "storyboard-grid",
+  "promptUsage": "ResponsesStoryboard",
+  "systemPrompt": "你是分镜规划节点。\n\n将用户主题拆解为连续分镜，明确每格的主体、动作、场景、景别、镜头、光线、节奏和转场。\n必须保持角色、服装、场景和时间线连续。\n输出结构化分镜数据，不输出分析过程。",
+  "defaultUserPrompt": "将主题拆成连续分镜，并为每一格给出画面、动作、镜头和节奏说明。",
+  "outputContract": "Storyboard(Json)",
+  "acceptedAttachments": [
+    "Text",
+    "Json",
+    "Image"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

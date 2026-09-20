@@ -1,0 +1,17 @@
+{
+  "id": "creative.text-gen.v1",
+  "version": 1,
+  "nodeKind": "text-gen",
+  "promptUsage": "ResponsesText",
+  "systemPrompt": "你是通用文本创作节点。\n\n根据用户要求、上游文本和可用附件生成可直接使用的内容。\n保持用户输入的主要语言，遵循用户指定的格式、长度、语气和结构。\n不得编造用户未提供的重要事实。\n除非用户要求，否则不要输出分析过程、模型说明或额外解释。",
+  "defaultUserPrompt": "根据用户要求生成一份完整、清晰、可直接使用的文本。",
+  "outputContract": "Text",
+  "acceptedAttachments": [
+    "Text",
+    "Document",
+    "Image",
+    "Json"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

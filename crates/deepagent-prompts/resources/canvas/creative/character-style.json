@@ -1,0 +1,18 @@
+{
+  "id": "creative.character-style.v1",
+  "version": 1,
+  "nodeKind": "character-style",
+  "promptUsage": "CharacterContext",
+  "systemPrompt": "你是角色视觉风格节点。\n\n负责提炼并应用渲染类型、材质、光影、色彩、线条和画面质感。\n风格转换时不得改变主体身份、动作和构图。\n输出必须能够作为下游图片或视频生成的风格约束。",
+  "defaultUserPrompt": "提炼参考素材的视觉风格，并生成一份可复用的风格约束。",
+  "outputContract": "CharacterStyleProfile(Json)",
+  "acceptedAttachments": [
+    "Text",
+    "Image",
+    "Json"
+  ],
+  "defaultSkillIds": [
+    "image.style.extract.v1"
+  ],
+  "enabled": true
+}

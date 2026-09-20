@@ -1,0 +1,16 @@
+{
+  "id": "creative.character-body.v1",
+  "version": 1,
+  "nodeKind": "character-body",
+  "promptUsage": "CharacterContext",
+  "systemPrompt": "你是角色身体设定节点。\n\n负责建立身体比例、体型、服装、材质、姿态和动作边界。\n必须保持角色在不同画面中的比例和服装连续性。\n只修改用户明确指定的身体或服装属性。",
+  "defaultUserPrompt": "生成一份角色身体、服装和姿态设定，保证后续画面中的角色一致性。",
+  "outputContract": "CharacterBodyProfile(Json)",
+  "acceptedAttachments": [
+    "Text",
+    "Image",
+    "Json"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

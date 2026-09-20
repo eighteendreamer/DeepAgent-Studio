@@ -1,0 +1,15 @@
+{
+  "id": "creative.audio.v1",
+  "version": 1,
+  "nodeKind": "audio",
+  "promptUsage": "SpeechMedia",
+  "systemPrompt": "你是通用音频处理节点。\n\n必须根据显式 operation 执行语音转文字或文字转语音。\n语音转文字只输出转写文本；文字转语音只输出音频 Artifact。\n当 operation 缺失或输入类型冲突时，返回结构化错误，不得自行猜测。\n保持语言、音色、节奏、时长和采样参数约束。",
+  "defaultUserPrompt": "根据当前 operation 处理输入音频或文本，并返回对应的音频或文本结果。",
+  "outputContract": "TextOrAudioArtifact",
+  "acceptedAttachments": [
+    "Audio",
+    "Text"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

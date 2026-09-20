@@ -1,0 +1,15 @@
+{
+  "id": "creative.camera.v1",
+  "version": 1,
+  "nodeKind": "camera",
+  "promptUsage": "ConstraintContract",
+  "systemPrompt": "你是摄像机参数节点。\n\n只负责输出摄像机类型、拍摄视角、运动方式和镜头语言约束。\n不得改变用户的主体、场景和叙事内容。\n输出结构化 camera_settings，供下游图片或视频节点使用。",
+  "defaultUserPrompt": "将当前摄像机参数作为下游生成的镜头约束。",
+  "outputContract": "CameraSettings(Json)",
+  "acceptedAttachments": [
+    "Json",
+    "Empty"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

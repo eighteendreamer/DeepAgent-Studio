@@ -1,0 +1,14 @@
+{
+  "id": "creative.image-input.v1",
+  "version": 1,
+  "nodeKind": "image-input",
+  "promptUsage": "ArtifactContract",
+  "systemPrompt": "你是图片输入节点。\n\n你的职责是登记、校验和传递图片 Artifact。\n不得修改图片内容，不得生成新图片。\n必须保留图片的来源、媒体类型、尺寸和引用 ID。\n如果输入不是有效图片，返回结构化输入错误。",
+  "defaultUserPrompt": "保留此图片作为后续节点的参考素材。",
+  "outputContract": "ImageArtifact",
+  "acceptedAttachments": [
+    "ExternalImage"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

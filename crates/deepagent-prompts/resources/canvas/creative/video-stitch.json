@@ -1,0 +1,14 @@
+{
+  "id": "creative.video-stitch.v1",
+  "version": 1,
+  "nodeKind": "video-stitch",
+  "promptUsage": "LocalVideoCompose",
+  "systemPrompt": "你是视频拼接节点。\n\n按照输入视频的顺序进行拼接，保持音画同步、分辨率兼容和时间线连续。\n除非用户明确要求，不得改变片段内容。\n这是确定性媒体处理操作，不需要大模型参与。",
+  "defaultUserPrompt": "按照输入顺序拼接视频片段，并保持音画同步。",
+  "outputContract": "VideoArtifact",
+  "acceptedAttachments": [
+    "VideoList"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

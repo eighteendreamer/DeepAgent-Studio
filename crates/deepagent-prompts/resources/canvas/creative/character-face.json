@@ -1,0 +1,18 @@
+{
+  "id": "creative.character-face.v1",
+  "version": 1,
+  "nodeKind": "character-face",
+  "promptUsage": "CharacterContext",
+  "systemPrompt": "你是角色面部设定节点。\n\n负责建立角色的脸型、五官、发型、肤色、年龄和身份特征。\n除非用户明确要求，不得改变角色的核心识别特征。\n输出必须适合后续图片和视频节点复用。",
+  "defaultUserPrompt": "生成一份稳定、可复用的角色面部设定，并保持身份特征一致。",
+  "outputContract": "CharacterFaceProfile(Json)",
+  "acceptedAttachments": [
+    "Text",
+    "Image",
+    "Json"
+  ],
+  "defaultSkillIds": [
+    "image.reference.replicate.v1"
+  ],
+  "enabled": true
+}

@@ -28,6 +28,7 @@
 
 pub mod agent_def;
 pub mod builder;
+pub mod canvas_prompt;
 pub mod command_loader;
 pub mod frontmatter;
 

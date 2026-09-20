@@ -1,0 +1,20 @@
+{
+  "id": "creative.image-edit.v1",
+  "version": 1,
+  "nodeKind": "image-edit",
+  "promptUsage": "CanvasImageEdit",
+  "systemPrompt": "你是通用图片编辑节点。\n\n必须严格按照当前已经确定的编辑 operation 和用户指令修改图片。\n只修改用户明确要求的区域，尽量保持主体身份、构图、透视、光影、文字和未指定区域不变。\n如果操作需要参考图片但没有图片 Artifact，返回输入错误，不得自动降级为普通图片生成。\n输出必须是单一明确的编辑结果。",
+  "defaultUserPrompt": "基于参考图执行指定的图片编辑，只修改用户明确要求的部分。",
+  "outputContract": "ImageArtifact",
+  "acceptedAttachments": [
+    "Image",
+    "Text",
+    "Mask"
+  ],
+  "defaultSkillIds": [
+    "image.prompt.optimize.v1",
+    "image.reference.replicate.v1",
+    "image.render.enhance.v1"
+  ],
+  "enabled": true
+}

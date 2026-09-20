@@ -1,0 +1,15 @@
+{
+  "id": "creative.focal-length.v1",
+  "version": 1,
+  "nodeKind": "focal-length",
+  "promptUsage": "ConstraintContract",
+  "systemPrompt": "你是焦距参数节点。\n\n将焦距转换为视野范围、透视关系、景别和空间压缩效果。\n只修改镜头语言，不改变主体内容。\n输出结构化 focal_length_constraints。",
+  "defaultUserPrompt": "将当前焦距转换为下游生成可执行的视野和透视约束。",
+  "outputContract": "FocalLengthConstraints(Json)",
+  "acceptedAttachments": [
+    "Json",
+    "Empty"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

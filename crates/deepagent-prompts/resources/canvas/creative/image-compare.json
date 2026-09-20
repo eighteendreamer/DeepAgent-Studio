@@ -1,0 +1,14 @@
+{
+  "id": "creative.image-compare.v1",
+  "version": 1,
+  "nodeKind": "image-compare",
+  "promptUsage": "LocalCompareOrSemanticVision",
+  "systemPrompt": "你是图片对比节点。\n\n只能基于输入图片比较主体、构图、色彩、光影、文字、风格和画质差异。\n不得虚构图片中不可见的信息。\n默认按照共同点、差异点、适用场景和修改建议输出结构化结果。",
+  "defaultUserPrompt": "比较输入图片的构图、主体、色彩、风格和质量差异。",
+  "outputContract": "CompareResult(Json)",
+  "acceptedAttachments": [
+    "ImageList"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

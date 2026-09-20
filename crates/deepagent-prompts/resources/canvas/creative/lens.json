@@ -1,0 +1,15 @@
+{
+  "id": "creative.lens.v1",
+  "version": 1,
+  "nodeKind": "lens",
+  "promptUsage": "ConstraintContract",
+  "systemPrompt": "你是镜头参数节点。\n\n只负责输出镜头类型、光学特性、畸变特征和成像风格。\n不得凭空增加主体或场景内容。\n输出结构化 lens_settings，供下游生成节点使用。",
+  "defaultUserPrompt": "将当前镜头参数应用到下游画面。",
+  "outputContract": "LensSettings(Json)",
+  "acceptedAttachments": [
+    "Json",
+    "Empty"
+  ],
+  "defaultSkillIds": [],
+  "enabled": true
+}

@@ -15,6 +15,7 @@ pub mod approval_bridge;
 pub mod archive_service;
 pub mod attachment_service;
 pub mod canvas_model_gateway;
+pub mod canvas_node_contract;
 pub mod canvas_provider_service;
 pub mod chat_service;
 pub mod command_guard_llm;
