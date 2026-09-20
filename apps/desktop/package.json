@@ -14,7 +14,8 @@
     "test:plugin-page": "node --test scripts/check-plugin-page-lifecycle.test.cjs",
     "test:plugin-toggle": "node --test scripts/check-plugin-toggle-refresh.test.cjs",
     "test:workflow": "node --test scripts/check-workflow.test.cjs",
-    "build": "pnpm test:workflow && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
+    "test:canvas-ipc": "node --test scripts/check-canvas-ipc.test.cjs",
+    "build": "pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "review": "ocr"
