@@ -60,6 +60,29 @@ pub struct NodeExecutionEvent {
     pub job_id: Option<String>,
 }
 
+impl NodeExecutionEvent {
+    /// Skeleton every emitter shares: identity plus neutral values.
+    pub fn new(revision: String, node_id: String) -> Self {
+        Self {
+            revision,
+            node_id,
+            status: NodeExecutionStatus::Pending,
+            scope: Vec::new(),
+            attempt: 1,
+            elapsed_ms: 0,
+            outputs: None,
+            updates: BTreeMap::new(),
+            error: None,
+            // Derived from `outputs` by the publisher (see annotate_provenance).
+            operation: None,
+            provider_id: None,
+            model_id: None,
+            artifacts: Vec::new(),
+            job_id: None,
+        }
+    }
+}
+
 /// An event reports which artifacts a node produced, never their bytes.
 const MAX_EVENT_ARTIFACTS: usize = 8;
 /// Output payloads are user-shaped; bound the walk that lifts provenance out.
@@ -138,6 +161,19 @@ impl NodeEventPublisher {
         event.error = event.error.map(|error| scrub_secret_literals(&error));
         annotate_provenance(&mut event);
         self.sink.emit(RuntimeEvent::WorkflowNode { event });
+    }
+
+    /// Report where a long media job stands. This stays a `Running` event: the
+    /// node has not finished, it just learned its provider job id and phase.
+    pub fn emit_job_progress(&self, revision: &str, node_id: &str, job_id: &str, phase: &str) {
+        let mut updates = BTreeMap::new();
+        updates.insert("jobPhase".to_string(), Value::String(phase.to_string()));
+        self.emit(NodeExecutionEvent {
+            status: NodeExecutionStatus::Running,
+            updates,
+            job_id: Some(job_id.to_string()),
+            ..NodeExecutionEvent::new(revision.to_string(), node_id.to_string())
+        });
     }
 }
 

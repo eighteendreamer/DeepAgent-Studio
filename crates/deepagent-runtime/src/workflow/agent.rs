@@ -16,7 +16,7 @@ use deepagent_models::chat_completions::ChatCompletionRequest;
 
 use super::canvas::{
     CanvasAudioRequest, CanvasCompletionRequest, CanvasEmbeddingRequest, CanvasImageRequest,
-    CanvasModelBridge, CanvasRouteRequest, CanvasVideoRequest,
+    CanvasJobProgressSink, CanvasModelBridge, CanvasRouteRequest, CanvasVideoRequest,
 };
 use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
@@ -45,6 +45,9 @@ pub struct WorkflowAgent {
     #[allow(dead_code)]
     started_at: Instant,
     cancel: Option<Arc<AtomicBool>>,
+    /// Node `think` is executing right now. A media job reports progress from
+    /// inside the provider poll loop, which cannot see the graph walk.
+    active_node_id: Option<String>,
     model: Option<Arc<ModelClient>>,
     model_name: Option<String>,
     knowledge_retriever: Option<Arc<dyn KnowledgeRetriever>>,
@@ -70,6 +73,7 @@ impl WorkflowAgent {
             step: 0,
             started_at: Instant::now(),
             cancel: None,
+            active_node_id: None,
             model: None,
             model_name: None,
             knowledge_retriever: None,
@@ -119,6 +123,10 @@ impl WorkflowAgent {
             .unwrap_or(false)
     }
 
+    fn base_event(&self, node_id: &str) -> NodeExecutionEvent {
+        NodeExecutionEvent::new(self.compiled.revision.clone(), node_id.to_string())
+    }
+
     fn emit_status(
         &self,
         node_id: &str,
@@ -129,22 +137,29 @@ impl WorkflowAgent {
         error: Option<String>,
     ) {
         self.publisher.emit(NodeExecutionEvent {
-            revision: self.compiled.revision.clone(),
-            node_id: node_id.to_string(),
             status,
-            scope: Vec::new(),
             attempt,
             elapsed_ms,
             outputs,
-            updates: BTreeMap::new(),
             error,
-            // The publisher derives these from `outputs` (see annotate_provenance).
-            operation: None,
-            provider_id: None,
-            model_id: None,
-            artifacts: Vec::new(),
-            job_id: None,
+            ..self.base_event(node_id)
         });
+    }
+
+    /// Sink handed to a media job so the provider poll loop can report the
+    /// node's job id and phase while it is still running.
+    fn progress_sink(&self) -> Option<CanvasJobProgressSink> {
+        let node_id = self.active_node_id.clone()?;
+        let publisher = self.publisher.clone();
+        let revision = self.compiled.revision.clone();
+        Some(CanvasJobProgressSink::new(move |progress| {
+            publisher.emit_job_progress(
+                &revision,
+                &node_id,
+                &progress.job_id,
+                progress.phase.as_str(),
+            );
+        }))
     }
 
     async fn execute_node_inline(
@@ -785,6 +800,7 @@ impl WorkflowAgent {
                     .filter(|value| !value.trim().is_empty()),
                 timeout_ms: 600_000,
                 cancel: self.cancel.clone(),
+                on_progress: self.progress_sink(),
             })
             .await?;
         Ok(serde_json::json!({
@@ -1268,6 +1284,7 @@ impl Agent for WorkflowAgent {
             }
         }
 
+        self.active_node_id = Some(node_id.clone());
         self.emit_status(&node_id, NodeExecutionStatus::Running, 1, 0, None, None);
         let node_start = Instant::now();
 
@@ -1362,7 +1379,8 @@ mod tests {
 
     use crate::workflow::canvas::{
         CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionResponse, CanvasEmbeddingResponse,
-        CanvasImageResponse, CanvasVideoRequest, CanvasVideoResponse,
+        CanvasImageResponse, CanvasJobPhase, CanvasJobProgress, CanvasVideoRequest,
+        CanvasVideoResponse,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -1443,6 +1461,13 @@ mod tests {
             &self,
             request: CanvasVideoRequest,
         ) -> deepagent_core::error::Result<CanvasVideoResponse> {
+            // 真实网关会在轮询途中报回作业 id，这里同样先报再返回结果。
+            if let Some(sink) = request.on_progress.as_ref() {
+                sink.emit(CanvasJobProgress {
+                    job_id: "job-77".to_string(),
+                    phase: CanvasJobPhase::Queued,
+                });
+            }
             // 模型名带标记即模拟“轮询途中用户点了停止”：翻起真实取消标志再报错。
             if request.model_ref.contains("cancel-mid-job") {
                 if let Some(flag) = request.cancel.as_ref() {
@@ -1925,6 +1950,17 @@ mod tests {
         assert_eq!(done.model_id.as_deref(), Some("Wan2.2-T2V-A14B"));
         assert_eq!(done.job_id.as_deref(), Some("job-77"));
         assert_eq!(done.artifacts, vec!["artifact://art_video"]);
+        let progress = events
+            .iter()
+            .find(|event| {
+                event.node_id == "video-1" && event.outputs.is_none() && event.job_id.is_some()
+            })
+            .expect("mid-flight job progress");
+        assert_eq!(progress.status, NodeExecutionStatus::Running);
+        assert_eq!(
+            progress.updates.get("jobPhase").and_then(Value::as_str),
+            Some("queued")
+        );
     }
 
     #[tokio::test]

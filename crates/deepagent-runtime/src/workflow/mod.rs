@@ -10,8 +10,8 @@ pub use agent::WorkflowAgent;
 pub use canvas::{
     CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest, CanvasCompletionResponse,
     CanvasEmbeddingRequest, CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse,
-    CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest, CanvasVideoRequest,
-    CanvasVideoResponse,
+    CanvasJobPhase, CanvasJobProgress, CanvasJobProgressSink, CanvasModelBridge,
+    CanvasRouteOutcome, CanvasRouteRequest, CanvasVideoRequest, CanvasVideoResponse,
 };
 pub use graph::{
     compile, CompiledWorkflow, WorkflowDefinition, WorkflowEdgeSpec, WorkflowNodeSpec,

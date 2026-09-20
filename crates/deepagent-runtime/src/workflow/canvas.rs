@@ -117,6 +117,58 @@ pub struct CanvasAudioResponse {
     pub model_id: String,
 }
 
+/// Mid-flight state of a submitted media job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanvasJobPhase {
+    /// Accepted by the provider, not started yet.
+    Queued,
+    /// The provider is working on it.
+    Running,
+}
+
+impl CanvasJobPhase {
+    /// Stable wire word, so a client can switch on it without the Rust type.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+        }
+    }
+}
+
+/// Progress of the job behind a running media node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasJobProgress {
+    pub job_id: String,
+    pub phase: CanvasJobPhase,
+}
+
+/// Callback a node hands the gateway so a job that takes minutes can report
+/// its task id and phase while it is still running.
+pub struct CanvasJobProgressSink(Arc<dyn Fn(CanvasJobProgress) + Send + Sync>);
+
+impl CanvasJobProgressSink {
+    pub fn new(callback: impl Fn(CanvasJobProgress) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(callback))
+    }
+
+    pub fn emit(&self, progress: CanvasJobProgress) {
+        (self.0)(progress);
+    }
+}
+
+impl Clone for CanvasJobProgressSink {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl std::fmt::Debug for CanvasJobProgressSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CanvasJobProgressSink")
+    }
+}
+
 /// A video job request for one canvas video node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,6 +188,9 @@ pub struct CanvasVideoRequest {
     /// Run cancellation flag; polled between status requests.
     #[serde(skip)]
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Status callback; reported once per phase change.
+    #[serde(skip)]
+    pub on_progress: Option<CanvasJobProgressSink>,
 }
 
 /// Video result: the stored artifact plus the provider task id kept for resume.

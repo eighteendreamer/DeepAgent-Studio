@@ -24,8 +24,8 @@ use deepagent_core::error::Result as CoreResult;
 use deepagent_runtime::workflow::{
     CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest, CanvasCompletionResponse,
     CanvasEmbeddingRequest, CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse,
-    CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest, CanvasVideoRequest,
-    CanvasVideoResponse,
+    CanvasJobPhase, CanvasJobProgress, CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest,
+    CanvasVideoRequest, CanvasVideoResponse,
 };
 
 use crate::canvas_node_contract::canvas_node_contract;
@@ -2241,6 +2241,7 @@ impl CanvasModelBridge for CanvasModelGateway {
         let timeout_ms = request.timeout_ms.max(1_000);
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let mut round = 0u32;
+        let mut reported: Option<CanvasJobPhase> = None;
         let job = loop {
             if request
                 .cancel
@@ -2260,6 +2261,20 @@ impl CanvasModelBridge for CanvasModelGateway {
                 CanvasJobStatus::Succeeded | CanvasJobStatus::Failed
             ) {
                 break job;
+            }
+            let phase = if job.status == CanvasJobStatus::Queued {
+                CanvasJobPhase::Queued
+            } else {
+                CanvasJobPhase::Running
+            };
+            if reported != Some(phase) {
+                if let Some(sink) = request.on_progress.as_ref() {
+                    sink.emit(CanvasJobProgress {
+                        job_id: task_id.clone(),
+                        phase,
+                    });
+                }
+                reported = Some(phase);
             }
             if Instant::now() >= deadline {
                 return Err(deepagent_core::error::CoreError::other(format!(
@@ -2453,6 +2468,7 @@ mod tests {
         CanvasModelConfig, CanvasProviderInput, CanvasProviderService, CanvasScenarioBinding,
     };
     use deepagent_persistence::Database;
+    use deepagent_runtime::workflow::CanvasJobProgressSink;
     use std::sync::Arc;
 
     fn facts(
@@ -3484,6 +3500,9 @@ mod tests {
             })
             .expect("provider");
         let gateway = CanvasModelGateway::new(providers).with_artifacts(artifacts.clone());
+        let progress: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let progress_sink = progress.clone();
         let base = CanvasVideoRequest {
             model_ref: format!("{}::Wan2.2-T2V-A14B", created.id),
             prompt: "一只橘猫在雨里走路".to_string(),
@@ -3492,12 +3511,24 @@ mod tests {
             resume_task_id: None,
             timeout_ms: 20_000,
             cancel: None,
+            on_progress: Some(CanvasJobProgressSink::new(move |report| {
+                progress_sink.lock().expect("lock").push(format!(
+                    "{}@{}",
+                    report.job_id,
+                    report.phase.as_str()
+                ));
+            })),
         };
 
         let done = rt
             .block_on(gateway.generate_video(base.clone()))
             .expect("video job");
         assert_eq!(done.task_id, "job-77");
+        assert_eq!(
+            progress.lock().expect("lock").clone(),
+            vec!["job-77@queued".to_string()],
+            "a minutes-long job must announce itself before it finishes"
+        );
         assert_eq!(done.mime, "video/mp4");
         assert!(
             done.artifact_uri.starts_with("artifact://"),
