@@ -16,6 +16,7 @@ import { runWorkflow } from "../utils/workflowExecutor";
 
 const TEXT_COLOR = "rgba(255,255,255,0.88)";
 import { importCanvasMedia } from "../utils/canvasMedia";
+import { PromptRestoreButton } from "./PromptRestoreButton";
 
 function autoGrow(e: React.FormEvent<HTMLTextAreaElement>, max = 100) {
   const t = e.currentTarget;
@@ -251,6 +252,7 @@ export function TextGenForm({ data, onUpdate }: { data: CreativeNodeData } & For
         placeholder="描述你想要生成的内容..."
         onChange={(prompt) => onUpdate({ prompt })}
       />
+      <PromptRestoreButton kind={data.kind} value={data.prompt ?? ""} onUpdate={onUpdate} />
       {data.output && <OutputBlock text={data.output} />}
     </div>
   );
@@ -611,6 +613,7 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
             className="block min-h-[76px] w-full resize-none border-0 bg-transparent p-0 pr-8 text-[13px] leading-relaxed text-white/[0.88] outline-none placeholder:text-white/40 focus:border-0 focus:outline-none focus:ring-0"
             style={{ maxHeight: 120, scrollbarWidth: "none" }}
           />
+          <PromptRestoreButton kind={data.kind} value={prompt} onUpdate={onUpdate} />
         </div>
 
         <div className="flex items-center justify-between px-3 pb-3 pt-1">
@@ -762,6 +765,7 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
             className="block min-h-[76px] w-full resize-none border-0 bg-transparent p-0 pr-8 text-[13px] leading-relaxed text-white/[0.88] outline-none placeholder:text-white/40 focus:border-0 focus:outline-none focus:ring-0"
             style={{ maxHeight: 120, scrollbarWidth: "none" }}
           />
+          <PromptRestoreButton kind={data.kind} value={prompt} onUpdate={onUpdate} />
         </div>
 
         <div className="flex items-center justify-between px-3 pb-3 pt-1">
@@ -866,6 +870,7 @@ export function ScriptGenForm({ data, onUpdate }: { data: CreativeNodeData } & F
         placeholder="描述视频主题和要求..."
         onChange={(prompt) => onUpdate({ prompt })}
       />
+      <PromptRestoreButton kind={data.kind} value={data.prompt ?? ""} onUpdate={onUpdate} />
     </div>
   );
 }

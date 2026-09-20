@@ -16,6 +16,7 @@ import { useCreativeStore } from "../store/creativeStore";
 import { runWorkflow } from "../utils/workflowExecutor";
 import { useScenarioModelOptions } from "../store/canvasSettingsStore";
 import { useCanvasMediaSrc } from "../utils/canvasMedia";
+import { PromptRestoreButton } from "./PromptRestoreButton";
 
 interface Props {
   nodeId: string;
@@ -114,6 +115,7 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
           className="block min-h-[76px] w-full resize-none border-0 bg-transparent p-0 pr-8 text-[13px] leading-relaxed text-white/[0.88] outline-none placeholder:text-white/40 focus:border-0 focus:outline-none focus:ring-0"
           style={{ maxHeight: 120, scrollbarWidth: "none" }}
         />
+        <PromptRestoreButton kind={data.kind} value={data.prompt ?? ""} onUpdate={onUpdate} />
       </div>
 
       <div className="flex items-center justify-between px-3 pb-3 pt-1">

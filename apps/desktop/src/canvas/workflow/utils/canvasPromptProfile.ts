@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { CreativeNodeData, CreativeNodeKind } from "../types";
 
@@ -38,6 +39,36 @@ const PROMPT_FIELD: Partial<Record<CreativeNodeKind, "prompt" | "imagePrompt" | 
 
 const cache = new Map<string, CanvasPromptResolution | null>();
 const pending = new Map<string, Promise<CanvasPromptResolution | null>>();
+
+/** 该节点种类承载用户提示词的字段；本地节点没有该字段。 */
+export function promptFieldOf(
+  kind: CreativeNodeKind,
+): "prompt" | "imagePrompt" | "videoPrompt" | undefined {
+  return PROMPT_FIELD[kind];
+}
+
+/** 内核为该节点种类定义的默认用户提示词，用于判断节点是否已被改写。 */
+export function useDefaultUserPrompt(kind?: CreativeNodeKind): string {
+  const [text, setText] = useState<string>(() =>
+    kind ? (cache.get(kind)?.resolvedUserPrompt ?? "") : "",
+  );
+
+  useEffect(() => {
+    if (!kind) {
+      setText("");
+      return;
+    }
+    let active = true;
+    void resolveCanvasPromptProfile(kind).then((resolution) => {
+      if (active) setText(resolution?.resolvedUserPrompt ?? "");
+    });
+    return () => {
+      active = false;
+    };
+  }, [kind]);
+
+  return text;
+}
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
