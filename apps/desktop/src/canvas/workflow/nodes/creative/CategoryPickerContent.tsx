@@ -3,6 +3,7 @@ import type { CreativeNodeData, CreativePickerCategory, CreativePickerOption } f
 import { CREATIVE_NODE_PICKER_CATEGORIES } from "../../types";
 import { useCreativeStore } from "../../store/creativeStore";
 import { PickerIcon } from "../../components/PickerIcon";
+import { importCanvasMediaFile, type CanvasMediaKind } from "../../utils/canvasMedia";
 
 interface Props {
   id: string;
@@ -23,15 +24,6 @@ function optionsFor(category: CreativePickerCategory): Array<{ group?: string; o
 
 function stopNodeGesture(event: React.SyntheticEvent) {
   event.stopPropagation();
-}
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(reader.error ?? new Error("读取文件失败"));
-    reader.readAsDataURL(file);
-  });
 }
 
 export function CategoryPickerContent({ id, data }: Props) {
@@ -59,23 +51,40 @@ export function CategoryPickerContent({ id, data }: Props) {
 
   const handleFile = async (file: File | undefined, option: CreativePickerOption) => {
     if (!file) return;
-    const url = await readFileAsDataUrl(file);
     const mime = file.type || "";
-    const kind = option.key === "parse-document"
-      ? "text-gen"
-      : mime.startsWith("video/")
-        ? "video-gen"
-        : mime.startsWith("audio/")
-          ? "audio"
-          : "image-gen";
+    const mediaKind: CanvasMediaKind =
+      option.key === "parse-document"
+        ? "document"
+        : mime.startsWith("video/")
+          ? "video"
+          : mime.startsWith("audio/")
+            ? "audio"
+            : "image";
+    const kind =
+      mediaKind === "document"
+        ? "text-gen"
+        : mediaKind === "video"
+          ? "video-gen"
+          : mediaKind === "audio"
+            ? "audio"
+            : "image-gen";
+    let reference: string;
+    try {
+      // data URL 只是 webview 到内核的一次性载体，节点上只留 artifact 引用。
+      reference = await importCanvasMediaFile(mediaKind, file);
+    } catch (error) {
+      console.error(`[canvas] ${file.name} 入库失败，已跳过:`, error);
+      return;
+    }
     const extraData: Record<string, unknown> = {
       label: file.name.replace(/\.[^.]+$/, "") || file.name,
       sourceFileName: file.name,
-      mediaUrl: url,
-      mediaType: kind === "video-gen" ? "video" : kind === "audio" ? "audio" : "image",
+      mediaUrl: reference,
+      mediaType: mediaKind,
     };
-    if (kind === "video-gen") extraData.videoUrl = url;
-    if (kind === "image-gen") extraData.imageUrl = url;
+    if (mediaKind === "video") extraData.videoUrl = reference;
+    if (mediaKind === "audio") extraData.audioReference = reference;
+    if (mediaKind === "image") extraData.imageUrl = reference;
     if (kind === "text-gen") {
       extraData.prompt = `待解析文档：${file.name}`;
       if (file.type.startsWith("text/") || /\.(txt|md|markdown)$/i.test(file.name)) {
