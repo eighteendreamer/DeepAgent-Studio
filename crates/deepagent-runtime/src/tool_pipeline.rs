@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use deepagent_core::error::Result;
 use deepagent_core::id::SessionId;
 use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry};
-use deepagent_persistence::artifact_store::{ToolArtifactRecord, ToolArtifactStore};
+use deepagent_persistence::artifact_store::{ArtifactKind, ArtifactRecord, ArtifactStore};
 use deepagent_persistence::run_control::{
     NewRunAction, NewRunApproval, RunActionState, RunControlStore,
 };
@@ -252,10 +252,12 @@ impl ToolArtifactPersistence {
         let byte_size = std::fs::metadata(path)
             .map(|metadata| metadata.len() as i64)
             .unwrap_or(0);
-        ToolArtifactStore::new(&self.db).put(&ToolArtifactRecord {
+        ArtifactStore::new(&self.db).put(&ArtifactRecord {
             id: format!("artifact_{}", deepagent_core::id::EventId::new()),
-            run_id: self.run_id.clone(),
-            call_id: call_id.to_string(),
+            kind: ArtifactKind::ToolResult,
+            run_id: Some(self.run_id.clone()),
+            call_id: Some(call_id.to_string()),
+            workspace_id: None,
             path: path.to_string_lossy().to_string(),
             media_type: Some("application/json".to_string()),
             byte_size,

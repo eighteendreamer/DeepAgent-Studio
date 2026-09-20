@@ -55,7 +55,7 @@ pub struct CanvasCompletionResponse {
 pub struct CanvasImageRequest {
     pub model_ref: String,
     pub prompt: String,
-    /// Reference images as data URLs.
+    /// Reference images: `artifact://<id>`, a `data:` URL or an http URL.
     pub reference_images: Vec<String>,
     pub size: Option<String>,
     /// Operation chosen by the router (`image_generate` / `image_edit`). Empty
@@ -64,12 +64,13 @@ pub struct CanvasImageRequest {
     pub operation: String,
 }
 
-/// Image result. `data_url` keeps the existing canvas node contract
-/// (`data.imageUrl`) intact while artifacts move to the backend.
+/// Image result. `artifact_uri` is the only form a canvas node may persist:
+/// the bytes stay in the artifact store, so no base64 reaches the graph, the
+/// node events or the session history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CanvasImageResponse {
-    pub data_url: String,
+    pub artifact_uri: String,
     pub mime: String,
     pub provider_id: String,
     pub model_id: String,
@@ -166,7 +167,7 @@ mod tests {
 
         async fn generate_image(&self, request: CanvasImageRequest) -> Result<CanvasImageResponse> {
             Ok(CanvasImageResponse {
-                data_url: format!("data:image/png;base64,{}", request.prompt.len()),
+                artifact_uri: format!("artifact://art_fake_{}", request.prompt.len()),
                 mime: "image/png".to_string(),
                 provider_id: "p".to_string(),
                 model_id: "m".to_string(),

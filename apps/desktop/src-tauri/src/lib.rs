@@ -380,6 +380,8 @@ struct AppState {
     canvas_gateway: Arc<deepagent_app_core::canvas_model_gateway::CanvasModelGateway>,
     /// Canvas workflow graphs (live canvas per mode + saved library).
     canvas_workflows: Arc<deepagent_app_core::canvas_workflow_store::CanvasWorkflowStore>,
+    /// Canvas media bytes plus their index; nodes reference them by artifact URI.
+    canvas_artifacts: Arc<deepagent_app_core::canvas_artifact_service::CanvasArtifactService>,
     knowledge: Arc<KnowledgeService>,
     cost: Arc<CostService>,
     runtime_logs: Arc<RuntimeLogStore>,
@@ -2346,6 +2348,33 @@ fn canvas_workflow_delete(state: State<'_, AppState>, id: String) -> Result<bool
     state
         .canvas_workflows
         .delete_workflow(&id)
+        .map_err(|e| e.to_string())
+}
+
+/// Store canvas media (uploaded, cropped, annotated or pasted) as an artifact.
+/// The node keeps only the returned `artifact://` reference, so base64 never
+/// enters the graph, the events or the logs.
+#[tauri::command]
+fn canvas_artifact_import(
+    state: State<'_, AppState>,
+    artifact: deepagent_app_core::canvas_artifact_service::CanvasArtifactImport,
+) -> Result<deepagent_app_core::canvas_artifact_service::CanvasArtifactDto, String> {
+    state
+        .canvas_artifacts
+        .import(&artifact)
+        .map_err(|e| e.to_string())
+}
+
+/// Resolve a node-stored media reference for display. Returns `None` for
+/// `http(s)`, `data:` and `asset:` values, which the renderer uses as-is.
+#[tauri::command]
+fn canvas_artifact_url(
+    state: State<'_, AppState>,
+    reference: String,
+) -> Result<Option<deepagent_app_core::canvas_artifact_service::CanvasArtifactDto>, String> {
+    state
+        .canvas_artifacts
+        .display_target(&reference)
         .map_err(|e| e.to_string())
 }
 
@@ -5935,6 +5964,7 @@ pub fn run() {
             let vision_cache_dir = cache_dir.join("vision");
             let mcp_dir = files_dir.join("mcp");
             let tool_results_dir = files_dir.join("tool-results");
+            let artifacts_dir = files_dir.join("artifacts");
             for managed_dir in [
                 &attachments_dir,
                 &recordings_dir,
@@ -5945,6 +5975,7 @@ pub fn run() {
                 &vision_cache_dir,
                 &mcp_dir,
                 &tool_results_dir,
+                &artifacts_dir,
             ] {
                 std::fs::create_dir_all(managed_dir).map_err(|error| {
                     format!(
@@ -6323,10 +6354,18 @@ pub fn run() {
                     sqlite_secrets.clone(),
                 ),
             );
+            let canvas_artifacts = Arc::new(
+                deepagent_app_core::canvas_artifact_service::CanvasArtifactService::new(
+                    &artifacts_dir,
+                    service.shared_database(),
+                )
+                .map_err(|error| format!("failed to open canvas artifact store: {error}"))?,
+            );
             let canvas_gateway = Arc::new(
                 deepagent_app_core::canvas_model_gateway::CanvasModelGateway::new(
                     canvas_providers.clone(),
-                ),
+                )
+                .with_artifacts(canvas_artifacts.clone()),
             );
             let canvas_workflows = Arc::new(
                 deepagent_app_core::canvas_workflow_store::CanvasWorkflowStore::new(
@@ -6478,6 +6517,7 @@ pub fn run() {
                 canvas_providers,
                 canvas_gateway,
                 canvas_workflows,
+                canvas_artifacts,
                 knowledge,
                 cost,
                 runtime_logs,
@@ -6613,6 +6653,8 @@ pub fn run() {
             canvas_workflow_save,
             canvas_workflow_load,
             canvas_workflow_delete,
+            canvas_artifact_import,
+            canvas_artifact_url,
             resolve_approval,
             stop_chat,
             cancel_run,

@@ -14,7 +14,7 @@ use deepagent_harness_protocol::{
     TurnInterruptRequest, TurnStartRequest, TurnSteerRequest, CONTROL_PROJECTION_VERSION,
     PROTOCOL_VERSION,
 };
-use deepagent_persistence::artifact_store::ToolArtifactStore;
+use deepagent_persistence::artifact_store::ArtifactStore;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::run_control::RunControlStore;
 use deepagent_persistence::run_store::RunStore;
@@ -614,16 +614,15 @@ impl ServerState {
                             }
                         };
                     let controls = RunControlStore::new(&self.database);
-                    let artifacts =
-                        match ToolArtifactStore::new(&self.database).list_for_run(&run.id) {
-                            Ok(artifacts) => artifacts,
-                            Err(error) => {
-                                return (
-                                    RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string()),
-                                    None,
-                                )
-                            }
-                        };
+                    let artifacts = match ArtifactStore::new(&self.database).list_for_run(&run.id) {
+                        Ok(artifacts) => artifacts,
+                        Err(error) => {
+                            return (
+                                RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string()),
+                                None,
+                            )
+                        }
+                    };
                     let actions = controls.list_actions(&run.id).map_err(|error| {
                         RpcResponse::error(id.clone(), ERR_INTERNAL, error.to_string())
                     });

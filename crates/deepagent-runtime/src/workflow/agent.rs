@@ -676,8 +676,9 @@ impl WorkflowAgent {
             })
             .await?;
         Ok(serde_json::json!({
-            "imageUrl": response.data_url,
-            "imageDataUrl": response.data_url,
+            // The node keeps its existing `imageUrl` field, but the value is an
+            // `artifact://` reference: no base64 enters events or the graph.
+            "imageUrl": response.artifact_uri,
             "mime": response.mime,
             "operation": response.operation,
             "providerId": response.provider_id,
@@ -1159,7 +1160,7 @@ mod tests {
             let edited = !request.reference_images.is_empty();
             self.images.lock().unwrap().push(request);
             Ok(CanvasImageResponse {
-                data_url: "data:image/png;base64,AA".to_string(),
+                artifact_uri: "artifact://art_generated".to_string(),
                 mime: "image/png".to_string(),
                 provider_id: "cvp-1".to_string(),
                 model_id: "gpt-image-2".to_string(),
@@ -1305,6 +1306,7 @@ mod tests {
     #[tokio::test]
     async fn image_node_with_reference_reports_edit_operation() {
         let bridge = RecordingBridge::default();
+        let records = bridge.images.clone();
         let mut agent = agent_with_bridge(bridge);
         let outcome = agent
             .execute_node_inline(
@@ -1312,13 +1314,25 @@ mod tests {
                 &config(&[
                     ("imageModel", json!("cvp-1::gpt-image-2")),
                     ("prompt", json!("make it night")),
-                    ("referenceImages", json!(["data:image/png;base64,BB"])),
+                    ("referenceImages", json!(["artifact://art_input"])),
                 ]),
             )
             .await
             .expect("image edit");
         assert_eq!(outcome["operation"], "edit");
-        assert_eq!(outcome["imageUrl"], "data:image/png;base64,AA");
+        assert_eq!(outcome["imageUrl"], "artifact://art_generated");
+        let serialized = outcome.to_string();
+        assert!(
+            !serialized.contains("base64"),
+            "node output carried inline bytes: {serialized}"
+        );
+        // Resolving the artifact to bytes is the gateway's job; the node only
+        // has to forward the reference it was given.
+        let sent = records.lock().unwrap().first().cloned().expect("one call");
+        assert_eq!(
+            sent.reference_images,
+            vec!["artifact://art_input".to_string()]
+        );
     }
 
     #[tokio::test]

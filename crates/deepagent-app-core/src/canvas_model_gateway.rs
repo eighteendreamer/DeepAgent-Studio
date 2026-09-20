@@ -538,6 +538,9 @@ pub struct CanvasConnectionTestResult {
 pub struct CanvasModelGateway {
     providers: std::sync::Arc<CanvasProviderService>,
     http: reqwest::Client,
+    /// Where generated media is stored. Without it, image calls have nowhere to
+    /// put their bytes, so they fail instead of emitting inline base64.
+    artifacts: Option<std::sync::Arc<crate::canvas_artifact_service::CanvasArtifactService>>,
 }
 
 impl CanvasModelGateway {
@@ -546,7 +549,52 @@ impl CanvasModelGateway {
             .timeout(Duration::from_secs(300))
             .build()
             .unwrap_or_default();
-        Self { providers, http }
+        Self {
+            providers,
+            http,
+            artifacts: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_artifacts(
+        mut self,
+        artifacts: std::sync::Arc<crate::canvas_artifact_service::CanvasArtifactService>,
+    ) -> Self {
+        self.artifacts = Some(artifacts);
+        self
+    }
+
+    fn artifact_store(
+        &self,
+        what: &str,
+    ) -> CoreResult<&crate::canvas_artifact_service::CanvasArtifactService> {
+        let service = self.artifacts.as_ref().ok_or_else(|| {
+            deepagent_core::error::CoreError::other(format!(
+                "canvas artifact store is not wired; cannot {what}"
+            ))
+        })?;
+        Ok(service.as_ref())
+    }
+
+    /// Turn node-stored image references into what a provider can fetch:
+    /// `artifact://id` becomes inline bytes, `data:` / `http(s)` pass through.
+    fn resolve_image_inputs(&self, urls: &[String]) -> CoreResult<Vec<CanvasImageInput>> {
+        urls.iter()
+            .map(|url| {
+                let resolved = self
+                    .artifact_store("send a reference image")?
+                    .resolve_for_provider(url)?
+                    .ok_or_else(|| {
+                        deepagent_core::error::CoreError::invalid(format!(
+                            "UnsupportedOperation: image reference `{url}` is not an artifact, data URL or http URL"
+                        ))
+                    })?;
+                Ok(CanvasImageInput {
+                    data_url: resolved,
+                })
+            })
+            .collect()
     }
 
     /// Run a request against an explicit provider/model pair.
@@ -1195,7 +1243,7 @@ async fn parse_output(
                         )
                     })?;
                 return Ok(CanvasModelOutput::Image {
-                    mime: "image/png".to_string(),
+                    mime: sniff_image_mime(&bytes).unwrap_or_else(|| "image/png".to_string()),
                     bytes,
                     provider_id,
                     model_id,
@@ -1213,7 +1261,7 @@ async fn parse_output(
                 })?;
             let bytes = fetch_binary(url, None).await?;
             Ok(CanvasModelOutput::Image {
-                mime: mime_from_url(url),
+                mime: sniff_image_mime(&bytes).unwrap_or_else(|| mime_from_url(url)),
                 bytes,
                 provider_id,
                 model_id,
@@ -1272,6 +1320,22 @@ async fn fetch_binary(url: &str, api_key: Option<&str>) -> CanvasResult<Vec<u8>>
             format!("read provider artifact bytes: {e}"),
         )
     })
+}
+
+/// Detect an image type from its magic bytes.
+///
+/// Providers label payloads inconsistently, and the type reported here becomes
+/// the stored artifact's extension plus the `data:` prefix sent back to other
+/// providers, so the bytes win over any declared name.
+fn sniff_image_mime(bytes: &[u8]) -> Option<String> {
+    let mime = match bytes {
+        [0x89, b'P', b'N', b'G', ..] => "image/png",
+        [0xff, 0xd8, 0xff, ..] => "image/jpeg",
+        [b'G', b'I', b'F', b'8', ..] => "image/gif",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
+        _ => return None,
+    };
+    Some(mime.to_string())
 }
 
 fn mime_from_url(url: &str) -> String {
@@ -1463,13 +1527,7 @@ impl CanvasModelBridge for CanvasModelGateway {
             operation: CanvasOperation::TextGenerate,
             prompt: request.prompt.clone(),
             system_prompt,
-            images: request
-                .images
-                .iter()
-                .map(|url| CanvasImageInput {
-                    data_url: url.clone(),
-                })
-                .collect(),
+            images: self.resolve_image_inputs(&request.images)?,
             texts: Vec::new(),
             size: None,
             timeout_ms: 120_000,
@@ -1524,13 +1582,7 @@ impl CanvasModelBridge for CanvasModelGateway {
             operation,
             prompt: request.prompt.clone(),
             system_prompt: None,
-            images: request
-                .reference_images
-                .iter()
-                .map(|url| CanvasImageInput {
-                    data_url: url.clone(),
-                })
-                .collect(),
+            images: self.resolve_image_inputs(&request.reference_images)?,
             texts: Vec::new(),
             size: request.size.clone(),
             timeout_ms: 300_000,
@@ -1551,20 +1603,27 @@ impl CanvasModelBridge for CanvasModelGateway {
                 bytes,
                 provider_id,
                 model_id,
-            } => Ok(CanvasImageResponse {
-                data_url: format!(
-                    "data:{mime};base64,{}",
-                    base64::engine::general_purpose::STANDARD.encode(&bytes)
-                ),
-                mime,
-                provider_id,
-                model_id: model_id.clone(),
-                operation: if operation == CanvasOperation::ImageEdit {
-                    "edit".to_string()
-                } else {
-                    "generate".to_string()
-                },
-            }),
+            } => {
+                let stored = self
+                    .artifact_store("store a generated image")?
+                    .import_bytes(
+                        deepagent_persistence::artifact_store::ArtifactKind::Image,
+                        Some(&mime),
+                        &bytes,
+                        None,
+                    )?;
+                Ok(CanvasImageResponse {
+                    artifact_uri: stored.uri,
+                    mime,
+                    provider_id,
+                    model_id: model_id.clone(),
+                    operation: if operation == CanvasOperation::ImageEdit {
+                        "edit".to_string()
+                    } else {
+                        "generate".to_string()
+                    },
+                })
+            }
             other => Err(deepagent_core::error::CoreError::other(format!(
                 "image node received a non-image model output: {other:?}"
             ))),
@@ -2116,9 +2175,14 @@ mod tests {
         // without depending on a live vendor.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
+        // Bytes a provider would hand back; the PNG magic is what the gateway
+        // must trust over any declared type.
+        let provider_png =
+            base64::engine::general_purpose::STANDARD.encode([0x89u8, b'P', b'N', b'G', 0, 1]);
         let received: Arc<std::sync::Mutex<Vec<(String, String, String)>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = received.clone();
+        let image_payload = provider_png.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
@@ -2141,8 +2205,10 @@ mod tests {
                 let head = text[..head_end].to_lowercase();
                 let request_line = text.lines().next().unwrap_or_default().to_string();
                 let body = text[head_end + 4..].to_string();
-                let payload = if head.contains("/embeddings") {
+                let payload = if request_line.contains("/embeddings") {
                     "{\"data\":[{\"embedding\":[0.1,0.2,0.3]}]}".to_string()
+                } else if request_line.contains("/images/generations") {
+                    format!("{{\"data\":[{{\"b64_json\":\"{image_payload}\"}}]}}")
                 } else {
                     "{\"choices\":[{\"message\":{\"content\":\"pong\"}}]}".to_string()
                 };
@@ -2157,6 +2223,14 @@ mod tests {
         });
 
         let db = Arc::new(Database::open_in_memory().expect("db"));
+        let artifact_root = std::env::temp_dir().join(format!(
+            "deepagent-gateway-artifacts-{}",
+            std::process::id()
+        ));
+        let artifacts = Arc::new(
+            crate::canvas_artifact_service::CanvasArtifactService::new(&artifact_root, db.clone())
+                .expect("artifact service"),
+        );
         let providers = Arc::new(CanvasProviderService::new(
             db,
             Arc::new(crate::secret_store::MemorySecretStore::default()),
@@ -2177,6 +2251,14 @@ mod tests {
                         priority: 0,
                     },
                     CanvasModelConfig {
+                        id: "gpt-image-2".to_string(),
+                        name: "gpt-image-2".to_string(),
+                        description: String::new(),
+                        enabled: true,
+                        scenarios: vec![CanvasScenario::ImageGeneration],
+                        priority: 0,
+                    },
+                    CanvasModelConfig {
                         id: "Qwen/Qwen3-VL-Embedding-8B".to_string(),
                         name: "qwen-embed".to_string(),
                         description: String::new(),
@@ -2190,7 +2272,7 @@ mod tests {
             })
             .expect("provider");
 
-        let gateway = CanvasModelGateway::new(providers.clone());
+        let gateway = CanvasModelGateway::new(providers.clone()).with_artifacts(artifacts.clone());
         let out = rt
             .block_on(gateway.execute_on(
                 &created.id,
@@ -2225,8 +2307,48 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
 
+        // The bridge must persist generated bytes and hand the node a reference.
+        let image = rt
+            .block_on(gateway.generate_image(
+                deepagent_runtime::workflow::canvas::CanvasImageRequest {
+                    model_ref: format!("{}::gpt-image-2", created.id),
+                    prompt: "画一只戴帽子的橘猫".to_string(),
+                    reference_images: Vec::new(),
+                    size: Some("1024x1024".to_string()),
+                    operation: "image_generate".to_string(),
+                },
+            ))
+            .expect("image call");
+        assert_eq!(image.mime, "image/png");
+        assert_eq!(image.operation, "generate");
+        assert!(
+            image.artifact_uri.starts_with("artifact://"),
+            "node saw {:?}",
+            image.artifact_uri
+        );
+        let artifact_id = image
+            .artifact_uri
+            .trim_start_matches("artifact://")
+            .to_string();
+        assert_eq!(
+            artifacts
+                .read_bytes(&artifact_id)
+                .expect("read")
+                .expect("stored")
+                .as_slice(),
+            &[0x89, b'P', b'N', b'G', 0, 1]
+        );
+        let reused = artifacts
+            .resolve_for_provider(&image.artifact_uri)
+            .expect("resolve")
+            .expect("provider-ready reference");
+        assert!(
+            reused.starts_with("data:image/png;base64,"),
+            "resolved reference was {reused}"
+        );
+
         let captured = received.lock().expect("lock").clone();
-        assert_eq!(captured.len(), 2, "both calls must reach the endpoint");
+        assert_eq!(captured.len(), 3, "all three calls must reach the endpoint");
         let (chat_line, chat_head, chat_body) = &captured[0];
         assert!(
             chat_line.contains("POST /v1/chat/completions"),
@@ -2246,6 +2368,14 @@ mod tests {
         );
         assert!(embed_body.contains("Qwen/Qwen3-VL-Embedding-8B"));
         assert!(providers.provider_api_key(&created.id).unwrap().as_deref() == Some("sk-local"));
+        let (image_line, _, image_body) = &captured[2];
+        assert!(
+            image_line.contains("POST /v1/images/generations"),
+            "image line was {image_line}"
+        );
+        assert!(image_body.contains("gpt-image-2"));
+        assert!(image_body.contains("1024x1024"));
+        let _ = std::fs::remove_dir_all(&artifact_root);
     }
 
     /// True once the headers plus the declared body length have been received.

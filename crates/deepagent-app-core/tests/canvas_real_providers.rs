@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use deepagent_app_core::canvas_artifact_service::CanvasArtifactService;
 use deepagent_app_core::canvas_model_gateway::{
     CanvasModelGateway, CanvasModelRequest, CanvasOperation,
 };
@@ -43,6 +44,18 @@ fn gateway() -> Arc<CanvasProviderService> {
         db,
         Arc::new(MemorySecretStore::default()),
     ))
+}
+
+/// Temp-backed artifact store; the caller removes the directory.
+fn artifact_store() -> (std::path::PathBuf, Arc<CanvasArtifactService>) {
+    let root =
+        std::env::temp_dir().join(format!("deepagent-canvas-artifacts-{}", std::process::id()));
+    let service = CanvasArtifactService::new(
+        &root,
+        Arc::new(Database::open_in_memory().expect("in-memory db")),
+    )
+    .expect("artifact service");
+    (root, Arc::new(service))
 }
 
 fn model(id: &str, scenarios: Vec<CanvasScenario>) -> CanvasModelConfig {
@@ -304,7 +317,8 @@ async fn creative_text_then_image_graph_runs_on_real_providers() {
         &image_key,
         vec![model(&image_model, vec![CanvasScenario::ImageGeneration])],
     );
-    let gateway = Arc::new(CanvasModelGateway::new(providers));
+    let (artifact_root, artifacts) = artifact_store();
+    let gateway = Arc::new(CanvasModelGateway::new(providers).with_artifacts(artifacts.clone()));
 
     let node = |id: &str, kind: &str, config: Value| WorkflowNodeSpec {
         id: id.to_string(),
@@ -365,25 +379,55 @@ async fn creative_text_then_image_graph_runs_on_real_providers() {
     }
 
     // Evidence lives on the node events: both creative nodes must report a
-    // completed status, the text node an answer and the image node inline bytes.
+    // completed status, the text node an answer and the image node an artifact
+    // reference — never inline bytes.
     let events = sink.events.lock().expect("sink lock").join("\n");
     assert!(
         events.contains("\"node_id\":\"script-1\"") && events.contains("\"node_id\":\"image-1\""),
         "missing node events, got: {events}"
     );
     assert!(
-        events.contains("data:image"),
-        "image node produced no inline image, got: {events}"
-    );
-    assert!(
         events.contains("\"status\":\"completed\""),
         "no completed node event, got: {events}"
     );
     assert!(
-        events.len() > 4096,
-        "image payload suspiciously small: {} bytes of events",
-        events.len()
+        events.contains("artifact://"),
+        "image node reported no artifact reference, got: {events}"
     );
+    assert!(
+        !events.contains("data:image") && !events.contains("base64"),
+        "an event carried inline bytes: {events}"
+    );
+    let stored = std::fs::read_dir(&artifact_root)
+        .expect("artifact dir")
+        .filter_map(|entry| entry.ok())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stored.len(),
+        1,
+        "expected one artifact file, got {stored:?}"
+    );
+    let bytes = std::fs::read(stored[0].path()).expect("read artifact");
+    assert!(
+        bytes.len() > 1024,
+        "artifact file too small: {} bytes",
+        bytes.len()
+    );
+    assert!(
+        artifacts
+            .record(
+                stored[0]
+                    .file_name()
+                    .to_string_lossy()
+                    .split('.')
+                    .next()
+                    .unwrap_or_default()
+            )
+            .expect("record")
+            .is_some(),
+        "artifact file has no index row"
+    );
+    let _ = std::fs::remove_dir_all(&artifact_root);
 }
 
 #[tokio::test]

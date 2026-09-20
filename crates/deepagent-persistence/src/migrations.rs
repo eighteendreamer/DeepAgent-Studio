@@ -316,6 +316,30 @@ const MIGRATIONS: &[&str] = &[
         updated_at INTEGER NOT NULL
     );
     "#,
+    // V17: `tool_artifacts` only ever described run-scoped tool output, so
+    // canvas media (which has no owning run) could not be indexed. Generalize
+    // it to one `artifacts` table instead of adding a second media index:
+    // run/call ownership become optional and workspace + kind become explicit.
+    r#"
+    CREATE TABLE artifacts (
+        id           TEXT PRIMARY KEY NOT NULL,
+        kind         TEXT NOT NULL,
+        run_id       TEXT REFERENCES runs(id) ON DELETE CASCADE,
+        call_id      TEXT,
+        workspace_id TEXT,
+        path         TEXT NOT NULL,
+        media_type   TEXT,
+        byte_size    INTEGER NOT NULL,
+        digest       TEXT,
+        created_at   INTEGER NOT NULL
+    );
+    INSERT INTO artifacts (id, kind, run_id, call_id, workspace_id, path, media_type, byte_size, digest, created_at)
+        SELECT id, 'tool_result', run_id, call_id, NULL, path, media_type, byte_size, digest, created_at
+        FROM tool_artifacts;
+    DROP TABLE tool_artifacts;
+    CREATE INDEX idx_artifacts_run ON artifacts(run_id, call_id);
+    CREATE INDEX idx_artifacts_workspace ON artifacts(workspace_id, kind, created_at);
+    "#,
 ];
 
 /// The highest schema version defined by this build.
@@ -398,7 +422,7 @@ mod tests {
             "runs",
             "run_events",
             "checkpoints",
-            "tool_artifacts",
+            "artifacts",
             "subagent_runs",
             "run_actions",
             "run_approvals",
@@ -415,5 +439,45 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "table {table} should exist");
         }
+    }
+
+    /// Upgrading an installed database must keep its tool-output index rather
+    /// than stranding it in the dropped table.
+    #[test]
+    fn v17_moves_existing_tool_artifact_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        for script in &MIGRATIONS[..16] {
+            conn.execute_batch(script).unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version = 16;").unwrap();
+        // No owning run row exists in this fixture, so the foreign key is
+        // checked only by the real application path.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO tool_artifacts (id, run_id, call_id, path, media_type, byte_size, digest, created_at) \
+             VALUES ('a1', 'r1', 'c1', '/tmp/r1.txt', NULL, 10, NULL, 5)",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(MIGRATIONS[16]).unwrap();
+
+        let (kind, run_id, path): (String, String, String) = conn
+            .query_row(
+                "SELECT kind, run_id, path FROM artifacts WHERE id='a1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "tool_result");
+        assert_eq!(run_id, "r1");
+        assert_eq!(path, "/tmp/r1.txt");
+        let legacy: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='tool_artifacts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy, 0);
     }
 }
