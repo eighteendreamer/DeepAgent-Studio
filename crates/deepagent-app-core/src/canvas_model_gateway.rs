@@ -344,10 +344,15 @@ impl DeterministicRouteResolver {
             .collect();
 
         match viable.as_slice() {
-            [single] => Ok(RouteDecision {
-                operation: *single,
-                reason: "artifact_facts",
-            }),
+            [single] => {
+                // Same validator as the explicit path: an input rule must not be
+                // bypassable by leaving the operation on auto.
+                validate_operation_inputs(*single, facts)?;
+                Ok(RouteDecision {
+                    operation: *single,
+                    reason: "artifact_facts",
+                })
+            }
             [] => Err(CanvasError::new(
                 CanvasErrorCode::RouteAmbiguous,
                 format!(
@@ -377,6 +382,25 @@ fn has_image(facts: &RouteFacts) -> bool {
 
 fn has_video(facts: &RouteFacts) -> bool {
     facts.input_kinds.contains(&CanvasInputKind::Video)
+}
+
+/// Which media type an operation works on, when it works on media at all.
+fn expected_media_kind(operation: CanvasOperation) -> Option<CanvasInputKind> {
+    match operation {
+        CanvasOperation::ImageGenerate
+        | CanvasOperation::ImageEdit
+        | CanvasOperation::ImageRemoveBackground
+        | CanvasOperation::ImageUpscale
+        | CanvasOperation::ImageRepaint
+        | CanvasOperation::ImageCrop
+        | CanvasOperation::ImageCompare
+        | CanvasOperation::VisionDescribe => Some(CanvasInputKind::Image),
+        CanvasOperation::VideoGenerate
+        | CanvasOperation::VideoEdit
+        | CanvasOperation::VideoExtend
+        | CanvasOperation::VideoCompose => Some(CanvasInputKind::Video),
+        _ => None,
+    }
 }
 
 fn operation_matches_inputs(operation: CanvasOperation, facts: &RouteFacts) -> bool {
@@ -416,6 +440,18 @@ fn validate_operation_inputs(operation: CanvasOperation, facts: &RouteFacts) -> 
         return Err(CanvasError::new(
             CanvasErrorCode::OperationInputConflict,
             "image_generate conflicts with image input; use image_edit".to_string(),
+        ));
+    }
+    // A media node may not be fed both media types. An image alone is still a
+    // valid video input (the first frame); image + video together is a mistake.
+    let is_media_operation = expected_media_kind(operation).is_some();
+    if is_media_operation && has_image(facts) && has_video(facts) {
+        return Err(CanvasError::new(
+            CanvasErrorCode::OperationInputConflict,
+            format!(
+                "operation `{}` cannot mix image and video inputs",
+                operation.as_str()
+            ),
         ));
     }
     if matches!(
@@ -2560,6 +2596,51 @@ mod tests {
         ))
         .expect_err("no image means no route");
         assert_eq!(err.code, CanvasErrorCode::RouteAmbiguous);
+    }
+
+    #[test]
+    fn text_plus_image_still_routes_to_video_generation() {
+        // 方案第十九节：文本 + 图片 → VideoGenerate（首帧图生视频是合法输入）。
+        let resolved = DeterministicRouteResolver::resolve(&facts(
+            "video-gen",
+            &[CanvasOperation::VideoGenerate],
+            None,
+            &[CanvasInputKind::Text, CanvasInputKind::Image],
+            true,
+        ))
+        .expect("first frame is a video input");
+        assert_eq!(resolved.operation, CanvasOperation::VideoGenerate);
+    }
+
+    #[test]
+    fn mixed_image_and_video_input_is_a_type_conflict() {
+        let err = DeterministicRouteResolver::resolve(&facts(
+            "image-edit",
+            &[CanvasOperation::ImageEdit],
+            Some(CanvasOperation::ImageEdit),
+            &[CanvasInputKind::Image, CanvasInputKind::Video],
+            true,
+        ))
+        .expect_err("media types cannot mix");
+        assert_eq!(err.code, CanvasErrorCode::OperationInputConflict);
+        assert!(
+            err.message.contains("cannot mix image and video"),
+            "reported {err}"
+        );
+    }
+
+    #[test]
+    fn auto_routing_cannot_bypass_the_media_conflict() {
+        // 自动路由挑出 image_edit 后仍要过同一套输入校验。
+        let err = DeterministicRouteResolver::resolve(&facts(
+            "image-gen",
+            &[CanvasOperation::ImageGenerate, CanvasOperation::ImageEdit],
+            None,
+            &[CanvasInputKind::Image, CanvasInputKind::Video],
+            true,
+        ))
+        .expect_err("auto must not smuggle a mixed input through");
+        assert_eq!(err.code, CanvasErrorCode::OperationInputConflict);
     }
 
     #[test]
