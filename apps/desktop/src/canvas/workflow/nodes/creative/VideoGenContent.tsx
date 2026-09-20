@@ -1,4 +1,5 @@
 import type { CreativeNodeData } from "../../types";
+import { useCanvasMediaSrc } from "../../utils/canvasMedia";
 
 interface Props {
   data: CreativeNodeData;
@@ -6,6 +7,7 @@ interface Props {
 
 export function VideoGenContent({ data }: Props) {
   const model = data.videoModel?.trim();
+  const videoSrc = useCanvasMediaSrc(data.videoUrl);
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1.5">
@@ -29,8 +31,8 @@ export function VideoGenContent({ data }: Props) {
           overflow: "hidden",
         }}
       >
-        {data.videoUrl ? (
-          <video src={data.videoUrl} className="h-full w-full object-cover rounded-lg" muted />
+        {videoSrc ? (
+          <video src={videoSrc} className="h-full w-full object-cover rounded-lg" muted />
         ) : (
           <span className="text-xs" style={{ color: "rgba(248,248,248,0.25)" }}>
             输入提示词生成视频

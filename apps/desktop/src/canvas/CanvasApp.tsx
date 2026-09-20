@@ -19,6 +19,7 @@ import { BottomBar as WorkflowBottomBar } from "./workflow/components/BottomBar"
 import { MiniMap } from "./workflow/components/MiniMap";
 import { NodePicker } from "./workflow/components/NodePicker";
 import { CanvasSettingsDialog } from "./workflow/components/CanvasSettingsDialog";
+import { importCanvasMedia } from "./workflow/utils/canvasMedia";
 import { CropOverlay } from "./workflow/components/CropOverlay";
 import { DrawingOverlay } from "./workflow/components/DrawingOverlay";
 import { OutpaintOverlay } from "./workflow/components/OutpaintOverlay";
@@ -129,7 +130,10 @@ function WorkflowCanvasInner() {
   }, [flowStore, isDesktop]);
 
   const handleMediaFiles = useCallback(
-    async (files: Array<{ name: string; url: string; kind: "image" | "video" }>, dropPoint?: { x: number; y: number }) => {
+    async (
+      files: Array<{ name: string; url: string; kind: "image" | "video"; localPath?: string }>,
+      dropPoint?: { x: number; y: number },
+    ) => {
       if (files.length === 0 || !rfInstance) return;
 
       const rect = containerRef.current?.getBoundingClientRect();
@@ -151,7 +155,21 @@ function WorkflowCanvasInner() {
         const col = i % cols;
         const f = files[i];
         const nodeKind = f.kind === "video" ? "video-gen" : "image-gen";
-        const data = f.kind === "video" ? { label: f.name.replace(/\.[^.]+$/, ""), videoUrl: f.url } : { label: f.name.replace(/\.[^.]+$/, ""), imageUrl: f.url };
+        // 落盘统一走制品库：本地文件按路径导入，剪贴板图片按 data URL 导入，
+        // 节点上只保留 artifact 引用。
+        let reference: string;
+        try {
+          reference = await importCanvasMedia(f.kind, {
+            localPath: f.localPath,
+            dataUrl: f.localPath ? undefined : f.url,
+            fileName: f.name,
+          });
+        } catch (error) {
+          console.error(`[canvas] ${f.name} 入库失败，已跳过:`, error);
+          continue;
+        }
+        const label = f.name.replace(/\.[^.]+$/, "");
+        const data = f.kind === "video" ? { label, videoUrl: reference } : { label, imageUrl: reference };
         useCreativeStore.getState().addNodeAt(nodeKind as any, baseX + startOffsetX + col * spacing, baseY + row * spacing, data);
       }
     },
@@ -201,7 +219,6 @@ function WorkflowCanvasInner() {
 
     const setup = async () => {
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-      const { convertFileSrc } = await import("@tauri-apps/api/core");
       if (disposed) return;
 
       unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
@@ -220,15 +237,15 @@ function WorkflowCanvasInner() {
 
           const imageExts = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"]);
           const videoExts = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".m4v"]);
-          const entries: Array<{ name: string; url: string; kind: "image" | "video" }> = [];
+          const entries: Array<{ name: string; url: string; kind: "image" | "video"; localPath?: string }> = [];
           for (const p of paths) {
             const ext = p.slice(p.lastIndexOf(".")).toLowerCase();
             const sepIdx = p.replace(/\\/g, "/").lastIndexOf("/");
             const name = p.slice(sepIdx + 1);
             if (imageExts.has(ext)) {
-              entries.push({ name, url: convertFileSrc(p), kind: "image" });
+              entries.push({ name, url: p, localPath: p, kind: "image" });
             } else if (videoExts.has(ext)) {
-              entries.push({ name, url: convertFileSrc(p), kind: "video" });
+              entries.push({ name, url: p, localPath: p, kind: "video" });
             }
           }
           if (entries.length > 0) {
@@ -635,8 +652,12 @@ function WorkflowCanvasInner() {
           itemName={cropTarget.name}
           initialRatio={cropTarget.ratio}
           onConfirm={(dataUrl) => {
-            useCreativeStore.getState().updateNodeData(cropTarget.nodeId, { imageUrl: dataUrl });
-            setCropTarget(null);
+            void importCanvasMedia("image", { dataUrl, fileName: `${cropTarget.name}-cropped.png` })
+              .then((reference) => {
+                useCreativeStore.getState().updateNodeData(cropTarget.nodeId, { imageUrl: reference });
+                setCropTarget(null);
+              })
+              .catch((error) => console.error("[canvas] 裁剪结果入库失败:", error));
           }}
           onCancel={() => setCropTarget(null)}
         />
@@ -647,8 +668,12 @@ function WorkflowCanvasInner() {
           itemName={drawingTarget.name}
           mode={drawingTarget.mode}
           onConfirm={(dataUrl) => {
-            useCreativeStore.getState().updateNodeData(drawingTarget.nodeId, { imageUrl: dataUrl });
-            setDrawingTarget(null);
+            void importCanvasMedia("image", { dataUrl, fileName: `${drawingTarget.name}-${drawingTarget.mode}.png` })
+              .then((reference) => {
+                useCreativeStore.getState().updateNodeData(drawingTarget.nodeId, { imageUrl: reference });
+                setDrawingTarget(null);
+              })
+              .catch((error) => console.error("[canvas] 标注结果入库失败:", error));
           }}
           onCancel={() => setDrawingTarget(null)}
         />

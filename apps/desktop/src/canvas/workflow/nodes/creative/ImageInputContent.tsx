@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { ImagePlus, RefreshCw, Upload } from "lucide-react";
 import type { CreativeNodeData } from "../../types";
 import { useCreativeStore } from "../../store/creativeStore";
+import { importCanvasMedia, useCanvasMediaSrc } from "../../utils/canvasMedia";
 
 interface Props {
   id: string;
@@ -24,6 +25,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
 export function ImageInputContent({ id, data }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const imageUrl = data.imageUrl ?? "";
+  const src = useCanvasMediaSrc(imageUrl);
   const sourceFileName = typeof data.sourceFileName === "string" ? data.sourceFileName : "";
 
   return (
@@ -37,7 +39,10 @@ export function ImageInputContent({ id, data }: Props) {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = "";
           if (!file) return;
-          const url = await readFileAsDataUrl(file);
+          const url = await importCanvasMedia("image", {
+            dataUrl: await readFileAsDataUrl(file),
+            fileName: file.name,
+          });
           useCreativeStore.getState().updateNodeData(id, {
             imageUrl: url,
             mediaUrl: url,
@@ -48,10 +53,10 @@ export function ImageInputContent({ id, data }: Props) {
         }}
       />
 
-      {imageUrl ? (
+      {src ? (
         <div className="relative overflow-hidden rounded-lg" style={{ height: 124, background: "rgba(255,255,255,0.035)" }}>
           <img
-            src={imageUrl}
+            src={src}
             alt={sourceFileName || "输入图片"}
             draggable={false}
             onDragStart={(event) => event.preventDefault()}

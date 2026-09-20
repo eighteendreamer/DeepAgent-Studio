@@ -15,6 +15,7 @@ import type { CreativeNodeData } from "../types";
 import { useCreativeStore } from "../store/creativeStore";
 import { runWorkflow } from "../utils/workflowExecutor";
 import { useScenarioModelOptions } from "../store/canvasSettingsStore";
+import { useCanvasMediaSrc } from "../utils/canvasMedia";
 
 interface Props {
   nodeId: string;
@@ -40,6 +41,7 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
     const source = edge ? state.nodes.find((node) => node.id === edge.source)?.data.imageUrl : undefined;
     return typeof source === "string" ? source : "";
   });
+  const upstreamSrc = useCanvasMediaSrc(upstreamImage);
   const placeholder = useMemo(
     () => (isImageToPrompt ? "描述要从图片中反推出的提示词，也可以手动补充..." : "描述你想要生成的内容，并在下方调整生成参数..."),
     [isImageToPrompt],
@@ -75,9 +77,9 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
     >
       {isImageToPrompt && (
         <div className="flex items-center gap-2 px-4 pb-0 pt-3">
-          {upstreamImage ? (
+          {upstreamSrc ? (
             <img
-              src={upstreamImage}
+              src={upstreamSrc}
               alt="上游图片"
               draggable={false}
               onDragStart={(event) => event.preventDefault()}

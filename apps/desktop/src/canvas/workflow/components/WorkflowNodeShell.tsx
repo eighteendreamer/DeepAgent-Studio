@@ -57,6 +57,7 @@ import {
   DatasourceContent,
   KnowledgeIndexContent,
 } from "../nodes/professional/ProfessionalNodes";
+import { loadCanvasMediaPixels } from "../utils/canvasMedia";
 
 const STATUS_BORDER: Record<NodeStatus, string> = {
   idle: "1px solid rgba(255,255,255,0.1)",
@@ -339,14 +340,18 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
     if (kind === "image-gen" || kind === "image-edit" || kind === "image-compare") {
       const url = creativeData.imageUrl;
       if (!url) return;
-      void triggerFileDownload(url, `${nodeLabel}-${Date.now()}.png`);
+      void loadCanvasMediaPixels(url)
+        .then((source) => triggerFileDownload(source, `${nodeLabel}-${Date.now()}.png`))
+        .catch((error) => console.error("[canvas] 图片下载失败:", error));
       return;
     }
 
     if (kind === "video-gen" || kind === "video-stitch") {
       const url = creativeData.videoUrl;
       if (!url) return;
-      void triggerFileDownload(url, `${nodeLabel}-${Date.now()}.mp4`);
+      void loadCanvasMediaPixels(url)
+        .then((source) => triggerFileDownload(source, `${nodeLabel}-${Date.now()}.mp4`))
+        .catch((error) => console.error("[canvas] 视频下载失败:", error));
       return;
     }
 

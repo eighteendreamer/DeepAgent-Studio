@@ -1,4 +1,5 @@
 import type { CreativeNodeData } from "../../types";
+import { useCanvasMediaSrc } from "../../utils/canvasMedia";
 
 interface Props {
   data: CreativeNodeData;
@@ -13,6 +14,7 @@ const EDIT_MODES: Record<string, { label: string; color: string }> = {
 
 export function ImageEditContent({ data }: Props) {
   const mode = data.editMode ?? "crop";
+  const src = useCanvasMediaSrc(data.imageUrl);
   const modeInfo = EDIT_MODES[mode] ?? EDIT_MODES.crop;
   return (
     <div className="flex flex-col gap-1.5">
@@ -28,8 +30,8 @@ export function ImageEditContent({ data }: Props) {
           overflow: "hidden",
         }}
       >
-        {data.imageUrl ? (
-          <img src={data.imageUrl} alt="" className="h-full w-full object-cover rounded-lg" />
+        {src ? (
+          <img src={src} alt="" className="h-full w-full object-cover rounded-lg" />
         ) : (
           <span className="text-xs" style={{ color: "rgba(248,248,248,0.25)" }}>
             选择图片进行编辑

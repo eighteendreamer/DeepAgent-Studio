@@ -1,4 +1,5 @@
 import { useCreativeStore } from "../../store/creativeStore";
+import { useCanvasMediaSrc } from "../../utils/canvasMedia";
 import { Sparkles } from "lucide-react";
 import type { CreativeNodeData } from "../../types";
 
@@ -15,13 +16,14 @@ export function TextGenContent({ id, data }: Props) {
     const source = edge ? state.nodes.find((node) => node.id === edge.source)?.data.imageUrl : undefined;
     return typeof source === "string" ? source : "";
   });
+  const upstreamSrc = useCanvasMediaSrc(upstreamImage);
   return (
     <div className="flex flex-col gap-1.5">
       {isImageToPrompt && (
         <div className="flex items-center gap-2 rounded-lg bg-white/[0.025] px-2 py-1.5">
-          {upstreamImage ? (
+          {upstreamSrc ? (
             <img
-              src={upstreamImage}
+              src={upstreamSrc}
               alt="待反推图片"
               draggable={false}
               onDragStart={(event) => event.preventDefault()}

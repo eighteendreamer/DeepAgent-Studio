@@ -1,4 +1,5 @@
 import type { CreativeNodeData } from "../../types";
+import { useCanvasMediaSrc } from "../../utils/canvasMedia";
 
 interface Props {
   data: CreativeNodeData;
@@ -6,6 +7,7 @@ interface Props {
 
 export function ImageGenContent({ data }: Props) {
   const model = data.imageModel?.trim();
+  const src = useCanvasMediaSrc(data.imageUrl);
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -30,8 +32,8 @@ export function ImageGenContent({ data }: Props) {
           overflow: "hidden",
         }}
       >
-        {data.imageUrl ? (
-          <img src={data.imageUrl} alt="" className="h-full w-full object-cover rounded-lg" />
+        {src ? (
+          <img src={src} alt="" className="h-full w-full object-cover rounded-lg" />
         ) : (
           <span className="text-xs" style={{ color: "rgba(248,248,248,0.25)" }}>
             输入提示词生成图片

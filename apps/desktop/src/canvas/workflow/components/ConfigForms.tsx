@@ -15,6 +15,7 @@ import { useCanvasSettingsStore, useScenarioModelOptions } from "../store/canvas
 import { runWorkflow } from "../utils/workflowExecutor";
 
 const TEXT_COLOR = "rgba(255,255,255,0.88)";
+import { importCanvasMedia } from "../utils/canvasMedia";
 
 function autoGrow(e: React.FormEvent<HTMLTextAreaElement>, max = 100) {
   const t = e.currentTarget;
@@ -350,13 +351,20 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
       e.target.value = "";
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      if (typeof ev.target?.result === "string") {
-        onUpdate({ imageInputUrls: [...inputUrls, ev.target.result] });
+    void (async () => {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result ?? ""));
+        reader.onerror = () => reject(reader.error ?? new Error("读取图片失败"));
+        reader.readAsDataURL(file);
+      });
+      try {
+        const reference = await importCanvasMedia("image", { dataUrl, fileName: file.name });
+        onUpdate({ imageInputUrls: [...inputUrls, reference] });
+      } catch (error) {
+        console.error("[canvas] 参考图入库失败:", error);
       }
-    };
-    reader.readAsDataURL(file);
+    })();
     e.target.value = "";
   };
 

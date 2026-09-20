@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, Crop, X } from "lucide-react";
 import { Input } from "../../../components/shadcn/input";
 import { cropImageToRect } from "../utils/gridCrop";
+import { loadCanvasMediaPixels } from "../utils/canvasMedia";
 
 interface Props {
   imageUrl: string;
@@ -46,6 +47,19 @@ function clamp(v: number, min: number, max: number) {
 }
 
 export function CropOverlay({ imageUrl, itemName, initialRatio, onConfirm, onCancel }: Props) {
+  const [source, setSource] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    void loadCanvasMediaPixels(imageUrl)
+      .then((pixels) => {
+        if (active) setSource(pixels);
+      })
+      .catch((error) => console.error("[canvas] 读取裁剪源图失败:", error));
+    return () => {
+      active = false;
+    };
+  }, [imageUrl]);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const [imgRect, setImgRect] = useState<Rect | null>(null);
@@ -224,7 +238,7 @@ export function CropOverlay({ imageUrl, itemName, initialRatio, onConfirm, onCan
       const sy = (crop.y - imgRect.y) * scaleY;
       const sw = crop.w * scaleX;
       const sh = crop.h * scaleY;
-      const dataUrl = await cropImageToRect(imageUrl, sx, sy, sw, sh);
+      const dataUrl = await cropImageToRect(source || imageUrl, sx, sy, sw, sh);
       onConfirm(dataUrl);
     } finally {
       setConfirming(false);
@@ -271,7 +285,7 @@ export function CropOverlay({ imageUrl, itemName, initialRatio, onConfirm, onCan
       <div ref={workspaceRef} className="relative flex-1 overflow-hidden">
         <img
           ref={imgRef}
-          src={imageUrl}
+          src={source || imageUrl}
           className="absolute"
           style={{
             left: ready ? imgRect.x : "50%",

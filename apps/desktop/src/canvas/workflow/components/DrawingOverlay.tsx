@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { loadCanvasMediaPixels } from "../utils/canvasMedia";
 import {
   Check,
   X,
@@ -177,6 +178,19 @@ function drawText(
 }
 
 export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }: Props) {
+  const [source, setSource] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    void loadCanvasMediaPixels(imageUrl)
+      .then((pixels) => {
+        if (active) setSource(pixels);
+      })
+      .catch((error) => console.error("[canvas] 读取标注源图失败:", error));
+    return () => {
+      active = false;
+    };
+  }, [imageUrl]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const baseImageRef = useRef<HTMLImageElement | null>(null);
@@ -205,8 +219,9 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
       baseImageRef.current = img;
       setImgSize({ w: img.naturalWidth, h: img.naturalHeight });
     };
-    img.src = imageUrl;
-  }, [imageUrl]);
+    if (!source) return;
+    img.src = source;
+  }, [source]);
 
   // 2) renderCanvas 同步绘制（base image 来自 ref，不重复异步加载）
   const renderCanvas = useCallback(() => {
@@ -526,10 +541,10 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    const pixels = await loadCanvasMediaPixels(imageUrl);
     await new Promise<void>((resolve) => {
       img.onload = () => resolve();
-      img.src = imageUrl;
+      img.src = pixels;
     });
     ctx.drawImage(img, 0, 0);
     for (const obj of objects) drawObject(ctx, obj, 1, 0, 0, "export");
@@ -629,7 +644,7 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
         }}
       >
         <img
-          src={imageUrl}
+          src={source || imageUrl}
           alt={itemName}
           className="absolute inset-0 h-full w-full rounded-2xl object-contain"
           style={{ background: "rgba(0,0,0,0.4)" }}

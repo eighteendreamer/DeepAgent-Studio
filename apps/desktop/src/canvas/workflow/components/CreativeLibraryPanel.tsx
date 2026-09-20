@@ -6,6 +6,7 @@ import {
   Folder, Library,
 } from "lucide-react";
 import { CATEGORY_TREE, type CategoryNode } from "../utils/categoryTree";
+import { importCanvasMedia, isArtifactReference, useCanvasMediaSrc } from "../utils/canvasMedia";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -410,14 +411,7 @@ export function CreativeLibraryPanel({ onClose, onUse }: Props) {
                   {/* Thumbnail */}
                   <div className="relative" style={{ aspectRatio: "4/3", background: "rgba(255,255,255,0.02)" }}>
                     {item.imageUrl ? (
-                      <img
-                        src={item.imageUrl}
-                        alt={item.name}
-                        loading="lazy"
-                        decoding="async"
-                        className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
-                        style={{ pointerEvents: "none" }}
-                      />
+                      <MediaThumb reference={item.imageUrl} alt={item.name} />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center">
                         <ImageIcon className="h-8 w-8" style={{ color: "rgba(255,255,255,0.1)" }} />
@@ -513,9 +507,18 @@ function AddCreativeModal({ onClose, onSave }: { onClose: () => void; onSave: (i
     reader.readAsDataURL(file);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!name.trim()) return;
-    onSave({ name: name.trim(), category, prompt: prompt.trim() || undefined, imageUrl: imageUrl || undefined });
+    let reference = imageUrl;
+    if (imageUrl && !isArtifactReference(imageUrl)) {
+      try {
+        reference = await importCanvasMedia("image", { dataUrl: imageUrl, fileName: `${name.trim()}.png` });
+      } catch (error) {
+        console.error("[canvas] 创意库图片入库失败:", error);
+        return;
+      }
+    }
+    onSave({ name: name.trim(), category, prompt: prompt.trim() || undefined, imageUrl: reference || undefined });
   };
 
   return createPortal(
@@ -593,5 +596,20 @@ function AddCreativeModal({ onClose, onSave }: { onClose: () => void; onSave: (i
       </div>
     </div>,
     document.body,
+  );
+}
+
+function MediaThumb({ reference, alt }: { reference: string; alt: string }) {
+  const src = useCanvasMediaSrc(reference);
+  if (!src) return null;
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      decoding="async"
+      className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
+      style={{ pointerEvents: "none" }}
+    />
   );
 }
