@@ -7,43 +7,21 @@ import {
 } from "lucide-react";
 import { CATEGORY_TREE, type CategoryNode } from "../utils/categoryTree";
 import { importCanvasMedia, isArtifactReference, useCanvasMediaSrc } from "../utils/canvasMedia";
+import {
+  onCreativeLibraryChanged,
+  readCreativeLibrary,
+  writeCreativeLibrary,
+  type CreativeItem,
+} from "../utils/creativeLibrary";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-
-interface CreativeItem {
-  id: string;
-  name: string;
-  category: string;
-  prompt?: string;
-  imageUrl?: string;
-  isFavorite?: boolean;
-  createdAt: number | string;
-  order?: number;
-}
 
 type SortKey = "time" | "name" | "manual";
 type FilterTab = "all" | "favorite";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = "canvas-creative-library";
 const GRID_PAGE = 24;
-
-
-// ─── Storage ─────────────────────────────────────────────────────────────────
-
-function loadItems(): CreativeItem[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveItems(items: CreativeItem[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-}
 
 function normalizeTimestamp(t: number | string): number {
   if (typeof t === "number") return t;
@@ -58,7 +36,7 @@ interface Props {
 }
 
 export function CreativeLibraryPanel({ onClose, onUse }: Props) {
-  const [items, setItems] = useState<CreativeItem[]>(loadItems);
+  const [items, setItems] = useState<CreativeItem[]>(() => readCreativeLibrary() ?? []);
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("time");
   const [filterTab, setFilterTab] = useState<FilterTab>("all");
@@ -72,8 +50,25 @@ export function CreativeLibraryPanel({ onClose, onUse }: Props) {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Persist on change
-  useEffect(() => { saveItems(items); }, [items]);
+  // Persist on change：只在内容确实变化时回写，未载入的空初始值不会覆盖库。
+  const persistedRef = useRef<string>(JSON.stringify(items));
+  useEffect(() => {
+    const snapshot = JSON.stringify(items);
+    if (snapshot === persistedRef.current) return;
+    persistedRef.current = snapshot;
+    writeCreativeLibrary(items);
+  }, [items]);
+
+  // 其他入口（节点工具栏存素材、旧数据迁移完成）改动库时同步到面板。
+  useEffect(
+    () =>
+      onCreativeLibraryChanged(() => {
+        const next = readCreativeLibrary() ?? [];
+        persistedRef.current = JSON.stringify(next);
+        setItems(next);
+      }),
+    [],
+  );
 
   // Escape to close
   useEffect(() => {

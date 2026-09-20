@@ -382,6 +382,8 @@ struct AppState {
     canvas_workflows: Arc<deepagent_app_core::canvas_workflow_store::CanvasWorkflowStore>,
     /// Canvas media bytes plus their index; nodes reference them by artifact URI.
     canvas_artifacts: Arc<deepagent_app_core::canvas_artifact_service::CanvasArtifactService>,
+    /// Canvas preference documents (snippets, creative library, output dirs).
+    canvas_preferences: Arc<deepagent_app_core::canvas_preferences::CanvasPreferencesStore>,
     knowledge: Arc<KnowledgeService>,
     cost: Arc<CostService>,
     runtime_logs: Arc<RuntimeLogStore>,
@@ -2389,6 +2391,32 @@ fn canvas_artifact_data_url(
     state
         .canvas_artifacts
         .resolve_for_provider(&reference)
+        .map_err(|e| e.to_string())
+}
+
+/// Read one canvas preference document (creative library, snippet library or
+/// workspace output directories). `None` means never written yet.
+#[tauri::command]
+fn canvas_preference_read(
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<Option<serde_json::Value>, String> {
+    state
+        .canvas_preferences
+        .read(&key)
+        .map_err(|e| e.to_string())
+}
+
+/// Replace one canvas preference document.
+#[tauri::command]
+fn canvas_preference_write(
+    state: State<'_, AppState>,
+    key: String,
+    value: serde_json::Value,
+) -> Result<i64, String> {
+    state
+        .canvas_preferences
+        .write(&key, &value)
         .map_err(|e| e.to_string())
 }
 
@@ -6386,6 +6414,11 @@ pub fn run() {
                     service.shared_database(),
                 ),
             );
+            let canvas_preferences = Arc::new(
+                deepagent_app_core::canvas_preferences::CanvasPreferencesStore::new(
+                    service.shared_database(),
+                ),
+            );
 
             // Chat: streamed runs; MCP servers connect + live-register tools, each
             // run is rooted at the active project's folder, the knowledge base
@@ -6532,6 +6565,7 @@ pub fn run() {
                 canvas_gateway,
                 canvas_workflows,
                 canvas_artifacts,
+                canvas_preferences,
                 knowledge,
                 cost,
                 runtime_logs,
@@ -6670,6 +6704,8 @@ pub fn run() {
             canvas_artifact_import,
             canvas_artifact_url,
             canvas_artifact_data_url,
+            canvas_preference_read,
+            canvas_preference_write,
             resolve_approval,
             stop_chat,
             cancel_run,

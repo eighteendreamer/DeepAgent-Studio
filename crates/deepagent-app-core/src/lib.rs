@@ -17,6 +17,7 @@ pub mod attachment_service;
 pub mod canvas_artifact_service;
 pub mod canvas_model_gateway;
 pub mod canvas_node_contract;
+pub mod canvas_preferences;
 pub mod canvas_provider_service;
 pub mod canvas_workflow_store;
 pub mod chat_service;

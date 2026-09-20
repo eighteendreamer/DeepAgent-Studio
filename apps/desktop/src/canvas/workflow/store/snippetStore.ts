@@ -1,25 +1,27 @@
 import { create } from "zustand";
 import type { WorkflowEdge, WorkflowNode } from "../types";
 import {
+  hasCanvasPreference,
+  readCanvasPreference,
+  writeCanvasPreference,
+} from "../utils/canvasPreferences";
+import {
   captureWorkflowFragment, parseSnippetLibrary, SNIPPET_LIMITS, validateSnippetName,
   type SnippetLibrary, type WorkflowSnippet,
 } from "../utils/workflowSnippets";
 
-export const SNIPPET_STORAGE_KEY = "workflow-canvas-professional-snippets";
-
 function readLibrary(): SnippetLibrary {
-  let raw: string | null;
-  try { raw = localStorage.getItem(SNIPPET_STORAGE_KEY); }
-  catch { throw new Error("无法读取本地片段库，请检查存储权限后重试；未修改已有数据。"); }
-  return parseSnippetLibrary(raw);
+  if (!hasCanvasPreference("workflow-snippets")) {
+    throw new Error("片段库正在从内核数据库载入，请稍后重试；未修改已有数据。");
+  }
+  const value = readCanvasPreference<unknown>("workflow-snippets", null);
+  return parseSnippetLibrary(value === null ? null : JSON.stringify(value));
 }
 
 function writeLibrary(library: SnippetLibrary): WorkflowSnippet[] {
-  const raw = JSON.stringify(library);
   // Validate the complete next library before writing; never repair unknown data by dropping it.
-  const validated = parseSnippetLibrary(raw);
-  try { localStorage.setItem(SNIPPET_STORAGE_KEY, raw); }
-  catch { throw new Error("片段库写入失败，可能是存储空间不足或存储被禁用；本次更改未保存。"); }
+  const validated = parseSnippetLibrary(JSON.stringify(library));
+  writeCanvasPreference("workflow-snippets", library);
   return validated.snippets;
 }
 

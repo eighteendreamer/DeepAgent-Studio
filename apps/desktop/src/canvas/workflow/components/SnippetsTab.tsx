@@ -5,7 +5,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../../components/shadcn/dropdown-menu";
 import { message } from "../../../components/message";
 import { useProfessionalStore } from "../store/professionalStore";
-import { SNIPPET_STORAGE_KEY, useSnippetStore } from "../store/snippetStore";
+import { useSnippetStore } from "../store/snippetStore";
+import { onCanvasPreferenceChanged } from "../utils/canvasPreferences";
 import { instantiateWorkflowFragment, SNIPPET_LIMITS, SNIPPET_SAFETY_NOTICE, type WorkflowSnippet } from "../utils/workflowSnippets";
 import { CANVAS_BUTTON_CLASS, CANVAS_MENU_CLASS, CanvasField, CanvasInput } from "./CanvasFields";
 
@@ -27,11 +28,10 @@ export function SnippetsTab({ worldX, worldY, onInserted }: { worldX: number; wo
   };
   useEffect(() => {
     reload();
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === SNIPPET_STORAGE_KEY || event.key === null) reload();
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    return onCanvasPreferenceChanged((key) => {
+      // 载入完成或其他画布窗口改动库时重新读取。
+      if (key === "workflow-snippets") reload();
+    });
   }, []);
 
   const save = () => {
@@ -39,7 +39,7 @@ export function SnippetsTab({ worldX, worldY, onInserted }: { worldX: number; wo
       const graph = useProfessionalStore.getState();
       useSnippetStore.getState().saveSnippet(name, graph.nodes, graph.edges);
       setName("");
-      message.success("片段已保存到本机；密码与敏感请求头已排除，使用前请重新配置。");
+      message.success("片段已保存到内核数据库；密码与敏感请求头已排除，使用前请重新配置。");
     } catch (failure) { message.error(failure instanceof Error ? failure.message : "片段保存失败"); }
   };
 
@@ -80,7 +80,7 @@ export function SnippetsTab({ worldX, worldY, onInserted }: { worldX: number; wo
       {error ? (
         <div role="alert" className="space-y-2 text-xs text-red-300">
           <p className="break-words">{error}</p>
-          <p className="text-[10px] text-white/50">原始库未覆盖。修复本地存储后重试，不会自动重置片段。</p>
+          <p className="text-[10px] text-white/50">原始库未覆盖。修复数据库中的片段文档后重试，不会自动重置片段。</p>
           <Button size="sm" variant="ghost" className={CANVAS_BUTTON_CLASS} onClick={reload}>重新读取</Button>
         </div>
       ) : (

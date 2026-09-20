@@ -58,6 +58,7 @@ import {
   KnowledgeIndexContent,
 } from "../nodes/professional/ProfessionalNodes";
 import { loadCanvasMediaPixels } from "../utils/canvasMedia";
+import { prependCreativeItem } from "../utils/creativeLibrary";
 
 const STATUS_BORDER: Record<NodeStatus, string> = {
   idle: "1px solid rgba(255,255,255,0.1)",
@@ -429,17 +430,17 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
     const imageUrl = (nodeData as CreativeNodeData).imageUrl;
     if (!imageUrl) return;
     try {
-      const raw = localStorage.getItem("canvas-creative-library");
-      const library: Array<{ id: string; name: string; imageUrl: string; category: string; createdAt: string }> = raw ? JSON.parse(raw) : [];
-      library.unshift({
+      prependCreativeItem({
         id: `asset-${Date.now()}`,
         name: nodeLabel,
         imageUrl,
         category: categoryKey,
         createdAt: new Date().toISOString(),
       });
-      localStorage.setItem("canvas-creative-library", JSON.stringify(library));
-    } catch { /* storage full or corrupt */ }
+      message.success(`已把「${nodeLabel}」存入创意库`);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "存入创意库失败");
+    }
   };
 
   return (

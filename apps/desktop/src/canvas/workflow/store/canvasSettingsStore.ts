@@ -1,6 +1,11 @@
 import { useMemo } from "react";
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  onCanvasPreferenceChanged,
+  readCanvasPreference,
+  writeCanvasPreference,
+} from "../utils/canvasPreferences";
 
 /**
  * Canvas model-provider state.
@@ -8,8 +13,9 @@ import { invoke } from "@tauri-apps/api/core";
  * The backend is the single source of truth: providers, models and scenario
  * bindings live in the application database (same store the main-window
  * DeepSeek settings use) and api keys live in its encrypted secret store.
- * Nothing model-related is written to localStorage here, and a plaintext key
- * never comes back from the backend — only `apiKeySet` + a masked preview.
+ * Output directories are preference documents in the same database, so this
+ * store never touches localStorage; and a plaintext key never comes back from
+ * the backend — only `apiKeySet` + a masked preview.
  */
 
 export type ModelProtocol = "openai" | "anthropic" | "gemini";
@@ -203,8 +209,6 @@ interface WorkflowSettingsState {
   setWorkspaceDir: (kind: keyof WorkspaceConfig, dir: string) => void;
 }
 
-const WORKSPACE_STORAGE_KEY = "workflow-workspace";
-
 /** 连续输入合并写库的等待时间。 */
 const PERSIST_DEBOUNCE_MS = 400;
 
@@ -327,30 +331,12 @@ function bindingsToWire(scenarioModels: Record<ScenarioKind, ScenarioBinding>): 
 
 /** 每个供应商一行 workspace 级目录配置，属于本机路径而非模型资产。 */
 function loadWorkspace(): WorkspaceConfig {
-  try {
-    const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
-    if (!raw) return { imageDir: "", videoDir: "" };
-    const parsed = JSON.parse(raw);
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      typeof parsed.imageDir === "string" &&
-      typeof parsed.videoDir === "string"
-    ) {
-      return { imageDir: parsed.imageDir, videoDir: parsed.videoDir };
-    }
-  } catch {
-    // 存储不可用时退回默认目录
-  }
-  return { imageDir: "", videoDir: "" };
+  const value = readCanvasPreference<Partial<WorkspaceConfig> | null>("workspace-dirs", null);
+  return { imageDir: value?.imageDir ?? "", videoDir: value?.videoDir ?? "" };
 }
 
 function saveWorkspace(workspace: WorkspaceConfig): void {
-  try {
-    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(workspace));
-  } catch {
-    // 存储不可用时忽略
-  }
+  writeCanvasPreference("workspace-dirs", workspace);
 }
 
 interface PendingWrite {
@@ -678,6 +664,16 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
 
 // 画布窗口一启动就向内核拉取一次真实配置。
 void useCanvasSettingsStore.getState().loadFromBackend();
+
+// 目录偏好可能晚于本 store 初始化才从内核载入，载入完成后刷新展示值。
+onCanvasPreferenceChanged((key) => {
+  if (key !== "workspace-dirs") return;
+  const next = loadWorkspace();
+  const current = useCanvasSettingsStore.getState().workspace;
+  if (next.imageDir !== current.imageDir || next.videoDir !== current.videoDir) {
+    useCanvasSettingsStore.setState({ workspace: next });
+  }
+});
 
 /**
  * 节点配置面板用：某个场景下可选的模型列表。
