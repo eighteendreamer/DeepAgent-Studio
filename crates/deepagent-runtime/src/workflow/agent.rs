@@ -138,6 +138,12 @@ impl WorkflowAgent {
             outputs,
             updates: BTreeMap::new(),
             error,
+            // The publisher derives these from `outputs` (see annotate_provenance).
+            operation: None,
+            provider_id: None,
+            model_id: None,
+            artifacts: Vec::new(),
+            job_id: None,
         });
     }
 
@@ -1855,9 +1861,12 @@ mod tests {
         assert!(Arc::ptr_eq(&flag, &cancel));
     }
 
-    #[tokio::test]
-    async fn cancelled_video_job_reports_exactly_one_terminal_state() {
-        let bridge = RecordingBridge::default();
+    fn video_agent(
+        bridge: RecordingBridge,
+        sink: CollectSink,
+        model_ref: &str,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> WorkflowAgent {
         let definition = WorkflowDefinition {
             version: 1,
             nodes: vec![
@@ -1866,7 +1875,7 @@ mod tests {
                     id: "video-1".to_string(),
                     kind: "video-gen".to_string(),
                     config: config(&[
-                        ("videoModel", json!("cvp-1::cancel-mid-job")),
+                        ("videoModel", json!(model_ref)),
                         ("prompt", json!("一段短片")),
                     ]),
                 },
@@ -1878,17 +1887,57 @@ mod tests {
             ],
         };
         let compiled = compile(definition).unwrap();
-        let sink = CollectSink::default();
-        let recorded = sink.events.clone();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let mut agent = WorkflowAgent::new(
+        let agent = WorkflowAgent::new(
             compiled,
             Map::new(),
             None,
             NodeEventPublisher::new(Arc::new(sink)),
         )
-        .with_canvas_bridge(Arc::new(bridge))
-        .with_cancel(cancel.clone());
+        .with_canvas_bridge(Arc::new(bridge));
+        match cancel {
+            Some(flag) => agent.with_cancel(flag),
+            None => agent,
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_video_event_reports_provenance_and_artifact_refs() {
+        let sink = CollectSink::default();
+        let recorded = sink.events.clone();
+        let mut agent = video_agent(
+            RecordingBridge::default(),
+            sink,
+            "cvp-1::Wan2.2-T2V-A14B",
+            None,
+        );
+        agent.think(0, &[]).await.expect("start runs");
+        agent.think(1, &[]).await.expect("video job runs");
+
+        let events = recorded.lock().unwrap();
+        let done = events
+            .iter()
+            .find(|event| {
+                event.node_id == "video-1" && event.status == NodeExecutionStatus::Completed
+            })
+            .expect("completed event");
+        assert_eq!(done.operation.as_deref(), Some("video_generate"));
+        assert_eq!(done.provider_id.as_deref(), Some("cvp-1"));
+        assert_eq!(done.model_id.as_deref(), Some("Wan2.2-T2V-A14B"));
+        assert_eq!(done.job_id.as_deref(), Some("job-77"));
+        assert_eq!(done.artifacts, vec!["artifact://art_video"]);
+    }
+
+    #[tokio::test]
+    async fn cancelled_video_job_reports_exactly_one_terminal_state() {
+        let sink = CollectSink::default();
+        let recorded = sink.events.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut agent = video_agent(
+            RecordingBridge::default(),
+            sink,
+            "cvp-1::cancel-mid-job",
+            Some(cancel.clone()),
+        );
 
         agent.think(0, &[]).await.expect("start runs");
         agent
