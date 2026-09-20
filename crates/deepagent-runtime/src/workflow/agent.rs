@@ -1294,9 +1294,16 @@ impl Agent for WorkflowAgent {
                 Ok(AgentDecision::Continue)
             }
             Err(error) => {
+                // 用户取消不是失败：视频这类长作业在轮询中途被打断时走到这里，
+                // 终态必须区分开，否则一次停止会被记成一次执行失败。
+                let status = if self.is_cancelled() {
+                    NodeExecutionStatus::Cancelled
+                } else {
+                    NodeExecutionStatus::Failed
+                };
                 self.emit_status(
                     &node_id,
-                    NodeExecutionStatus::Failed,
+                    status,
                     1,
                     elapsed_ms,
                     None,
@@ -1315,8 +1322,11 @@ impl Agent for WorkflowAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::{RuntimeEvent, RuntimeEventSink};
     use crate::workflow::graph::{compile, WorkflowDefinition, WorkflowEdgeSpec, WorkflowNodeSpec};
-    use crate::workflow::node_events::NodeEventPublisher;
+    use crate::workflow::node_events::{
+        NodeEventPublisher, NodeExecutionEvent, NodeExecutionStatus,
+    };
 
     fn make_start(id: &str) -> WorkflowNodeSpec {
         WorkflowNodeSpec {
@@ -1427,6 +1437,15 @@ mod tests {
             &self,
             request: CanvasVideoRequest,
         ) -> deepagent_core::error::Result<CanvasVideoResponse> {
+            // 模型名带标记即模拟“轮询途中用户点了停止”：翻起真实取消标志再报错。
+            if request.model_ref.contains("cancel-mid-job") {
+                if let Some(flag) = request.cancel.as_ref() {
+                    flag.store(true, Ordering::SeqCst);
+                }
+                return Err(deepagent_core::error::CoreError::other(
+                    "Cancelled: video job `job-77` interrupted; rerun the node with the same task id to keep polling",
+                ));
+            }
             self.videos.lock().unwrap().push(request);
             Ok(CanvasVideoResponse {
                 artifact_uri: "artifact://art_video".to_string(),
@@ -1533,6 +1552,19 @@ mod tests {
             config.insert((*key).to_string(), value.clone());
         }
         config
+    }
+
+    #[derive(Clone, Default)]
+    struct CollectSink {
+        events: Arc<Mutex<Vec<NodeExecutionEvent>>>,
+    }
+
+    impl RuntimeEventSink for CollectSink {
+        fn emit(&self, event: RuntimeEvent) {
+            if let RuntimeEvent::WorkflowNode { event } = event {
+                self.events.lock().unwrap().push(event);
+            }
+        }
     }
 
     fn agent_with_bridge(bridge: RecordingBridge) -> WorkflowAgent {
@@ -1821,6 +1853,62 @@ mod tests {
             .cancel
             .expect("video jobs must receive the cancel flag");
         assert!(Arc::ptr_eq(&flag, &cancel));
+    }
+
+    #[tokio::test]
+    async fn cancelled_video_job_reports_exactly_one_terminal_state() {
+        let bridge = RecordingBridge::default();
+        let definition = WorkflowDefinition {
+            version: 1,
+            nodes: vec![
+                make_start("start-1"),
+                WorkflowNodeSpec {
+                    id: "video-1".to_string(),
+                    kind: "video-gen".to_string(),
+                    config: config(&[
+                        ("videoModel", json!("cvp-1::cancel-mid-job")),
+                        ("prompt", json!("一段短片")),
+                    ]),
+                },
+                make_end("end-1"),
+            ],
+            edges: vec![
+                make_edge("e1", "start-1", "video-1"),
+                make_edge("e2", "video-1", "end-1"),
+            ],
+        };
+        let compiled = compile(definition).unwrap();
+        let sink = CollectSink::default();
+        let recorded = sink.events.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut agent = WorkflowAgent::new(
+            compiled,
+            Map::new(),
+            None,
+            NodeEventPublisher::new(Arc::new(sink)),
+        )
+        .with_canvas_bridge(Arc::new(bridge))
+        .with_cancel(cancel.clone());
+
+        agent.think(0, &[]).await.expect("start runs");
+        agent
+            .think(1, &[])
+            .await
+            .expect_err("the stop must reach the driver");
+
+        let events = recorded.lock().unwrap();
+        let terminals: Vec<&NodeExecutionEvent> = events
+            .iter()
+            .filter(|event| event.node_id == "video-1" && event.status.is_terminal())
+            .collect();
+        assert_eq!(terminals.len(), 1, "video-1 terminals: {terminals:?}");
+        assert_eq!(terminals[0].status, NodeExecutionStatus::Cancelled);
+        let error = terminals[0].error.clone().unwrap_or_default();
+        assert!(
+            error.contains("job-77"),
+            "the provider task id must survive into the event: {error}"
+        );
+        assert!(cancel.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
