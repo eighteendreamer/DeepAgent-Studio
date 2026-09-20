@@ -972,24 +972,21 @@ mod tests {
         assert_eq!(dto.base_url, "https://api.siliconflow.cn/v1");
         assert!(!dto.api_key_set);
 
-        svc.set_provider_api_key(
-            &dto.id,
-            "sk-eiohhqtxgcpevjuznqfiorkyatujwogbgdqtocoqcfxqbvmk",
-        )
-        .expect("set key");
+        svc.set_provider_api_key(&dto.id, "sk-canvas-local-test-9f2c41d7b6e04a51")
+            .expect("set key");
         let listed = svc.list_providers().expect("list");
         assert_eq!(listed.len(), 1);
         assert!(listed[0].api_key_set);
         let masked = listed[0].api_key_masked.clone().expect("masked");
         assert!(masked.contains('…'));
-        assert!(!masked.contains("eiohhqtxgcpevjuznq"));
+        assert!(!masked.contains("9f2c41d7b6e0"));
 
         let raw = DocumentStore::new(&svc.db)
             .get(CANVAS_COLLECTION, CANVAS_PROVIDERS_ID)
             .unwrap()
             .expect("doc")
             .body;
-        assert!(!raw.contains("sk-eiohh"));
+        assert!(!raw.contains("sk-canvas-local-test"));
     }
 
     #[test]

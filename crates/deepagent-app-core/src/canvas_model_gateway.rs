@@ -1789,7 +1789,7 @@ pub fn validate_request(request: &CanvasModelRequest) -> CanvasResult<()> {
 mod tests {
     use super::*;
     use crate::canvas_provider_service::{
-        CanvasModelConfig, CanvasProviderInput, CanvasProviderService,
+        CanvasModelConfig, CanvasProviderInput, CanvasProviderService, CanvasScenarioBinding,
     };
     use deepagent_persistence::Database;
     use std::sync::Arc;
@@ -2116,7 +2116,7 @@ mod tests {
     }
 
     #[test]
-    fn transient_status_switches_candidates_but_auth_errors_do_not() {
+    fn status_codes_split_transient_and_auth_failures() {
         assert!(classify_status(429, "rate limited").is_transient());
         assert!(classify_status(503, "unavailable").is_transient());
         assert!(!classify_status(401, "bad key").is_transient());
@@ -2434,6 +2434,141 @@ mod tests {
         assert!(image_body.contains("gpt-image-2"));
         assert!(image_body.contains("1024x1024"));
         let _ = std::fs::remove_dir_all(&artifact_root);
+    }
+
+    /// 候选循环必须只在瞬时失败时换下一个模型。已有的
+    /// `status_codes_split_transient_and_auth_failures` 只断言了
+    /// 状态码分类，这里驱动真实的 `execute` 路径。
+    #[test]
+    fn only_transient_failures_fall_through_to_the_next_candidate() {
+        use std::io::{Read, Write};
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 2048];
+                let mut text = String::new();
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            text.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            if body_complete(&text) {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let head_end = text.find("\r\n\r\n").unwrap_or(text.len());
+                let body = &text[head_end + 4..];
+                let model = serde_json::from_str::<Value>(body)
+                    .ok()
+                    .and_then(|value| value["model"].as_str().map(str::to_string))
+                    .unwrap_or_default();
+                let (status, payload) = if model.contains("flaky") {
+                    (
+                        "503 Service Unavailable",
+                        "{\"error\":{\"message\":\"overloaded\"}}".to_string(),
+                    )
+                } else if model.contains("denied") {
+                    (
+                        "401 Unauthorized",
+                        "{\"error\":{\"message\":\"bad key\"}}".to_string(),
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        format!(
+                            "{{\"choices\":[{{\"message\":{{\"content\":\"pong:{model}\"}}}}]}}"
+                        ),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                sink.lock().expect("lock").push(model);
+            }
+        });
+        let requested = || seen.lock().expect("lock").clone();
+
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::secret_store::MemorySecretStore::default()),
+        ));
+        let text_model = |id: &str| CanvasModelConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            enabled: true,
+            scenarios: vec![CanvasScenario::Text],
+            priority: 0,
+        };
+        let created = providers
+            .save_provider(CanvasProviderInput {
+                name: "Local".to_string(),
+                protocol: "openai".to_string(),
+                base_url: format!("http://127.0.0.1:{port}/v1"),
+                enabled: true,
+                models: vec![
+                    text_model("flaky-first"),
+                    text_model("denied-first"),
+                    text_model("healthy-second"),
+                ],
+                api_key: Some("sk-local".to_string()),
+                ..Default::default()
+            })
+            .expect("provider");
+        let bind = |models: &[&str]| {
+            providers
+                .save_bindings(
+                    None,
+                    models
+                        .iter()
+                        .map(|id| CanvasScenarioBinding {
+                            scenario: "text".to_string(),
+                            provider_id: created.id.clone(),
+                            model_id: (*id).to_string(),
+                            enabled: true,
+                        })
+                        .collect(),
+                )
+                .expect("bindings")
+        };
+        let gateway = CanvasModelGateway::new(providers.clone());
+
+        bind(&["flaky-first", "healthy-second"]);
+        let output = rt
+            .block_on(gateway.execute(&CanvasModelRequest::text("ping"), None))
+            .expect("a transient failure must move to the next candidate");
+        match output {
+            CanvasModelOutput::Text { text, model_id, .. } => {
+                assert_eq!(text, "pong:healthy-second");
+                assert_eq!(model_id, "healthy-second");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(requested(), vec!["flaky-first", "healthy-second"]);
+
+        seen.lock().expect("lock").clear();
+        bind(&["denied-first", "healthy-second"]);
+        let error = rt
+            .block_on(gateway.execute(&CanvasModelRequest::text("ping"), None))
+            .expect_err("an auth failure must stop the chain");
+        assert_eq!(error.code, CanvasErrorCode::SecretMissing);
+        assert_eq!(
+            requested(),
+            vec!["denied-first"],
+            "a non-transient failure must not leak the request to another model"
+        );
     }
 
     /// True once the headers plus the declared body length have been received.
