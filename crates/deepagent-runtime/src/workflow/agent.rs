@@ -709,12 +709,36 @@ impl WorkflowAgent {
                 .and_then(Value::as_str)
                 .unwrap_or(""),
         );
-        let audio_reference = config
+        // 节点自选的文件与上游连线送入的都是同一路音频；契约要求恰好一路。
+        let edge_audios: Vec<String> = config
+            .get("audioInputs")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut references = config
             .get("audioReference")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(str::to_string);
+            .map(str::to_string)
+            .into_iter()
+            .chain(edge_audios)
+            .collect::<Vec<_>>();
+        let audio_reference = match references.len() {
+            0 => None,
+            1 => Some(references.remove(0)),
+            count => return Err(deepagent_core::error::CoreError::invalid(format!(
+                "OperationInputConflict: `audio` node takes exactly one audio input, got {count}"
+            ))),
+        };
         let mut input_kinds = Vec::new();
         if !text.trim().is_empty() {
             input_kinds.push("Text".to_string());
@@ -1347,6 +1371,8 @@ mod tests {
                     if lowered.starts_with("data:audio")
                         || lowered.ends_with(".mp3")
                         || lowered.ends_with(".wav")
+                        // 相当于制品索引里 kind=audio 的记录。
+                        || lowered.starts_with("artifact://audio")
                     {
                         "Audio".to_string()
                     } else if lowered.starts_with("data:video") || lowered.ends_with(".mp4") {
@@ -1690,6 +1716,51 @@ mod tests {
         assert!(
             error.to_string().contains("OperationInputConflict"),
             "got {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_node_takes_one_reference_from_edges() {
+        let bridge = RecordingBridge::default();
+        let records = bridge.audios.clone();
+        let mut agent = agent_with_bridge(bridge);
+        let outcome = agent
+            .execute_node_inline(
+                "audio",
+                &config(&[
+                    ("operation", json!("speech_transcribe")),
+                    ("audioInputs", json!(["artifact://audio-1"])),
+                ]),
+            )
+            .await
+            .expect("one audio input from an edge");
+        assert_eq!(outcome["text"], "转写出来的文本");
+        let sent = records
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("one audio call");
+        assert_eq!(sent.audio_reference.as_deref(), Some("artifact://audio-1"));
+    }
+
+    #[tokio::test]
+    async fn audio_node_rejects_two_audio_inputs() {
+        let mut agent = agent_with_bridge(RecordingBridge::default());
+        let conflict = agent
+            .execute_node_inline(
+                "audio",
+                &config(&[
+                    ("operation", json!("speech_transcribe")),
+                    ("audioReference", json!("data:audio/wav;base64,AA")),
+                    ("audioInputs", json!(["data:audio/mp3;base64,BB"])),
+                ]),
+            )
+            .await
+            .expect_err("the contract allows exactly one audio input");
+        assert!(
+            conflict.to_string().contains("exactly one audio input"),
+            "got {conflict}"
         );
     }
 

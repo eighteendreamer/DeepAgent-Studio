@@ -140,6 +140,17 @@ export interface CreativeNodeData {
   videoDuration?: number;
   videoProgress?: number;
   videoTaskId?: string;
+  /** 音频节点：方向由用户显式选择，内核不猜。 */
+  audioOperation?: "speech_transcribe" | "speech_synthesize";
+  audioModel?: string;
+  /** 待转写音频的 artifact 引用。 */
+  audioReference?: string;
+  /** 供应商音色 id；留空则由供应商给出自己的报错。 */
+  audioVoice?: string;
+  audioFormat?: string;
+  audioUrl?: string;
+  /** 仅用于界面展示的原文件名。 */
+  audioReferenceName?: string;
   leftImageUrl?: string;
   rightImageUrl?: string;
   editMode?: "crop" | "remove-bg" | "upscale" | "repaint";

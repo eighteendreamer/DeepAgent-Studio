@@ -13,6 +13,7 @@ import {
   ImageEditForm,
   ImageCompareForm,
   VideoStitchForm,
+  AudioForm,
   GenericConfigForm,
 } from "./ConfigForms";
 
@@ -49,6 +50,8 @@ export function NodeConfigForm({ nodeId, nodeData, nodeType }: {
       return <ImageCompareForm data={creativeData} {...formProps} />;
     case "video-stitch":
       return <VideoStitchForm data={creativeData} {...formProps} />;
+    case "audio":
+      return <AudioForm data={creativeData} {...formProps} />;
     default:
       return <GenericConfigForm data={data} />;
   }

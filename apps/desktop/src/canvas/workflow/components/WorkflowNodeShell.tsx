@@ -25,6 +25,7 @@ import { ImageEditContent } from "../nodes/creative/ImageEditContent";
 import { ScriptGenContent } from "../nodes/creative/ScriptGenContent";
 import { VideoGenContent } from "../nodes/creative/VideoGenContent";
 import { VideoStitchContent } from "../nodes/creative/VideoStitchContent";
+import { AudioContent } from "../nodes/creative/AudioNodeContent";
 import { CategoryPickerContent } from "../nodes/creative/CategoryPickerContent";
 import {
   StartContent,
@@ -142,6 +143,8 @@ function renderContent(nodeData: WorkflowNodeData, nodeId?: string) {
       return <VideoGenContent data={creativeData} />;
     case "video-stitch":
       return <VideoStitchContent data={creativeData} />;
+    case "audio":
+      return <AudioContent data={creativeData} />;
     case "start":
       return <StartContent data={professionalData} />;
     case "end":

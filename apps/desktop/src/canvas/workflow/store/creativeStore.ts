@@ -73,7 +73,13 @@ function createDefaultCreativeData(kind: CreativeNodeKind): CreativeNodeData {
     case "character-style":
       return { ...base, label: "角色工作室 · 风格" };
     case "audio":
-      return { ...base, label: "音频" };
+      // 契约要求显式方向，创建时就写死默认值，界面选中态与配置保持一致。
+      return {
+        ...base,
+        label: "音频",
+        audioOperation: "speech_transcribe",
+        audioFormat: "mp3",
+      };
     case "storyboard-grid":
       return { ...base, label: "分镜格子" };
   }

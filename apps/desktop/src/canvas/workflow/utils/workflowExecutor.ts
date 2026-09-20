@@ -26,6 +26,7 @@ const UI_META_KEYS = new Set([
   "status",
   "errorMessage",
   "executionTime",
+  "audioReferenceName",
   "result",
   "inputVariables",
   "outputMapping",
@@ -43,7 +44,23 @@ const CREATIVE_OUTPUT_FIELD: Record<string, string> = {
   "image-input": "imageUrl",
   "video-gen": "videoUrl",
   "video-stitch": "videoUrl",
+  audio: "audioUrl",
 };
+
+/**
+ * 创作节点的对外输出字段。
+ *
+ * 音频节点两种方向输出不同东西：合成给出音频制品引用，转写给出文本，
+ * 所以只能按节点自己的方向决定，不能在表里写死。
+ */
+function creativeOutputField(node: WorkflowNode): string | undefined {
+  const data = node.data as { kind?: string; audioOperation?: string };
+  const kind = String(data.kind ?? "");
+  if (kind === "audio") {
+    return data.audioOperation === "speech_synthesize" ? "audioUrl" : "text";
+  }
+  return CREATIVE_OUTPUT_FIELD[kind];
+}
 
 /** 创作节点之间靠连线传递数据，这里把入边翻译成内核引用。 */
 function creativeConfig(
@@ -78,8 +95,7 @@ function serializeNodes(nodes: WorkflowNode[], edges: WorkflowEdge[], mode: "cre
   const outputFieldByNode = new Map<string, string>();
   if (mode === "creative") {
     for (const node of nodes) {
-      const kind = String((node.data as { kind?: string }).kind ?? "");
-      const field = CREATIVE_OUTPUT_FIELD[kind];
+      const field = creativeOutputField(node);
       if (field) outputFieldByNode.set(node.id, field);
     }
   }
@@ -186,6 +202,7 @@ function applyNodeOutputs(
   }
   if (typeof record.imageUrl === "string") patch.imageUrl = record.imageUrl;
   if (typeof record.videoUrl === "string") patch.videoUrl = record.videoUrl;
+  if (typeof record.audioUrl === "string") patch.audioUrl = record.audioUrl;
   if (typeof record.modelId === "string") patch.usedModel = record.modelId;
   return patch;
 }

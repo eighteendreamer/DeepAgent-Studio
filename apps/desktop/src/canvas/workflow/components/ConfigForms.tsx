@@ -950,6 +950,155 @@ export function VideoStitchForm({ data, onUpdate }: { data: CreativeNodeData } &
   );
 }
 
+const AUDIO_FORMATS = [
+  { value: "mp3", label: "MP3" },
+  { value: "wav", label: "WAV" },
+  { value: "pcm", label: "PCM" },
+  { value: "opus", label: "OPUS" },
+];
+
+type AudioDirection = "transcribe" | "synthesize";
+
+export function AudioForm({ nodeId, data, onUpdate }: { data: CreativeNodeData } & FormProps) {
+  const direction: AudioDirection =
+    data.audioOperation === "speech_synthesize" ? "synthesize" : "transcribe";
+  const options = useScenarioModelOptions(
+    direction === "synthesize" ? "text_to_speech" : "speech_to_text",
+    data.audioModel,
+  );
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const pickAudio = async (file?: File) => {
+    if (!file) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error ?? new Error("读取文件失败"));
+        reader.readAsDataURL(file);
+      });
+      // 与图片同一套规则：字节进制品库，节点只留 artifact 引用。
+      const uri = await importCanvasMedia("audio", {
+        dataUrl,
+        fileName: file.name,
+        mediaType: file.type || undefined,
+      });
+      onUpdate({ audioReference: uri, audioReferenceName: file.name });
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "音频入库失败");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-center gap-1.5">
+        <SegmentedChips<AudioDirection>
+          value={direction}
+          options={[
+            { value: "transcribe", label: "语音转文字" },
+            { value: "synthesize", label: "文字转语音" },
+          ]}
+          onChange={(next) =>
+            onUpdate({
+              audioOperation:
+                next === "synthesize" ? "speech_synthesize" : "speech_transcribe",
+            })
+          }
+        />
+        <ChipSelect
+          value={data.audioModel ?? options[0]?.value ?? ""}
+          options={options}
+          onChange={(audioModel) => onUpdate({ audioModel })}
+        />
+        <div className="ml-auto">
+          <GlassRunButton
+            disabled={!options.length}
+            title="执行音频节点"
+            onClick={() => void runWorkflow(nodeId)}
+          />
+        </div>
+      </div>
+
+      {direction === "synthesize" ? (
+        <>
+          <PromptArea
+            value={data.prompt ?? ""}
+            placeholder="输入要念出来的文本..."
+            onChange={(prompt) => onUpdate({ prompt })}
+          />
+          <div className="flex items-center gap-1.5">
+            <CanvasInput
+              className="flex-1"
+              value={data.audioVoice ?? ""}
+              placeholder="音色 id（留空则由供应商给出自己的报错）"
+              onChange={(event) => {
+                event.stopPropagation();
+                onUpdate({ audioVoice: event.target.value });
+              }}
+              onKeyDown={(event) => event.stopPropagation()}
+            />
+            <ChipSelect
+              value={data.audioFormat ?? "mp3"}
+              options={AUDIO_FORMATS}
+              onChange={(audioFormat) => onUpdate({ audioFormat })}
+            />
+          </div>
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            disabled={importing}
+            onClick={() => fileRef.current?.click()}
+            className="flex h-8 items-center justify-center gap-1.5 rounded-lg text-[12px] font-medium transition-colors hover:bg-white/12 disabled:opacity-50"
+            style={{
+              background: "rgba(255,255,255,0.08)",
+              color: "rgba(255,255,255,0.75)",
+            }}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {importing
+              ? "正在入库..."
+              : data.audioReference
+                ? "重新选择音频"
+                : "选择音频文件"}
+          </button>
+          {/* 音频文件必须走原生选择：画布只能拿到路径，字节由内核读取。 */}
+          <input
+            ref={fileRef}
+            type="file"
+            accept="audio/*"
+            className="hidden"
+            onChange={(event) => void pickAudio(event.target.files?.[0])}
+          />
+          {(data.audioReferenceName ?? data.audioReference) && (
+            <p
+              className="truncate text-[10px]"
+              style={{ color: "rgba(248,248,248,0.4)" }}
+              title={String(data.audioReferenceName ?? data.audioReference)}
+            >
+              {String(data.audioReferenceName ?? data.audioReference)}
+            </p>
+          )}
+        </>
+      )}
+
+      {error && (
+        <p className="text-[10px]" style={{ color: "rgba(248,113,113,0.9)" }}>
+          {error}
+        </p>
+      )}
+      {typeof data.output === "string" && data.output && <OutputBlock text={data.output} />}
+    </div>
+  );
+}
+
 export function GenericConfigForm({ data }: { data: WorkflowNodeData }) {
   return (
     <div
