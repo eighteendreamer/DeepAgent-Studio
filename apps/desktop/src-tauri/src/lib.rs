@@ -2378,6 +2378,20 @@ fn canvas_artifact_url(
         .map_err(|e| e.to_string())
 }
 
+/// One-off `data:` URL for the crop / annotate overlays, which need actual
+/// pixels. The value is transient by contract: overlays draw with it, nodes keep
+/// storing the artifact reference.
+#[tauri::command]
+fn canvas_artifact_data_url(
+    state: State<'_, AppState>,
+    reference: String,
+) -> Result<Option<String>, String> {
+    state
+        .canvas_artifacts
+        .resolve_for_provider(&reference)
+        .map_err(|e| e.to_string())
+}
+
 /// Start a professional-canvas workflow run. The workflow graph is compiled
 /// and executed through the same kernel pipeline as chat runs. Consumers
 /// follow `chat://event` and `session://completed` for progress.
@@ -6655,6 +6669,7 @@ pub fn run() {
             canvas_workflow_delete,
             canvas_artifact_import,
             canvas_artifact_url,
+            canvas_artifact_data_url,
             resolve_approval,
             stop_chat,
             cancel_run,

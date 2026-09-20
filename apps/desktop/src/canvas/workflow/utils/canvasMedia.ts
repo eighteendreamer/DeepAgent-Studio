@@ -92,10 +92,8 @@ export async function loadCanvasMediaPixels(reference: string): Promise<string> 
   const resolved = await invoke<string | null>("canvas_artifact_data_url", {
     reference: reference.trim(),
   });
-  if (!resolved) {
-    throw new Error(`无法读取媒体像素：${reference} 不是可用的图片引用`);
-  }
-  return resolved;
+  // 旧图里的 asset:/http:/data: 引用后端不接管，原样交给浏览器解码，行为与迁移前一致。
+  return resolved ?? reference;
 }
 
 /** Component hook: keep node data as the reference, render the resolved src. */
