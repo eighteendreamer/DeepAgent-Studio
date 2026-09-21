@@ -63,7 +63,7 @@ export interface ModelProvider {
   logo?: string;
 }
 
-/** 表单草稿：`apiKey` 只在提交那一刻写给后端，不落到任何本地存储。 */
+/** 表单草稿：`apiKey` 与其他字段共用同一条防抖落库链路，明文只进不出，不落到任何本地存储。 */
 export interface ProviderDraft {
   name: string;
   protocol: ModelProtocol;
@@ -188,10 +188,11 @@ interface WorkflowSettingsState {
   loadFromBackend: () => Promise<void>;
   clearError: () => void;
   addProvider: (draft: ProviderDraft) => Promise<string>;
-  updateProvider: (id: string, patch: Partial<Omit<ProviderDraft, "apiKey">>) => Promise<void>;
+  updateProvider: (id: string, patch: Partial<ProviderDraft>) => Promise<void>;
+  /** 立即结算某供应商尚未落库的草稿（含密钥），返回时保证已写入后端。 */
+  flushProvider: (id: string) => Promise<void>;
   removeProvider: (id: string) => Promise<void>;
   toggleProviderEnabled: (id: string) => Promise<void>;
-  saveProviderApiKey: (id: string, apiKey: string) => Promise<void>;
   clearProviderApiKey: (id: string) => Promise<void>;
   updateProviderModels: (id: string, models: ProviderModelConfig[]) => Promise<void>;
   addModelToProvider: (providerId: string, model: ProviderModelConfig) => Promise<void>;
@@ -379,6 +380,17 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
     }
   };
 
+  /** 取消待写入计时器并立即落库，随后放行所有等待这次写入的调用方。 */
+  const flushPersist = async (id: string) => {
+    const inFlight = pending.get(id);
+    if (inFlight) pending.delete(id);
+    try {
+      await persistProvider(id);
+    } finally {
+      inFlight?.resolvers.forEach((done) => done());
+    }
+  };
+
   const schedulePersist = (id: string) =>
     new Promise<void>((resolve) => {
       const existing = pending.get(id);
@@ -386,22 +398,14 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
         clearTimeout(existing.timer);
         existing.resolvers.push(resolve);
         pending.set(id, {
-          timer: setTimeout(() => {
-            pending.delete(id);
-            void persistProvider(id).finally(() =>
-              existing.resolvers.forEach((done) => done()),
-            );
-          }, PERSIST_DEBOUNCE_MS),
+          timer: setTimeout(() => void flushPersist(id), PERSIST_DEBOUNCE_MS),
           resolvers: existing.resolvers,
         });
         return;
       }
       const resolvers = [resolve];
       pending.set(id, {
-        timer: setTimeout(() => {
-          pending.delete(id);
-          void persistProvider(id).finally(() => resolvers.forEach((done) => done()));
-        }, PERSIST_DEBOUNCE_MS),
+        timer: setTimeout(() => void flushPersist(id), PERSIST_DEBOUNCE_MS),
         resolvers,
       });
     });
@@ -501,6 +505,8 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
       await schedulePersist(id);
     },
 
+    flushProvider: (id) => flushPersist(id),
+
     removeProvider: async (id) => {
       drafts.delete(id);
       pending.delete(id);
@@ -530,25 +536,10 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
       await get().updateProvider(id, { enabled: !(current.enabled !== false) });
     },
 
-    saveProviderApiKey: async (id, apiKey) => {
-      const trimmed = apiKey.trim();
-      if (!trimmed) return;
-      try {
-        const status = await invoke<{ set: boolean; masked?: string }>("canvas_secret_set", {
-          providerId: id,
-          apiKey: trimmed,
-        });
-        set((state) => ({
-          providers: state.providers.map((p) =>
-            p.id === id ? { ...p, apiKeySet: status.set, apiKeyMasked: status.masked } : p,
-          ),
-        }));
-      } catch (error) {
-        reportFailure("保存 APIKey", error);
-      }
-    },
-
     clearProviderApiKey: async (id) => {
+      // 先丢弃草稿里未落库的明文，否则随后结算的写入会把密钥又存回去。
+      const draft = drafts.get(id);
+      if (draft) delete draft.apiKey;
       try {
         await invoke("canvas_secret_clear", { providerId: id });
         set((state) => ({

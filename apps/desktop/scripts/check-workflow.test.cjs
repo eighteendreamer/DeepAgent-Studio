@@ -198,3 +198,98 @@ test("non-text model identifiers remain editable and header dictionaries validat
   assert.equal(validateSchemaValue(schemas.NODE_CONFIG_SCHEMAS["http-request"].properties.httpHeaders, { Accept: 7 }).length, 1);
   assert.equal(validateSchemaValue(schemas.NODE_CONFIG_SCHEMAS.llm.properties.llmModel, "provider-1::custom-chat").length, 0);
 });
+
+/**
+ * 供应商设置 store 的密钥落库行为：明文只进不出，且不需要任何“保存”按钮。
+ * invoke 与 zustand 都被替换成本地假实现，写入参数可以直接观察。
+ */
+function createLocalStore(init) {
+  let state;
+  const set = (partial) => {
+    state = { ...state, ...(typeof partial === "function" ? partial(state) : partial) };
+  };
+  const get = () => state;
+  state = init(set, get);
+  const api = () => state;
+  api.getState = get;
+  api.setState = set;
+  return api;
+}
+
+function loadSettingsStore(calls) {
+  const exports = loadTypeScript("../src/canvas/workflow/store/canvasSettingsStore.ts", {
+    react: { useMemo: () => undefined },
+    zustand: { create: createLocalStore },
+    "@tauri-apps/api/core": {
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        if (command !== "canvas_provider_save") return null;
+        const provider = args.provider;
+        return {
+          id: provider.id || "p1",
+          name: provider.name,
+          protocol: provider.protocol,
+          baseUrl: provider.baseUrl,
+          apiKeySet: Boolean(provider.apiKey),
+          models: provider.models ?? [],
+        };
+      },
+    },
+    "../utils/canvasPreferences": {
+      onCanvasPreferenceChanged: () => () => {},
+      readCanvasPreference: () => null,
+      writeCanvasPreference: () => {},
+    },
+  });
+  return exports.useCanvasSettingsStore;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function storeWithProvider() {
+  const calls = [];
+  const useStore = loadSettingsStore(calls);
+  const store = useStore();
+  const id = await store.addProvider({
+    name: "Tolove",
+    protocol: "openai",
+    baseUrl: "https://toloveu.asia/v1",
+    models: [],
+  });
+  calls.length = 0;
+  return { calls, store, useStore, id };
+}
+
+function keyWrites(calls) {
+  return calls
+    .filter((call) => call.command === "canvas_provider_save")
+    .map((call) => call.args.provider.apiKey);
+}
+
+test("api key typed into the provider form persists on its own, no save button", async () => {
+  const { calls, store, useStore, id } = await storeWithProvider();
+  await store.updateProvider(id, { apiKey: "  sk-auto-123  " });
+  await sleep(700);
+  assert.deepEqual(keyWrites(calls), ["sk-auto-123"]);
+  assert.equal(useStore().providers.find((p) => p.id === id).apiKey, undefined);
+});
+
+test("flushProvider writes a pending key immediately and never rewrites it", async () => {
+  const { calls, store, id } = await storeWithProvider();
+  void store.updateProvider(id, { apiKey: "sk-pending" });
+  await store.flushProvider(id);
+  assert.deepEqual(keyWrites(calls), ["sk-pending"]);
+  calls.length = 0;
+  await sleep(600);
+  assert.deepEqual(calls, []);
+});
+
+test("clearing a key discards the unpersisted draft so a later write cannot restore it", async () => {
+  const { calls, store, id } = await storeWithProvider();
+  void store.updateProvider(id, { apiKey: "sk-ghost" });
+  await store.clearProviderApiKey(id);
+  await sleep(700);
+  assert.ok(keyWrites(calls).includes(null));
+  assert.ok(keyWrites(calls).every((key) => key === null));
+  assert.ok(calls.some((call) => call.command === "canvas_secret_clear"));
+});

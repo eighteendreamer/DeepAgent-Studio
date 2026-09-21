@@ -434,7 +434,7 @@ export function ModelSettingsTab() {
   const setModelScenarios = useCanvasSettingsStore((s) => s.setModelScenarios);
   const toggleModelEnabled = useCanvasSettingsStore((s) => s.toggleModelEnabled);
   const removeModelFromProvider = useCanvasSettingsStore((s) => s.removeModelFromProvider);
-  const saveProviderApiKey = useCanvasSettingsStore((s) => s.saveProviderApiKey);
+  const flushProvider = useCanvasSettingsStore((s) => s.flushProvider);
   const clearProviderApiKey = useCanvasSettingsStore((s) => s.clearProviderApiKey);
   const testConnection = useCanvasSettingsStore((s) => s.testConnection);
   const discoverModels = useCanvasSettingsStore((s) => s.discoverModels);
@@ -455,7 +455,7 @@ export function ModelSettingsTab() {
 
   // API Key 显隐状态
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
-    // 密钥草稿：只在点“保存”时提交给后端，随后即从本地状态丢弃
+  // 密钥草稿：只是输入框的本地回显，改动即通过 updateProvider 自动落库。
   const [keyDraft, setKeyDraft] = useState<Record<string, string>>({});
   const [discoveringProviderId, setDiscoveringProviderId] = useState<string | null>(null);
 
@@ -607,17 +607,17 @@ export function ModelSettingsTab() {
     const trimmedUrl = providerForm.baseUrl.trim();
     if (!trimmedName || !trimmedUrl) return;
 
+    const apiKey = providerForm.apiKey.trim();
     const newId = await addProvider({
       name: trimmedName,
       protocol: providerForm.protocol,
       baseUrl: trimmedUrl,
       logo: providerForm.logo.trim() || undefined,
+      apiKey: apiKey || undefined,
       enabled: true,
       models: [],
     });
     if (!newId) return;
-    const apiKey = providerForm.apiKey.trim();
-    if (apiKey) await saveProviderApiKey(newId, apiKey);
 
     setSelectedProviderId(newId);
     setAddProviderDialogOpen(false);
@@ -625,6 +625,8 @@ export function ModelSettingsTab() {
 
     // 测试连通性：请求由内核发出，密钥不回到渲染进程
   const handleTestConnection = async (provider: ModelProvider) => {
+    // 刚输入的密钥可能还在防抖里，先结算再让内核发请求。
+    await flushProvider(provider.id);
     const models = provider.models ?? [];
     const target = models.find((model) => model.enabled) ?? models[0];
     if (!target) {
@@ -661,6 +663,8 @@ export function ModelSettingsTab() {
   const handleDiscoverModels = async (provider: ModelProvider) => {
     setDiscoveringProviderId(provider.id);
     try {
+      // 后端要读密钥库，先把还在防抖里的输入结算掉。
+      await flushProvider(provider.id);
       const discovered = await discoverModels(provider.id);
       if (!discovered.length) return;
       const existing = new Set((provider.models ?? []).map((model) => model.id));
@@ -674,10 +678,14 @@ export function ModelSettingsTab() {
     }
   };
 
-  const handleSaveApiKey = async (providerId: string) => {
-    const draft = (keyDraft[providerId] ?? "").trim();
-    if (!draft) return;
-    await saveProviderApiKey(providerId, draft);
+    // 密钥自动保存：与 Base URL 等字段共用同一条防抖落库链路，失焦时立即结算
+  const handleApiKeyChange = (providerId: string, value: string) => {
+    setKeyDraft((state) => ({ ...state, [providerId]: value }));
+    void updateProvider(providerId, { apiKey: value });
+  };
+
+  const handleApiKeyBlur = async (providerId: string) => {
+    await flushProvider(providerId);
     setKeyDraft((state) => ({ ...state, [providerId]: "" }));
   };
 
@@ -975,17 +983,15 @@ export function ModelSettingsTab() {
                             type={showApiKey[selectedProvider.id] ? "text" : "password"}
                             value={keyDraft[selectedProvider.id] ?? ""}
                             onChange={(event) =>
-                              setKeyDraft((state) => ({
-                                ...state,
-                                [selectedProvider.id]: event.target.value,
-                              }))
+                              handleApiKeyChange(selectedProvider.id, event.target.value)
                             }
+                            onBlur={() => void handleApiKeyBlur(selectedProvider.id)}
                             placeholder={
                               selectedProvider.apiKeySet
                                 ? "输入新密钥以覆盖"
                                 : "请输入 APIKey (sk-...)"
                             }
-                            className="h-8 rounded-lg pr-24 text-[11px] bg-white/[0.03] border-white/[0.08] text-white/90 focus-visible:ring-1 focus-visible:ring-[#339CFF]"
+                            className="h-8 rounded-lg pr-16 text-[11px] bg-white/[0.03] border-white/[0.08] text-white/90 focus-visible:ring-1 focus-visible:ring-[#339CFF]"
                           />
                           <div className="absolute right-1 flex items-center gap-0.5">
                             <button
@@ -1005,16 +1011,6 @@ export function ModelSettingsTab() {
                                 <Eye size={12} />
                               )}
                             </button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              disabled={!(keyDraft[selectedProvider.id] ?? "").trim()}
-                              onClick={() => handleSaveApiKey(selectedProvider.id)}
-                              className="h-6 px-1.5 text-[10.5px] text-[#339CFF] hover:bg-[#339CFF]/10 hover:text-[#339CFF]"
-                            >
-                              保存
-                            </Button>
                             {selectedProvider.apiKeySet && (
                               <Button
                                 type="button"
