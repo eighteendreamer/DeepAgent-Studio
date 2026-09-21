@@ -22,6 +22,17 @@ interface OutpaintTarget {
   name: string;
 }
 
+/**
+ * 新节点建好后要建立连线的一端。
+ *
+ * sources 是新节点的输入（框选批量接入、从输出桩拖出），targets 是新节点的
+ * 输出（从输入桩反向拖出）。两种入口共用同一份意图，不再各存一套状态。
+ */
+export interface PickerWiring {
+  sources: string[];
+  targets: string[];
+}
+
 interface CanvasState {
   mode: CanvasMode;
   setMode: (mode: CanvasMode) => void;
@@ -39,11 +50,10 @@ interface CanvasState {
   setSelectedNodeId: (id: string | null) => void;
 
   nodePicker: NodePickerPosition | null;
-  openNodePicker: (pos: NodePickerPosition) => void;
+  /** 打开节点面板时携带的接线意图：新节点建好后与这些节点建立连线。 */
+  pickerWiring: PickerWiring | null;
+  openNodePicker: (pos: NodePickerPosition, wiring?: PickerWiring) => void;
   closeNodePicker: () => void;
-
-  pendingConnection: { nodeId: string; handleType: "source" | "target" } | null;
-  setPendingConnection: (c: { nodeId: string; handleType: "source" | "target" } | null) => void;
 
   cropTarget: CropTarget | null;
   setCropTarget: (t: CropTarget | null) => void;
@@ -79,11 +89,9 @@ export const useCanvasStore = create<CanvasState>((set) => ({
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
 
   nodePicker: null,
-  openNodePicker: (pos) => set({ nodePicker: pos }),
-  closeNodePicker: () => set({ nodePicker: null, pendingConnection: null }),
-
-  pendingConnection: null,
-  setPendingConnection: (c) => set({ pendingConnection: c }),
+  pickerWiring: null,
+  openNodePicker: (pos, wiring) => set({ nodePicker: pos, pickerWiring: wiring ?? null }),
+  closeNodePicker: () => set({ nodePicker: null, pickerWiring: null }),
 
   cropTarget: null,
   setCropTarget: (t) => set({ cropTarget: t }),
@@ -98,6 +106,6 @@ export const useCanvasStore = create<CanvasState>((set) => ({
   setCreativeLibraryOpen: (open) => set({ creativeLibraryOpen: open }),
 
   settingsOpen: false,
-  openSettings: () => set({ settingsOpen: true, nodePicker: null, pendingConnection: null }),
+  openSettings: () => set({ settingsOpen: true, nodePicker: null, pickerWiring: null }),
   closeSettings: () => set({ settingsOpen: false }),
 }));

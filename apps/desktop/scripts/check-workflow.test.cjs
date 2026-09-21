@@ -15,19 +15,7 @@ function loadTypeScript(relativePath, imports = {}) {
   loaded.filename = filename;
   loaded.paths = Module._nodeModulePaths(path.dirname(filename));
   const requireModule = loaded.require.bind(loaded);
-  loaded.require = (specifier) => {
-    if (Object.hasOwn(imports, specifier)) return imports[specifier];
-    if (/^\./.test(specifier)) {
-      try {
-        return requireModule(specifier);
-      } catch (error) {
-        // Node 的 CJS 解析器不认 .ts，未列进 mock 表的相对依赖按 .ts 递归编译加载。
-        if (!error || error.code !== "MODULE_NOT_FOUND") throw error;
-        return loadTypeScript(path.resolve(path.dirname(filename), `${specifier}.ts`), imports);
-      }
-    }
-    return requireModule(specifier);
-  };
+  loaded.require = (specifier) => Object.hasOwn(imports, specifier) ? imports[specifier] : requireModule(specifier);
   loaded._compile(compiled.outputText, filename);
   return loaded.exports;
 }
@@ -337,7 +325,7 @@ test("the text category's 文生图 entry produces an image node, not a text car
 function loadWorkflowExecutor(calls, updates) {
   const creative = {
     getState: () => ({
-      nodes: [{ id: "n1", groupId: "g1", groupName: "分组", groupColor: "#8b5cf6", data: { kind: "image-gen", status: "running" } }],
+      nodes: [{ id: "n1", data: { kind: "image-gen", status: "running" } }],
       edges: [],
       updateNodeData: (id, patch) => updates.push([id, patch]),
     }),
@@ -388,48 +376,8 @@ test("cancelling a node run asks the kernel to cancel the same run id it returne
   );
 });
 
-/** 分组：组只是成员共享的标签，不是节点，也不进内核执行图。 */
-const nodeGroups = loadTypeScript("../src/canvas/workflow/utils/nodeGroups.ts");
-
-function mediaNode(id, x, y, extra = {}) {
-  return {
-    id,
-    type: "creative-image-gen",
-    position: { x, y },
-    data: { kind: "image-gen" },
-    measured: { width: 200, height: 100 },
-    ...extra,
-  };
-}
-
-test("group frames come from member bounds and ungrouping keeps the nodes", () => {
-  const nodes = [mediaNode("a", 0, 0), mediaNode("b", 300, 100), mediaNode("c", 900, 900)];
-  const grouped = nodeGroups.withGroup(nodes, ["a", "b"], "g1", "分组", "#8b5cf6");
-  assert.deepEqual(nodeGroups.membersOf(grouped, "g1").map((node) => node.id), ["a", "b"]);
-  assert.deepEqual(nodeGroups.groupBox(grouped, "g1"), { x: -12, y: -12, w: 524, h: 224 });
-  assert.equal(nodeGroups.groupBox(grouped, "missing"), null);
-  const moved = nodeGroups.translateGroup(grouped, "g1", 10, -5);
-  assert.deepEqual(moved.find((node) => node.id === "a").position, { x: 10, y: -5 });
-  assert.deepEqual(moved.find((node) => node.id === "c").position, { x: 900, y: 900 });
-  const ungrouped = nodeGroups.withoutGroup(grouped, "g1");
-  assert.equal(ungrouped.length, 3);
-  assert.equal(nodeGroups.membersOf(ungrouped, "g1").length, 0);
-});
-
-test("soleGroupOfSelected reports a group only when the whole group is selected", () => {
-  const nodes = nodeGroups.withGroup(
-    [mediaNode("a", 0, 0), mediaNode("b", 300, 0), mediaNode("c", 600, 0)],
-    ["a", "b"],
-    "g1",
-    "分组",
-    "#8b5cf6",
-  );
-  assert.equal(nodeGroups.soleGroupOfSelected(nodes, ["a"]), null);
-  assert.equal(nodeGroups.soleGroupOfSelected(nodes, ["a", "b"]), "g1");
-  assert.equal(nodeGroups.soleGroupOfSelected(nodes, ["a", "b", "c"]), null);
-});
-
-function loadGroupStore() {
+/** 框选批量接入：一次操作建多条连线，撤销一步回到接入前。 */
+function loadCreativeStore() {
   return loadTypeScript("../src/canvas/workflow/store/creativeStore.ts", {
     react: {
       useEffect: () => {},
@@ -439,7 +387,10 @@ function loadGroupStore() {
     },
     zustand: { create: createLocalStore },
     "@xyflow/react": {
-      addEdge: (connection, edges) => [...edges, { ...connection }],
+      addEdge: (connection, edges) => [
+        ...edges,
+        { id: `${connection.source}-${connection.target}`, source: connection.source, target: connection.target },
+      ],
       applyEdgeChanges: (_changes, edges) => edges,
       applyNodeChanges: (_changes, nodes) => nodes,
     },
@@ -447,41 +398,23 @@ function loadGroupStore() {
   }).useCreativeStore;
 }
 
-test("grouping needs at least two selected nodes and undo restores the labels", () => {
-  const useCreativeStore = loadGroupStore();
+test("batch wiring adds every edge in one undo step and skips duplicates", () => {
+  const useCreativeStore = loadCreativeStore();
   const store = useCreativeStore();
-  store.addNodeAt("image-gen", 0, 0, {});
-  store.addNodeAt("image-gen", 300, 0, {});
-  const [first, second] = useCreativeStore.getState().nodes;
-  store.setSelectedIds([first.id]);
-  assert.equal(useCreativeStore.getState().groupSelected(), "", "单选不能成组");
-  store.setSelectedIds([first.id, second.id]);
-  const groupId = useCreativeStore.getState().groupSelected();
-  assert.ok(groupId);
-  assert.equal(useCreativeStore.getState().nodes.filter((node) => node.groupId === groupId).length, 2);
-  useCreativeStore.getState().undo();
-  assert.equal(useCreativeStore.getState().nodes.filter((node) => node.groupId).length, 0);
-  useCreativeStore.getState().groupSelected();
-  useCreativeStore.getState().ungroup(groupId);
-  assert.equal(useCreativeStore.getState().nodes.length, 2, "解组只清标签，不删节点");
-});
+  const a = store.addNode("image-gen", 0, 0);
+  const b = store.addNode("image-gen", 0, 100);
+  const c = store.addNode("image-gen", 0, 200);
+  const target = store.addNode("text-gen", 400, 100);
 
-test("group labels stay out of the graph handed to the kernel", async () => {
-  const previousWindow = globalThis.window;
-  globalThis.window = { __TAURI_INTERNALS__: {} };
-  const calls = [];
-  try {
-    const executor = loadWorkflowExecutor(calls, []);
-    const running = executor.runWorkflow();
-    await sleep(30);
-    await executor.cancelWorkflow();
-    await running;
-  } finally {
-    if (previousWindow === undefined) delete globalThis.window;
-    else globalThis.window = previousWindow;
-  }
-  const sent = calls.find((call) => call.command === "start_workflow").args.workflow.definition.nodes[0];
-  assert.deepEqual(Object.keys(sent).sort(), ["config", "id", "kind"]);
-  assert.equal("groupId" in sent.config, false);
-  assert.equal("groupName" in sent.config, false);
+  store.connectMany([{ source: a, target }, { source: b, target }, { source: c, target }]);
+  assert.deepEqual(
+    useCreativeStore.getState().edges.map((edge) => `${edge.source}->${edge.target}`).sort(),
+    [`${a}->${target}`, `${b}->${target}`, `${c}->${target}`].sort(),
+  );
+
+  store.connectMany([{ source: a, target }]);
+  assert.equal(useCreativeStore.getState().edges.length, 3, "已存在的连线不能重复添加");
+
+  useCreativeStore.getState().undo();
+  assert.equal(useCreativeStore.getState().edges.length, 0, "批量接入必须一步撤销");
 });

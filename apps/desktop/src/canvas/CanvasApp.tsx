@@ -19,8 +19,7 @@ import { BottomBar as WorkflowBottomBar } from "./workflow/components/BottomBar"
 import { MiniMap } from "./workflow/components/MiniMap";
 import { NodePicker } from "./workflow/components/NodePicker";
 import { CanvasSettingsDialog } from "./workflow/components/CanvasSettingsDialog";
-import { SelectionLayer } from "./workflow/components/SelectionLayer";
-import { soleGroupOfSelected } from "./workflow/utils/nodeGroups";
+import { SelectionActions } from "./workflow/components/SelectionActions";
 import { importCanvasMedia } from "./workflow/utils/canvasMedia";
 import { CropOverlay } from "./workflow/components/CropOverlay";
 import { DrawingOverlay } from "./workflow/components/DrawingOverlay";
@@ -60,7 +59,6 @@ function WorkflowCanvasInner() {
   const setSelectedNodeId = useCanvasStore((s) => s.setSelectedNodeId);
   const openNodePicker = useCanvasStore((s) => s.openNodePicker);
   const closeNodePicker = useCanvasStore((s) => s.closeNodePicker);
-  const setPendingConnection = useCanvasStore((s) => s.setPendingConnection);
   const setViewport = useCanvasStore((s) => s.setViewport);
   const cropTarget = useCanvasStore((s) => s.cropTarget);
   const setCropTarget = useCanvasStore((s) => s.setCropTarget);
@@ -282,9 +280,6 @@ function WorkflowCanvasInner() {
   const onNodesChange = mode === "creative" ? creativeOnNodesChange : proOnNodesChange;
   const onEdgesChange = mode === "creative" ? creativeOnEdgesChange : proOnEdgesChange;
   const onConnect = mode === "creative" ? creativeOnConnect : proOnConnect;
-  /** 分组动作两个模式的 store 同形（GroupActions），按当前模式取一个。 */
-  const groupStore = () =>
-    mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
   const nodeTypes = useMemo(
     () => (mode === "creative" ? creativeNodeTypes : professionalNodeTypes),
     [mode],
@@ -355,10 +350,27 @@ function WorkflowCanvasInner() {
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       const world = rfInstance.screenToFlowPosition({ x: clientX - rect.left, y: clientY - rect.top });
-      setPendingConnection({ nodeId: state.fromNode.id, handleType: state.fromHandle.type });
-      openNodePicker({ x: clientX, y: clientY, worldX: world.x, worldY: world.y });
+      openNodePicker(
+        { x: clientX, y: clientY, worldX: world.x, worldY: world.y },
+        state.fromHandle.type === "source"
+          ? { sources: [state.fromNode.id], targets: [] }
+          : { sources: [], targets: [state.fromNode.id] },
+      );
     },
-    [rfInstance, openNodePicker, setPendingConnection],
+    [rfInstance, openNodePicker],
+  );
+
+  /** 框选批量接入：在选区右侧落点打开节点面板，选中节点全部作为输入。 */
+  const handleBatchDownstream = useCallback(
+    (sourceIds: string[], world: { x: number; y: number }) => {
+      if (!rfInstance) return;
+      const screen = rfInstance.flowToScreenPosition(world);
+      openNodePicker(
+        { x: screen.x, y: screen.y, worldX: world.x, worldY: world.y },
+        { sources: sourceIds, targets: [] },
+      );
+    },
+    [rfInstance, openNodePicker],
   );
 
   useEffect(() => {
@@ -404,21 +416,6 @@ function WorkflowCanvasInner() {
         e.preventDefault();
         if (mode === "creative") useCreativeStore.getState().redo();
         else useProfessionalStore.getState().redo();
-        return;
-      }
-
-      if ((e.ctrlKey || e.metaKey) && (e.key === "g" || e.key === "G") && !isEditableTarget(e.target)) {
-        e.preventDefault();
-        const store = groupStore();
-        if (e.shiftKey) {
-          const groupId = soleGroupOfSelected(
-            store.nodes,
-            store.nodes.filter((node) => node.selected).map((node) => node.id),
-          );
-          if (groupId) store.ungroup(groupId);
-        } else {
-          store.groupSelected();
-        }
         return;
       }
 
@@ -633,16 +630,7 @@ function WorkflowCanvasInner() {
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="transparent" />
       </ReactFlow>
-        <SelectionLayer
-          nodes={nodes}
-          viewport={viewport}
-          onGroup={() => groupStore().groupSelected()}
-          onUngroup={(groupId) => groupStore().ungroup(groupId)}
-          onRename={(groupId, name) => groupStore().renameGroup(groupId, name)}
-          onColor={(groupId, color) => groupStore().colorGroup(groupId, color)}
-          onMove={(groupId, dx, dy) => groupStore().moveGroup(groupId, dx, dy)}
-          onBeforeChange={() => groupStore().pushHistory()}
-        />
+        <SelectionActions nodes={nodes} viewport={viewport} onCreateDownstream={handleBatchDownstream} />
       </div>
 
       {nodes.length === 0 && (

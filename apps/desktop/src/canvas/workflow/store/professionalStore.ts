@@ -15,26 +15,18 @@ import type {
   WorkflowNode,
 } from "../types";
 import { createDefaultNodeData, normalizeProfessionalNode } from "../utils/nodeRegistry";
-import {
-  GROUP_COLORS,
-  coloredGroup,
-  nextGroupId,
-  renamedGroup,
-  translateGroup,
-  withGroup,
-  withoutGroup,
-  type GroupActions,
-} from "../utils/nodeGroups";
 
 const SNAP_GRID = 24;
 
-interface ProfessionalState extends GroupActions {
+interface ProfessionalState {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
 
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
+  /** 一次建立多条连线（句柄留空，与手动拉线一致）：一条历史、重复连线跳过。 */
+  connectMany: (connections: Array<{ source: string; target: string }>) => void;
 
   addNode: (kind: ProfessionalNodeKind, x: number, y: number) => string;
   addNodeAt: (kind: ProfessionalNodeKind, x: number, y: number, data: Partial<ProfessionalNodeData>) => string;
@@ -164,35 +156,18 @@ export const useProfessionalStore = create<ProfessionalState>((set, get) => ({
     });
   },
 
-  groupSelected: () => {
-    const ids = get().nodes.filter((node) => node.selected).map((node) => node.id);
-    if (ids.length < 2) return "";
+  connectMany: (connections) => {
+    const wanted = connections.filter(
+      (c) => !get().edges.some((edge) => edge.source === c.source && edge.target === c.target),
+    );
+    if (!wanted.length) return;
     get().pushHistory();
-    const groupId = nextGroupId();
-    set((s) => ({ nodes: withGroup(s.nodes, ids, groupId, "分组", GROUP_COLORS[0]) }));
-    return groupId;
-  },
-
-  ungroup: (groupId) => {
-    if (!groupId) return;
-    get().pushHistory();
-    set((s) => ({ nodes: withoutGroup(s.nodes, groupId) }));
-  },
-
-  renameGroup: (groupId, name) => {
-    if (!groupId) return;
-    get().pushHistory();
-    set((s) => ({ nodes: renamedGroup(s.nodes, groupId, name.trim() || "分组") }));
-  },
-
-  colorGroup: (groupId, color) => {
-    if (!groupId) return;
-    get().pushHistory();
-    set((s) => ({ nodes: coloredGroup(s.nodes, groupId, color) }));
-  },
-
-  moveGroup: (groupId, dx, dy) => {
-    set((s) => ({ nodes: translateGroup(s.nodes, groupId, dx, dy) }));
+    set((s) => ({
+      edges: wanted.reduce(
+        (acc, c) => addEdge({ ...c, sourceHandle: null, targetHandle: null }, acc),
+        s.edges,
+      ) as WorkflowEdge[],
+    }));
   },
 
   removeNode: (id) => {

@@ -212,17 +212,7 @@ export interface ProfessionalNodeData {
 
 export type WorkflowNodeData = CreativeNodeData | ProfessionalNodeData;
 
-/**
- * 画布节点。
- *
- * 分组不是节点也不是 data 字段，而是成员节点共享的一组标记：放在节点顶层，
- * 这样它既随整份图一起持久化，又永远不会被 `serializeNodes` 送进内核图。
- */
-export type WorkflowNode = Node<WorkflowNodeData, string> & {
-  groupId?: string;
-  groupName?: string;
-  groupColor?: string;
-};
+export type WorkflowNode = Node<WorkflowNodeData, string>;
 export type WorkflowEdge = Edge<{ dataType?: string }>;
 
 export interface NodePickerPosition {

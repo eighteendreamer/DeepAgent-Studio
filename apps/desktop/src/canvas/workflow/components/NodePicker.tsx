@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Connection } from "@xyflow/react";
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
@@ -25,7 +24,7 @@ const CREATIVE_PICKER_GROUPS = [
 export function NodePicker() {
   const mode = useCanvasStore((s) => s.mode);
   const nodePicker = useCanvasStore((s) => s.nodePicker);
-  const pendingConnection = useCanvasStore((s) => s.pendingConnection);
+  const pickerWiring = useCanvasStore((s) => s.pickerWiring);
   const closeNodePicker = useCanvasStore((s) => s.closeNodePicker);
   const addCreativeNode = useCreativeStore((s) => s.addNode);
   const addProfessionalNode = useProfessionalStore((s) => s.addNode);
@@ -55,20 +54,23 @@ export function NodePicker() {
     el.style.top = `${Math.max(margin, Math.min(nodePicker.y, window.innerHeight - height - margin))}px`;
   }, [nodePicker, activeTab]);
 
-  const connectNewNode = (newNodeId: string) => {
-    if (!pendingConnection) return;
-    const connection: Connection =
-      pendingConnection.handleType === "source"
-        ? { source: pendingConnection.nodeId, target: newNodeId, sourceHandle: null, targetHandle: null }
-        : { source: newNodeId, target: pendingConnection.nodeId, sourceHandle: null, targetHandle: null };
-    useCreativeStore.getState().onConnect(connection);
+  /** 新节点建好后按接线意图批量连线；框选批量接入与单点拖出走同一条链路。 */
+  const wireNewNode = (newNodeId: string) => {
+    if (!pickerWiring) return;
+    const connections = [
+      ...pickerWiring.sources.map((source) => ({ source, target: newNodeId })),
+      ...pickerWiring.targets.map((target) => ({ source: newNodeId, target })),
+    ];
+    if (!connections.length) return;
+    const store = mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
+    store.connectMany(connections);
   };
 
   const createCreativeNode = (kind: CreativeNodeKind, extraData: Record<string, unknown> = {}) => {
     if (!nodePicker) return;
     const newNodeId = addCreativeNode(kind, nodePicker.worldX, nodePicker.worldY);
     if (Object.keys(extraData).length > 0) useCreativeStore.getState().updateNodeData(newNodeId, extraData);
-    connectNewNode(newNodeId);
+    wireNewNode(newNodeId);
     closeNodePicker();
   };
 
@@ -81,7 +83,7 @@ export function NodePicker() {
       creativeAction: "选择具体类型",
       creativeActionKey: "category-picker",
     });
-    connectNewNode(newNodeId);
+    wireNewNode(newNodeId);
     closeNodePicker();
   };
 
@@ -140,7 +142,7 @@ export function NodePicker() {
       const newNodeId = useCreativeStore.getState().addNode(kind, nodePicker.worldX + index * 264, nodePicker.worldY + index * 24);
       useCreativeStore.getState().updateNodeData(newNodeId, extraData);
       if (!connected) {
-        connectNewNode(newNodeId);
+        wireNewNode(newNodeId);
         connected = true;
       }
     }
@@ -166,13 +168,7 @@ export function NodePicker() {
   const handleProfessionalSelect = (kind: ProfessionalNodeKind) => {
     if (!nodePicker) return;
     const newNodeId = addProfessionalNode(kind, nodePicker.worldX, nodePicker.worldY);
-    if (pendingConnection) {
-      const connection: Connection =
-        pendingConnection.handleType === "source"
-          ? { source: pendingConnection.nodeId, target: newNodeId, sourceHandle: null, targetHandle: null }
-          : { source: newNodeId, target: pendingConnection.nodeId, sourceHandle: null, targetHandle: null };
-      useProfessionalStore.getState().onConnect(connection);
-    }
+    wireNewNode(newNodeId);
     closeNodePicker();
   };
 
