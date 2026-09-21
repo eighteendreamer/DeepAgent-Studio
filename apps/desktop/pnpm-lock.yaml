@@ -95,6 +95,9 @@ importers:
       lucide-react:
         specifier: ^1.43.0
         version: 1.43.0(react@18.3.1)
+      ogl:
+        specifier: ^1.0.11
+        version: 1.0.11
       pnpm:
         specifier: ^11.7.0
         version: 11.7.0
@@ -2969,6 +2972,9 @@ packages:
 
   occt-import-js@0.0.23:
     resolution: {integrity: sha512-RFfYQXYFX5C1mB1Aywm0ShcUKzXOr/VzTnlzhBSDJOR6YCAPt1HYCzeXWg1vwwjn/cUxwqRNhhtf1dlewoZYCQ==}
+
+  ogl@1.0.11:
+    resolution: {integrity: sha512-kUpC154AFfxi16pmZUK4jk3J+8zxwTWGPo03EoYA8QPbzikHoaC82n6pNTbd+oEaJonaE8aPWBlX7ad9zrqLsA==}
 
   package-manager-detector@1.8.0:
     resolution: {integrity: sha512-yQA4H19AmPEoMUeavPMDIe1higySl/gH/yaQrkT/s07Qp+7pp2hYz30N3z2l5BkjVkF9Ow6o0wjJamm2y7Sn0A==}
@@ -6518,6 +6524,8 @@ snapshots:
   object-hash@3.0.0: {}
 
   occt-import-js@0.0.23: {}
+
+  ogl@1.0.11: {}
 
   package-manager-detector@1.8.0: {}
 
