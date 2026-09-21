@@ -294,3 +294,53 @@ test("emptying the key field clears the stored secret instead of leaving it", as
   assert.ok(keyWrites(calls).length > 0);
   assert.ok(keyWrites(calls).every((key) => key === null));
 });
+
+/**
+ * 文生图载体节点：文本节点只做提示词载体，发送时派生出一个未连线的图片节点。
+ * @xyflow/react 和提示词档案都换成本地假实现，只验证 store 的创建语义。
+ */
+function loadCreativeStore() {
+  const exports = loadTypeScript("../src/canvas/workflow/store/creativeStore.ts", {
+    react: {
+      useEffect: () => {},
+      useMemo: (factory) => factory(),
+      useRef: (initial) => ({ current: initial }),
+      useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}],
+    },
+    zustand: { create: createLocalStore },
+    "@xyflow/react": {
+      addEdge: (connection, edges) => [...edges, { ...connection }],
+      applyEdgeChanges: (_changes, edges) => edges,
+      applyNodeChanges: (_changes, nodes) => nodes,
+    },
+    "../utils/canvasPromptProfile": { canvasPromptProfilePatch: async () => null },
+  });
+  return exports.useCreativeStore;
+}
+
+test("text-to-image composer spawns an unconnected image node with prompt and model", () => {
+  const useCreativeStore = loadCreativeStore();
+  const store = useCreativeStore();
+  const textId = store.addNodeAt("text-gen", 120, 60, {
+    prompt: "  一只赛博朋克猫  ",
+    model: "p1::gpt-image-2",
+    creativeActionKey: "text-to-image",
+  });
+  const imageId = useCreativeStore.getState().spawnImageNodeFromPrompt(textId);
+  const spawned = useCreativeStore.getState().nodes.find((node) => node.id === imageId);
+  assert.ok(imageId);
+  assert.equal(spawned.type, "creative-image-gen");
+  assert.equal(spawned.data.kind, "image-gen");
+  assert.equal(spawned.data.imagePrompt, "  一只赛博朋克猫  ");
+  assert.equal(spawned.data.imageModel, "p1::gpt-image-2");
+  assert.equal(spawned.data.creativeActionKey, "text-to-image");
+  assert.deepEqual(useCreativeStore.getState().edges, []);
+});
+
+test("an empty composer prompt spawns nothing", () => {
+  const useCreativeStore = loadCreativeStore();
+  const store = useCreativeStore();
+  const textId = store.addNodeAt("text-gen", 0, 0, { prompt: "   ", creativeActionKey: "text-to-image" });
+  assert.equal(useCreativeStore.getState().spawnImageNodeFromPrompt(textId), null);
+  assert.equal(useCreativeStore.getState().nodes.length, 1);
+});

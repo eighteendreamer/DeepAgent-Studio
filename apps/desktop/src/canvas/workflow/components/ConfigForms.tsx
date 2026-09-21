@@ -133,21 +133,6 @@ function ChipSelect({
   );
 }
 
-function buildModelOptions(configuredModel: string, selectedModel: string) {
-  return Array.from(
-    new Map(
-      [
-        configuredModel ? { value: configuredModel, label: configuredModel } : null,
-        selectedModel && selectedModel !== configuredModel
-          ? { value: selectedModel, label: selectedModel }
-          : null,
-      ]
-        .filter((item): item is { value: string; label: string } => item !== null)
-        .map((item) => [item.value, item]),
-    ).values(),
-  );
-}
-
 function stopPanelGesture(event: React.SyntheticEvent) {
   event.stopPropagation();
 }
@@ -300,9 +285,9 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
   const fileInputRef = useRef<HTMLInputElement>(null);
   const expandedTextareaRef = useRef<HTMLTextAreaElement>(null);
   const configuredModel = useCanvasSettingsStore((state) => state.scenarioModels.image.model.trim());
-
-  const model = data.imageModel?.trim() || configuredModel;
-  const modelOptions = buildModelOptions(configuredModel, model);
+  const nodeModel = data.imageModel?.trim() || configuredModel;
+  const modelOptions = useScenarioModelOptions("image_generation", nodeModel);
+  const model = nodeModel || modelOptions[0]?.value || "";
   const prompt = data.imagePrompt ?? "";
   const ratio = data.aspectRatio ?? "1:1";
   const resolution = data.resolution ?? "1K";
@@ -587,7 +572,7 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <ChipSelect
               value={model}
-              options={modelOptions.length > 0 ? modelOptions : [{ value: "", label: "选择模型" }]}
+              options={modelOptions}
               onChange={setModel}
             />
             <ChipSelect
@@ -642,7 +627,7 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
             <div className="flex items-center gap-1.5">
               <ChipSelect
                 value={model}
-                options={modelOptions.length > 0 ? modelOptions : [{ value: "", label: "选择模型" }]}
+                options={modelOptions}
                 onChange={setModel}
               />
               <ChipSelect
@@ -684,8 +669,9 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
 export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeData } & FormProps) {
   const [expanded, setExpanded] = useState(false);
   const configuredModel = useCanvasSettingsStore((state) => state.scenarioModels.video.model.trim());
-  const selectedModel = data.videoModel?.trim() || configuredModel;
-  const modelOptions = buildModelOptions(configuredModel, selectedModel);
+  const nodeModel = data.videoModel?.trim() || configuredModel;
+  const modelOptions = useScenarioModelOptions("video_generation", nodeModel);
+  const selectedModel = nodeModel || modelOptions[0]?.value || "";
   const prompt = data.videoPrompt ?? "";
   const duration = data.videoDuration ?? 5;
 
@@ -739,7 +725,7 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
           <div className="flex min-w-0 items-center gap-1.5">
             <ChipSelect
               value={selectedModel}
-              options={modelOptions.length > 0 ? modelOptions : [{ value: "", label: "选择模型" }]}
+              options={modelOptions}
               onChange={(videoModel) => onUpdate({ videoModel })}
             />
             <label
@@ -789,7 +775,7 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
             <div className="flex items-center gap-1.5">
               <ChipSelect
                 value={selectedModel}
-                options={modelOptions.length > 0 ? modelOptions : [{ value: "", label: "选择模型" }]}
+                options={modelOptions}
                 onChange={(videoModel) => onUpdate({ videoModel })}
               />
               <label className="flex h-8 items-center gap-1 rounded-lg bg-white/[0.08] px-2.5 text-xs text-white/70">
