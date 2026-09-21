@@ -1046,9 +1046,13 @@ impl ChatService {
     }
 
     /// Execute a professional-canvas workflow through the kernel.
+    ///
+    /// `run_id` is supplied by the caller so the id it uses to listen for
+    /// events is the same one `cancel_run` can address.
     pub async fn run_workflow<F, A>(
         &self,
         workflow_request: deepagent_runtime::workflow::WorkflowRequest,
+        run_id: String,
         on_event: F,
         on_approval: A,
     ) -> Result<String>
@@ -1058,7 +1062,7 @@ impl ChatService {
     {
         let assembler = self.run_assembler();
         assembler
-            .run_workflow(workflow_request, on_event, on_approval)
+            .run_workflow(workflow_request, run_id, on_event, on_approval)
             .await
     }
 

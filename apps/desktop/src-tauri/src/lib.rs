@@ -2453,6 +2453,7 @@ fn start_workflow(
         let result = chat
             .run_workflow(
                 workflow,
+                run_id.clone(),
                 move |event| {
                     let _ = event_emitter.emit(
                         "chat://event",

@@ -317,3 +317,61 @@ test("the text category's 文生图 entry produces an image node, not a text car
   assert.equal(option.kind, "image-gen");
   assert.equal(option.label, "文生图");
 });
+
+/**
+ * 取消一次画布运行：必须通知内核，而不是只把前端监听摘掉。
+ * 内核只认 start_workflow 回执里的 run id，所以这里同时钉住两个 id 是同一个。
+ */
+function loadWorkflowExecutor(calls, updates) {
+  const creative = {
+    getState: () => ({
+      nodes: [{ id: "n1", data: { kind: "image-gen", status: "running" } }],
+      edges: [],
+      updateNodeData: (id, patch) => updates.push([id, patch]),
+    }),
+  };
+  const professional = { getState: () => ({ nodes: [], edges: [], updateNodeData: () => {} }) };
+  const canvas = { getState: () => ({ mode: "creative" }) };
+  return loadTypeScript("../src/canvas/workflow/utils/workflowExecutor.ts", {
+    "../store/canvasStore": { useCanvasStore: canvas },
+    "../store/creativeStore": { useCreativeStore: creative },
+    "../store/professionalStore": { useProfessionalStore: professional },
+    "@tauri-apps/api/core": {
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        return { run_id: "run_42", session_id: null, accepted: true };
+      },
+      convertFileSrc: (path) => path,
+    },
+    "@tauri-apps/api/event": { listen: async () => () => {} },
+  });
+}
+
+test("cancelling a node run asks the kernel to cancel the same run id it returned", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { __TAURI_INTERNALS__: {} };
+  const calls = [];
+  const updates = [];
+  try {
+    const executor = loadWorkflowExecutor(calls, updates);
+    const running = executor.runWorkflow("n1");
+    await sleep(30);
+    // 开跑时的 resetAllStatus 也会写一次 idle，取消前的复位要单独看。
+    updates.length = 0;
+    await executor.cancelWorkflow("n1");
+    await running;
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+  const started = calls.find((call) => call.command === "start_workflow");
+  assert.ok(started, "画布运行必须由 start_workflow 发起");
+  assert.deepEqual(
+    calls.find((call) => call.command === "cancel_run")?.args,
+    { runId: "run_42" },
+  );
+  assert.deepEqual(
+    updates.filter(([, patch]) => patch.status === "idle").map(([id]) => id),
+    ["n1"],
+  );
+});

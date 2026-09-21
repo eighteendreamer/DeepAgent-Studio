@@ -907,6 +907,7 @@ impl<'a> RunAssembler<'a> {
     pub(crate) async fn run_workflow<F, A>(
         self,
         workflow_request: deepagent_runtime::workflow::WorkflowRequest,
+        run_id: String,
         on_event: F,
         on_approval: A,
     ) -> Result<String>
@@ -915,7 +916,6 @@ impl<'a> RunAssembler<'a> {
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
         let root = self.effective_root();
-        let run_id = format!("run_{}", deepagent_core::id::EventId::new());
         let cancellation = self.coordinator.register(run_id.clone(), None);
 
         append_runtime_log(

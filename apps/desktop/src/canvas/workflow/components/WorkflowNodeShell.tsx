@@ -132,7 +132,7 @@ function renderContent(nodeData: WorkflowNodeData, nodeId?: string) {
     case "image-input":
       return <ImageInputContent id={nodeId ?? ""} data={creativeData} />;
     case "image-gen":
-      return <ImageGenContent data={creativeData} />;
+      return <ImageGenContent id={nodeId ?? ""} data={creativeData} />;
     case "image-compare":
       return <ImageCompareContent data={creativeData} />;
     case "image-edit":
@@ -140,7 +140,7 @@ function renderContent(nodeData: WorkflowNodeData, nodeId?: string) {
     case "script-gen":
       return <ScriptGenContent data={creativeData} />;
     case "video-gen":
-      return <VideoGenContent data={creativeData} />;
+      return <VideoGenContent id={nodeId ?? ""} data={creativeData} />;
     case "video-stitch":
       return <VideoStitchContent data={creativeData} />;
     case "audio":

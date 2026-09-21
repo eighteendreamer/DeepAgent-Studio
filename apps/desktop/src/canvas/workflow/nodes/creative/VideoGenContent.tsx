@@ -1,11 +1,13 @@
 import type { CreativeNodeData } from "../../types";
 import { useCanvasMediaSrc } from "../../utils/canvasMedia";
+import { GeneratingOverlay } from "./GeneratingOverlay";
 
 interface Props {
+  id: string;
   data: CreativeNodeData;
 }
 
-export function VideoGenContent({ data }: Props) {
+export function VideoGenContent({ id, data }: Props) {
   const model = data.videoModel?.trim();
   const videoSrc = useCanvasMediaSrc(data.videoUrl);
   return (
@@ -38,6 +40,7 @@ export function VideoGenContent({ data }: Props) {
             输入提示词生成视频
           </span>
         )}
+        {data.status === "running" && <GeneratingOverlay nodeId={id} label="视频生成中…" />}
         {data.status === "running" && data.videoProgress != null && (
           <div className="absolute bottom-0 left-0 right-0 h-1 overflow-hidden rounded-b-lg">
             <div

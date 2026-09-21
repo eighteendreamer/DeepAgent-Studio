@@ -27,7 +27,7 @@ import {
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
-import { runWorkflow, stopWorkflow, resetAllStatus, isWorkflowRunning } from "../utils/workflowExecutor";
+import { cancelWorkflow, runWorkflow, resetAllStatus, isWorkflowRunning } from "../utils/workflowExecutor";
 import { applyDagreLayout } from "../utils/layout";
 import type { NodeAlignMode } from "../types";
 import type { Viewport } from "@xyflow/react";
@@ -116,7 +116,7 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
 
   const handleRun = () => {
     if (running) {
-      stopWorkflow();
+      void cancelWorkflow();
     } else {
       resetAllStatus();
       void runWorkflow();

@@ -18,6 +18,8 @@ import type { CreativeNodeData, ProfessionalNodeData } from "../types";
 let _abortController: AbortController | null = null;
 let _eventUnlisten: (() => void) | null = null;
 let _completionUnlisten: (() => void) | null = null;
+/** 当前在跑的内核 run id；cancel_run 认的就是这个标识。 */
+let _currentRunId: string | null = null;
 
 const UI_META_KEYS = new Set([
   "label",
@@ -249,6 +251,7 @@ async function runBackendWorkflow(
     "start_workflow",
     { workflow, sessionId: null },
   );
+  _currentRunId = ack.run_id;
 
   return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
@@ -348,18 +351,42 @@ export async function runWorkflow(nodeId?: string) {
     }
   } finally {
     _abortController = null;
+    _currentRunId = null;
   }
 }
 
-export function stopWorkflow() {
+function stopWorkflow() {
   if (_abortController) {
     _abortController.abort();
     _abortController = null;
   }
+  _currentRunId = null;
   _eventUnlisten?.();
   _eventUnlisten = null;
   _completionUnlisten?.();
   _completionUnlisten = null;
+}
+
+/**
+ * 取消这次画布运行。
+ *
+ * 画布一次只有一个在跑的 run，所以节点上的取消就是取消整次运行；先通知内核
+ * 停止，再收掉本地监听并复位节点，避免节点永远停在“运行中”。
+ */
+export async function cancelWorkflow(nodeId?: string) {
+  const mode = useCanvasStore.getState().mode;
+  const runId = _currentRunId;
+  if (runId) {
+    try {
+      const core = await import("@tauri-apps/api/core");
+      const ack = await core.invoke<{ accepted: boolean }>("cancel_run", { runId });
+      if (!ack.accepted) console.warn("[canvas] 内核未受理取消:", runId);
+    } catch (error) {
+      console.error("[canvas] 取消运行失败:", error);
+    }
+  }
+  stopWorkflow();
+  if (nodeId) setNodeStatus(mode, nodeId, "idle");
 }
 
 export function resetAllStatus() {
