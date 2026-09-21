@@ -15,6 +15,16 @@ import type {
   WorkflowNode,
 } from "../types";
 import { canvasPromptProfilePatch } from "../utils/canvasPromptProfile";
+import {
+  GROUP_COLORS,
+  coloredGroup,
+  nextGroupId,
+  renamedGroup,
+  translateGroup,
+  withGroup,
+  withoutGroup,
+  type GroupActions,
+} from "../utils/nodeGroups";
 
 const SNAP_GRID = 24;
 
@@ -85,7 +95,7 @@ function createDefaultCreativeData(kind: CreativeNodeKind): CreativeNodeData {
   }
 }
 
-interface CreativeState {
+interface CreativeState extends GroupActions {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
 
@@ -258,6 +268,37 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
       edges: addEdge({ source: inputId, target: id, sourceHandle: null, targetHandle: null }, current.edges) as WorkflowEdge[],
     }));
     return inputId;
+  },
+
+  groupSelected: () => {
+    const ids = get().nodes.filter((node) => node.selected).map((node) => node.id);
+    if (ids.length < 2) return "";
+    get().pushHistory();
+    const groupId = nextGroupId();
+    set((s) => ({ nodes: withGroup(s.nodes, ids, groupId, "分组", GROUP_COLORS[0]) }));
+    return groupId;
+  },
+
+  ungroup: (groupId) => {
+    if (!groupId) return;
+    get().pushHistory();
+    set((s) => ({ nodes: withoutGroup(s.nodes, groupId) }));
+  },
+
+  renameGroup: (groupId, name) => {
+    if (!groupId) return;
+    get().pushHistory();
+    set((s) => ({ nodes: renamedGroup(s.nodes, groupId, name.trim() || "分组") }));
+  },
+
+  colorGroup: (groupId, color) => {
+    if (!groupId) return;
+    get().pushHistory();
+    set((s) => ({ nodes: coloredGroup(s.nodes, groupId, color) }));
+  },
+
+  moveGroup: (groupId, dx, dy) => {
+    set((s) => ({ nodes: translateGroup(s.nodes, groupId, dx, dy) }));
   },
 
   removeNode: (id) => {

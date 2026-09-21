@@ -19,6 +19,8 @@ import { BottomBar as WorkflowBottomBar } from "./workflow/components/BottomBar"
 import { MiniMap } from "./workflow/components/MiniMap";
 import { NodePicker } from "./workflow/components/NodePicker";
 import { CanvasSettingsDialog } from "./workflow/components/CanvasSettingsDialog";
+import { SelectionLayer } from "./workflow/components/SelectionLayer";
+import { soleGroupOfSelected } from "./workflow/utils/nodeGroups";
 import { importCanvasMedia } from "./workflow/utils/canvasMedia";
 import { CropOverlay } from "./workflow/components/CropOverlay";
 import { DrawingOverlay } from "./workflow/components/DrawingOverlay";
@@ -280,6 +282,9 @@ function WorkflowCanvasInner() {
   const onNodesChange = mode === "creative" ? creativeOnNodesChange : proOnNodesChange;
   const onEdgesChange = mode === "creative" ? creativeOnEdgesChange : proOnEdgesChange;
   const onConnect = mode === "creative" ? creativeOnConnect : proOnConnect;
+  /** 分组动作两个模式的 store 同形（GroupActions），按当前模式取一个。 */
+  const groupStore = () =>
+    mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
   const nodeTypes = useMemo(
     () => (mode === "creative" ? creativeNodeTypes : professionalNodeTypes),
     [mode],
@@ -399,6 +404,21 @@ function WorkflowCanvasInner() {
         e.preventDefault();
         if (mode === "creative") useCreativeStore.getState().redo();
         else useProfessionalStore.getState().redo();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && (e.key === "g" || e.key === "G") && !isEditableTarget(e.target)) {
+        e.preventDefault();
+        const store = groupStore();
+        if (e.shiftKey) {
+          const groupId = soleGroupOfSelected(
+            store.nodes,
+            store.nodes.filter((node) => node.selected).map((node) => node.id),
+          );
+          if (groupId) store.ungroup(groupId);
+        } else {
+          store.groupSelected();
+        }
         return;
       }
 
@@ -613,6 +633,16 @@ function WorkflowCanvasInner() {
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="transparent" />
       </ReactFlow>
+        <SelectionLayer
+          nodes={nodes}
+          viewport={viewport}
+          onGroup={() => groupStore().groupSelected()}
+          onUngroup={(groupId) => groupStore().ungroup(groupId)}
+          onRename={(groupId, name) => groupStore().renameGroup(groupId, name)}
+          onColor={(groupId, color) => groupStore().colorGroup(groupId, color)}
+          onMove={(groupId, dx, dy) => groupStore().moveGroup(groupId, dx, dy)}
+          onBeforeChange={() => groupStore().pushHistory()}
+        />
       </div>
 
       {nodes.length === 0 && (
