@@ -92,10 +92,12 @@ export function ImageInputContent({ id, data }: Props) {
         </button>
       )}
 
-      <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-white/40">
-        <Upload className="h-3 w-3 shrink-0" />
-        <span className="truncate">{sourceFileName || "支持 JPG、PNG、WebP"}</span>
-      </div>
+      {sourceFileName && (
+        <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-white/40">
+          <Upload className="h-3 w-3 shrink-0" />
+          <span className="truncate">{sourceFileName}</span>
+        </div>
+      )}
     </div>
   );
 }

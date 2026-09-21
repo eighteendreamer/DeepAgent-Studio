@@ -5,22 +5,10 @@ interface Props {
   data: CreativeNodeData;
 }
 
-const EDIT_MODES: Record<string, { label: string; color: string }> = {
-  crop: { label: "裁剪", color: "rgba(59,130,246,0.8)" },
-  "remove-bg": { label: "去背景", color: "rgba(16,185,129,0.8)" },
-  upscale: { label: "超分", color: "rgba(245,158,11,0.8)" },
-  repaint: { label: "重绘", color: "rgba(139,92,246,0.8)" },
-};
-
 export function ImageEditContent({ data }: Props) {
-  const mode = data.editMode ?? "crop";
   const src = useCanvasMediaSrc(data.imageUrl);
-  const modeInfo = EDIT_MODES[mode] ?? EDIT_MODES.crop;
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="rounded px-1 py-0.5 text-[9px] font-medium self-start" style={{ background: `${modeInfo.color}22`, color: modeInfo.color }}>
-        {modeInfo.label}
-      </span>
       <div
         className="flex items-center justify-center rounded-lg"
         style={{

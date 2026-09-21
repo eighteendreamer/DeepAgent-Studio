@@ -578,8 +578,8 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
         {/* Node content by kind */}
         {renderContent(nodeData, id)}
 
-        {/* Status line */}
-        {(!mediaFirst || nodeStatus === "error") && (
+        {/* Status line：就绪与已完成由主内容表达，只有运行中和失败需要额外说明 */}
+        {(nodeStatus === "error" || (nodeStatus === "running" && !mediaFirst)) && (
           <div className={`flex items-center gap-1.5 ${mediaFirst ? "px-3 pb-2 pt-1" : "mt-2"}`}>
             <div
               className="rounded-full"

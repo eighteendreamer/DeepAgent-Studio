@@ -8,9 +8,6 @@ export function VideoStitchContent({ data }: Props) {
   const count = data.inputVideoUrls?.length ?? 0;
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-[9px]" style={{ color: "rgba(248,248,248,0.35)" }}>
-        {count > 0 ? `${count} 段视频` : "添加视频片段"}
-      </span>
       <div className="flex gap-1">
         {[0, 1, 2].map((i) => (
           <div

@@ -34,15 +34,12 @@ export function TextGenContent({ id, data }: Props) {
               <Sparkles className="h-3.5 w-3.5" />
             </div>
           )}
-          <span className="truncate text-[10px] text-white/45">{upstreamImage ? "已连接图片输入" : "等待图片输入"}</span>
         </div>
       )}
-      {data.prompt ? (
+      {data.prompt && (
         <div className="rounded-lg bg-white/[0.025] px-2.5 py-2 text-xs leading-relaxed text-white/65" style={{ maxHeight: 72, overflow: "hidden" }}>
           {data.prompt}
         </div>
-      ) : (
-        <div className="px-2.5 py-2 text-[11px] text-white/30">点击节点后在下方编辑</div>
       )}
       {data.output && (
         <div className="rounded-lg border border-white/[0.08] bg-white/[0.02] px-2.5 py-2 text-[11px] leading-relaxed text-white/60">

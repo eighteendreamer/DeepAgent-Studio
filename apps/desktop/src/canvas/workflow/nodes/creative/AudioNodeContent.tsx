@@ -15,20 +15,9 @@ interface Props {
 export function AudioContent({ data }: Props) {
   const playable = useCanvasMediaSrc(data.audioUrl ?? data.audioReference);
   const transcribed = data.audioOperation !== "speech_synthesize";
-  const model = data.audioModel?.split("::").pop()?.trim();
 
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-1.5 text-[9px]">
-        <span className="font-medium" style={{ color: "rgba(248,248,248,0.55)" }}>
-          {transcribed ? "语音转文字" : "文字转语音"}
-        </span>
-        {model && <span style={{ color: "rgba(248,248,248,0.35)" }}>{model}</span>}
-        {data.audioFormat && !transcribed && (
-          <span style={{ color: "rgba(248,248,248,0.35)" }}>{data.audioFormat.toUpperCase()}</span>
-        )}
-      </div>
-
       {playable ? (
         <div
           className="flex items-center gap-2 rounded-lg px-2 py-2"
