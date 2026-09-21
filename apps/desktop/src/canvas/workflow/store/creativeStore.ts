@@ -43,7 +43,7 @@ function createDefaultCreativeData(kind: CreativeNodeKind): CreativeNodeData {
     case "image-input":
       return { ...base, label: "图片输入", imageUrl: "" };
     case "image-gen":
-      return { ...base, label: "图片生成", imageModel: "", imagePrompt: "", aspectRatio: "1:1" };
+      return { ...base, label: "图片生成", imageModel: "", imagePrompt: "", aspectRatio: "1:1", size: "1024x1024" };
     case "image-compare":
       return { ...base, label: "图片对比" };
     case "image-edit":
@@ -97,8 +97,6 @@ interface CreativeState {
   addNodeAt: (kind: CreativeNodeKind, x: number, y: number, data: Partial<CreativeNodeData>) => string;
   refineNode: (id: string, kind: CreativeNodeKind, data?: Partial<CreativeNodeData>) => void;
   createImageToPromptPair: (id: string, data?: Partial<CreativeNodeData>) => string | null;
-  /** 文生图文本节点发送时派生出承载生成请求的图片节点，返回新节点 id。 */
-  spawnImageNodeFromPrompt: (id: string) => string | null;
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<CreativeNodeData>) => void;
   setNodes: (nodes: WorkflowNode[]) => void;
@@ -260,22 +258,6 @@ export const useCreativeStore = create<CreativeState>((set, get) => ({
       edges: addEdge({ source: inputId, target: id, sourceHandle: null, targetHandle: null }, current.edges) as WorkflowEdge[],
     }));
     return inputId;
-  },
-
-  spawnImageNodeFromPrompt: (id) => {
-    const source = get().nodes.find((node) => node.id === id);
-    const data = source?.data as CreativeNodeData | undefined;
-    if (!source || !data?.prompt?.trim()) return null;
-    // 不连线：连线会让内核把文本节点当作 target 的祖先执行，而它只是提示词的载体。
-    return get().addNodeAt("image-gen", source.position.x + 340, source.position.y, {
-      label: "文生图",
-      creativeCategory: "图片",
-      creativeCategoryKey: "image",
-      creativeAction: "文生图",
-      creativeActionKey: "text-to-image",
-      imagePrompt: data.prompt,
-      imageModel: data.model ?? "",
-    });
   },
 
   removeNode: (id) => {

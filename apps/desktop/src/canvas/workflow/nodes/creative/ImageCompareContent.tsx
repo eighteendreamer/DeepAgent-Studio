@@ -1,10 +1,13 @@
 import type { CreativeNodeData } from "../../types";
+import { useCanvasMediaSrc } from "../../utils/canvasMedia";
 
 interface Props {
   data: CreativeNodeData;
 }
 
 export function ImageCompareContent({ data }: Props) {
+  const leftSrc = useCanvasMediaSrc(data.leftImageUrl);
+  const rightSrc = useCanvasMediaSrc(data.rightImageUrl);
   return (
     <div className="flex gap-1">
       <div
@@ -16,8 +19,8 @@ export function ImageCompareContent({ data }: Props) {
           overflow: "hidden",
         }}
       >
-        {data.leftImageUrl ? (
-          <img src={data.leftImageUrl} alt="" className="h-full w-full object-cover rounded-lg" />
+        {leftSrc ? (
+          <img src={leftSrc} alt="" className="h-full w-full object-cover rounded-lg" />
         ) : (
           <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.2)" }}>A</span>
         )}
@@ -37,8 +40,8 @@ export function ImageCompareContent({ data }: Props) {
           overflow: "hidden",
         }}
       >
-        {data.rightImageUrl ? (
-          <img src={data.rightImageUrl} alt="" className="h-full w-full object-cover rounded-lg" />
+        {rightSrc ? (
+          <img src={rightSrc} alt="" className="h-full w-full object-cover rounded-lg" />
         ) : (
           <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.2)" }}>B</span>
         )}

@@ -23,23 +23,28 @@ export function ImageGenContent({ data }: Props) {
           </span>
         )}
       </div>
-      <div
-        className="flex items-center justify-center rounded-lg"
-        style={{
-          height: 100,
-          background: data.imageUrl ? "transparent" : "rgba(255,255,255,0.03)",
-          border: data.imageUrl ? "none" : "1px dashed rgba(255,255,255,0.08)",
-          overflow: "hidden",
-        }}
-      >
-        {src ? (
-          <img src={src} alt="" className="h-full w-full object-cover rounded-lg" />
-        ) : (
+      {src ? (
+        <img
+          src={src}
+          alt=""
+          className="block max-h-[260px] w-full rounded-lg object-contain"
+          draggable={false}
+        />
+      ) : (
+        <div
+          className="flex items-center justify-center rounded-lg"
+          style={{
+            height: 100,
+            background: "rgba(255,255,255,0.03)",
+            border: "1px dashed rgba(255,255,255,0.08)",
+            overflow: "hidden",
+          }}
+        >
           <span className="text-xs" style={{ color: "rgba(248,248,248,0.25)" }}>
             输入提示词生成图片
           </span>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

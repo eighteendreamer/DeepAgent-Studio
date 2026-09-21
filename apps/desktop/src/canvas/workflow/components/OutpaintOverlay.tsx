@@ -13,6 +13,7 @@ import { Button } from "../../../components/shadcn/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../../components/shadcn/dropdown-menu";
 import { Textarea } from "../../../components/shadcn/textarea";
 import { useCanvasSettingsStore } from "../store/canvasSettingsStore";
+import { useCanvasMediaSrc } from "../utils/canvasMedia";
 
 interface Props {
   imageUrl: string;
@@ -61,6 +62,7 @@ function SettingMenu({ label, value, options, onChange }: {
 export function OutpaintOverlay({ imageUrl, itemName, onCancel }: Props) {
   const [draft, setDraft] = useState("");
   const configuredImageModel = useCanvasSettingsStore((state) => state.scenarioModels.image.model.trim());
+  const previewSrc = useCanvasMediaSrc(imageUrl);
   const [model, setModel] = useState("");
   const [resolution, setResolution] = useState("4K");
   const [thinkingLevel, setThinkingLevel] = useState("中度");
@@ -118,12 +120,14 @@ export function OutpaintOverlay({ imageUrl, itemName, onCancel }: Props) {
 
       <main className="absolute inset-0 flex items-center justify-center px-8 pb-[238px] pt-24">
         <div className="relative inline-flex max-h-full max-w-full overflow-hidden rounded-[22px] border border-white/10 bg-black/25 shadow-[0_20px_80px_rgba(0,0,0,0.32)]">
-          <img
-            src={imageUrl}
-            alt={itemName}
-            className="block max-h-[calc(100vh-300px)] max-w-[calc(100vw-64px)] rounded-[21px] object-contain"
-            draggable={false}
-          />
+          {previewSrc && (
+            <img
+              src={previewSrc}
+              alt={itemName}
+              className="block max-h-[calc(100vh-300px)] max-w-[calc(100vw-64px)] rounded-[21px] object-contain"
+              draggable={false}
+            />
+          )}
           <div className="absolute bottom-3 left-4 flex items-center gap-1.5 text-[10px] text-white/35">
             <ImageIcon className="h-3.5 w-3.5" />
             原图预览

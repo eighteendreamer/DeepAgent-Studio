@@ -295,52 +295,25 @@ test("emptying the key field clears the stored secret instead of leaving it", as
   assert.ok(keyWrites(calls).every((key) => key === null));
 });
 
-/**
- * 文生图载体节点：文本节点只做提示词载体，发送时派生出一个未连线的图片节点。
- * @xyflow/react 和提示词档案都换成本地假实现，只验证 store 的创建语义。
- */
-function loadCreativeStore() {
-  const exports = loadTypeScript("../src/canvas/workflow/store/creativeStore.ts", {
-    react: {
-      useEffect: () => {},
-      useMemo: (factory) => factory(),
-      useRef: (initial) => ({ current: initial }),
-      useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}],
-    },
-    zustand: { create: createLocalStore },
-    "@xyflow/react": {
-      addEdge: (connection, edges) => [...edges, { ...connection }],
-      applyEdgeChanges: (_changes, edges) => edges,
-      applyNodeChanges: (_changes, nodes) => nodes,
-    },
-    "../utils/canvasPromptProfile": { canvasPromptProfilePatch: async () => null },
-  });
-  return exports.useCreativeStore;
-}
+const imageSize = loadTypeScript("../src/canvas/workflow/utils/imageSize.ts");
+const canvasTypes = loadTypeScript("../src/canvas/workflow/types.ts");
 
-test("text-to-image composer spawns an unconnected image node with prompt and model", () => {
-  const useCreativeStore = loadCreativeStore();
-  const store = useCreativeStore();
-  const textId = store.addNodeAt("text-gen", 120, 60, {
-    prompt: "  一只赛博朋克猫  ",
-    model: "p1::gpt-image-2",
-    creativeActionKey: "text-to-image",
-  });
-  const imageId = useCreativeStore.getState().spawnImageNodeFromPrompt(textId);
-  const spawned = useCreativeStore.getState().nodes.find((node) => node.id === imageId);
-  assert.ok(imageId);
-  assert.equal(spawned.type, "creative-image-gen");
-  assert.equal(spawned.data.kind, "image-gen");
-  assert.equal(spawned.data.imagePrompt, "  一只赛博朋克猫  ");
-  assert.equal(spawned.data.imageModel, "p1::gpt-image-2");
-  assert.equal(spawned.data.creativeActionKey, "text-to-image");
-  assert.deepEqual(useCreativeStore.getState().edges, []);
+test("image size is derived from ratio and resolution, the only value the kernel reads", () => {
+  assert.equal(imageSize.imageSizeFor("1:1", "1K"), "1024x1024");
+  assert.equal(imageSize.imageSizeFor("16:9", "2K"), "2048x1152");
+  assert.equal(imageSize.imageSizeFor("9:16", "1K"), "576x1024");
+  assert.equal(imageSize.imageSizeFor("Auto", "4K"), "auto");
+  assert.equal(imageSize.imageSizeFor("custom", "1K", "1536x1024"), "1536x1024");
+  // 自定义却没填值时交给供应商决定，而不是前端猜一个像素数。
+  assert.equal(imageSize.imageSizeFor("custom", "1K", undefined), "auto");
+  assert.equal(imageSize.imageSizeFor("3:4", "9K"), "768x1024");
+  assert.deepEqual(imageSize.parseCustomSize("1024 × 512"), { w: 1024, h: 512 });
+  assert.equal(imageSize.parseCustomSize("wide"), null);
 });
 
-test("an empty composer prompt spawns nothing", () => {
-  const useCreativeStore = loadCreativeStore();
-  const store = useCreativeStore();
-  const textId = store.addNodeAt("text-gen", 0, 0, { prompt: "   ", creativeActionKey: "text-to-image" });
-  assert.equal(useCreativeStore.getState().spawnImageNodeFromPrompt(textId), null);
-  assert.equal(useCreativeStore.getState().nodes.length, 1);
+test("the text category's 文生图 entry produces an image node, not a text carrier", () => {
+  const textCategory = canvasTypes.CREATIVE_NODE_PICKER_CATEGORIES.find((item) => item.key === "text");
+  const option = textCategory.options.find((item) => item.key === "text-to-image");
+  assert.equal(option.kind, "image-gen");
+  assert.equal(option.label, "文生图");
 });

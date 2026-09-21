@@ -32,8 +32,7 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
   const [expanded, setExpanded] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isImageToPrompt = data.creativeActionKey === "image-to-prompt";
-  const isTextToImage = data.creativeActionKey === "text-to-image";
-  const models = useScenarioModelOptions(isTextToImage ? "image_generation" : "text", data.model);
+  const models = useScenarioModelOptions("text", data.model);
   const selectedModel = data.model ?? models[0]?.value ?? "";
   const selectedModelLabel =
     models.find((model) => model.value === selectedModel)?.label ?? "未配置模型";
@@ -45,13 +44,8 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
   });
   const upstreamSrc = useCanvasMediaSrc(upstreamImage);
   const placeholder = useMemo(
-    () =>
-      isImageToPrompt
-        ? "描述要从图片中反推出的提示词，也可以手动补充..."
-        : isTextToImage
-          ? "描述想要生成的画面，发送后会自动创建图片节点并生成..."
-          : "描述你想要生成的内容，并在下方调整生成参数...",
-    [isImageToPrompt, isTextToImage],
+    () => (isImageToPrompt ? "描述要从图片中反推出的提示词，也可以手动补充..." : "描述你想要生成的内容，并在下方调整生成参数..."),
+    [isImageToPrompt],
   );
 
   const resizeTextarea = (target: HTMLTextAreaElement) => {
@@ -59,21 +53,11 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
     target.style.height = `${Math.min(Math.max(target.scrollHeight, 76), 120)}px`;
   };
 
-  /** 文生图节点只是提示词载体，真正的一次生成落在派生出的图片节点上。 */
-  const run = () => {
-    if (!isTextToImage) {
-      void runWorkflow(nodeId);
-      return;
-    }
-    const imageNodeId = useCreativeStore.getState().spawnImageNodeFromPrompt(nodeId);
-    if (imageNodeId) void runWorkflow(imageNodeId);
-  };
-
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     event.stopPropagation();
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      run();
+      void runWorkflow(nodeId);
     }
   };
 
@@ -169,7 +153,7 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
           type="button"
           title="执行节点"
           disabled={!data.prompt?.trim()}
-          onClick={run}
+          onClick={() => void runWorkflow(nodeId)}
           className="relative flex h-7 w-7 items-center justify-center overflow-hidden rounded-[10px] bg-white/[0.12] text-white/75 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_4px_10px_rgba(0,0,0,0.06)] transition hover:bg-white/[0.18] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
         >
           <span
@@ -213,7 +197,7 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
         <div className="flex justify-end border-t border-white/[0.08] px-5 py-3">
           <button
             type="button"
-            onClick={() => { setExpanded(false); run(); }}
+            onClick={() => { setExpanded(false); void runWorkflow(nodeId); }}
             disabled={!data.prompt?.trim()}
             className="flex h-8 items-center gap-2 rounded-lg bg-white/[0.1] px-3 text-xs text-white/80 transition hover:bg-white/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
           >

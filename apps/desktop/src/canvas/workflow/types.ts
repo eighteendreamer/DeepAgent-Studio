@@ -120,6 +120,8 @@ export interface CreativeNodeData {
   promptProfileVersion?: number;
   aspectRatio?: string;
   resolution?: string;
+  /** 内核真正读取的输出尺寸（"WxH" 或 "auto"），由比例与分辨率折算而来。 */
+  size?: string;
   batchCount?: number;
   gptImage2Quality?: "low" | "medium" | "high" | "auto";
   customSize?: string;
@@ -283,7 +285,7 @@ export const CREATIVE_NODE_PICKER_CATEGORIES: CreativePickerCategory[] = [
     options: [
       { key: "write", label: "自己编写内容", kind: "text-gen", icon: "pen" },
       { key: "parse-document", label: "上传文档解析文本", kind: "text-gen", icon: "file-lines" },
-      { key: "text-to-image", label: "文生图", kind: "text-gen", icon: "image" },
+      { key: "text-to-image", label: "文生图", kind: "image-gen", icon: "image" },
       { key: "text-to-video", label: "文字生视频", kind: "video-gen", icon: "video" },
       { key: "image-to-prompt", label: "图片反推提示词", kind: "text-gen", icon: "wand-magic-sparkles" },
     ],

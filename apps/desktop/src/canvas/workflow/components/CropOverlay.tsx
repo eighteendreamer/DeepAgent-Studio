@@ -105,7 +105,7 @@ export function CropOverlay({ imageUrl, itemName, initialRatio, onConfirm, onCan
     const ro = new ResizeObserver(fit);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [imageUrl]);
+  }, [source]);
 
   const applyRatio = useCallback(
     (key: string) => {
@@ -285,7 +285,7 @@ export function CropOverlay({ imageUrl, itemName, initialRatio, onConfirm, onCan
       <div ref={workspaceRef} className="relative flex-1 overflow-hidden">
         <img
           ref={imgRef}
-          src={source || imageUrl}
+          src={source}
           className="absolute"
           style={{
             left: ready ? imgRect.x : "50%",

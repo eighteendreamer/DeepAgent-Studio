@@ -31,6 +31,12 @@ const UI_META_KEYS = new Set([
   "inputVariables",
   "outputMapping",
   "conditions",
+  // 界面意图字段：已折算成内核认的 size / referenceImages，不再重复跨界。
+  "aspectRatio",
+  "resolution",
+  "customSize",
+  "batchCount",
+  "imageInputUrls",
 ]);
 
 /** 创作节点种类 → 该节点对外输出的字段（与内核 output_contract 对齐）。 */
@@ -86,7 +92,12 @@ function creativeConfig(
     else texts.push(reference);
   }
   if (texts.length) config.upstreamTexts = texts;
-  if (images.length) config.referenceImages = images;
+  // 内核只认 referenceImages：连线来的图片与面板上传的参考图合并成同一份。
+  const own = Array.isArray(data.imageInputUrls)
+    ? (data.imageInputUrls as unknown[]).map(String).filter((value) => value.trim())
+    : [];
+  const references = [...new Set([...images, ...own])];
+  if (references.length) config.referenceImages = references;
   if (audios.length) config.audioInputs = audios;
   return config;
 }

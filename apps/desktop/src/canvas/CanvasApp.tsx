@@ -664,6 +664,7 @@ function WorkflowCanvasInner() {
       )}
       {drawingTarget && (
         <DrawingOverlay
+          key={`${drawingTarget.nodeId}-${drawingTarget.mode}`}
           imageUrl={drawingTarget.imageUrl}
           itemName={drawingTarget.name}
           mode={drawingTarget.mode}
@@ -680,6 +681,7 @@ function WorkflowCanvasInner() {
       )}
       {outpaintTarget && (
         <OutpaintOverlay
+          key={outpaintTarget.nodeId}
           imageUrl={outpaintTarget.imageUrl}
           itemName={outpaintTarget.name}
           onCancel={() => setOutpaintTarget(null)}

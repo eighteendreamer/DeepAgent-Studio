@@ -16,6 +16,7 @@ import { runWorkflow } from "../utils/workflowExecutor";
 
 const TEXT_COLOR = "rgba(255,255,255,0.88)";
 import { importCanvasMedia } from "../utils/canvasMedia";
+import { imageSizeFor, parseCustomSize } from "../utils/imageSize";
 import { PromptRestoreButton } from "./PromptRestoreButton";
 
 function autoGrow(e: React.FormEvent<HTMLTextAreaElement>, max = 100) {
@@ -330,12 +331,19 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
     onUpdate({ imageModel: next });
   };
 
+  /** 比例 / 分辨率 / 自定义宽高 都是 size 的编辑器，一次改动同时写回意图与结果值。 */
+  const applyGeometry = (next: { aspectRatio?: string; resolution?: string; customSize?: string }) => {
+    const aspectRatio = next.aspectRatio ?? ratio;
+    const resolution = next.resolution ?? data.resolution ?? "1K";
+    const customSize = next.customSize ?? data.customSize;
+    onUpdate({ aspectRatio, resolution, customSize, size: imageSizeFor(aspectRatio, resolution, customSize) });
+  };
+
   const setRatio = (next: string) => {
-    const updates: Record<string, unknown> = { aspectRatio: next };
-    if (next === "custom" && !data.customSize) {
-      updates.customSize = "1024x1024";
-    }
-    onUpdate(updates);
+    applyGeometry({
+      aspectRatio: next,
+      customSize: next === "custom" && !data.customSize ? "1024x1024" : data.customSize,
+    });
   };
 
   // 每个比例的形状图标映射（下拉项里也要展示）
@@ -348,15 +356,6 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
   }, []);
 
   // 自定义宽高：本地表单态 + 持久化字符串 "WxH"
-  const parseCustomSize = (s: string | undefined): { w: number; h: number } | null => {
-    if (!s) return null;
-    const m = s.match(/^(\d+)\s*[xX×]\s*(\d+)$/);
-    if (!m) return null;
-    const w = Number(m[1]);
-    const h = Number(m[2]);
-    if (!w || !h) return null;
-    return { w, h };
-  };
   const initCustom = parseCustomSize(data.customSize) ?? { w: 1024, h: 1024 };
   const [customW, setCustomW] = useState<number>(initCustom.w);
   const [customH, setCustomH] = useState<number>(initCustom.h);
@@ -373,7 +372,7 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
 
   const commitCustomSize = (w: number, h: number) => {
     if (!w || !h) return;
-    onUpdate({ customSize: `${w}x${h}` });
+    applyGeometry({ customSize: `${w}x${h}` });
   };
 
   const isCustomRatio = ratio === "custom";
@@ -587,7 +586,7 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
             <ChipSelect
               value={resolution}
               options={RESOLUTIONS.map((r) => ({ value: r.value, label: r.label }))}
-              onChange={(resolution) => onUpdate({ resolution })}
+              onChange={(resolution) => applyGeometry({ resolution })}
             />
             <ChipSelect
               value={String(count)}
@@ -642,7 +641,7 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
               <ChipSelect
                 value={resolution}
                 options={RESOLUTIONS.map((r) => ({ value: r.value, label: r.label }))}
-                onChange={(resolution) => onUpdate({ resolution })}
+                onChange={(resolution) => applyGeometry({ resolution })}
               />
               <ChipSelect
                 value={String(count)}

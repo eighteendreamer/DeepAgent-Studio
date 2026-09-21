@@ -232,14 +232,18 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
 
     const rect = container.getBoundingClientRect();
     const scale = Math.min(rect.width / imgSize.w, rect.height / imgSize.h, 1);
-    const dw = imgSize.w * scale;
-    const dh = imgSize.h * scale;
-    const ox = (rect.width - dw) / 2;
-    const oy = (rect.height - dh) / 2;
+    const dw = Math.round(imgSize.w * scale);
+    const dh = Math.round(imgSize.h * scale);
+    const ox = Math.round((rect.width - dw) / 2);
+    const oy = Math.round((rect.height - dh) / 2);
+    const dpr = window.devicePixelRatio || 1;
 
-    if (canvas.width !== rect.width || canvas.height !== rect.height) {
-      canvas.width = rect.width;
-      canvas.height = rect.height;
+    // 位图与 CSS 盒必须同源，否则画进去的图会被非等比拉伸；居中交给 CSS 偏移。
+    const bitmapW = Math.round(dw * dpr);
+    const bitmapH = Math.round(dh * dpr);
+    if (canvas.width !== bitmapW || canvas.height !== bitmapH) {
+      canvas.width = bitmapW;
+      canvas.height = bitmapH;
     }
     canvas.style.left = `${ox}px`;
     canvas.style.top = `${oy}px`;
@@ -248,12 +252,13 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(baseImg, ox, oy, dw, dh);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, dw, dh);
+    ctx.drawImage(baseImg, 0, 0, dw, dh);
 
     for (const obj of objects) {
       if (obj.type === "text" && obj.id === editingId) continue;
-      drawObject(ctx, obj, scale, ox, oy);
+      drawObject(ctx, obj, scale, 0, 0);
     }
     if (currentPoints.length > 0 && startPos) {
       const preview: DrawObject = {
@@ -264,7 +269,7 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
         size: brushSize,
         erase: isEraseMode,
       };
-      drawObject(ctx, preview, scale, ox, oy);
+      drawObject(ctx, preview, scale, 0, 0);
     }
   }, [objects, currentPoints, startPos, currentColor, brushSize, imgSize, editingId]);
 
@@ -637,19 +642,13 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
       {/* 中部画布区域 */}
       <div
         ref={containerRef}
-        className="relative z-10"
+        className="relative z-10 overflow-hidden rounded-2xl"
         style={{
           width: "min(90vw, 1400px)",
           height: "min(80vh, 900px)",
+          background: "rgba(0,0,0,0.4)",
         }}
       >
-        <img
-          src={source || imageUrl}
-          alt={itemName}
-          className="absolute inset-0 h-full w-full rounded-2xl object-contain"
-          style={{ background: "rgba(0,0,0,0.4)" }}
-          draggable={false}
-        />
         <canvas
           ref={canvasRef}
           className="absolute"

@@ -171,7 +171,7 @@ const STORYBOARD_SUBMENU: SubmenuItem[] = [
 const IMAGE_ACTIONS: ToolbarAction[] = [
   { key: "repaint", label: "标注", icon: Paintbrush, group: "edit", tooltip: "在图片上添加矩形、文字、箭头、序号等标注" },
   { key: "erase", label: "擦除", icon: Eraser, group: "edit", tooltip: "点编辑：擦除模式" },
-  { key: "enhance", label: "高清放大", icon: Sparkles, group: "edit", tooltip: "无损高清放大" },
+  { key: "enhance", label: "高清放大", icon: Sparkles, group: "edit", tooltip: "无损高清放大（暂未接入：内核图片执行通道还不接收渲染技能）", disabled: true },
   { key: "outpaint", label: "扩图", icon: Maximize, group: "edit", tooltip: "智能扩图（拖拽扩展画布边界）" },
   { key: "creative-library", label: "创意库", icon: Library, group: "creative", tooltip: "从创意库选择模板" },
   { key: "storyboard", label: "分镜大师", icon: Clapperboard, group: "creative", tooltip: "一图扩成多机位/分镜组", submenu: STORYBOARD_SUBMENU },
