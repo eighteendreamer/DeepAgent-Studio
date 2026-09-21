@@ -220,42 +220,9 @@ function SegmentedChips<T extends string>({
   );
 }
 
-function OutputBlock({ text }: { text: string }) {
-  return (
-    <div
-      className="rounded-lg px-3 py-2 text-xs leading-relaxed"
-      style={{ background: "rgba(255,255,255,0.03)", color: "rgba(248,248,248,0.6)", maxHeight: 140, overflowY: "auto" }}
-    >
-      {text}
-    </div>
-  );
-}
-
 interface FormProps {
   nodeId: string;
   onUpdate: (patch: Record<string, unknown>) => void;
-}
-
-export function TextGenForm({ data, onUpdate }: { data: CreativeNodeData } & FormProps) {
-  const options = useScenarioModelOptions("text", data.model);
-  return (
-    <div className="flex flex-col gap-2.5">
-      <div className="flex items-center gap-1.5">
-        <ChipSelect
-          value={data.model ?? options[0]?.value ?? ""}
-          options={options}
-          onChange={(model) => onUpdate({ model })}
-        />
-      </div>
-      <PromptArea
-        value={data.prompt ?? ""}
-        placeholder="描述你想要生成的内容..."
-        onChange={(prompt) => onUpdate({ prompt })}
-      />
-      <PromptRestoreButton kind={data.kind} value={data.prompt ?? ""} onUpdate={onUpdate} />
-      {data.output && <OutputBlock text={data.output} />}
-    </div>
-  );
 }
 
 const ASPECT_RATIOS = [
@@ -1094,7 +1061,6 @@ export function AudioForm({ nodeId, data, onUpdate }: { data: CreativeNodeData }
           {error}
         </p>
       )}
-      {typeof data.output === "string" && data.output && <OutputBlock text={data.output} />}
     </div>
   );
 }

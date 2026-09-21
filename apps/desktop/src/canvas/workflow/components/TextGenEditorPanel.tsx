@@ -170,12 +170,6 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
           <ArrowUp className="h-4 w-4" />
         </button>
       </div>
-
-      {data.output && (
-        <div className="mx-4 mb-3 border-t border-white/[0.08] px-0 pt-3 text-xs leading-relaxed text-white/65">
-          {data.output}
-        </div>
-      )}
     </div>
     <Dialog open={expanded} onOpenChange={setExpanded}>
       <DialogContent className="w-[min(720px,calc(100vw-32px))] max-w-none rounded-2xl border border-white/10 bg-[#1c1d20]/95 p-0 text-white shadow-[0_28px_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
