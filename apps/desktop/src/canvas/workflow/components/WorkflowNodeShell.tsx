@@ -236,6 +236,9 @@ const PROFESSIONAL_PANEL_STYLE: React.CSSProperties = { ...EDIT_PANEL_STYLE, wid
 // 创作类生成节点自带面板底色与固定宽度，不参与专业模式的面板宽度策略。
 const CREATIVE_GEN_KINDS: CreativeNodeKind[] = ["text-gen", "image-gen", "video-gen"];
 
+/** 内容就是一块媒体的节点：媒体即卡片，不加内边距，也不常驻状态行。 */
+const MEDIA_FIRST_KINDS: CreativeNodeKind[] = ["image-gen", "video-gen"];
+
 function editPanelStyle(kind: CreativeNodeKind | ProfessionalNodeKind | undefined, mode: CanvasMode): React.CSSProperties {
   if (CREATIVE_GEN_KINDS.includes(kind as CreativeNodeKind)) return { width: 480 };
   return mode === "professional" ? PROFESSIONAL_PANEL_STYLE : EDIT_PANEL_STYLE;
@@ -270,6 +273,7 @@ const triggerFileDownload = async (url: string, filename: string) => {
 function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
   const nodeData = normalizeProfessionalData(data as unknown as WorkflowNodeData, type);
   const nodeStatus = nodeData.status ?? "idle";
+  const mediaFirst = MEDIA_FIRST_KINDS.includes(nodeData.kind as CreativeNodeKind);
   const nodeLabel = nodeData.label ?? "节点";
   const mode = useCanvasStore((s) => s.mode);
 
@@ -570,26 +574,28 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
       </div>
 
       {/* Card content */}
-      <div className="px-3 py-2.5">
+      <div className={mediaFirst ? "" : "px-3 py-2.5"}>
         {/* Node content by kind */}
         {renderContent(nodeData, id)}
 
         {/* Status line */}
-        <div className="mt-2 flex items-center gap-1.5">
-          <div
-            className="rounded-full"
-            style={{
-              width: 6,
-              height: 6,
-              background: STATUS_DOT_COLOR[nodeStatus],
-              boxShadow: nodeStatus === "running" ? "0 0 6px rgba(59,130,246,0.5)" : "none",
-              animation: nodeStatus === "running" ? "pulse 1.5s ease-in-out infinite" : "none",
-            }}
-          />
-          <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.45)" }}>
-            {STATUS_LABEL[nodeStatus] || "就绪"}
-          </span>
-        </div>
+        {(!mediaFirst || nodeStatus === "error") && (
+          <div className={`flex items-center gap-1.5 ${mediaFirst ? "px-3 pb-2 pt-1" : "mt-2"}`}>
+            <div
+              className="rounded-full"
+              style={{
+                width: 6,
+                height: 6,
+                background: STATUS_DOT_COLOR[nodeStatus],
+                boxShadow: nodeStatus === "running" ? "0 0 6px rgba(59,130,246,0.5)" : "none",
+                animation: nodeStatus === "running" ? "pulse 1.5s ease-in-out infinite" : "none",
+              }}
+            />
+            <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.45)" }}>
+              {STATUS_LABEL[nodeStatus] || "就绪"}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Connection handles — Handle is the interactive layer, visual is nested inside */}
