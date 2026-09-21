@@ -418,3 +418,14 @@ test("batch wiring adds every edge in one undo step and skips duplicates", () =>
   useCreativeStore.getState().undo();
   assert.equal(useCreativeStore.getState().edges.length, 0, "批量接入必须一步撤销");
 });
+
+const nodeBounds = loadTypeScript("../src/canvas/workflow/utils/nodeBounds.ts");
+
+test("selection bounds cover every node and fall back before React Flow measures", () => {
+  const nodes = [
+    { id: "a", position: { x: 0, y: 0 }, data: {}, measured: { width: 300, height: 120 } },
+    { id: "b", position: { x: 400, y: 200 }, data: {} },
+  ];
+  assert.deepEqual(nodeBounds.boundsOfNodes(nodes), { left: 0, top: 0, right: 640, bottom: 293 });
+  assert.equal(nodeBounds.boundsOfNodes([]), null);
+});

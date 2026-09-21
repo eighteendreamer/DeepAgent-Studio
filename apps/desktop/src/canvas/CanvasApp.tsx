@@ -8,6 +8,7 @@ import {
   useStoreApi,
   type ReactFlowInstance,
   type Viewport,
+  type Connection,
   type FinalConnectionState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -19,7 +20,8 @@ import { BottomBar as WorkflowBottomBar } from "./workflow/components/BottomBar"
 import { MiniMap } from "./workflow/components/MiniMap";
 import { NodePicker } from "./workflow/components/NodePicker";
 import { CanvasSettingsDialog } from "./workflow/components/CanvasSettingsDialog";
-import { SelectionActions } from "./workflow/components/SelectionActions";
+import { SelectionFrameNode, SELECTION_NODE_ID, SELECTION_NODE_TYPE, SELECTION_FRAME_PADDING } from "./workflow/components/SelectionFrameNode";
+import { boundsOfNodes } from "./workflow/utils/nodeBounds";
 import { importCanvasMedia } from "./workflow/utils/canvasMedia";
 import { CropOverlay } from "./workflow/components/CropOverlay";
 import { DrawingOverlay } from "./workflow/components/DrawingOverlay";
@@ -28,7 +30,7 @@ import { CreativeLibraryPanel } from "./workflow/components/CreativeLibraryPanel
 import { WorkflowNodeShell } from "./workflow/components/WorkflowNodeShell";
 import { WorkflowEdge } from "./workflow/components/WorkflowEdge";
 import { useWorkflowPersistence } from "./workflow/hooks/useWorkflowPersistence";
-import { CREATIVE_NODE_KINDS, PROFESSIONAL_NODE_CATEGORIES } from "./workflow/types";
+import { CREATIVE_NODE_KINDS, PROFESSIONAL_NODE_CATEGORIES, type WorkflowNode } from "./workflow/types";
 import { isTauri } from "../api";
 
 function buildNodeTypes(prefix: string, kinds: string[]) {
@@ -73,13 +75,11 @@ function WorkflowCanvasInner() {
   const creativeEdges = useCreativeStore((s) => s.edges);
   const creativeOnNodesChange = useCreativeStore((s) => s.onNodesChange);
   const creativeOnEdgesChange = useCreativeStore((s) => s.onEdgesChange);
-  const creativeOnConnect = useCreativeStore((s) => s.onConnect);
 
   const proNodes = useProfessionalStore((s) => s.nodes);
   const proEdges = useProfessionalStore((s) => s.edges);
   const proOnNodesChange = useProfessionalStore((s) => s.onNodesChange);
   const proOnEdgesChange = useProfessionalStore((s) => s.onEdgesChange);
-  const proOnConnect = useProfessionalStore((s) => s.onConnect);
 
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
   const [viewport, setLocalViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
@@ -279,9 +279,54 @@ function WorkflowCanvasInner() {
   const edges = mode === "creative" ? creativeEdges : proEdges;
   const onNodesChange = mode === "creative" ? creativeOnNodesChange : proOnNodesChange;
   const onEdgesChange = mode === "creative" ? creativeOnEdgesChange : proOnEdgesChange;
-  const onConnect = mode === "creative" ? creativeOnConnect : proOnConnect;
   const nodeTypes = useMemo(
-    () => (mode === "creative" ? creativeNodeTypes : professionalNodeTypes),
+    () => ({
+      ...(mode === "creative" ? creativeNodeTypes : professionalNodeTypes),
+      [SELECTION_NODE_TYPE]: SelectionFrameNode,
+    }),
+    [mode],
+  );
+  const selectedNodes = useMemo(() => nodes.filter((node) => node.selected), [nodes]);
+
+  /** 框选≥2 个节点时追加一个虚拟选区节点，让选区能像节点一样左右拉线。 */
+  const flowNodes = useMemo(() => {
+    if (selectedNodes.length < 2) return nodes;
+    const box = boundsOfNodes(selectedNodes);
+    if (!box) return nodes;
+    return [
+      ...nodes,
+      {
+        id: SELECTION_NODE_ID,
+        type: SELECTION_NODE_TYPE,
+        position: { x: box.left - SELECTION_FRAME_PADDING, y: box.top - SELECTION_FRAME_PADDING },
+        data: {},
+        width: box.right - box.left + SELECTION_FRAME_PADDING * 2,
+        height: box.bottom - box.top + SELECTION_FRAME_PADDING * 2,
+        draggable: false,
+        selectable: false,
+        deletable: false,
+        style: { pointerEvents: "none", zIndex: 0 },
+      } as WorkflowNode,
+    ];
+  }, [nodes, selectedNodes]);
+
+  /** 从选区桩拉出的连线展开成"每个选中节点 → 目标"，反向同理。 */
+  const handleConnect = useCallback(
+    (connection: Connection) => {
+      const store = mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
+      const selectedIds = store.nodes.filter((node) => node.selected).map((node) => node.id);
+      if (connection.source === SELECTION_NODE_ID && connection.target) {
+        const target = connection.target;
+        store.connectMany(selectedIds.map((id) => ({ source: id, target })));
+        return;
+      }
+      if (connection.target === SELECTION_NODE_ID && connection.source) {
+        const source = connection.source;
+        store.connectMany(selectedIds.map((id) => ({ source, target: id })));
+        return;
+      }
+      store.onConnect(connection);
+    },
     [mode],
   );
 
@@ -350,27 +395,16 @@ function WorkflowCanvasInner() {
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       const world = rfInstance.screenToFlowPosition({ x: clientX - rect.left, y: clientY - rect.top });
+      const store = mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
+      const ids = state.fromNode.id === SELECTION_NODE_ID
+        ? store.nodes.filter((node) => node.selected).map((node) => node.id)
+        : [state.fromNode.id];
       openNodePicker(
         { x: clientX, y: clientY, worldX: world.x, worldY: world.y },
-        state.fromHandle.type === "source"
-          ? { sources: [state.fromNode.id], targets: [] }
-          : { sources: [], targets: [state.fromNode.id] },
+        state.fromHandle.type === "source" ? { sources: ids, targets: [] } : { sources: [], targets: ids },
       );
     },
-    [rfInstance, openNodePicker],
-  );
-
-  /** 框选批量接入：在选区右侧落点打开节点面板，选中节点全部作为输入。 */
-  const handleBatchDownstream = useCallback(
-    (sourceIds: string[], world: { x: number; y: number }) => {
-      if (!rfInstance) return;
-      const screen = rfInstance.flowToScreenPosition(world);
-      openNodePicker(
-        { x: screen.x, y: screen.y, worldX: world.x, worldY: world.y },
-        { sources: sourceIds, targets: [] },
-      );
-    },
-    [rfInstance, openNodePicker],
+    [rfInstance, openNodePicker, mode],
   );
 
   useEffect(() => {
@@ -596,11 +630,11 @@ function WorkflowCanvasInner() {
 
       <div ref={rfWrapperRef} className="absolute inset-0">
       <ReactFlow
-        nodes={nodes}
+        nodes={flowNodes}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
+        onConnect={handleConnect}
         onConnectEnd={handleConnectEnd}
         onNodeDragStart={handleNodeDragStart}
         onNodeDragStop={handleNodeDragStop}
@@ -630,7 +664,6 @@ function WorkflowCanvasInner() {
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="transparent" />
       </ReactFlow>
-        <SelectionActions nodes={nodes} viewport={viewport} onCreateDownstream={handleBatchDownstream} />
       </div>
 
       {nodes.length === 0 && (
