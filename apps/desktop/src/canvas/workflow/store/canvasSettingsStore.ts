@@ -193,7 +193,6 @@ interface WorkflowSettingsState {
   flushProvider: (id: string) => Promise<void>;
   removeProvider: (id: string) => Promise<void>;
   toggleProviderEnabled: (id: string) => Promise<void>;
-  clearProviderApiKey: (id: string) => Promise<void>;
   updateProviderModels: (id: string, models: ProviderModelConfig[]) => Promise<void>;
   addModelToProvider: (providerId: string, model: ProviderModelConfig) => Promise<void>;
   setModelScenarios: (
@@ -391,6 +390,22 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
     }
   };
 
+  /** 删除后端已存的供应商密钥并刷新掩码；先丢弃草稿明文，未配置时调用也是幂等的。 */
+  const clearStoredApiKey = async (id: string) => {
+    const draft = drafts.get(id);
+    if (draft) delete draft.apiKey;
+    try {
+      await invoke("canvas_secret_clear", { providerId: id });
+      set((state) => ({
+        providers: state.providers.map((p) =>
+          p.id === id ? { ...p, apiKeySet: false, apiKeyMasked: undefined } : p,
+        ),
+      }));
+    } catch (error) {
+      reportFailure("清除 APIKey", error);
+    }
+  };
+
   const schedulePersist = (id: string) =>
     new Promise<void>((resolve) => {
       const existing = pending.get(id);
@@ -502,6 +517,10 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
             : p,
         ),
       }));
+      // 后端把空 apiKey 当作“不动已存密钥”，所以删空输入框必须显式走删除接口。
+      if (patch.apiKey !== undefined && !patch.apiKey.trim()) {
+        await clearStoredApiKey(id);
+      }
       await schedulePersist(id);
     },
 
@@ -534,22 +553,6 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
       const current = get().providers.find((p) => p.id === id);
       if (!current) return;
       await get().updateProvider(id, { enabled: !(current.enabled !== false) });
-    },
-
-    clearProviderApiKey: async (id) => {
-      // 先丢弃草稿里未落库的明文，否则随后结算的写入会把密钥又存回去。
-      const draft = drafts.get(id);
-      if (draft) delete draft.apiKey;
-      try {
-        await invoke("canvas_secret_clear", { providerId: id });
-        set((state) => ({
-          providers: state.providers.map((p) =>
-            p.id === id ? { ...p, apiKeySet: false, apiKeyMasked: undefined } : p,
-          ),
-        }));
-      } catch (error) {
-        reportFailure("清除 APIKey", error);
-      }
     },
 
     updateProviderModels: async (id, models) => {

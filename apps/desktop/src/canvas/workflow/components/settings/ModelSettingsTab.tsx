@@ -435,7 +435,6 @@ export function ModelSettingsTab() {
   const toggleModelEnabled = useCanvasSettingsStore((s) => s.toggleModelEnabled);
   const removeModelFromProvider = useCanvasSettingsStore((s) => s.removeModelFromProvider);
   const flushProvider = useCanvasSettingsStore((s) => s.flushProvider);
-  const clearProviderApiKey = useCanvasSettingsStore((s) => s.clearProviderApiKey);
   const testConnection = useCanvasSettingsStore((s) => s.testConnection);
   const discoverModels = useCanvasSettingsStore((s) => s.discoverModels);
 
@@ -991,7 +990,7 @@ export function ModelSettingsTab() {
                                 ? "输入新密钥以覆盖"
                                 : "请输入 APIKey (sk-...)"
                             }
-                            className="h-8 rounded-lg pr-16 text-[11px] bg-white/[0.03] border-white/[0.08] text-white/90 focus-visible:ring-1 focus-visible:ring-[#339CFF]"
+                            className="h-8 rounded-lg pr-8 text-[11px] bg-white/[0.03] border-white/[0.08] text-white/90 focus-visible:ring-1 focus-visible:ring-[#339CFF]"
                           />
                           <div className="absolute right-1 flex items-center gap-0.5">
                             <button
@@ -1011,17 +1010,6 @@ export function ModelSettingsTab() {
                                 <Eye size={12} />
                               )}
                             </button>
-                            {selectedProvider.apiKeySet && (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => clearProviderApiKey(selectedProvider.id)}
-                                className="h-6 px-1.5 text-[10.5px] text-white/45 hover:bg-white/[0.06] hover:text-red-400"
-                              >
-                                清除
-                              </Button>
-                            )}
                           </div>
                         </div>
                       </div>

@@ -284,12 +284,13 @@ test("flushProvider writes a pending key immediately and never rewrites it", asy
   assert.deepEqual(calls, []);
 });
 
-test("clearing a key discards the unpersisted draft so a later write cannot restore it", async () => {
+test("emptying the key field clears the stored secret instead of leaving it", async () => {
   const { calls, store, id } = await storeWithProvider();
-  void store.updateProvider(id, { apiKey: "sk-ghost" });
-  await store.clearProviderApiKey(id);
+  await store.updateProvider(id, { apiKey: "sk-ghost" });
+  calls.length = 0;
+  void store.updateProvider(id, { apiKey: "   " });
   await sleep(700);
-  assert.ok(keyWrites(calls).includes(null));
-  assert.ok(keyWrites(calls).every((key) => key === null));
   assert.ok(calls.some((call) => call.command === "canvas_secret_clear"));
+  assert.ok(keyWrites(calls).length > 0);
+  assert.ok(keyWrites(calls).every((key) => key === null));
 });
