@@ -2250,8 +2250,6 @@ mod tests {
             builtin: tmp.path().join("plugin-builtin"),
             workspace: None,
             personal: tmp.path().join("plugins").join("personal"),
-            marketplace_cache: tmp.path().join("plugins").join("cache"),
-            marketplaces: tmp.path().join("plugins").join("marketplaces"),
         };
         let plugins = Arc::new(crate::plugin_service::PluginService::new(
             plugin_roots,
@@ -2292,8 +2290,7 @@ mod tests {
         assert!(plugins.list_apps().unwrap().is_empty());
         assert!(initial_projection.output_styles.is_empty());
 
-        let marketplace_root = tmp.path().join("team-marketplace");
-        let plugin_source = marketplace_root.join("plugins").join("chat-live");
+        let plugin_source = tmp.path().join("chat-live-src");
         std::fs::create_dir_all(plugin_source.join(".codex-plugin")).unwrap();
         std::fs::create_dir_all(plugin_source.join("skills").join("plugin-planning")).unwrap();
         std::fs::create_dir_all(plugin_source.join("commands")).unwrap();
@@ -2378,34 +2375,8 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        std::fs::write(
-            marketplace_root.join("marketplace.json"),
-            r#"{
-              "name": "team",
-              "plugins": [
-                {
-                  "name": "chat-live",
-                  "version": "0.1.0",
-                  "description": "Chat runtime sync plugin",
-                  "source": { "source": "local", "path": "./plugins/chat-live" }
-                }
-              ]
-            }"#,
-        )
-        .unwrap();
-        plugins
-            .add_marketplace(crate::plugin_marketplace::AddPluginMarketplaceDto {
-                name: Some("team".to_string()),
-                source: marketplace_root.display().to_string(),
-                git_ref: None,
-                sparse_path: None,
-            })
-            .unwrap();
-        let prepared = plugins
-            .prepare_plugin_install("team", "chat-live", false)
-            .unwrap();
-        let installed = plugins.commit_plugin_install(&prepared.token).unwrap();
-        assert_eq!(installed.id, "chat-live@team");
+        let installed = plugins.install_from_dir(&plugin_source).unwrap();
+        assert_eq!(installed.id, "chat-live@personal");
 
         let refreshed_projection = chat.sync_plugin_runtime().unwrap().unwrap();
         assert_eq!(refreshed_projection.skill_roots.len(), 1);
@@ -2413,18 +2384,16 @@ mod tests {
         assert_eq!(refreshed_projection.command_roots.len(), 1);
         assert_eq!(
             refreshed_projection.command_roots[0].plugin_id,
-            "chat-live@team"
+            "chat-live@personal"
         );
         assert!(refreshed_projection.command_roots[0]
             .path
             .ends_with("commands"));
-        assert!(
-            refreshed_projection
-                .mcp_server_sources
-                .values()
-                .any(|source| source.plugin_id == "chat-live@team"
-                    && source.declared_name == "hosted")
-        );
+        assert!(refreshed_projection
+            .mcp_server_sources
+            .values()
+            .any(|source| source.plugin_id == "chat-live@personal"
+                && source.declared_name == "hosted"));
         assert!(refreshed_projection
             .hook_definitions
             .hooks
@@ -2440,7 +2409,7 @@ mod tests {
         assert_eq!(refreshed_projection.app_entries.len(), 1);
         assert_eq!(
             refreshed_projection.app_entries[0].plugin_id,
-            "chat-live@team"
+            "chat-live@personal"
         );
         assert_eq!(
             refreshed_projection.app_entries[0].component,
@@ -2448,7 +2417,7 @@ mod tests {
         );
         let renderable_apps = plugins.list_apps().unwrap();
         assert_eq!(renderable_apps.len(), 1);
-        assert_eq!(renderable_apps[0].plugin_id, "chat-live@team");
+        assert_eq!(renderable_apps[0].plugin_id, "chat-live@personal");
         assert_eq!(renderable_apps[0].id, "chat-live-browser");
         let skills_guard = skills.lock().unwrap();
         assert_eq!(

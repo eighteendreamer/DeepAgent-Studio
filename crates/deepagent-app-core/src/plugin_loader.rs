@@ -1,4 +1,4 @@
-//! Plugin discovery across built-in, workspace, personal, and marketplace roots.
+//! Plugin discovery across built-in, workspace, personal, and session roots.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,6 @@ const PLUGIN_CACHE_ORPHAN_MARKER: &str = ".orphaned_at";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PluginOrigin {
     BuiltIn,
-    Marketplace,
     Personal,
     Workspace,
     Session,
@@ -25,7 +24,6 @@ impl PluginOrigin {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::BuiltIn => "builtin",
-            Self::Marketplace => "marketplace",
             Self::Personal => "personal",
             Self::Workspace => "workspace",
             Self::Session => "session",
@@ -35,7 +33,7 @@ impl PluginOrigin {
     pub fn default_enabled(self) -> bool {
         match self {
             Self::BuiltIn | Self::Personal | Self::Session => true,
-            Self::Marketplace | Self::Workspace => false,
+            Self::Workspace => false,
         }
     }
 }
@@ -46,8 +44,6 @@ pub struct PluginRoots {
     pub builtin: PathBuf,
     pub workspace: Option<PathBuf>,
     pub personal: PathBuf,
-    pub marketplace_cache: PathBuf,
-    pub marketplaces: PathBuf,
 }
 
 /// A load-time finding for one plugin.
@@ -82,7 +78,6 @@ pub struct LoadedPlugin {
     pub name: String,
     pub source_key: String,
     pub origin: PluginOrigin,
-    pub marketplace: Option<String>,
     pub root: PathBuf,
     pub resolved: Option<ResolvedPlugin>,
     pub available: bool,
@@ -109,35 +104,18 @@ impl LoadedPlugin {
 struct CandidateRoot {
     root: PathBuf,
     origin: PluginOrigin,
-    marketplace: Option<String>,
 }
 
 pub fn load_plugins(roots: &PluginRoots) -> Vec<LoadedPlugin> {
     let mut candidates = Vec::new();
-    candidates.extend(discover_collection(
-        &roots.builtin,
-        PluginOrigin::BuiltIn,
-        None,
-    ));
-    candidates.extend(discover_marketplace_cache(&roots.marketplace_cache));
-    candidates.extend(discover_collection(
-        &roots.personal,
-        PluginOrigin::Personal,
-        None,
-    ));
+    candidates.extend(discover_collection(&roots.builtin, PluginOrigin::BuiltIn));
+
+    candidates.extend(discover_collection(&roots.personal, PluginOrigin::Personal));
     if let Some(workspace) = &roots.workspace {
-        candidates.extend(discover_collection(
-            workspace,
-            PluginOrigin::Workspace,
-            None,
-        ));
+        candidates.extend(discover_collection(workspace, PluginOrigin::Workspace));
     }
     for session_root in &roots.session {
-        candidates.extend(discover_collection(
-            session_root,
-            PluginOrigin::Session,
-            None,
-        ));
+        candidates.extend(discover_collection(session_root, PluginOrigin::Session));
     }
 
     let mut plugins = candidates
@@ -156,17 +134,12 @@ pub fn load_plugins(roots: &PluginRoots) -> Vec<LoadedPlugin> {
     plugins
 }
 
-fn discover_collection(
-    dir: &Path,
-    origin: PluginOrigin,
-    marketplace: Option<String>,
-) -> Vec<CandidateRoot> {
+fn discover_collection(dir: &Path, origin: PluginOrigin) -> Vec<CandidateRoot> {
     let mut out = Vec::new();
     if find_plugin_manifest_path(dir).is_some() {
         out.push(CandidateRoot {
             root: dir.to_path_buf(),
             origin,
-            marketplace,
         });
         return out;
     }
@@ -192,78 +165,7 @@ fn discover_collection(
             continue;
         }
         if find_plugin_manifest_path(&path).is_some() {
-            out.push(CandidateRoot {
-                root: path,
-                origin,
-                marketplace: marketplace.clone(),
-            });
-        }
-    }
-    out
-}
-
-fn discover_marketplace_cache(cache_root: &Path) -> Vec<CandidateRoot> {
-    let mut out = Vec::new();
-    let Ok(marketplaces) = std::fs::read_dir(cache_root) else {
-        return out;
-    };
-    for market in marketplaces.flatten() {
-        let market_path = market.path();
-        if !market_path.is_dir() {
-            continue;
-        }
-        if is_orphaned_plugin_root(&market_path) {
-            continue;
-        }
-        let marketplace = market.file_name().to_string_lossy().trim().to_string();
-        if marketplace.is_empty() || marketplace == ".staging" {
-            continue;
-        }
-
-        if find_plugin_manifest_path(&market_path).is_some() {
-            out.push(CandidateRoot {
-                root: market_path,
-                origin: PluginOrigin::Marketplace,
-                marketplace: Some(marketplace),
-            });
-            continue;
-        }
-
-        let Ok(plugin_dirs) = std::fs::read_dir(&market_path) else {
-            continue;
-        };
-        for plugin_dir in plugin_dirs.flatten() {
-            let plugin_path = plugin_dir.path();
-            if !plugin_path.is_dir() {
-                continue;
-            }
-            if is_orphaned_plugin_root(&plugin_path) {
-                continue;
-            }
-            if find_plugin_manifest_path(&plugin_path).is_some() {
-                out.push(CandidateRoot {
-                    root: plugin_path,
-                    origin: PluginOrigin::Marketplace,
-                    marketplace: Some(marketplace.clone()),
-                });
-                continue;
-            }
-            let Ok(version_dirs) = std::fs::read_dir(&plugin_path) else {
-                continue;
-            };
-            for version_dir in version_dirs.flatten() {
-                let version_path = version_dir.path();
-                if version_path.is_dir()
-                    && !is_orphaned_plugin_root(&version_path)
-                    && find_plugin_manifest_path(&version_path).is_some()
-                {
-                    out.push(CandidateRoot {
-                        root: version_path,
-                        origin: PluginOrigin::Marketplace,
-                        marketplace: Some(marketplace.clone()),
-                    });
-                }
-            }
+            out.push(CandidateRoot { root: path, origin });
         }
     }
     out
@@ -282,7 +184,7 @@ fn load_candidate(candidate: CandidateRoot) -> LoadedPlugin {
         .to_string();
     match load_plugin_manifest(&candidate.root) {
         Ok(Some(manifest)) => {
-            let source_key = source_key(candidate.origin, candidate.marketplace.as_deref());
+            let source_key = candidate.origin.as_str().to_string();
             let id = plugin_id(&manifest.name, &source_key);
             let resolved = ResolvedPlugin::from_manifest(
                 &candidate.root,
@@ -305,7 +207,6 @@ fn load_candidate(candidate: CandidateRoot) -> LoadedPlugin {
                 name: resolved.name().to_string(),
                 source_key,
                 origin: candidate.origin,
-                marketplace: candidate.marketplace,
                 root: candidate.root,
                 resolved: Some(resolved),
                 available,
@@ -314,14 +215,13 @@ fn load_candidate(candidate: CandidateRoot) -> LoadedPlugin {
             }
         }
         Ok(None) => {
-            let source_key = source_key(candidate.origin, candidate.marketplace.as_deref());
+            let source_key = candidate.origin.as_str().to_string();
             let id = plugin_id(&fallback_name, &source_key);
             LoadedPlugin {
                 id: id.clone(),
                 name: fallback_name,
                 source_key,
                 origin: candidate.origin,
-                marketplace: candidate.marketplace,
                 root: candidate.root.clone(),
                 resolved: None,
                 available: false,
@@ -339,14 +239,13 @@ fn load_candidate(candidate: CandidateRoot) -> LoadedPlugin {
             }
         }
         Err(error) => {
-            let source_key = source_key(candidate.origin, candidate.marketplace.as_deref());
+            let source_key = candidate.origin.as_str().to_string();
             let id = plugin_id(&fallback_name, &source_key);
             LoadedPlugin {
                 id: id.clone(),
                 name: fallback_name,
                 source_key,
                 origin: candidate.origin,
-                marketplace: candidate.marketplace,
                 root: candidate.root.clone(),
                 resolved: None,
                 available: false,
@@ -480,17 +379,6 @@ pub fn plugin_id(name: &str, source_key: &str) -> String {
     format!("{name}@{source_key}")
 }
 
-pub fn source_key(origin: PluginOrigin, marketplace: Option<&str>) -> String {
-    match origin {
-        PluginOrigin::Marketplace => marketplace
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("marketplace")
-            .to_string(),
-        other => other.as_str().to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,8 +405,6 @@ mod tests {
             builtin,
             workspace: Some(workspace),
             personal: tmp.path().join("personal"),
-            marketplace_cache: tmp.path().join("cache"),
-            marketplaces: tmp.path().join("marketplaces"),
         });
 
         let active = plugins.iter().find(|p| p.available).unwrap();
@@ -543,8 +429,6 @@ mod tests {
             builtin,
             workspace: Some(workspace),
             personal: tmp.path().join("personal"),
-            marketplace_cache: tmp.path().join("cache"),
-            marketplaces: tmp.path().join("marketplaces"),
         });
 
         let active = plugins.iter().find(|p| p.available).unwrap();
@@ -565,8 +449,6 @@ mod tests {
             builtin: tmp.path().join("builtin"),
             workspace: None,
             personal,
-            marketplace_cache: tmp.path().join("cache"),
-            marketplaces: tmp.path().join("marketplaces"),
         });
 
         let plugin = plugins
@@ -581,42 +463,11 @@ mod tests {
     }
 
     #[test]
-    fn marketplace_discovery_skips_orphaned_versions() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache = tmp.path().join("cache");
-        let active = cache.join("team").join("demo").join("0.2.0");
-        let orphan = cache.join("team").join("demo").join("0.1.0");
-        write_manifest(&active, "demo");
-        write_manifest(&orphan, "demo");
-        std::fs::write(orphan.join(PLUGIN_CACHE_ORPHAN_MARKER), "0").unwrap();
-
-        let plugins = load_plugins(&PluginRoots {
-            session: Vec::new(),
-            builtin: tmp.path().join("builtin"),
-            workspace: None,
-            personal: tmp.path().join("personal"),
-            marketplace_cache: cache,
-            marketplaces: tmp.path().join("marketplaces"),
-        });
-
-        let marketplace_plugins = plugins
-            .iter()
-            .filter(|plugin| plugin.origin == PluginOrigin::Marketplace)
-            .collect::<Vec<_>>();
-        assert_eq!(marketplace_plugins.len(), 1);
-        assert_eq!(marketplace_plugins[0].root, active);
-    }
-
-    #[test]
     fn discovery_skips_staging_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let personal = tmp.path().join("personal");
-        let cache = tmp.path().join("cache");
         write_manifest(&personal.join(".staging").join("demo-stage"), "demo-stage");
-        write_manifest(
-            &cache.join(".staging").join("team-demo-stage"),
-            "team-demo-stage",
-        );
+        write_manifest(&personal.join("cache").join("demo-old"), "demo-old");
         write_manifest(&personal.join("demo"), "demo");
 
         let plugins = load_plugins(&PluginRoots {
@@ -624,8 +475,6 @@ mod tests {
             builtin: tmp.path().join("builtin"),
             workspace: None,
             personal,
-            marketplace_cache: cache,
-            marketplaces: tmp.path().join("marketplaces"),
         });
 
         assert!(plugins.iter().any(|plugin| plugin.id == "demo@personal"));

@@ -5,17 +5,11 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import {
   createPlugin,
-  cancelPluginInstall,
-  commitPluginInstall,
   installPluginFromDir,
   installPluginFromZip,
   isTauri,
-  listPluginMarketplaceEntries,
-  listPluginMarketplaces,
   listPluginOutputStyles,
   listPlugins,
-  removePluginMarketplace,
-  preparePluginInstall,
   scanPlugin,
   scanPluginZip,
   setPluginEnabled,
@@ -25,8 +19,6 @@ import type {
   CreatePluginDraft,
   Plugin,
   PluginDiagnosticSeverity,
-  PluginMarketplace,
-  PluginMarketplaceEntry,
   PluginOutputStyle,
   PluginScanReport,
 } from "../types";
@@ -44,7 +36,7 @@ import { Label } from "./shadcn/label";
 import { Textarea } from "./shadcn/textarea";
 import { ToggleSwitch } from "./ui/ToggleSwitch";
 
-type OriginFilter = "all" | "builtin" | "workspace" | "personal" | "marketplace";
+type OriginFilter = "all" | "builtin" | "workspace" | "personal";
 
 type PendingScanAction = {
   title: string;
@@ -69,7 +61,6 @@ const originTabs: Array<{ id: OriginFilter; label: string }> = [
   { id: "builtin", label: "DeepAgent 提供" },
   { id: "workspace", label: "工作区" },
   { id: "personal", label: "个人" },
-  { id: "marketplace", label: "市场" },
 ];
 
 const categoryOrder = [
@@ -90,9 +81,6 @@ const emptyCreateDraft: CreatePluginDraft = {
 
 export function PluginsView() {
   const [plugins, setPlugins] = useState<Plugin[]>([]);
-  const [marketplaces, setMarketplaces] = useState<PluginMarketplace[]>([]);
-  const [marketplaceEntries, setMarketplaceEntries] = useState<PluginMarketplaceEntry[]>([]);
-  const [marketplaceQuery, setMarketplaceQuery] = useState("");
   const [outputStyles, setOutputStyles] = useState<PluginOutputStyle[]>([]);
   const [query, setQuery] = useState("");
   const [origin, setOrigin] = useState<OriginFilter>("all");
@@ -111,14 +99,8 @@ export function PluginsView() {
     setLoading(true);
     setError(null);
     try {
-      const [pluginRows, initialMarketplaceRows, marketplaceEntryRows] = await Promise.all([
-        listPlugins(),
-        listPluginMarketplaces(),
-        listPluginMarketplaceEntries(),
-      ]);
+      const pluginRows = await listPlugins();
       setPlugins(pluginRows);
-      setMarketplaces(initialMarketplaceRows);
-      setMarketplaceEntries(marketplaceEntryRows);
       setOutputStyles(await listPluginOutputStyles().catch(() => []));
       if (selectedId && !pluginRows.some((plugin) => plugin.id === selectedId)) {
         setSelectedId(null);
@@ -383,90 +365,6 @@ export function PluginsView() {
     }
   };
 
-  const installMarketplaceEntry = async (entry: PluginMarketplaceEntry) => {
-    setBusyId(`${entry.marketplace}:${entry.name}`);
-    setError(null);
-    try {
-      const updating = entry.installed && entry.update_available;
-      const authRequired = entry.authentication_required;
-      const prepared = await preparePluginInstall(
-        entry.marketplace,
-        entry.name,
-        authRequired,
-      );
-      const report = prepared.scan_report;
-      openScanDialog({
-        title: `${updating ? "更新" : "安装"} ${entry.display_name}`,
-        submitLabel: highRiskCount(report) > 0
-          ? updating
-            ? "继续更新"
-            : "继续安装"
-          : updating
-            ? "更新插件"
-            : "安装插件",
-        report,
-        authenticationHint: authRequired
-          ? entry.authentication_hint ||
-            `安装时需要认证: ${entry.policy_authentication || "ON_INSTALL"}`
-          : null,
-        onConfirm: async () => {
-          const plugin = await commitPluginInstall(prepared.token);
-          await load();
-          setSelectedId(plugin.id);
-          setOrigin("marketplace");
-        },
-        onCancel: async () => {
-          await cancelPluginInstall(prepared.token);
-        },
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const updateInstalledPlugin = async (plugin: Plugin) => {
-    const marketplace = plugin.source.marketplace || plugin.source.name;
-    if (plugin.origin !== "marketplace" || !marketplace) return;
-    setBusyId(plugin.id);
-    setError(null);
-    try {
-      const entry = marketplaceEntries.find(
-        (item) => item.marketplace === marketplace && item.name === plugin.name,
-      );
-      const authRequired = Boolean(entry?.authentication_required);
-      const prepared = await preparePluginInstall(
-        marketplace,
-        plugin.name,
-        authRequired,
-      );
-      const report = prepared.scan_report;
-      openScanDialog({
-        title: `更新 ${plugin.display_name}`,
-        submitLabel: highRiskCount(report) > 0 ? "继续更新" : "更新插件",
-        report,
-        authenticationHint: authRequired
-          ? entry?.authentication_hint ||
-            `更新时需要认证: ${entry?.policy_authentication || "ON_INSTALL"}`
-          : null,
-        onConfirm: async () => {
-          const updated = await commitPluginInstall(prepared.token);
-          await load();
-          setSelectedId(updated.id);
-          setOrigin("marketplace");
-        },
-        onCancel: async () => {
-          await cancelPluginInstall(prepared.token);
-        },
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyId(null);
-    }
-  };
-
   return (
     <div className="h-full w-full overflow-hidden bg-white">
       {selected ? (
@@ -476,7 +374,6 @@ export function PluginsView() {
           busy={busyId === selected.id}
           onBack={() => setSelectedId(null)}
           onToggle={(enabled) => togglePlugin(selected, enabled)}
-          onUpdate={() => updateInstalledPlugin(selected)}
           onRemove={() => removePlugin(selected)}
         />
       ) : (
@@ -594,19 +491,6 @@ export function PluginsView() {
               ))
             )}
 
-            <MarketplacePanel
-              marketplaces={marketplaces}
-              entries={marketplaceEntries}
-              busyId={busyId}
-              query={marketplaceQuery}
-              onQueryChange={setMarketplaceQuery}
-              loading={loading}
-              onRemove={async (name) => {
-                await removePluginMarketplace(name);
-                await load();
-              }}
-              onInstall={installMarketplaceEntry}
-            />
           </div>
         </div>
       )}
@@ -697,7 +581,6 @@ function PluginDetail({
   busy,
   onBack,
   onToggle,
-  onUpdate,
   onRemove,
 }: {
   plugin: Plugin;
@@ -705,7 +588,6 @@ function PluginDetail({
   busy: boolean;
   onBack: () => void;
   onToggle: (enabled: boolean) => void;
-  onUpdate: () => void;
   onRemove: () => void;
 }) {
   return (
@@ -736,17 +618,6 @@ function PluginDetail({
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            {plugin.update_available && (
-              <Button
-                disabled={busy}
-                onClick={onUpdate}
-                variant="outline"
-                className="!bg-elevated-bg !text-text-base hover:!bg-hover-bg"
-              >
-                <FontAwesomeIcon icon={["fas", "cloud-arrow-down"]} className="text-[12px]" />
-                <span>更新</span>
-              </Button>
-            )}
             <Button
               disabled={busy || !plugin.available}
               onClick={() => onToggle(!plugin.enabled)}
@@ -1041,240 +912,6 @@ function ConfirmDialog({
       </DialogContent>
     </Dialog>
   );
-}
-
-function MarketplacePanel({
-  marketplaces,
-  entries,
-  busyId,
-  query,
-  onQueryChange,
-  loading,
-  onRemove,
-  onInstall,
-}: {
-  marketplaces: PluginMarketplace[];
-  entries: PluginMarketplaceEntry[];
-  busyId: string | null;
-  query: string;
-  onQueryChange: (query: string) => void;
-  loading: boolean;
-  onRemove: (name: string) => Promise<void>;
-  onInstall: (entry: PluginMarketplaceEntry) => Promise<void>;
-}) {
-  const needle = query.trim().toLowerCase();
-  const visibleEntries = needle
-    ? entries.filter((entry) =>
-        [entry.name, entry.display_name, entry.description, entry.category ?? ""]
-          .join(" ")
-          .toLowerCase()
-          .includes(needle),
-      )
-    : entries;
-  const entriesByMarketplace = new Map<string, PluginMarketplaceEntry[]>();
-  for (const entry of visibleEntries) {
-    const list = entriesByMarketplace.get(entry.marketplace) ?? [];
-    list.push(entry);
-    entriesByMarketplace.set(entry.marketplace, list);
-  }
-  const marketplaceNames = [
-    ...marketplaces.map((marketplace) => marketplace.name),
-    ...visibleEntries
-      .map((entry) => entry.marketplace)
-      .filter((name) => !marketplaces.some((marketplace) => marketplace.name === name)),
-  ];
-
-  return (
-    <section className="border-t border-border-theme pt-5">
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-[15px] font-semibold text-text-base">
-            插件市场
-          </h2>
-          <div className="mt-1 text-[12px] text-text-secondary">
-            添加本地目录、Git 仓库或压缩包源作为插件市场，安装时才下载完整插件。
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-wrap justify-end">
-          <Input
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            placeholder="搜索插件仓库"
-            className="h-8 w-[220px] text-[12px]"
-          />
-        </div>
-      </div>
-      {marketplaceNames.length === 0 ? (
-        <EmptyState text="尚未添加插件市场" />
-      ) : (
-        <div className="space-y-4">
-          {marketplaceNames.map((name) => {
-            const marketplace = marketplaces.find((item) => item.name === name);
-            const marketplaceEntries = entriesByMarketplace.get(name) ?? [];
-            return (
-              <div key={name} className="py-1">
-                <div className="flex items-start justify-between gap-3 border-b border-border-theme pb-3">
-                  <div className="min-w-0">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="truncate font-medium text-text-base">{name}</span>
-                      <MiniBadge tone="neutral">
-                        {`${marketplaceEntries.length} 个插件`}
-                      </MiniBadge>
-                    </div>
-                    <div className="mt-1 flex items-center gap-1.5 truncate text-[12px] text-text-secondary">
-                      <FontAwesomeIcon icon={["fab", "github"]} className="text-[11px]" />
-                      {marketplace?.source || "已发现市场插件"}
-                    </div>
-                    {marketplace?.last_updated && (
-                      <div className="mt-1 text-[11px] text-text-tertiary">
-                        最近同步：{formatMarketplaceUpdated(marketplace.last_updated)}
-                      </div>
-                    )}
-                  </div>
-                  {marketplace && (
-                    <div className="flex gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => void onRemove(marketplace.name)}
-                        title="删除"
-                      >
-                        <FontAwesomeIcon icon={["fas", "trash"]} />
-                      </Button>
-                    </div>
-                  )}
-                </div>
-                {marketplaceEntries.length === 0 ? (
-                  <div className="mt-3">
-                    <EmptyState text={loading ? "正在加载插件列表..." : "该市场暂无插件"} />
-                  </div>
-                ) : (
-                  <div className="mt-4 grid grid-cols-1 items-stretch gap-4 md:grid-cols-2">
-                    {marketplaceEntries.map((entry) => (
-                      <MarketplaceEntryCard
-                        key={`${entry.marketplace}:${entry.name}`}
-                        entry={entry}
-                        busy={busyId === `${entry.marketplace}:${entry.name}`}
-                        onInstall={onInstall}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function MarketplaceEntryCard({
-  entry,
-  busy,
-  onInstall,
-}: {
-  entry: PluginMarketplaceEntry;
-  busy: boolean;
-  onInstall: (entry: PluginMarketplaceEntry) => Promise<void>;
-}) {
-  const installHint = marketplaceInstallHint(entry);
-  const repositoryName = entry.repository_full_name || entry.display_name;
-  const visibleTopics = entry.topics.slice(0, 4);
-  const remainingTopics = Math.max(0, entry.topics.length - visibleTopics.length);
-  return (
-    <article className="flex min-h-[190px] min-w-0 flex-col rounded-lg border border-border-theme bg-white p-4 transition-colors hover:border-gray-300">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0 truncate text-[14px] font-semibold leading-5 text-text-base" title={repositoryName}>
-          {repositoryName}
-        </div>
-        <div className="flex shrink-0 items-center gap-1 text-[11px] text-text-secondary" title={`${entry.stargazers_count} stars`}>
-          <FontAwesomeIcon icon={["fas", "star"]} className="text-amber-500" />
-          <span>{formatMarketplaceStars(entry.stargazers_count)}</span>
-        </div>
-      </div>
-
-      <p className="mt-2 min-h-[3rem] line-clamp-2 text-[12px] leading-6 text-text-secondary">
-        {entry.description || "暂无仓库简介"}
-      </p>
-
-      <div className="mt-3 flex min-h-6 flex-wrap content-start gap-1.5 overflow-hidden">
-        {visibleTopics.length > 0 ? (
-          visibleTopics.map((topic) => (
-            <MiniBadge key={topic}>#{topic}</MiniBadge>
-          ))
-        ) : (
-          <span className="text-[11px] text-text-tertiary">暂无标签</span>
-        )}
-        {remainingTopics > 0 && <MiniBadge>+{remainingTopics}</MiniBadge>}
-      </div>
-
-      <div className="mt-auto flex items-end justify-between gap-3 border-t border-gray-100 pt-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <span className="flex items-center gap-1 text-[11px] text-text-secondary">
-            <FontAwesomeIcon icon={["fas", "book"]} className="text-[10px]" />
-            {entry.license || "未声明协议"}
-          </span>
-          {entry.policy_installation && (
-            <MiniBadge tone={entry.installable ? "neutral" : "warn"}>
-              {entry.policy_installation}
-            </MiniBadge>
-          )}
-          {entry.policy_authentication && (
-            <MiniBadge tone={entry.authentication_required ? "warn" : "neutral"}>
-              {entry.policy_authentication}
-            </MiniBadge>
-          )}
-          {entry.runtime_required && <MiniBadge tone="warn">需要运行时</MiniBadge>}
-          {entry.has_runtime_payload && <MiniBadge tone="info">含运行时包</MiniBadge>}
-        </div>
-        <Button
-          className="shrink-0"
-          size="sm"
-          variant={entry.installed && !entry.update_available ? "outline" : "default"}
-          disabled={busy || !entry.installable}
-          onClick={() => void onInstall(entry)}
-          title={installHint || (entry.installable ? "安装插件" : "该来源不可安装")}
-        >
-          <FontAwesomeIcon icon={["fas", "download"]} />
-          <span>
-            {busy
-              ? "处理中..."
-              : entry.update_available
-                ? "更新"
-                : entry.installed
-                  ? "重新安装"
-                  : "安装"}
-          </span>
-        </Button>
-      </div>
-      {!entry.installable && installHint && (
-        <div className="mt-2 truncate text-[11px] text-amber-700" title={installHint}>
-          {installHint}
-        </div>
-      )}
-    </article>
-  );
-}
-
-function formatMarketplaceStars(stars: number): string {
-  if (stars >= 1000) return `${(stars / 1000).toFixed(stars >= 10000 ? 0 : 1)}k`;
-  return stars.toString();
-}
-
-function formatMarketplaceUpdated(value: string): string {
-  const numeric = Number(value);
-  const date = Number.isFinite(numeric)
-    ? new Date(numeric < 1_000_000_000_000 ? numeric * 1000 : numeric)
-    : new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
 }
 
 function CreateDialog({
@@ -1890,8 +1527,6 @@ function originLabel(origin: string): string {
       return "工作区";
     case "personal":
       return "个人";
-    case "marketplace":
-      return "市场";
     case "session":
       return "会话";
     default:
@@ -1982,20 +1617,3 @@ function categoryLabel(category: string): string {
   }
 }
 
-function marketplaceInstallHint(entry: PluginMarketplaceEntry): string | null {
-  if (entry.install_block_reason) {
-    return entry.install_block_reason;
-  }
-  if (entry.installable) {
-    if (entry.authentication_required) {
-      return (
-        entry.authentication_hint ||
-        `安装时需要认证: ${entry.policy_authentication || "ON_INSTALL"}`
-      );
-    }
-    return entry.policy_authentication
-      ? `认证策略: ${entry.policy_authentication}`
-      : null;
-  }
-  return entry.source || "该来源不可安装";
-}

@@ -49,7 +49,6 @@ pub mod plugin;
 pub mod plugin_dependency;
 pub mod plugin_loader;
 pub mod plugin_manifest;
-pub mod plugin_marketplace;
 pub mod plugin_runtime;
 pub mod plugin_security;
 pub mod plugin_service;
@@ -130,10 +129,6 @@ pub use managed_files::ManagedFileInventory;
 pub use mcp_service::{McpConnectionStatusDto, McpServerDto, McpService, McpToolInfoDto};
 pub use office_service::{markdown_to_docspec, DocBlock, DocSpec, OfficeService};
 pub use plugin_loader::{PluginLoadError, PluginOrigin, PluginRoots};
-pub use plugin_marketplace::{
-    AddPluginMarketplaceDto, PluginMarketplaceDto, PluginMarketplaceEntriesQueryDto,
-    PluginMarketplaceEntryDto, PluginMarketplacePageDto,
-};
 pub use plugin_runtime::{
     PluginAgentRoot, PluginAppEntry, PluginCommandRoot, PluginConnectorEntry,
     PluginMcpServerSource, PluginOutputStyleEntry, PluginRuntimeError, PluginRuntimeProjection,

@@ -28,9 +28,8 @@ use deepagent_app_core::{
     GitWorktreeDto, KeychainStore, KnowledgeDraftDto, KnowledgeDto, KnowledgeHitDto,
     KnowledgeService, LocalPtyHandle, ManagedFileInventory, McpServerDto, McpService,
     NewRuntimeLogEntry, OfficeService, PdfRenderResultDto, PluginAppEntry, PluginDto,
-    PluginMarketplaceDto, PluginMarketplaceEntriesQueryDto, PluginMarketplaceEntryDto,
-    PluginMarketplacePageDto, PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto,
-    PluginScanReportDto, PluginService, PreflightToolCallDto, PreparedPluginInstallDto,
+    PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto, PluginScanReportDto,
+    PluginService, PreflightToolCallDto,
     PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
     ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
     ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, ProjectTrustDto,
@@ -1433,97 +1432,6 @@ fn ensure_plugin_scan_allowed(
         ));
     }
     Ok(())
-}
-
-#[tauri::command]
-fn list_plugin_marketplaces(
-    state: State<'_, AppState>,
-) -> Result<Vec<PluginMarketplaceDto>, String> {
-    state.plugins.list_marketplaces().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn remove_plugin_marketplace(
-    state: State<'_, AppState>,
-    name: String,
-) -> Result<bool, String> {
-    let removed = state
-        .plugins
-        .remove_marketplace(&name)
-        .map_err(|e| e.to_string())?;
-    sync_plugin_runtime_after_change(state.inner()).await?;
-    Ok(removed)
-}
-
-#[tauri::command]
-async fn list_plugin_marketplace_entries(
-    state: State<'_, AppState>,
-) -> Result<Vec<PluginMarketplaceEntryDto>, String> {
-    let plugins = Arc::clone(&state.plugins);
-    tauri::async_runtime::spawn_blocking(move || {
-        plugins
-            .list_marketplace_entries()
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn search_plugin_marketplace_entries(
-    state: State<'_, AppState>,
-    input: PluginMarketplaceEntriesQueryDto,
-) -> Result<PluginMarketplacePageDto, String> {
-    let plugins = Arc::clone(&state.plugins);
-    tauri::async_runtime::spawn_blocking(move || {
-        plugins
-            .search_marketplace_entries(input)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn prepare_plugin_install(
-    state: State<'_, AppState>,
-    marketplace: String,
-    plugin: String,
-    auth_confirmed: Option<bool>,
-) -> Result<PreparedPluginInstallDto, String> {
-    let plugins = Arc::clone(&state.plugins);
-    tauri::async_runtime::spawn_blocking(move || {
-        plugins
-            .prepare_plugin_install(&marketplace, &plugin, auth_confirmed.unwrap_or(false))
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn commit_plugin_install(
-    state: State<'_, AppState>,
-    token: String,
-) -> Result<PluginDto, String> {
-    let plugins = Arc::clone(&state.plugins);
-    let plugin = tauri::async_runtime::spawn_blocking(move || {
-        plugins
-            .commit_plugin_install(&token)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    sync_plugin_runtime_after_change(state.inner()).await?;
-    Ok(plugin)
-}
-
-#[tauri::command]
-fn cancel_plugin_install(state: State<'_, AppState>, token: String) -> Result<bool, String> {
-    state
-        .plugins
-        .cancel_plugin_install(&token)
-        .map_err(|e| e.to_string())
 }
 
 // ---- skill marketplace (skillsmp.com + GitHub) ----------------------------
@@ -6268,11 +6176,7 @@ pub fn run() {
             };
             let legacy_plugin_install_dir = preferred_plugin_install_dir(app.handle());
             let plugin_install_dir = plugins_dir.clone();
-            let plugin_cache = plugin_install_dir.join("cache");
-            let plugin_marketplaces = plugin_install_dir.join("marketplaces");
             let _ = std::fs::create_dir_all(&plugin_install_dir);
-            let _ = std::fs::create_dir_all(&plugin_cache);
-            let _ = std::fs::create_dir_all(&plugin_marketplaces);
             let _ = copy_dir_missing(&legacy_plugin_install_dir, &plugin_install_dir);
             let session_plugins = session_plugin_roots_from_env();
             let plugins = Arc::new(PluginService::new(
@@ -6281,8 +6185,6 @@ pub fn run() {
                     builtin: resource_plugins_dir.clone(),
                     workspace: Some(workspace_root.join(".deepagent").join("plugins")),
                     personal: plugin_install_dir.clone(),
-                    marketplace_cache: plugin_cache.clone(),
-                    marketplaces: plugin_marketplaces.clone(),
                 },
                 &dir,
             ));
@@ -6680,13 +6582,6 @@ pub fn run() {
             uninstall_plugin,
             scan_plugin,
             scan_plugin_zip,
-            list_plugin_marketplaces,
-            remove_plugin_marketplace,
-            list_plugin_marketplace_entries,
-            search_plugin_marketplace_entries,
-            prepare_plugin_install,
-            commit_plugin_install,
-            cancel_plugin_install,
             skill_market_search,
             skill_market_test_key,
             skill_market_get_api_key,

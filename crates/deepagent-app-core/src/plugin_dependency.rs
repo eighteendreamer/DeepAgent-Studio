@@ -264,7 +264,6 @@ mod tests {
             name: name.to_string(),
             source_key: source_key.to_string(),
             origin: PluginOrigin::Personal,
-            marketplace: None,
             root: root.clone(),
             resolved: Some(ResolvedPlugin::from_manifest(
                 &root,

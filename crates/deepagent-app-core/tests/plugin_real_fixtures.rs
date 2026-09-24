@@ -58,8 +58,6 @@ fn bundled_plugins_keep_their_component_counts() {
         builtin: root,
         workspace: None,
         personal: PathBuf::from("__missing_personal_plugins__"),
-        marketplace_cache: PathBuf::from("__missing_marketplace_cache__"),
-        marketplaces: PathBuf::from("__missing_marketplaces__"),
     });
 
     assert_eq!(loaded.len(), EXPECTED.len(), "built-in plugin set changed");
@@ -153,8 +151,6 @@ fn existing_host_adapters_preserve_state_and_data_from_install_dir() {
             builtin: root.clone(),
             workspace: None,
             personal: plugin_state_dir.join("personal"),
-            marketplace_cache: plugin_state_dir.join("cache"),
-            marketplaces: plugin_state_dir.join("marketplaces"),
         },
         &install_dir,
     );
@@ -217,8 +213,6 @@ fn existing_host_adapters_only_expose_registered_renderable_apps() {
             builtin: root,
             workspace: None,
             personal: tmp.path().join("personal"),
-            marketplace_cache: tmp.path().join("cache"),
-            marketplaces: tmp.path().join("marketplaces"),
         },
         tmp.path().join("app-data"),
     );
@@ -468,8 +462,6 @@ fn bundled_boltz_cli_requires_runtime_or_configuration_before_verification() {
             builtin: root,
             workspace: None,
             personal: tmp.path().join("personal"),
-            marketplace_cache: tmp.path().join("cache"),
-            marketplaces: tmp.path().join("marketplaces"),
         },
         tmp.path().join("app-data"),
     );
@@ -522,8 +514,6 @@ fn bundled_figma_requires_authorization_and_projects_real_runtime_entries() {
             builtin: root.clone(),
             workspace: None,
             personal: tmp.path().join("personal"),
-            marketplace_cache: tmp.path().join("cache"),
-            marketplaces: tmp.path().join("marketplaces"),
         },
         tmp.path().join("app-data"),
     );

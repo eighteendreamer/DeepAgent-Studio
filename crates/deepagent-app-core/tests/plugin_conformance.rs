@@ -160,8 +160,6 @@ fn main_loader_uses_portable_root_manifest_before_dialects() {
         builtin,
         workspace: None,
         personal: tmp.path().join("personal"),
-        marketplace_cache: tmp.path().join("cache"),
-        marketplaces: tmp.path().join("marketplaces"),
     });
 
     assert_eq!(loaded.len(), 1);
