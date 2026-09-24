@@ -12,6 +12,7 @@
 //! - [`TerminalService`] — interactive terminal in the active project dir.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -5879,11 +5880,41 @@ async fn mobile_get_network_records(
 
 /// Extract `zip_path` into `dest`, returning the directory to install from: the
 /// single top-level folder if the archive has exactly one, else `dest` itself.
+/// Caps for unpacking a user-supplied archive. `prepare_runtime_payload` in
+/// `deepagent-app-core` enforces the same budget for bundled runtime payloads;
+/// this covers the interactive Zip install and scan paths.
+const MAX_ARCHIVE_ENTRIES: usize = 10_000;
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
+
 fn extract_zip(zip_path: &str, dest: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    extract_zip_limited(
+        zip_path,
+        dest,
+        MAX_ARCHIVE_ENTRIES,
+        MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+    )
+}
+
+fn extract_zip_limited(
+    zip_path: &str,
+    dest: &std::path::Path,
+    max_entries: usize,
+    max_uncompressed_bytes: u64,
+) -> std::io::Result<std::path::PathBuf> {
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    if archive.len() > max_entries {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "archive declares {} entries, exceeding the {max_entries} limit",
+                archive.len()
+            ),
+        ));
+    }
     let mut top_levels = std::collections::BTreeSet::new();
+    let mut extracted: u64 = 0;
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -5901,8 +5932,20 @@ fn extract_zip(zip_path: &str, dest: &std::path::Path) -> std::io::Result<std::p
             if let Some(parent) = out.parent() {
                 std::fs::create_dir_all(parent)?;
             }
+            // Bound by bytes actually written rather than the header's declared
+            // size, which a crafted archive can understate. One extra byte is
+            // allowed through so exceeding the budget is detected instead of a
+            // legitimately sized file being rejected at the exact boundary.
+            let budget = max_uncompressed_bytes.saturating_sub(extracted);
             let mut outfile = std::fs::File::create(&out)?;
-            std::io::copy(&mut entry, &mut outfile)?;
+            let written = std::io::copy(&mut entry.by_ref().take(budget + 1), &mut outfile)?;
+            if written > budget {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("archive unpacks beyond the {max_uncompressed_bytes} byte limit"),
+                ));
+            }
+            extracted = extracted.saturating_add(written);
         }
     }
     if top_levels.len() == 1 {
@@ -6854,6 +6897,7 @@ mod tests {
 
     use super::*;
     use std::fs;
+    use std::io::Write;
 
     fn touch(path: &Path) {
         if let Some(parent) = path.parent() {
@@ -6986,8 +7030,6 @@ mod tests {
             builtin: tmp.path().join("builtin"),
             workspace: None,
             personal: tmp.path().join("personal"),
-            marketplace_cache: tmp.path().join("cache"),
-            marketplaces: tmp.path().join("marketplaces"),
         };
         let plugin_service = PluginService::new(roots, tmp.path().join("app-data"));
 
@@ -7080,5 +7122,97 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         touch(&tmp.path().join("foo").join("bar").join("SKILL.md"));
         assert!(!dir_has_skill_md(tmp.path()));
+    }
+
+    /// Build a zip whose single top-level directory holds `entries` files of
+    /// `size` bytes each, and return its path.
+    fn write_fixture_zip(
+        dir: &Path,
+        name: &str,
+        entries: usize,
+        size: usize,
+    ) -> std::io::Result<std::path::PathBuf> {
+        let path = dir.join(name);
+        let file = fs::File::create(&path)?;
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::FileOptions::default();
+        for index in 0..entries {
+            writer.start_file(format!("pkg/file-{index}.txt"), options)?;
+            writer.write_all(&vec![b'x'; size])?;
+        }
+        writer.finish()?;
+        Ok(path)
+    }
+
+    #[test]
+    fn extract_zip_rejects_archive_over_entry_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_fixture_zip(tmp.path(), "many.zip", 5, 4).unwrap();
+        let dest = tmp.path().join("out");
+        fs::create_dir_all(&dest).unwrap();
+
+        let err = extract_zip_limited(archive.to_str().unwrap(), &dest, 3, u64::MAX).unwrap_err();
+        assert!(
+            err.to_string().contains("exceeding the 3 limit"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_zip_rejects_archive_over_byte_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_fixture_zip(tmp.path(), "big.zip", 4, 100).unwrap();
+        let dest = tmp.path().join("out");
+        fs::create_dir_all(&dest).unwrap();
+
+        let err = extract_zip_limited(archive.to_str().unwrap(), &dest, 100, 250).unwrap_err();
+        assert!(
+            err.to_string().contains("byte limit"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The budget must stop the write, not merely report afterwards: the entry
+    /// that trips the cap is limited to the remaining budget plus the one probe
+    /// byte, so total bytes on disk stay within budget + 1 regardless of what
+    /// the archive's headers claim.
+    #[test]
+    fn extract_zip_does_not_write_beyond_the_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_fixture_zip(tmp.path(), "spill.zip", 4, 100).unwrap();
+        let dest = tmp.path().join("out");
+        fs::create_dir_all(&dest).unwrap();
+
+        assert!(extract_zip_limited(archive.to_str().unwrap(), &dest, 100, 250).is_err());
+        let pkg = dest.join("pkg");
+        let total = fs::read_dir(&pkg)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.path().metadata().ok())
+            .filter(|meta| meta.is_file())
+            .map(|meta| meta.len())
+            .sum::<u64>();
+        assert!(
+            total <= 251,
+            "extraction wrote {total} bytes to disk against a 250 byte budget"
+        );
+        let capped = fs::read(pkg.join("file-2.txt")).unwrap();
+        assert_eq!(
+            capped.len(),
+            51,
+            "entry 2 should hold the 50 remaining budget bytes plus one probe byte"
+        );
+    }
+
+    #[test]
+    fn extract_zip_accepts_archive_within_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = write_fixture_zip(tmp.path(), "ok.zip", 3, 10).unwrap();
+        let dest = tmp.path().join("out");
+        fs::create_dir_all(&dest).unwrap();
+
+        let root = extract_zip_limited(archive.to_str().unwrap(), &dest, 10, 1024).unwrap();
+        assert_eq!(root, dest.join("pkg"));
+        assert_eq!(fs::read(root.join("file-0.txt")).unwrap().len(), 10);
     }
 }
