@@ -54,9 +54,6 @@ const PLUGIN_CACHE_ORPHAN_MARKER: &str = ".orphaned_at";
 const PLUGIN_CACHE_ORPHAN_GRACE_MILLIS: u128 = 7 * 24 * 60 * 60 * 1000;
 const PREPARED_PLUGIN_INSTALL_FILE: &str = ".prepared-install.json";
 const GITHUB_API_BASES_ENV: &str = "DEEPAGENT_PLUGIN_GITHUB_API_BASES";
-const GITHUB_TOPIC_PREFIX: &str = "https://github.com/topics/";
-const DEEPSEEK_HARNESS_MARKETPLACE_NAME: &str = "deepseek-harness";
-const DEEPSEEK_HARNESS_MARKETPLACE_SOURCE: &str = "https://github.com/topics/dsh-plugin";
 const DSH_SIDECAR_MCP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const GITHUB_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const GITHUB_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1034,16 +1031,12 @@ impl PluginService {
         })?;
         let git_ref = input.git_ref.and_then(trimmed_string);
         let sparse_path = input.sparse_path.and_then(trimmed_string);
-        let materialized = if github_topic_from_source(&source).is_some() {
-            MaterializedMarketplace::default()
-        } else {
-            self.materialize_marketplace(
-                &name,
-                &source,
-                git_ref.as_deref(),
-                sparse_path.as_deref(),
-            )?
-        };
+        let materialized = self.materialize_marketplace(
+            &name,
+            &source,
+            git_ref.as_deref(),
+            sparse_path.as_deref(),
+        )?;
         let refreshed = materialized.manifest_path.is_some() || materialized.source_root.is_some();
         let state_item = MarketplaceState {
             source: source.clone(),
@@ -1274,69 +1267,27 @@ impl PluginService {
         &self,
         input: PluginMarketplaceEntriesQueryDto,
     ) -> Result<PluginMarketplacePageDto> {
-        let mut state = self.load_state()?;
+        let state = self.load_state()?;
         let marketplace_name = input
             .marketplace
             .as_deref()
             .map(slugify)
             .or_else(|| state.marketplaces.keys().next().cloned())
             .ok_or_else(|| CoreError::not_found("plugin marketplace"))?;
-        if marketplace_name == DEEPSEEK_HARNESS_MARKETPLACE_NAME
-            && !state.marketplaces.contains_key(&marketplace_name)
-        {
-            self.add_marketplace(AddPluginMarketplaceDto {
-                name: Some(DEEPSEEK_HARNESS_MARKETPLACE_NAME.to_string()),
-                source: DEEPSEEK_HARNESS_MARKETPLACE_SOURCE.to_string(),
-                git_ref: None,
-                sparse_path: None,
-            })?;
-            state = self.load_state()?;
-        }
         let page = input.page.max(1);
         let per_page = input.per_page.clamp(1, 100);
         let query = input.query.trim().to_string();
-        let marketplace = state
+        state
             .marketplaces
             .get(&marketplace_name)
             .ok_or_else(|| CoreError::not_found(format!("marketplace {marketplace_name}")))?;
-
-        let mut remote_total_count = None;
-        let mut remote_page_entry_names = None;
-        if let Some(topic) = github_topic_from_source(&marketplace.source) {
-            let registry_dir = self.roots.marketplaces.join(&marketplace_name);
-            let (materialized, total_count, page_entry_names) =
-                materialize_github_topic_marketplace_page(
-                    &marketplace_name,
-                    &topic,
-                    &query,
-                    page,
-                    per_page,
-                    &registry_dir,
-                )?;
-            let mut state = state;
-            let item = state
-                .marketplaces
-                .get_mut(&marketplace_name)
-                .ok_or_else(|| CoreError::not_found(format!("marketplace {marketplace_name}")))?;
-            item.manifest_path = materialized
-                .manifest_path
-                .as_ref()
-                .map(|path| path.display().to_string());
-            item.last_updated = Some(now_string());
-            self.save_state(&state)?;
-            remote_total_count = Some(total_count);
-            remote_page_entry_names = Some(page_entry_names.into_iter().collect::<BTreeSet<_>>());
-        }
 
         let mut entries = self
             .list_marketplace_entries()?
             .into_iter()
             .filter(|entry| entry.marketplace == marketplace_name)
             .collect::<Vec<_>>();
-        if let Some(page_entry_names) = remote_page_entry_names.as_ref() {
-            entries.retain(|entry| page_entry_names.contains(&entry.name));
-        }
-        if remote_total_count.is_none() && !query.is_empty() {
+        if !query.is_empty() {
             let query = query.to_ascii_lowercase();
             entries.retain(|entry| {
                 [
@@ -1350,15 +1301,13 @@ impl PluginService {
             });
         }
 
-        let total_count = remote_total_count.unwrap_or(entries.len() as u32);
-        if remote_total_count.is_none() {
-            let start = ((page - 1) * per_page) as usize;
-            entries = entries
-                .into_iter()
-                .skip(start)
-                .take(per_page as usize)
-                .collect();
-        }
+        let total_count = entries.len() as u32;
+        let start = ((page - 1) * per_page) as usize;
+        entries = entries
+            .into_iter()
+            .skip(start)
+            .take(per_page as usize)
+            .collect();
         Ok(PluginMarketplacePageDto {
             entries,
             total_count,
@@ -3302,18 +3251,6 @@ impl PluginService {
             return Ok(MaterializedMarketplace::default());
         }
 
-        if let Some(topic) = github_topic_from_source(source) {
-            return materialize_github_topic_marketplace_page(
-                name,
-                &topic,
-                "",
-                1,
-                100,
-                &registry_dir,
-            )
-            .map(|(materialized, _, _)| materialized);
-        }
-
         if source.starts_with("npm:") {
             return Err(CoreError::invalid(
                 "npm marketplace sources require immutable integrity metadata; use a checked local manifest or zip URL with sha256",
@@ -4358,7 +4295,21 @@ fn plugin_install_failure(
     ))
 }
 
+fn is_retired_topic_marketplace_source(source: &str) -> bool {
+    let source = source.trim().trim_end_matches('/');
+    source
+        .strip_prefix("github-topic:")
+        .or_else(|| source.strip_prefix("https://github.com/topics/"))
+        .is_some_and(|topic| !topic.is_empty())
+}
+
 fn migrate_plugin_state(mut state: PluginState) -> Result<PluginState> {
+    // GitHub topic sources resolved against a hosted catalog that this build no
+    // longer ships. Leftover entries would be re-tried as plain git sources and
+    // fail, so they are dropped rather than kept in a broken state.
+    state
+        .marketplaces
+        .retain(|_, item| !is_retired_topic_marketplace_source(&item.source));
     match state.version {
         0 => {
             state.version = PLUGIN_STATE_SCHEMA_VERSION;
@@ -4444,148 +4395,6 @@ fn marketplace_dependency_id(
         name,
         marketplace,
     })
-}
-
-/// Fetch only one remote index page for a GitHub topic.
-///
-/// The topic index is intentionally based on the Search API's repository
-/// metadata. Manifest, component, runtime, and archive requests belong to the
-/// install/scan path and must not run while the market list is being rendered.
-fn materialize_github_topic_marketplace_page(
-    name: &str,
-    topic: &str,
-    query: &str,
-    page: u32,
-    per_page: u32,
-    registry_dir: &Path,
-) -> Result<(MaterializedMarketplace, u32, Vec<String>)> {
-    let scratch = registry_dir.join(".github-api");
-    let snapshot_path = registry_dir.join("marketplace.json");
-    let result = (|| {
-        let endpoint = github_topic_search_endpoint(topic, query, page, per_page);
-        let search_text = download_github_api_json(&endpoint, &scratch, "topic-search-page")?;
-        let search: GitHubSearchRepositoriesResponse = serde_json::from_str(&search_text)
-            .map_err(|e| CoreError::invalid(format!("parse GitHub topic response: {e}")))?;
-        let mut used_names = BTreeSet::new();
-        let mut plugins = Vec::new();
-        for repo in search.items {
-            let Some(full_name) = trimmed_string(repo.full_name) else {
-                continue;
-            };
-            if full_name.split('/').count() != 2 {
-                continue;
-            }
-            let repo_name = repo
-                .name
-                .and_then(trimmed_string)
-                .unwrap_or_else(|| full_name.rsplit('/').next().unwrap_or("plugin").to_string());
-            let mut plugin_name = slugify(&repo_name);
-            if plugin_name.is_empty() || !used_names.insert(plugin_name.clone()) {
-                plugin_name = slugify(&full_name.replace('/', "-"));
-                if plugin_name.is_empty() || !used_names.insert(plugin_name.clone()) {
-                    continue;
-                }
-            }
-            let description = repo
-                .description
-                .and_then(trimmed_string)
-                .unwrap_or_else(|| "DSH plugin".to_string());
-            let license = repo
-                .license
-                .and_then(|license| license.spdx_id)
-                .and_then(trimmed_string);
-            let source = serde_json::json!({
-                "source": "github",
-                "repo": full_name.clone(),
-                "ref": repo
-                    .default_branch
-                    .and_then(trimmed_string)
-                    .unwrap_or_else(|| "main".to_string())
-            });
-            plugins.push(serde_json::json!({
-                "name": plugin_name,
-                "displayName": repo_name,
-                "description": description,
-                "full_name": full_name,
-                "stargazers_count": repo.stargazers_count,
-                "topics": repo.topics,
-                "license": license,
-                "category": "DSH Plugin",
-                "source": source
-            }));
-        }
-        let page_entry_names =
-            merge_github_topic_page_snapshot(&snapshot_path, name, topic, plugins)?;
-        Ok((
-            MaterializedMarketplace {
-                manifest_path: Some(snapshot_path),
-                source_root: None,
-            },
-            search.total_count,
-            page_entry_names,
-        ))
-    })();
-    let _ = remove_dir_all_with_retry(&scratch);
-    if result.is_err() {
-        let _ = std::fs::remove_file(registry_dir.join("marketplace.json"));
-    }
-    result
-}
-
-fn merge_github_topic_page_snapshot(
-    snapshot_path: &Path,
-    name: &str,
-    topic: &str,
-    page_plugins: Vec<serde_json::Value>,
-) -> Result<Vec<String>> {
-    let mut merged = BTreeMap::<String, serde_json::Value>::new();
-    if snapshot_path.is_file() {
-        let text = std::fs::read_to_string(snapshot_path).map_err(|e| {
-            CoreError::Persistence(format!(
-                "read GitHub topic marketplace snapshot {}: {e}",
-                snapshot_path.display()
-            ))
-        })?;
-        let existing: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| CoreError::invalid(format!("parse GitHub topic snapshot: {e}")))?;
-        if let Some(plugins) = existing
-            .get("plugins")
-            .and_then(serde_json::Value::as_array)
-        {
-            for plugin in plugins {
-                if let Some(plugin_name) = plugin
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|value| trimmed_string(value.to_string()))
-                {
-                    merged.insert(plugin_name, plugin.clone());
-                }
-            }
-        }
-    }
-
-    let mut page_entry_names = Vec::with_capacity(page_plugins.len());
-    for plugin in page_plugins {
-        let plugin_name = plugin
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|value| trimmed_string(value.to_string()))
-            .ok_or_else(|| CoreError::invalid("GitHub topic plugin entry missing name"))?;
-        page_entry_names.push(plugin_name.clone());
-        merged.insert(plugin_name, plugin);
-    }
-
-    let catalog = serde_json::json!({
-        "name": name,
-        "interface": {
-            "displayName": format!("GitHub topic: {topic}")
-        },
-        "plugins": merged.into_values().collect::<Vec<_>>()
-    });
-    let bytes = serde_json::to_vec_pretty(&catalog).map_err(CoreError::from)?;
-    write_file_atomically(snapshot_path, &bytes)?;
-    load_marketplace_catalog(snapshot_path)?;
-    Ok(page_entry_names)
 }
 
 fn materialize_git_plugin(
@@ -5157,37 +4966,6 @@ fn is_github_shorthand_segment(segment: &str) -> bool {
 }
 
 #[derive(Debug, Deserialize)]
-struct GitHubSearchRepositoriesResponse {
-    #[serde(default)]
-    total_count: u32,
-    #[serde(default)]
-    items: Vec<GitHubRepositoryItem>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubRepositoryItem {
-    #[serde(default)]
-    name: Option<String>,
-    full_name: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    stargazers_count: u64,
-    #[serde(default)]
-    topics: Vec<String>,
-    #[serde(default)]
-    default_branch: Option<String>,
-    #[serde(default)]
-    license: Option<GitHubRepositoryLicense>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubRepositoryLicense {
-    #[serde(default)]
-    spdx_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct GitHubBranchResponse {
     commit: GitHubBranchCommit,
 }
@@ -5205,31 +4983,6 @@ struct GitHubGitCommitResponse {
 #[derive(Debug, Deserialize)]
 struct GitHubGitCommitTree {
     sha: String,
-}
-
-fn github_topic_from_source(source: &str) -> Option<String> {
-    let source = source.trim().trim_end_matches('/');
-    let raw = source
-        .strip_prefix("github-topic:")
-        .or_else(|| source.strip_prefix(GITHUB_TOPIC_PREFIX))?;
-    let topic = raw.split(['/', '?', '#']).next().unwrap_or_default().trim();
-    is_safe_github_topic(topic).then(|| topic.to_string())
-}
-
-fn is_safe_github_topic(topic: &str) -> bool {
-    !topic.is_empty()
-        && topic.len() <= 50
-        && topic
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
-        && topic
-            .chars()
-            .next()
-            .is_some_and(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-        && topic
-            .chars()
-            .last()
-            .is_some_and(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
 }
 
 fn is_git_sha(value: &str) -> bool {
@@ -5380,35 +5133,13 @@ fn github_download_url_candidates(url: &str) -> Vec<String> {
     candidates
 }
 
+#[cfg(test)]
 fn percent_encode_query_value(input: &str) -> String {
     utf8_percent_encode(input, QUERY_ENCODE_SET).to_string()
 }
 
-fn github_topic_search_endpoint(topic: &str, query: &str, page: u32, per_page: u32) -> String {
-    let mut search = format!("topic:{topic}");
-    if let Some(query) = trimmed_string(query.to_string()) {
-        search.push(' ');
-        search.push_str(&query);
-    }
-    let page_suffix = (page > 1).then(|| format!("&page={}", page));
-    format!(
-        "/search/repositories?q={}&sort=updated&order=desc&per_page={}{}",
-        percent_encode_query_value(&search),
-        per_page.clamp(1, 100),
-        page_suffix.unwrap_or_default()
-    )
-}
-
 fn percent_encode_path_segment(input: &str) -> String {
     utf8_percent_encode(input, PATH_SEGMENT_ENCODE_SET).to_string()
-}
-
-#[cfg(test)]
-fn percent_encode_content_path(path: &str) -> String {
-    path.split('/')
-        .map(percent_encode_path_segment)
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 fn base64_decode_standard(input: &str) -> Result<Vec<u8>> {
@@ -8084,84 +7815,6 @@ mod tests {
         let tree = run_external_output("git", &["write-tree".to_string()], Some(root)).unwrap();
         let _ = remove_dir_all_with_retry(&root.join(".git"));
         tree.trim().to_string()
-    }
-
-    fn write_github_contents_manifest_fixture(
-        fixtures: &Path,
-        full_name: &str,
-        manifest_relative_path: &str,
-        commit: &str,
-        manifest: serde_json::Value,
-    ) {
-        let endpoint = format!(
-            "/repos/{}/contents/{}?ref={}",
-            full_name,
-            percent_encode_content_path(manifest_relative_path),
-            percent_encode_query_value(commit)
-        );
-        let encoded = base64_encode_test(serde_json::to_string(&manifest).unwrap().as_bytes());
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(&endpoint))),
-            serde_json::json!({
-                "type": "file",
-                "encoding": "base64",
-                "content": encoded,
-            })
-            .to_string(),
-        )
-        .unwrap();
-    }
-
-    fn write_github_contents_directory_fixture(
-        fixtures: &Path,
-        full_name: &str,
-        relative_path: &str,
-        commit: &str,
-        entries: serde_json::Value,
-    ) {
-        let endpoint = if relative_path.is_empty() {
-            format!(
-                "/repos/{}/contents?ref={}",
-                full_name,
-                percent_encode_query_value(commit)
-            )
-        } else {
-            format!(
-                "/repos/{}/contents/{}?ref={}",
-                full_name,
-                percent_encode_content_path(relative_path),
-                percent_encode_query_value(commit)
-            )
-        };
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(&endpoint))),
-            entries.to_string(),
-        )
-        .unwrap();
-    }
-
-    fn base64_encode_test(bytes: &[u8]) -> String {
-        const TABLE: &[u8; 64] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for chunk in bytes.chunks(3) {
-            let b0 = chunk[0];
-            let b1 = *chunk.get(1).unwrap_or(&0);
-            let b2 = *chunk.get(2).unwrap_or(&0);
-            out.push(TABLE[(b0 >> 2) as usize] as char);
-            out.push(TABLE[(((b0 & 0b11) << 4) | (b1 >> 4)) as usize] as char);
-            if chunk.len() > 1 {
-                out.push(TABLE[(((b1 & 0b1111) << 2) | (b2 >> 6)) as usize] as char);
-            } else {
-                out.push('=');
-            }
-            if chunk.len() > 2 {
-                out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-        out
     }
 
     fn git_available() -> bool {
@@ -12012,684 +11665,6 @@ deepagent-definitely-missing-runtime-cli --version
     }
 
     #[test]
-    fn dsh_search_registers_official_marketplace_automatically() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let roots = roots(tmp.path());
-        let fixtures = tmp.path().join("github-api");
-        std::fs::create_dir_all(&fixtures).unwrap();
-        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
-        std::env::set_var(
-            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
-            fixtures.display().to_string(),
-        );
-
-        let search_endpoint =
-            "/search/repositories?q=topic%3Adsh-plugin&sort=updated&order=desc&per_page=100";
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(search_endpoint))),
-            r#"{
-              "total_count": 1,
-              "items": [
-                {
-                  "name": "dsh-demo",
-                  "full_name": "deepseek-ai/dsh-demo",
-                  "description": "Demo DSH plugin",
-                  "default_branch": "main",
-                  "stargazers_count": 12,
-                  "topics": ["dsh-plugin"],
-                  "license": { "spdx_id": "MIT" }
-                }
-              ]
-            }"#,
-        )
-        .unwrap();
-        let branch_endpoint = "/repos/deepseek-ai/dsh-demo/branches/main";
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(branch_endpoint))),
-            r#"{
-              "commit": {
-                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-              }
-            }"#,
-        )
-        .unwrap();
-
-        let svc = PluginService::new(roots, tmp.path().join("app-data"));
-        assert!(svc.list_marketplaces().unwrap().is_empty());
-
-        let page = svc
-            .search_marketplace_entries(PluginMarketplaceEntriesQueryDto {
-                marketplace: Some("deepseek-harness".to_string()),
-                query: String::new(),
-                page: 1,
-                per_page: 100,
-            })
-            .unwrap();
-
-        assert_eq!(page.total_count, 1);
-        assert_eq!(page.entries.len(), 1);
-        assert_eq!(
-            page.entries[0].repository_full_name.as_deref(),
-            Some("deepseek-ai/dsh-demo")
-        );
-        let marketplaces = svc.list_marketplaces().unwrap();
-        assert_eq!(marketplaces.len(), 1);
-        assert_eq!(marketplaces[0].name, "deepseek-harness");
-        assert_eq!(
-            marketplaces[0].source,
-            "https://github.com/topics/dsh-plugin"
-        );
-
-        match old_fixtures {
-            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
-            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
-        }
-    }
-
-    #[test]
-    fn dsh_github_topic_refresh_writes_metadata_snapshot_without_plugin_download() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let roots = roots(tmp.path());
-        let fixtures = tmp.path().join("github-api");
-        std::fs::create_dir_all(&fixtures).unwrap();
-        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
-        std::env::set_var(
-            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
-            fixtures.display().to_string(),
-        );
-
-        let search_endpoint =
-            "/search/repositories?q=topic%3Adsh-plugin&sort=updated&order=desc&per_page=100";
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(search_endpoint))),
-            r#"{
-              "items": [
-                {
-                  "name": "dsh-demo",
-                  "full_name": "deepseek-ai/dsh-demo",
-                  "description": "Demo DSH plugin",
-                  "default_branch": "main",
-                  "license": { "spdx_id": "MIT" }
-                }
-              ]
-            }"#,
-        )
-        .unwrap();
-        let branch_endpoint = "/repos/deepseek-ai/dsh-demo/branches/main";
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(branch_endpoint))),
-            r#"{
-              "commit": {
-                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-              }
-            }"#,
-        )
-        .unwrap();
-
-        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
-        let marketplace = svc
-            .add_marketplace(AddPluginMarketplaceDto {
-                name: Some("dsh".to_string()),
-                source: "https://github.com/topics/dsh-plugin".to_string(),
-                git_ref: None,
-                sparse_path: None,
-            })
-            .unwrap();
-
-        assert_eq!(marketplace.name, "dsh");
-        assert!(marketplace.last_updated.is_none());
-        assert!(svc.list_marketplace_entries().unwrap().is_empty());
-        assert!(!roots
-            .marketplaces
-            .join("dsh")
-            .join("marketplace.json")
-            .exists());
-
-        let marketplace = svc.refresh_marketplace("dsh").unwrap();
-        assert!(marketplace.last_updated.is_some());
-        let entries = svc.list_marketplace_entries().unwrap();
-        assert_eq!(entries.len(), 1);
-        let entry = &entries[0];
-        assert_eq!(entry.marketplace, "dsh");
-        assert_eq!(entry.name, "dsh-demo");
-        assert_eq!(entry.display_name, "dsh-demo");
-        assert_eq!(entry.description, "Demo DSH plugin");
-        assert_eq!(entry.license.as_deref(), Some("MIT"));
-        assert_eq!(entry.version, None);
-        assert_eq!(entry.source_kind, "github");
-        assert!(entry.source.contains("deepseek-ai/dsh-demo@main"));
-        assert!(!entry.source.contains("gh.llkk.cc"));
-        assert!(!entry.source.contains("gh-proxy.com"));
-        assert_eq!(entry.source_commit, None);
-        assert_eq!(entry.skill_count, 0);
-        assert_eq!(entry.command_count, 0);
-        assert!(!entry.runtime_required);
-        assert!(entry.runtime_requirements.is_empty());
-        assert!(entry.installable);
-        assert!(!entry.installed);
-
-        let snapshot =
-            std::fs::read_to_string(roots.marketplaces.join("dsh").join("marketplace.json"))
-                .unwrap();
-        assert!(snapshot.contains(r#""repo": "deepseek-ai/dsh-demo""#));
-        assert!(snapshot.contains(r#""license": "MIT""#));
-        assert!(snapshot.contains(r#""ref": "main""#));
-        assert!(!snapshot.contains(r#""sha""#));
-        assert!(!snapshot.contains(r#""components""#));
-        assert!(!snapshot.contains(r#""runtime""#));
-        assert!(!snapshot.contains("gh.llkk.cc"));
-        assert!(!snapshot.contains("gh-proxy.com"));
-        assert!(!roots
-            .marketplace_cache
-            .join("dsh")
-            .join("dsh-demo")
-            .exists());
-
-        match old_fixtures {
-            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
-            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
-        }
-    }
-
-    #[test]
-    fn dsh_github_topic_refresh_prefers_real_manifest_metadata() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let roots = roots(tmp.path());
-        let fixtures = tmp.path().join("github-api");
-        std::fs::create_dir_all(&fixtures).unwrap();
-        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
-        std::env::set_var(
-            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
-            fixtures.display().to_string(),
-        );
-
-        let search_endpoint =
-            "/search/repositories?q=topic%3Adsh-plugin&sort=updated&order=desc&per_page=100";
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(search_endpoint))),
-            r#"{
-              "items": [
-                {
-                  "name": "repo-shell",
-                  "full_name": "deepseek-ai/repo-shell",
-                  "description": "Repo fallback description",
-                  "default_branch": "main",
-                  "license": { "spdx_id": "MIT" }
-                }
-              ]
-            }"#,
-        )
-        .unwrap();
-        let branch_endpoint = "/repos/deepseek-ai/repo-shell/branches/main";
-        let commit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(branch_endpoint))),
-            format!(r#"{{ "commit": {{ "sha": "{commit}" }} }}"#),
-        )
-        .unwrap();
-        write_github_contents_manifest_fixture(
-            &fixtures,
-            "deepseek-ai/repo-shell",
-            ".codex-plugin/plugin.json",
-            commit,
-            serde_json::json!({
-                "name": "manifest-plugin",
-                "version": "2.3.4",
-                "description": "Manifest description",
-                "license": "Apache-2.0",
-                "author": { "name": "Manifest Author" },
-                "runtime": { "node": ">=20.19", "python": ">=3.11" },
-                "interface": {
-                    "displayName": "Manifest Plugin",
-                    "category": "Science"
-                },
-                "skills": ["skills", "missing-skills"],
-                "commands": ["commands", "missing-commands"],
-                "agents": ["agents", "missing-agents"],
-                "hooks": "hooks.json",
-                "mcpServers": {
-                    "demo": {
-                        "type": "stdio",
-                        "command": "node",
-                        "args": ["${PLUGIN_ROOT}/server.js"]
-                    }
-                },
-                "apps": [".app.json", "missing.app.json"],
-                "outputStyles": ["output-styles", "missing-output-styles"]
-            }),
-        );
-        write_github_contents_directory_fixture(
-            &fixtures,
-            "deepseek-ai/repo-shell",
-            "",
-            commit,
-            serde_json::json!([
-                { "type": "dir", "name": ".codex-plugin" },
-                { "type": "dir", "name": "skills" },
-                { "type": "dir", "name": "commands" },
-                { "type": "dir", "name": "agents" },
-                { "type": "file", "name": "hooks.json" },
-                { "type": "file", "name": ".app.json" },
-                { "type": "dir", "name": "output-styles" },
-                { "type": "dir", "name": "scripts" },
-                { "type": "file", "name": "package.json" }
-            ]),
-        );
-        write_github_contents_directory_fixture(
-            &fixtures,
-            "deepseek-ai/repo-shell",
-            "skills",
-            commit,
-            serde_json::json!([{ "type": "dir", "name": "planner" }]),
-        );
-        write_github_contents_directory_fixture(
-            &fixtures,
-            "deepseek-ai/repo-shell",
-            "commands",
-            commit,
-            serde_json::json!([{ "type": "file", "name": "inspect.md" }]),
-        );
-        write_github_contents_directory_fixture(
-            &fixtures,
-            "deepseek-ai/repo-shell",
-            "agents",
-            commit,
-            serde_json::json!([{ "type": "file", "name": "review.md" }]),
-        );
-        write_github_contents_manifest_fixture(
-            &fixtures,
-            "deepseek-ai/repo-shell",
-            "hooks.json",
-            commit,
-            serde_json::json!({
-                "hooks": {
-                    "PostToolUse": [
-                        {
-                            "matcher": "Write",
-                            "hooks": [{ "type": "command", "command": "./scripts/check.sh" }]
-                        }
-                    ]
-                }
-            }),
-        );
-        write_github_contents_manifest_fixture(
-            &fixtures,
-            "deepseek-ai/repo-shell",
-            ".app.json",
-            commit,
-            serde_json::json!({
-                "apps": [
-                    {
-                        "id": "manifest-plugin-browser",
-                        "title": "Manifest Plugin Browser",
-                        "placement": "right-sidebar",
-                        "component": "builtin:browser"
-                    }
-                ]
-            }),
-        );
-        write_github_contents_directory_fixture(
-            &fixtures,
-            "deepseek-ai/repo-shell",
-            "output-styles",
-            commit,
-            serde_json::json!([{ "type": "file", "name": "brief.md" }]),
-        );
-
-        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
-        svc.add_marketplace(AddPluginMarketplaceDto {
-            name: Some("dsh".to_string()),
-            source: "https://github.com/topics/dsh-plugin".to_string(),
-            git_ref: None,
-            sparse_path: None,
-        })
-        .unwrap();
-        svc.refresh_marketplace("dsh").unwrap();
-
-        let entries = svc.list_marketplace_entries().unwrap();
-        assert_eq!(entries.len(), 1);
-        let entry = &entries[0];
-        assert_eq!(entry.name, "repo-shell");
-        assert_eq!(entry.display_name, "repo-shell");
-        assert_eq!(entry.description, "Repo fallback description");
-        assert_eq!(entry.version, None);
-        assert_eq!(entry.category.as_deref(), Some("DSH Plugin"));
-        assert_eq!(entry.license.as_deref(), Some("MIT"));
-        assert_eq!(entry.source_kind, "github");
-        assert!(entry.source.contains("deepseek-ai/repo-shell@main"));
-        assert!(!entry.source.contains("gh.llkk.cc"));
-        assert!(!entry.source.contains("gh-proxy.com"));
-        assert_eq!(entry.source_commit, None);
-        assert_eq!(entry.skill_count, 0);
-        assert_eq!(entry.command_count, 0);
-        assert_eq!(entry.agent_count, 0);
-        assert_eq!(entry.hook_count, 0);
-        assert_eq!(entry.mcp_count, 0);
-        assert_eq!(entry.app_count, 0);
-        assert_eq!(entry.output_style_count, 0);
-        assert!(!entry.runtime_required);
-        assert!(entry.runtime_requirements.is_empty());
-        assert!(!entry.has_runtime_payload);
-        assert!(entry.installable);
-
-        let snapshot =
-            std::fs::read_to_string(roots.marketplaces.join("dsh").join("marketplace.json"))
-                .unwrap();
-        assert!(snapshot.contains(r#""name": "repo-shell""#));
-        assert!(!snapshot.contains(r#""manifestPath""#));
-        assert!(snapshot.contains(r#""license": "MIT""#));
-        assert!(snapshot.contains(r#""repo": "deepseek-ai/repo-shell""#));
-        assert!(snapshot.contains(r#""ref": "main""#));
-        assert!(!snapshot.contains(r#""sha""#));
-        assert!(!snapshot.contains(r#""components""#));
-        assert!(!snapshot.contains(r#""runtime""#));
-        assert!(!snapshot.contains(r#""node >=20.19""#));
-        assert!(!snapshot.contains("gh.llkk.cc"));
-        assert!(!snapshot.contains("gh-proxy.com"));
-
-        match old_fixtures {
-            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
-            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
-        }
-    }
-
-    #[test]
-    fn dsh_github_topic_installs_complete_sidecar_package_and_runs_health_probe() {
-        if !probe_runtime("node", &["--version"]) {
-            eprintln!("skipping: node runtime is not available");
-            return;
-        }
-        if !git_available() {
-            eprintln!("skipping: git is not available");
-            return;
-        }
-        let _guard = ENV_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let roots = roots(tmp.path());
-        let fixtures = tmp.path().join("github-api");
-        std::fs::create_dir_all(&fixtures).unwrap();
-        let archive = tmp.path().join("fixtures").join("topic-sidecar.zip");
-        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
-        let old_skip_clone = std::env::var_os("DEEPAGENT_TEST_GITHUB_SKIP_CLONE");
-        let old_download_source = std::env::var_os("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE");
-        std::env::set_var(
-            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
-            fixtures.display().to_string(),
-        );
-        std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", "1");
-        std::env::set_var(
-            "DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE",
-            archive.display().to_string(),
-        );
-
-        let search_endpoint =
-            "/search/repositories?q=topic%3Adsh-plugin&sort=updated&order=desc&per_page=100";
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(search_endpoint))),
-            r#"{
-              "items": [
-                {
-                  "name": "topic-sidecar",
-                  "full_name": "deepseek-ai/topic-sidecar",
-                  "description": "Topic sidecar fallback description",
-                  "default_branch": "main",
-                  "license": { "spdx_id": "MIT" }
-                }
-              ]
-            }"#,
-        )
-        .unwrap();
-        let commit = "cccccccccccccccccccccccccccccccccccccccc";
-        let branch_endpoint = "/repos/deepseek-ai/topic-sidecar/branches/main";
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(branch_endpoint))),
-            format!(r#"{{ "commit": {{ "sha": "{commit}" }} }}"#),
-        )
-        .unwrap();
-        write_github_contents_manifest_fixture(
-            &fixtures,
-            "deepseek-ai/topic-sidecar",
-            ".codex-plugin/plugin.json",
-            commit,
-            serde_json::json!({
-                "name": "topic-sidecar",
-                "version": "0.2.0",
-                "description": "Topic sidecar manifest",
-                "license": "MIT",
-                "skills": "skills",
-                "mcpServers": ".mcp.json",
-            }),
-        );
-        write_github_contents_directory_fixture(
-            &fixtures,
-            "deepseek-ai/topic-sidecar",
-            "",
-            commit,
-            serde_json::json!([
-                { "type": "dir", "name": ".codex-plugin" },
-                { "type": "file", "name": ".mcp.json" },
-                { "type": "file", "name": "server.js" },
-                { "type": "file", "name": "LICENSE" }
-            ]),
-        );
-        write_github_contents_manifest_fixture(
-            &fixtures,
-            "deepseek-ai/topic-sidecar",
-            ".mcp.json",
-            commit,
-            serde_json::json!({
-                "mcpServers": {
-                    "topic-local": {
-                        "type": "stdio",
-                        "command": "node",
-                        "args": ["server.js"]
-                    }
-                }
-            }),
-        );
-
-        let mcp_config = serde_json::json!({
-            "mcpServers": {
-                "topic-local": {
-                    "type": "stdio",
-                    "command": "node",
-                    "args": ["server.js"],
-                    "cwd": "${PLUGIN_ROOT}"
-                }
-            }
-        })
-        .to_string();
-        write_plugin_zip_with_manifest(
-            &archive,
-            "deepseek-ai-topic-sidecar-ccccccc",
-            serde_json::json!({
-                "name": "topic-sidecar",
-                "version": "0.2.0",
-                "description": "Topic sidecar manifest",
-                "license": "MIT",
-                "skills": "skills",
-                "mcpServers": ".mcp.json",
-            }),
-            &[
-                (".mcp.json", mcp_config.as_bytes()),
-                ("server.js", minimal_mcp_node_server().as_bytes()),
-                ("README.md", b"# Topic Sidecar\n"),
-                ("LICENSE", b"MIT\n"),
-            ],
-        );
-        write_github_commit_tree_fixture(&fixtures, "deepseek-ai/topic-sidecar", commit, &archive);
-
-        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
-        svc.add_marketplace(AddPluginMarketplaceDto {
-            name: Some("dsh".to_string()),
-            source: "https://github.com/topics/dsh-plugin".to_string(),
-            git_ref: None,
-            sparse_path: None,
-        })
-        .unwrap();
-        svc.refresh_marketplace("dsh").unwrap();
-
-        let entries = svc.list_marketplace_entries().unwrap();
-        assert_eq!(entries.len(), 1);
-        let entry = &entries[0];
-        assert_eq!(entry.marketplace, "dsh");
-        assert_eq!(entry.name, "topic-sidecar");
-        assert_eq!(entry.version, None);
-        assert_eq!(entry.license.as_deref(), Some("MIT"));
-        assert_eq!(entry.mcp_count, 0);
-        assert_eq!(entry.source_kind, "github");
-        assert_eq!(entry.source_commit, None);
-        assert!(!entry.runtime_required);
-        assert!(entry.runtime_requirements.is_empty());
-        assert!(entry.installable);
-        assert!(!entry.installed);
-        assert!(!roots
-            .marketplace_cache
-            .join("dsh")
-            .join("topic-sidecar")
-            .exists());
-
-        let prepared = svc
-            .prepare_plugin_install("dsh", "topic-sidecar", false)
-            .unwrap();
-        assert_eq!(prepared.source_kind, "github");
-        assert!(prepared.source.contains("deepseek-ai/topic-sidecar@main"));
-        assert!(!prepared.source.contains("gh.llkk.cc"));
-        assert!(!prepared.source.contains("gh-proxy.com"));
-        assert!(prepared.content_hash.starts_with("sha256:"));
-        assert_eq!(
-            prepared.runtime_inspection.execution_kind,
-            PluginExecutionKind::DshSidecar
-        );
-        assert!(PathBuf::from(&prepared.plugin_root)
-            .join("server.js")
-            .is_file());
-
-        let installed = svc.commit_plugin_install(&prepared.token).unwrap();
-
-        assert_eq!(installed.id, "topic-sidecar@dsh");
-        assert_eq!(installed.execution_kind, PluginExecutionKind::DshSidecar);
-        assert_eq!(installed.health_status, PluginHealthStatus::Ready);
-        assert_eq!(installed.state, PluginLifecycleState::Executable);
-        assert!(installed.health_error.is_none());
-        assert!(roots
-            .marketplace_cache
-            .join("dsh")
-            .join("topic-sidecar")
-            .join("0.2.0")
-            .join("server.js")
-            .is_file());
-        let state = svc.load_state().unwrap();
-        assert_eq!(
-            state
-                .installed
-                .get("topic-sidecar@dsh")
-                .and_then(|installed| installed.content_hash.as_deref()),
-            Some(prepared.content_hash.as_str())
-        );
-        let health = state.health_checks.get("topic-sidecar@dsh").unwrap();
-        assert_eq!(health.status, PluginHealthStatus::Ready);
-        assert!(health.error.is_none());
-
-        let refreshed_entries = svc.list_marketplace_entries().unwrap();
-        assert!(refreshed_entries[0].installed);
-        assert!(refreshed_entries[0].enabled);
-
-        match old_fixtures {
-            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
-            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
-        }
-        match old_skip_clone {
-            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE", value),
-            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_SKIP_CLONE"),
-        }
-        match old_download_source {
-            Some(path) => std::env::set_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE", path),
-            None => std::env::remove_var("DEEPAGENT_TEST_PLUGIN_DOWNLOAD_SOURCE"),
-        }
-    }
-
-    #[test]
-    fn dsh_github_topic_refresh_failure_cleans_scratch_and_state() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let roots = roots(tmp.path());
-        let fixtures = tmp.path().join("github-api");
-        std::fs::create_dir_all(&fixtures).unwrap();
-        let old_fixtures = std::env::var_os("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR");
-        std::env::set_var(
-            "DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR",
-            fixtures.display().to_string(),
-        );
-
-        let search_endpoint =
-            "/search/repositories?q=topic%3Adsh-plugin&sort=updated&order=desc&per_page=100";
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(search_endpoint))),
-            r#"{
-              "items": [
-                {
-                  "name": "dsh-demo",
-                  "full_name": "deepseek-ai/dsh-demo",
-                  "default_branch": "main"
-                }
-              ]
-            }"#,
-        )
-        .unwrap();
-        let branch_endpoint = "/repos/deepseek-ai/dsh-demo/branches/main";
-        std::fs::write(
-            fixtures.join(format!("{}.json", github_api_fixture_name(branch_endpoint))),
-            r#"{
-              "commit": {
-                "sha": "not-a-commit"
-              }
-            }"#,
-        )
-        .unwrap();
-
-        let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
-        svc.add_marketplace(AddPluginMarketplaceDto {
-            name: Some("dsh".to_string()),
-            source: "https://github.com/topics/dsh-plugin".to_string(),
-            git_ref: None,
-            sparse_path: None,
-        })
-        .unwrap();
-        let marketplace = svc.refresh_marketplace("dsh").unwrap();
-
-        assert!(marketplace.last_updated.is_some());
-        let entries = svc.list_marketplace_entries().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].source_commit, None);
-        let err = svc
-            .prepare_plugin_install("dsh", "dsh-demo", false)
-            .unwrap_err();
-
-        assert!(err.to_string().contains("valid commit sha"));
-        assert_eq!(svc.list_marketplaces().unwrap().len(), 1);
-        assert!(roots
-            .marketplaces
-            .join("dsh")
-            .join("marketplace.json")
-            .exists());
-        assert!(!roots.marketplaces.join("dsh").join(".github-api").exists());
-        assert!(!roots
-            .marketplace_cache
-            .join("dsh")
-            .join("dsh-demo")
-            .exists());
-
-        match old_fixtures {
-            Some(value) => std::env::set_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR", value),
-            None => std::env::remove_var("DEEPAGENT_TEST_GITHUB_API_FIXTURE_DIR"),
-        }
-    }
-
-    #[test]
     fn github_download_candidates_include_domestic_mirrors_after_official_url() {
         let candidates = github_download_url_candidates(
             "https://github.com/deepseek-ai/dsh-demo/archive/main.zip",
@@ -12702,34 +11677,6 @@ deepagent-definitely-missing-runtime-cli --version
                 "https://gh.llkk.cc/https://github.com/deepseek-ai/dsh-demo/archive/main.zip",
                 "https://gh-proxy.com/https://github.com/deepseek-ai/dsh-demo/archive/main.zip",
             ]
-        );
-    }
-
-    #[test]
-    fn github_topic_source_rejects_unsafe_topic_names() {
-        assert_eq!(
-            github_topic_from_source("https://github.com/topics/dsh-plugin"),
-            Some("dsh-plugin".to_string())
-        );
-        assert_eq!(
-            github_topic_from_source("github-topic:dsh-plugin"),
-            Some("dsh-plugin".to_string())
-        );
-        assert_eq!(
-            github_topic_from_source("https://github.com/topics/../secret"),
-            None
-        );
-        assert_eq!(
-            github_topic_from_source("https://github.com/topics/DSH-Plugin"),
-            None
-        );
-    }
-
-    #[test]
-    fn github_topic_search_endpoint_preserves_query_and_page() {
-        assert_eq!(
-            github_topic_search_endpoint("dsh-plugin", "figma api", 3, 30),
-            "/search/repositories?q=topic%3Adsh-plugin%20figma%20api&sort=updated&order=desc&per_page=30&page=3"
         );
     }
 
@@ -12757,40 +11704,6 @@ deepagent-definitely-missing-runtime-cli --version
         verify_subresource_integrity_file(&payload, &integrity).unwrap();
         let err = verify_subresource_integrity_file(&payload, "sha256-AAAA").unwrap_err();
         assert!(err.to_string().contains("integrity mismatch"));
-    }
-
-    #[test]
-    fn github_topic_page_snapshot_keeps_plugins_from_previous_pages() {
-        let tmp = tempfile::tempdir().unwrap();
-        let snapshot = tmp.path().join("marketplace.json");
-        let page_one = vec![serde_json::json!({
-            "name": "page-one-plugin",
-            "displayName": "owner/page-one-plugin",
-            "description": "Page one",
-            "source": {"source": "github", "repo": "owner/page-one-plugin", "ref": "main"}
-        })];
-        let page_two = vec![serde_json::json!({
-            "name": "page-two-plugin",
-            "displayName": "owner/page-two-plugin",
-            "description": "Page two",
-            "source": {"source": "github", "repo": "owner/page-two-plugin", "ref": "main"}
-        })];
-
-        merge_github_topic_page_snapshot(&snapshot, "deepseek-harness", "dsh-plugin", page_one)
-            .unwrap();
-        merge_github_topic_page_snapshot(&snapshot, "deepseek-harness", "dsh-plugin", page_two)
-            .unwrap();
-
-        let catalog = load_marketplace_catalog(&snapshot).unwrap();
-        let names = catalog
-            .entries
-            .into_iter()
-            .map(|entry| entry.name)
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            names,
-            BTreeSet::from(["page-one-plugin".to_string(), "page-two-plugin".to_string()])
-        );
     }
 
     #[cfg(windows)]
