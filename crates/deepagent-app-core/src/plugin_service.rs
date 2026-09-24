@@ -2889,7 +2889,29 @@ impl PluginService {
         })?;
         let state: PluginState = serde_json::from_str(&text)
             .map_err(|e| CoreError::invalid(format!("parse plugin state: {e}")))?;
-        migrate_plugin_state(state)
+        let (state, retired) = migrate_plugin_state(state)?;
+        self.reclaim_retired_marketplaces(&retired);
+        Ok(state)
+    }
+
+    /// Reclaim managed storage of marketplaces the migration dropped. Removal is
+    /// bounded to the marketplace roots and a missing directory is a no-op, so
+    /// this stays cheap across the many `load_state` callers.
+    fn reclaim_retired_marketplaces(&self, names: &[String]) {
+        for name in names {
+            let file_name = sanitize_file_name(name);
+            for base in [&self.roots.marketplaces, &self.roots.marketplace_cache] {
+                let dir = base.join(&file_name);
+                if let Err(error) = remove_managed_child_dir(base, &dir) {
+                    tracing::warn!(
+                        marketplace = %name,
+                        path = %dir.display(),
+                        error = %error,
+                        "failed to reclaim retired marketplace storage"
+                    );
+                }
+            }
+        }
     }
 
     fn save_state(&self, state: &PluginState) -> Result<()> {
@@ -4303,22 +4325,29 @@ fn is_retired_topic_marketplace_source(source: &str) -> bool {
         .is_some_and(|topic| !topic.is_empty())
 }
 
-fn migrate_plugin_state(mut state: PluginState) -> Result<PluginState> {
+fn migrate_plugin_state(mut state: PluginState) -> Result<(PluginState, Vec<String>)> {
     // GitHub topic sources resolved against a hosted catalog that this build no
     // longer ships. Leftover entries would be re-tried as plain git sources and
-    // fail, so they are dropped rather than kept in a broken state.
-    state
-        .marketplaces
-        .retain(|_, item| !is_retired_topic_marketplace_source(&item.source));
+    // fail, so they are dropped rather than kept in a broken state. The dropped
+    // names are returned so their managed storage can be reclaimed too; without
+    // that the directory would stay on disk with no UI left to remove it.
+    let mut retired = Vec::new();
+    state.marketplaces.retain(|name, item| {
+        let drop_entry = is_retired_topic_marketplace_source(&item.source);
+        if drop_entry {
+            retired.push(name.clone());
+        }
+        !drop_entry
+    });
     match state.version {
         0 => {
             state.version = PLUGIN_STATE_SCHEMA_VERSION;
-            Ok(state)
+            Ok((state, retired))
         }
-        PLUGIN_STATE_SCHEMA_VERSION => Ok(state),
+        PLUGIN_STATE_SCHEMA_VERSION => Ok((state, retired)),
         version if version < PLUGIN_STATE_SCHEMA_VERSION => {
             state.version = PLUGIN_STATE_SCHEMA_VERSION;
-            Ok(state)
+            Ok((state, retired))
         }
         version => Err(CoreError::invalid(format!(
             "unsupported plugin state version {version}; this DeepAgent build supports version {PLUGIN_STATE_SCHEMA_VERSION}"

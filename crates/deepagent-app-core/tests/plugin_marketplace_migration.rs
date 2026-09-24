@@ -80,6 +80,56 @@ fn migration_is_idempotent_and_tolerates_empty_result() {
     }
 }
 
+/// 迁移丢弃条目后，其受管存储必须一并回收，否则目录既不可见又不可删。
+/// 同时断言未退役市场的存储不受影响。
+#[test]
+fn retired_marketplace_storage_is_reclaimed_and_bounded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let install_dir = tmp.path().join("app-data");
+    let root = tmp.path();
+    let svc = PluginService::new(roots(root), install_dir.clone());
+
+    let retired_dir = root.join("marketplaces").join("deepseek-harness");
+    let retired_cache = root.join("cache").join("deepseek-harness");
+    let kept_dir = root.join("marketplaces").join("team");
+    std::fs::create_dir_all(&retired_dir).unwrap();
+    std::fs::write(retired_dir.join("marketplace.json"), b"[]").unwrap();
+    std::fs::create_dir_all(&retired_cache).unwrap();
+    std::fs::write(retired_cache.join("payload"), b"x").unwrap();
+    std::fs::create_dir_all(&kept_dir).unwrap();
+    std::fs::write(kept_dir.join("marketplace.json"), b"[]").unwrap();
+
+    let local_source = root.join("team-marketplace").display().to_string();
+    write_state(
+        &install_dir.join("plugins").join("state.json"),
+        serde_json::json!({
+            "deepseek-harness": { "source": "https://github.com/topics/dsh-plugin" },
+            "team": { "source": local_source }
+        }),
+    );
+
+    assert!(retired_dir.exists());
+    assert!(retired_cache.exists());
+
+    let names: Vec<String> = svc
+        .list_marketplaces()
+        .unwrap()
+        .into_iter()
+        .map(|marketplace| marketplace.name)
+        .collect();
+    assert_eq!(names, vec!["team".to_string()]);
+
+    assert!(!retired_dir.exists(), "retired marketplace dir survived");
+    assert!(
+        !retired_cache.exists(),
+        "retired marketplace cache survived"
+    );
+    assert!(
+        kept_dir.exists(),
+        "retirement must not touch another marketplace's storage"
+    );
+}
+
 /// 加载只改内存；任何一次状态写入都要把清理结果固化到磁盘。
 #[test]
 fn next_state_write_persists_the_migration() {
