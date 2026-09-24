@@ -15,10 +15,6 @@ use crate::plugin_manifest::{load_plugin_manifest, PluginManifest};
 
 const BLOCKLIST_ENV: &str = "DEEPAGENT_PLUGIN_BLOCKLIST";
 const ALLOWED_SOURCE_ROOTS_ENV: &str = "DEEPAGENT_PLUGIN_ALLOWED_SOURCE_ROOTS";
-const MARKETPLACE_ALLOWED_SOURCE_KINDS_ENV: &str =
-    "DEEPAGENT_PLUGIN_MARKETPLACE_ALLOWED_SOURCE_KINDS";
-const MARKETPLACE_BLOCKED_SOURCE_KINDS_ENV: &str =
-    "DEEPAGENT_PLUGIN_MARKETPLACE_BLOCKED_SOURCE_KINDS";
 const RESERVED_PLUGIN_NAMES: &[&str] = &[
     "builtin",
     "cache",
@@ -39,37 +35,6 @@ pub fn is_reserved_plugin_name(name: &str) -> bool {
 pub fn is_blocked_plugin_name(name: &str) -> bool {
     let normalized = name.trim().to_ascii_lowercase();
     blocked_plugin_names().contains(normalized.as_str())
-}
-
-pub fn marketplace_source_kind_policy_error(kind: &str) -> Option<String> {
-    let blocked = marketplace_source_kind_set(MARKETPLACE_BLOCKED_SOURCE_KINDS_ENV);
-    let allowed = marketplace_source_kind_set(MARKETPLACE_ALLOWED_SOURCE_KINDS_ENV);
-    marketplace_source_kind_policy_error_with_rules(kind, &allowed, &blocked)
-}
-
-pub(crate) fn marketplace_source_kind_policy_error_with_rules(
-    kind: &str,
-    allowed: &BTreeSet<String>,
-    blocked: &BTreeSet<String>,
-) -> Option<String> {
-    let normalized = normalize_source_kind(kind);
-    if normalized.is_empty() {
-        return Some("marketplace source kind is empty".to_string());
-    }
-
-    if source_kind_set_contains(blocked, &normalized) {
-        return Some(format!(
-            "marketplace source kind '{kind}' is blocked by {MARKETPLACE_BLOCKED_SOURCE_KINDS_ENV}"
-        ));
-    }
-
-    if !allowed.is_empty() && !source_kind_set_contains(allowed, &normalized) {
-        return Some(format!(
-            "marketplace source kind '{kind}' is not allowed by {MARKETPLACE_ALLOWED_SOURCE_KINDS_ENV}"
-        ));
-    }
-
-    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -534,28 +499,6 @@ fn blocked_plugin_names() -> BTreeSet<String> {
         .collect()
 }
 
-fn marketplace_source_kind_set(env_name: &str) -> BTreeSet<String> {
-    std::env::var(env_name)
-        .ok()
-        .into_iter()
-        .flat_map(|value| {
-            value
-                .split([',', ';', '\n', '\r', '\t', ' '])
-                .map(normalize_source_kind)
-                .filter(|item| !item.is_empty())
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
-fn normalize_source_kind(kind: &str) -> String {
-    kind.trim().to_ascii_lowercase().replace(['_', ' '], "-")
-}
-
-fn source_kind_set_contains(set: &BTreeSet<String>, normalized_kind: &str) -> bool {
-    set.contains("*") || set.contains("all") || set.contains(normalized_kind)
-}
-
 fn apply_source_policy(source_dir: &Path, report: &mut PluginScanReportDto) {
     let Some(allowed_roots) = std::env::var_os(ALLOWED_SOURCE_ROOTS_ENV) else {
         return;
@@ -885,31 +828,5 @@ mod tests {
                     .iter()
                     .any(|detail| detail == "forced for plugin")
         }));
-    }
-
-    #[test]
-    fn marketplace_source_kind_policy_respects_allow_and_block_lists() {
-        let allowed = ["local", "npm"]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<BTreeSet<_>>();
-        let blocked = ["git"]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<BTreeSet<_>>();
-
-        assert!(
-            marketplace_source_kind_policy_error_with_rules("local", &allowed, &blocked).is_none()
-        );
-        assert!(
-            marketplace_source_kind_policy_error_with_rules("git", &allowed, &blocked)
-                .unwrap()
-                .contains("blocked")
-        );
-        assert!(
-            marketplace_source_kind_policy_error_with_rules("zip-url", &allowed, &blocked)
-                .unwrap()
-                .contains("not allowed")
-        );
     }
 }
