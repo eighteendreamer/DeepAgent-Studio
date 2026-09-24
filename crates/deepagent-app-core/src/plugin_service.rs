@@ -31,7 +31,7 @@ use crate::plugin_runtime::{EnabledPluginRuntimeInput, PluginRuntimeProjection};
 use crate::plugin_security::{scan_plugin_dir, PluginScanReportDto};
 
 const PLUGIN_STATE_SCHEMA_VERSION: u32 = 1;
-const DSH_SIDECAR_MCP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const MCP_SIDECAR_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginSourceDto {
     pub kind: String,
@@ -54,7 +54,7 @@ pub enum PluginExecutionKind {
     SkillOnly,
     Subprocess,
     ManagedRuntime,
-    DshSidecar,
+    McpSidecar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -965,7 +965,7 @@ impl PluginService {
         }
 
         if counts.mcp_servers > 0 || counts.hooks > 0 || counts.apps > 0 {
-            return PluginExecutionKind::DshSidecar;
+            return PluginExecutionKind::McpSidecar;
         }
 
         if counts.commands > 0 {
@@ -1399,11 +1399,11 @@ impl PluginService {
             }
         }
 
-        if plugin.execution_kind == PluginExecutionKind::DshSidecar {
+        if plugin.execution_kind == PluginExecutionKind::McpSidecar {
             if let Err(error) = verify_plugin_data_writable(&data_dir) {
                 return Ok(Some((PluginHealthStatus::Incomplete, Some(error))));
             }
-            if let Some(failure) = dsh_sidecar_health_failure(&projection.mcp_config) {
+            if let Some(failure) = mcp_sidecar_health_failure(&projection.mcp_config) {
                 return Ok(Some(failure));
             }
         }
@@ -1529,7 +1529,7 @@ impl PluginService {
                 }
                 PluginExecutionKind::Subprocess
                 | PluginExecutionKind::ManagedRuntime
-                | PluginExecutionKind::DshSidecar => PluginLifecycleState::Executable,
+                | PluginExecutionKind::McpSidecar => PluginLifecycleState::Executable,
             },
         }
     }
@@ -2035,13 +2035,13 @@ fn runtime_payload_health_error(plugin_root: &Path, data_dir: &Path) -> Option<S
     None
 }
 
-fn dsh_sidecar_health_failure(
+fn mcp_sidecar_health_failure(
     mcp_config: &McpConfig,
 ) -> Option<(PluginHealthStatus, Option<String>)> {
-    dsh_sidecar_health_failure_inner(mcp_config, true)
+    mcp_sidecar_health_failure_inner(mcp_config, true)
 }
 
-fn dsh_sidecar_health_failure_inner(
+fn mcp_sidecar_health_failure_inner(
     mcp_config: &McpConfig,
     probe_sidecar: bool,
 ) -> Option<(PluginHealthStatus, Option<String>)> {
@@ -2122,7 +2122,7 @@ fn probe_mcp_sidecar(server: McpServerConfig) -> std::result::Result<usize, Stri
                 .map_err(|e| format!("connect transport: {e}"))?;
             let client = deepagent_mcp::McpClient::new(transport);
             match tokio::time::timeout(
-                DSH_SIDECAR_MCP_PROBE_TIMEOUT,
+                MCP_SIDECAR_PROBE_TIMEOUT,
                 client.initialize("deepagent-plugin-health"),
             )
             .await
@@ -2137,22 +2137,18 @@ fn probe_mcp_sidecar(server: McpServerConfig) -> std::result::Result<usize, Stri
                     return Err(format!("initialize timed out: {error}"));
                 }
             }
-            let tools = match tokio::time::timeout(
-                DSH_SIDECAR_MCP_PROBE_TIMEOUT,
-                client.list_tools(),
-            )
-            .await
-            {
-                Ok(Ok(tools)) => tools,
-                Ok(Err(error)) => {
-                    let _ = client.close().await;
-                    return Err(format!("tools/list: {error}"));
-                }
-                Err(error) => {
-                    let _ = client.close().await;
-                    return Err(format!("tools/list timed out: {error}"));
-                }
-            };
+            let tools =
+                match tokio::time::timeout(MCP_SIDECAR_PROBE_TIMEOUT, client.list_tools()).await {
+                    Ok(Ok(tools)) => tools,
+                    Ok(Err(error)) => {
+                        let _ = client.close().await;
+                        return Err(format!("tools/list: {error}"));
+                    }
+                    Err(error) => {
+                        let _ = client.close().await;
+                        return Err(format!("tools/list timed out: {error}"));
+                    }
+                };
             let _ = client.close().await;
             Ok(tools.len())
         })
@@ -5275,7 +5271,7 @@ rl.on('line', (line) => {
 
         let plugin = svc.read("connector-demo@builtin").unwrap().unwrap();
 
-        assert_eq!(plugin.execution_kind, PluginExecutionKind::DshSidecar);
+        assert_eq!(plugin.execution_kind, PluginExecutionKind::McpSidecar);
         assert_eq!(plugin.health_status, PluginHealthStatus::NeedsAuthorization);
         assert_eq!(plugin.state, PluginLifecycleState::RuntimeReady);
         assert!(plugin
@@ -5440,7 +5436,7 @@ rl.on('line', (line) => {
     }
 
     #[test]
-    fn check_plugin_health_verifies_dsh_stdio_mcp_sidecar_entrypoint_and_plugin_data() {
+    fn check_plugin_health_verifies_stdio_mcp_sidecar_entrypoint_and_plugin_data() {
         if !probe_runtime("node", &["--version"]) {
             eprintln!("skipping: node runtime is not available");
             return;
@@ -5460,7 +5456,7 @@ rl.on('line', (line) => {
         let svc = PluginService::new(roots, &app_data);
 
         let before = svc.read("sidecar-plugin@builtin").unwrap().unwrap();
-        assert_eq!(before.execution_kind, PluginExecutionKind::DshSidecar);
+        assert_eq!(before.execution_kind, PluginExecutionKind::McpSidecar);
         assert!(before.runtime_required);
         assert!(!before.runtime_available);
         assert_eq!(before.health_status, PluginHealthStatus::Unknown);
@@ -5483,7 +5479,7 @@ rl.on('line', (line) => {
     }
 
     #[test]
-    fn check_plugin_health_marks_dsh_stdio_mcp_protocol_failure_failed() {
+    fn check_plugin_health_marks_stdio_mcp_protocol_failure_failed() {
         if !probe_runtime("node", &["--version"]) {
             eprintln!("skipping: node runtime is not available");
             return;
@@ -5516,7 +5512,7 @@ rl.on('line', (line) => {
     }
 
     #[test]
-    fn check_plugin_health_marks_dsh_stdio_mcp_missing_script_incomplete() {
+    fn check_plugin_health_marks_stdio_mcp_missing_script_incomplete() {
         if !probe_runtime("node", &["--version"]) {
             eprintln!("skipping: node runtime is not available");
             return;
@@ -5548,7 +5544,7 @@ rl.on('line', (line) => {
     }
 
     #[test]
-    fn check_plugin_health_marks_dsh_stdio_mcp_missing_command_runtime_unavailable() {
+    fn check_plugin_health_marks_stdio_mcp_missing_command_runtime_unavailable() {
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
         let root = roots.builtin.join("sidecar-plugin");
@@ -6073,7 +6069,7 @@ rl.on('line', (line) => {
 
         let plugin = svc.read("hook-plugin@builtin").unwrap().unwrap();
 
-        assert_eq!(plugin.execution_kind, PluginExecutionKind::DshSidecar);
+        assert_eq!(plugin.execution_kind, PluginExecutionKind::McpSidecar);
         assert_eq!(plugin.health_status, PluginHealthStatus::Unknown);
         assert!(plugin.runtime_required);
         assert!(plugin

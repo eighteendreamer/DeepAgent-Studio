@@ -420,7 +420,7 @@ export type PluginExecutionKind =
   | "skill_only"
   | "subprocess"
   | "managed_runtime"
-  | "dsh_sidecar";
+  | "mcp_sidecar";
 
 export type PluginLifecycleState =
   | "discovered"

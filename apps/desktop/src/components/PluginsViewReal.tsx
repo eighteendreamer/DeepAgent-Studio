@@ -1422,8 +1422,8 @@ function pluginExecutionLabel(kind: Plugin["execution_kind"]): string {
       return "子进程";
     case "managed_runtime":
       return "托管运行时";
-    case "dsh_sidecar":
-      return "DSH Sidecar";
+    case "mcp_sidecar":
+      return "MCP Sidecar";
     default:
       return kind;
   }
@@ -1494,7 +1494,7 @@ function pluginExecutionTone(
       return "info";
     case "managed_runtime":
       return "warn";
-    case "dsh_sidecar":
+    case "mcp_sidecar":
       return "neutral";
     default:
       return "neutral";

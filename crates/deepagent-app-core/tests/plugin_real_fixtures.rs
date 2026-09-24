@@ -520,7 +520,7 @@ fn bundled_figma_requires_authorization_and_projects_real_runtime_entries() {
 
     let figma = svc.read("figma@builtin").unwrap().expect("bundled figma");
 
-    assert_eq!(figma.execution_kind, PluginExecutionKind::DshSidecar);
+    assert_eq!(figma.execution_kind, PluginExecutionKind::McpSidecar);
     assert_eq!(figma.health_status, PluginHealthStatus::NeedsAuthorization);
     assert_eq!(figma.state, PluginLifecycleState::RuntimeReady);
     assert_eq!(figma.skill_count, 12);
