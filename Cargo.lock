@@ -1174,6 +1174,7 @@ dependencies = [
  "deepagent-session",
  "deepagent-tracing",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

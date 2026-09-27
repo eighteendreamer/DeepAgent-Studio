@@ -184,6 +184,12 @@ impl ServerState {
     #[cfg(test)]
     fn new_for_test() -> Self {
         let database = Arc::new(Database::open_in_memory().expect("test database"));
+        let workspace = std::env::current_dir().expect("test cwd");
+        Self::new_for_test_with_database(database, workspace)
+    }
+
+    #[cfg(test)]
+    fn new_for_test_with_database(database: Arc<Database>, workspace: PathBuf) -> Self {
         let transport: Arc<dyn deepagent_models::HttpTransport> =
             Arc::new(deepagent_models::ReqwestTransport::new());
         let settings = Arc::new(deepagent_app_core::SettingsService::new(
@@ -191,7 +197,6 @@ impl ServerState {
             transport.clone(),
             Arc::new(deepagent_app_core::EnvSecretStore::new()),
         ));
-        let workspace = std::env::current_dir().expect("test cwd");
         let chat = ChatService::new(database, settings, transport, workspace.clone());
         Self::new(
             chat,
@@ -443,9 +448,21 @@ impl ServerState {
         id: serde_json::Value,
         params: ThreadResumeRequest,
     ) -> (RpcResponse, Option<TurnLaunch>) {
-        let record = match EventStore::new(&self.database)
-            .get_session(params.thread_id.parse().unwrap_or_default())
-        {
+        let session_id = match params.thread_id.parse() {
+            Ok(session_id) => session_id,
+            Err(error) => {
+                return (
+                    RpcResponse::error(
+                        id,
+                        ERR_INVALID_THREAD,
+                        format!("invalid thread id: {error}"),
+                    ),
+                    None,
+                )
+            }
+        };
+        let store = EventStore::new(&self.database);
+        let record = match store.get_session(session_id) {
             Ok(Some(record)) => record,
             Ok(None) => {
                 return (
@@ -460,6 +477,21 @@ impl ServerState {
                 )
             }
         };
+        match store.event_count(session_id) {
+            Ok(0) => {
+                return (
+                    RpcResponse::error(id, ERR_INVALID_THREAD, "thread has no session file"),
+                    None,
+                )
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    None,
+                )
+            }
+        }
         let workspace = record
             .project
             .map(PathBuf::from)
@@ -558,6 +590,12 @@ impl ServerState {
             }
         };
         let events = match store.load_session(session_id) {
+            Ok(events) if events.is_empty() => {
+                return (
+                    RpcResponse::error(id, ERR_INVALID_THREAD, "thread has no session file"),
+                    None,
+                )
+            }
             Ok(events) => events
                 .into_iter()
                 .filter(|event| session_after.map_or(true, |after| event.sequence > after))
@@ -1228,6 +1266,106 @@ mod tests {
             serde_json::json!({ "threadId": thread_id }),
         ));
         assert_ne!(forked.result()["threadId"], thread_id);
+    }
+
+    #[test]
+    fn thread_resume_and_read_reopen_the_same_file_backed_session() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let database_path = temporary.path().join("deepagent.db");
+        let database = Arc::new(Database::open(&database_path).unwrap());
+        let mut state = ServerState::new_for_test_with_database(database, workspace.clone());
+        initialize(&mut state);
+
+        let started = state.handle_request_for_test(rpc_request(
+            1,
+            "thread/start",
+            serde_json::json!({ "cwd": workspace }),
+        ));
+        let thread_id = started.result()["threadId"].as_str().unwrap().to_owned();
+        let clock = SystemClock;
+        {
+            let mut session =
+                Session::recover(&state.database, &clock, thread_id.parse().unwrap()).unwrap();
+            session
+                .append(deepagent_core::event::EventPayload::MessageAppended {
+                    message: deepagent_core::message::Message::user("reopen marker 90210"),
+                })
+                .unwrap();
+        }
+        let before = state.handle_request_for_test(rpc_request(
+            2,
+            "thread/read",
+            serde_json::json!({ "threadId": thread_id }),
+        ));
+        let original_events = before.result()["events"].clone();
+        assert!(original_events.as_array().unwrap().len() >= 2);
+        assert!(original_events.to_string().contains("reopen marker 90210"));
+        drop(state);
+
+        let reopened = Arc::new(Database::open(&database_path).unwrap());
+        let mut state = ServerState::new_for_test_with_database(reopened, workspace.clone());
+        initialize(&mut state);
+        let listed =
+            state.handle_request_for_test(rpc_request(3, "thread/list", serde_json::json!({})));
+        assert!(listed.result()["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|thread| thread["threadId"] == thread_id));
+        let resumed = state.handle_request_for_test(rpc_request(
+            4,
+            "thread/resume",
+            serde_json::json!({ "threadId": thread_id }),
+        ));
+        assert_eq!(resumed.result()["status"], "ready");
+        assert_eq!(resumed.result()["cwd"], before.result()["cwd"]);
+        let after = state.handle_request_for_test(rpc_request(
+            5,
+            "thread/read",
+            serde_json::json!({ "threadId": thread_id }),
+        ));
+        assert_eq!(after.result()["events"], original_events);
+        let forked = state.handle_request_for_test(rpc_request(
+            6,
+            "thread/fork",
+            serde_json::json!({ "threadId": thread_id }),
+        ));
+        assert_ne!(forked.result()["threadId"], thread_id);
+    }
+
+    #[test]
+    fn fileless_legacy_row_is_not_resumable_or_readable() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+        let legacy_id = deepagent_core::id::SessionId::new().to_string();
+        state
+            .database
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO sessions
+                         (id, title, mode, project, created_at, updated_at, ended_at)
+                         VALUES (?1, 'legacy', 'normal', NULL, 1, 1, NULL)",
+                        [&legacy_id],
+                    )
+                    .unwrap();
+                Ok(())
+            })
+            .unwrap();
+
+        let listed =
+            state.handle_request_for_test(rpc_request(1, "thread/list", serde_json::json!({})));
+        assert!(listed.result()["threads"].as_array().unwrap().is_empty());
+        for method in ["thread/resume", "thread/read"] {
+            let response = state.handle_request_for_test(rpc_request(
+                2,
+                method,
+                serde_json::json!({ "threadId": legacy_id }),
+            ));
+            assert_eq!(response.error_code(), Some(ERR_INVALID_THREAD), "{method}");
+        }
     }
 
     #[test]
