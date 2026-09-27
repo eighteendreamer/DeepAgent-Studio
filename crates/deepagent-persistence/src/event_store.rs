@@ -10,20 +10,25 @@
 //!
 //! Invariants enforced here:
 //! 1. Sequence numbers are contiguous and start at 0 per session.
-//! 2. Events are never updated or deleted (append-only).
-//! 3. Appending and computing the next sequence happen in one transaction, so
-//!    concurrent appends cannot produce duplicate or gapped sequences.
+//! 2. Events are written to a per-session compressed JSONL file; SQLite keeps
+//!    only queryable session metadata and a rebuildable file cursor.
+//! 3. Appending and computing the next sequence are serialized per database,
+//!    while one stable per-session OS lock covers file and projection commits
+//!    across processes.
 
 use deepagent_core::clock::Timestamp;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::{Event, EventPayload, Sequence};
 use deepagent_core::id::{EventId, SessionId};
+use deepagent_core::message::Role;
 use deepagent_core::session_mode::SessionMode;
 use rusqlite::{params, OptionalExtension};
+use sha2::{Digest, Sha256};
 
+use crate::session_files::{self, SessionFileCursor, SessionFileHeader};
 use crate::{map_sqlite, Database};
 
-/// Repository over the `sessions` + `events` tables.
+/// Existing repository facade over session metadata and file-backed events.
 pub struct EventStore<'db> {
     db: &'db Database,
 }
@@ -45,6 +50,21 @@ pub struct SessionRecord {
     pub updated_at: Timestamp,
     /// Set once the session is ended.
     pub ended_at: Option<Timestamp>,
+}
+
+/// One conversation-body match projected from the rebuildable SQLite index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionSearchHit {
+    /// Existing session summary for the matched conversation.
+    pub session: SessionRecord,
+    /// Exact event position in the authoritative session file.
+    pub sequence: Sequence,
+    /// Message role when the indexed event is a conversation message.
+    pub role: Option<Role>,
+    /// Timestamp of the matched event.
+    pub timestamp: Timestamp,
+    /// Short excerpt reconstructed from the source event, not the FTS table.
+    pub snippet: String,
 }
 
 impl<'db> EventStore<'db> {
@@ -80,21 +100,45 @@ impl<'db> EventStore<'db> {
         project: Option<&str>,
         now: Timestamp,
     ) -> Result<()> {
-        self.db.with_conn(|c| {
-            c.execute(
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), id)?;
+        let created = session_files::create(
+            &self.db.session_files_root(),
+            SessionFileHeader {
+                id,
+                title: title.map(str::to_owned),
+                mode,
+                project: project.map(str::to_owned),
+                created_at: now,
+            },
+        )?;
+        let result =
+            self.db.with_conn(|c| {
+                let tx = c.unchecked_transaction().map_err(map_sqlite)?;
+                tx.execute(
                 "INSERT INTO sessions (id, title, mode, project, created_at, updated_at, ended_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?5, NULL)",
-                params![
-                    id.to_string(),
-                    title,
-                    mode.label(),
-                    project,
-                    now.as_millis()
-                ],
+                params![id.to_string(), title, mode.label(), project, now.as_millis()],
             )
             .map_err(map_sqlite)?;
-            Ok(())
-        })
+                tx.execute(
+                    "INSERT INTO session_file_state
+                    (session_id, generation, last_sequence, byte_size, updated_at)
+                 VALUES (?1, ?2, NULL, ?3, ?4)",
+                    params![
+                        id.to_string(),
+                        created.generation as i64,
+                        created.byte_len as i64,
+                        now.as_millis()
+                    ],
+                )
+                .map_err(map_sqlite)?;
+                tx.commit().map_err(map_sqlite)
+            });
+        if let Err(error) = &result {
+            tracing::error!(%id, %error, "session file committed but metadata insert failed; retaining source for startup repair");
+        }
+        result
     }
 
     /// Append `payload` to `session_id`'s stream, returning the full [`Event`]
@@ -105,75 +149,175 @@ impl<'db> EventStore<'db> {
         payload: EventPayload,
         now: Timestamp,
     ) -> Result<Event> {
-        let kind = payload.kind();
-        let payload_json = serde_json::to_string(&payload)?;
-        let event_id = EventId::new();
-
-        self.db.with_conn(|c| {
-            let tx = c.unchecked_transaction().map_err(map_sqlite)?;
-
-            // Ensure the session exists.
-            let exists: bool = tx
-                .query_row(
-                    "SELECT 1 FROM sessions WHERE id = ?1",
-                    params![session_id.to_string()],
-                    |_| Ok(true),
-                )
-                .optional()
-                .map_err(map_sqlite)?
-                .unwrap_or(false);
-            if !exists {
-                return Err(CoreError::not_found(format!(
-                    "session {session_id} does not exist"
-                )));
-            }
-
-            // Next gapless sequence = max(sequence)+1, or 0 if none.
-            let next_seq: Sequence = tx
-                .query_row(
-                    "SELECT COALESCE(MAX(sequence) + 1, 0) FROM events WHERE session_id = ?1",
-                    params![session_id.to_string()],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(map_sqlite)? as Sequence;
-
-            tx.execute(
-                "INSERT INTO events (id, session_id, sequence, kind, timestamp, payload)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    event_id.to_string(),
-                    session_id.to_string(),
-                    next_seq as i64,
-                    kind,
-                    now.as_millis(),
-                    payload_json,
-                ],
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        if self.get_session(session_id)?.is_none() {
+            return Err(CoreError::not_found(format!(
+                "session {session_id} does not exist"
+            )));
+        }
+        let cursor = self.projected_cursor(session_id)?;
+        let search_cursor = self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT generation, last_sequence, dirty
+                 FROM session_search_cursors WHERE session_id = ?1",
+                params![session_id.to_string()],
+                |row| {
+                    let generation: i64 = row.get(0)?;
+                    let last_sequence: Option<i64> = row.get(1)?;
+                    let dirty: i64 = row.get(2)?;
+                    Ok((
+                        generation as u64,
+                        last_sequence.map(|value| value as u64),
+                        dirty != 0,
+                    ))
+                },
             )
-            .map_err(map_sqlite)?;
+            .optional()
+            .map_err(map_sqlite)
+        })?;
+        let candidate_sequence = cursor
+            .and_then(|cursor| cursor.last_sequence)
+            .map_or(0, |sequence| sequence + 1);
+        let event = Event {
+            id: EventId::new(),
+            session_id,
+            sequence: candidate_sequence,
+            timestamp: now,
+            payload,
+        };
+        let committed =
+            session_files::append(&self.db.session_files_root(), session_id, event, cursor)?;
+        let event = committed.event;
+        if committed.recovered_tail_bytes > 0 {
+            tracing::warn!(
+                %session_id,
+                recovered_bytes = committed.recovered_tail_bytes,
+                "discarded an incomplete session-file tail before append"
+            );
+        }
+        let search_is_incremental = match search_cursor {
+            None => event.sequence == 0,
+            Some((generation, last_sequence, dirty)) => {
+                !dirty
+                    && generation == committed.generation
+                    && last_sequence.map_or(event.sequence == 0, |sequence| {
+                        sequence + 1 == event.sequence
+                    })
+            }
+        };
+        let rebuild_events = if search_is_incremental {
+            None
+        } else {
+            Some(
+                session_files::load(&self.db.session_files_root(), session_id)?
+                    .ok_or_else(|| {
+                        CoreError::EventLog(format!(
+                            "session {session_id} disappeared after event append"
+                        ))
+                    })?
+                    .events,
+            )
+        };
 
-            // Touch the session's updated_at / ended_at.
+        let projection_result = self.db.with_conn(|c| {
+            let tx = c.unchecked_transaction().map_err(map_sqlite)?;
             tx.execute(
                 "UPDATE sessions SET updated_at = ?2 WHERE id = ?1",
                 params![session_id.to_string(), now.as_millis()],
             )
             .map_err(map_sqlite)?;
-            if matches!(payload, EventPayload::SessionEnded { .. }) {
+            if matches!(&event.payload, EventPayload::SessionEnded { .. }) {
                 tx.execute(
                     "UPDATE sessions SET ended_at = ?2 WHERE id = ?1",
                     params![session_id.to_string(), now.as_millis()],
                 )
                 .map_err(map_sqlite)?;
             }
-
-            tx.commit().map_err(map_sqlite)?;
-
-            Ok(Event {
-                id: event_id,
+            tx.execute(
+                "INSERT INTO session_file_state
+                    (session_id, generation, last_sequence, byte_size, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    generation=excluded.generation,
+                    last_sequence=excluded.last_sequence,
+                    byte_size=excluded.byte_size,
+                    updated_at=excluded.updated_at",
+                params![
+                    session_id.to_string(),
+                    committed.generation as i64,
+                    event.sequence as i64,
+                    committed.byte_len as i64,
+                    now.as_millis()
+                ],
+            )
+            .map_err(map_sqlite)?;
+            if let Some(events) = rebuild_events.as_deref() {
+                replace_search_index(&tx, session_id, events)?;
+            } else {
+                index_search_event(&tx, &event)?;
+            }
+            tx.execute(
+                "INSERT INTO session_search_cursors
+                    (session_id, generation, last_sequence, dirty, updated_at)
+                 VALUES (?1, ?2, ?3, 0, ?4)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    generation=excluded.generation,
+                    last_sequence=excluded.last_sequence,
+                    dirty=0,
+                    updated_at=excluded.updated_at",
+                params![
+                    session_id.to_string(),
+                    committed.generation as i64,
+                    event.sequence as i64,
+                    now.as_millis()
+                ],
+            )
+            .map_err(map_sqlite)?;
+            tx.commit().map_err(map_sqlite)
+        });
+        if let Err(error) = projection_result {
+            tracing::error!(
+                %session_id,
+                sequence = event.sequence,
+                %error,
+                "session event committed but SQLite projection update failed"
+            );
+            if let Err(mark_error) = self.mark_search_dirty(
                 session_id,
-                sequence: next_seq,
-                timestamp: now,
-                payload,
-            })
+                committed.generation,
+                search_cursor.and_then(|(_, sequence, _)| sequence),
+                now,
+            ) {
+                tracing::error!(
+                    %session_id,
+                    %mark_error,
+                    "failed to mark conversation search projection dirty"
+                );
+            }
+        }
+        Ok(event)
+    }
+
+    fn projected_cursor(&self, session_id: SessionId) -> Result<Option<SessionFileCursor>> {
+        self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT generation, last_sequence, byte_size
+                 FROM session_file_state WHERE session_id = ?1",
+                params![session_id.to_string()],
+                |row| {
+                    let generation: i64 = row.get(0)?;
+                    let last_sequence: Option<i64> = row.get(1)?;
+                    let byte_len: i64 = row.get(2)?;
+                    Ok(SessionFileCursor {
+                        generation: generation as u64,
+                        last_sequence: last_sequence.map(|value| value as u64),
+                        byte_len: byte_len as u64,
+                    })
+                },
+            )
+            .optional()
+            .map_err(map_sqlite)
         })
     }
 
@@ -185,48 +329,24 @@ impl<'db> EventStore<'db> {
     /// Read events for a session starting at `from_sequence` (inclusive).
     /// Useful for incremental replay / tailing.
     pub fn read_from(&self, session_id: SessionId, from_sequence: Sequence) -> Result<Vec<Event>> {
-        self.db.with_conn(|c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT id, sequence, timestamp, payload
-                     FROM events
-                     WHERE session_id = ?1 AND sequence >= ?2
-                     ORDER BY sequence ASC",
-                )
-                .map_err(map_sqlite)?;
-
-            let rows = stmt
-                .query_map(
-                    params![session_id.to_string(), from_sequence as i64],
-                    |row| {
-                        let id_str: String = row.get(0)?;
-                        let sequence: i64 = row.get(1)?;
-                        let ts: i64 = row.get(2)?;
-                        let payload_json: String = row.get(3)?;
-                        Ok((id_str, sequence, ts, payload_json))
-                    },
-                )
-                .map_err(map_sqlite)?;
-
-            let mut events = Vec::new();
-            for row in rows {
-                let (id_str, sequence, ts, payload_json) = row.map_err(map_sqlite)?;
-                let id = id_str
-                    .parse::<EventId>()
-                    .map_err(|e| CoreError::EventLog(e.to_string()))?;
-                let payload: EventPayload = serde_json::from_str(&payload_json)?;
-                events.push(Event {
-                    id,
-                    session_id,
-                    sequence: sequence as Sequence,
-                    timestamp: Timestamp::from_millis(ts),
-                    payload,
-                });
-            }
-
-            verify_contiguous(&events, session_id, from_sequence)?;
-            Ok(events)
-        })
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        let Some(loaded) = session_files::load(&self.db.session_files_root(), session_id)? else {
+            return Ok(Vec::new());
+        };
+        verify_contiguous(&loaded.events, session_id, 0)?;
+        if loaded.recovered_tail_bytes > 0 {
+            tracing::warn!(
+                %session_id,
+                recovered_bytes = loaded.recovered_tail_bytes,
+                "discarded an incomplete session-file tail after an interrupted write"
+            );
+        }
+        Ok(loaded
+            .events
+            .into_iter()
+            .filter(|event| event.sequence >= from_sequence)
+            .collect())
     }
 
     /// Fetch the session record.
@@ -285,13 +405,18 @@ impl<'db> EventStore<'db> {
         })
     }
 
-    /// List all sessions, most recently updated first.
+    /// List active file-backed sessions, most recently updated first. Legacy
+    /// rows without a source file and recycled sessions remain hidden from
+    /// every caller, including CLI and harness thread listings.
     pub fn list_sessions(&self) -> Result<Vec<SessionRecord>> {
-        self.db.with_conn(|c| {
+        let records = self.db.with_conn(|c| {
             let mut stmt = c
                 .prepare(
-                    "SELECT id, title, mode, project, created_at, updated_at, ended_at
-                     FROM sessions ORDER BY updated_at DESC",
+                    "SELECT s.id, s.title, s.mode, s.project, s.created_at,
+                            s.updated_at, s.ended_at
+                     FROM sessions s
+                     JOIN session_file_state f ON f.session_id = s.id
+                     ORDER BY s.updated_at DESC",
                 )
                 .map_err(map_sqlite)?;
             let rows = stmt
@@ -325,21 +450,410 @@ impl<'db> EventStore<'db> {
                 });
             }
             Ok(out)
-        })
+        })?;
+        let root = self.db.session_files_root();
+        let mut visible = Vec::with_capacity(records.len());
+        for record in records {
+            if session_files::current_cursor(&root, record.id)?.is_some() {
+                visible.push(record);
+            }
+        }
+        Ok(visible)
     }
 
     /// Count of events in a session.
     pub fn event_count(&self, session_id: SessionId) -> Result<u64> {
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        let Some(physical) =
+            session_files::current_cursor(&self.db.session_files_root(), session_id)?
+        else {
+            return Ok(0);
+        };
+        if let Some(projected) = self.projected_cursor(session_id)? {
+            if projected.generation == physical.generation
+                && projected.byte_len == physical.byte_len
+            {
+                return Ok(projected.last_sequence.map_or(0, |sequence| sequence + 1));
+            }
+        }
+        Ok(
+            session_files::load(&self.db.session_files_root(), session_id)?
+                .map(|loaded| loaded.events.len() as u64)
+                .unwrap_or(0),
+        )
+    }
+
+    /// Atomically move a session's authoritative files into the managed
+    /// recycle area. Metadata remains intact so archive restore stays on the
+    /// existing session id and projection chain.
+    pub fn trash_session(&self, session_id: SessionId, deleted_at: Timestamp) -> Result<bool> {
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        if self.get_session(session_id)?.is_none() {
+            return Err(CoreError::not_found(format!(
+                "session {session_id} does not exist"
+            )));
+        }
+        session_files::move_to_trash(
+            &self.db.session_files_root(),
+            session_id,
+            deleted_at.as_millis(),
+        )
+    }
+
+    /// Ensure the authoritative file is active, restoring its newest recycled
+    /// generation if needed. Returns false only when neither location has it.
+    pub fn restore_trashed_session(&self, session_id: SessionId) -> Result<bool> {
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        if session_files::current_cursor(&self.db.session_files_root(), session_id)?.is_some() {
+            return Ok(true);
+        }
+        session_files::restore_from_trash(&self.db.session_files_root(), session_id)
+    }
+
+    /// Inspect the recycle area for a session without altering its files.
+    pub fn trashed_session_deleted_at(&self, session_id: SessionId) -> Result<Option<Timestamp>> {
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        if session_files::current_cursor(&self.db.session_files_root(), session_id)?.is_some() {
+            return Ok(None);
+        }
+        Ok(
+            session_files::latest_trash_timestamp(&self.db.session_files_root(), session_id)?
+                .map(Timestamp::from_millis),
+        )
+    }
+
+    /// Permanently remove recycled session directories older than `cutoff`.
+    pub fn purge_trashed_sessions_before(&self, cutoff: Timestamp) -> Result<u64> {
+        let _io = self.db.lock_session_io()?;
+        session_files::purge_trash_before(&self.db.session_files_root(), cutoff.as_millis())
+    }
+
+    /// Remove the SQLite metadata and rebuildable projections for a session
+    /// whose recycled source file has passed its retention window.
+    pub fn purge_deleted_session_metadata(&self, session_id: SessionId) -> Result<bool> {
         self.db.with_conn(|c| {
-            let n: i64 = c
-                .query_row(
-                    "SELECT count(*) FROM events WHERE session_id = ?1",
+            let tx = c.unchecked_transaction().map_err(map_sqlite)?;
+            tx.execute(
+                "DELETE FROM session_search_fts
+                 WHERE CAST(doc_id AS INTEGER) IN
+                    (SELECT id FROM session_search_docs WHERE session_id = ?1)",
+                params![session_id.to_string()],
+            )
+            .map_err(map_sqlite)?;
+            let deleted = tx
+                .execute(
+                    "DELETE FROM sessions WHERE id = ?1",
                     params![session_id.to_string()],
-                    |r| r.get(0),
                 )
                 .map_err(map_sqlite)?;
-            Ok(n as u64)
+            tx.commit().map_err(map_sqlite)?;
+            Ok(deleted > 0)
         })
+    }
+
+    /// Search settled conversation content through the rebuildable FTS index.
+    /// Exact snippets are reconstructed from the authoritative session file.
+    pub fn search(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SessionSearchHit>> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.repair_search_indexes()?;
+        let limit = limit.clamp(1, 100) as i64;
+        let char_count = query.chars().count();
+        let is_cjk_bigram = char_count == 2 && query.chars().all(is_cjk);
+        let candidates: Vec<(SessionId, Sequence, Option<Role>, Timestamp)> =
+            self.db.with_conn(|c| {
+                let sql = if is_cjk_bigram {
+                    "SELECT d.session_id, d.sequence, d.role, d.timestamp
+                     FROM session_search_cjk_bigrams b
+                     JOIN session_search_docs d ON d.id = b.doc_id
+                     JOIN sessions s ON s.id = d.session_id
+                     WHERE b.gram = ?1 AND (?2 IS NULL OR s.project = ?2)
+                     ORDER BY d.timestamp DESC LIMIT ?3"
+                } else if char_count >= 3 {
+                    "SELECT d.session_id, d.sequence, d.role, d.timestamp
+                     FROM session_search_fts f
+                     JOIN session_search_docs d ON d.id = CAST(f.doc_id AS INTEGER)
+                     JOIN sessions s ON s.id = d.session_id
+                     WHERE session_search_fts MATCH ?1
+                       AND (?2 IS NULL OR s.project = ?2)
+                     ORDER BY bm25(session_search_fts), d.timestamp DESC LIMIT ?3"
+                } else {
+                    "SELECT d.session_id, d.sequence, d.role, d.timestamp
+                     FROM session_search_fts f
+                     JOIN session_search_docs d ON d.id = CAST(f.doc_id AS INTEGER)
+                     JOIN sessions s ON s.id = d.session_id
+                     WHERE f.content LIKE ?1 ESCAPE '\\'
+                       AND (?2 IS NULL OR s.project = ?2)
+                     ORDER BY d.timestamp DESC LIMIT ?3"
+                };
+                let search_term = if is_cjk_bigram {
+                    query.to_owned()
+                } else if char_count >= 3 {
+                    format!("\"{}\"", query.replace('"', "\"\""))
+                } else {
+                    format!("%{}%", escape_like(query))
+                };
+                let mut stmt = c.prepare(sql).map_err(map_sqlite)?;
+                let rows = stmt
+                    .query_map(params![search_term, project, limit], |row| {
+                        let id: String = row.get(0)?;
+                        let sequence: i64 = row.get(1)?;
+                        let role: Option<String> = row.get(2)?;
+                        let timestamp: i64 = row.get(3)?;
+                        Ok((id, sequence, role, timestamp))
+                    })
+                    .map_err(map_sqlite)?;
+                let mut candidates = Vec::new();
+                for row in rows {
+                    let (id, sequence, role, timestamp) = row.map_err(map_sqlite)?;
+                    candidates.push((
+                        id.parse::<SessionId>()
+                            .map_err(|error| CoreError::Persistence(error.to_string()))?,
+                        sequence as Sequence,
+                        role.as_deref().and_then(parse_role),
+                        Timestamp::from_millis(timestamp),
+                    ));
+                }
+                Ok(candidates)
+            })?;
+
+        let mut hits = Vec::with_capacity(candidates.len());
+        for (session_id, sequence, role, timestamp) in candidates {
+            let Some(session) = self.get_session(session_id)? else {
+                continue;
+            };
+            let Some(event) = self.read_from(session_id, sequence)?.into_iter().next() else {
+                continue;
+            };
+            if event.sequence != sequence {
+                continue;
+            }
+            let Some((_, content)) = search_document(&event) else {
+                continue;
+            };
+            hits.push(SessionSearchHit {
+                session,
+                sequence,
+                role,
+                timestamp,
+                snippet: make_snippet(&content, query, 240),
+            });
+        }
+        Ok(hits)
+    }
+
+    fn mark_search_dirty(
+        &self,
+        session_id: SessionId,
+        generation: u64,
+        last_sequence: Option<u64>,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO session_search_cursors
+                    (session_id, generation, last_sequence, dirty, updated_at)
+                 VALUES (?1, ?2, ?3, 1, ?4)
+                 ON CONFLICT(session_id) DO UPDATE SET dirty=1, updated_at=excluded.updated_at",
+                params![
+                    session_id.to_string(),
+                    generation as i64,
+                    last_sequence.map(|value| value as i64),
+                    now.as_millis()
+                ],
+            )
+            .map_err(map_sqlite)?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn recover_orphaned_session_files(&self) -> Result<()> {
+        for session_id in session_files::list_active_session_ids(&self.db.session_files_root())? {
+            let _io = self.db.lock_session_io()?;
+            let _file_lock =
+                session_files::lock_session(&self.db.session_files_root(), session_id)?;
+            if self.projected_cursor(session_id)?.is_some() {
+                continue;
+            }
+            let Some(loaded) = session_files::load(&self.db.session_files_root(), session_id)?
+            else {
+                continue;
+            };
+            let updated_at = loaded
+                .events
+                .last()
+                .map_or(loaded.header.created_at.as_millis(), |event| {
+                    event.timestamp.as_millis()
+                });
+            let ended_at = loaded.events.iter().rev().find_map(|event| {
+                matches!(event.payload, EventPayload::SessionEnded { .. })
+                    .then_some(event.timestamp.as_millis())
+            });
+            self.db.with_conn(|c| {
+                let tx = c.unchecked_transaction().map_err(map_sqlite)?;
+                tx.execute(
+                    "INSERT INTO sessions
+                        (id, title, mode, project, created_at, updated_at, ended_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(id) DO UPDATE SET
+                        title=excluded.title,
+                        mode=excluded.mode,
+                        project=excluded.project,
+                        created_at=excluded.created_at,
+                        updated_at=excluded.updated_at,
+                        ended_at=excluded.ended_at",
+                    params![
+                        session_id.to_string(),
+                        loaded.header.title,
+                        loaded.header.mode.label(),
+                        loaded.header.project,
+                        loaded.header.created_at.as_millis(),
+                        updated_at,
+                        ended_at,
+                    ],
+                )
+                .map_err(map_sqlite)?;
+                tx.execute(
+                    "INSERT INTO session_file_state
+                        (session_id, generation, last_sequence, byte_size, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        session_id.to_string(),
+                        loaded.generation as i64,
+                        loaded.events.last().map(|event| event.sequence as i64),
+                        loaded.byte_len as i64,
+                        updated_at,
+                    ],
+                )
+                .map_err(map_sqlite)?;
+                tx.commit().map_err(map_sqlite)
+            })?;
+            tracing::warn!(%session_id, "recovered session metadata from authoritative file");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn repair_search_indexes(&self) -> Result<()> {
+        let states: Vec<(SessionId, u64, u64, bool)> = self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT f.session_id, f.generation, f.byte_size,
+                            CASE WHEN c.session_id IS NULL OR c.dirty <> 0
+                                OR c.generation <> f.generation
+                                OR c.last_sequence IS NOT f.last_sequence
+                            THEN 1 ELSE 0 END
+                     FROM session_file_state f
+                     LEFT JOIN session_search_cursors c ON c.session_id = f.session_id",
+                )
+                .map_err(map_sqlite)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let id: String = row.get(0)?;
+                    let generation: i64 = row.get(1)?;
+                    let byte_size: i64 = row.get(2)?;
+                    let dirty: i64 = row.get(3)?;
+                    Ok((id, generation, byte_size, dirty))
+                })
+                .map_err(map_sqlite)?;
+            let mut states = Vec::new();
+            for row in rows {
+                let (id, generation, byte_size, dirty) = row.map_err(map_sqlite)?;
+                states.push((
+                    id.parse::<SessionId>()
+                        .map_err(|error| CoreError::Persistence(error.to_string()))?,
+                    generation as u64,
+                    byte_size as u64,
+                    dirty != 0,
+                ));
+            }
+            Ok(states)
+        })?;
+        for (session_id, projected_generation, projected_bytes, dirty) in states {
+            let _io = self.db.lock_session_io()?;
+            let _file_lock =
+                session_files::lock_session(&self.db.session_files_root(), session_id)?;
+            let physical =
+                session_files::current_cursor(&self.db.session_files_root(), session_id)?;
+            let projection_matches_file = physical.as_ref().is_some_and(|cursor| {
+                cursor.generation == projected_generation && cursor.byte_len == projected_bytes
+            });
+            if !dirty && projection_matches_file {
+                continue;
+            }
+            let Some(loaded) = session_files::load(&self.db.session_files_root(), session_id)?
+            else {
+                continue;
+            };
+            let updated_at = loaded
+                .events
+                .last()
+                .map_or(loaded.header.created_at.as_millis(), |event| {
+                    event.timestamp.as_millis()
+                });
+            let ended_at = loaded.events.iter().rev().find_map(|event| {
+                matches!(event.payload, EventPayload::SessionEnded { .. })
+                    .then_some(event.timestamp.as_millis())
+            });
+            self.db.with_conn(|c| {
+                let tx = c.unchecked_transaction().map_err(map_sqlite)?;
+                tx.execute(
+                    "UPDATE session_file_state SET
+                        generation = ?2, last_sequence = ?3, byte_size = ?4, updated_at = ?5
+                     WHERE session_id = ?1",
+                    params![
+                        session_id.to_string(),
+                        loaded.generation as i64,
+                        loaded.events.last().map(|event| event.sequence as i64),
+                        loaded.byte_len as i64,
+                        updated_at,
+                    ],
+                )
+                .map_err(map_sqlite)?;
+                tx.execute(
+                    "UPDATE sessions SET updated_at = ?2, ended_at = ?3 WHERE id = ?1",
+                    params![session_id.to_string(), updated_at, ended_at],
+                )
+                .map_err(map_sqlite)?;
+                replace_search_index(&tx, session_id, &loaded.events)?;
+                tx.execute(
+                    "INSERT INTO session_search_cursors
+                        (session_id, generation, last_sequence, dirty, updated_at)
+                     VALUES (?1, ?2, ?3, 0, ?4)
+                     ON CONFLICT(session_id) DO UPDATE SET
+                        generation=excluded.generation,
+                        last_sequence=excluded.last_sequence,
+                        dirty=0,
+                        updated_at=excluded.updated_at",
+                    params![
+                        session_id.to_string(),
+                        loaded.generation as i64,
+                        loaded.events.last().map(|event| event.sequence as i64),
+                        updated_at
+                    ],
+                )
+                .map_err(map_sqlite)?;
+                tx.commit().map_err(map_sqlite)
+            })?;
+            if let Err(error) = session_files::prune_older_generations(
+                &self.db.session_files_root(),
+                session_id,
+                loaded.generation,
+            ) {
+                tracing::warn!(%session_id, %error, "could not remove obsolete session generations");
+            }
+        }
+        Ok(())
     }
 
     /// Distinct project paths that have at least one session, each with its
@@ -418,58 +932,268 @@ impl<'db> EventStore<'db> {
     /// session's `ended_at` is cleared (the session is "reopened") and
     /// `updated_at` is reset to the timestamp of the new tail event.
     pub fn truncate_after(&self, session_id: SessionId, keep_through: Sequence) -> Result<u64> {
-        self.db.with_conn(|c| {
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        if self.get_session(session_id)?.is_none() {
+            return Err(CoreError::not_found(format!(
+                "session {session_id} does not exist"
+            )));
+        }
+        let (rewritten, removed) =
+            session_files::rewrite_prefix(&self.db.session_files_root(), session_id, keep_through)?;
+        let tail_ts = rewritten
+            .events
+            .last()
+            .map(|event| event.timestamp.as_millis());
+        let updated_at = tail_ts.unwrap_or(rewritten.header.created_at.as_millis());
+        let last_sequence = rewritten.events.last().map(|event| event.sequence as i64);
+        let projection_result = self.db.with_conn(|c| {
             let tx = c.unchecked_transaction().map_err(map_sqlite)?;
-
-            let exists: bool = tx
-                .query_row(
-                    "SELECT 1 FROM sessions WHERE id = ?1",
-                    params![session_id.to_string()],
-                    |_| Ok(true),
-                )
-                .optional()
-                .map_err(map_sqlite)?
-                .unwrap_or(false);
-            if !exists {
-                return Err(CoreError::not_found(format!(
-                    "session {session_id} does not exist"
-                )));
-            }
-
-            let deleted = tx
-                .execute(
-                    "DELETE FROM events WHERE session_id = ?1 AND sequence > ?2",
-                    params![session_id.to_string(), keep_through as i64],
-                )
-                .map_err(map_sqlite)?;
-
-            // The new tail timestamp (None if the session is now empty).
-            let tail_ts: Option<i64> = tx
-                .query_row(
-                    "SELECT MAX(timestamp) FROM events WHERE session_id = ?1",
-                    params![session_id.to_string()],
-                    |row| row.get::<_, Option<i64>>(0),
-                )
-                .map_err(map_sqlite)?;
-
-            if let Some(ts) = tail_ts {
-                tx.execute(
-                    "UPDATE sessions SET ended_at = NULL, updated_at = ?2 WHERE id = ?1",
-                    params![session_id.to_string(), ts],
-                )
-                .map_err(map_sqlite)?;
-            } else {
-                tx.execute(
-                    "UPDATE sessions SET ended_at = NULL WHERE id = ?1",
-                    params![session_id.to_string()],
-                )
-                .map_err(map_sqlite)?;
-            }
-
-            tx.commit().map_err(map_sqlite)?;
-            Ok(deleted as u64)
-        })
+            tx.execute(
+                "UPDATE sessions SET ended_at = NULL, updated_at = ?2 WHERE id = ?1",
+                params![session_id.to_string(), updated_at],
+            )
+            .map_err(map_sqlite)?;
+            tx.execute(
+                "UPDATE session_file_state
+                 SET generation = ?2, last_sequence = ?3, byte_size = ?4, updated_at = ?5
+                 WHERE session_id = ?1",
+                params![
+                    session_id.to_string(),
+                    rewritten.generation as i64,
+                    last_sequence,
+                    rewritten.byte_len as i64,
+                    updated_at
+                ],
+            )
+            .map_err(map_sqlite)?;
+            replace_search_index(&tx, session_id, &rewritten.events)?;
+            tx.execute(
+                "INSERT INTO session_search_cursors
+                    (session_id, generation, last_sequence, dirty, updated_at)
+                 VALUES (?1, ?2, ?3, 0, ?4)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    generation=excluded.generation,
+                    last_sequence=excluded.last_sequence,
+                    dirty=0,
+                    updated_at=excluded.updated_at",
+                params![
+                    session_id.to_string(),
+                    rewritten.generation as i64,
+                    last_sequence,
+                    updated_at
+                ],
+            )
+            .map_err(map_sqlite)?;
+            tx.commit().map_err(map_sqlite)
+        });
+        if let Err(error) = projection_result {
+            tracing::error!(
+                %session_id,
+                %error,
+                "session rewind committed but SQLite projection update failed"
+            );
+        } else if let Err(error) = session_files::prune_older_generations(
+            &self.db.session_files_root(),
+            session_id,
+            rewritten.generation,
+        ) {
+            tracing::warn!(%session_id, %error, "could not remove obsolete session generations");
+        }
+        Ok(removed)
     }
+}
+
+fn replace_search_index(
+    connection: &rusqlite::Connection,
+    session_id: SessionId,
+    events: &[Event],
+) -> Result<()> {
+    connection
+        .execute(
+            "DELETE FROM session_search_fts
+             WHERE CAST(doc_id AS INTEGER) IN
+                (SELECT id FROM session_search_docs WHERE session_id = ?1)",
+            params![session_id.to_string()],
+        )
+        .map_err(map_sqlite)?;
+    connection
+        .execute(
+            "DELETE FROM session_search_cjk_bigrams
+             WHERE doc_id IN
+                (SELECT id FROM session_search_docs WHERE session_id = ?1)",
+            params![session_id.to_string()],
+        )
+        .map_err(map_sqlite)?;
+    connection
+        .execute(
+            "DELETE FROM session_search_docs WHERE session_id = ?1",
+            params![session_id.to_string()],
+        )
+        .map_err(map_sqlite)?;
+    for event in events {
+        index_search_event(connection, event)?;
+    }
+    Ok(())
+}
+
+fn index_search_event(connection: &rusqlite::Connection, event: &Event) -> Result<()> {
+    let Some((role, content)) = search_document(event) else {
+        return Ok(());
+    };
+    if content.trim().is_empty() {
+        return Ok(());
+    }
+    let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+    let inserted = connection
+        .execute(
+            "INSERT OR IGNORE INTO session_search_docs
+                (session_id, sequence, role, timestamp, content_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                event.session_id.to_string(),
+                event.sequence as i64,
+                role.map(|value| value.as_str()),
+                event.timestamp.as_millis(),
+                content_hash
+            ],
+        )
+        .map_err(map_sqlite)?;
+    if inserted == 0 {
+        return Ok(());
+    }
+    let doc_id: i64 = connection
+        .query_row(
+            "SELECT id FROM session_search_docs WHERE session_id = ?1 AND sequence = ?2",
+            params![event.session_id.to_string(), event.sequence as i64],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite)?;
+    connection
+        .execute(
+            "INSERT INTO session_search_fts(doc_id, content) VALUES (?1, ?2)",
+            params![doc_id, content],
+        )
+        .map_err(map_sqlite)?;
+    let mut bigrams = std::collections::BTreeSet::new();
+    let chars: Vec<char> = content.chars().collect();
+    for pair in chars.windows(2) {
+        if pair.iter().all(|character| is_cjk(*character)) {
+            bigrams.insert(pair.iter().collect::<String>());
+        }
+    }
+    for gram in bigrams {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO session_search_cjk_bigrams(doc_id, gram)
+                 VALUES (?1, ?2)",
+                params![doc_id, gram],
+            )
+            .map_err(map_sqlite)?;
+    }
+    Ok(())
+}
+
+fn search_document(event: &Event) -> Option<(Option<Role>, String)> {
+    match &event.payload {
+        EventPayload::MessageAppended { message }
+            if matches!(message.role, Role::User | Role::Assistant)
+                || (message.role == Role::System
+                    && message
+                        .content
+                        .starts_with("[Earlier conversation compacted")) =>
+        {
+            Some((Some(message.role), message.content.clone()))
+        }
+        EventPayload::ToolCallRequested { call } => {
+            let arguments = json_shape(&call.arguments);
+            Some((None, format!("tool {} requested {arguments}", call.name)))
+        }
+        EventPayload::ToolCallCompleted {
+            call_id,
+            ok,
+            output,
+            ..
+        } => Some((
+            None,
+            format!(
+                "tool call {call_id} {} {}",
+                if *ok { "completed" } else { "failed" },
+                json_shape(output)
+            ),
+        )),
+        _ => None,
+    }
+}
+
+fn json_shape(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let keys: Vec<&str> = map.keys().take(16).map(String::as_str).collect();
+            format!("object keys [{}]", keys.join(", "))
+        }
+        serde_json::Value::Array(values) => format!("array length {}", values.len()),
+        serde_json::Value::String(_) => "string output".into(),
+        serde_json::Value::Number(_) => "number output".into(),
+        serde_json::Value::Bool(_) => "boolean output".into(),
+        serde_json::Value::Null => "null output".into(),
+    }
+}
+
+fn parse_role(role: &str) -> Option<Role> {
+    match role {
+        "system" => Some(Role::System),
+        "user" => Some(Role::User),
+        "assistant" => Some(Role::Assistant),
+        "tool" => Some(Role::Tool),
+        _ => None,
+    }
+}
+
+fn is_cjk(character: char) -> bool {
+    matches!(
+        character,
+        '\u{3400}'..='\u{4dbf}'
+            | '\u{4e00}'..='\u{9fff}'
+            | '\u{f900}'..='\u{faff}'
+            | '\u{20000}'..='\u{2fa1f}'
+    )
+}
+
+fn escape_like(query: &str) -> String {
+    query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn make_snippet(content: &str, query: &str, max_chars: usize) -> String {
+    let content_chars: Vec<char> = content.chars().collect();
+    if content_chars.len() <= max_chars {
+        return content.to_owned();
+    }
+    let query_chars: Vec<char> = query.chars().collect();
+    let lower_content: Vec<char> = content.to_lowercase().chars().collect();
+    let lower_query: Vec<char> = query.to_lowercase().chars().collect();
+    let match_start = if lower_query.is_empty() || lower_query.len() > lower_content.len() {
+        0
+    } else {
+        lower_content
+            .windows(lower_query.len())
+            .position(|window| window == lower_query.as_slice())
+            .unwrap_or(0)
+    };
+    let padding = max_chars.saturating_sub(query_chars.len()) / 2;
+    let start = match_start.saturating_sub(padding);
+    let end = (start + max_chars).min(content_chars.len());
+    let mut snippet: String = content_chars[start..end].iter().collect();
+    if start > 0 {
+        snippet.insert(0, '…');
+    }
+    if end < content_chars.len() {
+        snippet.push('…');
+    }
+    snippet
 }
 
 /// Parse a stored mode label back into [`SessionMode`], defaulting to Normal
@@ -575,6 +1299,294 @@ mod tests {
     }
 
     #[test]
+    fn disk_database_reopens_from_session_file_without_sqlite_event_bodies() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("deepagent.db");
+        let session_id = SessionId::new();
+        {
+            let db = Database::open(&db_path).unwrap();
+            let store = EventStore::new(&db);
+            store
+                .create_session(session_id, Some("disk"), Timestamp::from_millis(10))
+                .unwrap();
+            store
+                .append(
+                    session_id,
+                    EventPayload::Note {
+                        text: "persisted in file".into(),
+                    },
+                    Timestamp::from_millis(20),
+                )
+                .unwrap();
+            let sqlite_events: i64 = db
+                .with_conn(|connection| {
+                    connection
+                        .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+                        .map_err(map_sqlite)
+                })
+                .unwrap();
+            assert_eq!(sqlite_events, 0);
+        }
+
+        let reopened = Database::open(&db_path).unwrap();
+        let events = EventStore::new(&reopened).load_session(session_id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0].payload,
+            EventPayload::Note { text } if text == "persisted in file"
+        ));
+        assert!(temp.path().join("files").join("sessions").exists());
+    }
+
+    #[test]
+    fn disk_databases_share_the_per_session_lock_for_concurrent_appends() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.sqlite3");
+        let first = std::sync::Arc::new(Database::open(&db_path).unwrap());
+        let session_id = SessionId::new();
+        EventStore::new(&first)
+            .create_session(session_id, Some("concurrent"), Timestamp::from_millis(1))
+            .unwrap();
+        let second = std::sync::Arc::new(Database::open(&db_path).unwrap());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+
+        let workers: Vec<_> = [first.clone(), second]
+            .into_iter()
+            .enumerate()
+            .map(|(worker, db)| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for index in 0..25 {
+                        EventStore::new(&db)
+                            .append(
+                                session_id,
+                                EventPayload::MessageAppended {
+                                    message: Message::user(format!("worker-{worker}-{index}")),
+                                },
+                                Timestamp::from_millis(10 + index),
+                            )
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let events = EventStore::new(&first).load_session(session_id).unwrap();
+        assert_eq!(events.len(), 50);
+        assert!(events
+            .iter()
+            .enumerate()
+            .all(|(index, event)| event.sequence == index as u64));
+    }
+
+    #[test]
+    fn reopen_repairs_projection_after_file_commit_before_sqlite_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.sqlite3");
+        let session_id = SessionId::new();
+        {
+            let db = Database::open(&db_path).unwrap();
+            let store = EventStore::new(&db);
+            store
+                .create_session(session_id, Some("crash window"), Timestamp::from_millis(1))
+                .unwrap();
+            store
+                .append(
+                    session_id,
+                    EventPayload::MessageAppended {
+                        message: Message::user("before crash"),
+                    },
+                    Timestamp::from_millis(2),
+                )
+                .unwrap();
+            let cursor = db
+                .with_conn(|connection| {
+                    connection
+                        .query_row(
+                            "SELECT generation, last_sequence, byte_size
+                             FROM session_file_state WHERE session_id = ?1",
+                            params![session_id.to_string()],
+                            |row| {
+                                Ok(SessionFileCursor {
+                                    generation: row.get::<_, i64>(0)? as u64,
+                                    last_sequence: row
+                                        .get::<_, Option<i64>>(1)?
+                                        .map(|value| value as u64),
+                                    byte_len: row.get::<_, i64>(2)? as u64,
+                                })
+                            },
+                        )
+                        .map_err(map_sqlite)
+                })
+                .unwrap();
+            let event = Event {
+                id: EventId::new(),
+                session_id,
+                sequence: 0,
+                timestamp: Timestamp::from_millis(3),
+                payload: EventPayload::MessageAppended {
+                    message: Message::assistant("projection crash marker"),
+                },
+            };
+            {
+                let _file_lock =
+                    session_files::lock_session(&db.session_files_root(), session_id).unwrap();
+                session_files::append(&db.session_files_root(), session_id, event, Some(cursor))
+                    .unwrap();
+            }
+            assert_eq!(store.event_count(session_id).unwrap(), 2);
+            // Deliberately omit every SQLite update, matching a process exit
+            // after the authoritative frame fsync and before projection commit.
+        }
+
+        let reopened = Database::open(&db_path).unwrap();
+        let store = EventStore::new(&reopened);
+        assert_eq!(store.load_session(session_id).unwrap().len(), 2);
+        assert_eq!(
+            store.get_session(session_id).unwrap().unwrap().updated_at,
+            Timestamp::from_millis(3)
+        );
+        let hits = store.search("projection crash marker", None, 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].sequence, 1);
+    }
+
+    #[test]
+    fn reopen_recovers_session_created_before_metadata_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.sqlite3");
+        let session_id = SessionId::new();
+        {
+            let db = Database::open(&db_path).unwrap();
+            let root = db.session_files_root();
+            let _file_lock = session_files::lock_session(&root, session_id).unwrap();
+            session_files::create(
+                &root,
+                SessionFileHeader {
+                    id: session_id,
+                    title: Some("orphaned creation".into()),
+                    mode: SessionMode::Normal,
+                    project: Some("G:/workspace/orphan".into()),
+                    created_at: Timestamp::from_millis(42),
+                },
+            )
+            .unwrap();
+            assert!(EventStore::new(&db)
+                .get_session(session_id)
+                .unwrap()
+                .is_none());
+            // Simulate a process exit after the file fsync and before SQLite
+            // inserts the session and its cursor.
+        }
+
+        let reopened = Database::open(&db_path).unwrap();
+        let store = EventStore::new(&reopened);
+        let record = store.get_session(session_id).unwrap().unwrap();
+        assert_eq!(record.title.as_deref(), Some("orphaned creation"));
+        assert_eq!(record.project.as_deref(), Some("G:/workspace/orphan"));
+        assert_eq!(record.created_at, Timestamp::from_millis(42));
+        assert_eq!(store.event_count(session_id).unwrap(), 0);
+        let appended = store
+            .append(
+                session_id,
+                EventPayload::MessageAppended {
+                    message: Message::user("found after orphan recovery"),
+                },
+                Timestamp::from_millis(43),
+            )
+            .unwrap();
+        assert_eq!(appended.sequence, 0);
+        assert_eq!(store.search("orphan recovery", None, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn failed_session_metadata_insert_keeps_file_and_repairs_existing_row_on_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.sqlite3");
+        let session_id = SessionId::new();
+        {
+            let db = Database::open(&db_path).unwrap();
+            db.with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO sessions
+                            (id, title, mode, project, created_at, updated_at, ended_at)
+                         VALUES (?1, 'stale row', 'normal', NULL, 1, 1, NULL)",
+                        params![session_id.to_string()],
+                    )
+                    .map_err(map_sqlite)?;
+                Ok(())
+            })
+            .unwrap();
+            let store = EventStore::new(&db);
+            assert!(store
+                .create_session(session_id, Some("file truth"), Timestamp::from_millis(2))
+                .is_err());
+            assert!(
+                session_files::current_cursor(&db.session_files_root(), session_id)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+
+        let reopened = Database::open(&db_path).unwrap();
+        let store = EventStore::new(&reopened);
+        assert_eq!(
+            store
+                .get_session(session_id)
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("file truth")
+        );
+        assert_eq!(
+            store
+                .append(
+                    session_id,
+                    EventPayload::Note {
+                        text: "recovered".into()
+                    },
+                    Timestamp::from_millis(3),
+                )
+                .unwrap()
+                .sequence,
+            0
+        );
+    }
+
+    #[test]
+    fn trash_and_restore_preserve_the_same_session_history() {
+        let (db, session_id, clock) = store_with_session();
+        let store = EventStore::new(&db);
+        store
+            .append(
+                session_id,
+                EventPayload::MessageAppended {
+                    message: Message::user("recover me"),
+                },
+                clock.now(),
+            )
+            .unwrap();
+        assert!(store
+            .trash_session(session_id, Timestamp::from_millis(2_000))
+            .unwrap());
+        assert!(store.load_session(session_id).unwrap().is_empty());
+        assert!(store.restore_trashed_session(session_id).unwrap());
+        let restored = store.load_session(session_id).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert!(matches!(
+            &restored[0].payload,
+            EventPayload::MessageAppended { message } if message.content == "recover me"
+        ));
+    }
+
+    #[test]
     fn read_from_offset() {
         let (db, sid, clock) = store_with_session();
         let store = EventStore::new(&db);
@@ -592,6 +1604,124 @@ mod tests {
         let tail = store.read_from(sid, 3).unwrap();
         assert_eq!(tail.len(), 2);
         assert_eq!(tail[0].sequence, 3);
+    }
+
+    #[test]
+    fn search_matches_chinese_english_paths_and_code_identifiers() {
+        let db = Database::open_in_memory().unwrap();
+        let store = EventStore::new(&db);
+        let session_id = SessionId::new();
+        store
+            .create_session_full(
+                session_id,
+                Some("search"),
+                SessionMode::Normal,
+                Some("G:/workspace/project-a"),
+                Timestamp::from_millis(1),
+            )
+            .unwrap();
+        store
+            .append(
+                session_id,
+                EventPayload::MessageAppended {
+                    message: Message::user(
+                        "请检查缓存稳定性，并查看 src/runtime/cache.rs 里的 parse_config 函数",
+                    ),
+                },
+                Timestamp::from_millis(2),
+            )
+            .unwrap();
+        store
+            .append(
+                session_id,
+                EventPayload::MessageAppended {
+                    message: Message::assistant("Cache prefix remains stable after the fix."),
+                },
+                Timestamp::from_millis(3),
+            )
+            .unwrap();
+
+        for query in ["缓存", "稳定性", "prefix", "src/runtime", "parse_config"] {
+            let hits = store
+                .search(query, Some("G:/workspace/project-a"), 10)
+                .unwrap();
+            assert!(!hits.is_empty(), "query {query:?} should match");
+            assert_eq!(hits[0].session.id, session_id);
+            assert!(hits[0].snippet.contains(query) || query == "prefix");
+        }
+        assert!(store
+            .search("缓存", Some("G:/workspace/other"), 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn deleted_search_projection_is_rebuilt_from_session_file() {
+        let (db, session_id, clock) = store_with_session();
+        let store = EventStore::new(&db);
+        store
+            .append(
+                session_id,
+                EventPayload::MessageAppended {
+                    message: Message::user("rebuildable needle text"),
+                },
+                clock.now(),
+            )
+            .unwrap();
+        assert_eq!(store.search("needle", None, 10).unwrap().len(), 1);
+        db.with_conn(|connection| {
+            connection
+                .execute_batch(
+                    "DELETE FROM session_search_fts;
+                     DELETE FROM session_search_cjk_bigrams;
+                     DELETE FROM session_search_docs;
+                     DELETE FROM session_search_cursors;",
+                )
+                .map_err(map_sqlite)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let rebuilt = store.search("needle", None, 10).unwrap();
+        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(rebuilt[0].session.id, session_id);
+    }
+
+    #[test]
+    fn dropped_fts_table_is_recreated_and_reindexed_on_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.sqlite3");
+        let session_id = SessionId::new();
+        {
+            let db = Database::open(&db_path).unwrap();
+            let store = EventStore::new(&db);
+            store
+                .create_session(session_id, Some("search reset"), Timestamp::from_millis(1))
+                .unwrap();
+            store
+                .append(
+                    session_id,
+                    EventPayload::MessageAppended {
+                        message: Message::user("rebuild this search projection"),
+                    },
+                    Timestamp::from_millis(2),
+                )
+                .unwrap();
+            assert_eq!(store.search("projection", None, 10).unwrap().len(), 1);
+            db.with_conn(|connection| {
+                connection
+                    .execute_batch("DROP TABLE session_search_fts;")
+                    .map_err(map_sqlite)
+            })
+            .unwrap();
+        }
+
+        let reopened = Database::open(&db_path).unwrap();
+        let hits = EventStore::new(&reopened)
+            .search("projection", None, 10)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session.id, session_id);
     }
 
     #[test]
@@ -634,6 +1764,36 @@ mod tests {
         let all = store.list_sessions().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, sid);
+    }
+
+    #[test]
+    fn list_sessions_excludes_legacy_rows_and_recycled_files() {
+        let (db, active, clock) = store_with_session();
+        let store = EventStore::new(&db);
+        let legacy = SessionId::new();
+        db.with_conn(|connection| {
+            connection
+                .execute(
+                    "INSERT INTO sessions
+                        (id, title, mode, project, created_at, updated_at, ended_at)
+                     VALUES (?1, 'legacy', 'normal', NULL, 1, 1, NULL)",
+                    params![legacy.to_string()],
+                )
+                .map_err(map_sqlite)?;
+            Ok(())
+        })
+        .unwrap();
+        let recycled = SessionId::new();
+        store
+            .create_session(recycled, Some("recycled"), clock.now())
+            .unwrap();
+        store.trash_session(recycled, clock.now()).unwrap();
+
+        let listed = store.list_sessions().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, active);
+        assert!(store.get_session(legacy).unwrap().is_some());
+        assert!(store.get_session(recycled).unwrap().is_some());
     }
 
     #[test]
@@ -714,6 +1874,9 @@ mod tests {
         let removed = store.truncate_after(sid, 2).unwrap();
         // Removed events 3,4,5 (the SessionEnded plus n3,n4).
         assert_eq!(removed, 3);
+        let dir = session_files::session_dir(&db.session_files_root(), sid);
+        assert!(!dir.join("session.g000001.v1.jsonl.zst").exists());
+        assert!(dir.join("session.g000002.v1.jsonl.zst").exists());
 
         let remaining = store.load_session(sid).unwrap();
         assert_eq!(remaining.len(), 3);

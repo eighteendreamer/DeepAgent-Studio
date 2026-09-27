@@ -129,6 +129,8 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"
 
 # Persistence
 rusqlite = { version = "0.31", features = ["bundled"] }
+zstd = "0.13"
+fs2 = "0.4"
 
 # Code graph: tree-sitter parsing + pure-Rust-compilable grammars (C grammar
 # built locally via cc; no Node.js, no runtime grammar download).

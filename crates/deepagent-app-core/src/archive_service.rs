@@ -26,6 +26,8 @@ struct ArchivedConversationRecord {
     project: Option<String>,
     project_path: Option<String>,
     archived_at: i64,
+    #[serde(default)]
+    deleted_at: Option<i64>,
     updated_at: i64,
 }
 
@@ -37,6 +39,7 @@ impl ArchivedConversationRecord {
             project: self.project,
             project_path: self.project_path,
             archived_at: self.archived_at,
+            deleted_at: self.deleted_at,
             updated_at: self.updated_at,
         }
     }
@@ -89,6 +92,7 @@ impl ArchiveService {
                 project: Some(project_name.clone()),
                 project_path: Some(project_path.to_string()),
                 archived_at: now,
+                deleted_at: None,
                 updated_at: session.updated_at.as_millis(),
             };
             let body = serde_json::to_string(&record)?;
@@ -127,6 +131,7 @@ impl ArchiveService {
             project: session.project.as_deref().map(folder_name),
             project_path: session.project,
             archived_at: SystemClock.now().as_millis(),
+            deleted_at: None,
             updated_at: session.updated_at.as_millis(),
         };
         DocumentStore::new(&self.db).put(
@@ -152,27 +157,126 @@ impl ArchiveService {
         Ok(out)
     }
 
-    /// Remove one conversation from the archive index.
+    /// Restore recycled files first, then remove the archive marker.
     pub fn unarchive_session(&self, session_id: &str) -> Result<bool> {
+        let Some(_) = self.record(session_id)? else {
+            return Ok(false);
+        };
+        let id = session_id
+            .parse()
+            .map_err(|error| CoreError::invalid(format!("bad session id: {error}")))?;
+        if !EventStore::new(&self.db).restore_trashed_session(id)? {
+            return Err(CoreError::not_found(format!(
+                "session files for {session_id} are no longer available"
+            )));
+        }
         DocumentStore::new(&self.db).delete(ARCHIVE_COLLECTION, session_id)
     }
 
-    /// Delete one archived entry from the archive index.
+    /// Move one archived conversation into the managed recycle area.
     pub fn delete_archived_session(&self, session_id: &str) -> Result<bool> {
-        self.unarchive_session(session_id)
+        let Some(mut record) = self.record(session_id)? else {
+            return Ok(false);
+        };
+        if record.deleted_at.is_some() {
+            return Ok(false);
+        }
+        let id = session_id
+            .parse()
+            .map_err(|error| CoreError::invalid(format!("bad session id: {error}")))?;
+        let now = SystemClock.now();
+        let store = EventStore::new(&self.db);
+        record.deleted_at = if store.trash_session(id, now)? {
+            Some(now.as_millis())
+        } else {
+            store
+                .trashed_session_deleted_at(id)?
+                .map(|value| value.as_millis())
+        };
+        if record.deleted_at.is_none() {
+            return Ok(false);
+        }
+        DocumentStore::new(&self.db).put(
+            ARCHIVE_COLLECTION,
+            session_id,
+            &serde_json::to_string(&record)?,
+            None,
+            now,
+        )?;
+        Ok(true)
     }
 
-    /// Clear all archived entries. Returns how many archive records were removed.
+    /// Move all archived conversations into the managed recycle area.
     pub fn delete_all(&self) -> Result<u32> {
         let archived = self.list()?;
-        let store = DocumentStore::new(&self.db);
         let mut removed = 0u32;
         for item in archived {
-            if store.delete(ARCHIVE_COLLECTION, &item.session_id)? {
+            if self.delete_archived_session(&item.session_id)? {
                 removed += 1;
             }
         }
         Ok(removed)
+    }
+
+    /// Permanently remove recycled files and archive markers older than the
+    /// configured retention window.
+    pub fn gc_deleted_sessions(&self, retention_days: u64) -> Result<u64> {
+        let retention_ms = retention_days
+            .saturating_mul(24)
+            .saturating_mul(60)
+            .saturating_mul(60)
+            .saturating_mul(1_000);
+        let cutoff = SystemClock
+            .now()
+            .as_millis()
+            .saturating_sub(retention_ms.min(i64::MAX as u64) as i64);
+        // A crash may have moved the file before the archive document was
+        // updated. Reconcile that window before applying the retention cutoff.
+        for item in self.list()? {
+            if item.deleted_at.is_some() {
+                continue;
+            }
+            let id = item
+                .session_id
+                .parse()
+                .map_err(|error| CoreError::invalid(format!("bad archived session id: {error}")))?;
+            if let Some(deleted_at) = EventStore::new(&self.db).trashed_session_deleted_at(id)? {
+                let Some(mut record) = self.record(&item.session_id)? else {
+                    continue;
+                };
+                record.deleted_at = Some(deleted_at.as_millis());
+                DocumentStore::new(&self.db).put(
+                    ARCHIVE_COLLECTION,
+                    &item.session_id,
+                    &serde_json::to_string(&record)?,
+                    None,
+                    SystemClock.now(),
+                )?;
+            }
+        }
+        let removed = EventStore::new(&self.db)
+            .purge_trashed_sessions_before(deepagent_core::clock::Timestamp::from_millis(cutoff))?;
+        let docs = DocumentStore::new(&self.db);
+        for item in self.list()? {
+            if item
+                .deleted_at
+                .is_some_and(|deleted_at| deleted_at <= cutoff)
+            {
+                let session_id = item.session_id.parse().map_err(|error| {
+                    CoreError::invalid(format!("bad archived session id: {error}"))
+                })?;
+                EventStore::new(&self.db).purge_deleted_session_metadata(session_id)?;
+                docs.delete(ARCHIVE_COLLECTION, &item.session_id)?;
+            }
+        }
+        Ok(removed)
+    }
+
+    fn record(&self, session_id: &str) -> Result<Option<ArchivedConversationRecord>> {
+        DocumentStore::new(&self.db)
+            .get(ARCHIVE_COLLECTION, session_id)?
+            .map(|document| serde_json::from_str(&document.body).map_err(CoreError::from))
+            .transpose()
     }
 }
 
@@ -245,5 +349,114 @@ mod tests {
         assert!(svc.is_archived(&session.id().to_string()).unwrap());
         assert!(svc.unarchive_session(&session.id().to_string()).unwrap());
         assert!(!svc.is_archived(&session.id().to_string()).unwrap());
+    }
+
+    #[test]
+    fn delete_recycles_files_and_unarchive_restores_them() {
+        let (svc, db) = service();
+        let clock = FixedClock::new(1_000);
+        let mut session =
+            Session::create_in_project(&db, &clock, Some("a"), Default::default(), Some("/work/p"))
+                .unwrap();
+        session
+            .append(deepagent_core::event::EventPayload::MessageAppended {
+                message: deepagent_core::message::Message::user("restore after delete"),
+            })
+            .unwrap();
+        let session_id = session.id().to_string();
+        let event_count = EventStore::new(&db).event_count(session.id()).unwrap();
+        svc.archive_session(&session_id).unwrap();
+
+        assert!(svc.delete_archived_session(&session_id).unwrap());
+        assert!(svc.list().unwrap()[0].deleted_at.is_some());
+        assert!(EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap()
+            .is_empty());
+
+        assert!(svc.unarchive_session(&session_id).unwrap());
+        assert!(!svc.is_archived(&session_id).unwrap());
+        assert_eq!(
+            EventStore::new(&db).event_count(session.id()).unwrap(),
+            event_count
+        );
+    }
+
+    #[test]
+    fn unarchive_restores_file_moved_before_archive_marker_update() {
+        let (svc, db) = service();
+        let clock = FixedClock::new(1_000);
+        let session = Session::create(&db, &clock, Some("interrupted delete")).unwrap();
+        let session_id = session.id().to_string();
+        svc.archive_session(&session_id).unwrap();
+        EventStore::new(&db)
+            .trash_session(
+                session.id(),
+                deepagent_core::clock::Timestamp::from_millis(10),
+            )
+            .unwrap();
+        assert!(svc.list().unwrap()[0].deleted_at.is_none());
+
+        assert!(svc.unarchive_session(&session_id).unwrap());
+        assert!(EventStore::new(&db)
+            .restore_trashed_session(session.id())
+            .unwrap());
+        assert!(!svc.is_archived(&session_id).unwrap());
+    }
+
+    #[test]
+    fn gc_reconciles_file_moved_before_archive_marker_update() {
+        let (svc, db) = service();
+        let clock = FixedClock::new(1_000);
+        let session = Session::create(&db, &clock, Some("interrupted gc")).unwrap();
+        let session_id = session.id().to_string();
+        svc.archive_session(&session_id).unwrap();
+        EventStore::new(&db)
+            .trash_session(
+                session.id(),
+                deepagent_core::clock::Timestamp::from_millis(10),
+            )
+            .unwrap();
+
+        assert_eq!(svc.gc_deleted_sessions(0).unwrap(), 1);
+        assert!(svc.list().unwrap().is_empty());
+        assert!(EventStore::new(&db)
+            .get_session(session.id())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn gc_permanently_removes_expired_files_metadata_and_search_projection() {
+        let (svc, db) = service();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create_in_project(
+            &db,
+            &clock,
+            Some("expired"),
+            Default::default(),
+            Some("/work/p"),
+        )
+        .unwrap();
+        session
+            .append(deepagent_core::event::EventPayload::MessageAppended {
+                message: deepagent_core::message::Message::user("expired searchable marker"),
+            })
+            .unwrap();
+        let session_id = session.id();
+        svc.archive_session(&session_id.to_string()).unwrap();
+        svc.delete_archived_session(&session_id.to_string())
+            .unwrap();
+
+        assert_eq!(svc.gc_deleted_sessions(0).unwrap(), 1);
+        assert!(svc.list().unwrap().is_empty());
+        assert!(EventStore::new(&db)
+            .get_session(session_id)
+            .unwrap()
+            .is_none());
+        assert!(EventStore::new(&db)
+            .search("expired searchable marker", None, 10)
+            .unwrap()
+            .is_empty());
     }
 }

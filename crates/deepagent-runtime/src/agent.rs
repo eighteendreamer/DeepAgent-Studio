@@ -124,6 +124,14 @@ pub struct RunUsage {
 /// accumulated observations so far.
 #[async_trait]
 pub trait Agent: Send + Sync {
+    /// Attach the run's canonical event sink.
+    ///
+    /// [`crate::kernel::AgentKernel`] calls this after it has wrapped the live
+    /// delegate with durable `run_events` persistence. Model-backed agents use
+    /// the sink for provider-stream events; deterministic/custom agents may
+    /// keep the default no-op implementation.
+    fn set_event_sink(&mut self, _events: Arc<dyn crate::events::RuntimeEventSink>) {}
+
     /// Produce the next decision. `step` is the 0-based iteration index;
     /// `last` carries the observations from the previous step (empty on the
     /// first step; more than one when the previous step ran tools in parallel).

@@ -434,9 +434,14 @@ mod tests {
             Arc::new(ReqwestTransport::new()),
             ModelConfig::deepseek(key),
         );
+        let review_instructions = format!(
+            "{skill_body}\n\nFor this isolated review fixture, the complete diff is already in the user \
+             message. No tools are available: do not emit or simulate tool calls; review the pasted \
+             diff directly and return the final findings."
+        );
         let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
             "deepseek-chat".to_string(),
-            &skill_body,
+            &review_instructions,
             &user_prompt,
         )
         .with_temperature(0.2)

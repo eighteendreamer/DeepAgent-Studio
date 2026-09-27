@@ -13,7 +13,7 @@ use deepagent_core::task::TaskState;
 use deepagent_observation::{build_timeline, export_transcript, SessionStats, TranscriptFormat};
 use deepagent_persistence::checkpoint_store::CheckpointStore;
 use deepagent_persistence::cost_store::CostStore;
-use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::event_store::{EventStore, SessionRecord};
 use deepagent_persistence::run_control::RunControlStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
@@ -24,8 +24,8 @@ use crate::commands::{builtin_commands, commands_from_roots, filter_commands};
 use crate::diff::{diff_lines, DiffResult};
 use crate::dto::{
     AttachmentDto, CommandDto, ConversationMessageDto, ConversationPartDto, ConversationUsageDto,
-    ForkResultDto, RewindResultDto, RunRecoveryDto, SessionDetailDto, SessionStatsDto,
-    SessionSummaryDto, TimelineEntryDto, TranscriptDto,
+    ForkResultDto, RewindResultDto, RunRecoveryDto, SessionDetailDto, SessionSearchHitDto,
+    SessionStatsDto, SessionSummaryDto, TimelineEntryDto, TranscriptDto,
 };
 use crate::{ArchiveService, ProjectService, SessionStateService};
 
@@ -37,20 +37,21 @@ pub struct AppService {
 impl AppService {
     /// Open the service over a database at `path` (created + migrated if new).
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        Ok(Self {
-            db: std::sync::Arc::new(Database::open(path)?),
-        })
+        let db = std::sync::Arc::new(Database::open(path)?);
+        ArchiveService::new(db.clone()).gc_deleted_sessions(30)?;
+        Ok(Self { db })
     }
 
     /// Build over an existing database (e.g. in-memory for tests).
     pub fn new(db: Database) -> Self {
-        Self {
-            db: std::sync::Arc::new(db),
-        }
+        Self::from_shared(std::sync::Arc::new(db))
     }
 
     /// Build over a shared database handle (so settings + sessions share one DB).
     pub fn from_shared(db: std::sync::Arc<Database>) -> Self {
+        if let Err(error) = ArchiveService::new(db.clone()).gc_deleted_sessions(30) {
+            tracing::warn!(%error, "failed to collect expired recycled conversations");
+        }
         Self { db }
     }
 
@@ -159,7 +160,13 @@ impl AppService {
         let projects = ProjectService::new(self.db.clone());
         let (registered_projects, project_names) = projects.session_projection()?;
         let records = store.list_sessions()?;
-        Ok(records
+        let mut file_backed_records = Vec::with_capacity(records.len());
+        for record in records {
+            if store.event_count(record.id)? > 0 {
+                file_backed_records.push(record);
+            }
+        }
+        Ok(file_backed_records
             .into_iter()
             .filter(|r| !archived.contains(&r.id.to_string()))
             // V11 Responses cutover clears legacy transcript sessions while
@@ -171,21 +178,60 @@ impl AppService {
                     .map(|path| registered_projects.contains(path))
                     .unwrap_or(true)
             })
-            .map(|r| SessionSummaryDto {
-                id: r.id.to_string(),
-                project: r.project.as_deref().map(|path| {
+            .map(|record| {
+                let project = record.project.as_deref().map(|path| {
                     project_names
                         .get(path)
                         .filter(|name| !name.trim().is_empty())
                         .cloned()
                         .unwrap_or_else(|| project_display_name(path))
-                }),
-                title: r.title,
-                mode: r.mode.label().to_string(),
-                created_at: r.created_at.as_millis(),
-                updated_at: r.updated_at.as_millis(),
-                ended: r.ended_at.is_some(),
-                pinned: pinned.contains(&r.id.to_string()),
+                });
+                let is_pinned = pinned.contains(&record.id.to_string());
+                session_summary_dto(record, project, is_pinned)
+            })
+            .collect())
+    }
+
+    /// Search settled conversation bodies while preserving the existing
+    /// session-list projection and archive/project visibility rules.
+    pub fn search_sessions(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SessionSearchHitDto>> {
+        let store = EventStore::new(&self.db);
+        let archived = ArchiveService::new(self.db.clone()).archived_ids()?;
+        let pinned = SessionStateService::new(self.db.clone()).pinned_ids()?;
+        let projects = ProjectService::new(self.db.clone());
+        let (registered_projects, project_names) = projects.session_projection()?;
+        let hits = store.search(query, project, limit)?;
+        Ok(hits
+            .into_iter()
+            .filter(|hit| !archived.contains(&hit.session.id.to_string()))
+            .filter(|hit| {
+                hit.session
+                    .project
+                    .as_deref()
+                    .map(|path| registered_projects.contains(path))
+                    .unwrap_or(true)
+            })
+            .map(|hit| {
+                let project = hit.session.project.as_deref().map(|path| {
+                    project_names
+                        .get(path)
+                        .filter(|name| !name.trim().is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| project_display_name(path))
+                });
+                let is_pinned = pinned.contains(&hit.session.id.to_string());
+                SessionSearchHitDto {
+                    session: session_summary_dto(hit.session, project, is_pinned),
+                    sequence: hit.sequence,
+                    role: hit.role.map(|role| role.as_str().to_owned()),
+                    timestamp: hit.timestamp.as_millis(),
+                    snippet: hit.snippet,
+                }
             })
             .collect())
     }
@@ -228,19 +274,14 @@ impl AppService {
         };
 
         Ok(SessionDetailDto {
-            summary: SessionSummaryDto {
-                id: record.id.to_string(),
-                project: record.project.as_deref().map(|path| {
+            summary: {
+                let project = record.project.as_deref().map(|path| {
                     projects
                         .display_name(path)
                         .unwrap_or_else(|_| project_display_name(path))
-                }),
-                title: record.title,
-                mode: record.mode.label().to_string(),
-                created_at: record.created_at.as_millis(),
-                updated_at: record.updated_at.as_millis(),
-                ended: record.ended_at.is_some(),
-                pinned: pinned.contains(&record.id.to_string()),
+                });
+                let is_pinned = pinned.contains(&record.id.to_string());
+                session_summary_dto(record, project, is_pinned)
             },
             timeline,
             stats,
@@ -560,6 +601,23 @@ impl AppService {
 }
 
 /// Map a stored project path to its display name (last folder component).
+fn session_summary_dto(
+    record: SessionRecord,
+    project: Option<String>,
+    pinned: bool,
+) -> SessionSummaryDto {
+    SessionSummaryDto {
+        id: record.id.to_string(),
+        project,
+        title: record.title,
+        mode: record.mode.label().to_string(),
+        created_at: record.created_at.as_millis(),
+        updated_at: record.updated_at.as_millis(),
+        ended: record.ended_at.is_some(),
+        pinned,
+    }
+}
+
 fn project_display_name(path: &str) -> String {
     crate::project_service::folder_name(path)
 }
@@ -829,6 +887,33 @@ mod tests {
     }
 
     #[test]
+    fn searches_conversation_body_and_excludes_archived_sessions() {
+        let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("searchable")).unwrap();
+        session
+            .append(deepagent_core::event::EventPayload::MessageAppended {
+                message: deepagent_core::message::Message::user("中文缓存命中率检查"),
+            })
+            .unwrap();
+        let session_id = session.id().to_string();
+        let service = AppService::from_shared(db.clone());
+
+        let hits = service.search_sessions("缓存", None, 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session.id, session_id);
+        assert!(hits[0].snippet.contains("缓存"));
+
+        ArchiveService::new(db)
+            .archive_session(&session_id)
+            .unwrap();
+        assert!(service
+            .search_sessions("缓存", None, 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn list_sessions_hides_removed_project_sessions() {
         let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
         let clock = FixedClock::new(1_000);
@@ -846,6 +931,19 @@ mod tests {
         let sessions = svc.list_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].project.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn list_sessions_hides_rows_without_file_backed_events() {
+        let db = Database::open_in_memory().unwrap();
+        EventStore::new(&db)
+            .create_session(
+                SessionId::new(),
+                Some("metadata only"),
+                deepagent_core::clock::Timestamp::from_millis(1),
+            )
+            .unwrap();
+        assert!(AppService::new(db).list_sessions().unwrap().is_empty());
     }
 
     #[test]

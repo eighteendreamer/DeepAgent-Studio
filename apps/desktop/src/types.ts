@@ -11,6 +11,14 @@ export interface SessionSummary {
   pinned: boolean;
 }
 
+export interface SessionSearchHit {
+  session: SessionSummary;
+  sequence: number;
+  role: string | null;
+  timestamp: number;
+  snippet: string;
+}
+
 export interface SessionUiPrefs {
   env_panel_auto_open: boolean;
 }
@@ -1050,6 +1058,7 @@ export interface ArchivedConversation {
   project: string | null;
   project_path: string | null;
   archived_at: number;
+  deleted_at: number | null;
   updated_at: number;
 }
 
@@ -1772,4 +1781,3 @@ export interface LogPage {
   records: LogRecord[];
   truncated: boolean;
 }
-

@@ -340,6 +340,61 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_artifacts_run ON artifacts(run_id, call_id);
     CREATE INDEX idx_artifacts_workspace ON artifacts(workspace_id, kind, created_at);
     "#,
+    // V18: move the authoritative conversation event stream out of SQLite.
+    // `session_file_state` is only a rebuildable cursor/projection; the
+    // per-session compressed JSONL generations are the source of truth. Old
+    // event rows are intentionally not dual-read because their protocol era
+    // cannot be replayed safely through the current Responses adapter.
+    r#"
+    CREATE TABLE session_file_state (
+        session_id    TEXT PRIMARY KEY NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        generation    INTEGER NOT NULL,
+        last_sequence INTEGER,
+        byte_size     INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL
+    );
+    DELETE FROM events;
+    INSERT OR IGNORE INTO migration_notices(key) VALUES ('session_files_v1_cutover_completed');
+    INSERT OR IGNORE INTO migration_notices(key) VALUES ('session_files_v1_maintenance_pending');
+    "#,
+    // V19: rebuildable local full-text index for file-backed conversations.
+    // The FTS table stores its own derived text so it can be deleted and
+    // rebuilt independently of the authoritative session files.
+    r#"
+    CREATE TABLE session_search_docs (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        sequence     INTEGER NOT NULL,
+        role         TEXT,
+        timestamp    INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        UNIQUE(session_id, sequence)
+    );
+    CREATE INDEX idx_session_search_docs_session_seq
+        ON session_search_docs(session_id, sequence);
+
+    CREATE VIRTUAL TABLE session_search_fts USING fts5(
+        doc_id UNINDEXED,
+        content,
+        tokenize='trigram'
+    );
+
+    CREATE TABLE session_search_cjk_bigrams (
+        doc_id INTEGER NOT NULL REFERENCES session_search_docs(id) ON DELETE CASCADE,
+        gram   TEXT NOT NULL,
+        PRIMARY KEY(doc_id, gram)
+    );
+    CREATE INDEX idx_session_search_cjk_gram
+        ON session_search_cjk_bigrams(gram, doc_id);
+
+    CREATE TABLE session_search_cursors (
+        session_id    TEXT PRIMARY KEY NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        generation    INTEGER NOT NULL,
+        last_sequence INTEGER,
+        dirty         INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// The highest schema version defined by this build.
@@ -358,7 +413,7 @@ pub fn current_version(conn: &Connection) -> Result<i64> {
 pub fn run(conn: &Connection) -> Result<()> {
     let mut version = current_version(conn)?;
     if version >= LATEST_VERSION {
-        return Ok(());
+        return ensure_session_search_projection(conn);
     }
 
     while (version as usize) < MIGRATIONS.len() {
@@ -388,7 +443,44 @@ pub fn run(conn: &Connection) -> Result<()> {
         }
     }
 
-    Ok(())
+    ensure_session_search_projection(conn)
+}
+
+/// The session search schema is a disposable projection. Recreate the entire
+/// group when any one of its tables has been removed, so stale cursors cannot
+/// falsely report a complete index after a manual reset or interrupted repair.
+fn ensure_session_search_projection(conn: &Connection) -> Result<()> {
+    if current_version(conn)? != LATEST_VERSION {
+        return Ok(());
+    }
+    let present: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'view')
+             AND name IN ('session_search_docs', 'session_search_fts',
+                          'session_search_cjk_bigrams', 'session_search_cursors')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite)?;
+    if present == 4 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN;
+         DROP TABLE IF EXISTS session_search_fts;
+         DROP TABLE IF EXISTS session_search_cjk_bigrams;
+         DROP TABLE IF EXISTS session_search_cursors;
+         DROP TABLE IF EXISTS session_search_docs;",
+    )
+    .map_err(map_sqlite)?;
+    let result = conn.execute_batch(MIGRATIONS[18]).map_err(map_sqlite);
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT;").map_err(map_sqlite),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -429,6 +521,10 @@ mod tests {
             "execution_leases",
             "secret_records",
             "managed_files",
+            "session_file_state",
+            "session_search_docs",
+            "session_search_cjk_bigrams",
+            "session_search_cursors",
         ] {
             let count: i64 = conn
                 .query_row(
@@ -439,6 +535,14 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "table {table} should exist");
         }
+        let fts: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_search_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts, 1);
     }
 
     /// Upgrading an installed database must keep its tool-output index rather
@@ -479,5 +583,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(legacy, 0);
+    }
+
+    #[test]
+    fn v18_direct_cut_clears_legacy_event_bodies() {
+        let conn = Connection::open_in_memory().unwrap();
+        for script in &MIGRATIONS[..17] {
+            conn.execute_batch(script).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO sessions
+                (id, title, created_at, updated_at, ended_at, mode, project)
+             VALUES ('ses_legacy', 'legacy', 1, 1, NULL, 'normal', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (id, session_id, sequence, kind, timestamp, payload)
+             VALUES ('evt_legacy', 'ses_legacy', 0, 'note', 1, '{}')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute_batch(MIGRATIONS[17]).unwrap();
+
+        let events: i64 = conn
+            .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(events, 0);
+        let state_table: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type='table' AND name='session_file_state'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state_table, 1);
     }
 }

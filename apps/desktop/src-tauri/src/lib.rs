@@ -37,8 +37,9 @@ use deepagent_app_core::{
     PtyReadChunk, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeBroker,
     RuntimeLogEntry, RuntimeLogStore, RuntimeProgressDto, RuntimeRootsDto, RuntimeService,
     RuntimeStatusDto, SandboxieExecutor, SandboxieService, SandboxieStatusDto, SecretStore,
-    SessionDetailDto, SessionStateService, SessionSummaryDto, SessionUiPrefsDto, SettingsService,
-    SettingsView, SkillActivationDto, SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService,
+    SessionDetailDto, SessionSearchHitDto, SessionStateService, SessionSummaryDto,
+    SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
+    SkillsMpClientHandle, SkillsRoots, SkillsService,
     SpeechService, SqliteSecretStore, StoredRunEvent, TerminalResultDto, TerminalService,
     TerminalShell, TranscriptDto, TranscriptSegmentDto, TrustService, VisionRecognizeRequestDto,
     VisionRecognizeResultDto, VisionService, VisionSettings, WebSearchSettings, WorkspaceInfoDto,
@@ -755,6 +756,18 @@ struct SessionTitleUpdatedPayload {
 fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummaryDto>, String> {
     let svc = state.service.lock().map_err(|e| e.to_string())?;
     svc.list_sessions().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_sessions(
+    state: State<'_, AppState>,
+    query: String,
+    project: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<SessionSearchHitDto>, String> {
+    let svc = state.service.lock().map_err(|e| e.to_string())?;
+    svc.search_sessions(&query, project.as_deref(), limit.unwrap_or(50))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -6062,6 +6075,25 @@ pub fn run() {
                     })),
                 );
             }
+            if service
+                .shared_database()
+                .take_migration_notice("session_files_v1_cutover_completed")
+                .map_err(|error| format!("failed to read migration notice: {error}"))?
+            {
+                let _ = runtime_logs.append(
+                    NewRuntimeLogEntry::info("persistence", "session_files_v1_cutover_completed")
+                        .with_source("desktop-tauri")
+                        .with_message(
+                            "session event bodies switched to per-session Zstd JSONL files",
+                        )
+                        .with_data(serde_json::json!({
+                            "migration": 18,
+                            "source_of_truth": "files/sessions",
+                            "sqlite_events_cleared": true,
+                            "legacy_sessions_without_files_hidden": true,
+                        })),
+                );
+            }
             let recovered_runs = service
                 .recover_unfinished_runs()
                 .map_err(|error| format!("failed to recover unfinished runs: {error}"))?;
@@ -6572,6 +6604,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_sessions,
+            search_sessions,
             session_detail,
             session_conversation,
             runtime_logs_recent,

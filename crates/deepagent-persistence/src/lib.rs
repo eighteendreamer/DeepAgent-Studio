@@ -5,14 +5,15 @@
 //! Responsibilities:
 //! - Open/configure a SQLite database (WAL mode, foreign keys, busy timeout).
 //! - Run idempotent, versioned [`migrations`].
-//! - Provide the append-only [`event_store::EventStore`] — the source of truth
-//!   for session replay & crash recovery.
+//! - Provide the append-only [`event_store::EventStore`] facade. Session event
+//!   bodies live in per-session Zstd JSONL files; SQLite retains metadata,
+//!   run-control ledgers, and rebuildable search projections.
 //!
 //! Concurrency model: a single [`Connection`] guarded by a `Mutex`. SQLite in
-//! WAL mode permits concurrent readers, but the runtime's event-append path is
-//! naturally serialized per-session, so a single guarded connection keeps the
-//! invariants (gapless sequence numbers) simple and correct. A connection pool
-//! can be layered in later without changing the repository API.
+//! WAL mode permits concurrent readers. A connection mutex coordinates SQLite
+//! projections, while a separate session-I/O mutex plus OS file locks preserve
+//! gapless event sequences. A connection pool can be layered in later without
+//! changing the repository API.
 
 pub mod artifact_store;
 pub mod checkpoint_store;
@@ -26,7 +27,9 @@ pub mod run_store;
 pub mod runtime_log_store;
 pub mod subagent_store;
 
-use std::path::Path;
+mod session_files;
+
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use deepagent_core::error::{CoreError, Result};
@@ -43,14 +46,28 @@ pub(crate) fn map_sqlite(e: rusqlite::Error) -> CoreError {
 /// is needed).
 pub struct Database {
     conn: Mutex<Connection>,
+    data_root: PathBuf,
+    _temporary_root: Option<tempfile::TempDir>,
+    session_io: Mutex<()>,
 }
 
 impl Database {
     /// Open (creating if necessary) a database at `path`, applying pragmas and
     /// running all pending migrations.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let data_root = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        std::fs::create_dir_all(data_root.join("files").join("sessions"))
+            .map_err(|error| CoreError::Persistence(error.to_string()))?;
         let conn = Connection::open(path).map_err(map_sqlite)?;
-        let db = Self::from_connection(conn)?;
+        let db = Self::from_connection(conn, data_root, None)?;
+        db.run_session_file_cutover_maintenance()?;
+        event_store::EventStore::new(&db).recover_orphaned_session_files()?;
+        event_store::EventStore::new(&db).repair_search_indexes()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -63,16 +80,38 @@ impl Database {
 
     /// Open an in-memory database (used in tests). Each call is isolated.
     pub fn open_in_memory() -> Result<Self> {
+        let temporary_root =
+            tempfile::tempdir().map_err(|error| CoreError::Persistence(error.to_string()))?;
+        let data_root = temporary_root.path().to_path_buf();
+        std::fs::create_dir_all(data_root.join("files").join("sessions"))
+            .map_err(|error| CoreError::Persistence(error.to_string()))?;
         let conn = Connection::open_in_memory().map_err(map_sqlite)?;
-        Self::from_connection(conn)
+        Self::from_connection(conn, data_root, Some(temporary_root))
     }
 
-    fn from_connection(conn: Connection) -> Result<Self> {
+    fn from_connection(
+        conn: Connection,
+        data_root: PathBuf,
+        temporary_root: Option<tempfile::TempDir>,
+    ) -> Result<Self> {
         configure_pragmas(&conn)?;
         migrations::run(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            data_root,
+            _temporary_root: temporary_root,
+            session_io: Mutex::new(()),
         })
+    }
+
+    pub(crate) fn session_files_root(&self) -> PathBuf {
+        self.data_root.join("files").join("sessions")
+    }
+
+    pub(crate) fn lock_session_io(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
+        self.session_io
+            .lock()
+            .map_err(|_| CoreError::Persistence("session file mutex poisoned".into()))
     }
 
     /// Run a closure with exclusive access to the underlying connection.
@@ -97,6 +136,29 @@ impl Database {
                 .execute("DELETE FROM migration_notices WHERE key = ?1", [key])
                 .map_err(map_sqlite)?;
             Ok(changed > 0)
+        })
+    }
+
+    fn run_session_file_cutover_maintenance(&self) -> Result<()> {
+        self.with_conn(|conn| {
+            let pending: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM migration_notices WHERE key = ?1)",
+                    ["session_files_v1_maintenance_pending"],
+                    |row| row.get(0),
+                )
+                .map_err(map_sqlite)?;
+            if !pending {
+                return Ok(());
+            }
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+                .map_err(map_sqlite)?;
+            conn.execute(
+                "DELETE FROM migration_notices WHERE key = ?1",
+                ["session_files_v1_maintenance_pending"],
+            )
+            .map_err(map_sqlite)?;
+            Ok(())
         })
     }
 }

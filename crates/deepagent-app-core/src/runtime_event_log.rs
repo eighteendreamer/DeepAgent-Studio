@@ -40,6 +40,14 @@ where
                 RuntimeEvent::ReasoningDelta { text } => {
                     delta_buffer.push(&logs, &run_id, &session_id, "reasoning_delta", text)
                 }
+                // ModelAgent emits this sanitized metadata immediately before
+                // the matching semantic delta. Keep forwarding it live, but
+                // do not duplicate one diagnostic row per token or use it to
+                // force-flush the 16 KiB delta metrics buffer.
+                RuntimeEvent::ResponsesStreamEvent {
+                    delta_chars: Some(_),
+                    ..
+                } => {}
                 _ => {
                     delta_buffer.flush(&logs, &run_id, &session_id);
                     append_runtime_log(&logs, runtime_event_log_entry(&run_id, &session_id, &ev));
@@ -215,9 +223,11 @@ fn responses_diagnostic_event(event: &RuntimeEvent) -> &str {
 #[derive(Default)]
 struct RuntimeLogDeltaBuffer {
     event: Option<&'static str>,
-    text: String,
+    bytes: usize,
     chunks: usize,
 }
+
+const RUNTIME_LOG_DELTA_BATCH_BYTES: usize = 16 * 1024;
 
 impl RuntimeLogDeltaBuffer {
     fn push(
@@ -228,20 +238,22 @@ impl RuntimeLogDeltaBuffer {
         event: &'static str,
         text: &str,
     ) {
-        if self.event.is_some_and(|current| current != event) || self.text.len() >= 1024 {
+        if self.event.is_some_and(|current| current != event)
+            || self.bytes >= RUNTIME_LOG_DELTA_BATCH_BYTES
+        {
             self.flush(logs, run_id, session_id);
         }
         self.event = Some(event);
-        self.text.push_str(text);
+        self.bytes += text.len();
         self.chunks += 1;
     }
 
     fn flush(&mut self, logs: &Option<Arc<RuntimeLogStore>>, run_id: &str, session_id: &str) {
-        if self.text.is_empty() {
+        if self.bytes == 0 {
             return;
         }
         let event = self.event.unwrap_or("content_delta");
-        let text = std::mem::take(&mut self.text);
+        let bytes = std::mem::replace(&mut self.bytes, 0);
         let chunks = std::mem::replace(&mut self.chunks, 0);
         self.event = None;
         append_runtime_log(
@@ -253,8 +265,8 @@ impl RuntimeLogDeltaBuffer {
                 .with_message(format!("batched {chunks} {event} chunk(s)"))
                 .with_data(serde_json::json!({
                     "event": event,
-                    "text": text,
                     "chunks": chunks,
+                    "bytes": bytes,
                 })),
         );
     }
@@ -619,5 +631,61 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.category == "runtime" && entry.event == "run_completed"));
+        let delta = entries
+            .iter()
+            .find(|entry| entry.event == "content_delta_batch")
+            .unwrap();
+        assert_eq!(delta.data["bytes"], 5);
+        assert_eq!(delta.data["chunks"], 2);
+        assert!(delta.data.get("text").is_none());
+    }
+
+    #[tokio::test]
+    async fn responses_delta_metadata_does_not_split_runtime_log_batches() {
+        let logs = Arc::new(RuntimeLogStore::open_in_memory().unwrap());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let pump = spawn_runtime_event_pump(
+            rx,
+            Some(logs.clone()),
+            "run-stream".into(),
+            "ses-stream".into(),
+            |_| {},
+        );
+        for _ in 0..100 {
+            tx.send(RuntimeEvent::ResponsesStreamEvent {
+                event_type: "response.output_text.delta".into(),
+                item_id: Some("msg_1".into()),
+                item_type: None,
+                delta_chars: Some(8),
+            })
+            .unwrap();
+            tx.send(RuntimeEvent::ContentDelta {
+                text: "12345678".into(),
+            })
+            .unwrap();
+        }
+        tx.send(RuntimeEvent::RunCompleted {
+            message: "done".into(),
+        })
+        .unwrap();
+        drop(tx);
+        pump.await.unwrap();
+
+        let entries = logs.recent_for_session("ses-stream", 1000).unwrap();
+        let batches: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.event == "content_delta_batch")
+            .collect();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].data["chunks"], 100);
+        assert_eq!(batches[0].data["bytes"], 800);
+        assert!(!entries.iter().any(|entry| {
+            entry.event == "responses_stream_event"
+                && entry
+                    .data
+                    .get("delta_chars")
+                    .and_then(|value| value.as_u64())
+                    == Some(8)
+        }));
     }
 }

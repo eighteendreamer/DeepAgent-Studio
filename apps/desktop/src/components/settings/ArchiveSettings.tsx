@@ -68,7 +68,7 @@ export function ArchiveSettings() {
   const handleDelete = (sessionId: string) => {
     deleteArchivedConversation(sessionId)
       .then(() => {
-        setArchives((prev) => prev.filter((a) => a.session_id !== sessionId));
+        reload();
         message.success(t("settings.archive.archiveDeleted"));
       })
       .catch(() => message.error(t("settings.archive.actionFailed")));
@@ -77,7 +77,7 @@ export function ArchiveSettings() {
   const handleDeleteAll = () => {
     deleteAllArchivedConversations()
       .then(() => {
-        setArchives([]);
+        reload();
         message.success(t("settings.archive.archiveCleared"));
       })
       .catch(() => message.error(t("settings.archive.actionFailed")));
@@ -87,7 +87,7 @@ export function ArchiveSettings() {
       <div className="pb-20 relative">
         <div className="mb-10 max-w-[700px] flex items-end justify-between">
           <h1 className="text-2xl font-semibold text-text-base mb-1">{t("settings.archive.title")}</h1>
-          {archives.length > 0 && (
+          {archives.some((archive) => archive.deleted_at === null) && (
             <button 
               className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-600 rounded-full text-[12px] font-medium transition-colors"
               onClick={handleDeleteAll}
@@ -107,16 +107,18 @@ export function ArchiveSettings() {
                       {chat.title || t("settings.archive.untitled")}
                     </div>
                     <div className="text-[12px] text-text-secondary">
-                      {formatArchiveDate(chat.archived_at)} • {chat.project || t("settings.archive.unknownProject")}
+                      {formatArchiveDate(chat.deleted_at ?? chat.archived_at)} • {chat.project || t("settings.archive.unknownProject")}
                     </div>
                   </div>
                   <div className="flex items-center space-x-4">
-                    <button 
-                      className="text-gray-400 hover:text-red-500 transition-colors"
-                      onClick={() => handleDelete(chat.session_id)}
-                    >
-                      <FontAwesomeIcon icon={["far", "trash-can"]} className="text-[14px]" />
-                    </button>
+                    {chat.deleted_at === null && (
+                      <button
+                        className="text-gray-400 hover:text-red-500 transition-colors"
+                        onClick={() => handleDelete(chat.session_id)}
+                      >
+                        <FontAwesomeIcon icon={["far", "trash-can"]} className="text-[14px]" />
+                      </button>
+                    )}
                     <button 
                       className="px-4 py-1.5 bg-black/5 hover:bg-black/5 rounded-full text-[12px] font-medium text-text-base transition-colors"
                       onClick={() => handleUnarchive(chat.session_id)}

@@ -240,12 +240,6 @@ const SNIP_NUDGE_INTERVAL_TOKENS: u64 = 10_000;
 /// tool pairing) must survive. Parity with the compactor's
 /// KEEP_RECENT_MESSAGES protected tail.
 const SNIP_PROTECTED_RECENT_MESSAGES: usize = 8;
-/// Keep this many most-recent tool outputs verbatim during pre-request
-/// microcompact. Older outputs stay paired with their calls but are reduced to
-/// short stubs so stateless providers do not receive the same bulky tool data
-/// on every turn.
-const PRE_REQUEST_MICROCOMPACT_KEEP_TOOL_OUTPUTS: usize = 12;
-const PRE_REQUEST_MICROCOMPACT_MIN_CLEAR_CHARS: usize = 240;
 /// Consecutive identical tool calls (same name + arguments) that trip the
 /// client-side doom-loop detector. Grok's doom-loop is a SERVER signal
 /// (`x-grok-doom-loop-check`); DeepSeek has no such header, so this is the
@@ -287,10 +281,6 @@ impl ResponseHistory {
 
     fn request(&self, model: impl Into<String>) -> ResponseRequest {
         ResponseRequest::from_response_items(model, self.instructions.clone(), self.items.clone())
-    }
-
-    fn microcompact_old_tool_outputs(&mut self, keep_recent_outputs: usize) -> usize {
-        microcompact_old_tool_outputs_in_items(&mut self.items, keep_recent_outputs)
     }
 
     fn replace_from_messages(&mut self, messages: &[Message]) {
@@ -580,21 +570,6 @@ impl ModelAgent {
 
     fn request_for_current_history(&self) -> ResponseRequest {
         self.response_history.request(self.model.clone())
-    }
-
-    fn maybe_microcompact_before_request(&mut self, step: usize) {
-        let cleared = self
-            .response_history
-            .microcompact_old_tool_outputs(PRE_REQUEST_MICROCOMPACT_KEEP_TOOL_OUTPUTS);
-        if cleared == 0 {
-            return;
-        }
-        tracing::info!(
-            step,
-            cleared_tool_outputs = cleared,
-            keep_recent_tool_outputs = PRE_REQUEST_MICROCOMPACT_KEEP_TOOL_OUTPUTS,
-            "pre-request microcompact cleared old tool outputs"
-        );
     }
 
     fn push_provider_output_items(&mut self, assistant: Message, items: &[ResponseOutputItem]) {
@@ -1409,72 +1384,6 @@ fn render_for_estimate(message: &Message) -> String {
     rendered
 }
 
-fn microcompact_old_tool_outputs_in_items(
-    items: &mut [ResponseInputItem],
-    keep_recent_outputs: usize,
-) -> usize {
-    let mut call_names = std::collections::HashMap::new();
-    for item in items.iter() {
-        match item {
-            ResponseInputItem::FunctionCall { call_id, name, .. }
-            | ResponseInputItem::CustomToolCall { call_id, name, .. } => {
-                call_names.insert(call_id.clone(), name.clone());
-            }
-            _ => {}
-        }
-    }
-
-    let mut seen_outputs = 0usize;
-    let mut cleared = 0usize;
-    for item in items.iter_mut().rev() {
-        let (call_id, output) = match item {
-            ResponseInputItem::FunctionCallOutput { call_id, output }
-            | ResponseInputItem::CustomToolCallOutput { call_id, output } => (call_id, output),
-            _ => continue,
-        };
-        seen_outputs += 1;
-        if seen_outputs <= keep_recent_outputs
-            || output.chars().count() <= PRE_REQUEST_MICROCOMPACT_MIN_CLEAR_CHARS
-            || output.contains("\"status\":\"cleared\"")
-        {
-            continue;
-        }
-        let tool = call_names
-            .get(call_id)
-            .map(String::as_str)
-            .unwrap_or("tool");
-        *output = cleared_tool_output_stub(tool, call_id, output);
-        cleared += 1;
-    }
-    cleared
-}
-
-fn cleared_tool_output_stub(tool: &str, call_id: &str, output: &str) -> String {
-    let parsed = serde_json::from_str::<serde_json::Value>(output).ok();
-    let mut stub = serde_json::json!({
-        "status": "cleared",
-        "tool": tool,
-        "call_id": call_id,
-        "note": "old tool result cleared by pre-request micro-compact to free context; re-run or read the saved path if this data is needed again"
-    });
-    if let Some(value) = parsed.as_ref() {
-        if let Some(saved_path) = value.get("saved_path").and_then(|v| v.as_str()) {
-            stub["saved_path"] = serde_json::Value::String(saved_path.to_string());
-        }
-        if let Some(tokens) = value
-            .get("original_estimated_tokens")
-            .and_then(|v| v.as_u64())
-        {
-            stub["original_estimated_tokens"] =
-                serde_json::Value::Number(serde_json::Number::from(tokens));
-        }
-        if let Some(max_tokens) = value.get("max_tokens").and_then(|v| v.as_u64()) {
-            stub["max_tokens"] = serde_json::Value::Number(serde_json::Number::from(max_tokens));
-        }
-    }
-    stub.to_string()
-}
-
 /// A stable signature of one turn's tool calls (sorted `name(arguments)`) for
 /// the doom-loop detector: two turns with the same signature requested the
 /// exact same work.
@@ -1622,6 +1531,10 @@ async fn stream_model_attempt<'a>(
 
 #[async_trait]
 impl Agent for ModelAgent {
+    fn set_event_sink(&mut self, events: Arc<dyn RuntimeEventSink>) {
+        self.events = Some(events);
+    }
+
     async fn think(&mut self, step: usize, last: &[Observation]) -> Result<AgentDecision> {
         self.think_inner(step, last, None, None).await
     }
@@ -1688,7 +1601,6 @@ impl ModelAgent {
         self.collect_finished_prefire().await;
         self.collect_finished_memory_prefetch().await;
         self.maybe_proactive_compact(step).await;
-        self.maybe_microcompact_before_request(step);
         self.maybe_schedule_prefire();
         self.maybe_schedule_memory_prefetch();
         self.maybe_inject_snip_nudge();
@@ -2152,6 +2064,40 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    #[test]
+    fn repeated_responses_requests_keep_the_same_prefix_and_old_tool_outputs() {
+        let mut history = ResponseHistory::from_seed("stable system".into(), "first turn".into());
+        for index in 0..14 {
+            history.items.push(ResponseInputItem::FunctionCall {
+                call_id: format!("call-{index}"),
+                name: "read_file".into(),
+                arguments: r#"{"path":"fixture.txt"}"#.into(),
+            });
+            history.items.push(ResponseInputItem::FunctionCallOutput {
+                call_id: format!("call-{index}"),
+                output: format!("{}-{index}", "settled output ".repeat(40)),
+            });
+        }
+
+        let first = history.request("deepseek-test");
+        let repeated = history.request("deepseek-test");
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(&repeated).unwrap()
+        );
+        history.items.push(ResponseInputItem::Message {
+            role: "user".into(),
+            content: "second turn".into(),
+        });
+        let continued = history.request("deepseek-test");
+        assert_eq!(continued.instructions, first.instructions);
+        assert!(continued.input.starts_with(&first.input));
+        assert!(matches!(
+            &continued.input[2],
+            ResponseInputItem::FunctionCallOutput { output, .. } if output.starts_with("settled output")
+        ));
+    }
+
     struct StaticReactiveCompactor {
         calls: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -2538,73 +2484,6 @@ mod tests {
         assert!(input
             .iter()
             .any(|item| item["type"] == "message" && item["content"] == "child goal"));
-    }
-
-    #[tokio::test]
-    async fn pre_request_microcompact_clears_old_response_tool_outputs() {
-        let transport = Arc::new(AttemptTransport {
-            attempts: Mutex::new(VecDeque::from([response_text_completed("done")])),
-            requests: Mutex::new(Vec::new()),
-        });
-        let client = Arc::new(ModelClient::new(
-            transport.clone(),
-            ModelConfig::deepseek("test"),
-        ));
-        let mut history = Vec::new();
-        for index in 0..14 {
-            let call_id = format!("call-{index}");
-            history.push(ResponseInputItem::FunctionCall {
-                call_id: call_id.clone(),
-                name: "bash".into(),
-                arguments: format!(r#"{{"cmd":"command {index}"}}"#),
-            });
-            history.push(ResponseInputItem::FunctionCallOutput {
-                call_id,
-                output: format!(
-                    r#"{{"status":"ok","saved_path":"G:\\tmp\\call-{index}.txt","original_estimated_tokens":2048,"payload":"{}"}}"#,
-                    "x".repeat(400)
-                ),
-            });
-        }
-        history.push(ResponseInputItem::Message {
-            role: "user".into(),
-            content: "continue".into(),
-        });
-        let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "goal", vec![])
-            .with_response_history(history);
-
-        let decision = agent.think(0, &[]).await.unwrap();
-
-        let _ = complete_items(decision);
-        let requests = transport.requests.lock().unwrap();
-        let input = requests[0]["input"].as_array().unwrap();
-        let outputs: Vec<_> = input
-            .iter()
-            .filter(|item| item["type"] == "function_call_output")
-            .collect();
-        let cleared = outputs
-            .iter()
-            .filter(|item| item["output"].as_str().unwrap().contains("micro-compact"))
-            .count();
-        assert!(
-            cleared >= 2,
-            "old tool outputs should be cleared before the model request"
-        );
-        assert!(
-            outputs
-                .iter()
-                .filter(|item| item["output"].as_str().unwrap().contains("\"payload\""))
-                .count()
-                <= 12,
-            "only the recent tool outputs should keep their original content"
-        );
-        assert!(outputs.iter().any(|item| {
-            item["call_id"] == "call-0"
-                && item["output"]
-                    .as_str()
-                    .unwrap()
-                    .contains("original_estimated_tokens")
-        }));
     }
 
     // --- §2.3 stall/laziness detector integration ---------------------------
@@ -3414,6 +3293,64 @@ mod tests {
             Some("I should add.")
         );
         assert_eq!(agent.pending_tool_call_id.as_deref(), Some("c1"));
+    }
+
+    #[tokio::test]
+    async fn tool_followup_replays_reasoning_item_id_and_text() {
+        let reasoning_item = serde_json::json!({
+            "type": "reasoning",
+            "id": "rs_42",
+            "content": [{"type": "reasoning_text", "text": "I should inspect first."}],
+        });
+        let mut first = vec![
+            response_reasoning_delta("I should inspect first."),
+            serde_json::json!({
+                "type": "response.output_item.done",
+                "item": reasoning_item,
+            })
+            .to_string(),
+        ];
+        first.extend(response_function_call_done(
+            "c1",
+            "read_file",
+            r#"{"path":"fixture.txt"}"#,
+        ));
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                first,
+                response_text_completed("read complete"),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let mut agent = ModelAgent::new(client, "model", "system", "inspect", vec![]);
+
+        let first_decision = agent.think(0, &[]).await.unwrap();
+        assert!(matches!(first_decision, AgentDecision::CallTool(_)));
+        let observation = Observation {
+            tool: "read_file".to_string(),
+            ok: true,
+            output: serde_json::json!({"content": "body"}),
+            raw_output: None,
+            call_id: Some("c1".to_string()),
+        };
+        let _ = agent.think(1, &[observation]).await.unwrap();
+
+        let requests = transport.requests.lock().unwrap();
+        let input = requests[1]["input"].as_array().unwrap();
+        let reasoning = input
+            .iter()
+            .find(|item| item["type"] == "reasoning")
+            .expect("follow-up request must preserve reasoning item");
+        assert_eq!(reasoning["id"], "rs_42");
+        assert_eq!(reasoning["content"][0]["type"], "reasoning_text");
+        assert_eq!(reasoning["content"][0]["text"], "I should inspect first.");
+        assert!(input
+            .iter()
+            .any(|item| { item["type"] == "function_call_output" && item["call_id"] == "c1" }));
     }
 
     #[tokio::test]

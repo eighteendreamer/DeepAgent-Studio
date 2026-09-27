@@ -214,9 +214,8 @@ async fn golden_trace_simple_answer_matches_fixture() {
     // The golden fixture: shape-stable across machines. Update ONLY when the
     // kernel state machine intentionally changes.
     //
-    // Note: model streaming events (request started / deltas) flow through
-    // the UI event pump into runtime-logs.db; run_events carries the durable
-    // kernel state machine only — that separation is part of the contract.
+    // Model lifecycle events and coalesced delta metrics now share the
+    // kernel's canonical durable sink. Raw per-token text remains excluded.
     let expected = vec![
         "accepted:run_accepted",
         "preparing:setup.started",
@@ -225,6 +224,11 @@ async fn golden_trace_simple_answer_matches_fixture() {
         "preparing:run_started",
         "preparing:session_registered",
         "running_turn:turn_started",
+        "running_turn:model_request_started",
+        "running_turn:model_first_token",
+        "running_turn:model_output",
+        "running_turn:responses_stream_event",
+        "running_turn:model_request_completed",
         "verifying:completion_evidence",
         "finalizing:run_completed",
         "terminal:run_terminal",

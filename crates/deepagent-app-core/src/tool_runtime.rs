@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepagent_core::error::{CoreError, Result};
-use deepagent_tools::ToolRegistry;
+use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::Database;
+use deepagent_tools::{PermissionSet, RiskLevel, Tool, ToolDescriptor, ToolOutput, ToolRegistry};
 
 use crate::knowledge_service::KnowledgeService;
 use crate::mcp_runtime::attach_mcp_tools;
@@ -131,6 +133,7 @@ impl deepagent_builtins::bash_tool::CommandExecutor for RuntimeCommandExecutor {
 }
 
 pub(crate) struct ToolRegistryBuildRequest<'a> {
+    pub(crate) db: Arc<Database>,
     pub(crate) root: &'a Path,
     pub(crate) access: deepagent_builtins::FsAccess,
     pub(crate) env_mode: Option<&'a str>,
@@ -179,6 +182,10 @@ pub(crate) fn build_base_tool_registry(
 
     let todo_store = register_builtins(&mut registry, config)?;
     register_web_tools(&mut registry, &request.settings)?;
+    registry.register(Arc::new(SessionSearchTool::new(
+        request.db,
+        request.root.to_path_buf(),
+    )))?;
 
     registry.register(Arc::new(AskUserQuestionTool::new(DeclineResponder)))?;
     register_knowledge_search(&mut registry, request.knowledge);
@@ -202,6 +209,135 @@ pub(crate) fn build_base_tool_registry(
     )?;
 
     Ok((registry, todo_store))
+}
+
+struct SessionSearchTool {
+    db: Arc<Database>,
+    project_root: PathBuf,
+}
+
+impl SessionSearchTool {
+    fn new(db: Arc<Database>, project_root: PathBuf) -> Self {
+        Self { db, project_root }
+    }
+}
+
+#[async_trait]
+impl Tool for SessionSearchTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "session_search".into(),
+            description: "Search settled messages and tool activity in prior DeepAgent sessions. Results default to the current project and include nearby conversation context.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Literal text, path, identifier, or Chinese phrase to find."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 10
+                    },
+                    "cross_project": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Set true only when the user explicitly wants results from every project."
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+            risk: RiskLevel::Safe,
+            required_permissions: PermissionSet::read_only(),
+        }
+    }
+
+    async fn invoke(&self, arguments: serde_json::Value) -> Result<ToolOutput> {
+        let query = arguments
+            .get("query")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .ok_or_else(|| CoreError::invalid("session_search.query must not be empty"))?;
+        let limit = arguments
+            .get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(10)
+            .clamp(1, 20) as usize;
+        let cross_project = arguments
+            .get("cross_project")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let project = (!cross_project).then(|| self.project_root.to_string_lossy().into_owned());
+        let store = EventStore::new(&self.db);
+        let hits = store.search(query, project.as_deref(), limit)?;
+        let mut results = Vec::with_capacity(hits.len());
+        for hit in hits {
+            let start = hit.sequence.saturating_sub(2);
+            let context = store
+                .read_from(hit.session.id, start)?
+                .into_iter()
+                .take_while(|event| event.sequence <= hit.sequence.saturating_add(2))
+                .filter_map(tool_context_line)
+                .collect::<Vec<_>>();
+            results.push(serde_json::json!({
+                "session_id": hit.session.id.to_string(),
+                "title": hit.session.title,
+                "project": hit.session.project,
+                "sequence": hit.sequence,
+                "role": hit.role.map(|role| role.as_str()),
+                "timestamp": hit.timestamp.as_millis(),
+                "snippet": hit.snippet,
+                "context": context,
+            }));
+        }
+        Ok(ToolOutput::success(serde_json::json!({
+            "query": query,
+            "project": project,
+            "results": results,
+        })))
+    }
+}
+
+fn tool_context_line(event: deepagent_core::event::Event) -> Option<serde_json::Value> {
+    use deepagent_core::event::EventPayload;
+    match event.payload {
+        EventPayload::MessageAppended { message }
+            if matches!(
+                message.role,
+                deepagent_core::message::Role::User | deepagent_core::message::Role::Assistant
+            ) =>
+        {
+            Some(serde_json::json!({
+                "sequence": event.sequence,
+                "role": message.role.as_str(),
+                "content": truncate_tool_context(&message.content, 800),
+            }))
+        }
+        EventPayload::ToolCallRequested { call } => Some(serde_json::json!({
+            "sequence": event.sequence,
+            "role": "tool",
+            "content": format!("requested tool {}", call.name),
+        })),
+        EventPayload::ToolCallCompleted { call_id, ok, .. } => Some(serde_json::json!({
+            "sequence": event.sequence,
+            "role": "tool",
+            "content": format!("tool call {call_id} {}", if ok { "completed" } else { "failed" }),
+        })),
+        _ => None,
+    }
+}
+
+fn truncate_tool_context(content: &str, max_chars: usize) -> String {
+    let mut chars = content.chars();
+    let mut truncated: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        truncated.push('…');
+    }
+    truncated
 }
 
 pub(crate) fn register_skill_tool(
@@ -957,5 +1093,62 @@ impl deepagent_runtime::workflow::ToolExecutor for WorkflowToolExecutor {
             .iter_specs()
             .map(|spec| spec.descriptor.name.clone())
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod session_search_tests {
+    use super::*;
+    use deepagent_core::clock::FixedClock;
+    use deepagent_core::event::EventPayload;
+    use deepagent_core::message::Message;
+    use deepagent_session::Session;
+
+    #[tokio::test]
+    async fn session_search_uses_existing_tool_permissions_and_project_scope() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let mut current = Session::create_in_project(
+            &db,
+            &clock,
+            Some("current"),
+            Default::default(),
+            Some("/work/current"),
+        )
+        .unwrap();
+        current
+            .append(EventPayload::MessageAppended {
+                message: Message::user("needle in current project"),
+            })
+            .unwrap();
+        let mut other = Session::create_in_project(
+            &db,
+            &clock,
+            Some("other"),
+            Default::default(),
+            Some("/work/other"),
+        )
+        .unwrap();
+        other
+            .append(EventPayload::MessageAppended {
+                message: Message::user("needle in other project"),
+            })
+            .unwrap();
+
+        let tool = SessionSearchTool::new(db, PathBuf::from("/work/current"));
+        let descriptor = tool.descriptor();
+        assert_eq!(descriptor.risk, RiskLevel::Safe);
+        assert_eq!(descriptor.required_permissions, PermissionSet::read_only());
+
+        let scoped = tool
+            .invoke(serde_json::json!({"query": "needle"}))
+            .await
+            .unwrap();
+        assert_eq!(scoped.value["results"].as_array().unwrap().len(), 1);
+        let global = tool
+            .invoke(serde_json::json!({"query": "needle", "cross_project": true}))
+            .await
+            .unwrap();
+        assert_eq!(global.value["results"].as_array().unwrap().len(), 2);
     }
 }

@@ -145,6 +145,8 @@ struct DeltaBuffer {
     chunks: usize,
 }
 
+const PERSISTED_DELTA_BATCH_BYTES: usize = 16 * 1024;
+
 struct PersistentEventSink {
     db: Arc<Database>,
     run_id: String,
@@ -229,7 +231,8 @@ impl PersistentEventSink {
     fn buffer_delta(&self, kind: &'static str, text: &str) {
         let should_flush = {
             let guard = self.delta.lock().unwrap_or_else(|p| p.into_inner());
-            guard.kind.is_some_and(|current| current != kind) || guard.text.len() >= 1024
+            guard.kind.is_some_and(|current| current != kind)
+                || guard.text.len() >= PERSISTED_DELTA_BATCH_BYTES
         };
         if should_flush {
             self.flush_delta();
@@ -248,6 +251,16 @@ impl RuntimeEventSink for PersistentEventSink {
             RuntimeEvent::ReasoningDelta { text } => {
                 self.buffer_delta("reasoning_delta_batch", text)
             }
+            // ModelAgent emits one sanitized Responses metadata event directly
+            // before the matching ContentDelta/ReasoningDelta. Persisting that
+            // per-token metadata would both duplicate the stream signal and
+            // force-flush the 16 KiB text buffer on every token. It remains on
+            // the live delegate path below; only the durable duplicate is
+            // suppressed.
+            RuntimeEvent::ResponsesStreamEvent {
+                delta_chars: Some(_),
+                ..
+            } => {}
             _ => {
                 self.flush_delta();
                 let (phase, status) = phase_for_event(&event);
@@ -496,7 +509,6 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             &serde_json::json!({
                 "toolCount": capabilities.len(),
                 "toolSchemaHash": schema_hash,
-                "tools": capabilities,
             }),
         )?;
         store.transition(&run_id, RunPhase::Preparing.label(), now_ms())?;
@@ -506,6 +518,10 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             run_id.clone(),
             self.events.clone(),
         ));
+        // Provider streaming originates inside the Agent rather than the loop
+        // engine. Inject the same canonical sink here so model deltas cannot
+        // bypass run_events persistence while still reaching the live UI.
+        agent.set_event_sink(persistent.clone());
         let mut engine =
             RuntimeEngine::<C>::new(self.registry, self.metrics.clone(), self.config.clone())
                 .with_cancel(self.handle.cancellation.legacy_flag())
@@ -681,6 +697,33 @@ mod tests {
 
     struct ContextOverflowAgent;
 
+    struct StreamingAgent {
+        events: Option<Arc<dyn RuntimeEventSink>>,
+    }
+
+    #[async_trait]
+    impl crate::agent::Agent for StreamingAgent {
+        fn set_event_sink(&mut self, events: Arc<dyn RuntimeEventSink>) {
+            self.events = Some(events);
+        }
+
+        async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            let events = self.events.as_ref().expect("kernel event sink");
+            for _ in 0..100 {
+                events.emit(RuntimeEvent::ResponsesStreamEvent {
+                    event_type: "response.output_text.delta".into(),
+                    item_id: Some("msg_1".into()),
+                    item_type: None,
+                    delta_chars: Some(8),
+                });
+                events.emit(RuntimeEvent::ContentDelta {
+                    text: "12345678".into(),
+                });
+            }
+            Ok(AgentDecision::Complete("done".into()))
+        }
+    }
+
     struct ErrorAfterUsageAgent {
         raw_usage: Vec<serde_json::Value>,
     }
@@ -776,6 +819,221 @@ mod tests {
         assert!(capability.data["toolSchemaHash"]
             .as_str()
             .is_some_and(|hash| hash.starts_with("sha256:")));
+        assert!(capability.data.get("tools").is_none());
+    }
+
+    #[test]
+    fn persistent_delta_batching_reduces_run_event_rows_by_at_least_eighty_percent() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1);
+        let session = Session::create(&db, &clock, Some("delta batching")).unwrap();
+        let store = RunStore::new(&db);
+        store
+            .create("run-deltas", &session.id().to_string(), Some("task"), 1)
+            .unwrap();
+        let sink = PersistentEventSink::new(
+            db.clone(),
+            "run-deltas".to_string(),
+            Arc::new(NullEventSink),
+        );
+        for _ in 0..20 {
+            sink.emit(RuntimeEvent::ContentDelta {
+                text: "x".repeat(1024),
+            });
+        }
+        sink.emit(RuntimeEvent::RunCompleted {
+            message: "done".into(),
+        });
+
+        let events = store.events_after("run-deltas", None).unwrap();
+        let delta_rows = events
+            .iter()
+            .filter(|event| event.event_type == "content_delta_batch")
+            .count();
+        assert!(delta_rows <= 4, "20 chunks produced {delta_rows} rows");
+    }
+
+    #[test]
+    fn persistent_delta_batching_reduces_run_event_wal_bytes_against_previous_threshold() {
+        const DELTA_CHUNKS: usize = 100;
+        let directory = tempfile::tempdir().unwrap();
+        let old_path = directory.path().join("old-threshold.db");
+        let new_path = directory.path().join("new-threshold.db");
+
+        let old_db = Arc::new(Database::open(&old_path).unwrap());
+        let old_clock = FixedClock::new(1);
+        let old_session = Session::create(&old_db, &old_clock, Some("old")).unwrap();
+        let old_store = RunStore::new(&old_db);
+        old_store
+            .create("old-run", &old_session.id().to_string(), Some("task"), 1)
+            .unwrap();
+        old_db
+            .with_conn(|conn| {
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        // Before this change the 1 KiB threshold flushed each 1 KiB delta
+        // into a separate run_events row. Replay that exact write pattern.
+        for _ in 0..DELTA_CHUNKS {
+            old_store
+                .append_event(
+                    "old-run",
+                    1,
+                    "running_turn",
+                    "progress",
+                    "content_delta_batch",
+                    &serde_json::json!({ "text": "x".repeat(1024), "chunks": 1 }),
+                )
+                .unwrap();
+        }
+        old_store
+            .append_event(
+                "old-run",
+                1,
+                "terminal",
+                "completed",
+                "run_completed",
+                &serde_json::json!({ "message": "done" }),
+            )
+            .unwrap();
+
+        let new_db = Arc::new(Database::open(&new_path).unwrap());
+        let new_clock = FixedClock::new(1);
+        let new_session = Session::create(&new_db, &new_clock, Some("new")).unwrap();
+        let new_store = RunStore::new(&new_db);
+        new_store
+            .create("new-run", &new_session.id().to_string(), Some("task"), 1)
+            .unwrap();
+        new_db
+            .with_conn(|conn| {
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let sink = PersistentEventSink::new(
+            new_db.clone(),
+            "new-run".to_string(),
+            Arc::new(NullEventSink),
+        );
+        for _ in 0..DELTA_CHUNKS {
+            sink.emit(RuntimeEvent::ContentDelta {
+                text: "x".repeat(1024),
+            });
+        }
+        sink.emit(RuntimeEvent::RunCompleted {
+            message: "done".into(),
+        });
+
+        for (store, run_id) in [(&old_store, "old-run"), (&new_store, "new-run")] {
+            let replayed = store
+                .events_after(run_id, None)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.event_type == "content_delta_batch")
+                .map(|event| event.data["text"].as_str().unwrap().to_owned())
+                .collect::<String>();
+            assert_eq!(replayed, "x".repeat(DELTA_CHUNKS * 1024));
+        }
+
+        let wal_bytes = |path: &std::path::Path| {
+            let file_name = path.file_name().unwrap().to_string_lossy();
+            std::fs::metadata(path.with_file_name(format!("{file_name}-wal")))
+                .unwrap()
+                .len()
+        };
+        let old_bytes = wal_bytes(&old_path);
+        let new_bytes = wal_bytes(&new_path);
+        eprintln!("{DELTA_CHUNKS} KiB stream WAL: old={old_bytes}, new={new_bytes}");
+        assert!(
+            new_bytes * 5 <= old_bytes,
+            "run_events WAL did not shrink by 80%: old={old_bytes}, new={new_bytes}"
+        );
+    }
+
+    #[test]
+    fn responses_delta_metadata_does_not_break_persistent_batching() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1);
+        let session = Session::create(&db, &clock, Some("real stream batching")).unwrap();
+        let store = RunStore::new(&db);
+        store
+            .create(
+                "run-stream-deltas",
+                &session.id().to_string(),
+                Some("task"),
+                1,
+            )
+            .unwrap();
+        let sink = PersistentEventSink::new(
+            db.clone(),
+            "run-stream-deltas".to_string(),
+            Arc::new(NullEventSink),
+        );
+        for _ in 0..100 {
+            sink.emit(RuntimeEvent::ResponsesStreamEvent {
+                event_type: "response.output_text.delta".into(),
+                item_id: Some("msg_1".into()),
+                item_type: None,
+                delta_chars: Some(8),
+            });
+            sink.emit(RuntimeEvent::ContentDelta {
+                text: "12345678".into(),
+            });
+        }
+        sink.emit(RuntimeEvent::RunCompleted {
+            message: "done".into(),
+        });
+
+        let events = store.events_after("run-stream-deltas", None).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "content_delta_batch")
+                .count(),
+            1
+        );
+        assert!(!events
+            .iter()
+            .any(|event| event.event_type == "responses_stream_event"));
+    }
+
+    #[tokio::test]
+    async fn kernel_injects_durable_sink_into_streaming_agent() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("kernel stream")).unwrap();
+        let task = session.create_task("stream").unwrap();
+        let registry = ToolRegistry::new();
+        let mut agent = StreamingAgent { events: None };
+        let kernel = AgentKernel::<FixedClock>::new(
+            db.clone(),
+            &registry,
+            Metrics::new(),
+            RuntimeConfig::default(),
+            "run-kernel-stream",
+        );
+
+        let terminal = kernel
+            .start(RunRequest::new(&mut session, task, &mut agent))
+            .await
+            .unwrap();
+        assert!(terminal.succeeded());
+        let events = RunStore::new(&db)
+            .events_after("run-kernel-stream", None)
+            .unwrap();
+        let batches: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == "content_delta_batch")
+            .collect();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].data["chunks"], 100);
+        assert_eq!(batches[0].data["text"].as_str().unwrap().len(), 800);
+        assert!(!events
+            .iter()
+            .any(|event| event.event_type == "responses_stream_event"));
     }
 
     #[test]

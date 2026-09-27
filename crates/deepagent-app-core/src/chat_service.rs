@@ -732,6 +732,7 @@ impl ChatService {
             (None, executor) => executor.clone(),
         };
         ToolRegistryBuildRequest {
+            db: self.db.clone(),
             root,
             access,
             env_mode,

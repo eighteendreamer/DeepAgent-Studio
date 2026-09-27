@@ -27,6 +27,21 @@ pub struct SessionSummaryDto {
     pub pinned: bool,
 }
 
+/// One full-text conversation match shown by the existing session picker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionSearchHitDto {
+    /// Existing sidebar/session summary projection.
+    pub session: SessionSummaryDto,
+    /// Exact event position used when reconstructing the result.
+    pub sequence: u64,
+    /// Message role when applicable.
+    pub role: Option<String>,
+    /// Match timestamp, Unix ms.
+    pub timestamp: i64,
+    /// Short excerpt read from the authoritative session file.
+    pub snippet: String,
+}
+
 /// Durable UI preferences bound to a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionUiPrefsDto {
@@ -346,6 +361,8 @@ pub struct ArchivedConversationDto {
     pub project_path: Option<String>,
     /// When this conversation was archived, Unix ms.
     pub archived_at: i64,
+    /// When its files were moved to the recycle area, Unix ms.
+    pub deleted_at: Option<i64>,
     /// The session's last update time, Unix ms.
     pub updated_at: i64,
 }

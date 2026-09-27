@@ -1762,6 +1762,7 @@ mod tests {
             AgentDecision::Continue
                 | AgentDecision::Complete(_)
                 | AgentDecision::CompleteMessage(_)
+                | AgentDecision::CompleteItems { .. }
                 | AgentDecision::CallTool(_)
                 | AgentDecision::CallTools(_)
         ));

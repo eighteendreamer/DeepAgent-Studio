@@ -334,11 +334,7 @@ impl ResponseAccumulator {
                     .get("id")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string),
-                content: item
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                content: reasoning_text_from_item(item).unwrap_or_default(),
             }),
             "function_call" => Some(ResponseOutputItem::FunctionCall {
                 call_id: item
@@ -404,12 +400,6 @@ impl ResponseAccumulator {
             ));
         }
         let mut fallback_items = Vec::new();
-        if !self.reasoning.is_empty() {
-            fallback_items.push(ResponseOutputItem::Reasoning {
-                id: None,
-                content: self.reasoning.clone(),
-            });
-        }
         for builder in self.tool_calls.drain(..) {
             let id = builder
                 .id
@@ -440,6 +430,24 @@ impl ResponseAccumulator {
             });
         }
         let mut output_items = self.output_items;
+        if !self.reasoning.is_empty() {
+            if let Some(ResponseOutputItem::Reasoning { content, .. }) = output_items
+                .iter_mut()
+                .find(|item| matches!(item, ResponseOutputItem::Reasoning { .. }))
+            {
+                if content.is_empty() {
+                    *content = self.reasoning.clone();
+                }
+            } else {
+                fallback_items.insert(
+                    0,
+                    ResponseOutputItem::Reasoning {
+                        id: None,
+                        content: self.reasoning.clone(),
+                    },
+                );
+            }
+        }
         for item in fallback_items {
             if !response_item_already_present(&output_items, &item) {
                 output_items.push(item);
@@ -550,6 +558,27 @@ fn output_text_from_message_item(item: &serde_json::Value) -> Option<String> {
         }
     }
     Some(out)
+}
+
+fn reasoning_text_from_item(item: &serde_json::Value) -> Option<String> {
+    match item.get("content")? {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Array(parts) => {
+            let mut out = String::new();
+            for part in parts {
+                if matches!(
+                    part.get("type").and_then(serde_json::Value::as_str),
+                    Some("reasoning_text" | "text")
+                ) {
+                    if let Some(text) = part.get("text").and_then(serde_json::Value::as_str) {
+                        out.push_str(text);
+                    }
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
 }
 
 fn parse_response_usage(value: Option<&serde_json::Value>) -> Option<Usage> {
@@ -820,6 +849,37 @@ mod tests {
             Some("Let me think... the answer is 4.")
         );
         assert_eq!(resp.output_text_projection(), "4");
+    }
+
+    #[test]
+    fn preserves_reasoning_item_id_and_content_parts_for_tool_continuation() {
+        let mut acc = ResponseAccumulator::new();
+        event(
+            &mut acc,
+            r#"{"type":"response.reasoning_text.delta","delta":"inspect first"}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_42","content":[{"type":"reasoning_text","text":"inspect first"}]}}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"fixture.txt\"}"}}"#,
+        );
+        complete(&mut acc);
+
+        let response = acc.finish().unwrap();
+        let reasoning: Vec<_> = response
+            .output_items
+            .iter()
+            .filter_map(|item| match item {
+                ResponseOutputItem::Reasoning { id, content } => {
+                    Some((id.as_deref(), content.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasoning, vec![(Some("rs_42"), "inspect first")]);
     }
 
     #[test]

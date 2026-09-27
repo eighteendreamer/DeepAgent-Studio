@@ -116,8 +116,8 @@ pub use dto::{
     GitPushRiskItemDto, GitPushRiskScanDto, GitRefCompareDto, GitWorktreeDto, PdfRenderResultDto,
     PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, RecordingSessionDto,
     RewindResultDto, RunRecoveryDto, RuntimeProgressDto, RuntimeRootsDto, RuntimeStatusDto,
-    SessionDetailDto, SessionStatsDto, SessionSummaryDto, SessionUiPrefsDto, SheetPreviewDto,
-    TerminalResultDto, TimelineEntryDto, TranscriptDto, TranscriptSegmentDto,
+    SessionDetailDto, SessionSearchHitDto, SessionStatsDto, SessionSummaryDto, SessionUiPrefsDto,
+    SheetPreviewDto, TerminalResultDto, TimelineEntryDto, TranscriptDto, TranscriptSegmentDto,
     VisionRecognizeRequestDto, VisionRecognizeResultDto, WorkspaceInfoDto,
 };
 pub use file_preview_service::FilePreviewService;

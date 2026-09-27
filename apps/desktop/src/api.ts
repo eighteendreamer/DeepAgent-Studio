@@ -84,6 +84,7 @@ import type {
   ScanResult,
   SandboxieStatus,
   SessionDetail,
+  SessionSearchHit,
   SessionSummary,
   SessionUiPrefs,
   SettingsView,
@@ -176,6 +177,22 @@ function getInvoke(): InvokeFn | null {
 export async function listSessions(): Promise<SessionSummary[]> {
   const invoke = getInvoke();
   if (invoke) return invoke<SessionSummary[]>("list_sessions");
+  return [];
+}
+
+export async function searchSessions(
+  query: string,
+  project?: string,
+  limit = 50,
+): Promise<SessionSearchHit[]> {
+  const invoke = getInvoke();
+  if (invoke) {
+    return invoke<SessionSearchHit[]>("search_sessions", {
+      query,
+      project: project ?? null,
+      limit,
+    });
+  }
   return [];
 }
 

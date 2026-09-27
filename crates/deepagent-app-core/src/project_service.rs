@@ -220,6 +220,9 @@ impl ProjectService {
                 if archived.contains(&s.id.to_string()) {
                     continue;
                 }
+                if store.event_count(s.id)? == 0 {
+                    continue;
+                }
                 count += 1;
                 updated_at = updated_at.max(s.updated_at.as_millis());
             }

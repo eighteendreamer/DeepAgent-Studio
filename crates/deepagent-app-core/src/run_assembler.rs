@@ -768,8 +768,7 @@ impl<'a> RunAssembler<'a> {
             .with_response_history(response_history)
             .with_proactive_compaction(proactive_threshold)
             .with_prefire(prefire_start)
-            .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME)
-            .with_events(sink.clone());
+            .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME);
 
         if let Some(knowledge) = self.knowledge {
             agent = agent.with_relevant_memory_provider(Arc::new(
@@ -1436,6 +1435,7 @@ impl<'a> RunAssembler<'a> {
             (None, executor) => executor.clone(),
         };
         ToolRegistryBuildRequest {
+            db: self.db.clone(),
             root,
             access,
             env_mode,
