@@ -1016,8 +1016,9 @@ impl<'a> RunAssembler<'a> {
             ));
         }
 
+        let granted = PermissionSet::developer();
         agent = agent.with_tool_executor(std::sync::Arc::new(
-            crate::tool_runtime::WorkflowToolExecutor::new(tool_registry.clone()),
+            crate::tool_runtime::WorkflowToolExecutor::new(tool_registry.clone(), granted.clone()),
         ));
 
         let session_sequence = deepagent_persistence::event_store::EventStore::new(self.db)
@@ -1039,7 +1040,7 @@ impl<'a> RunAssembler<'a> {
             todo_store,
             verification_policy: crate::settings::VerificationPolicy::default(),
             fire_session_start: true,
-            granted: PermissionSet::developer(),
+            granted,
             nested_instructions: None,
         })?;
         let config = kernel_runtime.config;

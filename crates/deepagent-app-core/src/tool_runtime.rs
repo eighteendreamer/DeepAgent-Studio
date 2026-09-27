@@ -1042,16 +1042,16 @@ fn set_usize(value: &serde_json::Value, key: &str, target: &mut usize) {
 }
 
 /// Adapts [`ToolRegistry`] to the workflow's [`ToolExecutor`] trait so tool
-/// nodes can execute registered tools. The registry is synchronous; the trait
-/// is async, so each call simply forwards to the sync method.
+/// nodes use the same schema and permission checks as model tool calls.
 pub struct WorkflowToolExecutor {
     registry: Arc<ToolRegistry>,
+    granted: PermissionSet,
 }
 
 impl WorkflowToolExecutor {
     /// Wrap a shared tool registry.
-    pub fn new(registry: Arc<ToolRegistry>) -> Self {
-        Self { registry }
+    pub fn new(registry: Arc<ToolRegistry>, granted: PermissionSet) -> Self {
+        Self { registry, granted }
     }
 }
 
@@ -1062,18 +1062,13 @@ impl deepagent_runtime::workflow::ToolExecutor for WorkflowToolExecutor {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<deepagent_runtime::workflow::ToolExecutionResult> {
-        let spec = match self.registry.get(tool_name) {
-            Some(s) => s,
-            None => {
-                return Ok(deepagent_runtime::workflow::ToolExecutionResult {
-                    success: false,
-                    output: serde_json::Value::Null,
-                    error: Some(format!("tool '{}' not found", tool_name)),
-                });
-            }
-        };
-
-        match spec.tool.invoke(arguments).await {
+        // Workflow tool nodes do not have an approval-response channel. Fail
+        // closed for high-risk tools instead of silently bypassing approval.
+        match self
+            .registry
+            .invoke(tool_name, arguments, &self.granted, false)
+            .await
+        {
             Ok(output) => Ok(deepagent_runtime::workflow::ToolExecutionResult {
                 success: true,
                 output: output.value,
@@ -1090,8 +1085,10 @@ impl deepagent_runtime::workflow::ToolExecutor for WorkflowToolExecutor {
     async fn list_tools(&self) -> Result<Vec<String>> {
         Ok(self
             .registry
-            .iter_specs()
-            .map(|spec| spec.descriptor.name.clone())
+            .visible_to(&self.granted)
+            .into_iter()
+            .filter(|descriptor| !descriptor.risk.requires_approval())
+            .map(|descriptor| descriptor.name)
             .collect())
     }
 }
@@ -1102,7 +1099,27 @@ mod session_search_tests {
     use deepagent_core::clock::FixedClock;
     use deepagent_core::event::EventPayload;
     use deepagent_core::message::Message;
+    use deepagent_runtime::workflow::ToolExecutor;
     use deepagent_session::Session;
+
+    struct ApprovalOnlyTool;
+
+    #[async_trait]
+    impl Tool for ApprovalOnlyTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "approval_only".into(),
+                description: "Test tool requiring approval".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                risk: RiskLevel::High,
+                required_permissions: PermissionSet::read_only(),
+            }
+        }
+
+        async fn invoke(&self, _: serde_json::Value) -> Result<ToolOutput> {
+            Ok(ToolOutput::success(serde_json::json!({"invoked": true})))
+        }
+    }
 
     #[tokio::test]
     async fn session_search_uses_existing_tool_permissions_and_project_scope() {
@@ -1135,20 +1152,89 @@ mod session_search_tests {
             })
             .unwrap();
 
-        let tool = SessionSearchTool::new(db, PathBuf::from("/work/current"));
+        let tool = Arc::new(SessionSearchTool::new(db, PathBuf::from("/work/current")));
         let descriptor = tool.descriptor();
         assert_eq!(descriptor.risk, RiskLevel::Safe);
         assert_eq!(descriptor.required_permissions, PermissionSet::read_only());
+        let mut registry = ToolRegistry::new();
+        registry.register(tool).unwrap();
 
-        let scoped = tool
-            .invoke(serde_json::json!({"query": "needle"}))
+        let denied = registry
+            .invoke(
+                "session_search",
+                serde_json::json!({"query": "needle"}),
+                &PermissionSet::empty(),
+                false,
+            )
+            .await;
+        assert!(denied.is_err());
+        let malformed = registry
+            .invoke(
+                "session_search",
+                serde_json::json!({"query": "needle", "limit": 0}),
+                &PermissionSet::read_only(),
+                false,
+            )
+            .await;
+        assert!(malformed.is_err());
+
+        let scoped = registry
+            .invoke(
+                "session_search",
+                serde_json::json!({"query": "needle"}),
+                &PermissionSet::read_only(),
+                false,
+            )
             .await
             .unwrap();
         assert_eq!(scoped.value["results"].as_array().unwrap().len(), 1);
-        let global = tool
-            .invoke(serde_json::json!({"query": "needle", "cross_project": true}))
+        let global = registry
+            .invoke(
+                "session_search",
+                serde_json::json!({"query": "needle", "cross_project": true}),
+                &PermissionSet::read_only(),
+                false,
+            )
             .await
             .unwrap();
         assert_eq!(global.value["results"].as_array().unwrap().len(), 2);
+
+        registry.register(Arc::new(ApprovalOnlyTool)).unwrap();
+        let registry = Arc::new(registry);
+        let denied_workflow = WorkflowToolExecutor::new(registry.clone(), PermissionSet::empty());
+        let denied = denied_workflow
+            .execute("session_search", serde_json::json!({"query": "needle"}))
+            .await
+            .unwrap();
+        assert!(!denied.success);
+        assert!(denied.error.unwrap().contains("permission"));
+        assert!(denied_workflow.list_tools().await.unwrap().is_empty());
+
+        let workflow = WorkflowToolExecutor::new(registry, PermissionSet::read_only());
+        assert_eq!(workflow.list_tools().await.unwrap(), vec!["session_search"]);
+        let malformed = workflow
+            .execute(
+                "session_search",
+                serde_json::json!({"query": "needle", "limit": 0}),
+            )
+            .await
+            .unwrap();
+        assert!(!malformed.success);
+        assert!(malformed.error.unwrap().contains("validation"));
+        let high_risk = workflow
+            .execute("approval_only", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(!high_risk.success);
+        assert!(high_risk.error.unwrap().contains("approval"));
+        let scoped_workflow = workflow
+            .execute("session_search", serde_json::json!({"query": "needle"}))
+            .await
+            .unwrap();
+        assert!(scoped_workflow.success);
+        assert_eq!(
+            scoped_workflow.output["results"].as_array().unwrap().len(),
+            1
+        );
     }
 }
