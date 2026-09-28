@@ -37,7 +37,6 @@ const SIDEBAR_OVERFLOW_NAV: Array<{
 ];
 
 const SIDEBAR_OVERFLOW_IDS = new Set<string>(SIDEBAR_OVERFLOW_NAV.map((item) => item.id));
-const NO_PROJECT_GROUP = "\u0000no-project";
 
 interface Props {
   sessions: SessionSummary[];
@@ -45,7 +44,7 @@ interface Props {
   activeProjectPath: string | null;
   activeId: string | null;
   onSelect: (id: string) => void;
-  onSelectProject: (path: string | null) => void;
+  onSelectProject: (path: string) => void;
   onNewChat: () => void;
   onAddProject: () => void;
   onPinSession: (id: string, pinned: boolean) => void;
@@ -236,8 +235,8 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
       groups[p.name] = [];
     }
     for (const s of sortSessions(sessions)) {
-      if (s.pinned) continue;
-      const proj = s.project || NO_PROJECT_GROUP;
+      if (s.pinned || !s.project) continue;
+      const proj = s.project;
       if (!groups[proj]) groups[proj] = [];
       groups[proj].push(s);
     }
@@ -285,8 +284,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           changed = true;
         }
       }
-      if (NO_PROJECT_GROUP in prev) next[NO_PROJECT_GROUP] = prev[NO_PROJECT_GROUP];
-      if (Object.keys(prev).some((name) => name !== NO_PROJECT_GROUP && !projects.some((p) => p.name === name))) changed = true;
+      if (Object.keys(prev).some((name) => !projects.some((p) => p.name === name))) changed = true;
       if (changed) writeExpandedProjects(next);
       return next;
     });
@@ -433,25 +431,23 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   };
 
   const renderProjectGroup = (proj: string, projSessions: SessionSummary[]) => {
-    const isExpanded = proj === NO_PROJECT_GROUP
-      ? expandedProjects[proj] !== false
-      : expandedProjects[proj];
+    const isExpanded = expandedProjects[proj];
     const project = projectByName[proj];
     const isProjectPinned = project?.pinned ?? false;
     return (
       <div key={proj} className="flex flex-col">
         <div
-          className={`flex items-center px-2.5 py-1.5 text-[13px] cursor-pointer hover:bg-sidebar-highlight rounded-md transition-colors group/proj ${activeProjectMenu === proj || (project ? nameToPath[proj] === activeProjectPath : activeProjectPath === null) ? 'bg-sidebar-highlight text-text-base font-medium' : 'text-text-secondary'}`}
+          className={`flex items-center px-2.5 py-1.5 text-[13px] cursor-pointer hover:bg-sidebar-highlight rounded-md transition-colors group/proj ${activeProjectMenu === proj || nameToPath[proj] === activeProjectPath ? 'bg-sidebar-highlight text-text-base font-medium' : 'text-text-secondary'}`}
           onClick={() => {
             const path = nameToPath[proj];
-            onSelectProject(path ?? null);
+            if (path) onSelectProject(path);
             toggleProject(proj);
           }}
         >
           <FontAwesomeIcon icon={["far", "folder"]} className="w-4 shrink-0 text-left mr-2 text-text-secondary" />
-          <span className="truncate flex-1">{project ? proj : t("startView.noProject")}</span>
+          <span className="truncate flex-1">{proj}</span>
 
-          {project && <div className={`flex items-center space-x-0.5 transition-opacity ${activeProjectMenu === proj || isProjectPinned ? 'opacity-100' : 'opacity-0 group-hover/proj:opacity-100'}`}>
+          <div className={`flex items-center space-x-0.5 transition-opacity ${activeProjectMenu === proj || isProjectPinned ? 'opacity-100' : 'opacity-0 group-hover/proj:opacity-100'}`}>
             <button
               type="button"
               className={cn(
@@ -510,7 +506,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             >
               <FontAwesomeIcon icon={["far", "pen-to-square"]} className="text-[10px]" />
             </button>
-          </div>}
+          </div>
         </div>
         {isExpanded && (
           <div className="flex flex-col mt-0.5 space-y-0.5">
@@ -722,11 +718,11 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               {projects.length === 0 && projectEntries.length === 0 && (
                 <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noProjects")}</div>
               )}
-              {organizeMode === "time" && chronologicalSessions.length === 0 && (
+              {organizeMode === "time" && chronologicalSessions.every((session) => !session.project) && (
                 <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noChats")}</div>
               )}
               {organizeMode === "time" &&
-                chronologicalSessions.map((session) => renderSessionItem(session, true))}
+                chronologicalSessions.filter((session) => session.project).map((session) => renderSessionItem(session, true))}
               {projectEntries.map(([proj, projSessions]) => renderProjectGroup(proj, projSessions))}
             </div>
           )}
