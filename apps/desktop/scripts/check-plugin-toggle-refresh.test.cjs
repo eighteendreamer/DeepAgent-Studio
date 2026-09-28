@@ -97,10 +97,13 @@ test("built-in sidebar tab titles use the active locale without replacing custom
   assert.match(header, /normalized === "meeting_recorder"/);
 });
 
-test("project map keeps a scrollable readable canvas in a narrow sidebar", () => {
+test("project map supports zooming and panning in a narrow sidebar", () => {
   const panel = readFileSync(join(__dirname, "..", "src", "components", "project-map", "ProjectMapPanel.tsx"), "utf8");
-  assert.match(panel, /ref=\{viewportRef\} className="absolute inset-0 overflow-auto"/);
-  assert.match(panel, /min-h-\[640px\].*min-w-\[1000px\]/);
-  assert.match(panel, /viewport\.scrollLeft = Math\.max/);
+  assert.match(panel, /ref=\{viewportRef\} className="absolute inset-0 overflow-hidden"/);
+  assert.match(panel, /svg\.addEventListener\("wheel", handleWheel, \{ passive: false \}\)/);
+  assert.match(panel, /onPointerMove=\{handlePointerMove\}/);
+  assert.match(panel, /aria-label="缩小项目地图"/);
+  assert.match(panel, /aria-label="放大项目地图"/);
+  assert.match(panel, /aria-label="适应项目地图画布"/);
   assert.match(panel, /statusLabel\(status\)/);
 });

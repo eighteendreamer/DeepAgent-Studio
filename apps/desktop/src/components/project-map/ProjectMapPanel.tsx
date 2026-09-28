@@ -1,6 +1,7 @@
 import { HoverInfo } from "../ui/HoverInfo";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Box, ChevronRight, Code2, FileText, Network, RotateCw, Search } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Box, ChevronRight, Code2, FileText, Maximize, Network, RotateCw, Search, ZoomIn, ZoomOut } from "lucide-react";
+import { Button } from "../shadcn/button";
 import {
   projectMapGraph,
   projectMapNeighbors,
@@ -65,6 +66,12 @@ function complexityClass(complexity: string): string {
 }
 
 type PanelMode = "graph" | "list";
+
+const GRAPH_WIDTH = 1000;
+const GRAPH_HEIGHT = 640;
+const MIN_GRAPH_ZOOM = 0.25;
+const MAX_GRAPH_ZOOM = 3;
+const GRAPH_ZOOM_STEP = 1.25;
 
 type ProjectMapPanelCache = {
   version: 1;
@@ -486,6 +493,12 @@ function ProjectMapGraphView({
   onSelect: (hit: ProjectMapHit | null) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const viewportSizeRef = useRef({ width: 0, height: 0 });
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [view, setView] = useState({ x: 0, y: 0, k: 1 });
+  const panRef = useRef<{ pointerId: number; startX: number; startY: number; x: number; y: number } | null>(null);
+  const didPanRef = useRef(false);
   const layout = useMemo(() => {
     const nodes = graph?.nodes ?? [];
     const edges = graph?.edges ?? [];
@@ -528,20 +541,95 @@ function ProjectMapGraphView({
   }, [graph, selected?.node_id]);
 
   useEffect(() => {
-    if (!graph || !viewportRef.current) return;
     const viewport = viewportRef.current;
-    const centerGraph = () => {
-      viewport.scrollLeft = Math.max(0, (viewport.scrollWidth - viewport.clientWidth) / 2);
-      viewport.scrollTop = Math.max(0, (viewport.scrollHeight - viewport.clientHeight) / 2);
+    if (!viewport) return;
+    const measure = () => {
+      const { width, height } = viewport.getBoundingClientRect();
+      const previous = viewportSizeRef.current;
+      if (width === previous.width && height === previous.height) return;
+      viewportSizeRef.current = { width, height };
+      setViewportSize({ width, height });
+      setView((current) => previous.width === 0 && previous.height === 0
+        ? { ...current, x: (width - GRAPH_WIDTH * current.k) / 2, y: (height - GRAPH_HEIGHT * current.k) / 2 }
+        : { ...current, x: current.x + (width - previous.width) / 2, y: current.y + (height - previous.height) / 2 });
     };
-    const frame = window.requestAnimationFrame(centerGraph);
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(centerGraph);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     observer?.observe(viewport);
+    window.addEventListener("resize", measure);
     return () => {
-      window.cancelAnimationFrame(frame);
       observer?.disconnect();
+      window.removeEventListener("resize", measure);
     };
   }, [graph]);
+
+  useEffect(() => {
+    if (!graph) return;
+    const { width, height } = viewportSizeRef.current;
+    setView({ x: (width - GRAPH_WIDTH) / 2, y: (height - GRAPH_HEIGHT) / 2, k: 1 });
+  }, [graph]);
+
+  const zoomAt = useCallback((factor: number, anchor: { x: number; y: number }) => {
+    setView((current) => {
+      const k = Math.max(MIN_GRAPH_ZOOM, Math.min(MAX_GRAPH_ZOOM, current.k * factor));
+      if (k === current.k) return current;
+      const worldX = (anchor.x - current.x) / current.k;
+      const worldY = (anchor.y - current.y) / current.k;
+      return { x: anchor.x - worldX * k, y: anchor.y - worldY * k, k };
+    });
+  }, []);
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      zoomAt(event.deltaY < 0 ? GRAPH_ZOOM_STEP : 1 / GRAPH_ZOOM_STEP, {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      });
+    };
+    svg.addEventListener("wheel", handleWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", handleWheel);
+  }, [graph, zoomAt]);
+
+  const zoomAtCenter = (factor: number) => {
+    zoomAt(factor, { x: viewportSize.width / 2, y: viewportSize.height / 2 });
+  };
+
+  const resetView = () => {
+    setView({ x: (viewportSize.width - GRAPH_WIDTH) / 2, y: (viewportSize.height - GRAPH_HEIGHT) / 2, k: 1 });
+  };
+
+  const fitView = () => {
+    if (viewportSize.width === 0 || viewportSize.height === 0) return;
+    const k = Math.max(MIN_GRAPH_ZOOM, Math.min(MAX_GRAPH_ZOOM,
+      Math.min(viewportSize.width / GRAPH_WIDTH, viewportSize.height / GRAPH_HEIGHT) * 0.95));
+    setView({ x: (viewportSize.width - GRAPH_WIDTH * k) / 2, y: (viewportSize.height - GRAPH_HEIGHT * k) / 2, k });
+  };
+
+  const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    didPanRef.current = false;
+    panRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: view.x, y: view.y };
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const pan = panRef.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    const dx = event.clientX - pan.startX;
+    const dy = event.clientY - pan.startY;
+    if (Math.abs(dx) + Math.abs(dy) > 3) didPanRef.current = true;
+    setView((current) => ({ ...current, x: pan.x + dx, y: pan.y + dy }));
+  };
+
+  const handlePointerUp = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (panRef.current?.pointerId !== event.pointerId) return;
+    panRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
 
   if (!graph) {
     return (
@@ -561,19 +649,29 @@ function ProjectMapGraphView({
 
   return (
     <div className="relative min-h-0 flex-1 bg-[#fbfcfd]">
-      <div ref={viewportRef} className="absolute inset-0 overflow-auto" role="region" aria-label="项目地图画布" tabIndex={0}>
+      <div ref={viewportRef} className="absolute inset-0 overflow-hidden" role="region" aria-label="项目地图画布" tabIndex={0}>
         <svg
-        viewBox="0 0 1000 640"
-        className="block h-full min-h-[640px] w-full min-w-[1000px] cursor-default"
+        ref={svgRef}
+        width={viewportSize.width}
+        height={viewportSize.height}
+        className="block h-full w-full touch-none select-none cursor-grab active:cursor-grabbing"
         role="img"
         aria-label="项目关系图谱"
-        onClick={() => onSelect(null)}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={() => { panRef.current = null; didPanRef.current = false; }}
+        onClick={() => {
+          if (didPanRef.current) { didPanRef.current = false; return; }
+          onSelect(null);
+        }}
       >
         <defs>
           <marker id="project-map-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
             <path d="M0,0 L8,4 L0,8 Z" fill="#9aa4b2" />
           </marker>
         </defs>
+        <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
         {layout.edges.map((edge, index) => {
           const source = layout.positions.get(edge.source);
           const target = layout.positions.get(edge.target);
@@ -602,6 +700,7 @@ function ProjectMapGraphView({
               key={node.node_id}
               transform={`translate(${position.x - width / 2} ${position.y - 22})`}
               className="cursor-pointer"
+              onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
                 onSelect(node);
@@ -631,7 +730,31 @@ function ProjectMapGraphView({
             </g>
           );
         })}
+        </g>
         </svg>
+      </div>
+
+      <div className="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-xl border border-border-theme bg-elevated-bg/95 p-1 shadow-sm">
+        <HoverInfo content="缩小">
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="缩小项目地图" disabled={view.k <= MIN_GRAPH_ZOOM} onClick={() => zoomAtCenter(1 / GRAPH_ZOOM_STEP)}>
+            <ZoomOut className="h-4 w-4" aria-hidden="true" />
+          </Button>
+        </HoverInfo>
+        <HoverInfo content="重置为 100%">
+          <Button variant="ghost" size="sm" className="h-7 min-w-[48px] px-1.5" aria-label="重置项目地图缩放" onClick={resetView}>
+            {Math.round(view.k * 100)}%
+          </Button>
+        </HoverInfo>
+        <HoverInfo content="放大">
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="放大项目地图" disabled={view.k >= MAX_GRAPH_ZOOM} onClick={() => zoomAtCenter(GRAPH_ZOOM_STEP)}>
+            <ZoomIn className="h-4 w-4" aria-hidden="true" />
+          </Button>
+        </HoverInfo>
+        <HoverInfo content="适应画布">
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="适应项目地图画布" onClick={fitView}>
+            <Maximize className="h-4 w-4" aria-hidden="true" />
+          </Button>
+        </HoverInfo>
       </div>
 
       {selected && (
