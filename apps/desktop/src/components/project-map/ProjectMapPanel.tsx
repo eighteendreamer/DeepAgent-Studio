@@ -67,14 +67,16 @@ function complexityClass(complexity: string): string {
 
 type PanelMode = "graph" | "list";
 
-const GRAPH_WIDTH = 1000;
-const GRAPH_HEIGHT = 640;
-const MIN_GRAPH_ZOOM = 0.25;
+const GRAPH_MIN_WIDTH = 1000;
+const GRAPH_MIN_HEIGHT = 640;
+const MIN_GRAPH_ZOOM = 0.05;
 const MAX_GRAPH_ZOOM = 3;
 const GRAPH_ZOOM_STEP = 1.25;
+const GRAPH_RING_GAP = 140;
+const GRAPH_NODE_GAP = 150;
 
 type ProjectMapPanelCache = {
-  version: 1;
+  version: 2;
   projectPath: string | null;
   cachedAt: number;
   overview: ProjectMapOverview;
@@ -93,7 +95,7 @@ function readProjectMapPanelCache(projectPath?: string | null): ProjectMapPanelC
     const raw = window.localStorage.getItem(projectMapCacheKey(projectPath));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<ProjectMapPanelCache>;
-    if (parsed.version !== 1 || !parsed.overview) return null;
+    if (parsed.version !== 2 || !parsed.overview) return null;
     return parsed as ProjectMapPanelCache;
   } catch {
     return null;
@@ -108,7 +110,7 @@ function writeProjectMapPanelCache(
   if (typeof window === "undefined") return;
   try {
     const cache: ProjectMapPanelCache = {
-      version: 1,
+      version: 2,
       projectPath: projectPath ?? null,
       cachedAt: Date.now(),
       overview,
@@ -193,7 +195,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
 
         let graphNext: ProjectMapGraph | null = null;
         if (next.status.status !== "missing" && next.status.status !== "failed") {
-          graphNext = await projectMapGraph(90, projectPath).catch(() => null);
+          graphNext = await projectMapGraph(0, projectPath).catch(() => null);
           if (cancelled) return;
         }
         setGraph(graphNext);
@@ -281,7 +283,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
     try {
       const result = await projectMapRefreshDeep(projectPath);
       const next = await projectMapOverview(projectPath);
-      const graphNext = await projectMapGraph(90, projectPath).catch(() => null);
+      const graphNext = await projectMapGraph(0, projectPath).catch(() => null);
       setOverview(next);
       setGraph(graphNext);
       writeProjectMapPanelCache(projectPath, next, graphNext);
@@ -348,6 +350,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
             {refreshing ? "生成中" : loading ? "加载中" : statusLabel(status)}
           </span>
           <span className="whitespace-nowrap"><span className="font-medium text-text-base">{stats?.nodes ?? 0}</span> 节点</span>
+          {mode === "graph" && graph && <span className="whitespace-nowrap">图中 {graph.nodes.length}</span>}
           <span className="whitespace-nowrap"><span className="font-medium text-text-base">{stats?.edges ?? 0}</span> 边</span>
           <span className="whitespace-nowrap"><span className="font-medium text-text-base">{stats?.files ?? 0}</span> 文件</span>
           <span className="whitespace-nowrap">更新于 {formatTime(stats?.updated_at ?? null)}</span>
@@ -502,43 +505,34 @@ function ProjectMapGraphView({
   const layout = useMemo(() => {
     const nodes = graph?.nodes ?? [];
     const edges = graph?.edges ?? [];
-    const selectedId = selected?.node_id ?? nodes[0]?.node_id ?? "";
-    const visibleNodes = nodes.slice(0, 90);
-    const byId = new Map(visibleNodes.map((node) => [node.node_id, node]));
-    const visibleEdges = edges.filter((edge) => byId.has(edge.source) && byId.has(edge.target)).slice(0, 220);
-    const connected = new Set<string>([selectedId]);
-    for (const edge of visibleEdges) {
-      if (edge.source === selectedId) connected.add(edge.target);
-      if (edge.target === selectedId) connected.add(edge.source);
-    }
-
-    const ordered = [...visibleNodes].sort((a, b) => {
-      if (a.node_id === selectedId) return -1;
-      if (b.node_id === selectedId) return 1;
-      const ca = connected.has(a.node_id) ? 0 : 1;
-      const cb = connected.has(b.node_id) ? 0 : 1;
-      return ca - cb || typeRank(a.node_type) - typeRank(b.node_type) || a.name.localeCompare(b.name);
-    });
     const positions = new Map<string, { x: number; y: number }>();
-    if (ordered[0]) positions.set(ordered[0].node_id, { x: 500, y: 315 });
-    const rings = [
-      { radiusX: 230, radiusY: 145, start: 1, count: Math.min(18, Math.max(0, ordered.length - 1)) },
-      { radiusX: 390, radiusY: 245, start: 19, count: Math.min(36, Math.max(0, ordered.length - 19)) },
-      { radiusX: 470, radiusY: 300, start: 55, count: Math.max(0, ordered.length - 55) },
-    ];
-    for (const ring of rings) {
-      for (let i = 0; i < ring.count; i++) {
-        const node = ordered[ring.start + i];
-        if (!node) continue;
-        const angle = -Math.PI / 2 + (i / Math.max(1, ring.count)) * Math.PI * 2;
-        positions.set(node.node_id, {
-          x: 500 + Math.cos(angle) * ring.radiusX,
-          y: 315 + Math.sin(angle) * ring.radiusY,
+    if (nodes[0]) positions.set(nodes[0].node_id, { x: 0, y: 0 });
+    let placed = 1;
+    let ring = 1;
+    while (placed < nodes.length) {
+      const radius = ring * GRAPH_RING_GAP;
+      const count = Math.min(nodes.length - placed, Math.max(6, Math.floor(2 * Math.PI * radius / GRAPH_NODE_GAP)));
+      for (let i = 0; i < count; i++) {
+        const angle = -Math.PI / 2 + (i / count) * 2 * Math.PI;
+        positions.set(nodes[placed + i].node_id, {
+          x: Math.cos(angle) * radius,
+          y: Math.sin(angle) * radius,
         });
       }
+      placed += count;
+      ring++;
     }
-    return { nodes: ordered, edges: visibleEdges, positions };
-  }, [graph, selected?.node_id]);
+    const extent = Math.max(GRAPH_MIN_HEIGHT / 2, (ring - 1) * GRAPH_RING_GAP + 90);
+    const width = Math.max(GRAPH_MIN_WIDTH, extent * 2);
+    const height = Math.max(GRAPH_MIN_HEIGHT, extent * 2);
+    const offsetX = width / 2;
+    const offsetY = height / 2;
+    for (const position of positions.values()) {
+      position.x += offsetX;
+      position.y += offsetY;
+    }
+    return { nodes, edges, positions, width, height };
+  }, [graph]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -550,7 +544,7 @@ function ProjectMapGraphView({
       viewportSizeRef.current = { width, height };
       setViewportSize({ width, height });
       setView((current) => previous.width === 0 && previous.height === 0
-        ? { ...current, x: (width - GRAPH_WIDTH * current.k) / 2, y: (height - GRAPH_HEIGHT * current.k) / 2 }
+        ? { ...current, x: (width - layout.width * current.k) / 2, y: (height - layout.height * current.k) / 2 }
         : { ...current, x: current.x + (width - previous.width) / 2, y: current.y + (height - previous.height) / 2 });
     };
     measure();
@@ -561,13 +555,14 @@ function ProjectMapGraphView({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [graph]);
+  }, [graph, layout.width, layout.height]);
 
   useEffect(() => {
     if (!graph) return;
     const { width, height } = viewportSizeRef.current;
-    setView({ x: (width - GRAPH_WIDTH) / 2, y: (height - GRAPH_HEIGHT) / 2, k: 1 });
-  }, [graph]);
+    const k = Math.max(MIN_GRAPH_ZOOM, Math.min(1, Math.min(width / layout.width, height / layout.height) * 0.95));
+    setView({ x: (width - layout.width * k) / 2, y: (height - layout.height * k) / 2, k });
+  }, [graph, layout.width, layout.height]);
 
   const zoomAt = useCallback((factor: number, anchor: { x: number; y: number }) => {
     setView((current) => {
@@ -599,14 +594,14 @@ function ProjectMapGraphView({
   };
 
   const resetView = () => {
-    setView({ x: (viewportSize.width - GRAPH_WIDTH) / 2, y: (viewportSize.height - GRAPH_HEIGHT) / 2, k: 1 });
+    setView({ x: (viewportSize.width - layout.width) / 2, y: (viewportSize.height - layout.height) / 2, k: 1 });
   };
 
   const fitView = () => {
     if (viewportSize.width === 0 || viewportSize.height === 0) return;
     const k = Math.max(MIN_GRAPH_ZOOM, Math.min(MAX_GRAPH_ZOOM,
-      Math.min(viewportSize.width / GRAPH_WIDTH, viewportSize.height / GRAPH_HEIGHT) * 0.95));
-    setView({ x: (viewportSize.width - GRAPH_WIDTH * k) / 2, y: (viewportSize.height - GRAPH_HEIGHT * k) / 2, k });
+      Math.min(viewportSize.width / layout.width, viewportSize.height / layout.height) * 0.95));
+    setView({ x: (viewportSize.width - layout.width * k) / 2, y: (viewportSize.height - layout.height * k) / 2, k });
   };
 
   const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -685,8 +680,8 @@ function ProjectMapGraphView({
               y2={target.y}
               stroke={edgeColor(edge.edge_type)}
               strokeWidth={edge.edge_type === "calls" ? 1.8 : 1.2}
-              strokeOpacity={selected && edge.source !== selected.node_id && edge.target !== selected.node_id ? 0.22 : 0.58}
-              markerEnd="url(#project-map-arrow)"
+              strokeOpacity={selected && edge.source !== selected.node_id && edge.target !== selected.node_id ? 0.12 : view.k < 0.6 ? 0.3 : 0.58}
+              markerEnd={view.k >= 0.6 ? "url(#project-map-arrow)" : undefined}
             />
           );
         })}
@@ -695,6 +690,20 @@ function ProjectMapGraphView({
           if (!position) return null;
           const isSelected = selected?.node_id === node.node_id;
           const width = node.node_type === "function" ? 118 : 136;
+          if (view.k < 0.6 && !isSelected) {
+            return (
+              <circle
+                key={node.node_id}
+                cx={position.x}
+                cy={position.y}
+                r={Math.max(9, 4 / view.k)}
+                fill={nodeAccent(node.node_type)}
+                className="cursor-pointer"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onSelect(node); }}
+              />
+            );
+          }
           return (
             <g
               key={node.node_id}
@@ -781,15 +790,6 @@ function ProjectMapGraphView({
         )}
     </div>
   );
-}
-
-function typeRank(type: string): number {
-  if (type === "class") return 0;
-  if (type === "function") return 1;
-  if (type === "endpoint") return 2;
-  if (type === "service") return 3;
-  if (type === "file") return 4;
-  return 5;
 }
 
 function shortLabel(value: string, limit: number): string {

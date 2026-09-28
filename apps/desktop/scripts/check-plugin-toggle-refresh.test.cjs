@@ -99,6 +99,9 @@ test("built-in sidebar tab titles use the active locale without replacing custom
 
 test("project map supports zooming and panning in a narrow sidebar", () => {
   const panel = readFileSync(join(__dirname, "..", "src", "components", "project-map", "ProjectMapPanel.tsx"), "utf8");
+  assert.match(panel, /projectMapGraph\(0, projectPath\)/);
+  assert.doesNotMatch(panel, /nodes\.slice\(0, 90\)|edges\.slice\(0, 220\)/);
+  assert.match(panel, /图中 \{graph\.nodes\.length\}/);
   assert.match(panel, /ref=\{viewportRef\} className="absolute inset-0 overflow-hidden"/);
   assert.match(panel, /svg\.addEventListener\("wheel", handleWheel, \{ passive: false \}\)/);
   assert.match(panel, /onPointerMove=\{handlePointerMove\}/);

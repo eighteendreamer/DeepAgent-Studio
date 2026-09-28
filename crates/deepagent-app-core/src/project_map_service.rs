@@ -340,7 +340,10 @@ impl ProjectMapService {
 
     pub fn graph(&self, project_root: &Path, limit: usize) -> Result<ProjectMapGraphDto> {
         let loaded = self.load(project_root)?;
-        Ok(graph_slice(&loaded.graph, limit.clamp(20, 160)))
+        // A zero limit requests the complete graph for the interactive map.
+        // Positive limits preserve the bounded graph-query behavior.
+        let limit = if limit == 0 { 0 } else { limit.clamp(20, 160) };
+        Ok(graph_slice(&loaded.graph, limit))
     }
 
     pub fn impact(&self, project_root: &Path, node_ref: &str) -> Result<ProjectMapImpactDto> {
@@ -765,7 +768,9 @@ fn graph_slice(graph: &RawGraph, limit: usize) -> ProjectMapGraphDto {
             })
             .then_with(|| a.name.cmp(&b.name))
     });
-    nodes.truncate(limit);
+    if limit != 0 {
+        nodes.truncate(limit);
+    }
     let node_ids = nodes
         .iter()
         .map(|node| node.node_id.as_str())
@@ -789,7 +794,9 @@ fn graph_slice(graph: &RawGraph, limit: usize) -> ProjectMapGraphDto {
             .then_with(|| a.source.cmp(&b.source))
             .then_with(|| a.target.cmp(&b.target))
     });
-    edges.truncate(limit.saturating_mul(3));
+    if limit != 0 {
+        edges.truncate(limit.saturating_mul(3));
+    }
     ProjectMapGraphDto { nodes, edges }
 }
 
@@ -1087,5 +1094,44 @@ mod tests {
         assert!(hits
             .iter()
             .any(|h| h.file_path.as_deref() == Some("src/api.ts")));
+    }
+
+    #[test]
+    fn graph_slice_zero_limit_returns_all_nodes_and_edges() {
+        let nodes = (0..2094)
+            .map(|index| RawNode {
+                id: format!("node-{index}"),
+                node_type: "function".to_string(),
+                name: format!("function-{index}"),
+                file_path: None,
+                line_range: None,
+                summary: String::new(),
+                tags: Vec::new(),
+                complexity: "simple".to_string(),
+                language_notes: None,
+            })
+            .collect();
+        let edges = (0..2586)
+            .map(|index| RawEdge {
+                source: format!("node-{}", index % 2094),
+                target: format!("node-{}", (index + 1) % 2094),
+                edge_type: "calls".to_string(),
+                _direction: String::new(),
+                _weight: 1.0,
+            })
+            .collect();
+        let graph = RawGraph {
+            project: None,
+            nodes,
+            edges,
+        };
+
+        let complete = graph_slice(&graph, 0);
+        assert_eq!(complete.nodes.len(), 2094);
+        assert_eq!(complete.edges.len(), 2586);
+
+        let bounded = graph_slice(&graph, 90);
+        assert_eq!(bounded.nodes.len(), 90);
+        assert!(bounded.edges.len() < complete.edges.len());
     }
 }
