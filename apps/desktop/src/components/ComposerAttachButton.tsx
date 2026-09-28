@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
 import { cn } from "./shadcn/utils";
@@ -13,10 +14,10 @@ export function ComposerAttachButton({ disabled = false, disabledTitle, onClick 
   const { t } = useTranslation();
 
   return (
-    <button
+    <HoverInfo content={disabled ? disabledTitle : undefined}><button
       type="button"
       disabled={disabled}
-      title={disabled ? disabledTitle : undefined}
+
       aria-label={t("composer.addMenu.hoverLabel")}
       onClick={onClick}
       className={cn(
@@ -45,6 +46,6 @@ export function ComposerAttachButton({ disabled = false, disabledTitle, onClick 
       >
         {t("composer.addMenu.hoverLabel")}
       </span>
-    </button>
+    </button></HoverInfo>
   );
 }

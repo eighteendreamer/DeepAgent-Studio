@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -176,17 +177,17 @@ export function SidebarProjectMenu({
 
   return (
     <div ref={triggerRef} className="relative">
-      <button
+      <HoverInfo content="项目选项"><button
         type="button"
         className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded"
-        title="项目选项"
+
         onClick={(e) => {
           e.stopPropagation();
           onOpenChange(!open);
         }}
       >
         <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[10px]" />
-      </button>
+      </button></HoverInfo>
 
       {open &&
         createPortal(

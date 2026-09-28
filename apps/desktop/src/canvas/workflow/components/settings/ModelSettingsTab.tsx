@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../../components/ui/HoverInfo";
 import { useState, useMemo, useEffect, useRef } from "react";
 import {
   Activity,
@@ -183,9 +184,9 @@ export function ProviderLogo({
   switch (effective) {
     case "deepseek":
       return (
-        <div
+        <HoverInfo content="DeepSeek"><div
           className={`flex shrink-0 items-center justify-center border border-[#339CFF]/30 bg-[#339CFF]/15 text-[#339CFF] shadow-[0_0_12px_rgba(51,156,255,0.15)] ${sizeClasses} ${className}`}
-          title="DeepSeek"
+
         >
           <svg viewBox="0 0 24 24" fill="none" className="w-[62%] h-[62%]">
             <path
@@ -197,13 +198,13 @@ export function ProviderLogo({
             />
             <circle cx="16" cy="6.5" r="1.3" fill="currentColor" />
           </svg>
-        </div>
+        </div></HoverInfo>
       );
     case "openai":
       return (
-        <div
+        <HoverInfo content="OpenAI"><div
           className={`flex shrink-0 items-center justify-center border border-[#10A37F]/30 bg-[#10A37F]/15 text-[#10A37F] shadow-[0_0_12px_rgba(16,163,127,0.15)] ${sizeClasses} ${className}`}
-          title="OpenAI"
+
         >
           <svg viewBox="0 0 24 24" fill="none" className="w-[62%] h-[62%]">
             <path
@@ -214,25 +215,25 @@ export function ProviderLogo({
               strokeLinejoin="round"
             />
           </svg>
-        </div>
+        </div></HoverInfo>
       );
     case "anthropic":
     case "claude":
       return (
-        <div
+        <HoverInfo content="Anthropic Claude"><div
           className={`flex shrink-0 items-center justify-center border border-[#D97757]/30 bg-[#D97757]/15 text-[#D97757] shadow-[0_0_12px_rgba(217,119,87,0.15)] ${sizeClasses} ${className}`}
-          title="Anthropic Claude"
+
         >
           <svg viewBox="0 0 24 24" fill="currentColor" className="w-[60%] h-[60%]">
             <path d="M13.8 4L21 19.5H16.8L15.3 16.2H8.7L7.2 19.5H3L10.2 4H13.8ZM12 8.8L9.9 13.4H14.1L12 8.8Z" />
           </svg>
-        </div>
+        </div></HoverInfo>
       );
     case "gemini":
       return (
-        <div
+        <HoverInfo content="Google Gemini"><div
           className={`flex shrink-0 items-center justify-center border border-[#4285F4]/30 bg-[#4285F4]/15 text-[#4285F4] shadow-[0_0_12px_rgba(66,133,244,0.15)] ${sizeClasses} ${className}`}
-          title="Google Gemini"
+
         >
           <svg viewBox="0 0 24 24" fill="none" className="w-[64%] h-[64%]">
             <path
@@ -247,35 +248,35 @@ export function ProviderLogo({
               </linearGradient>
             </defs>
           </svg>
-        </div>
+        </div></HoverInfo>
       );
     case "siliconflow":
       return (
-        <div
+        <HoverInfo content="SiliconFlow 硅基流动"><div
           className={`flex shrink-0 items-center justify-center border border-[#8B5CF6]/30 bg-[#8B5CF6]/15 text-[#8B5CF6] shadow-[0_0_12px_rgba(139,92,246,0.15)] ${sizeClasses} ${className}`}
-          title="SiliconFlow 硅基流动"
+
         >
           <Cpu size={iconSizes} strokeWidth={2} />
-        </div>
+        </div></HoverInfo>
       );
     case "ollama":
       return (
-        <div
+        <HoverInfo content="Ollama (本地)"><div
           className={`flex shrink-0 items-center justify-center border border-white/25 bg-white/10 text-white shadow-[0_0_12px_rgba(255,255,255,0.1)] ${sizeClasses} ${className}`}
-          title="Ollama (本地)"
+
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-[62%] h-[62%]">
             <path d="M7 21v-4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v4M15 15V8a3 3 0 0 0-3-3H9M7 5l2 3M15 5l-2 3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             <circle cx="10" cy="9" r="1" fill="currentColor" />
             <circle cx="14" cy="9" r="1" fill="currentColor" />
           </svg>
-        </div>
+        </div></HoverInfo>
       );
     case "moonshot":
       return (
-        <div
+        <HoverInfo content="Moonshot Kimi"><div
           className={`flex shrink-0 items-center justify-center border border-[#38BDF8]/30 bg-[#38BDF8]/15 text-[#38BDF8] shadow-[0_0_12px_rgba(56,189,248,0.15)] ${sizeClasses} ${className}`}
-          title="Moonshot Kimi"
+
         >
           <svg viewBox="0 0 24 24" fill="none" className="w-[60%] h-[60%]">
             <path
@@ -289,41 +290,41 @@ export function ProviderLogo({
             />
             <circle cx="18" cy="6" r="1.5" fill="#FACC15" />
           </svg>
-        </div>
+        </div></HoverInfo>
       );
     case "zhipu":
       return (
-        <div
+        <HoverInfo content="智谱 GLM"><div
           className={`flex shrink-0 items-center justify-center border border-[#2563EB]/30 bg-[#2563EB]/15 text-[#2563EB] shadow-[0_0_12px_rgba(37,99,235,0.15)] ${sizeClasses} ${className}`}
-          title="智谱 GLM"
+
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="#3B82F6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-[62%] h-[62%]">
             <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
           </svg>
-        </div>
+        </div></HoverInfo>
       );
     case "qwen":
       return (
-        <div
+        <HoverInfo content="通义千问"><div
           className={`flex shrink-0 items-center justify-center border border-[#F97316]/30 bg-[#F97316]/15 text-[#F97316] shadow-[0_0_12px_rgba(249,115,22,0.15)] ${sizeClasses} ${className}`}
-          title="通义千问"
+
         >
           <svg viewBox="0 0 24 24" fill="none" className="w-[62%] h-[62%]">
             <circle cx="12" cy="12" r="8" stroke="#F97316" strokeWidth="2" strokeDasharray="3 3" />
             <circle cx="12" cy="12" r="4" fill="#F97316" />
           </svg>
-        </div>
+        </div></HoverInfo>
       );
     case "azure":
       return (
-        <div
+        <HoverInfo content="Azure OpenAI"><div
           className={`flex shrink-0 items-center justify-center border border-[#0078D4]/30 bg-[#0078D4]/15 text-[#0078D4] ${sizeClasses} ${className}`}
-          title="Azure OpenAI"
+
         >
           <svg viewBox="0 0 24 24" fill="currentColor" className="w-[62%] h-[62%]">
             <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" />
           </svg>
-        </div>
+        </div></HoverInfo>
       );
     case "bot":
       return (
@@ -781,14 +782,14 @@ export function ModelSettingsTab() {
                       className="h-7 rounded-lg pl-8 text-[11px] bg-white/[0.03] border-white/[0.08] text-white/90 placeholder:text-white/30 focus-visible:ring-1 focus-visible:ring-[#339CFF]"
                     />
                   </div>
-                  <button
+                  <HoverInfo content="添加 AI 服务商"><button
                     type="button"
                     onClick={() => handleOpenAddProviderDialog()}
-                    title="添加 AI 服务商"
+
                     className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#339CFF] text-white hover:bg-[#2563EB] transition-colors shadow-sm"
                   >
                     <Plus size={14} strokeWidth={2.2} />
-                  </button>
+                  </button></HoverInfo>
                 </div>
 
               </div>
@@ -867,11 +868,11 @@ export function ModelSettingsTab() {
                   {/* 1. 顶部 Header (轻量化无卡片包裹，透明底+底部分割线) */}
                   <div className="shrink-0 pb-3 border-b border-white/[0.06] flex items-center justify-between gap-4">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <div
+                      <HoverInfo content="点击更换服务商 Logo"><div
                         role="button"
                         tabIndex={0}
                         onClick={() => setChangeLogoDialogOpen(true)}
-                        title="点击更换服务商 Logo"
+
                         className="group relative cursor-pointer"
                       >
                         <ProviderLogo
@@ -883,7 +884,7 @@ export function ModelSettingsTab() {
                         <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/60 opacity-0 transition-opacity group-hover:opacity-100">
                           <Pencil size={12} className="text-white" />
                         </div>
-                      </div>
+                      </div></HoverInfo>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <Input
@@ -945,14 +946,14 @@ export function ModelSettingsTab() {
                         测试连通性
                       </Button>
 
-                      <button
+                      <HoverInfo content="删除该供应商"><button
                         type="button"
                         onClick={() => setDeleteConfirmProvider(selectedProvider)}
-                        title="删除该供应商"
+
                         className="flex h-7 w-7 items-center justify-center rounded-lg border border-red-500/20 bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
                       >
                         <Trash2 size={13} />
-                      </button>
+                      </button></HoverInfo>
 
                       <div className="flex items-center gap-2 pl-2 border-l border-white/[0.08]">
                         <ToggleSwitch
@@ -993,7 +994,7 @@ export function ModelSettingsTab() {
                             className="h-8 rounded-lg pr-8 text-[11px] bg-white/[0.03] border-white/[0.08] text-white/90 focus-visible:ring-1 focus-visible:ring-[#339CFF]"
                           />
                           <div className="absolute right-1 flex items-center gap-0.5">
-                            <button
+                            <HoverInfo content={showApiKey[selectedProvider.id] ? "隐藏输入内容" : "显示输入内容"}><button
                               type="button"
                               onClick={() =>
                                 setShowApiKey((state) => ({
@@ -1002,14 +1003,14 @@ export function ModelSettingsTab() {
                                 }))
                               }
                               className="p-1 text-white/40 hover:text-white/80 transition-colors"
-                              title={showApiKey[selectedProvider.id] ? "隐藏输入内容" : "显示输入内容"}
+
                             >
                               {showApiKey[selectedProvider.id] ? (
                                 <EyeOff size={12} />
                               ) : (
                                 <Eye size={12} />
                               )}
-                            </button>
+                            </button></HoverInfo>
                           </div>
                         </div>
                       </div>
@@ -1218,7 +1219,7 @@ export function ModelSettingsTab() {
                             </div>
 
                             <div className="flex items-center gap-2.5 shrink-0">
-                              <button
+                              <HoverInfo content="设置模型使用场景"><button
                                 type="button"
                                 onClick={() =>
                                   openScenarioDialog(
@@ -1229,21 +1230,21 @@ export function ModelSettingsTab() {
                                   )
                                 }
                                 className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.02] px-1.5 py-1 text-[10px] text-white/55 transition-colors hover:border-[#339CFF]/40 hover:bg-[#339CFF]/10 hover:text-[#9DD4FF]"
-                                title="设置模型使用场景"
+
                               >
                                 <Settings2 size={11} />
                                 设置
-                              </button>
-                              <button
+                              </button></HoverInfo>
+                              <HoverInfo content="删除模型"><button
                                 type="button"
                                 onClick={() =>
                                   removeModelFromProvider(selectedProvider.id, model.id)
                                 }
                                 className="opacity-0 group-hover:opacity-100 p-1 text-white/30 hover:text-red-400 transition-all"
-                                title="删除模型"
+
                               >
                                 <Trash2 size={12} />
-                              </button>
+                              </button></HoverInfo>
                               <ToggleSwitch
                                 checked={model.enabled}
                                 onChange={() =>
@@ -1518,7 +1519,7 @@ export function ModelSettingsTab() {
                       </div>
 
                       <div className="flex items-center justify-end gap-2">
-                        <button
+                        <HoverInfo content="设置模型使用场景"><button
                           type="button"
                           onClick={() =>
                             openScenarioDialog(
@@ -1529,10 +1530,10 @@ export function ModelSettingsTab() {
                             )
                           }
                           className="rounded-md p-1 text-white/40 transition-colors hover:bg-[#339CFF]/10 hover:text-[#9DD4FF]"
-                          title="设置模型使用场景"
+
                         >
                           <Settings2 size={13} />
-                        </button>
+                        </button></HoverInfo>
                         <ToggleSwitch
                           checked={item.enabled}
                           onChange={() =>
@@ -1807,9 +1808,9 @@ export function ModelSettingsTab() {
             {/* 1. 居中 Logo 预览与上传 */}
             <div className="flex flex-col items-center justify-center pt-1 pb-1">
               <div className="relative group">
-                <div
+                <HoverInfo content={providerForm.logo ? "点击更换 Logo" : "点击上传 Logo (可选)"}><div
                   onClick={() => fileInputRef.current?.click()}
-                  title={providerForm.logo ? "点击更换 Logo" : "点击上传 Logo (可选)"}
+
                   className={`flex h-20 w-20 cursor-pointer items-center justify-center rounded-xl border-2 border-dashed transition-all overflow-hidden ${
                     providerForm.logo
                       ? "border-white/30 bg-black/40"
@@ -1828,20 +1829,20 @@ export function ModelSettingsTab() {
                       <span className="text-[10.5px] font-medium tracking-wide">Logo</span>
                     </div>
                   )}
-                </div>
+                </div></HoverInfo>
 
                 {providerForm.logo && (
-                  <button
+                  <HoverInfo content="清除 Logo"><button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setProviderForm((prev) => ({ ...prev, logo: "" }));
                     }}
-                    title="清除 Logo"
+
                     className="absolute -right-1.5 -top-1.5 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-red-500 text-white shadow hover:bg-red-600 transition-colors"
                   >
                     <X size={10} strokeWidth={2.5} />
-                  </button>
+                  </button></HoverInfo>
                 )}
               </div>
 
@@ -1981,9 +1982,9 @@ export function ModelSettingsTab() {
           </div>
 
           <div className="p-4 flex items-center gap-3">
-            <div
+            <HoverInfo content="点击上传本地图片"><div
               onClick={() => changeLogoFileInputRef.current?.click()}
-              title="点击上传本地图片"
+
               className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-xl border border-dashed border-white/20 bg-white/[0.03] transition-all hover:border-[#339CFF]/60 hover:bg-[#339CFF]/10 overflow-hidden shrink-0"
             >
               <ProviderLogo
@@ -1991,7 +1992,7 @@ export function ModelSettingsTab() {
                 name={selectedProvider?.name}
                 size="lg"
               />
-            </div>
+            </div></HoverInfo>
 
             <div className="min-w-0 flex-1 space-y-1">
               <div className="text-[11px] text-white/80">点击左侧图标上传本地图片</div>

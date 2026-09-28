@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 // SkillsMarketProviderConfig — gear-button popover that lets users configure
 // the SkillsMP API key, test the connection, and clear a saved key (R9.2,
 // R9.4, R9.5, R9.6).
@@ -194,14 +195,14 @@ export function SkillsMarketProviderConfig({
             {t("skillsmp.description")}
           </p>
         </div>
-        <button
+        <HoverInfo content={t("skillsmp.close")}><button
           onClick={onClose}
           className="text-text-secondary hover:text-text-base ml-2"
-          title={t("skillsmp.close")}
+
           aria-label={t("skillsmp.close")}
         >
           <FontAwesomeIcon icon={["fas", "xmark"]} className="text-xs" />
-        </button>
+        </button></HoverInfo>
       </div>
 
       <div className="border-t border-border-theme my-3" />

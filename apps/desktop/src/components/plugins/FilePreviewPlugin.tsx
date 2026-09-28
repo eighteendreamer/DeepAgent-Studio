@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { memo, useState, useEffect } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
@@ -127,7 +128,7 @@ export function FilePreviewPlugin() {
 
       // 2. 读取文件二进制数据
       let blob: Blob;
-      
+
       // 对于图片文件，优先使用 previewReadDataUrl（支持更多格式）
       if (result.metadata.kind === "image") {
         try {
@@ -146,7 +147,7 @@ export function FilePreviewPlugin() {
         const response = await fetch(assetUrl);
         blob = await response.blob();
       }
-      
+
       setFileBlob(blob);
     } catch (e) {
       setError(String(e));
@@ -170,9 +171,9 @@ export function FilePreviewPlugin() {
           <div className="flex items-center min-w-0 ml-3">
             <div className="flex items-center min-w-0 text-[12px] text-text-secondary">
               <FontAwesomeIcon icon={kindIcon(preview.metadata.kind)} className="mr-2 flex-shrink-0" />
-              <span className="truncate" title={preview.metadata.path}>
+              <HoverInfo content={preview.metadata.path}><span className="truncate" >
                 {preview.metadata.name}
-              </span>
+              </span></HoverInfo>
               <span className="ml-2 flex-shrink-0">· {formatSize(preview.metadata.size_bytes)}</span>
               <span className="ml-2 flex-shrink-0 uppercase">{preview.metadata.ext || "?"}</span>
             </div>

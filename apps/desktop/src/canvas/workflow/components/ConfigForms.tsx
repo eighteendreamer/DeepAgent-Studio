@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../components/ui/HoverInfo";
 import React, { useRef, useState } from "react";
 import { ArrowUp, ChevronDown, Maximize2, Plus, X, Square } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "../../../components/shadcn/dialog";
@@ -148,9 +149,9 @@ function GlassRunButton({
   title?: string;
 }) {
   return (
-    <button
+    <HoverInfo content={title}><button
       type="button"
-      title={title}
+
       disabled={disabled}
       onClick={onClick}
       className="relative flex h-7 w-7 items-center justify-center overflow-hidden rounded-[10px] bg-white/[0.12] text-white/75 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_4px_10px_rgba(0,0,0,0.06)] transition hover:bg-white/[0.18] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
@@ -168,7 +169,7 @@ function GlassRunButton({
         }}
       />
       <ArrowUp className="h-4 w-4" />
-    </button>
+    </button></HoverInfo>
   );
 }
 
@@ -447,14 +448,14 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
         onPointerDown={stopPanelGesture}
         onMouseDown={stopPanelGesture}
       >
-        <button
+        <HoverInfo content="放大编辑"><button
           type="button"
           onClick={() => setExpanded(true)}
           className="absolute right-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded-lg text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
-          title="放大编辑"
+
         >
           <Maximize2 className="h-3.5 w-3.5" />
-        </button>
+        </button></HoverInfo>
 
         <div className="flex flex-wrap items-center gap-1.5 px-4 pb-0 pr-12 pt-3">
           <span className="shrink-0 text-[11px]" style={{ color: SUB_COLOR }}>
@@ -467,18 +468,18 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
               style={{ border: "1px solid rgba(255,255,255,0.15)" }}
             >
               <img src={url} alt={`输入${idx + 1}`} className="h-full w-full object-cover" draggable={false} />
-              <button
+              <HoverInfo content="移除输入图"><button
                 type="button"
                 onClick={() => removeInput(idx)}
                 className="absolute right-0 top-0 flex h-4 w-4 items-center justify-center rounded-bl-md opacity-0 transition-opacity group-hover:opacity-100"
                 style={{ background: "rgba(0,0,0,0.6)" }}
-                title="移除输入图"
+
               >
                 <X className="h-2.5 w-2.5 text-white" />
-              </button>
+              </button></HoverInfo>
             </div>
           ))}
-          <button
+          <HoverInfo content={atMaxInput ? `已达上限 ${MAX_INPUT_IMAGES} 张` : "添加图片"}><button
             type="button"
             onClick={() => {
               if (atMaxInput) return;
@@ -491,10 +492,10 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
               background: atMaxInput ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)",
               opacity: atMaxInput ? 0.4 : 1,
             }}
-            title={atMaxInput ? `已达上限 ${MAX_INPUT_IMAGES} 张` : "添加图片"}
+
           >
             <Plus className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.6)" }} />
-          </button>
+          </button></HoverInfo>
           <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
         </div>
 
@@ -506,11 +507,11 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
             >
               <span style={{ fontSize: 12 }}>🎬</span>
               分镜·{data._storyboardLabel}
-              <button
+              <HoverInfo content="移除分镜模板"><button
                 type="button"
                 className="flex h-3.5 w-3.5 items-center justify-center rounded-full opacity-70 transition-opacity hover:opacity-100"
                 style={{ background: "rgba(59,130,246,0.25)" }}
-                title="移除分镜模板"
+
                 onClick={() =>
                   onUpdate({
                     _storyboardLabel: undefined,
@@ -521,7 +522,7 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
                 }
               >
                 <X className="h-2 w-2" />
-              </button>
+              </button></HoverInfo>
             </span>
           </div>
         )}
@@ -534,11 +535,11 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
             >
               <span style={{ fontSize: 12 }}>📚</span>
               模板·{data._creativeLabel}
-              <button
+              <HoverInfo content="移除模板"><button
                 type="button"
                 className="flex h-3.5 w-3.5 items-center justify-center rounded-full opacity-70 transition-opacity hover:opacity-100"
                 style={{ background: "rgba(139,92,246,0.28)" }}
-                title="移除模板"
+
                 onClick={() =>
                   onUpdate({
                     _creativeLabel: undefined,
@@ -548,7 +549,7 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
                 }
               >
                 <X className="h-2 w-2" />
-              </button>
+              </button></HoverInfo>
             </span>
           </div>
         )}
@@ -602,14 +603,14 @@ export function ImageGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
         <DialogContent className="w-[min(720px,calc(100vw-32px))] max-w-none rounded-2xl border border-white/10 bg-[#1c1d20]/95 p-0 text-white shadow-[0_28px_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
           <div className="flex items-center justify-between border-b border-white/[0.08] px-5 py-4">
             <DialogTitle className="text-sm font-medium text-white/85">编辑提示词</DialogTitle>
-            <button
+            <HoverInfo content="关闭"><button
               type="button"
               onClick={() => setExpanded(false)}
               className="flex h-7 w-7 items-center justify-center rounded-lg text-white/50 transition hover:bg-white/[0.08] hover:text-white"
-              title="关闭"
+
             >
               <X className="h-4 w-4" />
-            </button>
+            </button></HoverInfo>
           </div>
           <div className="px-5 py-4">
             <textarea
@@ -699,14 +700,14 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
         onMouseDown={stopPanelGesture}
       >
         <div className="relative px-4 pb-2 pt-3">
-          <button
+          <HoverInfo content="放大编辑"><button
             type="button"
-            title="放大编辑"
+
             onClick={() => setExpanded(true)}
             className="absolute right-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded-lg text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
           >
             <Maximize2 className="h-3.5 w-3.5" />
-          </button>
+          </button></HoverInfo>
           <textarea
             value={prompt}
             placeholder="描述你想要生成的内容，并在下方调整生成参数..."
@@ -727,9 +728,9 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
               options={modelOptions}
               onChange={(videoModel) => onUpdate({ videoModel })}
             />
-            <label
+            <HoverInfo content="视频时长"><label
               className="flex h-8 items-center gap-1 rounded-lg bg-white/[0.08] px-2.5 text-xs text-white/70"
-              title="视频时长"
+
             >
               <input
                 type="number"
@@ -741,7 +742,7 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
                 className="w-8 border-0 bg-transparent p-0 text-xs font-medium text-white/80 outline-none [appearance:textfield] focus:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
               />
               <span className="text-white/40">秒</span>
-            </label>
+            </label></HoverInfo>
           </div>
           <GlassRunButton disabled={!prompt.trim()} onClick={() => void runWorkflow(nodeId)} />
         </div>
@@ -751,14 +752,14 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
         <DialogContent className="w-[min(720px,calc(100vw-32px))] max-w-none rounded-2xl border border-white/10 bg-[#1c1d20]/95 p-0 text-white shadow-[0_28px_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
           <div className="flex items-center justify-between border-b border-white/[0.08] px-5 py-4">
             <DialogTitle className="text-sm font-medium text-white/85">编辑提示词</DialogTitle>
-            <button
+            <HoverInfo content="关闭"><button
               type="button"
-              title="关闭"
+
               onClick={() => setExpanded(false)}
               className="flex h-7 w-7 items-center justify-center rounded-lg text-white/50 transition hover:bg-white/[0.08] hover:text-white"
             >
               <X className="h-4 w-4" />
-            </button>
+            </button></HoverInfo>
           </div>
           <div className="px-5 py-4">
             <textarea
@@ -1030,13 +1031,13 @@ export function AudioForm({ nodeId, data, onUpdate }: { data: CreativeNodeData }
             onChange={(event) => void pickAudio(event.target.files?.[0])}
           />
           {(data.audioReferenceName ?? data.audioReference) && (
-            <p
+            <HoverInfo content={String(data.audioReferenceName ?? data.audioReference)}><p
               className="truncate text-[10px]"
               style={{ color: "rgba(248,248,248,0.4)" }}
-              title={String(data.audioReferenceName ?? data.audioReference)}
+
             >
               {String(data.audioReferenceName ?? data.audioReference)}
-            </p>
+            </p></HoverInfo>
           )}
         </>
       )}

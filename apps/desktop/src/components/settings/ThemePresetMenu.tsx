@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
@@ -126,9 +127,9 @@ export function ThemePresetMenu({ variant }: { variant: ThemeVariant }) {
                 <div className="flex items-center shrink-0">
                   {!isBuiltin && (
                     <>
-                      <button
+                      <HoverInfo content={t("settings.appearance.rename", "重命名")}><button
                         type="button"
-                        title={t("settings.appearance.rename", "重命名")}
+
                         className="opacity-0 group-hover:opacity-100 text-[10px] text-text-secondary hover:text-text-base px-1"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -140,10 +141,10 @@ export function ThemePresetMenu({ variant }: { variant: ThemeVariant }) {
                         }}
                       >
                         <FontAwesomeIcon icon={["fas", "pen"]} />
-                      </button>
-                      <button
+                      </button></HoverInfo>
+                      <HoverInfo content={t("settings.appearance.delete", "删除")}><button
                         type="button"
-                        title={t("settings.appearance.delete", "删除")}
+
                         className="opacity-0 group-hover:opacity-100 text-[10px] text-text-secondary hover:text-red-500 px-1"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -157,7 +158,7 @@ export function ThemePresetMenu({ variant }: { variant: ThemeVariant }) {
                         }}
                       >
                         <FontAwesomeIcon icon={["fas", "trash"]} />
-                      </button>
+                      </button></HoverInfo>
                     </>
                   )}
                   <div className="w-4 flex justify-end">

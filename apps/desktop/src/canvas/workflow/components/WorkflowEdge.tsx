@@ -7,6 +7,7 @@ import {
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
+import { HoverInfo } from "../../../components/ui/HoverInfo";
 
 const MAGIC_BEAM_GRADIENT_START = "#ffaa40";
 const MAGIC_BEAM_GRADIENT_STOP = "#9c40ff";
@@ -122,7 +123,7 @@ function WorkflowEdgeInner({
       )}
       {/* 剪切按钮 */}
       {hovered && !isRunning && (
-        <g
+        <HoverInfo content="断开连线" side="top"><g
           transform={`translate(${labelX} ${labelY})`}
           style={{ cursor: "pointer", pointerEvents: "auto" }}
           onClick={(e) => {
@@ -132,7 +133,6 @@ function WorkflowEdgeInner({
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
         >
-          <title>断开连线</title>
           <circle r="13" fill="rgba(239,68,68,0.12)" />
           <circle
             r="10"
@@ -146,7 +146,7 @@ function WorkflowEdgeInner({
             <line x1="-1" y1="-1" x2="4.5" y2="4" />
             <line x1="-1" y1="1" x2="4.5" y2="-4" />
           </g>
-        </g>
+        </g></HoverInfo>
       )}
     </>
   );

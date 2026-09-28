@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../../components/ui/HoverInfo";
 import { FolderOpen, Download, Upload } from "lucide-react";
 import { Button } from "../../../../components/shadcn/button";
 import { Input } from "../../../../components/shadcn/input";
@@ -55,18 +56,18 @@ function DirRow({ label, desc, value, onBrowse, onClear, disabled, disabledHint 
           className="h-8 flex-1 text-[12px]"
           style={{ background: INPUT_BG, borderColor: BORDER_COLOR, color: TEXT_PRIMARY }}
         />
-        <Button
+        <HoverInfo content={disabled ? disabledHint : "浏览"}><Button
           variant="outline"
           size="sm"
           className="h-8 text-[12px]"
           disabled={disabled}
-          title={disabled ? disabledHint : "浏览"}
+
           onClick={onBrowse}
           style={{ borderColor: BORDER_COLOR, color: TEXT_SECONDARY, background: "transparent" }}
         >
           <FolderOpen size={13} className="mr-1" />
           浏览
-        </Button>
+        </Button></HoverInfo>
         {value && (
           <Button
             variant="ghost"

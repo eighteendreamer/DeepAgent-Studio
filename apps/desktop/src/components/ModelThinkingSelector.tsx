@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 
@@ -118,18 +119,18 @@ export function ModelThinkingSelector({
   const pillModel = selectedModel ? modelLabel(selectedModel) : selectModelLabel;
 
   const trigger = (
-    <TintButton
+    <HoverInfo content={`${selectModelLabel} / ${selectedThinkingOption.label}`}><TintButton
       type="button"
       disabled={disabled}
       onClick={() => onOpenChange(!open)}
       className={cn("flex h-8 max-w-[210px] flex-shrink-0 items-center rounded-full px-3 text-xs", triggerClassName)}
-      title={`${selectModelLabel} / ${selectedThinkingOption.label}`}
+
     >
       <FontAwesomeIcon icon={selectedThinkingOption.icon as any} className="mr-1.5 text-[11px] text-text-secondary" />
       <span className="font-medium">{pillModel}</span>
       <span className="ml-1.5 shrink-0 text-text-secondary">{selectedThinkingOption.label}</span>
       <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[9px] text-text-secondary" />
-    </TintButton>
+    </TintButton></HoverInfo>
   );
 
   return (

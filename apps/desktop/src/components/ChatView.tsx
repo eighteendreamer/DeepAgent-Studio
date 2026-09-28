@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -640,9 +641,9 @@ function UserAttachmentCard({ item }: { item: ComposerAttachment }) {
   const imageSrc = item.kind === "image" && !imageFailed ? loadedSrc : null;
 
   return (
-    <div
+    <HoverInfo content={item.originalPath ?? item.localPath ?? item.name}><div
       className="group/attachment flex min-h-14 max-w-[220px] items-center gap-2 overflow-hidden rounded-xl border border-border-theme bg-elevated-bg px-2 py-2 shadow-sm"
-      title={item.originalPath ?? item.localPath ?? item.name}
+
     >
       {imageSrc ? (
         <img
@@ -666,7 +667,7 @@ function UserAttachmentCard({ item }: { item: ComposerAttachment }) {
           {formatAttachmentSize(item.size) ? ` · ${formatAttachmentSize(item.size)}` : ""}
         </div>
       </div>
-    </div>
+    </div></HoverInfo>
   );
 }
 
@@ -709,24 +710,22 @@ export function UserContextChips({
   return (
     <div className="mb-2 flex max-w-[80%] flex-wrap justify-end gap-1.5">
       {skills.map((skill) => (
-        <span
-          key={`skill-${skill.id}`}
+        <HoverInfo key={`skill-${skill.id}`} content={`${skill.name} (${skill.id})`}><span
           className="inline-flex max-w-[220px] items-center rounded-md border border-primary/20 bg-primary/10 px-2 py-1 text-[13px] font-medium text-primary"
-          title={`${skill.name} (${skill.id})`}
+
         >
           <FontAwesomeIcon icon={["fas", "cube"]} className="mr-1.5 text-[11px]" />
           <span className="truncate">{skill.name || skill.id}</span>
-        </span>
+        </span></HoverInfo>
       ))}
       {mentions.map((mention, index) => (
-        <span
-          key={`mention-${index}-${mentionLabel(mention)}`}
+        <HoverInfo key={`mention-${index}-${mentionLabel(mention)}`} content={mentionTitle(mention)}><span
           className="inline-flex max-w-[260px] items-center rounded-md border border-border-theme bg-sidebar-bg px-2 py-1 text-[13px] font-medium text-text-base"
-          title={mentionTitle(mention)}
+
         >
           <FontAwesomeIcon icon={["fas", mentionIcon(mention) as any]} className="mr-1.5 text-[11px] text-text-secondary" />
           <span className="truncate">{mentionLabel(mention)}</span>
-        </span>
+        </span></HoverInfo>
       ))}
     </div>
   );
@@ -761,24 +760,22 @@ function UserInlineContent({
     return mention.path;
   };
   const renderSkillChip = (skill: ComposerSkillSelection, key: string) => (
-    <span
-      key={key}
+    <HoverInfo key={key} content={`${skill.name} (${skill.id})`}><span
       className="mx-0.5 inline-flex max-w-[220px] translate-y-[2px] items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[13px] font-medium leading-none text-primary"
-      title={`${skill.name} (${skill.id})`}
+
     >
       <FontAwesomeIcon icon={["fas", "cube"]} className="mr-1 text-[11px]" />
       <span className="truncate">{skill.name || skill.id}</span>
-    </span>
+    </span></HoverInfo>
   );
   const renderMentionChip = (mention: ComposerMention, key: string) => (
-    <span
-      key={key}
+    <HoverInfo key={key} content={mentionTitle(mention)}><span
       className="mx-0.5 inline-flex max-w-[260px] translate-y-[2px] items-center rounded-md border border-border-theme bg-sidebar-bg px-1.5 py-0.5 text-[13px] font-medium leading-none text-text-base"
-      title={mentionTitle(mention)}
+
     >
       <FontAwesomeIcon icon={["fas", mentionIcon(mention) as any]} className="mr-1 text-[11px] text-text-secondary" />
       <span className="truncate">{mentionLabel(mention)}</span>
-    </span>
+    </span></HoverInfo>
   );
 
   const markerRegex = /[\uE000\uE001]/g;
@@ -888,25 +885,25 @@ export function UserTurn({
       )}
       {!editing && (
         <div className="flex text-text-secondary mt-2 space-x-3 text-sm opacity-0 group-hover:opacity-100 transition-opacity w-full justify-end">
-          <button
+          <HoverInfo content="复制"><button
             type="button"
-            title="复制"
+
             aria-label="复制"
             onClick={() => copyText(visibleContent)}
             className="hover:text-text-base"
           >
             <FontAwesomeIcon icon={["far", "copy"]} />
-          </button>
-          <button
+          </button></HoverInfo>
+          <HoverInfo content="编辑后重发"><button
             type="button"
-            title="编辑后重发"
+
             aria-label="编辑后重发"
             onClick={() => setEditing(true)}
             disabled={busy || !visibleContent}
             className="hover:text-text-base disabled:opacity-40"
           >
             <FontAwesomeIcon icon={["fas", "pen"]} />
-          </button>
+          </button></HoverInfo>
         </div>
       )}
     </div>
@@ -1281,28 +1278,28 @@ export function ChatView({
       />
       {/* Global Window Actions: fixed position in all states. */}
       <div className="absolute top-3 right-6 z-50 flex items-center gap-3 text-text-secondary pointer-events-auto">
-        <button
+        <HoverInfo content={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}><button
           type="button"
           onClick={() => setIsRightSidebarOpen((v) => !v)}
           className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
             isRightSidebarOpen ? "text-text-base" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
           }`}
-          title={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
+
           aria-label={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
         >
           <SidebarRightIcon className="text-[15px]" />
-        </button>
-        <button
+        </button></HoverInfo>
+        <HoverInfo content="打开底部终端"><button
           type="button"
           onClick={handleToggleBottomTerminalPanel}
           className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
             isBottomPanelOpen ? "text-text-base" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
           }`}
-          title="打开底部终端"
+
           aria-label="打开底部终端"
         >
           <BottomPanelIcon className="text-[15px]" />
-        </button>
+        </button></HoverInfo>
       </div>
 
       {/* Top half: conversation flow & overlay */}
@@ -1357,14 +1354,14 @@ export function ChatView({
                     setSelectedConnection(connection ?? null);
                   }}
                 >
-                <button
+                <HoverInfo content={t("chatView.environmentInfo")}><button
                   type="button"
                   className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover-bg hover:text-text-base data-[state=open]:text-text-base"
-                  title={t("chatView.environmentInfo")}
+
                   aria-label={t("chatView.environmentInfo")}
                 >
                   <FontAwesomeIcon icon={["fas", "sliders"]} className="text-[15px]" />
-                </button>
+                </button></HoverInfo>
                 </EnvironmentInfoMenu>
               )}
             </div>
@@ -1372,7 +1369,7 @@ export function ChatView({
         </header>
           <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
             <div className="flex-1 flex flex-col relative min-w-0 min-h-0">
-          
+
 
         <div
           ref={scrollRef}
@@ -1420,7 +1417,7 @@ export function ChatView({
         </div>
 
             </div>
-            
+
           </div>
         </div>
           <RightSidebarWorkbench

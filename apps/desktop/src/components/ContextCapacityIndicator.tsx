@@ -1,3 +1,4 @@
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "./shadcn/hover-card";
 import { useMemo, useState, useEffect, useRef } from "react";
 import type { ContextUsageSnapshot } from "../types";
 import { MOTION } from "./ui/motion";
@@ -87,21 +88,17 @@ export function ContextCapacityIndicator({
   const showPopover = open && !popoverSuppressed;
 
   return (
-    <div
-      className="relative flex h-8 w-8 shrink-0 items-center justify-center"
-      onMouseEnter={() => {
-        if (!popoverSuppressed) setOpen(true);
-      }}
-      onMouseLeave={() => setOpen(false)}
-    >
-      <button
+    <div className="relative flex h-8 w-8 shrink-0 items-center justify-center">
+      <HoverCard open={showPopover} onOpenChange={(next, details) => {
+        if (details.reason === "trigger-press") details.cancel();
+        else if (!popoverSuppressed) setOpen(next);
+      }}>
+      <HoverCardTrigger delay={120} closeDelay={150} render={<button
         type="button"
         className={`flex h-8 w-8 items-center justify-center rounded-full text-text-secondary ${MOTION.fast}`}
-        title={`Context ${percent}%`}
         aria-label={`Context ${percent}%`}
         onClick={() => {
-          if (popoverSuppressed) return;
-          setOpen((value) => !value);
+          if (!popoverSuppressed) setOpen((value) => !value);
         }}
       >
         <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
@@ -128,10 +125,9 @@ export function ContextCapacityIndicator({
             />
           )}
         </svg>
-      </button>
+      </button>} />
 
-      {showPopover && (
-        <div className="absolute bottom-full right-0 z-50 mb-2 w-[200px] rounded-2xl bg-elevated-bg px-3.5 py-3 text-[12px] text-text-base shadow-[0_6px_24px_rgba(0,0,0,0.10)]">
+      <HoverCardContent side="top" align="end" className="w-[200px] px-3.5 py-3">
           <div className="flex items-baseline justify-between gap-2">
             <span className="font-semibold">上下文</span>
             <span className="text-[18px] font-semibold leading-none">{percent}%</span>
@@ -159,8 +155,8 @@ export function ContextCapacityIndicator({
               </span>
             </div>
           )}
-        </div>
-      )}
+      </HoverCardContent>
+      </HoverCard>
     </div>
   );
 }

@@ -1,10 +1,10 @@
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "./shadcn/hover-card";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { LoaderCircle, Wallet } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { getBalance, SETTINGS_CHANGED_EVENT, type SettingsChangedDetail } from "../api";
 import type { Balance, BalanceInfo } from "../types";
-import { FLOATING_MENU } from "./ui/motion";
 
 /**
  * A compact "余额: ¥xx.xx" chip that calls DeepSeek's `/user/balance` and
@@ -57,18 +57,16 @@ export function BalanceChip({ popoverSuppressed = false }: { popoverSuppressed?:
   const tone = pickTone(balance, error, loading);
 
   return (
-    <div
-      className="relative"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      <button
+    <HoverCard open={hovered && !popoverSuppressed} onOpenChange={(next, details) => {
+      if (details.reason === "trigger-press") details.cancel();
+      else setHovered(next);
+    }}>
+      <HoverCardTrigger delay={180} closeDelay={150} render={<button
         type="button"
         onClick={(e) => {
           e.stopPropagation();
           if (!loading) refresh();
         }}
-        title={tooltipText(balance, error, t)}
         className={`inline-flex items-center text-[12px] font-medium cursor-pointer transition-colors ${tone}`}
       >
         {loading ? (
@@ -77,12 +75,10 @@ export function BalanceChip({ popoverSuppressed = false }: { popoverSuppressed?:
           <Wallet className="mr-2 h-3 w-3" />
         )}
         {label}
-      </button>
+      </button>} />
 
-      {hovered && !popoverSuppressed && balance && balance.infos.length > 0 && (
-        <div
-          className={`${FLOATING_MENU.shell} absolute bottom-full right-0 z-50 mb-2 min-w-[240px] px-3 py-2.5 text-[12px] text-text-base`}
-        >
+      <HoverCardContent side="top" align="end" className="min-w-[240px] px-3 py-2.5">
+        {balance && balance.infos.length > 0 ? <>
           {balance.infos.map((info, i) => (
             <div key={`${info.currency}-${i}`} className={i > 0 ? "mt-3" : ""}>
               {i > 0 && <div className="my-1.5 h-px shrink-0 bg-border-theme opacity-[0.55]" />}
@@ -107,9 +103,9 @@ export function BalanceChip({ popoverSuppressed = false }: { popoverSuppressed?:
               <div className="pt-0.5 text-[11px] text-amber-600">{t("balanceChip.depleted")}</div>
             </>
           )}
-        </div>
-      )}
-    </div>
+        </> : tooltipText(balance, error, t)}
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 

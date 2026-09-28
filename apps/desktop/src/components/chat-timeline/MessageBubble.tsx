@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -39,27 +40,25 @@ function mentionTitle(mention: ComposerMention): string | undefined {
 
 function renderSkillChip(skill: ComposerSkillSelection, key: string) {
   return (
-    <span
-      key={key}
+    <HoverInfo key={key} content={`${skill.name} (${skill.id})`}><span
       className="mx-0.5 inline-flex max-w-[220px] translate-y-[2px] items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[13px] font-medium leading-none text-primary"
-      title={`${skill.name} (${skill.id})`}
+
     >
       <FontAwesomeIcon icon={["fas", "cube"]} className="mr-1 text-[11px]" />
       <span className="truncate">{skill.name || skill.id}</span>
-    </span>
+    </span></HoverInfo>
   );
 }
 
 function renderMentionChip(mention: ComposerMention, key: string) {
   return (
-    <span
-      key={key}
+    <HoverInfo key={key} content={mentionTitle(mention)}><span
       className="mx-0.5 inline-flex max-w-[260px] translate-y-[2px] items-center rounded-md border border-gray-300 bg-gray-50 px-1.5 py-0.5 text-[13px] font-medium leading-none text-text-base"
-      title={mentionTitle(mention)}
+
     >
       <FontAwesomeIcon icon={["fas", mentionIcon(mention)]} className="mr-1 text-[11px] text-text-secondary" />
       <span className="truncate">{mentionLabel(mention)}</span>
-    </span>
+    </span></HoverInfo>
   );
 }
 
@@ -131,14 +130,13 @@ function AttachmentPreviews({ block }: { block: Extract<ChatBlock, { kind: "user
           );
         }
         return (
-          <span
-            key={attachment.id}
+          <HoverInfo key={attachment.id} content={attachment.name}><span
             className="inline-flex max-w-[260px] items-center rounded-xl border border-border-theme bg-white px-3 py-2 text-[12px] text-text-secondary shadow-sm"
-            title={attachment.name}
+
           >
             <FontAwesomeIcon icon={["fas", "paperclip"]} className="mr-2 text-[11px]" />
             <span className="truncate">{attachment.name}</span>
-          </span>
+          </span></HoverInfo>
         );
       })}
     </div>

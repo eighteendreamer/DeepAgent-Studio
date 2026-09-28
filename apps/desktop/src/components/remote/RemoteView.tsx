@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useRef, useState } from "react";
 import { FileText, Loader2, Plus, Server, Terminal, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -287,20 +288,20 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
             </ContextMenuContent>
           </ContextMenu>
         ))}
-        <button
+        <HoverInfo content={t("remote.tabNewTerminal")}><button
           type="button"
           className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-black/5 hover:text-text-base"
           onClick={addTerminalTab}
-          title={t("remote.tabNewTerminal")}
+
         >
           <Plus className="h-3.5 w-3.5" />
-        </button>
+        </button></HoverInfo>
         {fileTabs.map((tab) => (
           <ContextMenu key={tab.path}>
             <ContextMenuTrigger asChild>
-              <button
+              <HoverInfo content={tab.path}><button
                 type="button"
-                title={tab.path}
+
                 className={tabButtonClassName(activeKey === tab.path)}
                 onClick={() => setActiveKey(tab.path)}
               >
@@ -318,7 +319,7 @@ export function RemoteView({ connection, openFile }: RemoteViewProps) {
                 >
                   <X className="h-3 w-3" />
                 </span>
-              </button>
+              </button></HoverInfo>
             </ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem onSelect={() => closeTab(tab.path)}>

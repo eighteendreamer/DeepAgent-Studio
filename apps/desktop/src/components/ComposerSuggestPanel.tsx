@@ -1,6 +1,6 @@
 import { useMemo, type ReactNode } from "react";
 import { Panel } from "./ui/Panel";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/Tooltip";
+import { HoverInfo } from "./ui/HoverInfo";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 
 export type ComposerSuggestSection<T> = {
@@ -46,7 +46,7 @@ export function ComposerSuggestPanel<T>({
   }, [sections, selectedIndex, getKey]);
   if (!open) return null;
   return (
-    <TooltipProvider>
+    <>
       <Panel
         className={`absolute inset-x-3 bottom-full z-50 mb-2 max-h-60 w-auto overflow-y-auto p-1.5 ${className}`}
       >
@@ -81,12 +81,7 @@ export function ComposerSuggestPanel<T>({
                   </button>
                 );
                 return renderTooltip ? (
-                  <Tooltip key={itemKey}>
-                    <TooltipTrigger asChild>{button}</TooltipTrigger>
-                    <TooltipContent side="top" align="start">
-                      {renderTooltip(item)}
-                    </TooltipContent>
-                  </Tooltip>
+                  <HoverInfo key={itemKey} content={renderTooltip(item)}>{button}</HoverInfo>
                 ) : (
                   button
                 );
@@ -96,6 +91,6 @@ export function ComposerSuggestPanel<T>({
         })}
       </SlidingMenuList>
       </Panel>
-    </TooltipProvider>
+    </>
   );
 }

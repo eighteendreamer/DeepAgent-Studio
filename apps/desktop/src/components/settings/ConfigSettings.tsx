@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useMemo, useState } from "react";
@@ -513,15 +514,15 @@ function RuntimeResourceSettings() {
                         卸载
                       </button>
                     ) : (
-                      <button
+                      <HoverInfo content={unavailableReason ?? undefined}><button
                         type="button"
                         onClick={() => installRuntime(runtime)}
                         disabled={installDisabled}
                         className="rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:bg-gray-200 disabled:text-text-secondary"
-                        title={unavailableReason ?? undefined}
+
                       >
                         下载
-                      </button>
+                      </button></HoverInfo>
                     )}
                   </div>
                 </div>
@@ -1295,7 +1296,7 @@ export function ConfigSettings() {
       {/* Section: 自定义 config.toml 设置 */}
       <div className="mb-12 max-w-[700px]">
         <h2 className="text-[15px] font-medium text-text-base mb-6">{t("settings.config.customSettings")}</h2>
-        
+
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center bg-black/5 hover:bg-black/5 rounded-lg px-3 py-1.5 cursor-pointer transition-colors">
             <span className="text-[12px] font-medium text-text-base mr-2">{t("settings.config.userConfig")}</span>

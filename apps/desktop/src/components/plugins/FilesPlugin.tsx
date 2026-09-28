@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
@@ -655,10 +656,10 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
               ) : null}
             </span>
             <FontAwesomeIcon icon={fileIcon(entry)} className="mr-2 w-4 flex-shrink-0 text-text-secondary" />
-            <div className="flex min-w-0 flex-1 overflow-hidden" title={entry.name}>
+            <HoverInfo content={entry.name}><div className="flex min-w-0 flex-1 overflow-hidden" >
               <span className="truncate block">{basename}</span>
               <span className="flex-shrink-0">{extension}</span>
-            </div>
+            </div></HoverInfo>
             {entry.is_dir && isLoadingChildren ? (
               <FontAwesomeIcon icon={["fas", "circle-notch"]} className="ml-2 animate-spin text-[11px] text-text-secondary" />
             ) : null}
@@ -680,12 +681,12 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                 {index > 0 ? (
                   <FontAwesomeIcon icon={["fas", "chevron-right"]} className="mx-1.5 text-[9px] text-[#a0a7b4]" />
                 ) : null}
-                <span
+                <HoverInfo content={segment}><span
                   className={`truncate ${index === breadcrumbSegments.length - 1 ? "font-semibold text-text-base" : ""}`}
-                  title={segment}
+
                 >
                   {segment}
-                </span>
+                </span></HoverInfo>
               </div>
             ))}
           </div>
@@ -771,17 +772,17 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
             ) : null}
           </div>
 
-          <button
+          <HoverInfo content={treeCollapsed ? "展开文件树" : "收起文件树"}><button
             type="button"
             onClick={() => setTreeCollapsed((prev) => !prev)}
             className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f4f5f7] hover:text-text-base"
-            title={treeCollapsed ? "展开文件树" : "收起文件树"}
+
           >
             <FontAwesomeIcon
               icon={["fas", treeCollapsed ? "angles-left" : "angles-right"]}
               className="text-[12px]"
             />
-          </button>
+          </button></HoverInfo>
         </div>
       </div>
 

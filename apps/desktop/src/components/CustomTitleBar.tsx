@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { ArrowLeft, ArrowRight, PanelLeft } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
@@ -96,38 +97,38 @@ export function CustomTitleBar({
             id={NAV_ROW_ID}
             className={cn("flex h-full items-center gap-1 pl-3", className)}
           >
-            <Button
+            <HoverInfo content={t("settings.shortcuts.toggleSidebar")}><Button
               variant="ghost"
               size="icon"
               className={BUTTON_CLASS}
               onClick={onToggleSidebar}
-              title={t("settings.shortcuts.toggleSidebar")}
+
               aria-label={t("settings.shortcuts.toggleSidebar")}
             >
               <PanelLeft className="h-4 w-4" />
-            </Button>
-            <Button
+            </Button></HoverInfo>
+            <HoverInfo content={t("settings.shortcuts.goBack")}><Button
               variant="ghost"
               size="icon"
               className={BUTTON_CLASS}
               onClick={onBack}
               disabled={!canGoBack}
-              title={t("settings.shortcuts.goBack")}
+
               aria-label={t("settings.shortcuts.goBack")}
             >
               <ArrowLeft className="h-4 w-4" />
-            </Button>
-            <Button
+            </Button></HoverInfo>
+            <HoverInfo content={t("settings.shortcuts.goForward")}><Button
               variant="ghost"
               size="icon"
               className={BUTTON_CLASS}
               onClick={onForward}
               disabled={!canGoForward}
-              title={t("settings.shortcuts.goForward")}
+
               aria-label={t("settings.shortcuts.goForward")}
             >
               <ArrowRight className="h-4 w-4" />
-            </Button>
+            </Button></HoverInfo>
           </div>,
           slot,
         )}

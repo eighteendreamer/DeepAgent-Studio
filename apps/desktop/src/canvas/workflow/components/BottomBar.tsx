@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../components/ui/HoverInfo";
 import {
   AlignHorizontalJustifyCenter,
   AlignHorizontalJustifyEnd,
@@ -170,84 +171,83 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
     <div
       className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-[9997]${toolsOpen ? " pointer-events-none" : ""}`}
     >
-      <HoverCard open={toolsOpen} onOpenChange={setToolsOpen} openDelay={120} closeDelay={300}>
-        <HoverCardTrigger asChild>
+      <HoverCard open={toolsOpen} onOpenChange={setToolsOpen}>
+        <HoverCardTrigger delay={120} closeDelay={300} render={
           <button
-            className="flex items-center justify-center outline-none transition-all duration-300 hover:brightness-125 active:scale-95 data-[state=open]:pointer-events-none data-[state=open]:opacity-0"
+            className="flex items-center justify-center outline-none transition-all duration-300 hover:brightness-125 active:scale-95 data-popup-open:pointer-events-none data-popup-open:opacity-0"
             style={{ ...BAR_STYLE, width: 44, height: 28, borderRadius: 999, cursor: "pointer" }}
-            title="工具栏"
+            aria-label="工具栏"
           >
             <ChevronUp size={12} strokeWidth={2} color={ICON_COLOR} />
           </button>
-        </HoverCardTrigger>
+        } />
         <HoverCardContent
           side="top"
           align="center"
           sideOffset={-28}
-          className="w-auto"
+          className="w-auto max-w-none"
           style={{ ...BAR_STYLE, borderRadius: 12, padding: 0 }}
         >
           <div className="flex items-center gap-1 px-1.5" style={{ height: 40 }}>
       {/* Grid / Snap */}
-      <button
+      <HoverInfo content="网格"><button
         className={BTN_CLASS}
         onClick={toggleGrid}
-        title="网格"
+
         style={{ background: gridVisible ? "rgba(255,255,255,0.15)" : undefined }}
       >
         <Grid3x3 size={14} strokeWidth={1.8} color={gridVisible ? ICON_ACTIVE : ICON_COLOR} />
-      </button>
-      <button
+      </button></HoverInfo>
+      <HoverInfo content="磁吸"><button
         className={BTN_CLASS}
         onClick={toggleSnap}
-        title="磁吸"
+
         style={{ background: snapToGrid ? "rgba(255,255,255,0.15)" : undefined }}
       >
         <Magnet size={14} strokeWidth={1.8} color={snapToGrid ? ICON_ACTIVE : ICON_COLOR} />
-      </button>
-      <button className={BTN_CLASS} onClick={handleUndo} disabled={!canUndo} title="撤销">
+      </button></HoverInfo>
+      <HoverInfo content="撤销"><button className={BTN_CLASS} onClick={handleUndo} disabled={!canUndo} >
         <Undo2 size={14} strokeWidth={1.8} color={canUndo ? ICON_COLOR : ICON_MUTED} />
-      </button>
-      <button className={BTN_CLASS} onClick={handleRedo} disabled={!canRedo} title="重做">
+      </button></HoverInfo>
+      <HoverInfo content="重做"><button className={BTN_CLASS} onClick={handleRedo} disabled={!canRedo} >
         <Redo2 size={14} strokeWidth={1.8} color={canRedo ? ICON_COLOR : ICON_MUTED} />
-      </button>
+      </button></HoverInfo>
 
       <div style={DIVIDER_STYLE} />
 
       {/* Align */}
       {ALIGN_BUTTONS.map(({ mode: alignMode, title, Icon }) => (
-        <button
-          key={alignMode}
+        <HoverInfo key={alignMode} content={canAlign ? title : "选择至少两个节点后可对齐"}><button
           className={BTN_CLASS}
           onClick={() => handleAlign(alignMode)}
           disabled={!canAlign}
-          title={canAlign ? title : "选择至少两个节点后可对齐"}
+
         >
           <Icon size={14} strokeWidth={1.8} color={canAlign ? ICON_COLOR : ICON_MUTED} />
-        </button>
+        </button></HoverInfo>
       ))}
 
       <div style={DIVIDER_STYLE} />
 
       {/* Auto layout */}
-      <button
+      <HoverInfo content={nodeCount > 0 ? "自动布局" : "画布为空"}><button
         className={BTN_CLASS}
         onClick={handleAutoLayout}
         disabled={nodeCount === 0}
-        title={nodeCount > 0 ? "自动布局" : "画布为空"}
+
       >
         <LayoutGrid size={14} strokeWidth={1.8} color={nodeCount > 0 ? ICON_COLOR : ICON_MUTED} />
-      </button>
+      </button></HoverInfo>
 
       <div style={DIVIDER_STYLE} />
 
       {/* Fit screen + Zoom */}
-      <button className={BTN_CLASS} onClick={handleFitScreen} title="适应屏幕">
+      <HoverInfo content="适应屏幕"><button className={BTN_CLASS} onClick={handleFitScreen} >
         <Maximize2 size={14} strokeWidth={1.8} color={ICON_COLOR} />
-      </button>
-      <button className={BTN_CLASS} onClick={handleZoomOut} title="缩小">
+      </button></HoverInfo>
+      <HoverInfo content="缩小"><button className={BTN_CLASS} onClick={handleZoomOut} >
         <ZoomOut size={14} strokeWidth={1.8} color={ICON_COLOR} />
-      </button>
+      </button></HoverInfo>
       <input
         type="range"
         min={20}
@@ -258,17 +258,17 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
         className="w-28 cursor-pointer"
         style={{ accentColor: "rgb(248,248,248)" }}
       />
-      <button className={BTN_CLASS} onClick={handleZoomIn} title="放大">
+      <HoverInfo content="放大"><button className={BTN_CLASS} onClick={handleZoomIn} >
         <ZoomIn size={14} strokeWidth={1.8} color={ICON_COLOR} />
-      </button>
-      <button
+      </button></HoverInfo>
+      <HoverInfo content="重置缩放"><button
         className="px-1.5 text-xs font-medium transition-colors duration-200"
         style={{ color: ICON_COLOR, minWidth: 36 }}
         onClick={handleResetZoom}
-        title="重置缩放"
+
       >
         {percent}%
-      </button>
+      </button></HoverInfo>
 
       <div style={DIVIDER_STYLE} />
 
@@ -295,9 +295,9 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
       <div style={DIVIDER_STYLE} />
 
       {/* Settings */}
-      <button className={BTN_CLASS} title="设置" onClick={useCanvasStore.getState().openSettings}>
+      <HoverInfo content="设置"><button className={BTN_CLASS}  onClick={useCanvasStore.getState().openSettings}>
         <Settings size={14} strokeWidth={1.8} color={ICON_COLOR} />
-      </button>
+      </button></HoverInfo>
           </div>
         </HoverCardContent>
       </HoverCard>

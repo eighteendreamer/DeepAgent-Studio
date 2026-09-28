@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useCallback, useId, useLayoutEffect } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { Cloud, Monitor } from "lucide-react";
@@ -335,28 +336,28 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
     <div className="w-full h-full min-w-0 overflow-hidden flex flex-col relative">
       {/* Top-right action buttons: sidebar + terminal, fixed position in all states. */}
       <div className="absolute top-0.5 right-6 z-50 flex items-center gap-3 text-text-secondary pointer-events-auto">
-        <button
+        <HoverInfo content={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}><button
           type="button"
           onClick={() => setIsRightSidebarOpen((v) => !v)}
           className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
             isRightSidebarOpen ? "text-text-base" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
           }`}
-          title={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
+
           aria-label={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
         >
           <SidebarRightIcon className="text-[15px]" />
-        </button>
-        <button
+        </button></HoverInfo>
+        <HoverInfo content="打开底部终端"><button
           type="button"
           onClick={handleToggleBottomTerminalPanel}
           className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
             isBottomPanelOpen ? "text-text-base" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
           }`}
-          title="打开底部终端"
+
           aria-label="打开底部终端"
         >
           <BottomPanelIcon className="text-[15px]" />
-        </button>
+        </button></HoverInfo>
       </div>
 
       {/* Top half: main content & right sidebar */}
@@ -771,7 +772,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
               </div>
             </div>
         )}
-      
+
     </div>
   );
 }

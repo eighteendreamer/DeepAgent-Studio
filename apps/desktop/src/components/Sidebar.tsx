@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { Archive, ArrowDown, Book, Check, ChevronDown, ChevronRight, Clock, Ellipsis, Folder, FolderPlus, Layers, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
@@ -206,7 +207,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   const [sortCriterion, setSortCriterion] = useState<SidebarSortCriterion>(() =>
     readSidebarPreference("deepagent:sidebar-sort-criterion", "updated", SIDEBAR_SORT_CRITERIA)
   );
-  
+
   useEffect(() => {
     return () => {
       if (overflowCloseTimer.current != null) window.clearTimeout(overflowCloseTimer.current);
@@ -368,12 +369,11 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
       >
         <div className="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
           {isRunning && (
-            <FontAwesomeIcon
+            <HoverInfo content={t("sidebar.running")}><FontAwesomeIcon
               icon={["fas", "circle-notch"]}
               spin
               className="flex-shrink-0 text-[11px] text-blue-500"
-              title={t("sidebar.running")}
-            />
+            /></HoverInfo>
           )}
           <span className="truncate">{s.title?.trim() || t("sidebar.newChat")}</span>
         </div>
@@ -399,25 +399,25 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                     : "pointer-events-none opacity-0 group-hover/session:pointer-events-auto group-hover/session:opacity-100",
                 )}
               >
-                <button
+                <HoverInfo content={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}><button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onPinSession(s.id, !isPinned); }}
                   className={cn(
                     "flex h-5 w-5 items-center justify-center rounded hover:bg-sidebar-highlight",
                     isPinned ? "text-text-base" : "text-text-secondary",
                   )}
-                  title={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
+
                 >
                   <PinThumbtackIcon pinned={isPinned} />
-                </button>
-                <button
+                </button></HoverInfo>
+                <HoverInfo content={t("sidebar.archive")}><button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onArchiveSession(s.id); }}
                   className="flex h-5 w-5 items-center justify-center rounded text-text-secondary hover:bg-sidebar-highlight"
-                  title={t("sidebar.archive")}
+
                 >
                   <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-[10px]" />
-                </button>
+                </button></HoverInfo>
               </div>
             </>
           )}
@@ -444,13 +444,13 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           <span className="truncate flex-1">{proj}</span>
 
           <div className={`flex items-center space-x-0.5 transition-opacity ${activeProjectMenu === proj || isProjectPinned ? 'opacity-100' : 'opacity-0 group-hover/proj:opacity-100'}`}>
-            <button
+            <HoverInfo content={isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}><button
               type="button"
               className={cn(
                 "w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded",
                 isProjectPinned && "text-text-base",
               )}
-              title={isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}
+
               onClick={(e) => {
                 e.stopPropagation();
                 const path = nameToPath[proj];
@@ -458,7 +458,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               }}
             >
               <PinThumbtackIcon pinned={isProjectPinned} />
-            </button>
+            </button></HoverInfo>
             <SidebarProjectMenu
               isPinned={isProjectPinned}
               open={activeProjectMenu === proj}
@@ -490,9 +490,9 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 if (path) setRemoveProject({ path, name: proj });
               }}
             />
-            <button
+            <HoverInfo content={t("sidebar.newChat")}><button
               className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded"
-              title={t("sidebar.newChat")}
+
               onClick={(e) => {
                 e.stopPropagation();
                 const path = nameToPath[proj];
@@ -501,7 +501,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               }}
             >
               <FontAwesomeIcon icon={["far", "pen-to-square"]} className="text-[10px]" />
-            </button>
+            </button></HoverInfo>
           </div>
         </div>
         {isExpanded && (
@@ -585,9 +585,9 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
       {/* Project / session list */}
       <div className="stable-scrollbar-gutter flex-1 overflow-y-auto px-2 mt-4 space-y-3 pb-2 custom-scrollbar">
         <div className="flex flex-col">
-          <div
+          <HoverInfo content={projectsCollapsed ? t("sidebar.expandProjects") : t("sidebar.collapseProjects")}><div
             className="flex items-center justify-between px-2 mb-1 text-text-secondary group cursor-pointer select-none"
-            title={projectsCollapsed ? t("sidebar.expandProjects") : t("sidebar.collapseProjects")}
+
             onClick={toggleProjectsSection}
           >
             <span className="flex items-center gap-0.5 text-[12px]">
@@ -607,11 +607,11 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   if (next) setIsNewProjectMenuOpen(false);
                 }}
               >
-                <DropdownMenuTrigger asChild title={t("sidebar.more")}>
+                <HoverInfo content={t("sidebar.more")}><DropdownMenuTrigger asChild >
                   <button className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded">
                     <Ellipsis className="h-3 w-3" />
                   </button>
-                </DropdownMenuTrigger>
+                </DropdownMenuTrigger></HoverInfo>
                 <DropdownMenuContent align="end" className="min-w-[12rem]">
                   <DropdownMenuItem className="gap-2" onSelect={() => onArchiveAllSessions()}>
                     <Archive className="h-4 w-4 shrink-0 text-text-secondary" />
@@ -678,11 +678,11 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   if (next) setIsMoreMenuOpen(false);
                 }}
               >
-                <DropdownMenuTrigger asChild title={t("sidebar.newProject")}>
+                <HoverInfo content={t("sidebar.newProject")}><DropdownMenuTrigger asChild >
                   <button className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded">
                     <FolderPlus className="h-3 w-3" />
                   </button>
-                </DropdownMenuTrigger>
+                </DropdownMenuTrigger></HoverInfo>
                 <DropdownMenuContent align="end" className="min-w-[10rem]">
                   <DropdownMenuItem className="gap-2" onSelect={() => onAddProject()}>
                     <FolderPlus className="h-4 w-4 shrink-0 text-text-secondary" />
@@ -695,7 +695,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-          </div>
+          </div></HoverInfo>
           {!projectsCollapsed && (
             <div className="space-y-0.5">
               {projects.length === 0 && projectEntries.length === 0 && (
@@ -712,9 +712,9 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         </div>
 
         <div className="flex flex-col">
-          <div
+          <HoverInfo content={recentCollapsed ? t("sidebar.expandRecentChats") : t("sidebar.collapseRecentChats")}><div
             className="flex items-center justify-between px-2 mb-1 text-text-secondary group cursor-pointer select-none"
-            title={recentCollapsed ? t("sidebar.expandRecentChats") : t("sidebar.collapseRecentChats")}
+
             onClick={toggleRecentSection}
           >
             <span className="flex items-center gap-0.5 text-[12px]">
@@ -728,11 +728,11 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               onClick={(e) => e.stopPropagation()}
             >
               <DropdownMenu open={isRecentMenuOpen} onOpenChange={setIsRecentMenuOpen}>
-                <DropdownMenuTrigger asChild title={t("sidebar.more")}>
+                <HoverInfo content={t("sidebar.more")}><DropdownMenuTrigger asChild >
                   <button className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded">
                     <Ellipsis className="h-3 w-3" />
                   </button>
-                </DropdownMenuTrigger>
+                </DropdownMenuTrigger></HoverInfo>
                 <DropdownMenuContent align="end" className="min-w-[11rem]">
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger>
@@ -760,19 +760,19 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   </DropdownMenuSub>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <button
+              <HoverInfo content={t("sidebar.newChat")}><button
                 type="button"
                 className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded"
-                title={t("sidebar.newChat")}
+
                 onClick={() => {
                   onSelectProject(null);
                   onNewChat();
                 }}
               >
                 <SquarePen className="h-3 w-3" />
-              </button>
+              </button></HoverInfo>
             </div>
-          </div>
+          </div></HoverInfo>
           {!recentCollapsed && (
             <div className="space-y-0.5">
               {recentSessions.length === 0 && (

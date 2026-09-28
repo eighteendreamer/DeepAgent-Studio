@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
@@ -156,9 +157,9 @@ export function EnvironmentInfoMenu({
                 )}
               </div>
               {hasProject ? (
-                <div
+                <HoverInfo content={`Git workspace changes; chat changes +${chatChanges.additions} -${chatChanges.deletions}`}><div
                   className="flex items-center gap-1.5 text-[13px] font-normal tabular-nums"
-                  title={`Git workspace changes; chat changes +${chatChanges.additions} -${chatChanges.deletions}`}
+
                 >
                   {gitLoading ? (
                     <span className="text-[13px] text-text-secondary">{t("chatView.loading")}</span>
@@ -173,7 +174,7 @@ export function EnvironmentInfoMenu({
                   ) : (
                     <span className="text-[13px] text-text-secondary">{t("chatView.noGitRepository")}</span>
                   )}
-                </div>
+                </div></HoverInfo>
               ) : (
                 <span className="text-[13px] text-text-secondary">{t("chatView.noProject")}</span>
               )}
@@ -440,11 +441,11 @@ function OutputRow({ item, onOpenUrl }: { item: OutputItem; onOpenUrl: (url: str
   };
 
   return (
-    <div
+    <HoverInfo content={item.label}><div
       className={`flex min-h-[28px] min-w-0 items-center rounded-lg text-[13px] text-text-secondary transition-colors ${
         clickable ? "cursor-pointer hover:text-blue-500" : "cursor-default"
       }`}
-      title={item.label}
+
       onClick={clickable ? handleItemClick : undefined}
     >
       <FontAwesomeIcon icon={icon} className={`mr-3.5 w-4 flex-shrink-0 text-[13px] ${iconColor}`} />
@@ -459,7 +460,7 @@ function OutputRow({ item, onOpenUrl }: { item: OutputItem; onOpenUrl: (url: str
           {t("chatView.outputCreated")}
         </span>
       )}
-    </div>
+    </div></HoverInfo>
   );
 }
 

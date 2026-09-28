@@ -1,6 +1,7 @@
 import type { HTMLAttributes } from "react";
 import { cn } from "../shadcn/utils";
 import { FLOATING_MENU, MOTION } from "./motion";
+import { HoverInfo } from "./HoverInfo";
 
 /**
  * 列表项 / 下拉行 —— 统一语言：hover 与激活同为 bg-ui-tint（主题感知静默着色）。
@@ -9,11 +10,12 @@ import { FLOATING_MENU, MOTION } from "./motion";
 export function ListItem({
   selected = false,
   sliding = false,
+  title,
   className,
   ...rest
 }: HTMLAttributes<HTMLDivElement> & { selected?: boolean; sliding?: boolean }) {
   return (
-    <div
+    <HoverInfo content={title}><div
       className={cn(
         "flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-[12px]",
         !sliding && FLOATING_MENU.item,
@@ -27,6 +29,6 @@ export function ListItem({
         className,
       )}
       {...rest}
-    />
+    /></HoverInfo>
   );
 }

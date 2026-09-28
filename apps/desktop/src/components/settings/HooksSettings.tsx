@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
@@ -265,13 +266,13 @@ function HookList({
               {item.actions.length} actions
             </span>
             {onDelete && item.source === "user" && (
-              <button
+              <HoverInfo content="删除这条钩子"><button
                 onClick={() => onDelete(item)}
                 className="rounded-md border border-border-theme px-2 py-0.5 text-[11px] text-text-secondary transition-colors hover:border-red-400 hover:text-red-500"
-                title="删除这条钩子"
+
               >
                 删除
-              </button>
+              </button></HoverInfo>
             )}
           </div>
         </li>
@@ -432,28 +433,28 @@ export function HooksSettings() {
             {t("settings.hooks.editorTitle")}
           </div>
           <div className="flex items-center gap-2">
-            <button
+            <HoverInfo content={testTarget ? primaryCommand([testTarget.action]) : "没有可测试的 command hook"}><button
               onClick={testFirst}
               disabled={!valid || !testTarget || testStatus === "running"}
               className="rounded-md border border-border-theme bg-transparent px-2.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-hover-bg hover:text-text-base disabled:opacity-40"
-              title={testTarget ? primaryCommand([testTarget.action]) : "没有可测试的 command hook"}
+
             >
               {testStatus === "running" ? "测试中..." : "测试第一条"}
-            </button>
+            </button></HoverInfo>
             <button
               onClick={format}
               className="rounded-md border border-border-theme px-2.5 py-1 text-[12px] text-text-secondary transition-colors hover:bg-hover-bg hover:text-text-base"
             >
               {t("settings.hooks.format")}
             </button>
-            <button
+            <HoverInfo content={hasInput ? undefined : "输入框仅用于新增：粘贴一段 hooks JSON 后保存，会追加到下方已保存列表"}><button
               onClick={save}
               disabled={!valid || !loaded || !hasInput}
               className="rounded-md bg-text-base px-3 py-1 text-[12px] text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-              title={hasInput ? undefined : "输入框仅用于新增：粘贴一段 hooks JSON 后保存，会追加到下方已保存列表"}
+
             >
               {t("settings.hooks.save")}
-            </button>
+            </button></HoverInfo>
           </div>
         </div>
 
@@ -503,14 +504,14 @@ export function HooksSettings() {
             </span>
           )}
           {status === "error" && errorMsg && (
-            <span className="max-w-[360px] truncate text-red-500" title={errorMsg}>
+            <HoverInfo content={errorMsg}><span className="max-w-[360px] truncate text-red-500" >
               {errorMsg}
-            </span>
+            </span></HoverInfo>
           )}
         </div>
 
         {(testResult || testError) && (
-          <div
+          <HoverInfo content={testError || (testResult ? testResultText(testResult) : undefined)}><div
             className={`mt-2 truncate text-[12px] ${
               testStatus === "error"
                 ? "text-red-500"
@@ -518,10 +519,10 @@ export function HooksSettings() {
                   ? "text-amber-600"
                   : "text-text-secondary"
             }`}
-            title={testError || (testResult ? testResultText(testResult) : undefined)}
+
           >
             {testError || (testResult ? testResultText(testResult) : "")}
-          </div>
+          </div></HoverInfo>
         )}
       </div>
 

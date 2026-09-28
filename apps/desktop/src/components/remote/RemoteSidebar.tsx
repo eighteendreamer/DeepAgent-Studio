@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import {
   ArrowLeft,
   Check,
@@ -675,11 +676,11 @@ export function RemoteSidebar({
                   }}
                 >
                   <ContextMenuTrigger asChild>
-                    <button
+                    <HoverInfo content={entry.path}><button
                       type="button"
                       className={rowClassName}
                       style={{ paddingLeft: 4 + depth * 12 }}
-                      title={entry.path}
+
                       onClick={() => toggleDir(entry)}
                       data-remote-drop-dir={entry.path}
                     >
@@ -697,7 +698,7 @@ export function RemoteSidebar({
                       {loadingDir === entry.path && (
                         <Loader2 className="h-3 w-3 shrink-0 animate-spin text-text-secondary" />
                       )}
-                    </button>
+                    </button></HoverInfo>
                   </ContextMenuTrigger>
                   <ContextMenuContent
                     onCloseAutoFocus={(event) => event.preventDefault()}
@@ -738,17 +739,17 @@ export function RemoteSidebar({
                 }}
               >
                 <ContextMenuTrigger asChild>
-                  <button
+                  <HoverInfo content={entry.path}><button
                     type="button"
                     className="flex w-full items-center gap-1 rounded-md py-1 pr-1.5 pl-0 text-left text-[12px] text-text-base hover:bg-black/5"
                     style={{ paddingLeft: 4 + depth * 12 }}
-                    title={entry.path}
+
                     onClick={() => onOpenFile(entry.path, entry.name)}
                   >
                     <span className="w-3 shrink-0" />
                     <FileIcon className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
                     <span className="truncate">{entry.name}</span>
-                  </button>
+                  </button></HoverInfo>
                 </ContextMenuTrigger>
                 <ContextMenuContent
                   onCloseAutoFocus={(event) => event.preventDefault()}
@@ -830,10 +831,10 @@ export function RemoteSidebar({
                 {connectingId === conn.id ? (
                   <Loader2 className="h-3 w-3 shrink-0 animate-spin text-text-secondary" />
                 ) : (
-                  <span
+                  <HoverInfo content={statusLabel(conn.status)}><span
                     className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotClassName(conn.status)}`}
-                    title={statusLabel(conn.status)}
-                  />
+
+                  /></HoverInfo>
                 )}
               </button>
             </ContextMenuTrigger>
@@ -919,11 +920,10 @@ export function RemoteSidebar({
             ) : (
               searchMatches.map(({ dir, entry }) =>
                 entry.is_dir ? (
-                  <button
-                    key={`${dir}/${entry.name}`}
+                  <HoverInfo key={`${dir}/${entry.name}`} content={`${dir} · ${entry.path}`}><button
                     type="button"
                     className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 text-left hover:bg-black/5"
-                    title={`${dir} · ${entry.path}`}
+
                     onClick={() => toggleDir(entry)}
                   >
                     <Folder className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
@@ -935,13 +935,12 @@ export function RemoteSidebar({
                         {dir}
                       </span>
                     </span>
-                  </button>
+                  </button></HoverInfo>
                 ) : (
-                  <button
-                    key={`${dir}/${entry.name}`}
+                  <HoverInfo key={`${dir}/${entry.name}`} content={`${dir} · ${entry.path}`}><button
                     type="button"
                     className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 text-left hover:bg-black/5"
-                    title={`${dir} · ${entry.path}`}
+
                     onClick={() => onOpenFile(entry.path, entry.name)}
                   >
                     <FileIcon className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
@@ -953,7 +952,7 @@ export function RemoteSidebar({
                         {dir}
                       </span>
                     </span>
-                  </button>
+                  </button></HoverInfo>
                 ),
               )
             )
@@ -1024,9 +1023,9 @@ export function RemoteSidebar({
                   {upload.name}
                 </span>
                 {upload.status === "error" && upload.error && (
-                  <span className="shrink-0 text-[10px] text-red-400" title={upload.error}>
+                  <HoverInfo content={upload.error}><span className="shrink-0 text-[10px] text-red-400" >
                     失败
-                  </span>
+                  </span></HoverInfo>
                 )}
               </div>
             ))}

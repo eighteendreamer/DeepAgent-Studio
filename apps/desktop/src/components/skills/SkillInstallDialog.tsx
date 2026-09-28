@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 // SkillInstallDialog — controlled modal that drives the
 // scan → AI review → install flow for a single market skill (R4.1-R4.11).
 //
@@ -314,14 +315,14 @@ export function SkillInstallDialog({
               {source.githubUrl}
             </div>
           </div>
-          <button
+          <HoverInfo content={t("skillInstallDialog.cancel")}><button
             onClick={handleCancelClick}
             disabled={phase.kind === "installing"}
-            title={t("skillInstallDialog.cancel")}
+
             className="w-7 h-7 rounded-full bg-black/5 flex items-center justify-center text-text-secondary hover:bg-black/5 hover:text-text-base transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
           >
             <FontAwesomeIcon icon={["fas", "xmark"]} className="text-xs" />
-          </button>
+          </button></HoverInfo>
         </div>
 
         {/* Body */}

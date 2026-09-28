@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../../components/ui/HoverInfo";
 import { useRef } from "react";
 import { ImagePlus, RefreshCw, Upload } from "lucide-react";
 import type { CreativeNodeData } from "../../types";
@@ -62,9 +63,9 @@ export function ImageInputContent({ id, data }: Props) {
             onDragStart={(event) => event.preventDefault()}
             className="pointer-events-none h-full w-full select-none object-cover"
           />
-          <button
+          <HoverInfo content="替换图片"><button
             type="button"
-            title="替换图片"
+
             onPointerDown={stopNodeGesture}
             onMouseDown={stopNodeGesture}
             onClick={(event) => {
@@ -74,7 +75,7 @@ export function ImageInputContent({ id, data }: Props) {
             className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-black/60 text-white/75 backdrop-blur transition hover:bg-black/80 hover:text-white"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-          </button>
+          </button></HoverInfo>
         </div>
       ) : (
         <button

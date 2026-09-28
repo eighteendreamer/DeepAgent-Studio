@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes } from "react";
 import { cn } from "../shadcn/utils";
+import { HoverInfo } from "./HoverInfo";
 import { MOTION } from "./motion";
 
 type ToggleSwitchSize = "sm" | "md";
@@ -30,6 +31,7 @@ export function ToggleSwitch({
   tone = "primary",
   className,
   disabled,
+  title,
   ...rest
 }: {
   checked: boolean;
@@ -40,7 +42,7 @@ export function ToggleSwitch({
   const s = SIZE[size];
 
   return (
-    <button
+    <HoverInfo content={title}><button
       type="button"
       role="switch"
       aria-checked={checked}
@@ -73,7 +75,7 @@ export function ToggleSwitch({
           checked ? s.thumbOn : s.thumbOff,
         )}
       />
-    </button>
+    </button></HoverInfo>
   );
 }
 
@@ -93,7 +95,7 @@ export function ToggleSwitchRow({
   tone?: ToggleSwitchTone;
 }) {
   return (
-    <label
+    <HoverInfo content={hint}><label
       onClick={(e) => {
         e.preventDefault();
         onChange();
@@ -103,7 +105,6 @@ export function ToggleSwitchRow({
         size === "sm" ? "gap-2" : "gap-3",
         MOTION.fast,
       )}
-      title={hint}
     >
       <ToggleSwitch checked={checked} onChange={onChange} size={size} tone={tone} />
       <span
@@ -114,6 +115,6 @@ export function ToggleSwitchRow({
       >
         {label}
       </span>
-    </label>
+    </label></HoverInfo>
   );
 }

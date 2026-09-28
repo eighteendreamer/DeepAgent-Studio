@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 // MarketSkillCard — a single tile in the Skills Market grid.
 //
 // Renders a skill discovered via the SkillsMP REST API: name, author,
@@ -38,9 +39,9 @@ function formatUpdated(epochSeconds: number): string {
 export function MarketSkillCard({ skill, installed, onInstall }: MarketSkillCardProps) {
   const { t } = useTranslation();
   return (
-    <div
+    <HoverInfo content={skill.skillUrl}><div
       className="flex flex-col h-full rounded-xl border border-border-theme bg-white p-4 hover:shadow-sm hover:border-gray-300 transition-all"
-      title={skill.skillUrl}
+
     >
       {/* Header: name + author */}
       <div className="flex items-start justify-between gap-2 mb-2">
@@ -54,22 +55,22 @@ export function MarketSkillCard({ skill, installed, onInstall }: MarketSkillCard
           </div>
         </div>
         {installed ? (
-          <span
+          <HoverInfo content={t("skillsView.market_already_installed")}><span
             className="text-[11px] bg-green-50 border border-green-200 text-green-700 rounded-full px-2 py-0.5 flex-shrink-0 whitespace-nowrap"
-            title={t("skillsView.market_already_installed")}
+
           >
             <FontAwesomeIcon icon={["fas", "check"]} className="mr-1" />
             {t("skillsView.market_already_installed")}
-          </span>
+          </span></HoverInfo>
         ) : (
-          <button
+          <HoverInfo content={t("skillsView.market_install_button")}><button
             onClick={() => onInstall(skill)}
-            title={t("skillsView.market_install_button")}
+
             className="w-7 h-7 rounded-full border border-border-theme flex items-center justify-center text-text-secondary bg-gray-50 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-all flex-shrink-0"
             aria-label={t("skillsView.market_install_button")}
           >
             <FontAwesomeIcon icon={["fas", "plus"]} className="text-xs" />
-          </button>
+          </button></HoverInfo>
         )}
       </div>
 
@@ -80,14 +81,14 @@ export function MarketSkillCard({ skill, installed, onInstall }: MarketSkillCard
 
       {/* Footer: stars + updated */}
       <div className="flex items-center justify-between text-[11px] text-text-secondary mt-auto pt-2 border-t border-gray-100">
-        <span className="flex items-center gap-1" title={`${skill.stars} stars`}>
+        <HoverInfo content={`${skill.stars} stars`}><span className="flex items-center gap-1" >
           <FontAwesomeIcon icon={["fas", "star"]} className="text-yellow-500" />
           {formatStars(skill.stars)}
-        </span>
-        <span title={`Updated ${formatUpdated(skill.updatedAt)}`}>
+        </span></HoverInfo>
+        <HoverInfo content={`Updated ${formatUpdated(skill.updatedAt)}`}><span >
           {formatUpdated(skill.updatedAt)}
-        </span>
+        </span></HoverInfo>
       </div>
-    </div>
+    </div></HoverInfo>
   );
 }

@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useRef, useState } from "react";
 import { Send, X, Wrench } from "lucide-react";
 import { startChatV2, sshPtyWrite } from "../../api";
@@ -182,14 +183,14 @@ export function FloatingChat({ connectionId, connected }: FloatingChatProps) {
   return (
     <>
       {/* FAB */}
-      <button
+      <HoverInfo content="远程 AI 助手"><button
         type="button"
         onClick={() => setOpen(true)}
         className="fixed bottom-6 right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-lg transition-transform hover:scale-105 active:scale-95"
-        title="远程 AI 助手"
+
       >
         <img src="/logo.png" alt="logo" className="h-7 w-7" />
-      </button>
+      </button></HoverInfo>
 
       {/* Backdrop */}
       {open && (

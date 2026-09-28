@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
@@ -109,10 +110,10 @@ export function DesktopUpdateController() {
   if (!navRow) return null;
 
   return createPortal(
-    <Button
+    <HoverInfo content={t("titleBar.downloadUpdate")}><Button
       onClick={downloadUpdate}
       disabled={downloading}
-      title={t("titleBar.downloadUpdate")}
+
       className="relative inline-flex h-7 min-w-[104px] items-center justify-center gap-1.5 overflow-hidden rounded-full border border-blue-200 bg-blue-50 px-3 text-[12px] font-medium text-blue-700 transition-colors hover:border-blue-300 hover:bg-blue-100 disabled:cursor-default disabled:border-blue-100 disabled:bg-blue-50 disabled:text-blue-500"
     >
       {downloading && typeof downloadPercent === "number" && (
@@ -134,7 +135,7 @@ export function DesktopUpdateController() {
               : t("titleBar.downloadingUpdate")
           : t("titleBar.downloadUpdate")}
       </span>
-    </Button>,
+    </Button></HoverInfo>,
     navRow,
   );
 }

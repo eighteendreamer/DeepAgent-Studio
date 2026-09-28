@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
@@ -421,7 +422,7 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
           </div>
         </div>
 
-        <div
+        <HoverInfo content="拖动调整宽度"><div
           className="group relative flex min-h-0 cursor-col-resize items-stretch justify-center bg-white"
           onMouseDown={startSidebarResize}
           role="separator"
@@ -429,10 +430,10 @@ export function GitChangesPanel({ projectPath, changes, loading = false, onRefre
           aria-valuemin={minSidebarWidth}
           aria-valuemax={maxSidebarWidth}
           aria-valuenow={Math.round(sidebarWidth)}
-          title="拖动调整宽度"
+
         >
           <div className="h-full w-px bg-border-theme transition-colors group-hover:bg-gray-400" />
-        </div>
+        </div></HoverInfo>
 
         <div className="min-h-0 min-w-0 overflow-hidden">
           {selected ? (
@@ -472,11 +473,11 @@ function ChangedFileRow({
   const canUnstage = file.category === "staged";
 
   return (
-    <div
+    <HoverInfo content={file.old_path ? `${file.old_path} -> ${file.path}` : file.path}><div
       className={`group flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[12px] transition-colors ${
         active ? "bg-white text-text-base shadow-sm" : "text-text-secondary hover:bg-white/70 hover:text-text-base"
       }`}
-      title={file.old_path ? `${file.old_path} -> ${file.path}` : file.path}
+
     >
       {onToggleChecked && (
         <input
@@ -519,7 +520,7 @@ function ChangedFileRow({
           </button>
         )}
       </div>
-    </div>
+    </div></HoverInfo>
   );
 }
 

@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
@@ -311,11 +312,10 @@ export function GitProjectsPanel({ activeProjectPath, onRefresh }: Props) {
             {t("git.projectsPanel.gitProjectsCount", { count: statuses.filter((status) => status.is_repo).length })}
           </span>
           {refreshing && (
-            <FontAwesomeIcon
+            <HoverInfo content={t("git.projectsPanel.loadingBranches")}><FontAwesomeIcon
               icon={["fas", "rotate-right"]}
               className="ml-2 text-[11px] text-text-tertiary motion-safe:animate-spin"
-              title={t("git.projectsPanel.loadingBranches")}
-            />
+            /></HoverInfo>
           )}
         </div>
         <div className="flex items-center gap-1.5">
@@ -526,9 +526,9 @@ function ProjectStatusRow({
             </span>
             {active && <span className="ml-2 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">{t("git.projectsPanel.current")}</span>}
           </div>
-          <div className="mt-0.5 truncate text-[11px] text-text-secondary" title={status.project_path}>
+          <HoverInfo content={status.project_path}><div className="mt-0.5 truncate text-[11px] text-text-secondary" >
             {status.project_path}
-          </div>
+          </div></HoverInfo>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
@@ -690,9 +690,9 @@ function CompareResultView({ title, result }: { title: string; result: GitRefCom
                         : "text-text-base hover:bg-black/5"
                     }`}
                   >
-                    <span className="truncate" title={file.path}>
+                    <HoverInfo content={file.path}><span className="truncate" >
                       {file.path}
-                    </span>
+                    </span></HoverInfo>
                     <span className="shrink-0 text-[11px] text-text-secondary">
                       +{file.additions} -{file.deletions}
                     </span>
@@ -1010,9 +1010,9 @@ function BatchCommitPanel({
             ) : (
               preview.map((item) => (
                 <div key={item.project_path} className="border-b border-border-theme px-3 py-2 last:border-b-0">
-                  <div className="truncate text-[12px] font-medium text-text-base" title={item.project_path}>
+                  <HoverInfo content={item.project_path}><div className="truncate text-[12px] font-medium text-text-base" >
                     {item.project_path.split(/[\\/]/).pop() || item.project_path}
-                  </div>
+                  </div></HoverInfo>
                   <div className="mt-1 flex flex-wrap gap-1.5 text-[11px] text-text-secondary">
                     <span>{item.current_branch ?? t("git.detachedHead")}</span>
                     <span>{t("git.projectsPanel.previewChanged", { count: item.files_changed })}</span>
@@ -1073,9 +1073,9 @@ function BatchCommitPanel({
                   result.ok ? "border-green-100 bg-green-50 text-green-800" : "border-red-100 bg-red-50 text-red-700"
                 }`}
               >
-                <div className="truncate font-medium" title={result.project_path}>
+                <HoverInfo content={result.project_path}><div className="truncate font-medium" >
                   {result.project_path}
-                </div>
+                </div></HoverInfo>
                 <div className="mt-1 text-[11px] opacity-90">{result.message || (result.ok ? t("git.projectsPanel.ok") : t("git.projectsPanel.failed"))}</div>
               </div>
             ))}
@@ -1121,9 +1121,9 @@ function BatchPushRiskCard({ summary }: { summary: BatchPushRiskSummary }) {
                 <span className="font-medium text-text-base">{risk.title}</span>
                 <span className="text-[11px] text-text-secondary">{risk.category}</span>
               </div>
-              <div className="mt-1 truncate text-[11px] text-text-secondary" title={risk.projectPath}>
+              <HoverInfo content={risk.projectPath}><div className="mt-1 truncate text-[11px] text-text-secondary" >
                 {risk.projectPath}
-              </div>
+              </div></HoverInfo>
               <div className="mt-0.5 text-[11px] text-text-secondary">
                 {risk.filePath ? `${risk.filePath}: ` : ""}
                 {risk.detail}

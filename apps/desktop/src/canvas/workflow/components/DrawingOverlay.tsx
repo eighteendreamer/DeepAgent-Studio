@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../components/ui/HoverInfo";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { loadCanvasMediaPixels } from "../utils/canvasMedia";
@@ -629,14 +630,14 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
         <span className="text-[12px]" style={{ color: "rgba(255,255,255,0.55)" }}>
           {subtitle}
         </span>
-        <button
+        <HoverInfo content="关闭 (Esc)"><button
           onClick={onCancel}
           className="ml-3 rounded-lg p-1.5 transition-all hover:bg-white/10"
           style={{ color: "rgba(255,255,255,0.65)" }}
-          title="关闭 (Esc)"
+
         >
           <X className="h-4 w-4" />
-        </button>
+        </button></HoverInfo>
       </div>
 
       {/* 中部画布区域 */}
@@ -721,8 +722,7 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
           {(isEraseMode ? ERASE_TOOLS : ANNOTATE_TOOLS).map(({ tool, icon: Icon, label }) => {
             const active = currentTool === tool;
             return (
-              <button
-                key={tool}
+              <HoverInfo key={tool} content={label}><button
                 onClick={() => {
                   setCurrentTool(tool);
                   if (tool === "text") {
@@ -734,10 +734,10 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
                   background: active ? "rgba(255,255,255,0.12)" : "transparent",
                   color: active ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.6)",
                 }}
-                title={label}
+
               >
                 <Icon className="h-3.5 w-3.5" />
-              </button>
+              </button></HoverInfo>
             );
           })}
         </div>
@@ -751,14 +751,13 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
               {COLORS.map((c) => {
                 const active = currentColor === c.solid;
                 return (
-                  <button
-                    key={c.solid}
+                  <HoverInfo key={c.solid} content={`${c.label}色`}><button
                     onClick={() => setCurrentColor(c.solid)}
                     className="flex h-7 w-7 items-center justify-center rounded-lg transition-all"
                     style={{
                       background: active ? "rgba(255,255,255,0.12)" : "transparent",
                     }}
-                    title={`${c.label}色`}
+
                   >
                     <div
                       className="h-3.5 w-3.5 rounded-full transition-all"
@@ -769,7 +768,7 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
                           : "none",
                       }}
                     />
-                  </button>
+                  </button></HoverInfo>
                 );
               })}
             </div>
@@ -820,18 +819,18 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
 
         {/* 撤销 / 重做 / 清空 */}
         <div className="flex items-center gap-0.5">
-          <button onClick={handleUndo} disabled={objects.length === 0} className={ICON_BTN}
-            style={{ color: "rgba(255,255,255,0.65)" }} title="撤销 (Ctrl+Z)">
+          <HoverInfo content="撤销 (Ctrl+Z)"><button onClick={handleUndo} disabled={objects.length === 0} className={ICON_BTN}
+            style={{ color: "rgba(255,255,255,0.65)" }} >
             <Undo2 className="h-3.5 w-3.5" />
-          </button>
-          <button onClick={handleRedo} disabled={redoStack.length === 0} className={ICON_BTN}
-            style={{ color: "rgba(255,255,255,0.65)" }} title="重做 (Ctrl+Shift+Z)">
+          </button></HoverInfo>
+          <HoverInfo content="重做 (Ctrl+Shift+Z)"><button onClick={handleRedo} disabled={redoStack.length === 0} className={ICON_BTN}
+            style={{ color: "rgba(255,255,255,0.65)" }} >
             <Redo2 className="h-3.5 w-3.5" />
-          </button>
-          <button onClick={handleClear} disabled={objects.length === 0} className={ICON_BTN}
-            style={{ color: "rgba(255,255,255,0.65)" }} title="清空">
+          </button></HoverInfo>
+          <HoverInfo content="清空"><button onClick={handleClear} disabled={objects.length === 0} className={ICON_BTN}
+            style={{ color: "rgba(255,255,255,0.65)" }} >
             <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          </button></HoverInfo>
         </div>
 
         <div className="h-5 w-px" style={{ background: "rgba(255,255,255,0.10)" }} />

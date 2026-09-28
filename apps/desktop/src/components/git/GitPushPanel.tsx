@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useCallback, useEffect, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
@@ -264,9 +265,9 @@ function RiskScanCard({ scan }: { scan: GitPushRiskScan | null }) {
                 </div>
                 <div className="mt-1 text-[11px] opacity-90">{risk.detail}</div>
                 {risk.file_path && (
-                  <div className="mt-1 truncate font-mono text-[11px] opacity-80" title={risk.file_path}>
+                  <HoverInfo content={risk.file_path}><div className="mt-1 truncate font-mono text-[11px] opacity-80" >
                     {risk.file_path}
-                  </div>
+                  </div></HoverInfo>
                 )}
               </div>
             ))}
@@ -309,9 +310,9 @@ function Info({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
       <div className="text-[11px] uppercase text-text-secondary">{label}</div>
-      <div className="mt-0.5 truncate text-[13px] font-medium text-text-base" title={value}>
+      <HoverInfo content={value}><div className="mt-0.5 truncate text-[13px] font-medium text-text-base" >
         {value}
-      </div>
+      </div></HoverInfo>
     </div>
   );
 }

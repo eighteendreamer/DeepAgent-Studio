@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../components/ui/HoverInfo";
 import { useState } from "react";
 import { Eye, EyeOff, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
@@ -310,24 +311,24 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
           pointerEvents: "auto",
         }}
       >
-        <button type="button" onClick={() => changeZoom(-0.1)} title="缩小" aria-label="缩小" style={CONTROL_BUTTON_STYLE}>
+        <HoverInfo content="缩小"><button type="button" onClick={() => changeZoom(-0.1)}  aria-label="缩小" style={CONTROL_BUTTON_STYLE}>
           <ZoomOut size={15} strokeWidth={1.8} />
-        </button>
-        <button type="button" onClick={handleFitView} title="适应屏幕" aria-label="适应屏幕" style={CONTROL_BUTTON_STYLE}>
+        </button></HoverInfo>
+        <HoverInfo content="适应屏幕"><button type="button" onClick={handleFitView}  aria-label="适应屏幕" style={CONTROL_BUTTON_STYLE}>
           <Maximize2 size={15} strokeWidth={1.8} />
-        </button>
-        <button type="button" onClick={() => changeZoom(0.1)} title="放大" aria-label="放大" style={CONTROL_BUTTON_STYLE}>
+        </button></HoverInfo>
+        <HoverInfo content="放大"><button type="button" onClick={() => changeZoom(0.1)}  aria-label="放大" style={CONTROL_BUTTON_STYLE}>
           <ZoomIn size={15} strokeWidth={1.8} />
-        </button>
-        <button
+        </button></HoverInfo>
+        <HoverInfo content={minimapVisible ? "隐藏小地图" : "显示小地图"}><button
           type="button"
           onClick={() => setMinimapVisible((visible) => !visible)}
-          title={minimapVisible ? "隐藏小地图" : "显示小地图"}
+
           aria-label={minimapVisible ? "隐藏小地图" : "显示小地图"}
           style={CONTROL_BUTTON_STYLE}
         >
           {minimapVisible ? <Eye size={15} strokeWidth={1.8} /> : <EyeOff size={15} strokeWidth={1.8} />}
-        </button>
+        </button></HoverInfo>
       </div>
     </div>
   );

@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { ToolCall } from "../../types";
@@ -232,9 +233,9 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
             </span>
           ))}
           {summary.monoText && (
-            <code className="min-w-0 truncate bg-transparent p-0 font-mono text-[12.5px] text-text-secondary" title={summary.monoText}>
+            <HoverInfo content={summary.monoText}><code className="min-w-0 truncate bg-transparent p-0 font-mono text-[12.5px] text-text-secondary" >
               {summary.monoText}
-            </code>
+            </code></HoverInfo>
           )}
         </span>
         {canOpen && tool.status !== "running" && (
@@ -253,9 +254,9 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
           ) : summary.matches.length > 0 ? (
             <div className="max-h-64 overflow-auto px-3 py-2 font-mono text-[12px] leading-5 text-text-base">
               {summary.matches.map((match) => (
-                <div key={match} className="truncate" title={match}>
+                <HoverInfo key={match} content={match}><div className="truncate" >
                   {match}
-                </div>
+                </div></HoverInfo>
               ))}
             </div>
           ) : summary.isError ? (

@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
@@ -112,14 +113,14 @@ export function ProjectMapStatusBadge({
     ? `项目地图：${status.status}，${status.nodes} nodes / ${status.edges} edges`
     : "项目地图：加载中";
   return (
-    <button
+    <HoverInfo content={label}><button
       type="button"
       className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-hover-bg transition-colors"
-      title={label}
+
       onClick={onClick}
     >
       <span className={`w-2.5 h-2.5 rounded-full ${statusClass(status?.status ?? "loading")}`} />
-    </button>
+    </button></HoverInfo>
   );
 }
 
@@ -286,7 +287,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
           <div className="flex items-center min-w-0">
             <FontAwesomeIcon icon={["fas", "share-nodes"]} className="text-text-secondary mr-2" />
             <div className="text-[14px] font-medium text-text-base">项目地图</div>
-            
+
             {status !== "missing" && status !== "failed" && !showDebugPanel && (
               <div className="ml-4 inline-flex h-7 rounded-lg border border-border-theme bg-sidebar-bg p-0.5 text-[12px]">
                 <button
@@ -314,22 +315,22 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
               <span className={`w-2 h-2 rounded-full mr-1.5 ${statusClass(refreshing ? "updating" : status)}`} />
               {refreshing ? "生成中" : loading ? "加载中" : status}
             </div>
-            <button
+            <HoverInfo content="使用 Understand-Anything 刷新地图"><button
               type="button"
               className="h-7 px-2.5 rounded-md border border-border-theme bg-elevated-bg hover:bg-hover-bg text-text-base transition-colors disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
               onClick={handleRefresh}
               disabled={refreshing}
-              title="使用 Understand-Anything 刷新地图"
+
             >
               <FontAwesomeIcon
                 icon={["fas", "rotate-right"]}
                 className={`text-[11px] ${refreshing ? "animate-spin" : "text-text-secondary"}`}
               />
               <span className="text-[11px] font-medium">刷新</span>
-            </button>
+            </button></HoverInfo>
           </div>
         </div>
-        
+
         <div className="mt-2.5 flex items-center justify-between text-[11px] text-text-secondary">
           <div className="flex items-center gap-2.5">
             <span className="font-medium text-text-base">{stats?.nodes ?? 0}</span> 节点

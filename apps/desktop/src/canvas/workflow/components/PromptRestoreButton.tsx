@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../components/ui/HoverInfo";
 import type { CreativeNodeKind } from "../types";
 import { promptFieldOf, useDefaultUserPrompt } from "../utils/canvasPromptProfile";
 
@@ -20,14 +21,14 @@ export function PromptRestoreButton({
   if (value.trim() === defaultPrompt.trim()) return null;
 
   return (
-    <button
+    <HoverInfo content="恢复为该节点提示词档案的默认内容"><button
       type="button"
-      title="恢复为该节点提示词档案的默认内容"
+
       onClick={() => onUpdate({ [field]: defaultPrompt })}
       className="self-start text-[10px] transition-colors hover:underline"
       style={{ color: "rgba(248,248,248,0.45)" }}
     >
       恢复默认提示词
-    </button>
+    </button></HoverInfo>
   );
 }

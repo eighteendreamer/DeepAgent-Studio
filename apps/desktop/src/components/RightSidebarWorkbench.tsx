@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { SidebarPluginHeader } from "./SidebarPluginHeader";
@@ -134,17 +135,17 @@ export function RightSidebarWorkbench({
     activeTab?.type === "files" || extraActions ? (
       <>
         {activeTab?.type === "files" ? (
-          <button
+          <HoverInfo content={isMaximized ? "退出全屏文件视图" : "全屏文件视图"}><button
             type="button"
             onClick={toggleMaximize}
             className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover-bg hover:text-text-base"
-            title={isMaximized ? "退出全屏文件视图" : "全屏文件视图"}
+
           >
             <FontAwesomeIcon
               icon={["fas", isMaximized ? "compress" : "expand"]}
               className="text-[12px]"
             />
-          </button>
+          </button></HoverInfo>
         ) : null}
         {extraActions}
       </>

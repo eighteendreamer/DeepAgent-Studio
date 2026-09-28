@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { TokenUsage } from "../../types";
@@ -61,23 +62,23 @@ export function TurnFooter({
         )}
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <button
+        <HoverInfo content="复制回答"><button
           type="button"
           onClick={copyAnswer}
           className="flex h-7 w-7 items-center justify-center rounded-md transition hover:bg-black/5 hover:text-text-base"
-          title="复制回答"
+
           aria-label="复制回答"
         >
           <FontAwesomeIcon icon={copied ? ["fas", "check"] : ["far", "copy"]} className="text-[12px]" />
-        </button>
-        <button
+        </button></HoverInfo>
+        <HoverInfo content="从这里创建分支"><button
           type="button"
           className="flex h-7 w-7 items-center justify-center rounded-md transition hover:bg-black/5 hover:text-text-base"
-          title="从这里创建分支"
+
           aria-label="从这里创建分支"
         >
           <FontAwesomeIcon icon={["fas", "code-branch"]} className="text-[12px]" />
-        </button>
+        </button></HoverInfo>
       </div>
     </div>
   );

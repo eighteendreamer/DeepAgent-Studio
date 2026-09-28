@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useRef, useState, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
@@ -186,7 +187,7 @@ export function GitBranchChip({
           />
         </MorphingToolbarMenu>
       ) : (
-      <button
+      <HoverInfo content={status?.repo_root ?? projectPath ?? undefined}><button
         type="button"
         className={
           variant === "env"
@@ -198,7 +199,7 @@ export function GitBranchChip({
               }`
         }
         onClick={() => setOpen(!open)}
-        title={status?.repo_root ?? projectPath ?? undefined}
+
       >
         {variant === "env" ? (
           <>
@@ -224,7 +225,7 @@ export function GitBranchChip({
             <FontAwesomeIcon icon={["fas", open ? "chevron-up" : "chevron-down"]} className="ml-3 text-[11px] text-text-secondary" />
           </>
         )}
-      </button>
+      </button></HoverInfo>
       )}
 
       {variant !== "chip" && open && (

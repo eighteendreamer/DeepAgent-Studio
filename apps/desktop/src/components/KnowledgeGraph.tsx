@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KnowledgeEntry } from "../types";
 
@@ -454,13 +455,13 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
     <div ref={containerRef} className="relative w-full h-full overflow-hidden">
       {/* Controls */}
       <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
-        <button
+        <HoverInfo content="Reset view"><button
           onClick={resetView}
           className="px-2.5 py-1 text-xs rounded-md bg-white/90 border border-border-theme text-text-secondary hover:text-text-base hover:bg-white transition-colors shadow-sm"
-          title="Reset view"
+
         >
           {Math.round(tr.k * 100)}%
-        </button>
+        </button></HoverInfo>
       </div>
 
       <svg
@@ -499,16 +500,16 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
             const selected = n.entry != null && n.entry.id === selectedId;
             const fill = n.type === "entry" ? kindColor(n.entry?.kind ?? "note") : TAG_COLOR;
             return (
-              <g
-                key={n.id}
+              <HoverInfo key={n.id} content={n.type === "tag" ? `#${n.label}` : n.label} side="right"><g
                 transform={`translate(${n.x},${n.y})`}
                 opacity={dim ? 0.28 : 1}
                 style={{ cursor: n.type === "entry" ? "pointer" : "default" }}
+                tabIndex={0}
+                aria-label={n.type === "tag" ? `#${n.label}` : n.label}
                 onPointerDown={(e) => onPointerDownNode(e, n)}
                 onPointerEnter={() => setHoverId(n.id)}
                 onPointerLeave={() => setHoverId((h) => (h === n.id ? null : h))}
               >
-                <title>{n.type === "tag" ? `#${n.label}` : n.label}</title>
                 <circle
                   r={r}
                   fill={n.type === "tag" ? "#fff" : fill}
@@ -518,7 +519,7 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
                 {selected && (
                   <circle r={r + 4 / tr.k} fill="none" stroke={fill} strokeWidth={1.5 / tr.k} opacity={0.5} />
                 )}
-              </g>
+              </g></HoverInfo>
             );
           })}
           {/* Labels are drawn above all nodes so hovered and selected titles stay readable. */}

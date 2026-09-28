@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../components/ui/HoverInfo";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -108,14 +109,14 @@ export function OutpaintOverlay({ imageUrl, itemName, onCancel }: Props) {
             <p className="text-[10px] text-white/30">图片预览 · 扩图编辑</p>
           </div>
         </div>
-        <button
+        <HoverInfo content="关闭"><button
           type="button"
           onClick={onCancel}
           className="rounded-xl border border-white/10 bg-black/35 p-2.5 text-white/60 backdrop-blur-xl transition-colors hover:bg-white/10 hover:text-white"
-          title="关闭"
+
         >
           <X className="h-5 w-5" />
-        </button>
+        </button></HoverInfo>
       </header>
 
       <main className="absolute inset-0 flex items-center justify-center px-8 pb-[238px] pt-24">
@@ -173,15 +174,15 @@ export function OutpaintOverlay({ imageUrl, itemName, onCancel }: Props) {
             onChange={setPreset}
           />
           <div className="mx-1 h-5 w-px bg-white/10" />
-          <Button
+          <HoverInfo content="发送扩图描述"><Button
             onClick={sendMessage}
             size="icon"
             aria-label="发送扩图描述"
-            title="发送扩图描述"
+
             className="ml-auto h-9 w-9 rounded-full bg-white text-black hover:bg-white/90"
           >
             <Send className="h-3.5 w-3.5" />
-          </Button>
+          </Button></HoverInfo>
         </div>
         <div className="mt-1 flex items-center justify-center text-[10px] text-white/25">Ctrl / ⌘ + Enter 发送消息</div>
       </section>

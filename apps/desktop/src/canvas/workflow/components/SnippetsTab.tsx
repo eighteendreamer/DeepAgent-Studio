@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../components/ui/HoverInfo";
 import { useEffect, useId, useState } from "react";
 import { Layers, MoreHorizontal, Plus, Save, Trash2 } from "lucide-react";
 import { Button } from "../../../components/shadcn/button";
@@ -92,7 +93,7 @@ export function SnippetsTab({ worldX, worldY, onInserted }: { worldX: number; wo
               {visible.map((snippet) => (
                 <div key={snippet.id} className="flex items-center gap-2 rounded-lg border border-white/[0.06] p-2">
                   <Layers className="h-4 w-4 shrink-0 text-white/40" />
-                  <div className="min-w-0 flex-1"><p className="truncate text-xs" title={snippet.name}>{snippet.name}</p><p className="mt-1 text-[10px] text-white/40">{snippet.nodes.length} 个节点 · {snippet.edges.length} 条连线</p></div>
+                  <div className="min-w-0 flex-1"><HoverInfo content={snippet.name}><p className="truncate text-xs" >{snippet.name}</p></HoverInfo><p className="mt-1 text-[10px] text-white/40">{snippet.nodes.length} 个节点 · {snippet.edges.length} 条连线</p></div>
                   <Button size="icon" variant="ghost" className={`${CANVAS_BUTTON_CLASS} !h-7 !w-7`} aria-label={`插入片段 ${snippet.name}`} onClick={() => setConfirmation({ action: "insert", snippet })}><Plus className="h-3.5 w-3.5" /></Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild><Button size="icon" variant="ghost" className={`${CANVAS_BUTTON_CLASS} !h-7 !w-7`} aria-label={`管理片段 ${snippet.name}`}><MoreHorizontal className="h-3.5 w-3.5" /></Button></DropdownMenuTrigger>

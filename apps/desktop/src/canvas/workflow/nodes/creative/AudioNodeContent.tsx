@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../../components/ui/HoverInfo";
 import { AudioLines, Music } from "lucide-react";
 import type { CreativeNodeData } from "../../types";
 import { useCanvasMediaSrc } from "../../utils/canvasMedia";
@@ -46,13 +47,13 @@ export function AudioContent({ data }: Props) {
       )}
 
       {transcribed && typeof data.output === "string" && data.output && (
-        <p
+        <HoverInfo content={data.output}><p
           className="line-clamp-3 text-[11px] leading-relaxed"
           style={{ color: "rgba(248,248,248,0.6)" }}
-          title={data.output}
+
         >
           {data.output}
-        </p>
+        </p></HoverInfo>
       )}
     </div>
   );

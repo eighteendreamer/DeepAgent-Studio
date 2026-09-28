@@ -1,3 +1,4 @@
+import { HoverInfo } from "../components/ui/HoverInfo";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faBatteryFull,
@@ -140,21 +141,21 @@ export function MiniAppPreviewNode({
           <i /> 预览中
         </span>
         <div className="studio-miniapp-header-actions nodrag">
-          <button
+          <HoverInfo content={config.inspectorEnabled ? "退出元素选择" : "选择元素"}><button
             type="button"
             className={config.inspectorEnabled ? "is-active" : ""}
-            title={config.inspectorEnabled ? "退出元素选择" : "选择元素"}
+
             aria-pressed={config.inspectorEnabled}
             onClick={() => onChange({ inspectorEnabled: !config.inspectorEnabled })}
           >
             <FontAwesomeIcon icon={faCrosshairs} />
-          </button>
-          <button type="button" title="旋转设备" onClick={() => onChange({ orientation: isPortrait ? "landscape" : "portrait" })}>
+          </button></HoverInfo>
+          <HoverInfo content="旋转设备"><button type="button"  onClick={() => onChange({ orientation: isPortrait ? "landscape" : "portrait" })}>
             <FontAwesomeIcon icon={faRotateRight} />
-          </button>
-          <button type="button" title="刷新预览" onClick={refresh}>
+          </button></HoverInfo>
+          <HoverInfo content="刷新预览"><button type="button"  onClick={refresh}>
             <FontAwesomeIcon icon={faRotateRight} spin={refreshing} />
-          </button>
+          </button></HoverInfo>
         </div>
       </div>
 

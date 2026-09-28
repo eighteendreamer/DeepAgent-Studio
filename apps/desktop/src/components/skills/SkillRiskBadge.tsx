@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 // SkillRiskBadge — small chip displaying a single static-scan finding's
 // category and severity (consumed by SkillInstallDialog's risk list).
 //
@@ -42,14 +43,14 @@ export function SkillRiskBadge({
   const [pack, name] = CATEGORY_ICONS[category];
   const style = SEVERITY_STYLES[severity];
   return (
-    <span
+    <HoverInfo content={detail ?? `${category} (${severity})`}><span
       className={`inline-flex items-center gap-1 text-[11px] rounded-full px-2 py-0.5 border whitespace-nowrap ${style} ${className}`}
-      title={detail ?? `${category} (${severity})`}
+
     >
       <FontAwesomeIcon icon={[pack, name]} className="text-[10px]" />
       <span>{t(`skillRisk.category.${category}`)}</span>
       <span className="opacity-60">·</span>
       <span>{t(`skillRisk.severity.${severity}`)}</span>
-    </span>
+    </span></HoverInfo>
   );
 }

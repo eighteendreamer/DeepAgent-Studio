@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { Inbox, List, Network, Pencil, Plus, RotateCw, Search, Trash2, X } from "lucide-react";
@@ -228,7 +229,7 @@ export function KnowledgeView() {
           <div className="flex items-center gap-2 flex-shrink-0">
             {/* graph / list switch */}
             <div className="flex h-8 items-center rounded-lg bg-ui-tint p-0.5">
-              <Button
+              <HoverInfo content={t("knowledgeView.graphView")}><Button
                 type="button"
                 onClick={() => setMode("graph")}
                 variant="ghost"
@@ -239,12 +240,12 @@ export function KnowledgeView() {
                     ? "bg-elevated-bg text-text-base shadow-sm"
                     : "text-text-secondary hover:text-text-base"
                 }`}
-                title={t("knowledgeView.graphView")}
+
               >
                 <Network className="h-3.5 w-3.5" aria-hidden="true" />
                 {t("knowledgeView.graphView")}
-              </Button>
-              <Button
+              </Button></HoverInfo>
+              <HoverInfo content={t("knowledgeView.listView")}><Button
                 type="button"
                 onClick={() => setMode("list")}
                 variant="ghost"
@@ -255,11 +256,11 @@ export function KnowledgeView() {
                     ? "bg-elevated-bg text-text-base shadow-sm"
                     : "text-text-secondary hover:text-text-base"
                 }`}
-                title={t("knowledgeView.listView")}
+
               >
                 <List className="h-3.5 w-3.5" aria-hidden="true" />
                 {t("knowledgeView.listView")}
-              </Button>
+              </Button></HoverInfo>
             </div>
 
             <div className="flex h-8 min-w-[14rem] w-56 items-center rounded-lg bg-ui-tint transition-colors duration-150 ease-out focus-within:bg-ui-tint-strong">
@@ -274,12 +275,12 @@ export function KnowledgeView() {
             </div>
 
             {/* drafts bell */}
-            <Button
+            <HoverInfo content={t("knowledgeView.draftsTitle", { count: drafts.length })}><Button
               onClick={() => setShowDrafts((s) => !s)}
               variant="ghost"
               size="icon"
               className={`relative h-8 w-8 bg-ui-tint hover:bg-ui-tint-strong ${showDrafts ? "bg-amber-50 text-amber-600 hover:bg-amber-50" : ""}`}
-              title={t("knowledgeView.draftsTitle", { count: drafts.length })}
+
               aria-label={t("knowledgeView.draftsTitle", { count: drafts.length })}
               aria-pressed={showDrafts}
             >
@@ -289,14 +290,14 @@ export function KnowledgeView() {
                   {drafts.length}
                 </span>
               )}
-            </Button>
+            </Button></HoverInfo>
 
-            <Button onClick={() => refresh(true)} variant="ghost" size="icon" className="h-8 w-8 bg-ui-tint hover:bg-ui-tint-strong" title={t("knowledgeView.refresh")} aria-label={t("knowledgeView.refresh")} disabled={loading}>
+            <HoverInfo content={t("knowledgeView.refresh")}><Button onClick={() => refresh(true)} variant="ghost" size="icon" className="h-8 w-8 bg-ui-tint hover:bg-ui-tint-strong"  aria-label={t("knowledgeView.refresh")} disabled={loading}>
               <RotateCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
-            </Button>
-            <Button onClick={openNew} variant="ghost" size="icon" className="h-8 w-8 bg-ui-tint hover:bg-ui-tint-strong" title={t("knowledgeView.new")} aria-label={t("knowledgeView.new")}>
+            </Button></HoverInfo>
+            <HoverInfo content={t("knowledgeView.new")}><Button onClick={openNew} variant="ghost" size="icon" className="h-8 w-8 bg-ui-tint hover:bg-ui-tint-strong"  aria-label={t("knowledgeView.new")}>
               <Plus className="h-4 w-4" aria-hidden="true" />
-            </Button>
+            </Button></HoverInfo>
           </div>
         </div>
 
@@ -386,16 +387,16 @@ export function KnowledgeView() {
                         </div>
                         <div className="text-[12px] text-text-secondary truncate mt-0.5">{entry.body}</div>
                       </div>
-                      <button
+                      <HoverInfo content={t("knowledgeView.delete")}><button
                         onClick={(e) => {
                           e.stopPropagation();
                           onDelete(entry);
                         }}
-                        title={t("knowledgeView.delete")}
+
                         className="w-7 h-7 rounded-full border border-border-theme flex items-center justify-center text-text-secondary hover:bg-white hover:text-red-500 transition-all bg-gray-50 opacity-0 group-hover:opacity-100"
                       >
                         <FontAwesomeIcon icon={["fas", "trash"]} className="text-xs" />
-                      </button>
+                      </button></HoverInfo>
                     </div>
                   );
                 })}
@@ -463,9 +464,9 @@ export function KnowledgeView() {
                 <div className="min-w-0 text-lg font-semibold text-text-base">
                   {selected ? t("knowledgeView.editTitle") : t("knowledgeView.newTitle")}
                 </div>
-                <Button onClick={() => setEditing(false)} variant="ghost" size="icon" className="h-8 w-8" aria-label={t("knowledgeView.cancel")} title={t("knowledgeView.cancel")}>
+                <HoverInfo content={t("knowledgeView.cancel")}><Button onClick={() => setEditing(false)} variant="ghost" size="icon" className="h-8 w-8" aria-label={t("knowledgeView.cancel")} >
                   <X className="h-4 w-4" aria-hidden="true" />
-                </Button>
+                </Button></HoverInfo>
               </div>
               <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
                 <div>
@@ -559,44 +560,44 @@ export function KnowledgeView() {
                     {t(`knowledgeView.kind.${selected.kind}`, selected.kind)} · {selected.scope}
                   </div>
                   <div className="flex shrink-0 items-center gap-0.5">
-                    <Button
+                    <HoverInfo content={t("knowledgeView.edit")}><Button
                       onClick={() => openEdit(selected)}
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8"
-                      title={t("knowledgeView.edit")}
+
                       aria-label={t("knowledgeView.edit")}
                     >
                       <Pencil className="h-4 w-4" aria-hidden="true" />
-                    </Button>
-                    <Button
+                    </Button></HoverInfo>
+                    <HoverInfo content={t("knowledgeView.delete")}><Button
                       onClick={() => onDelete(selected)}
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8 hover:text-red-500"
-                      title={t("knowledgeView.delete")}
+
                       aria-label={t("knowledgeView.delete")}
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </Button>
-                    <Button
+                    </Button></HoverInfo>
+                    <HoverInfo content={t("knowledgeView.close")}><Button
                       onClick={() => setSelected(null)}
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8"
-                      title={t("knowledgeView.close")}
+
                       aria-label={t("knowledgeView.close")}
                     >
                       <X className="h-4 w-4" aria-hidden="true" />
-                    </Button>
+                    </Button></HoverInfo>
                   </div>
                 </div>
-                <h2
+                <HoverInfo content={selected.title}><h2
                   className="mt-2 line-clamp-3 text-base font-semibold leading-6 text-text-base [overflow-wrap:anywhere]"
-                  title={selected.title}
+
                 >
                   {selected.title}
-                </h2>
+                </h2></HoverInfo>
               </div>
               <div className="min-w-0 flex-1 overflow-y-auto px-6 py-4">
                 {selected.tags.length > 0 && (

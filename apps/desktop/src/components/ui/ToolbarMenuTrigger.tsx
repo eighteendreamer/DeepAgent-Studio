@@ -1,6 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { cn } from "../shadcn/utils";
+import { HoverInfo } from "./HoverInfo";
 import { MOTION } from "./motion";
 
 /**
@@ -12,6 +13,7 @@ export function ToolbarMenuTrigger({
   icon,
   label,
   trailing,
+  title,
   className,
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -21,7 +23,7 @@ export function ToolbarMenuTrigger({
   trailing?: ReactNode;
 }) {
   return (
-    <button
+    <HoverInfo content={title}><button
       type="button"
       className={cn(
         "inline-flex h-8 max-w-[200px] shrink-0 items-center gap-1.5 text-[12px] font-medium text-text-secondary",
@@ -41,6 +43,6 @@ export function ToolbarMenuTrigger({
         icon={["fas", "chevron-down"]}
         className="shrink-0 text-[9px] text-text-secondary opacity-70"
       />
-    </button>
+    </button></HoverInfo>
   );
 }

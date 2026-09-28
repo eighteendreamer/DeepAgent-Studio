@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -329,48 +330,48 @@ export function SkillsView() {
             </div>
 
             {marketTab === "installed" && (
-              <Button
+              <HoverInfo content={t("skillsView.refresh")}><Button
                 type="button"
                 onClick={() => refresh(true)}
-                title={t("skillsView.refresh")}
+
                 aria-label={t("skillsView.refresh")}
                 variant="ghost"
                 size="icon"
                 className={toolbarIconBtn}
               >
                 <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
-              </Button>
+              </Button></HoverInfo>
             )}
 
             {marketTab === "installed" && (
-              <Button
+              <HoverInfo content="Upload ZIP Skill"><Button
                 type="button"
                 onClick={handleInstallZip}
                 variant="ghost"
                 size="icon"
                 className={toolbarIconBtn}
-                title="Upload ZIP Skill"
+
                 aria-label="Upload ZIP Skill"
               >
                 <FileArchive className="h-4 w-4" aria-hidden="true" />
-              </Button>
+              </Button></HoverInfo>
             )}
 
             {marketTab === "market" && (
               <div className="relative">
-                <Button
+                <HoverInfo content={t("skillsView.market_provider_config")}><Button
                   type="button"
                   onClick={handleProviderConfig}
                   variant="ghost"
                   size="icon"
                   className={`${toolbarIconBtn} ${providerConfigOpen ? "bg-ui-tint-strong text-text-base" : ""}`}
-                  title={t("skillsView.market_provider_config")}
+
                   aria-label={t("skillsView.market_provider_config")}
                   aria-haspopup="dialog"
                   aria-expanded={providerConfigOpen}
                 >
                   <Settings className="h-4 w-4" aria-hidden="true" />
-                </Button>
+                </Button></HoverInfo>
                 <SkillsMarketProviderConfig
                   open={providerConfigOpen}
                   onClose={() => setProviderConfigOpen(false)}
@@ -419,19 +420,19 @@ export function SkillsView() {
             <div className="flex items-center gap-2">
               {/* R8.7 / R8.8: hide uninstall for built-in skills */}
               {selected.origin !== "built_in" && (
-                <Button
+                <HoverInfo content={t("skillsView.uninstall")}><Button
                   type="button"
                   onClick={() => onUninstall(selected)}
                   variant="ghost"
                   size="icon"
-                  title={t("skillsView.uninstall")}
+
                   aria-label={t("skillsView.uninstall")}
                   className="h-7 w-7 rounded-full border border-border-theme bg-white text-text-secondary hover:bg-white hover:text-red-500"
                 >
                   <X className="h-3.5 w-3.5" aria-hidden="true" />
-                </Button>
+                </Button></HoverInfo>
               )}
-              <Button
+              <HoverInfo content="Close"><Button
                 type="button"
                 variant="ghost"
                 size="icon"
@@ -440,11 +441,11 @@ export function SkillsView() {
                   setActivation(null);
                 }}
                 className="h-7 w-7 text-text-secondary hover:text-text-base"
-                title="Close"
+
                 aria-label="Close"
               >
                 <X className="h-4 w-4" aria-hidden="true" />
-              </Button>
+              </Button></HoverInfo>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto px-6 py-4">
@@ -549,7 +550,7 @@ function InstalledBody({
                 </div>
                 {/* R8.7 / R8.8: hide uninstall (✕) for built-in skills */}
                 {!builtIn && (
-                  <Button
+                  <HoverInfo content={t("skillsView.uninstall")}><Button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -557,12 +558,12 @@ function InstalledBody({
                     }}
                     variant="ghost"
                     size="icon"
-                    title={t("skillsView.uninstall")}
+
                     aria-label={t("skillsView.uninstall")}
                     className="h-7 w-7 rounded-full border border-border-theme bg-gray-50 text-text-secondary opacity-0 transition-all hover:bg-white hover:text-red-500 group-hover:opacity-100"
                   >
                     <X className="h-3.5 w-3.5" aria-hidden="true" />
-                  </Button>
+                  </Button></HoverInfo>
                 )}
               </div>
             );

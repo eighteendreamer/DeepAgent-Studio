@@ -582,8 +582,8 @@ export function NodeFloatingToolbar({ kind, onDelete, onRename, onDuplicate, onD
       </button>
     );
     const buttonWithTooltip = action.tooltip ? (
-      <HoverCard openDelay={250} closeDelay={100}>
-        <HoverCardTrigger asChild>{button}</HoverCardTrigger>
+      <HoverCard>
+        <HoverCardTrigger render={button} delay={250} closeDelay={100} />
         <HoverCardContent side="bottom" sideOffset={8} className={TOOLTIP_CONTENT_CLASS}>
           {action.tooltip}
         </HoverCardContent>

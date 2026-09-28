@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useEffect, useState } from "react";
@@ -445,11 +446,11 @@ export function MCPSettings() {
           <div className="text-[14px] font-medium text-text-base">{t("settings.mcp.servers")}</div>
           <div className="flex items-center space-x-2">
             {servers.length > 0 && (
-              <button
+              <HoverInfo content={t("settings.mcp.refreshStatus")}><button
                 className="flex items-center px-3 py-1 bg-black/5 hover:bg-black/5 rounded-full text-[12px] font-medium text-text-base transition-colors disabled:opacity-50"
                 onClick={refreshStatuses}
                 disabled={checking}
-                title={t("settings.mcp.refreshStatus")}
+
               >
                 <FontAwesomeIcon
                   icon={["fas", "circle-notch"]}
@@ -457,7 +458,7 @@ export function MCPSettings() {
                   className="mr-1.5 text-[10px]"
                 />{" "}
                 {t("settings.mcp.refreshStatus")}
-              </button>
+              </button></HoverInfo>
             )}
             <button
               className="flex items-center px-3 py-1 bg-black/5 hover:bg-black/5 rounded-full text-[12px] font-medium text-text-base transition-colors"
@@ -488,16 +489,16 @@ export function MCPSettings() {
                           {s.name}
                         </span>
                         {st && <StatusBadge status={st.status} />}
-                        <span
+                        <HoverInfo content={s.source_path ?? undefined}><span
                           className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
                             s.source === "plugin"
                               ? "bg-blue-50 text-blue-600"
                               : "bg-gray-100 text-gray-500"
                           }`}
-                          title={s.source_path ?? undefined}
+
                         >
                           {sourceLabel(s)}
-                        </span>
+                        </span></HoverInfo>
                       </div>
                       <div className="text-[11px] text-text-secondary truncate mt-0.5">
                         {s.transport} · {s.transport === "stdio" ? s.command : s.url}
@@ -518,33 +519,33 @@ export function MCPSettings() {
                         )}
                       </div>
                       {st?.status === "failed" && st.error && (
-                        <div className="text-[11px] text-red-500 truncate mt-0.5" title={st.error}>
+                        <HoverInfo content={st.error}><div className="text-[11px] text-red-500 truncate mt-0.5" >
                           {st.error}
-                        </div>
+                        </div></HoverInfo>
                       )}
                       {s.conflict && (
-                        <div className="text-[11px] text-amber-600 truncate mt-0.5" title={s.conflict}>
+                        <HoverInfo content={s.conflict}><div className="text-[11px] text-amber-600 truncate mt-0.5" >
                           {s.conflict}
-                        </div>
+                        </div></HoverInfo>
                       )}
                     </div>
                     <div className="flex items-center space-x-4 flex-shrink-0">
                       {!s.read_only && (
                         <>
-                          <button
+                          <HoverInfo content={t("settings.mcp.edit")}><button
                             className="text-gray-400 hover:text-text-base transition-colors"
-                            title={t("settings.mcp.edit")}
+
                             onClick={() => openAdd(s)}
                           >
                             <FontAwesomeIcon icon={["fas", "gear"]} className="text-[14px]" />
-                          </button>
-                          <button
+                          </button></HoverInfo>
+                          <HoverInfo content={t("settings.mcp.delete")}><button
                             className="text-gray-400 hover:text-red-500 transition-colors"
-                            title={t("settings.mcp.delete")}
+
                             onClick={() => onRemove(s)}
                           >
                             <FontAwesomeIcon icon={["fas", "minus"]} className="text-[14px]" />
-                          </button>
+                          </button></HoverInfo>
                           <ToggleSwitch checked={s.enabled} onChange={() => onToggle(s)} />
                         </>
                       )}

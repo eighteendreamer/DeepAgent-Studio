@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, type ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
@@ -129,7 +130,7 @@ export function SidebarPluginHeader({
           }`}
         >
           <div className="relative flex-shrink-0" ref={menuRef}>
-            <button
+            <HoverInfo content={t("chatView.recommended", { defaultValue: "Open plugin" })}><button
               type="button"
               onClick={() => {
                 if (availablePlugins && availablePlugins.length > 0) {
@@ -138,7 +139,7 @@ export function SidebarPluginHeader({
                   onShowLauncher();
                 }
               }}
-              title={t("chatView.recommended", { defaultValue: "Open plugin" })}
+
               className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md transition-colors ${
                 isMenuOpen
                   ? "bg-hover-bg text-text-base"
@@ -146,7 +147,7 @@ export function SidebarPluginHeader({
               }`}
             >
               <FontAwesomeIcon icon={["fas", "plus"]} className="text-[12px]" />
-            </button>
+            </button></HoverInfo>
 
             {isMenuOpen && availablePlugins && (
               <div className={`${FLOATING_MENU.shell} absolute right-0 top-full z-[100] mt-1 flex w-56 origin-top-right flex-col`}>

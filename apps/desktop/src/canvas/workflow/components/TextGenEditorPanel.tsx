@@ -1,3 +1,4 @@
+import { HoverInfo } from "../../../components/ui/HoverInfo";
 import { useMemo, useRef, useState } from "react";
 import { ArrowUp, ChevronDown, Maximize2, Sparkles, X } from "lucide-react";
 import {
@@ -96,14 +97,14 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
       )}
 
       <div className="relative px-4 pb-2 pt-3">
-        <button
+        <HoverInfo content="放大编辑"><button
           type="button"
-          title="放大编辑"
+
           onClick={() => setExpanded(true)}
           className="absolute right-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded-lg text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
         >
           <Maximize2 className="h-3.5 w-3.5" />
-        </button>
+        </button></HoverInfo>
         <textarea
           ref={textareaRef}
           value={data.prompt ?? ""}
@@ -121,14 +122,14 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
       <div className="flex items-center justify-between px-3 pb-3 pt-1">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button
+            <HoverInfo content="选择模型"><button
               type="button"
-              title="选择模型"
+
               className="flex h-8 max-w-[260px] items-center gap-2 rounded-lg bg-white/[0.08] px-3 text-xs text-white/75 outline-none transition hover:bg-white/[0.12] focus-visible:ring-1 focus-visible:ring-white/20 data-[state=open]:bg-white/[0.12]"
             >
               <span className="truncate">{selectedModelLabel}</span>
               <ChevronDown className="h-3.5 w-3.5 shrink-0 text-white/40" />
-            </button>
+            </button></HoverInfo>
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="start"
@@ -149,9 +150,9 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
-        <button
+        <HoverInfo content="执行节点"><button
           type="button"
-          title="执行节点"
+
           disabled={!data.prompt?.trim()}
           onClick={() => void runWorkflow(nodeId)}
           className="relative flex h-7 w-7 items-center justify-center overflow-hidden rounded-[10px] bg-white/[0.12] text-white/75 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_4px_10px_rgba(0,0,0,0.06)] transition hover:bg-white/[0.18] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
@@ -168,21 +169,21 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
             }}
           />
           <ArrowUp className="h-4 w-4" />
-        </button>
+        </button></HoverInfo>
       </div>
     </div>
     <Dialog open={expanded} onOpenChange={setExpanded}>
       <DialogContent className="w-[min(720px,calc(100vw-32px))] max-w-none rounded-2xl border border-white/10 bg-[#1c1d20]/95 p-0 text-white shadow-[0_28px_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
         <div className="flex items-center justify-between border-b border-white/[0.08] px-5 py-4">
           <DialogTitle className="text-sm font-medium text-white/85">编辑提示词</DialogTitle>
-          <button
+          <HoverInfo content="关闭"><button
             type="button"
-            title="关闭"
+
             onClick={() => setExpanded(false)}
             className="flex h-7 w-7 items-center justify-center rounded-lg text-white/50 transition hover:bg-white/[0.08] hover:text-white"
           >
             <X className="h-4 w-4" />
-          </button>
+          </button></HoverInfo>
         </div>
         <div className="px-5 py-4">
           <textarea

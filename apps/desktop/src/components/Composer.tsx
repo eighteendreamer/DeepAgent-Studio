@@ -1,3 +1,4 @@
+import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
@@ -367,7 +368,7 @@ export function Composer({
     { id: "auto", label: "composer.autoReview", desc: "composer.autoReviewDesc", icon: ["fas", "shield-halved"] as const },
     { id: "full", label: "composer.fullAccess", desc: "composer.fullAccessDesc", icon: ["fas", "circle-exclamation"] as const },
   ];
-  
+
   const [visibleOptions, setVisibleOptions] = useState(ALL_APPROVAL_OPTIONS);
   const [selectedApproval, setSelectedApproval] = useState(ALL_APPROVAL_OPTIONS[0]);
 
@@ -1257,18 +1258,17 @@ export function Composer({
         if (skill) {
           const skillLabel = skill.name || skill.id;
           nodes.push(
-            <span
-              key={`skill-${segmentIndex}`}
+            <HoverInfo key={`skill-${segmentIndex}`} content={`${skill.name} (${skill.id})`}><span
               className={`mx-0.5 inline-flex h-[20px] max-w-[180px] items-center rounded-[3px] px-1 text-[13px] font-medium leading-none align-baseline ${
                 markerSelected
                   ? "bg-primary text-white"
                   : "border border-primary/20 bg-primary/10 text-primary"
               }`}
-              title={`${skill.name} (${skill.id})`}
+
             >
               <FontAwesomeIcon icon={["fas", "cube"]} className="mr-1 text-[11px]" />
               <span className="truncate">{skillLabel}</span>
-            </span>,
+            </span></HoverInfo>,
           );
         }
         skillIndex += 1;
@@ -1291,18 +1291,17 @@ export function Composer({
               ? "开启计划模式"
               : mention.path;
           nodes.push(
-            <span
-              key={`mention-${segmentIndex}`}
+            <HoverInfo key={`mention-${segmentIndex}`} content={title}><span
               className={`mx-0.5 inline-flex h-[20px] max-w-[220px] items-center rounded-[3px] px-1 text-[13px] font-medium leading-none align-baseline ${
                 markerSelected
                   ? "bg-primary text-white"
                   : "bg-black/5 text-text-base"
               }`}
-              title={title}
+
             >
               <FontAwesomeIcon icon={["fas", icon as any]} className="mr-1 text-[11px] text-text-secondary" />
               <span className="truncate">{label}</span>
-            </span>,
+            </span></HoverInfo>,
           );
         }
         mentionIndex += 1;
@@ -1601,7 +1600,7 @@ export function Composer({
             disabledTitle={`Maximum ${MAX_COMPOSER_ATTACHMENTS} attachments allowed`}
             onClick={() => fileInputRef.current?.click()}
           />
-          
+
           {visibleOptions.length > 0 && (
             <div ref={approvalDropdownRef} className="min-w-0 max-w-full">
               <MorphingMenuShell
@@ -1763,7 +1762,7 @@ export function Composer({
               onChooseThinking={chooseThinking}
             />
           </div>
-          <button
+          <HoverInfo content={busy ? t("composer.stop") : undefined}><button
             onClick={() => {
               if (busy) {
                 onStop?.();
@@ -1772,7 +1771,7 @@ export function Composer({
               }
             }}
             disabled={busy ? !onStop : !hasComposerContent}
-            title={busy ? t("composer.stop") : undefined}
+
             className={cn(
               "composer-send-btn",
               busy
@@ -1787,7 +1786,7 @@ export function Composer({
             )}
           >
             <FontAwesomeIcon icon={busy ? ["fas", "stop"] : ["fas", "arrow-up"]} className="text-[11px]" />
-          </button>
+          </button></HoverInfo>
         </div>
       </div>
         </div>

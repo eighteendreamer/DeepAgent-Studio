@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { PluginDefinition } from "./pluginTypes";
@@ -138,14 +139,14 @@ export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
         <div className="flex items-center gap-3 text-text-secondary">
           <FontAwesomeIcon icon={["fas", "arrow-left"]} className="cursor-not-allowed opacity-40" />
           <FontAwesomeIcon icon={["fas", "arrow-right"]} className="cursor-not-allowed opacity-40" />
-          <button
+          <HoverInfo content="重新加载"><button
             type="button"
             className="text-text-secondary hover:text-text-base"
-            title="重新加载"
+
             onClick={() => setReloadKey((current) => current + 1)}
           >
             <FontAwesomeIcon icon={["fas", "rotate-right"]} className="text-[13px]" />
-          </button>
+          </button></HoverInfo>
         </div>
         <form
           className="flex-1"
@@ -165,9 +166,9 @@ export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
           />
         </form>
         {host && (
-          <div className="hidden max-w-[160px] truncate text-[12px] text-text-secondary md:block" title={host}>
+          <HoverInfo content={host}><div className="hidden max-w-[160px] truncate text-[12px] text-text-secondary md:block" >
             {host}
-          </div>
+          </div></HoverInfo>
         )}
       </div>
 

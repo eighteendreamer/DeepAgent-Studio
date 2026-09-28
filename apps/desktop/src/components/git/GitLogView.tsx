@@ -1,3 +1,4 @@
+import { HoverInfo } from "../ui/HoverInfo";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
@@ -307,9 +308,9 @@ export function GitLogView({ projectPath, onRefresh }: Props) {
                     ))}
                   </div>
                   {operationMessage && (
-                    <div className="mt-1 max-w-full truncate text-[11px] text-text-secondary" title={operationMessage}>
+                    <HoverInfo content={operationMessage}><div className="mt-1 max-w-full truncate text-[11px] text-text-secondary" >
                       {operationMessage}
-                    </div>
+                    </div></HoverInfo>
                   )}
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
@@ -396,13 +397,13 @@ function CommitRow({
   const parentCount = entry.parents.length;
   const merge = parentCount > 1;
   return (
-    <button
+    <HoverInfo content={entry.subject}><button
       type="button"
       className={`grid w-full grid-cols-[48px_minmax(0,1fr)] px-3 py-2 text-left transition-colors ${
         active ? "bg-white text-text-base shadow-sm" : "text-text-secondary hover:bg-white/70 hover:text-text-base"
       }`}
       onClick={onClick}
-      title={entry.subject}
+
     >
       <CommitGraphRail first={index === 0} last={index === total - 1} active={active} merge={merge} />
       <div className="min-w-0">
@@ -426,7 +427,7 @@ function CommitRow({
           <span>{t("git.logPanel.filesCount", { count: entry.files.length })}</span>
         </div>
       </div>
-    </button>
+    </button></HoverInfo>
   );
 }
 
@@ -473,13 +474,13 @@ function CommitFileRow({
   onClick: () => void;
 }) {
   return (
-    <button
+    <HoverInfo content={file.old_path ? `${file.old_path} -> ${file.path}` : file.path}><button
       type="button"
       className={`flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-[12px] transition-colors ${
         active ? "bg-white text-text-base shadow-sm" : "text-text-secondary hover:bg-white/70 hover:text-text-base"
       }`}
       onClick={onClick}
-      title={file.old_path ? `${file.old_path} -> ${file.path}` : file.path}
+
     >
       <div className="flex min-w-0 items-center">
         <FontAwesomeIcon icon={["far", "file-lines"]} className="mr-2 w-4 text-text-secondary" />
@@ -489,7 +490,7 @@ function CommitFileRow({
         <span className="text-green-600">+{file.additions}</span>
         <span className="text-red-500">-{file.deletions}</span>
       </div>
-    </button>
+    </button></HoverInfo>
   );
 }
 
@@ -507,19 +508,19 @@ function LogActionButton({
   onClick: () => void;
 }) {
   return (
-    <button
+    <HoverInfo content={label}><button
       type="button"
       className="inline-flex h-8 items-center rounded-md bg-black/5 px-2 text-[12px] font-medium text-text-secondary transition-colors hover:bg-black/5 hover:text-text-base disabled:cursor-not-allowed disabled:opacity-50"
       disabled={disabled}
       onClick={onClick}
-      title={label}
+
     >
       <FontAwesomeIcon
         icon={(busy ? ["fas", "spinner"] : icon) as any}
         className={`mr-1.5 text-[11px] ${busy ? "animate-spin" : ""}`}
       />
       {label}
-    </button>
+    </button></HoverInfo>
   );
 }
 
