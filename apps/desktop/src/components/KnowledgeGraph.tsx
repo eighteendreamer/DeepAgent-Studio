@@ -42,6 +42,27 @@ interface Transform {
   k: number;
 }
 
+interface LabelBox {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+function overlaps(a: LabelBox, b: LabelBox): boolean {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+}
+
+function labelText(node: SimNode): string {
+  return node.type === "tag" ? `#${truncate(node.label, 18)}` : truncate(node.label, 24);
+}
+
+// SVG labels use a constant screen-space font size. Approximate their bounds
+// without measuring the DOM on every animation frame.
+function labelWidth(text: string): number {
+  return Array.from(text).reduce((width, char) => width + (char.charCodeAt(0) > 127 ? 11 : 6.5), 0);
+}
+
 interface Props {
   entries: KnowledgeEntry[];
   selectedId: string | null;
@@ -386,6 +407,49 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
     return false;
   };
 
+  // Place important labels first, then suppress only the ordinary labels that
+  // would collide. The graph's physics positions nodes, not their text.
+  const visibleLabels = new Set<string>();
+  const labelBoxes: LabelBox[] = [];
+  const orderedNodes = [...nodes].sort((a, b) => {
+    const priority = (n: SimNode) => n.id === hoverId ? 2 : n.entry?.id === selectedId ? 1 : 0;
+    return priority(b) - priority(a) || b.degree - a.degree || a.id.localeCompare(b.id);
+  });
+  for (const n of orderedNodes) {
+    const important = n.id === hoverId || n.entry?.id === selectedId;
+    if (!important && (isDimmed(n.id) || tr.k < (n.type === "entry" ? 0.9 : 1.35))) {
+      continue;
+    }
+    const x = tr.x + n.x * tr.k;
+    const y = tr.y + n.y * tr.k + nodeRadius(n) * tr.k + 11;
+    const width = labelWidth(labelText(n));
+    const box = { left: x - width / 2 - 3, right: x + width / 2 + 3, top: y - 11, bottom: y + 4 };
+    if (
+      !important &&
+      (box.left < 0 ||
+        box.right > size.w ||
+        box.top < 0 ||
+        box.bottom > size.h ||
+        labelBoxes.some((placed) => overlaps(box, placed)) ||
+        nodes.some((other) => {
+          if (other.id === n.id) return false;
+          const cx = tr.x + other.x * tr.k;
+          const cy = tr.y + other.y * tr.k;
+          const radius = nodeRadius(other) * tr.k + 2;
+          return overlaps(box, {
+            left: cx - radius,
+            right: cx + radius,
+            top: cy - radius,
+            bottom: cy + radius,
+          });
+        }))
+    ) {
+      continue;
+    }
+    visibleLabels.add(n.id);
+    labelBoxes.push(box);
+  }
+
   return (
     <div ref={containerRef} className="relative w-full h-full overflow-hidden">
       {/* Controls */}
@@ -434,7 +498,6 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
             const dim = isDimmed(n.id);
             const selected = n.entry != null && n.entry.id === selectedId;
             const fill = n.type === "entry" ? kindColor(n.entry?.kind ?? "note") : TAG_COLOR;
-            const showLabel = tr.k > 0.75 || n.type === "entry";
             return (
               <g
                 key={n.id}
@@ -445,6 +508,7 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
                 onPointerEnter={() => setHoverId(n.id)}
                 onPointerLeave={() => setHoverId((h) => (h === n.id ? null : h))}
               >
+                <title>{n.type === "tag" ? `#${n.label}` : n.label}</title>
                 <circle
                   r={r}
                   fill={n.type === "tag" ? "#fff" : fill}
@@ -454,22 +518,28 @@ export function KnowledgeGraph({ entries, selectedId, search, onSelect }: Props)
                 {selected && (
                   <circle r={r + 4 / tr.k} fill="none" stroke={fill} strokeWidth={1.5 / tr.k} opacity={0.5} />
                 )}
-                {showLabel && (
-                  <text
-                    x={0}
-                    y={r + 11 / tr.k}
-                    textAnchor="middle"
-                    fontSize={11 / tr.k}
-                    fill={n.type === "tag" ? "#94a3b8" : "#374151"}
-                    fontWeight={n.type === "entry" ? 500 : 400}
-                    style={{ pointerEvents: "none" }}
-                  >
-                    {n.type === "tag" ? `#${n.label}` : truncate(n.label, 24)}
-                  </text>
-                )}
               </g>
             );
           })}
+          {/* Labels are drawn above all nodes so hovered and selected titles stay readable. */}
+          {orderedNodes.filter((n) => visibleLabels.has(n.id)).reverse().map((n) => (
+            <text
+              key={`label:${n.id}`}
+              x={n.x}
+              y={n.y + nodeRadius(n) + 11 / tr.k}
+              textAnchor="middle"
+              fontSize={11 / tr.k}
+              fill={n.type === "tag" ? "#64748b" : "#374151"}
+              fontWeight={n.type === "entry" ? 500 : 400}
+              stroke="#fff"
+              strokeWidth={3 / tr.k}
+              strokeLinejoin="round"
+              paintOrder="stroke"
+              pointerEvents="none"
+            >
+              {labelText(n)}
+            </text>
+          ))}
         </g>
       </svg>
     </div>

@@ -1443,6 +1443,7 @@
     "empty": "暂无知识。可在此添加；开启自动沉淀后，失败后恢复的经验会自动保存。或者让智能体用 knowledge_write 主动保存。",
     "delete": "删除",
     "edit": "编辑",
+    "close": "关闭",
     "newTitle": "新建条目",
     "editTitle": "编辑条目",
     "fieldTitle": "标题",

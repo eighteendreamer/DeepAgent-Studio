@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { Inbox, List, Network, Pencil, Plus, RotateCw, Search, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import type { KnowledgeEntry, KnowledgeDraft } from "../types";
@@ -18,6 +19,7 @@ import {
 } from "../api";
 import { message } from "./message";
 import { KnowledgeGraph } from "./KnowledgeGraph";
+import { Button } from "./shadcn/button";
 import { ToggleSwitchRow } from "./ui/ToggleSwitch";
 
 const KINDS = ["pitfall", "solution", "command", "config", "note"] as const;
@@ -208,9 +210,6 @@ export function KnowledgeView() {
     }
   }
 
-  const iconBtn =
-    "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ui-tint text-text-secondary transition-colors duration-150 ease-out hover:bg-ui-tint-strong hover:text-text-base";
-
   return (
     <div className="w-full h-full flex bg-white overflow-hidden">
       {/* Main area: graph (or list) */}
@@ -229,39 +228,42 @@ export function KnowledgeView() {
           <div className="flex items-center gap-2 flex-shrink-0">
             {/* graph / list switch */}
             <div className="flex h-8 items-center rounded-lg bg-ui-tint p-0.5">
-              <button
+              <Button
                 type="button"
                 onClick={() => setMode("graph")}
-                className={`flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-colors ${
+                variant="ghost"
+                size="sm"
+                aria-pressed={mode === "graph"}
+                className={`h-7 rounded-md px-2.5 ${
                   mode === "graph"
                     ? "bg-elevated-bg text-text-base shadow-sm"
                     : "text-text-secondary hover:text-text-base"
                 }`}
                 title={t("knowledgeView.graphView")}
               >
-                <FontAwesomeIcon icon={["fas", "share-nodes"]} className="text-[11px]" />
+                <Network className="h-3.5 w-3.5" aria-hidden="true" />
                 {t("knowledgeView.graphView")}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 onClick={() => setMode("list")}
-                className={`flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-colors ${
+                variant="ghost"
+                size="sm"
+                aria-pressed={mode === "list"}
+                className={`h-7 rounded-md px-2.5 ${
                   mode === "list"
                     ? "bg-elevated-bg text-text-base shadow-sm"
                     : "text-text-secondary hover:text-text-base"
                 }`}
                 title={t("knowledgeView.listView")}
               >
-                <FontAwesomeIcon icon={["fas", "list"]} className="text-[11px]" />
+                <List className="h-3.5 w-3.5" aria-hidden="true" />
                 {t("knowledgeView.listView")}
-              </button>
+              </Button>
             </div>
 
             <div className="flex h-8 min-w-[14rem] w-56 items-center rounded-lg bg-ui-tint transition-colors duration-150 ease-out focus-within:bg-ui-tint-strong">
-              <FontAwesomeIcon
-                icon={["fas", "magnifying-glass"]}
-                className="ml-3 shrink-0 text-[12px] text-text-secondary"
-              />
+              <Search className="ml-3 h-3.5 w-3.5 shrink-0 text-text-secondary" aria-hidden="true" />
               <input
                 type="search"
                 placeholder={t("knowledgeView.searchPlaceholder")}
@@ -272,25 +274,29 @@ export function KnowledgeView() {
             </div>
 
             {/* drafts bell */}
-            <button
+            <Button
               onClick={() => setShowDrafts((s) => !s)}
-              className={`relative ${iconBtn} ${showDrafts ? "bg-amber-50 text-amber-600 hover:bg-amber-50" : ""}`}
+              variant="ghost"
+              size="icon"
+              className={`relative h-8 w-8 bg-ui-tint hover:bg-ui-tint-strong ${showDrafts ? "bg-amber-50 text-amber-600 hover:bg-amber-50" : ""}`}
               title={t("knowledgeView.draftsTitle", { count: drafts.length })}
+              aria-label={t("knowledgeView.draftsTitle", { count: drafts.length })}
+              aria-pressed={showDrafts}
             >
-              <FontAwesomeIcon icon={["fas", "inbox"]} className="text-[12px]" />
+              <Inbox className="h-4 w-4" aria-hidden="true" />
               {drafts.length > 0 && (
                 <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-white text-[10px] leading-4 text-center">
                   {drafts.length}
                 </span>
               )}
-            </button>
+            </Button>
 
-            <button onClick={() => refresh(true)} className={iconBtn} title={t("knowledgeView.refresh")}>
-              <FontAwesomeIcon icon={["fas", "rotate-right"]} className={`text-[12px] ${loading ? "animate-spin" : ""}`} />
-            </button>
-            <button onClick={openNew} className={iconBtn} title={t("knowledgeView.new")}>
-              <FontAwesomeIcon icon={["fas", "plus"]} className="text-[12px]" />
-            </button>
+            <Button onClick={() => refresh(true)} variant="ghost" size="icon" className="h-8 w-8 bg-ui-tint hover:bg-ui-tint-strong" title={t("knowledgeView.refresh")} aria-label={t("knowledgeView.refresh")} disabled={loading}>
+              <RotateCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
+            </Button>
+            <Button onClick={openNew} variant="ghost" size="icon" className="h-8 w-8 bg-ui-tint hover:bg-ui-tint-strong" title={t("knowledgeView.new")} aria-label={t("knowledgeView.new")}>
+              <Plus className="h-4 w-4" aria-hidden="true" />
+            </Button>
           </div>
         </div>
 
@@ -450,16 +456,16 @@ export function KnowledgeView() {
 
       {/* Right: detail or editor */}
       {(selected || editing) && (
-        <div className="w-96 border-l border-border-theme flex flex-col overflow-hidden bg-gray-50/50 flex-shrink-0">
+        <div className="w-96 min-w-0 border-l border-border-theme flex flex-col overflow-hidden bg-gray-50/50 flex-shrink-0">
           {editing ? (
             <>
-              <div className="px-6 py-5 border-b border-border-theme flex items-start justify-between">
-                <div className="text-lg font-semibold text-text-base">
+              <div className="px-6 py-5 border-b border-border-theme flex items-start justify-between gap-2">
+                <div className="min-w-0 text-lg font-semibold text-text-base">
                   {selected ? t("knowledgeView.editTitle") : t("knowledgeView.newTitle")}
                 </div>
-                <button onClick={() => setEditing(false)} className="text-text-secondary hover:text-text-base">
-                  <FontAwesomeIcon icon={["fas", "xmark"]} />
-                </button>
+                <Button onClick={() => setEditing(false)} variant="ghost" size="icon" className="h-8 w-8" aria-label={t("knowledgeView.cancel")} title={t("knowledgeView.cancel")}>
+                  <X className="h-4 w-4" aria-hidden="true" />
+                </Button>
               </div>
               <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
                 <div>
@@ -547,34 +553,40 @@ export function KnowledgeView() {
             </>
           ) : selected ? (
             <>
-              <div className="px-6 py-5 border-b border-border-theme flex items-start justify-between">
-                <div>
-                  <div className="text-lg font-semibold text-text-base">{selected.title}</div>
+              <div className="px-6 py-5 border-b border-border-theme flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-lg font-semibold text-text-base [overflow-wrap:anywhere]">{selected.title}</div>
                   <div className="text-xs text-text-secondary mt-0.5">
                     {t(`knowledgeView.kind.${selected.kind}`, selected.kind)} · {selected.scope}
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <button
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <Button
                     onClick={() => openEdit(selected)}
-                    className="text-text-secondary hover:text-text-base"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
                     title={t("knowledgeView.edit")}
+                    aria-label={t("knowledgeView.edit")}
                   >
-                    <FontAwesomeIcon icon={["fas", "pen"]} />
-                  </button>
-                  <button
+                    <Pencil className="h-4 w-4" aria-hidden="true" />
+                  </Button>
+                  <Button
                     onClick={() => onDelete(selected)}
-                    className="text-text-secondary hover:text-red-500"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 hover:text-red-500"
                     title={t("knowledgeView.delete")}
+                    aria-label={t("knowledgeView.delete")}
                   >
-                    <FontAwesomeIcon icon={["fas", "trash"]} />
-                  </button>
-                  <button onClick={() => setSelected(null)} className="text-text-secondary hover:text-text-base">
-                    <FontAwesomeIcon icon={["fas", "xmark"]} />
-                  </button>
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  </Button>
+                  <Button onClick={() => setSelected(null)} variant="ghost" size="icon" className="h-8 w-8" title={t("knowledgeView.close")} aria-label={t("knowledgeView.close")}>
+                    <X className="h-4 w-4" aria-hidden="true" />
+                  </Button>
                 </div>
               </div>
-              <div className="flex-1 overflow-y-auto px-6 py-4">
+              <div className="min-w-0 flex-1 overflow-y-auto px-6 py-4">
                 {selected.tags.length > 0 && (
                   <>
                     <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">
@@ -582,7 +594,7 @@ export function KnowledgeView() {
                     </div>
                     <div className="flex flex-wrap gap-1.5 mb-5">
                       {selected.tags.map((tag) => (
-                        <span key={tag} className="text-[11px] bg-white border border-border-theme rounded-full px-2 py-0.5 text-text-secondary">
+                        <span key={tag} className="max-w-full text-[11px] bg-white border border-border-theme rounded-full px-2 py-0.5 text-text-secondary [overflow-wrap:anywhere]">
                           #{tag}
                         </span>
                       ))}
@@ -592,7 +604,7 @@ export function KnowledgeView() {
                 <div className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">
                   {t("knowledgeView.fieldBody")}
                 </div>
-                <pre className="text-[12px] text-text-base whitespace-pre-wrap font-mono leading-relaxed bg-white border border-border-theme rounded-lg p-3">
+                <pre className="min-w-0 max-w-full text-[12px] text-text-base whitespace-pre-wrap [overflow-wrap:anywhere] font-mono leading-relaxed bg-white border border-border-theme rounded-lg p-3">
                   {selected.body}
                 </pre>
               </div>

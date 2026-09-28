@@ -1443,6 +1443,7 @@
     "empty": "No knowledge yet. Add entries here; with auto-capture on, recovered failures are saved automatically. The agent can also save notes with knowledge_write.",
     "delete": "Delete",
     "edit": "Edit",
+    "close": "Close",
     "newTitle": "New entry",
     "editTitle": "Edit entry",
     "fieldTitle": "Title",
