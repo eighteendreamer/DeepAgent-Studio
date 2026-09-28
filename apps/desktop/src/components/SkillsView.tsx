@@ -1,7 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useTranslation } from "react-i18next";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import {
+  Box,
+  Code,
+  FileArchive,
+  GitBranch,
+  Globe,
+  Layers,
+  PenLine,
+  RefreshCw,
+  Search,
+  Server,
+  Settings,
+  Target,
+  Terminal,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import type { MarketSkill, Skill, SkillActivation, SortBy } from "../types";
 import {
   listSkills,
@@ -16,20 +31,21 @@ import {
 import { MarketSkillCard } from "./skills/MarketSkillCard";
 import { SkillInstallDialog } from "./skills/SkillInstallDialog";
 import { SkillsMarketProviderConfig } from "./skills/SkillsMarketProviderConfig";
+import { Button } from "./shadcn/button";
 
 // Map a skill id (or name) to an icon + accent color, falling back to a cube.
-function visualFor(skill: Skill): { icon: IconProp; bg: string } {
-  const map: Record<string, { icon: IconProp; bg: string }> = {
-    "agent-browser": { icon: ["fab", "chrome"], bg: "bg-gray-100 text-gray-600" },
-    "code-review-skill": { icon: ["fas", "code"], bg: "bg-purple-100 text-purple-600" },
-    "mcp-builder": { icon: ["fas", "server"], bg: "bg-indigo-100 text-indigo-600" },
-    "planning-with-files": { icon: ["fas", "pen"], bg: "bg-blue-100 text-blue-600" },
-    "rust-backend-review": { icon: ["fas", "code-branch"], bg: "bg-orange-100 text-orange-600" },
-    superpowers: { icon: ["fas", "bullseye"], bg: "bg-pink-100 text-pink-600" },
-    "ui-ux-pro-max-skill": { icon: ["fas", "layer-group"], bg: "bg-green-100 text-green-600" },
-    "webapp-testing": { icon: ["fas", "terminal"], bg: "bg-yellow-100 text-yellow-700" },
+function visualFor(skill: Skill): { icon: LucideIcon; bg: string } {
+  const map: Record<string, { icon: LucideIcon; bg: string }> = {
+    "agent-browser": { icon: Globe, bg: "bg-gray-100 text-gray-600" },
+    "code-review-skill": { icon: Code, bg: "bg-purple-100 text-purple-600" },
+    "mcp-builder": { icon: Server, bg: "bg-indigo-100 text-indigo-600" },
+    "planning-with-files": { icon: PenLine, bg: "bg-blue-100 text-blue-600" },
+    "rust-backend-review": { icon: GitBranch, bg: "bg-orange-100 text-orange-600" },
+    superpowers: { icon: Target, bg: "bg-pink-100 text-pink-600" },
+    "ui-ux-pro-max-skill": { icon: Layers, bg: "bg-green-100 text-green-600" },
+    "webapp-testing": { icon: Terminal, bg: "bg-yellow-100 text-yellow-700" },
   };
-  return map[skill.id] ?? { icon: ["fas", "cube"], bg: "bg-gray-100 text-gray-600" };
+  return map[skill.id] ?? { icon: Box, bg: "bg-gray-100 text-gray-600" };
 }
 
 function useOriginLabel() {
@@ -256,7 +272,7 @@ export function SkillsView() {
 
   // ---------------- render ----------------
   const toolbarIconBtn =
-    "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ui-tint text-text-secondary transition-colors duration-150 ease-out hover:bg-ui-tint-strong hover:text-text-base disabled:cursor-not-allowed disabled:opacity-40";
+    "h-8 w-8 bg-ui-tint text-text-secondary hover:bg-ui-tint-strong hover:text-text-base disabled:cursor-not-allowed disabled:opacity-40";
 
   return (
     <div className="w-full h-full flex bg-white overflow-hidden">
@@ -302,10 +318,7 @@ export function SkillsView() {
 
           <div className="ml-auto flex items-center gap-2">
             <div className="flex h-8 w-64 min-w-[12rem] items-center rounded-lg bg-ui-tint transition-colors duration-150 ease-out focus-within:bg-ui-tint-strong">
-              <FontAwesomeIcon
-                icon={["fas", "magnifying-glass"]}
-                className="ml-3 shrink-0 text-[12px] text-text-secondary"
-              />
+              <Search className="ml-3 h-3.5 w-3.5 shrink-0 text-text-secondary" aria-hidden="true" />
               <input
                 type="search"
                 placeholder={t("skillsView.market_search_placeholder")}
@@ -316,42 +329,48 @@ export function SkillsView() {
             </div>
 
             {marketTab === "installed" && (
-              <button
+              <Button
                 type="button"
                 onClick={() => refresh(true)}
                 title={t("skillsView.refresh")}
+                aria-label={t("skillsView.refresh")}
+                variant="ghost"
+                size="icon"
                 className={toolbarIconBtn}
               >
-                <FontAwesomeIcon
-                  icon={["fas", "rotate-right"]}
-                  className={`text-[12px] ${loading ? "animate-spin" : ""}`}
-                />
-              </button>
+                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
+              </Button>
             )}
 
             {marketTab === "installed" && (
-              <button
+              <Button
                 type="button"
                 onClick={handleInstallZip}
+                variant="ghost"
+                size="icon"
                 className={toolbarIconBtn}
                 title="Upload ZIP Skill"
+                aria-label="Upload ZIP Skill"
               >
-                <FontAwesomeIcon icon={["fas", "file-zipper"]} className="text-[12px]" />
-              </button>
+                <FileArchive className="h-4 w-4" aria-hidden="true" />
+              </Button>
             )}
 
             {marketTab === "market" && (
               <div className="relative">
-                <button
+                <Button
                   type="button"
                   onClick={handleProviderConfig}
+                  variant="ghost"
+                  size="icon"
                   className={`${toolbarIconBtn} ${providerConfigOpen ? "bg-ui-tint-strong text-text-base" : ""}`}
                   title={t("skillsView.market_provider_config")}
+                  aria-label={t("skillsView.market_provider_config")}
                   aria-haspopup="dialog"
                   aria-expanded={providerConfigOpen}
                 >
-                  <FontAwesomeIcon icon={["fas", "gear"]} className="text-[12px]" />
-                </button>
+                  <Settings className="h-4 w-4" aria-hidden="true" />
+                </Button>
                 <SkillsMarketProviderConfig
                   open={providerConfigOpen}
                   onClose={() => setProviderConfigOpen(false)}
@@ -400,24 +419,32 @@ export function SkillsView() {
             <div className="flex items-center gap-2">
               {/* R8.7 / R8.8: hide uninstall for built-in skills */}
               {selected.origin !== "built_in" && (
-                <button
+                <Button
+                  type="button"
                   onClick={() => onUninstall(selected)}
+                  variant="ghost"
+                  size="icon"
                   title={t("skillsView.uninstall")}
-                  className="w-7 h-7 rounded-full border border-border-theme flex items-center justify-center text-text-secondary hover:bg-white hover:text-red-500 transition-all bg-white"
+                  aria-label={t("skillsView.uninstall")}
+                  className="h-7 w-7 rounded-full border border-border-theme bg-white text-text-secondary hover:bg-white hover:text-red-500"
                 >
-                  <FontAwesomeIcon icon={["fas", "xmark"]} className="text-xs" />
-                </button>
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                </Button>
               )}
-              <button
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
                 onClick={() => {
                   setSelected(null);
                   setActivation(null);
                 }}
-                className="text-text-secondary hover:text-text-base"
+                className="h-7 w-7 text-text-secondary hover:text-text-base"
                 title="Close"
+                aria-label="Close"
               >
-                <FontAwesomeIcon icon={["fas", "xmark"]} />
-              </button>
+                <X className="h-4 w-4" aria-hidden="true" />
+              </Button>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto px-6 py-4">
@@ -491,6 +518,7 @@ function InstalledBody({
         <div className="grid grid-cols-2 gap-x-6 gap-y-2">
           {filtered.map((skill) => {
             const v = visualFor(skill);
+            const Icon = v.icon;
             const active = selected?.id === skill.id;
             const builtIn = skill.origin === "built_in";
             return (
@@ -504,7 +532,7 @@ function InstalledBody({
                 <div
                   className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 mr-4 ${v.bg}`}
                 >
-                  <FontAwesomeIcon icon={v.icon} className="text-lg" />
+                  <Icon className="h-5 w-5" aria-hidden="true" />
                 </div>
                 <div className="flex-1 min-w-0 pr-3">
                   <div className="flex items-center gap-2">
@@ -521,16 +549,20 @@ function InstalledBody({
                 </div>
                 {/* R8.7 / R8.8: hide uninstall (✕) for built-in skills */}
                 {!builtIn && (
-                  <button
+                  <Button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       onUninstall(skill);
                     }}
+                    variant="ghost"
+                    size="icon"
                     title={t("skillsView.uninstall")}
-                    className="w-7 h-7 rounded-full border border-border-theme flex items-center justify-center text-text-secondary hover:bg-white hover:text-red-500 transition-all bg-gray-50 opacity-0 group-hover:opacity-100"
+                    aria-label={t("skillsView.uninstall")}
+                    className="h-7 w-7 rounded-full border border-border-theme bg-gray-50 text-text-secondary opacity-0 transition-all hover:bg-white hover:text-red-500 group-hover:opacity-100"
                   >
-                    <FontAwesomeIcon icon={["fas", "xmark"]} className="text-xs" />
-                  </button>
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </Button>
                 )}
               </div>
             );
