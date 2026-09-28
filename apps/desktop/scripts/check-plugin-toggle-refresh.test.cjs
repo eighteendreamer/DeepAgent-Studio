@@ -58,3 +58,18 @@ test("tool launchers use enabled plugin apps instead of static plugin cards", ()
     assert.doesNotMatch(launcher, /PLUGIN_TOOL_CARDS/, `${name} must not expose static plugin cards`);
   }
 });
+
+test("right sidebar tools render component icons for every built-in tool type", () => {
+  const components = join(__dirname, "..", "src", "components");
+  const icons = readFileSync(join(components, "plugins", "toolIconComponents.ts"), "utf8");
+  const launcher = readFileSync(join(components, "ToolLauncherPanel.tsx"), "utf8");
+  const header = readFileSync(join(components, "SidebarPluginHeader.tsx"), "utf8");
+
+  for (const type of ["browser", "canvas", "chat", "file_preview", "files", "project_map", "recording", "terminal"]) {
+    assert.match(icons, new RegExp(`\\b${type}:\\s*[A-Z]`), `${type} needs a component icon`);
+  }
+  assert.match(launcher, /const Icon = toolIconComponent\(card\.type\)/);
+  assert.match(launcher, /<Icon className="h-\[18px\] w-\[18px\]"/);
+  assert.match(header, /toolIconComponent\(tab\.type\)/);
+  assert.match(header, /toolIconComponent\(plugin\.type\)/);
+});

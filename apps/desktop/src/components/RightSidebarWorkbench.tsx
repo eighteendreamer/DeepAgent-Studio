@@ -1,6 +1,6 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useEffect, useMemo, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { Maximize2, Minimize2 } from "lucide-react";
 import { SidebarPluginHeader } from "./SidebarPluginHeader";
 import { ToolLauncherPanel, type ToolLauncherCard } from "./ToolLauncherPanel";
 import {
@@ -141,10 +141,11 @@ export function RightSidebarWorkbench({
             className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover-bg hover:text-text-base"
 
           >
-            <FontAwesomeIcon
-              icon={["fas", isMaximized ? "compress" : "expand"]}
-              className="text-[12px]"
-            />
+            {isMaximized ? (
+              <Minimize2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden="true" />
+            ) : (
+              <Maximize2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden="true" />
+            )}
           </button></HoverInfo>
         ) : null}
         {extraActions}

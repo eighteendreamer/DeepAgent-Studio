@@ -1,6 +1,7 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
+import { toolIconComponent } from "./plugins/toolIconComponents";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 
 export interface ToolLauncherCard {
@@ -89,6 +90,7 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
         <SlidingMenuList activeId="__none__" pillClassName="left-0 right-0 rounded-lg" className="w-full max-w-[220px]">
           <div className="flex flex-col gap-0.5">
             {cards.map((card) => {
+              const Icon = toolIconComponent(card.type);
               const itemId = `${card.type}:${card.title}`;
               const ownTitle = explicitLabel(card.title, card.type);
               const translatedTitle =
@@ -106,8 +108,8 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
                   onClick={() => onSelect(card)}
                   className="relative z-[1] grid w-full grid-cols-[auto_1fr_auto] items-center gap-2.5 rounded-lg px-2.5 py-2 text-left"
                 >
-                  <div className="flex h-7 w-7 items-center justify-center text-primary">
-                    <FontAwesomeIcon icon={card.icon} className="text-[15px]" />
+                  <div className="flex h-7 w-7 items-center justify-center text-text-secondary">
+                    <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden="true" />
                   </div>
                   <span className="truncate text-[13px] font-medium text-text-base">{translatedTitle}</span>
                   {shortcut ? (

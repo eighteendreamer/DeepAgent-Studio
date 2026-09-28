@@ -1,8 +1,9 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import { Plus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { toolIconComponent } from "./plugins/toolIconComponents";
 import { FLOATING_MENU } from "./ui/motion";
 
 export type SidebarHeaderTab = {
@@ -92,6 +93,7 @@ export function SidebarPluginHeader({
           <div className="flex min-w-0 max-w-full items-center gap-1.5 overflow-x-auto overscroll-x-contain pr-1 no-scrollbar">
             {tabs.map((tab) => {
               const active = activeTabId === tab.id;
+              const Icon = toolIconComponent(tab.type);
               return (
                 <button
                   key={tab.id}
@@ -103,7 +105,7 @@ export function SidebarPluginHeader({
                       : "text-text-secondary hover:bg-ui-tint hover:text-text-base"
                   }`}
                 >
-                  <FontAwesomeIcon icon={tab.icon} className="flex-shrink-0 text-[11px]" />
+                  <Icon className="h-3.5 w-3.5 flex-shrink-0" strokeWidth={1.8} aria-hidden="true" />
                   <span className="min-w-0 flex-1 truncate text-left font-medium">{tab.title}</span>
                   <span
                     onClick={(event) => {
@@ -116,7 +118,7 @@ export function SidebarPluginHeader({
                         : "text-transparent group-hover:text-text-secondary hover:bg-hover-bg hover:text-text-base"
                     }`}
                   >
-                    <FontAwesomeIcon icon={["fas", "xmark"]} />
+                    <X className="h-3 w-3" strokeWidth={1.8} aria-hidden="true" />
                   </span>
                 </button>
               );
@@ -146,32 +148,35 @@ export function SidebarPluginHeader({
                   : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
               }`}
             >
-              <FontAwesomeIcon icon={["fas", "plus"]} className="text-[12px]" />
+              <Plus className="h-4 w-4" strokeWidth={1.8} aria-hidden="true" />
             </button></HoverInfo>
 
             {isMenuOpen && availablePlugins && (
               <div className={`${FLOATING_MENU.shell} absolute right-0 top-full z-[100] mt-1 flex w-56 origin-top-right flex-col`}>
-                {availablePlugins.map((plugin) => (
-                  <button
-                    key={plugin.id ?? `${plugin.type}:${plugin.title}`}
-                    type="button"
-                    onClick={() => {
-                      setIsMenuOpen(false);
-                      onSelectPlugin?.(plugin);
-                    }}
-                    className={`${FLOATING_MENU.row} w-full text-left`}
-                  >
-                    <div className="mr-3 flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
-                      <FontAwesomeIcon icon={plugin.icon} className="text-[12px]" />
-                    </div>
-                    <span className="text-[13px] font-medium text-text-base">
-                      {explicitLabel(plugin.title, plugin.type) ||
-                        t(`chatView.tools.${plugin.type}`, {
-                          defaultValue: toolLabel(plugin.type),
-                        })}
-                    </span>
-                  </button>
-                ))}
+                {availablePlugins.map((plugin) => {
+                  const Icon = toolIconComponent(plugin.type);
+                  return (
+                    <button
+                      key={plugin.id ?? `${plugin.type}:${plugin.title}`}
+                      type="button"
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onSelectPlugin?.(plugin);
+                      }}
+                      className={`${FLOATING_MENU.row} w-full text-left`}
+                    >
+                      <div className="mr-3 flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
+                        <Icon className="h-4 w-4" strokeWidth={1.8} aria-hidden="true" />
+                      </div>
+                      <span className="text-[13px] font-medium text-text-base">
+                        {explicitLabel(plugin.title, plugin.type) ||
+                          t(`chatView.tools.${plugin.type}`, {
+                            defaultValue: toolLabel(plugin.type),
+                          })}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
