@@ -333,7 +333,8 @@ impl AppService {
     /// / text it showed live — not flattened timeline lines.
     ///
     /// Walks the event log in order: user/assistant `MessageAppended` become
-    /// message turns (assistant text + its reasoning), and
+    /// message turns, provider-native reasoning items retain their original
+    /// position, and
     /// `ToolCallRequested`/`ToolCallCompleted` fold into a tool card attached
     /// (in chronological position) to the current assistant turn.
     pub fn session_conversation(&self, session_id: &str) -> Result<Vec<ConversationMessageDto>> {
@@ -356,6 +357,11 @@ impl AppService {
         // completion updates the request card in place.
         let mut tool_pos: std::collections::HashMap<String, (usize, usize)> =
             std::collections::HashMap::new();
+        // Native Responses reasoning is persisted separately from the final
+        // MessageAppended projection. Replay exact duplicate provider items
+        // only once within this user turn, matching the stream accumulator.
+        let mut seen_reasoning_items = std::collections::HashSet::new();
+        let mut native_reasoning_since_tool = String::new();
 
         // Ensure there is a trailing assistant turn to attach tool cards to.
         let ensure_assistant = |messages: &mut Vec<ConversationMessageDto>| -> usize {
@@ -374,7 +380,7 @@ impl AppService {
             messages.len() - 1
         };
 
-        for ev in &events {
+        for (event_index, ev) in events.iter().enumerate() {
             match &ev.payload {
                 EventPayload::MessageAppended { message } => match message.role {
                     Role::User => {
@@ -385,6 +391,8 @@ impl AppService {
                         // A new user turn ends the previous assistant turn's
                         // tool-card grouping.
                         tool_pos.clear();
+                        seen_reasoning_items.clear();
+                        native_reasoning_since_tool.clear();
                         let attachments = parse_conversation_attachments(&text, session_id);
                         messages.push(ConversationMessageDto {
                             role: "user".to_string(),
@@ -406,11 +414,14 @@ impl AppService {
                             continue;
                         }
                         let idx = ensure_assistant(&mut messages);
-                        if let Some(r) = reasoning {
+                        if let Some(r) =
+                            reasoning.filter(|r| *r != native_reasoning_since_tool.trim())
+                        {
                             messages[idx].parts.push(ConversationPartDto::Reasoning {
                                 text: r.to_string(),
                             });
                         }
+                        native_reasoning_since_tool.clear();
                         if !content.is_empty() {
                             messages[idx].parts.push(ConversationPartDto::Text {
                                 text: content.to_string(),
@@ -425,7 +436,32 @@ impl AppService {
                     }
                     _ => {}
                 },
+                EventPayload::ResponseItemAppended {
+                    item: deepagent_core::response_item::ResponseItem::Reasoning { id, content },
+                } if !content.trim().is_empty() => {
+                    // Session::append(MessageAppended) also writes a synthetic
+                    // Responses item immediately afterwards. That legacy
+                    // projection is already represented by the message above.
+                    let projected_from_previous_message = event_index > 0
+                        && matches!(
+                            &events[event_index - 1].payload,
+                            EventPayload::MessageAppended { message }
+                                if message.role == Role::Assistant
+                                    && message.reasoning_content.as_deref() == Some(content)
+                        );
+                    if projected_from_previous_message
+                        || !seen_reasoning_items.insert((id.clone(), content.clone()))
+                    {
+                        continue;
+                    }
+                    let idx = ensure_assistant(&mut messages);
+                    messages[idx].parts.push(ConversationPartDto::Reasoning {
+                        text: content.clone(),
+                    });
+                    native_reasoning_since_tool.push_str(content);
+                }
                 EventPayload::ToolCallRequested { call } => {
+                    native_reasoning_since_tool.clear();
                     let idx = ensure_assistant(&mut messages);
                     let part_idx = messages[idx].parts.len();
                     let metadata = tool_ui_metadata(&call.name, &call.arguments, None);
@@ -1085,6 +1121,189 @@ mod tests {
         assert_eq!(output["provider"], "searxng");
         assert_eq!(output["attempts"][0]["provider"], "deepseek");
         assert_eq!(output["attempts"][1]["ok"], true);
+    }
+
+    #[test]
+    fn session_conversation_replays_native_reasoning_without_duplicating_provider_items() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+        use deepagent_core::response_item::ResponseItem;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("reasoning replay")).unwrap();
+        let sid = session.id().to_string();
+
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("first"),
+            })
+            .unwrap();
+        for _ in 0..2 {
+            // A retried request can leave the same provider item in the file
+            // twice, as observed in an affected real session.
+            session
+                .append_response_item(ResponseItem::Reasoning {
+                    id: Some("rs_1".into()),
+                    content: "inspect available skills".into(),
+                })
+                .unwrap();
+            session
+                .append_response_item(ResponseItem::Message {
+                    role: "assistant".into(),
+                    content: "first answer".into(),
+                })
+                .unwrap();
+        }
+        session
+            .append_without_response_projection(EventPayload::MessageAppended {
+                message: Message::assistant("first answer"),
+            })
+            .unwrap();
+
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("second"),
+            })
+            .unwrap();
+        session
+            .append_response_item(ResponseItem::Reasoning {
+                id: Some("rs_1".into()),
+                content: "check the correction".into(),
+            })
+            .unwrap();
+        session
+            .append_without_response_projection(EventPayload::MessageAppended {
+                message: Message::assistant("second answer"),
+            })
+            .unwrap();
+
+        let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+        let assistant_parts: Vec<_> = conversation
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .map(|message| &message.parts)
+            .collect();
+        assert_eq!(assistant_parts.len(), 2);
+        assert_eq!(
+            assistant_parts[0],
+            &vec![
+                ConversationPartDto::Reasoning {
+                    text: "inspect available skills".into(),
+                },
+                ConversationPartDto::Text {
+                    text: "first answer".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            assistant_parts[1],
+            &vec![
+                ConversationPartDto::Reasoning {
+                    text: "check the correction".into(),
+                },
+                ConversationPartDto::Text {
+                    text: "second answer".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn session_conversation_does_not_repeat_synthetic_reasoning_projection() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("legacy reasoning")).unwrap();
+        let sid = session.id().to_string();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("question"),
+            })
+            .unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::assistant("answer").with_reasoning("legacy thought"),
+            })
+            .unwrap();
+
+        let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+        assert_eq!(
+            conversation[1].parts,
+            vec![
+                ConversationPartDto::Reasoning {
+                    text: "legacy thought".into(),
+                },
+                ConversationPartDto::Text {
+                    text: "answer".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn session_conversation_keeps_native_reasoning_before_tool_and_final_text() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::{Message, ToolCall};
+        use deepagent_core::response_item::ResponseItem;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("ordered process")).unwrap();
+        let sid = session.id().to_string();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("inspect"),
+            })
+            .unwrap();
+        session
+            .append_response_item(ResponseItem::Reasoning {
+                id: Some("rs_tool".into()),
+                content: "read the file first".into(),
+            })
+            .unwrap();
+        session
+            .append_without_response_projection(EventPayload::ToolCallRequested {
+                call: ToolCall {
+                    id: "call_1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "fixture.txt"}),
+                },
+            })
+            .unwrap();
+        session
+            .append(EventPayload::ToolCallCompleted {
+                call_id: "call_1".into(),
+                ok: true,
+                output: serde_json::json!({"content": "fixture"}),
+                duration_ms: 12,
+            })
+            .unwrap();
+        session
+            .append_without_response_projection(EventPayload::MessageAppended {
+                message: Message::assistant("done"),
+            })
+            .unwrap();
+
+        let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+        let parts = &conversation[1].parts;
+        assert!(matches!(
+            &parts[..],
+            [
+                ConversationPartDto::Reasoning { text },
+                ConversationPartDto::Tool {
+                    call_id,
+                    status,
+                    ..
+                },
+                ConversationPartDto::Text { text: answer }
+            ] if text == "read the file first"
+                && call_id == "call_1"
+                && status == "ok"
+                && answer == "done"
+        ));
     }
 
     #[test]
