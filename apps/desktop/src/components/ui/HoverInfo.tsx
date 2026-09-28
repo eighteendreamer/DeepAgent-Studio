@@ -9,7 +9,7 @@ interface HoverInfoProps {
 }
 
 /** A short, non-underlined information card for an existing UI trigger. */
-export function HoverInfo({ content, children, side = "top" }: HoverInfoProps) {
+export function HoverInfo({ content, children, side }: HoverInfoProps) {
   if (content == null || content === "") return children;
   const disabled = isValidElement<{ disabled?: boolean; className?: string }>(children)
     && children.props.disabled === true;

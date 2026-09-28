@@ -12,7 +12,7 @@ function HoverCardTrigger(props: PreviewCardPrimitive.Trigger.Props) {
 
 function HoverCardContent({
   className,
-  side = "top",
+  side = "bottom",
   align = "center",
   sideOffset = 6,
   alignOffset = 0,

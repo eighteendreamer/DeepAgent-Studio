@@ -37,4 +37,8 @@ test("shared Hover Card uses the requested shadcn Base UI primitive", () => {
   const card = fs.readFileSync(path.join(sourceRoot, "components/shadcn/hover-card.tsx"), "utf8");
   assert.match(card, /@base-ui\/react\/preview-card/);
   assert.doesNotMatch(card, /@radix-ui\/react-hover-card/);
+  assert.match(card, /side\s*=\s*"bottom"/);
+
+  const info = fs.readFileSync(path.join(sourceRoot, "components/ui/HoverInfo.tsx"), "utf8");
+  assert.doesNotMatch(info, /side\s*=\s*"top"/);
 });
