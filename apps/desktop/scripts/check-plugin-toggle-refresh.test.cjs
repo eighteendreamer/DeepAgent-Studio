@@ -19,11 +19,29 @@ test("plugin toggle refreshes plugin state without a full page reload", () => {
   assert.doesNotMatch(implementation, /\bload\(\)/);
   assert.match(implementation, /setPlugins\(/);
   assert.match(implementation, /listPlugins\(\)/);
+  assert.match(implementation, /if \(selectedId === plugin\.id\)/);
   assert.match(implementation, /listPluginOutputStyles\(\)/);
   assert.doesNotMatch(
     implementation,
     /listPluginMarketplaces|listPluginMarketplaceEntries/,
   );
+});
+
+test("plugin catalog loads details only after selection", () => {
+  const loadStart = source.indexOf("const load = async");
+  const loadEnd = source.indexOf("useEffect(() => {", loadStart);
+  assert.notEqual(loadStart, -1);
+  assert.notEqual(loadEnd, -1);
+  const catalogLoad = source.slice(loadStart, loadEnd);
+  assert.match(catalogLoad, /listPlugins\(\)/);
+  assert.doesNotMatch(catalogLoad, /readPlugin\(|listPluginOutputStyles\(/);
+
+  assert.match(source, /if \(!selectedId\)/);
+  assert.match(source, /void readPlugin\(selectedId\)/);
+  assert.match(source, /void listPluginOutputStyles\(\)/);
+  const rowStart = source.indexOf("function PluginRow(");
+  const rowEnd = source.indexOf("function PluginDetail(", rowStart);
+  assert.doesNotMatch(source.slice(rowStart, rowEnd), /PluginStateBadges/);
 });
 
 test("tool launchers use enabled plugin apps instead of static plugin cards", () => {

@@ -504,6 +504,30 @@ export interface Plugin {
   errors: PluginLoadError[];
 }
 
+/** The catalog payload returned by list_plugins; runtime details use read_plugin. */
+export interface PluginSummary {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  developer?: string | null;
+  origin: string;
+  category?: string | null;
+  keywords: string[];
+  capabilities: string[];
+  installed: boolean;
+  enabled: boolean;
+  available: boolean;
+  skill_count: number;
+  mcp_server_count: number;
+  hook_count: number;
+  output_style_count: number;
+  icon_path?: string | null;
+  logo_path?: string | null;
+  brand_color?: string | null;
+  required_by: PluginDependent[];
+}
+
 export interface PluginApp {
   plugin_id: string;
   plugin_name: string;

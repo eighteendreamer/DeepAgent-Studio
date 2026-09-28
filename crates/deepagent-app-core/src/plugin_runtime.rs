@@ -234,6 +234,36 @@ fn project_output_styles(
     }
 }
 
+pub(crate) fn load_plugin_output_style_entries(
+    plugin_id: &str,
+    plugin_name: &str,
+    manifest: &PluginManifest,
+) -> Vec<PluginOutputStyleEntry> {
+    let mut projection = PluginRuntimeProjection::default();
+    project_output_styles(plugin_id, plugin_name, manifest, &mut projection);
+    projection.output_styles
+}
+
+pub(crate) fn load_plugin_app_entries(
+    plugin_id: &str,
+    plugin_name: &str,
+    manifest: &PluginManifest,
+) -> Vec<PluginAppEntry> {
+    let mut apps = Vec::new();
+    for path in manifest.paths.app_paths.iter().filter(|path| path.exists()) {
+        match load_plugin_app_config(plugin_id, plugin_name, path) {
+            Ok(config) => apps.extend(config.apps),
+            Err(error) => tracing::warn!(
+                plugin_id,
+                path = %path.display(),
+                error = %error,
+                "plugin app card config could not be loaded"
+            ),
+        }
+    }
+    apps
+}
+
 fn project_mcp(
     plugin_id: &str,
     plugin_name: &str,

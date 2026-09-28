@@ -10,6 +10,7 @@ import {
   isTauri,
   listPluginOutputStyles,
   listPlugins,
+  readPlugin,
   scanPlugin,
   scanPluginZip,
   setPluginEnabled,
@@ -21,6 +22,7 @@ import type {
   PluginDiagnosticSeverity,
   PluginOutputStyle,
   PluginScanReport,
+  PluginSummary,
 } from "../types";
 import { Button } from "./shadcn/button";
 import {
@@ -52,7 +54,7 @@ type PendingConfirmAction = {
   message: string;
   submitLabel: string;
   tone?: "danger" | "warning";
-  dependents?: Plugin["required_by"];
+  dependents?: PluginSummary["required_by"];
   onConfirm: () => Promise<void>;
 };
 
@@ -80,7 +82,9 @@ const emptyCreateDraft: CreatePluginDraft = {
 };
 
 export function PluginsView() {
-  const [plugins, setPlugins] = useState<Plugin[]>([]);
+  const [plugins, setPlugins] = useState<PluginSummary[]>([]);
+  const [selectedPlugin, setSelectedPlugin] = useState<Plugin | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [outputStyles, setOutputStyles] = useState<PluginOutputStyle[]>([]);
   const [query, setQuery] = useState("");
   const [origin, setOrigin] = useState<OriginFilter>("all");
@@ -101,10 +105,6 @@ export function PluginsView() {
     try {
       const pluginRows = await listPlugins();
       setPlugins(pluginRows);
-      setOutputStyles(await listPluginOutputStyles().catch(() => []));
-      if (selectedId && !pluginRows.some((plugin) => plugin.id === selectedId)) {
-        setSelectedId(null);
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -116,9 +116,41 @@ export function PluginsView() {
     void load();
   }, []);
 
-  const selected = selectedId
-    ? plugins.find((plugin) => plugin.id === selectedId) ?? null
-    : null;
+  useEffect(() => {
+    if (!selectedId) {
+      setSelectedPlugin(null);
+      setOutputStyles([]);
+      return;
+    }
+    let cancelled = false;
+    setError(null);
+    setSelectedPlugin(null);
+    setOutputStyles([]);
+    setDetailLoading(true);
+    void readPlugin(selectedId)
+      .then((plugin) => {
+        if (cancelled) return;
+        setSelectedPlugin(plugin);
+        setDetailLoading(false);
+        if (!plugin) setError(`插件 ${selectedId} 不存在`);
+        if (!plugin) return;
+        void listPluginOutputStyles()
+          .then((styles) => {
+            if (!cancelled) setOutputStyles(styles);
+          })
+          .catch((err) => {
+            if (!cancelled) setError(`加载插件样式失败：${err instanceof Error ? err.message : String(err)}`);
+          });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setDetailLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedId]);
+
+  const selected = selectedPlugin?.id === selectedId ? selectedPlugin : null;
   const selectedOutputStyles = selected
     ? outputStyles.filter((style) => style.plugin_id === selected.id)
     : [];
@@ -164,21 +196,16 @@ export function PluginsView() {
     return groups.filter((group) => group.plugins.length > 0);
   }, [filtered]);
 
-  const applyPluginToggle = async (plugin: Plugin, enabled: boolean) => {
+  const applyPluginToggle = async (plugin: PluginSummary | Plugin, enabled: boolean) => {
     setBusyId(plugin.id);
     setError(null);
     try {
       const updated = await setPluginEnabled(plugin.id, enabled);
-      setPlugins((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item)),
-      );
-
-      const [pluginRows, outputStyleRows] = await Promise.all([
-        listPlugins(),
-        listPluginOutputStyles().catch(() => []),
-      ]);
-      setPlugins(pluginRows);
-      setOutputStyles(outputStyleRows);
+      setSelectedPlugin((current) => current?.id === updated.id ? updated : current);
+      setPlugins(await listPlugins());
+      if (selectedId === plugin.id) {
+        setOutputStyles(await listPluginOutputStyles());
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -186,7 +213,7 @@ export function PluginsView() {
     }
   };
 
-  const togglePlugin = async (plugin: Plugin, enabled: boolean) => {
+  const togglePlugin = async (plugin: PluginSummary | Plugin, enabled: boolean) => {
     if (!enabled && plugin.enabled && plugin.required_by.length > 0) {
       setConfirmDialog({
         title: `禁用 ${plugin.display_name}`,
@@ -201,7 +228,7 @@ export function PluginsView() {
     await applyPluginToggle(plugin, enabled);
   };
 
-  const removePlugin = async (plugin: Plugin) => {
+  const removePlugin = async (plugin: PluginSummary | Plugin) => {
     if (plugin.origin === "builtin" || plugin.origin === "workspace") {
       await togglePlugin(plugin, false);
       return;
@@ -367,15 +394,23 @@ export function PluginsView() {
 
   return (
     <div className="h-full w-full overflow-hidden bg-white">
-      {selected ? (
-        <PluginDetail
-          plugin={selected}
-          outputStyles={selectedOutputStyles}
-          busy={busyId === selected.id}
-          onBack={() => setSelectedId(null)}
-          onToggle={(enabled) => togglePlugin(selected, enabled)}
-          onRemove={() => removePlugin(selected)}
-        />
+      {selectedId ? (
+        selected ? (
+          <PluginDetail
+            plugin={selected}
+            outputStyles={selectedOutputStyles}
+            error={error}
+            busy={busyId === selected.id}
+            onBack={() => setSelectedId(null)}
+            onToggle={(enabled) => togglePlugin(selected, enabled)}
+            onRemove={() => removePlugin(selected)}
+          />
+        ) : (
+          <div className="mx-auto w-full max-w-[940px] px-8 py-8">
+            <Button variant="ghost" onClick={() => setSelectedId(null)}>返回插件列表</Button>
+            <EmptyState text={detailLoading ? "正在加载插件详情..." : error || "插件不存在"} />
+          </div>
+        )
       ) : (
         <div className="h-full overflow-y-auto custom-scrollbar">
           <div className="mx-auto w-full max-w-[1120px] px-8 py-8">
@@ -531,7 +566,7 @@ function PluginRow({
   onOpen,
   onToggle,
 }: {
-  plugin: Plugin;
+  plugin: PluginSummary;
   busy: boolean;
   onOpen: () => void;
   onToggle: (enabled: boolean) => void;
@@ -553,7 +588,6 @@ function PluginRow({
             <StatusBadge plugin={plugin} />
           </div>
           <div className="mt-1 truncate text-[12px] text-text-secondary">{plugin.description}</div>
-          <PluginStateBadges plugin={plugin} />
           <div className="mt-2 flex flex-wrap gap-1">
             <MiniBadge>{originLabel(plugin.origin)}</MiniBadge>
             {plugin.capabilities.slice(0, 3).map((capability) => (
@@ -578,6 +612,7 @@ function PluginRow({
 function PluginDetail({
   plugin,
   outputStyles,
+  error,
   busy,
   onBack,
   onToggle,
@@ -585,6 +620,7 @@ function PluginDetail({
 }: {
   plugin: Plugin;
   outputStyles: PluginOutputStyle[];
+  error: string | null;
   busy: boolean;
   onBack: () => void;
   onToggle: (enabled: boolean) => void;
@@ -602,6 +638,12 @@ function PluginDetail({
           <FontAwesomeIcon icon={["fas", "chevron-left"]} className="text-[11px]" />
           插件列表
         </Button>
+
+        {error && (
+          <div className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">
+            {error}
+          </div>
+        )}
 
         <div className="mb-8 flex flex-wrap items-start justify-between gap-5">
           <div className="flex min-w-0 items-center gap-4">
@@ -1208,7 +1250,7 @@ function ScanMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PluginIcon({ plugin, size = "md" }: { plugin: Plugin; size?: "md" | "lg" }) {
+function PluginIcon({ plugin, size = "md" }: { plugin: PluginSummary | Plugin; size?: "md" | "lg" }) {
   const icon = iconForPlugin(plugin);
   const large = size === "lg";
   const assetPath = plugin.icon_path || plugin.logo_path;
@@ -1243,7 +1285,7 @@ function PluginIcon({ plugin, size = "md" }: { plugin: Plugin; size?: "md" | "lg
   );
 }
 
-function iconForPlugin(plugin: Plugin): IconProp {
+function iconForPlugin(plugin: PluginSummary | Plugin): IconProp {
   const name = `${plugin.name} ${plugin.display_name}`.toLowerCase();
   if (name.includes("browser") || name.includes("chrome")) return ["fas", "arrow-pointer"];
   if (name.includes("computer")) return ["fas", "desktop"];
@@ -1256,7 +1298,7 @@ function iconForPlugin(plugin: Plugin): IconProp {
   return ["fas", "puzzle-piece"];
 }
 
-function StatusBadge({ plugin }: { plugin: Plugin }) {
+function StatusBadge({ plugin }: { plugin: PluginSummary | Plugin }) {
   if (!plugin.available) return <MiniBadge tone="warn">不可用</MiniBadge>;
   if (plugin.enabled) return <MiniBadge tone="ok">已启用</MiniBadge>;
   return <MiniBadge>已禁用</MiniBadge>;

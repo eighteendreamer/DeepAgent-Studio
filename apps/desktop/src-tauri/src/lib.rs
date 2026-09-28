@@ -30,8 +30,8 @@ use deepagent_app_core::{
     KnowledgeService, LocalPtyHandle, ManagedFileInventory, McpServerDto, McpService,
     NewRuntimeLogEntry, OfficeService, PdfRenderResultDto, PluginAppEntry, PluginDto,
     PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto, PluginScanReportDto,
-    PluginService, PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto, ProjectDto,
-    ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto,
+    PluginService, PluginSummaryDto, PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto,
+    ProjectDto, ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto,
     ProjectMapNodeDto, ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService,
     ProjectMapStatusDto, ProjectService, ProjectTrustDto, PtyReadChunk, RecordingService,
     RecordingSessionDto, RewindResultDto, RuntimeBroker, RuntimeLogEntry, RuntimeLogStore,
@@ -1265,12 +1265,12 @@ fn activate_skill(
 
 // ---- plugin commands ------------------------------------------------------
 
-fn list_plugins_for_display(plugins: &PluginService) -> Result<Vec<PluginDto>, String> {
-    plugins.list().map_err(|e| e.to_string())
+fn list_plugins_for_display(plugins: &PluginService) -> Result<Vec<PluginSummaryDto>, String> {
+    plugins.list_summaries().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn list_plugins(state: State<'_, AppState>) -> Result<Vec<PluginDto>, String> {
+fn list_plugins(state: State<'_, AppState>) -> Result<Vec<PluginSummaryDto>, String> {
     list_plugins_for_display(&state.plugins)
 }
 
@@ -1310,9 +1310,7 @@ fn check_plugin_health(
 
 #[tauri::command]
 fn list_plugin_apps(state: State<'_, AppState>) -> Result<Vec<PluginAppEntry>, String> {
-    let apps = state.plugins.list_apps().map_err(|e| e.to_string())?;
-    sync_plugin_skill_roots(state.inner())?;
-    Ok(apps)
+    state.plugins.list_apps().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -7097,7 +7095,11 @@ mod tests {
         let plugins = list_plugins_for_display(&plugin_service).unwrap();
 
         assert_eq!(plugins.len(), 1);
-        assert!(plugins[0].has_runtime_payload);
+        assert_eq!(plugins[0].id, "runtime-demo@builtin");
+        let serialized = serde_json::to_value(&plugins[0]).unwrap();
+        assert!(serialized.get("health_status").is_none());
+        assert!(serialized.get("runtime_available").is_none());
+        assert!(serialized.get("entrypoints").is_none());
         assert!(
             !tmp.path().join("app-data").join("plugins").join("data").exists(),
             "displaying the plugin list must not create plugin data dirs or unpack runtime payloads"

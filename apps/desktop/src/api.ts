@@ -57,6 +57,7 @@ import type {
   PluginMarketplacePage,
   PluginOutputStyle,
   PluginScanReport,
+  PluginSummary,
   Project,
   ProjectMapHit,
   ProjectMapGraph,
@@ -616,9 +617,9 @@ export async function activateSkill(id: string): Promise<SkillActivation | null>
 // Plugins are discovered from disk by the Rust `PluginService`, so there is no
 // meaningful browser fallback: reads return empty, mutations fail loudly.
 
-export async function listPlugins(): Promise<Plugin[]> {
+export async function listPlugins(): Promise<PluginSummary[]> {
   const invoke = getInvoke();
-  if (invoke) return invoke<Plugin[]>("list_plugins");
+  if (invoke) return invoke<PluginSummary[]>("list_plugins");
   return [];
 }
 

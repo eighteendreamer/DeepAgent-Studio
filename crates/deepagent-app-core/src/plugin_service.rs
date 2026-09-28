@@ -27,7 +27,10 @@ use crate::plugin_loader::{
     load_plugins, plugin_id, LoadedPlugin, PluginLoadError, PluginOrigin, PluginRoots,
 };
 use crate::plugin_manifest::{load_plugin_manifest, PluginManifest};
-use crate::plugin_runtime::{EnabledPluginRuntimeInput, PluginRuntimeProjection};
+use crate::plugin_runtime::{
+    load_plugin_app_entries, load_plugin_output_style_entries, EnabledPluginRuntimeInput,
+    PluginRuntimeProjection,
+};
 use crate::plugin_security::{scan_plugin_dir, PluginScanReportDto};
 
 const PLUGIN_STATE_SCHEMA_VERSION: u32 = 1;
@@ -163,6 +166,40 @@ pub struct PluginDto {
     pub errors: Vec<PluginLoadError>,
 }
 
+/// Metadata needed by the plugin catalog. Runtime and diagnostic details are
+/// fetched through `read_plugin` only after a plugin is selected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSummaryDto {
+    pub id: String,
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub developer: Option<String>,
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    pub installed: bool,
+    pub enabled: bool,
+    pub available: bool,
+    pub skill_count: u32,
+    pub mcp_server_count: u32,
+    pub hook_count: u32,
+    pub output_style_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand_color: Option<String>,
+    #[serde(default)]
+    pub required_by: Vec<PluginDependentDto>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginRuntimeInspectionDto {
     pub plugin_id: String,
@@ -285,6 +322,7 @@ pub struct PluginService {
     data_root: PathBuf,
     runtime_cache: Mutex<Option<PluginRuntimeCache>>,
     list_cache: Mutex<Option<PluginListCache>>,
+    summary_cache: Mutex<Option<PluginSummaryCache>>,
 }
 
 struct PluginRuntimeCache {
@@ -294,6 +332,11 @@ struct PluginRuntimeCache {
 
 struct PluginListCache {
     plugins: Vec<PluginDto>,
+    snapshots: Vec<PathSnapshot>,
+}
+
+struct PluginSummaryCache {
+    plugins: Vec<PluginSummaryDto>,
     snapshots: Vec<PathSnapshot>,
 }
 
@@ -391,6 +434,7 @@ impl PluginService {
             data_root: plugin_data.join("data"),
             runtime_cache: Mutex::new(None),
             list_cache: Mutex::new(None),
+            summary_cache: Mutex::new(None),
         };
         service.reclaim_decommissioned_marketplace_storage(&plugin_data);
         service
@@ -436,12 +480,34 @@ impl PluginService {
         Ok(plugins)
     }
 
+    pub fn list_summaries(&self) -> Result<Vec<PluginSummaryDto>> {
+        if let Some(plugins) = self.cached_plugin_summaries() {
+            return Ok(plugins);
+        }
+        let state = self.load_state()?;
+        let loaded = load_plugins(&self.roots);
+        let dependencies = self.dependency_outcome(&loaded, &state);
+        let plugins = loaded
+            .iter()
+            .map(|plugin| self.summary_from_loaded(plugin, &loaded, &state, &dependencies))
+            .collect::<Vec<_>>();
+        let snapshots = self.plugin_list_cache_snapshots(&loaded, &state);
+        self.store_plugin_summary_cache(plugins.clone(), snapshots);
+        Ok(plugins)
+    }
+
     pub fn reload(&self) -> Result<Vec<PluginDto>> {
         self.list()
     }
 
     pub fn read(&self, id: &str) -> Result<Option<PluginDto>> {
-        Ok(self.list()?.into_iter().find(|plugin| plugin.id == id))
+        let state = self.load_state()?;
+        let loaded = load_plugins(&self.roots);
+        let dependencies = self.dependency_outcome(&loaded, &state);
+        Ok(loaded
+            .iter()
+            .find(|plugin| plugin.id == id)
+            .map(|plugin| self.dto_from_loaded(plugin, &loaded, &state, &dependencies)))
     }
 
     pub fn inspect_plugin_runtime(&self, id: &str) -> Result<Option<PluginRuntimeInspectionDto>> {
@@ -909,16 +975,54 @@ impl PluginService {
     }
 
     pub fn list_apps(&self) -> Result<Vec<crate::plugin_runtime::PluginAppEntry>> {
-        Ok(self
-            .runtime_projection()?
-            .app_entries
+        let state = self.load_state()?;
+        let loaded = load_plugins(&self.roots);
+        let dependencies = self.dependency_outcome(&loaded, &state);
+        let mut enabled_plugins = loaded
             .into_iter()
+            .filter(|plugin| {
+                self.is_effectively_enabled(plugin, &state)
+                    && !dependencies.demoted.contains(&plugin.id)
+            })
+            .collect::<Vec<_>>();
+        enabled_plugins.sort_by(|a, b| {
+            plugin_runtime_priority(b.origin)
+                .cmp(&plugin_runtime_priority(a.origin))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(enabled_plugins
+            .iter()
+            .filter_map(|plugin| {
+                plugin
+                    .resolved()
+                    .map(|resolved| (plugin, &resolved.manifest))
+            })
+            .flat_map(|(plugin, manifest)| {
+                load_plugin_app_entries(&plugin.id, &plugin.name, manifest)
+            })
             .filter(|app| host_app_component_is_renderable(&app.component))
             .collect())
     }
 
     pub fn list_output_styles(&self) -> Result<Vec<crate::plugin_runtime::PluginOutputStyleEntry>> {
-        Ok(self.runtime_projection()?.output_styles)
+        let state = self.load_state()?;
+        let loaded = load_plugins(&self.roots);
+        let dependencies = self.dependency_outcome(&loaded, &state);
+        Ok(loaded
+            .iter()
+            .filter(|plugin| {
+                self.is_effectively_enabled(plugin, &state)
+                    && !dependencies.demoted.contains(&plugin.id)
+            })
+            .filter_map(|plugin| {
+                plugin
+                    .resolved()
+                    .map(|resolved| (plugin, &resolved.manifest))
+            })
+            .flat_map(|(plugin, manifest)| {
+                load_plugin_output_style_entries(&plugin.id, &plugin.name, manifest)
+            })
+            .collect())
     }
 
     fn dependency_outcome(
@@ -1597,26 +1701,7 @@ impl PluginService {
             health_status,
             &entrypoints,
         );
-        let mut capabilities = manifest
-            .map(|m| m.interface.capabilities.clone())
-            .unwrap_or_default();
-        if capabilities.is_empty() {
-            if counts.skills > 0 {
-                capabilities.push("Skill".to_string());
-            }
-            if counts.mcp_servers > 0 {
-                capabilities.push("MCP".to_string());
-            }
-            if counts.hooks > 0 {
-                capabilities.push("Hooks".to_string());
-            }
-            if counts.apps > 0 {
-                capabilities.push("App".to_string());
-            }
-            if counts.output_styles > 0 {
-                capabilities.push("Output Style".to_string());
-            }
-        }
+        let capabilities = plugin_capabilities(manifest, counts);
 
         let mut errors = plugin.errors.clone();
         errors.extend_from_slice(dependencies.errors_for(&plugin.id));
@@ -1699,6 +1784,58 @@ impl PluginService {
             brand_color: manifest.and_then(|m| m.interface.brand_color.clone()),
             required_by,
             errors,
+        }
+    }
+
+    fn summary_from_loaded(
+        &self,
+        plugin: &LoadedPlugin,
+        loaded: &[LoadedPlugin],
+        state: &PluginState,
+        dependencies: &PluginDependencyOutcome,
+    ) -> PluginSummaryDto {
+        let resolved = plugin.resolved();
+        let manifest = resolved.map(|plugin| &plugin.manifest);
+        let presentation =
+            resolved.map(|resolved| self.presentation_for_loaded(plugin, resolved, state));
+        let counts = PluginComponentCounts::from_manifest(manifest);
+        PluginSummaryDto {
+            id: plugin.id.clone(),
+            name: plugin.name.clone(),
+            display_name: presentation
+                .as_ref()
+                .map(|presentation| presentation.display_name.clone())
+                .unwrap_or_else(|| plugin.name.clone()),
+            description: presentation
+                .as_ref()
+                .and_then(|presentation| presentation.short_description.clone())
+                .or_else(|| resolved.map(|plugin| plugin.short_description()))
+                .unwrap_or_else(|| "Plugin failed to load".to_string()),
+            developer: presentation
+                .as_ref()
+                .and_then(|presentation| presentation.developer_name.clone()),
+            origin: plugin.origin.as_str().to_string(),
+            category: presentation
+                .as_ref()
+                .and_then(|presentation| presentation.category.clone()),
+            keywords: manifest.map(|m| m.keywords.clone()).unwrap_or_default(),
+            capabilities: plugin_capabilities(manifest, counts),
+            installed: manifest.is_some(),
+            enabled: self.is_effectively_enabled(plugin, state)
+                && !dependencies.demoted.contains(&plugin.id),
+            available: plugin.available && resolved.is_some(),
+            skill_count: counts.skills,
+            mcp_server_count: counts.mcp_servers,
+            hook_count: counts.hooks,
+            output_style_count: counts.output_styles,
+            icon_path: manifest
+                .and_then(|m| m.interface.composer_icon.as_ref())
+                .map(|path| path_string(path)),
+            logo_path: manifest
+                .and_then(|m| m.interface.logo.as_ref())
+                .map(|path| path_string(path)),
+            brand_color: manifest.and_then(|m| m.interface.brand_color.clone()),
+            required_by: self.reverse_dependents(plugin, loaded, state, dependencies),
         }
     }
 
@@ -1804,6 +1941,26 @@ impl PluginService {
         }
     }
 
+    fn cached_plugin_summaries(&self) -> Option<Vec<PluginSummaryDto>> {
+        let cache = self.summary_cache.lock().ok()?;
+        let cache = cache.as_ref()?;
+        if cache.snapshots.iter().all(PathSnapshot::still_matches) {
+            Some(cache.plugins.clone())
+        } else {
+            None
+        }
+    }
+
+    fn store_plugin_summary_cache(
+        &self,
+        plugins: Vec<PluginSummaryDto>,
+        snapshots: Vec<PathSnapshot>,
+    ) {
+        if let Ok(mut cache) = self.summary_cache.lock() {
+            *cache = Some(PluginSummaryCache { plugins, snapshots });
+        }
+    }
+
     fn store_plugin_list_cache(&self, plugins: Vec<PluginDto>, snapshots: Vec<PathSnapshot>) {
         if let Ok(mut cache) = self.list_cache.lock() {
             *cache = Some(PluginListCache { plugins, snapshots });
@@ -1842,6 +1999,9 @@ impl PluginService {
     fn invalidate_plugin_caches(&self) {
         self.invalidate_runtime_cache();
         if let Ok(mut cache) = self.list_cache.lock() {
+            *cache = None;
+        }
+        if let Ok(mut cache) = self.summary_cache.lock() {
             *cache = None;
         }
     }
@@ -4160,6 +4320,33 @@ fn is_credential_env_name(token: &str) -> bool {
         || token.ends_with("_SECRET")
 }
 
+fn plugin_capabilities(
+    manifest: Option<&PluginManifest>,
+    counts: PluginComponentCounts,
+) -> Vec<String> {
+    let mut capabilities = manifest
+        .map(|m| m.interface.capabilities.clone())
+        .unwrap_or_default();
+    if capabilities.is_empty() {
+        if counts.skills > 0 {
+            capabilities.push("Skill".to_string());
+        }
+        if counts.mcp_servers > 0 {
+            capabilities.push("MCP".to_string());
+        }
+        if counts.hooks > 0 {
+            capabilities.push("Hooks".to_string());
+        }
+        if counts.apps > 0 {
+            capabilities.push("App".to_string());
+        }
+        if counts.output_styles > 0 {
+            capabilities.push("Output Style".to_string());
+        }
+    }
+    capabilities
+}
+
 fn count_skills(manifest: &PluginManifest) -> u32 {
     manifest
         .paths
@@ -5169,6 +5356,72 @@ rl.on('line', (line) => {
         assert_eq!(plugin.health_status, PluginHealthStatus::Ready);
         assert!(plugin.entrypoints.is_empty());
         assert!(!plugin.runtime_required);
+    }
+
+    #[test]
+    fn list_summaries_excludes_runtime_and_diagnostic_details() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin(&roots.builtin.join("demo"), "demo");
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let summaries = svc.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "demo@builtin");
+        assert!(summaries[0].enabled);
+        let serialized = serde_json::to_value(&summaries[0]).unwrap();
+        for field in [
+            "health_status",
+            "runtime_available",
+            "entrypoints",
+            "permissions",
+            "errors",
+            "data_dir",
+        ] {
+            assert!(
+                serialized.get(field).is_none(),
+                "{field} leaked into summary"
+            );
+        }
+        assert!(!tmp
+            .path()
+            .join("app-data")
+            .join("plugins")
+            .join("data")
+            .exists());
+    }
+
+    #[test]
+    fn list_summaries_refreshes_after_toggle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin(&roots.builtin.join("demo"), "demo");
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        assert!(svc.list_summaries().unwrap()[0].enabled);
+        svc.set_enabled("demo@builtin", false).unwrap();
+        assert!(!svc.list_summaries().unwrap()[0].enabled);
+    }
+
+    #[test]
+    fn listing_output_styles_does_not_prepare_plugin_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let plugin_root = roots.builtin.join("demo");
+        write_plugin_with_app_component_and_output_style(&plugin_root, "demo", "builtin:browser");
+        std::fs::write(plugin_root.join("runtime.zip"), b"unused runtime archive").unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let styles = svc.list_output_styles().unwrap();
+
+        assert_eq!(styles.len(), 1);
+        assert_eq!(styles[0].plugin_id, "demo@builtin");
+        assert!(!tmp
+            .path()
+            .join("app-data")
+            .join("plugins")
+            .join("data")
+            .exists());
     }
 
     #[test]
@@ -6779,6 +7032,27 @@ rl.on('line', (line) => {
         assert_eq!(styles.len(), 1);
         assert_eq!(styles[0].plugin_id, "demo@builtin");
         assert_eq!(styles[0].name, "demo:concise");
+    }
+
+    #[test]
+    fn listing_app_cards_does_not_prepare_plugin_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let plugin_root = roots.builtin.join("demo");
+        write_plugin_with_app_component_and_output_style(&plugin_root, "demo", "builtin:browser");
+        std::fs::write(plugin_root.join("runtime.zip"), b"unused runtime archive").unwrap();
+        let svc = PluginService::new(roots, tmp.path().join("app-data"));
+
+        let apps = svc.list_apps().unwrap();
+
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].plugin_id, "demo@builtin");
+        assert!(!tmp
+            .path()
+            .join("app-data")
+            .join("plugins")
+            .join("data")
+            .exists());
     }
 
     #[test]
