@@ -188,6 +188,9 @@ impl<'db, C: Clock> Session<'db, C> {
             return Err(CoreError::not_found(format!("session {id}")));
         }
         let events = store.load_session(id)?;
+        if events.is_empty() {
+            return Err(CoreError::not_found(format!("session {id}")));
+        }
         let state = SessionState::replay(id, events.iter().map(|e| &e.payload));
         tracing::info!(%id, events = events.len(), "recovered session");
         Ok(Self {
@@ -402,6 +405,32 @@ mod tests {
             Err(CoreError::NotFound(_)) => {}
             other => panic!("expected NotFound, got {:?}", other.map(|_| "session")),
         }
+    }
+
+    #[test]
+    fn recover_fileless_legacy_row_errors() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let id = SessionId::new();
+        db.with_conn(|connection| {
+            connection
+                .execute(
+                    "INSERT INTO sessions
+                     (id, title, mode, project, created_at, updated_at, ended_at)
+                     VALUES (?1, 'legacy', 'normal', NULL, 1, 1, NULL)",
+                    [id.to_string()],
+                )
+                .map_err(|error| {
+                    deepagent_core::error::CoreError::Persistence(error.to_string())
+                })?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(matches!(
+            Session::recover(&db, &clock, id),
+            Err(CoreError::NotFound(_))
+        ));
     }
 
     #[test]

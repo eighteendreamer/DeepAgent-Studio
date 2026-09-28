@@ -247,6 +247,9 @@ impl AppService {
             .get_session(id)?
             .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
         let events = store.load_session(id)?;
+        if events.is_empty() {
+            return Err(CoreError::not_found(format!("session {session_id}")));
+        }
 
         let timeline = build_timeline(&events)
             .into_iter()
@@ -337,6 +340,9 @@ impl AppService {
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         let store = EventStore::new(&self.db);
         let events = store.load_session(id)?;
+        if events.is_empty() {
+            return Err(CoreError::not_found(format!("session {session_id}")));
+        }
         let mut recorded_costs = CostStore::new(&self.db)
             .session_costs(session_id)?
             .into_iter();
@@ -584,6 +590,9 @@ impl AppService {
             .get_session(id)?
             .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
         let events = store.load_session(id)?;
+        if events.is_empty() {
+            return Err(CoreError::not_found(format!("session {session_id}")));
+        }
         let content = export_transcript(record.title.as_deref(), &events, fmt)
             .map_err(|e| CoreError::invalid(format!("transcript render failed: {e}")))?;
         Ok(TranscriptDto {
@@ -944,6 +953,54 @@ mod tests {
             )
             .unwrap();
         assert!(AppService::new(db).list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fileless_legacy_row_cannot_be_opened_exported_or_forked() {
+        let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
+        let id = SessionId::new();
+        db.with_conn(|connection| {
+            connection
+                .execute(
+                    "INSERT INTO sessions
+                     (id, title, mode, project, created_at, updated_at, ended_at)
+                     VALUES (?1, 'legacy', 'normal', NULL, 1, 1, NULL)",
+                    [id.to_string()],
+                )
+                .map_err(|error| CoreError::Persistence(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+        let service = AppService::from_shared(db.clone());
+        let id = id.to_string();
+
+        assert!(matches!(
+            service.session_detail(&id),
+            Err(CoreError::NotFound(_))
+        ));
+        assert!(matches!(
+            service.session_conversation(&id),
+            Err(CoreError::NotFound(_))
+        ));
+        assert!(matches!(
+            service.export_transcript(&id, "json"),
+            Err(CoreError::NotFound(_))
+        ));
+        assert!(matches!(
+            service.fork_session(&id, 0),
+            Err(CoreError::NotFound(_))
+        ));
+        let count = db
+            .with_conn(|connection| {
+                connection
+                    .query_row("SELECT COUNT(*) FROM sessions", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map_err(|error| CoreError::Persistence(error.to_string()))
+            })
+            .unwrap();
+        assert_eq!(count, 1, "failed fork must not create an orphan session");
+        assert!(service.list_sessions().unwrap().is_empty());
     }
 
     #[test]

@@ -904,6 +904,9 @@ impl<'db> EventStore<'db> {
             .get_session(source_id)?
             .ok_or_else(|| CoreError::not_found(format!("session {source_id} does not exist")))?;
         let events = self.load_session(source_id)?;
+        if events.is_empty() {
+            return Err(CoreError::not_found(format!("session {source_id}")));
+        }
 
         // Create the new session row first (carry title + mode + project forward).
         self.create_session_full(
