@@ -72,6 +72,8 @@ test("right sidebar tools render component icons for every built-in tool type", 
   assert.match(launcher, /<Icon className="h-\[18px\] w-\[18px\]"/);
   assert.match(header, /toolIconComponent\(tab\.type\)/);
   assert.match(header, /toolIconComponent\(plugin\.type\)/);
+  assert.match(header, /items-center justify-center text-text-secondary">\s*<Icon/);
+  assert.doesNotMatch(header, /bg-primary\/10 text-primary/);
 });
 
 test("tool panels use component icons without Font Awesome renderers", () => {

@@ -165,7 +165,7 @@ export function SidebarPluginHeader({
                       }}
                       className={`${FLOATING_MENU.row} w-full text-left`}
                     >
-                      <div className="mr-3 flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
+                      <div className="mr-3 flex h-6 w-6 items-center justify-center text-text-secondary">
                         <Icon className="h-4 w-4" strokeWidth={1.8} aria-hidden="true" />
                       </div>
                       <span className="text-[13px] font-medium text-text-base">
