@@ -53,6 +53,7 @@ function explicitLabel(value: string | undefined, type: string) {
   const fallback = normalizeToolText(toolLabel(type));
   if (normalized === type || normalized === fallback) return "";
   if (type === "chat" && normalized === "side_chat") return "";
+  if (type === "recording" && normalized === "meeting_recorder") return "";
   return value;
 }
 
@@ -94,6 +95,8 @@ export function SidebarPluginHeader({
             {tabs.map((tab) => {
               const active = activeTabId === tab.id;
               const Icon = toolIconComponent(tab.type);
+              const title = explicitLabel(tab.title, tab.type) ||
+                t(`chatView.tools.${tab.type}`, { defaultValue: toolLabel(tab.type) });
               return (
                 <button
                   key={tab.id}
@@ -106,7 +109,7 @@ export function SidebarPluginHeader({
                   }`}
                 >
                   <Icon className="h-3.5 w-3.5 flex-shrink-0" strokeWidth={1.8} aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate text-left font-medium">{tab.title}</span>
+                  <span className="min-w-0 flex-1 truncate text-left font-medium">{title}</span>
                   <span
                     onClick={(event) => {
                       event.stopPropagation();

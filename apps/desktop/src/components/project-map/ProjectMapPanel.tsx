@@ -1,5 +1,5 @@
 import { HoverInfo } from "../ui/HoverInfo";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, ChevronRight, Code2, FileText, Network, RotateCw, Search } from "lucide-react";
 import {
   projectMapGraph,
@@ -45,6 +45,17 @@ function statusClass(status: string): string {
   if (status === "stale") return "bg-amber-500";
   if (status === "failed") return "bg-red-500";
   return "bg-gray-400";
+}
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case "missing": return "未生成";
+    case "ready": return "已就绪";
+    case "stale": return "待更新";
+    case "updating": return "更新中";
+    case "failed": return "失败";
+    default: return status;
+  }
 }
 
 function complexityClass(complexity: string): string {
@@ -110,7 +121,7 @@ export function ProjectMapStatusBadge({
   onClick?: () => void;
 }) {
   const label = status
-    ? `项目地图：${status.status}，${status.nodes} nodes / ${status.edges} edges`
+    ? `项目地图：${statusLabel(status.status)}，${status.nodes} 个节点 / ${status.edges} 条边`
     : "项目地图：加载中";
   return (
     <HoverInfo content={label}><button
@@ -283,23 +294,23 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
   return (
     <div className="h-full min-h-0 flex flex-col bg-bg-base">
       <div className="px-4 py-2 border-b border-border-theme flex-shrink-0">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex shrink-0 items-center whitespace-nowrap">
             <Network className="mr-2 h-4 w-4 text-text-secondary" aria-hidden="true" />
             <div className="text-[14px] font-medium text-text-base">项目地图</div>
 
             {status !== "missing" && status !== "failed" && !showDebugPanel && (
-              <div className="ml-4 inline-flex h-7 rounded-lg border border-border-theme bg-sidebar-bg p-0.5 text-[12px]">
+              <div className="ml-3 inline-flex h-7 shrink-0 rounded-lg border border-border-theme bg-sidebar-bg p-0.5 text-[12px]">
                 <button
                   type="button"
-                  className={`px-3 rounded-md transition-colors ${mode === "graph" ? "bg-elevated-bg text-text-base shadow-sm" : "text-text-secondary hover:text-text-base"}`}
+                  className={`px-2.5 rounded-md transition-colors ${mode === "graph" ? "bg-elevated-bg text-text-base shadow-sm" : "text-text-secondary hover:text-text-base"}`}
                   onClick={() => setMode("graph")}
                 >
                   图谱
                 </button>
                 <button
                   type="button"
-                  className={`px-3 rounded-md transition-colors ${mode === "list" ? "bg-elevated-bg text-text-base shadow-sm" : "text-text-secondary hover:text-text-base"}`}
+                  className={`px-2.5 rounded-md transition-colors ${mode === "list" ? "bg-elevated-bg text-text-base shadow-sm" : "text-text-secondary hover:text-text-base"}`}
                   onClick={() => setMode("list")}
                 >
                   列表
@@ -307,17 +318,13 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-3 text-[12px] text-text-secondary">
+          <div className="ml-auto flex shrink-0 items-center gap-2 text-[12px] text-text-secondary">
             {debugButtonVisible && (
               <ProjectMapDebugToggle enabled={debugEnabled} onChange={updateDebugEnabled} />
             )}
-            <div className="flex items-center">
-              <span className={`w-2 h-2 rounded-full mr-1.5 ${statusClass(refreshing ? "updating" : status)}`} />
-              {refreshing ? "生成中" : loading ? "加载中" : status}
-            </div>
             <HoverInfo content="使用 Understand-Anything 刷新地图"><button
               type="button"
-              className="h-7 px-2.5 rounded-md border border-border-theme bg-elevated-bg hover:bg-hover-bg text-text-base transition-colors disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
+              className="flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border-theme bg-elevated-bg px-2.5 text-text-base shadow-sm transition-colors hover:bg-hover-bg disabled:opacity-50"
               onClick={handleRefresh}
               disabled={refreshing}
 
@@ -328,16 +335,15 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
           </div>
         </div>
 
-        <div className="mt-2.5 flex items-center justify-between text-[11px] text-text-secondary">
-          <div className="flex items-center gap-2.5">
-            <span className="font-medium text-text-base">{stats?.nodes ?? 0}</span> 节点
-            <span className="w-1 h-1 rounded-full bg-border-theme"></span>
-            <span className="font-medium text-text-base">{stats?.edges ?? 0}</span> 边
-            <span className="w-1 h-1 rounded-full bg-border-theme"></span>
-            <span className="font-medium text-text-base">{stats?.files ?? 0}</span> 文件
-
-          </div>
-          <span>更新于 {formatTime(stats?.updated_at ?? null)}</span>
+        <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-text-secondary">
+          <span className="flex shrink-0 items-center whitespace-nowrap">
+            <span className={`mr-1.5 h-2 w-2 rounded-full ${statusClass(refreshing ? "updating" : status)}`} />
+            {refreshing ? "生成中" : loading ? "加载中" : statusLabel(status)}
+          </span>
+          <span className="whitespace-nowrap"><span className="font-medium text-text-base">{stats?.nodes ?? 0}</span> 节点</span>
+          <span className="whitespace-nowrap"><span className="font-medium text-text-base">{stats?.edges ?? 0}</span> 边</span>
+          <span className="whitespace-nowrap"><span className="font-medium text-text-base">{stats?.files ?? 0}</span> 文件</span>
+          <span className="whitespace-nowrap">更新于 {formatTime(stats?.updated_at ?? null)}</span>
         </div>
 
         {notice && (
@@ -479,6 +485,7 @@ function ProjectMapGraphView({
   selected: ProjectMapHit | null;
   onSelect: (hit: ProjectMapHit | null) => void;
 }) {
+  const viewportRef = useRef<HTMLDivElement>(null);
   const layout = useMemo(() => {
     const nodes = graph?.nodes ?? [];
     const edges = graph?.edges ?? [];
@@ -520,6 +527,22 @@ function ProjectMapGraphView({
     return { nodes: ordered, edges: visibleEdges, positions };
   }, [graph, selected?.node_id]);
 
+  useEffect(() => {
+    if (!graph || !viewportRef.current) return;
+    const viewport = viewportRef.current;
+    const centerGraph = () => {
+      viewport.scrollLeft = Math.max(0, (viewport.scrollWidth - viewport.clientWidth) / 2);
+      viewport.scrollTop = Math.max(0, (viewport.scrollHeight - viewport.clientHeight) / 2);
+    };
+    const frame = window.requestAnimationFrame(centerGraph);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(centerGraph);
+    observer?.observe(viewport);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+    };
+  }, [graph]);
+
   if (!graph) {
     return (
       <div className="flex-1 min-h-0 flex items-center justify-center text-[13px] text-text-secondary">
@@ -537,10 +560,11 @@ function ProjectMapGraphView({
   }
 
   return (
-    <div className="flex-1 min-h-0 relative bg-[#fbfcfd]">
-      <svg
+    <div className="relative min-h-0 flex-1 bg-[#fbfcfd]">
+      <div ref={viewportRef} className="absolute inset-0 overflow-auto" role="region" aria-label="项目地图画布" tabIndex={0}>
+        <svg
         viewBox="0 0 1000 640"
-        className="w-full h-full block cursor-default"
+        className="block h-full min-h-[640px] w-full min-w-[1000px] cursor-default"
         role="img"
         aria-label="项目关系图谱"
         onClick={() => onSelect(null)}
@@ -607,7 +631,8 @@ function ProjectMapGraphView({
             </g>
           );
         })}
-      </svg>
+        </svg>
+      </div>
 
       {selected && (
           <div className="popover-menu absolute right-4 top-4 w-[280px] rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-border-theme bg-elevated-bg/95 backdrop-blur-md p-4 flex flex-col max-h-[calc(100%-32px)] overflow-y-auto custom-scrollbar z-10">
