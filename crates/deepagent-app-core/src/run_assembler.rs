@@ -137,7 +137,7 @@ impl<'a> RunAssembler<'a> {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
-        let root = self.effective_root();
+        let (root, session_project) = self.run_location()?;
         let normalized_input = deepagent_runtime::InputIngress::normalize(
             continue_session.map(ToOwned::to_owned),
             root.clone(),
@@ -216,7 +216,6 @@ impl<'a> RunAssembler<'a> {
         }
 
         let clock = SystemClock;
-        let project = root.to_string_lossy().into_owned();
         let coordinator = self.coordinator;
         let runtime_logs_ref = self.runtime_logs.clone();
         let db_handle = self.db.clone();
@@ -228,7 +227,7 @@ impl<'a> RunAssembler<'a> {
             &run_id,
             continue_session,
             env_mode,
-            &project,
+            session_project.as_deref(),
             normalized_input.clone(),
             cancellation.flag(),
             |active_run| {
@@ -914,7 +913,7 @@ impl<'a> RunAssembler<'a> {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
-        let root = self.effective_root();
+        let (root, session_project) = self.run_location()?;
         let cancellation = self.coordinator.register(run_id.clone(), None);
 
         append_runtime_log(
@@ -930,7 +929,6 @@ impl<'a> RunAssembler<'a> {
         );
 
         let clock = SystemClock;
-        let project = root.to_string_lossy().into_owned();
         let normalized_input = deepagent_runtime::InputIngress::normalize(
             None,
             root.clone(),
@@ -951,7 +949,7 @@ impl<'a> RunAssembler<'a> {
             &run_id,
             None,
             None,
-            &project,
+            session_project.as_deref(),
             normalized_input,
             cancellation.flag(),
             |active_run| {
@@ -1116,18 +1114,20 @@ impl<'a> RunAssembler<'a> {
 
     // ── Helper methods (moved from ChatService, used only in the run path) ──
 
-    /// Resolve the effective workspace root: active project folder when a
-    /// project registry is attached and a project is active, otherwise the
-    /// launch directory.
-    fn effective_root(&self) -> PathBuf {
+    /// Resolve execution root and persisted project from the same snapshot.
+    /// Desktop's explicit no-project state still executes from its workspace,
+    /// but does not claim that launch directory as a registered project.
+    fn run_location(&self) -> Result<(PathBuf, Option<String>)> {
         if let Some(projects) = self.projects {
-            if let Ok(Some(active)) = projects.active() {
-                if !active.trim().is_empty() {
-                    return PathBuf::from(active);
-                }
-            }
+            let active = projects.active()?.filter(|path| !path.trim().is_empty());
+            let root = active
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| self.workspace.to_path_buf());
+            return Ok((root, active));
         }
-        self.workspace.to_path_buf()
+        let root = self.workspace.to_path_buf();
+        Ok((root.clone(), Some(root.to_string_lossy().into_owned())))
     }
 
     /// Build a [`crate::slash_runtime::SlashRuntime`] from this assembler's

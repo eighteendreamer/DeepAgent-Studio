@@ -1924,7 +1924,7 @@ export async function addProject(path: string): Promise<Project> {
 }
 
 /** Set the active project. */
-export async function setActiveProject(path: string): Promise<void> {
+export async function setActiveProject(path: string | null): Promise<void> {
   const invoke = getInvoke();
   if (invoke) await invoke("set_active_project", { path });
 }

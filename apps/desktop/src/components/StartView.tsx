@@ -51,7 +51,7 @@ interface Props {
   activeProjectPath?: string | null;
   projectMapOpenSignal?: number;
   projects: Project[];
-  onSelectProject: (path: string) => void;
+  onSelectProject: (path: string | null) => void;
   onAddProject: () => void;
   onSubmit: (
     text: string,
@@ -392,7 +392,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                 }}
                 layoutId={projectMorphLayoutId}
                 icon={<FontAwesomeIcon icon={["far", "folder"]} className="text-[13px]" />}
-                label={projectName}
+                label={activeProjectPath ? projectName : t("startView.noProject")}
                 panelClassName="flex w-[300px] flex-col"
                 zIndex={50}
                 staggerContent={false}
@@ -458,6 +458,10 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
                         <div
                           {...{ [MENU_ITEM_ATTR]: "__none__" }}
                           className={cn(PROJECT_MENU.row, "relative z-[1] hover:bg-transparent")}
+                          onClick={() => {
+                            onSelectProject(null);
+                            setIsDropdownOpen(false);
+                          }}
                         >
                           <div className="flex min-w-0 items-center">
                             <FontAwesomeIcon icon={["far", "folder"]} className={PROJECT_MENU.icon} />

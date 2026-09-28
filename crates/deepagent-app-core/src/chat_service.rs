@@ -1845,6 +1845,34 @@ mod tests {
         assert_eq!(store.list_sessions().unwrap().len(), 1);
     }
 
+    #[tokio::test]
+    async fn new_chat_without_active_project_is_visible_with_its_title_and_search_hit() {
+        let (db, settings, dir) = seeded().await;
+        let projects = Arc::new(crate::project_service::ProjectService::new(db.clone()));
+        let registered = dir.path().join("registered");
+        projects.add_project(registered.to_str().unwrap()).unwrap();
+        projects.clear_active().unwrap();
+
+        let chat = ChatService::new(db.clone(), settings, chat_transport(), dir.path())
+            .with_projects(projects);
+        let session_id = chat.run("星轨缓存验收0928", |_| {}, |_| {}).await.unwrap();
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        let id = deepagent_core::id::SessionId::from_str(&session_id).unwrap();
+        assert_eq!(store.get_session(id).unwrap().unwrap().project, None);
+
+        let service = crate::service::AppService::from_shared(db.clone());
+        service.rename_session(&session_id, "星轨缓存验收").unwrap();
+        let listed = service.list_sessions().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, session_id);
+        assert_eq!(listed[0].title.as_deref(), Some("星轨缓存验收"));
+        assert!(service
+            .search_sessions("星轨", None, 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.session.id == session_id));
+    }
+
     #[test]
     fn conversation_from_events_keeps_text_turns_only() {
         use deepagent_core::event::{Event, EventPayload};

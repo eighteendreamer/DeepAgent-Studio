@@ -474,6 +474,7 @@ export function App() {
   const activeIdRef = useRef<string | null>(null);
   const activePendingRunKeyRef = useRef<string | null>(null);
   const activeRunIdsRef = useRef<Map<string, string>>(new Map());
+  const projectSelectionRef = useRef<Promise<boolean> | null>(null);
   // Always-current `messages`, so a continuation can read the on-screen thread
   // without taking a stale closure (and without re-creating onSubmit).
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -602,7 +603,7 @@ export function App() {
   // The active project's display name (folder name), for the StartView header.
   const activeProjectName = useMemo(() => {
     const p = projects.find((p) => p.path === activeProjectPath);
-    return p?.name ?? projects[0]?.name ?? "";
+    return p?.name ?? "";
   }, [projects, activeProjectPath]);
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? null,
@@ -782,9 +783,23 @@ export function App() {
   }, [navigateTo]);
 
   // Switch the active project (agent ops + new sessions attach here).
-  const onSelectProject = useCallback((path: string) => {
-    setActiveProjectPath(path);
-    setActiveProject(path).catch(() => {});
+  const onSelectProject = useCallback((path: string | null) => {
+    const previous = projectSelectionRef.current;
+    const selection = (async () => {
+      if (previous) await previous;
+      try {
+        await setActiveProject(path);
+        setActiveProjectPath(path);
+        return true;
+      } catch (error) {
+        message.error(`切换项目失败：${String(error)}`);
+        return false;
+      }
+    })();
+    projectSelectionRef.current = selection;
+    void selection.then(() => {
+      if (projectSelectionRef.current === selection) projectSelectionRef.current = null;
+    });
   }, []);
 
   // Open the native folder picker, then open the chosen folder as a project,
@@ -897,13 +912,12 @@ export function App() {
   }, []);
 
   const onOpenProjectMap = useCallback((path: string) => {
-    setActiveProjectPath(path);
-    setActiveProject(path).catch(() => {});
+    onSelectProject(path);
     setProjectMapOpenSignal((n) => n + 1);
     if (view !== "chat" && view !== "start") {
       setView("start");
     }
-  }, [view]);
+  }, [view, onSelectProject]);
 
   const onRenameProject = useCallback(
     (path: string, name: string) => {
@@ -972,6 +986,8 @@ export function App() {
       const contextBlocks = [skillContext, mentionContext].filter((block) => block.trim().length > 0);
       const promptText = [...contextBlocks, trimmedText].filter((block) => block.trim().length > 0).join("\n\n");
       if (!promptText.trim() && attachments.length === 0) return;
+      const projectSelection = projectSelectionRef.current;
+      if (projectSelection && !(await projectSelection)) return;
       const storedEnvMode = localStorage.getItem("envMode");
       const effectiveEnvMode: "local" | "remote" =
         envMode ?? (storedEnvMode === "remote" ? "remote" : "local");

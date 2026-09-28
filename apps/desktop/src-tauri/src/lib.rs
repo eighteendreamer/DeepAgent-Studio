@@ -4106,15 +4106,23 @@ fn add_project(state: State<'_, AppState>, path: String) -> Result<ProjectDto, S
 }
 
 #[tauri::command]
-fn set_active_project(state: State<'_, AppState>, path: String) -> Result<(), String> {
-    state
-        .projects
-        .set_active(&path)
-        .map_err(|e| e.to_string())?;
-    state
-        .knowledge
-        .activate_project(std::path::Path::new(&path))
-        .map_err(|e| e.to_string())
+fn set_active_project(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
+    if let Some(path) = path.filter(|path| !path.trim().is_empty()) {
+        state
+            .projects
+            .set_active(&path)
+            .map_err(|e| e.to_string())?;
+        state
+            .knowledge
+            .activate_project(std::path::Path::new(&path))
+            .map_err(|e| e.to_string())
+    } else {
+        state.projects.clear_active().map_err(|e| e.to_string())?;
+        state
+            .knowledge
+            .activate_project(std::path::Path::new(&state.workspace.info().path))
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]
@@ -6230,13 +6238,6 @@ pub fn run() {
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
             let workspace = Arc::new(WorkspaceService::new(workspace_root.clone()));
             let projects = Arc::new(ProjectService::new(service.shared_database()));
-            // Development starts from the empty project state. This clears
-            // launch-default data created by older dev builds while keeping
-            // the user's registered projects and their sessions intact.
-            #[cfg(debug_assertions)]
-            projects
-                .clear_active()
-                .map_err(|e| format!("failed to clear development active project: {e}"))?;
             let project_map = Arc::new(ProjectMapService::new());
 
             let resource_plugins_dir = match app.path().resource_dir() {

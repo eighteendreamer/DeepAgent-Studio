@@ -39,7 +39,7 @@ pub(crate) async fn accept_input_turn<'db, C, F>(
     run_id: &str,
     continue_session: Option<&str>,
     env_mode: Option<&str>,
-    project: &str,
+    project: Option<&str>,
     normalized_input: InputEnvelope,
     cancel_flag: Arc<std::sync::atomic::AtomicBool>,
     cancel_active: F,
@@ -145,7 +145,7 @@ fn bind_session<'db, C: Clock>(
     clock: &'db C,
     continue_session: Option<&str>,
     env_mode: Option<&str>,
-    project: &str,
+    project: Option<&str>,
 ) -> Result<(Session<'db, C>, Vec<Message>, Vec<Event>)> {
     match continue_session {
         Some(id_str) => {
@@ -165,7 +165,7 @@ fn bind_session<'db, C: Clock>(
                 Some("remote") => deepagent_core::SessionMode::Remote,
                 _ => deepagent_core::SessionMode::Normal,
             };
-            let session = Session::create_in_project(db, clock, None, mode, Some(project))?;
+            let session = Session::create_in_project(db, clock, None, mode, project)?;
             Ok((session, Vec::new(), Vec::new()))
         }
     }
@@ -810,7 +810,7 @@ mod tests {
             "run_test",
             None,
             Some("remote"),
-            "G:/Code/Kotlin_code",
+            Some("G:/Code/Kotlin_code"),
             input,
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             |_| false,
