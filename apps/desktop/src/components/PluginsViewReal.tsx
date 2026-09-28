@@ -1,8 +1,32 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import {
+  Anchor,
+  ArrowLeft,
+  CircleAlert,
+  CircleCheck,
+  FileArchive,
+  FileText,
+  FolderOpen,
+  KeyRound,
+  Mic,
+  Monitor,
+  MousePointer2,
+  Pause,
+  Pen,
+  Play,
+  Plug,
+  Plus,
+  Puzzle,
+  RefreshCw,
+  Search,
+  Trash2,
+  TriangleAlert,
+  WandSparkles,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import {
   createPlugin,
   installPluginFromDir,
@@ -423,19 +447,19 @@ export function PluginsView() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button variant="outline" onClick={() => void load()}>
-                  <FontAwesomeIcon icon={["fas", "rotate"]} className="text-[12px]" />
+                  <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>刷新</span>
                 </Button>
                 <Button variant="outline" onClick={installFromDirectory}>
-                  <FontAwesomeIcon icon={["fas", "folder-open"]} className="text-[12px]" />
+                  <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>目录安装</span>
                 </Button>
                 <Button variant="outline" onClick={installFromArchive}>
-                  <FontAwesomeIcon icon={["fas", "file-zipper"]} className="text-[12px]" />
+                  <FileArchive className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>Zip 安装</span>
                 </Button>
                 <Button variant="outline" onClick={() => setCreateOpen(true)}>
-                  <FontAwesomeIcon icon={["fas", "plus"]} className="text-[11px]" />
+                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>创建</span>
                 </Button>
               </div>
@@ -450,10 +474,7 @@ export function PluginsView() {
             <div className="mb-6 flex flex-wrap items-center gap-2">
               <div className="relative min-w-[260px] flex-1">
                 <div className="flex h-8 items-center rounded-lg bg-ui-tint transition-colors duration-150 ease-out focus-within:bg-ui-tint-strong">
-                  <FontAwesomeIcon
-                    icon={["fas", "magnifying-glass"]}
-                    className="ml-3 shrink-0 text-[12px] text-text-secondary"
-                  />
+                  <Search className="ml-3 h-3.5 w-3.5 shrink-0 text-text-secondary" aria-hidden="true" />
                   <input
                     type="search"
                     value={query}
@@ -635,7 +656,7 @@ function PluginDetail({
           size="sm"
           className="mb-8 px-0 hover:bg-transparent"
         >
-          <FontAwesomeIcon icon={["fas", "chevron-left"]} className="text-[11px]" />
+          <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
           插件列表
         </Button>
 
@@ -666,10 +687,11 @@ function PluginDetail({
               variant="outline"
               className="!bg-elevated-bg !text-text-base hover:!bg-hover-bg"
             >
-              <FontAwesomeIcon
-                icon={plugin.enabled ? ["fas", "pause"] : ["fas", "play"]}
-                className="text-[12px]"
-              />
+              {plugin.enabled ? (
+                <Pause className="h-3.5 w-3.5" aria-hidden="true" />
+              ) : (
+                <Play className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
               <span>{plugin.enabled ? "禁用" : "启用"}</span>
             </Button>
             <Button
@@ -677,10 +699,11 @@ function PluginDetail({
               variant="outline"
               className="text-red-600 hover:border-red-200 hover:bg-red-50"
             >
-              <FontAwesomeIcon
-                icon={["fas", plugin.origin === "builtin" ? "pause" : "trash"]}
-                className="text-[12px]"
-              />
+              {plugin.origin === "builtin" ? (
+                <Pause className="h-3.5 w-3.5" aria-hidden="true" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
               <span>
                 {plugin.origin === "builtin" || plugin.origin === "workspace" ? "禁用" : "卸载"}
               </span>
@@ -905,8 +928,8 @@ function ConfirmDialog({
             <DialogTitle>{action.title}</DialogTitle>
             <DialogDescription>{action.message}</DialogDescription>
           </div>
-          <Button variant="ghost" size="icon" disabled={busy} onClick={onClose}>
-            <FontAwesomeIcon icon={["fas", "xmark"]} />
+          <Button variant="ghost" size="icon" disabled={busy} onClick={onClose} aria-label="关闭">
+            <X className="h-4 w-4" aria-hidden="true" />
           </Button>
         </DialogHeader>
 
@@ -1037,8 +1060,8 @@ function PluginScanDialog({
               安装前扫描会检查 manifest、权限声明、MCP、hooks 和文件风险。
             </DialogDescription>
           </div>
-          <Button variant="ghost" size="icon" disabled={busy} onClick={onClose}>
-            <FontAwesomeIcon icon={["fas", "xmark"]} />
+          <Button variant="ghost" size="icon" disabled={busy} onClick={onClose} aria-label="关闭">
+            <X className="h-4 w-4" aria-hidden="true" />
           </Button>
         </DialogHeader>
 
@@ -1053,15 +1076,13 @@ function PluginScanDialog({
             }`}
           >
             <div className="flex items-center gap-2 text-[13px] font-medium">
-              <FontAwesomeIcon
-                icon={
-                  blocked
-                    ? ["fas", "circle-exclamation"]
-                    : highCount > 0
-                      ? ["fas", "triangle-exclamation"]
-                      : ["fas", "circle-check"]
-                }
-              />
+              {blocked ? (
+                <CircleAlert className="h-4 w-4" aria-hidden="true" />
+              ) : highCount > 0 ? (
+                <TriangleAlert className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <CircleCheck className="h-4 w-4" aria-hidden="true" />
+              )}
               {blocked
                 ? "扫描发现阻断错误，无法安装。"
                 : highCount > 0
@@ -1073,7 +1094,7 @@ function PluginScanDialog({
           {action.authenticationHint && !blocked && (
             <div className="mb-5 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-[13px] leading-5 text-sky-800">
               <div className="mb-1 flex items-center gap-2 font-medium">
-                <FontAwesomeIcon icon={["fas", "key"]} />
+                <KeyRound className="h-4 w-4" aria-hidden="true" />
                 认证策略
               </div>
               <div>{action.authenticationHint}</div>
@@ -1218,8 +1239,8 @@ function Modal({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <Button variant="ghost" size="icon" onClick={onClose}>
-            <FontAwesomeIcon icon={["fas", "xmark"]} />
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="关闭">
+            <X className="h-4 w-4" aria-hidden="true" />
           </Button>
         </DialogHeader>
         <div className="space-y-4 px-6 py-5">{children}</div>
@@ -1251,7 +1272,7 @@ function ScanMetric({ label, value }: { label: string; value: string }) {
 }
 
 function PluginIcon({ plugin, size = "md" }: { plugin: PluginSummary | Plugin; size?: "md" | "lg" }) {
-  const icon = iconForPlugin(plugin);
+  const Icon = iconForPlugin(plugin);
   const large = size === "lg";
   const assetPath = plugin.icon_path || plugin.logo_path;
   const assetUrl = assetPath && isTauri() ? convertFileSrc(assetPath) : null;
@@ -1280,22 +1301,22 @@ function PluginIcon({ plugin, size = "md" }: { plugin: PluginSummary | Plugin; s
       className={`${large ? "h-12 w-12 text-[18px]" : "h-8 w-8 text-[13px]"} flex shrink-0 items-center justify-center rounded-lg text-white`}
       style={{ backgroundColor: color }}
     >
-      <FontAwesomeIcon icon={icon} />
+      <Icon className={large ? "h-5 w-5" : "h-4 w-4"} aria-hidden="true" />
     </div>
   );
 }
 
-function iconForPlugin(plugin: PluginSummary | Plugin): IconProp {
+function iconForPlugin(plugin: PluginSummary | Plugin): LucideIcon {
   const name = `${plugin.name} ${plugin.display_name}`.toLowerCase();
-  if (name.includes("browser") || name.includes("chrome")) return ["fas", "arrow-pointer"];
-  if (name.includes("computer")) return ["fas", "desktop"];
-  if (name.includes("office") || name.includes("doc")) return ["far", "file-lines"];
-  if (name.includes("meeting") || name.includes("record")) return ["fas", "microphone"];
-  if (plugin.hook_count > 0) return ["fas", "anchor"];
-  if (plugin.mcp_server_count > 0) return ["fas", "plug"];
-  if (plugin.skill_count > 0) return ["fas", "wand-magic-sparkles"];
-  if ((plugin.output_style_count ?? 0) > 0) return ["fas", "pen"];
-  return ["fas", "puzzle-piece"];
+  if (name.includes("browser") || name.includes("chrome")) return MousePointer2;
+  if (name.includes("computer")) return Monitor;
+  if (name.includes("office") || name.includes("doc")) return FileText;
+  if (name.includes("meeting") || name.includes("record")) return Mic;
+  if (plugin.hook_count > 0) return Anchor;
+  if (plugin.mcp_server_count > 0) return Plug;
+  if (plugin.skill_count > 0) return WandSparkles;
+  if ((plugin.output_style_count ?? 0) > 0) return Pen;
+  return Puzzle;
 }
 
 function StatusBadge({ plugin }: { plugin: PluginSummary | Plugin }) {
