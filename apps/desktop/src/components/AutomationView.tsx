@@ -1,5 +1,14 @@
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import {
+  Bell,
+  CalendarCheck2,
+  ChartNoAxesCombined,
+  ChevronDown,
+  Clock3,
+  LayoutTemplate,
+  MessageSquarePlus,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Button } from "./shadcn/button";
 
 export function AutomationView() {
   const { t } = useTranslation();
@@ -8,13 +17,20 @@ export function AutomationView() {
       
       {/* Top right actions */}
       <div className="absolute top-6 right-8 flex items-center space-x-3">
-        <button className="flex items-center text-text-base bg-black/5 hover:bg-black/5 rounded-lg px-4 py-1.5 text-[13px] font-medium transition-colors">
+        <Button
+          variant="ghost"
+          className="h-auto rounded-lg bg-black/5 px-4 py-1.5 text-[13px] font-medium text-text-base hover:bg-black/10"
+        >
+          <LayoutTemplate className="h-3.5 w-3.5" aria-hidden="true" />
           {t("automationView.viewTemplates")}
-        </button>
-        <button className="flex items-center text-white bg-text-base hover:bg-black rounded-lg px-4 py-1.5 text-[13px] font-medium transition-colors">
+        </Button>
+        <Button
+          className="h-auto rounded-lg bg-text-base px-4 py-1.5 text-[13px] font-medium text-white hover:bg-black"
+        >
+          <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden="true" />
           {t("automationView.createViaChat")}
-          <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[10px]" />
-        </button>
+          <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+        </Button>
       </div>
 
       {/* Main Content Centered */}
@@ -30,24 +46,33 @@ export function AutomationView() {
         {/* Empty State Center */}
         <div className="flex flex-col items-center">
           <div className="w-20 h-20 rounded-full border-[3px] border-text-base flex items-center justify-center mb-8">
-            <FontAwesomeIcon icon={["far", "clock"]} className="text-4xl text-text-base" />
+            <Clock3 className="h-10 w-10 text-text-base" aria-hidden="true" />
           </div>
           
           <h2 className="text-base font-medium text-text-base mb-6">{t("automationView.createFirst")}</h2>
           
           <div className="flex items-center space-x-3">
-            <button className="flex items-center text-[13px] text-text-secondary bg-black/5 rounded-lg px-4 py-2 hover:bg-black/5 hover:text-text-base transition-colors shadow-sm">
-              <FontAwesomeIcon icon={["far", "bell"]} className="mr-2" />
+            <Button
+              variant="ghost"
+              className="h-auto rounded-lg bg-black/5 px-4 py-2 text-[13px] text-text-secondary shadow-sm hover:bg-black/10 hover:text-text-base"
+            >
+              <Bell className="h-3.5 w-3.5" aria-hidden="true" />
               {t("automationView.dailyBriefing")}
-            </button>
-            <button className="flex items-center text-[13px] text-text-secondary bg-black/5 rounded-lg px-4 py-2 hover:bg-black/5 hover:text-text-base transition-colors shadow-sm">
-              <FontAwesomeIcon icon={["far", "calendar-check"]} className="mr-2" />
+            </Button>
+            <Button
+              variant="ghost"
+              className="h-auto rounded-lg bg-black/5 px-4 py-2 text-[13px] text-text-secondary shadow-sm hover:bg-black/10 hover:text-text-base"
+            >
+              <CalendarCheck2 className="h-3.5 w-3.5" aria-hidden="true" />
               {t("automationView.weeklyReview")}
-            </button>
-            <button className="flex items-center text-[13px] text-text-secondary bg-black/5 rounded-lg px-4 py-2 hover:bg-black/5 hover:text-text-base transition-colors shadow-sm">
-              <FontAwesomeIcon icon={["fas", "magnifying-glass-chart"]} className="mr-2" />
+            </Button>
+            <Button
+              variant="ghost"
+              className="h-auto rounded-lg bg-black/5 px-4 py-2 text-[13px] text-text-secondary shadow-sm hover:bg-black/10 hover:text-text-base"
+            >
+              <ChartNoAxesCombined className="h-3.5 w-3.5" aria-hidden="true" />
               {t("automationView.projectMonitoring")}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
