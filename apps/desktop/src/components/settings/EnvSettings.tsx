@@ -27,30 +27,30 @@ export function EnvSettings() {
 
   if (view === "detail") {
     return (
-      <div className="max-w-[700px]">
+      <div className="w-full">
         {/* Breadcrumb */}
-        <div className="absolute top-6 left-16 flex items-center text-[13px] text-text-secondary">
+        <div className="mb-6 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-text-secondary">
           <button 
             className="hover:text-text-base transition-colors flex items-center"
             onClick={() => setView("list")}
           >
             <FontAwesomeIcon icon={["fas", "arrow-left"]} className="mr-2 text-[12px]" /> {t("settings.env.back")}
           </button>
-          <span className="mx-2">&gt;</span>
+          <span aria-hidden="true">&gt;</span>
           <span>{t("settings.env.title")}</span>
-          <span className="mx-2">&gt;</span>
-          <span className="text-text-base">CodeSprout_Ai</span>
+          <span aria-hidden="true">&gt;</span>
+          <span className="min-w-0 max-w-full truncate text-text-base">CodeSprout_Ai</span>
         </div>
 
-        <h1 className="text-2xl font-semibold text-text-base mb-10">{t("settings.env.title")}</h1>
+        <h1 className="mb-10 text-2xl font-semibold text-text-base">{t("settings.env.title")}</h1>
 
         <div className="mb-8">
           <div className="text-[14px] font-medium text-text-base mb-2">{t("settings.env.project")}</div>
-          <div className="border border-border-theme rounded-xl p-3 flex items-center bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)]">
-            <FontAwesomeIcon icon={["far", "folder"]} className="text-gray-400 mr-3 text-[14px]" />
-            <div>
-              <div className="text-[13px] font-medium text-text-base">CodeSprout_Ai</div>
-              <div className="text-[12px] text-text-secondary">G:\Code_Warehouse\CodeSprout_Ai</div>
+          <div className="flex min-w-0 items-center gap-3 rounded-xl border border-border-theme bg-white p-3 shadow-[0_1px_2px_rgb(0,0,0,0.02)]">
+            <FontAwesomeIcon icon={["far", "folder"]} className="shrink-0 text-gray-400 text-[14px]" />
+            <div className="min-w-0">
+              <div className="truncate text-[13px] font-medium text-text-base">CodeSprout_Ai</div>
+              <div className="break-all text-[12px] text-text-secondary">G:\Code_Warehouse\CodeSprout_Ai</div>
             </div>
           </div>
         </div>
@@ -75,33 +75,33 @@ export function EnvSettings() {
 
   if (view === "edit") {
     return (
-      <div className="max-w-[700px]">
+      <div className="w-full">
         {/* Breadcrumb */}
-        <div className="absolute top-6 left-16 flex items-center text-[13px] text-text-secondary">
+        <div className="mb-6 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-text-secondary">
           <button 
             className="hover:text-text-base transition-colors flex items-center"
             onClick={() => setView("list")}
           >
             <FontAwesomeIcon icon={["fas", "arrow-left"]} className="mr-2 text-[12px]" /> {t("settings.env.back")}
           </button>
-          <span className="mx-2">&gt;</span>
+          <span aria-hidden="true">&gt;</span>
           <span>{t("settings.env.title")}</span>
-          <span className="mx-2">&gt;</span>
-          <span className="cursor-pointer hover:underline" onClick={() => setView("detail")}>CodeSprout_Ai</span>
-          <span className="mx-2">&gt;</span>
+          <span aria-hidden="true">&gt;</span>
+          <button className="min-w-0 max-w-full truncate text-left hover:text-text-base hover:underline" onClick={() => setView("detail")}>CodeSprout_Ai</button>
+          <span aria-hidden="true">&gt;</span>
           <span className="text-text-base">{t("settings.env.edit")}</span>
         </div>
 
-        <h1 className="text-2xl font-semibold text-text-base mb-10">{t("settings.env.title")}</h1>
+        <h1 className="mb-10 text-2xl font-semibold text-text-base">{t("settings.env.title")}</h1>
 
         <div className="space-y-8 pb-20">
           <div>
             <div className="text-[14px] font-medium text-text-base mb-2">{t("settings.env.localEnv")}</div>
-            <div className="border border-border-theme rounded-xl p-3 flex items-center bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)]">
-              <FontAwesomeIcon icon={["far", "folder"]} className="text-gray-400 mr-3 text-[14px]" />
-              <div>
-                <div className="text-[13px] font-medium text-text-base">CodeSprout_Ai</div>
-                <div className="text-[12px] text-text-secondary">G:\Code_Warehouse\CodeSprout_Ai</div>
+            <div className="flex min-w-0 items-center gap-3 rounded-xl border border-border-theme bg-white p-3 shadow-[0_1px_2px_rgb(0,0,0,0.02)]">
+              <FontAwesomeIcon icon={["far", "folder"]} className="shrink-0 text-gray-400 text-[14px]" />
+              <div className="min-w-0">
+                <div className="truncate text-[13px] font-medium text-text-base">CodeSprout_Ai</div>
+                <div className="break-all text-[12px] text-text-secondary">G:\Code_Warehouse\CodeSprout_Ai</div>
               </div>
             </div>
           </div>
@@ -209,14 +209,14 @@ export function EnvSettings() {
   // --- List View ---
   return (
     <>
-      <div className="mb-10 max-w-[700px]">
+      <div className="mb-10 w-full">
         <h1 className="text-2xl font-semibold text-text-base mb-1">{t("settings.env.title")}</h1>
         <div className="text-[13px] text-text-secondary">
           {t("settings.env.desc1")} <a href="#" className="text-blue-500 hover:underline">{t("settings.env.learnMore")}</a>
         </div>
       </div>
 
-      <div className="max-w-[700px]">
+      <div className="w-full">
         <div className="flex items-center justify-between mb-4">
           <div className="text-[14px] font-medium text-text-base">{t("settings.env.selectProject")}</div>
           <button className="px-3 py-1.5 bg-black/5 hover:bg-black/5 rounded-full text-[12px] font-medium text-text-base transition-colors">
@@ -228,15 +228,15 @@ export function EnvSettings() {
           {projects.map((proj, idx) => (
             <div 
               key={idx} 
-              className="rounded-xl p-3 flex items-center justify-between bg-black/5 shadow-[0_1px_2px_rgb(0,0,0,0.02)] hover:bg-black/5 transition-colors cursor-pointer"
+              className="flex min-w-0 items-center justify-between gap-3 rounded-xl bg-black/5 p-3 shadow-[0_1px_2px_rgb(0,0,0,0.02)] transition-colors hover:bg-black/5 cursor-pointer"
               onClick={() => {
                 if (idx === 0) setView("detail"); // Only wire up the first one for demo
               }}
             >
-              <div className="flex items-center">
-                <FontAwesomeIcon icon={["far", "folder"]} className="text-gray-400 mr-3 text-[14px]" />
-                <span className="text-[13px] font-medium text-text-base mr-2">{proj.name}</span>
-                {proj.sub && <span className="text-[12px] text-text-secondary">{proj.sub}</span>}
+              <div className="flex min-w-0 items-center gap-3">
+                <FontAwesomeIcon icon={["far", "folder"]} className="shrink-0 text-gray-400 text-[14px]" />
+                <span className="min-w-0 truncate text-[13px] font-medium text-text-base">{proj.name}</span>
+                {proj.sub && <span className="shrink-0 truncate text-[12px] text-text-secondary">{proj.sub}</span>}
               </div>
               <button 
                 className="w-6 h-6 rounded-md border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-black/5 transition-colors"
