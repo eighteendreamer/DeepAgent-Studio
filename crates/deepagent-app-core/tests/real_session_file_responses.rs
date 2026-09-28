@@ -210,6 +210,10 @@ async fn real_responses_session_replays_tools_skills_files_and_logs() {
         .collect();
     assert_eq!(usage.len(), 3, "each live turn must persist provider usage");
     assert!(usage.iter().all(|entry| entry.3));
+    assert!(
+        usage.iter().all(|entry| entry.1 + entry.2 == entry.0),
+        "Responses cached and uncached input tokens must account for every input token"
+    );
     eprintln!("[real-session] provider usage (prompt, hit, miss, raw)={usage:?}");
     let requested_tools: Vec<&str> = events
         .iter()

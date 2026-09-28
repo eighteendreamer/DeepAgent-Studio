@@ -583,11 +583,17 @@ fn reasoning_text_from_item(item: &serde_json::Value) -> Option<String> {
 
 fn parse_response_usage(value: Option<&serde_json::Value>) -> Option<Usage> {
     let value = value?;
+    let prompt_tokens = value
+        .get("input_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+    let prompt_cache_hit_tokens = value
+        .get("input_tokens_details")
+        .and_then(|v| v.get("cached_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
     Some(Usage {
-        prompt_tokens: value
-            .get("input_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u32,
+        prompt_tokens,
         completion_tokens: value
             .get("output_tokens")
             .and_then(serde_json::Value::as_u64)
@@ -601,12 +607,8 @@ fn parse_response_usage(value: Option<&serde_json::Value>) -> Option<Usage> {
             .get("total_tokens")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0) as u32,
-        prompt_cache_hit_tokens: value
-            .get("input_tokens_details")
-            .and_then(|v| v.get("cached_tokens"))
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u32,
-        prompt_cache_miss_tokens: 0,
+        prompt_cache_hit_tokens,
+        prompt_cache_miss_tokens: prompt_tokens.saturating_sub(prompt_cache_hit_tokens),
     })
 }
 
@@ -1171,7 +1173,10 @@ mod tests {
         assert!(rec.0.iter().any(|event| matches!(
             event,
             ModelStreamEvent::Usage { usage }
-                if usage.prompt_cache_hit_tokens == 2 && usage.reasoning_tokens == 3
+                if usage.prompt_tokens == 4
+                    && usage.prompt_cache_hit_tokens == 2
+                    && usage.prompt_cache_miss_tokens == 2
+                    && usage.reasoning_tokens == 3
         )));
         let response = acc.finish().unwrap();
         assert_eq!(response.finish_reason, Some(FinishReason::Length));
@@ -1184,6 +1189,26 @@ mod tests {
                 .and_then(serde_json::Value::as_u64),
             Some(4)
         );
+    }
+
+    #[test]
+    fn responses_usage_without_cached_tokens_counts_all_input_as_miss() {
+        let usage = parse_response_usage(Some(&serde_json::json!({
+            "input_tokens": 37,
+            "output_tokens": 5,
+            "total_tokens": 42
+        })))
+        .unwrap();
+        assert_eq!(usage.prompt_tokens, 37);
+        assert_eq!(usage.prompt_cache_hit_tokens, 0);
+        assert_eq!(usage.prompt_cache_miss_tokens, 37);
+
+        let inconsistent = parse_response_usage(Some(&serde_json::json!({
+            "input_tokens": 3,
+            "input_tokens_details": {"cached_tokens": 8}
+        })))
+        .unwrap();
+        assert_eq!(inconsistent.prompt_cache_miss_tokens, 0);
     }
 
     #[test]
