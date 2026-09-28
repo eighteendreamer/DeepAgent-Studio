@@ -35,12 +35,12 @@ import { useGitStatus } from "../hooks/useGitStatus";
 import { GitWorkbench } from "./git/GitWorkbench";
 import {
   createPluginTab,
-  PLUGIN_TOOL_CARDS,
   renderPluginTab,
   type PluginConnectionSummary,
   type PluginTab,
   type PluginToolCard,
 } from "./plugins/pluginRegistry";
+import { usePluginAppCards } from "./plugins/usePluginAppCards";
 import { RightSidebarWorkbench } from "./RightSidebarWorkbench";
 import { ChatTimeline } from "./chat-timeline/ChatTimeline";
 import { usePanelPresence } from "../hooks/usePanelPresence";
@@ -1102,18 +1102,24 @@ export function ChatView({
     setActiveBottomTabId(newTab.id);
   };
 
-  const handleToggleBottomTerminalPanel = () => {
+  const [pluginAppCards, refreshPluginAppCards] = usePluginAppCards(isBottomPanelOpen);
+
+  const handleToggleBottomTerminalPanel = async () => {
     if (isBottomPanelOpen) {
       setIsBottomPanelOpen(false);
     } else {
-      setIsBottomPanelOpen(true);
       if (!bottomTabs.some((tab) => tab.type === "terminal")) {
-        const terminalCard = PLUGIN_TOOL_CARDS.find((card) => card.type === "terminal");
-        if (terminalCard) handleOpenBottomPlugin(terminalCard);
+        const terminalCard = (await refreshPluginAppCards()).find((card) => card.type === "terminal");
+        if (!terminalCard) {
+          toast.error("请先在插件页启用 Terminal");
+          return;
+        }
+        handleOpenBottomPlugin(terminalCard);
       } else {
         const terminalTab = bottomTabs.find((tab) => tab.type === "terminal");
         if (terminalTab) setActiveBottomTabId(terminalTab.id);
       }
+      setIsBottomPanelOpen(true);
     }
   };
 
@@ -1498,7 +1504,7 @@ export function ChatView({
 
               <div className="flex-1 overflow-hidden flex flex-col relative">
                 {activeBottomTabId === "new" && (
-                  <ToolLauncherPanel cards={PLUGIN_TOOL_CARDS} onSelect={handleOpenBottomPlugin} variant="bottom" />
+                  <ToolLauncherPanel cards={pluginAppCards} onSelect={handleOpenBottomPlugin} variant="bottom" />
                 )}
 
                 {activeBottomTabId !== "new" && activeBottomTab

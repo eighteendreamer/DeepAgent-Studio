@@ -1389,52 +1389,6 @@ mod tests {
     }
 
     #[test]
-    fn bundled_figma_connector_projects_without_renderable_app_error() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/desktop/src-tauri/resources/plugins/figma");
-        if !root.is_dir() {
-            eprintln!("skipping: bundled figma plugin resource is not present");
-            return;
-        }
-        let data_dir = root.join("__test_data__").join("figma-builtin");
-        let manifest = load_plugin_manifest(&root).unwrap().unwrap();
-        let resolved = resolved(&root, manifest);
-
-        let projection =
-            PluginRuntimeProjection::from_enabled_plugins([EnabledPluginRuntimeInput {
-                id: "figma@builtin",
-                name: "figma",
-                source_priority: 10,
-                root: &root,
-                data_dir,
-                plugin: &resolved,
-            }]);
-
-        assert!(
-            projection.app_entries.is_empty(),
-            "connector app must not be exposed as a renderable builtin app"
-        );
-        assert_eq!(projection.connector_entries.len(), 1);
-        assert_eq!(projection.connector_entries[0].provider, "figma");
-        assert_eq!(
-            projection.connector_entries[0].id,
-            "connector_68df038e0ba48191908c8434991bbac2"
-        );
-        assert!(
-            !projection
-                .errors
-                .iter()
-                .any(|error| error.component == "apps"),
-            "figma connector .app.json should not produce app config errors: {:?}",
-            projection.errors
-        );
-    }
-
-    /// Agent Plugins §9.1 requires `PLUGIN_ROOT` and `PLUGIN_DATA` in every
-    /// plugin subprocess environment, set *after* the configured `env` so they
-    /// replace a same-named entry. A plugin must not be able to point them
-    /// elsewhere.
-    #[test]
     fn portable_plugin_variables_override_plugin_declared_values() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("env-plugin");

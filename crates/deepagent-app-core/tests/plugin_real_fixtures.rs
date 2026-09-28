@@ -3,23 +3,15 @@
 //! 这些 fixture 来自桌面应用实际随包资源，不使用人工构造的理想目录。
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Mutex;
 
 use deepagent_app_core::plugin_loader::{load_plugins, PluginLoadError, PluginRoots};
-use deepagent_app_core::{
-    PluginExecutionKind, PluginHealthStatus, PluginLifecycleState, PluginService,
-};
+use deepagent_app_core::{PluginExecutionKind, PluginHealthStatus, PluginService};
 use deepagent_skills::{loader, SkillOrigin, SkillRegistry};
 
 const EXPECTED: &[(&str, u32, u32, u32, u32, u32, u32)] = &[
     // name, skills, mcp, hooks, commands, apps, output styles
-    ("boltz-api-cli", 8, 0, 0, 0, 0, 0),
     ("browser", 0, 0, 0, 1, 1, 0),
-    ("computer-use", 0, 0, 0, 1, 1, 0),
-    ("figma", 12, 1, 1, 4, 1, 0),
     ("files", 0, 0, 0, 1, 1, 0),
     ("meeting-recorder", 0, 0, 0, 1, 1, 0),
     ("office-agent", 0, 0, 0, 1, 1, 1),
@@ -32,7 +24,6 @@ const EXPECTED: &[(&str, u32, u32, u32, u32, u32, u32)] = &[
 
 const EXISTING_HOST_ADAPTERS: &[&str] = &[
     "browser",
-    "computer-use",
     "files",
     "meeting-recorder",
     "office-agent",
@@ -41,8 +32,6 @@ const EXISTING_HOST_ADAPTERS: &[&str] = &[
     "terminal",
     "wedecode",
 ];
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn bundled_plugins_keep_their_component_counts() {
@@ -189,11 +178,7 @@ fn existing_host_adapters_preserve_state_and_data_from_install_dir() {
             "{id} user data must remain in the install-dir plugin data tree"
         );
         if *name != "wedecode" {
-            assert_eq!(
-                plugin.execution_kind,
-                PluginExecutionKind::HostBacked,
-                "{id} should remain a host adapter"
-            );
+            assert_eq!(plugin.execution_kind, PluginExecutionKind::HostBacked);
         }
     }
 }
@@ -235,22 +220,6 @@ fn existing_host_adapters_only_expose_registered_renderable_apps() {
         assert_eq!(plugin.app_count, 1, "{name} app count changed");
     }
 
-    let computer_use = svc
-        .read("computer-use@builtin")
-        .unwrap()
-        .expect("computer-use host adapter");
-    assert_eq!(
-        computer_use.health_status,
-        PluginHealthStatus::Incomplete,
-        "unregistered host components must not look executable"
-    );
-    assert_eq!(computer_use.state, PluginLifecycleState::Incomplete);
-    assert!(computer_use
-        .health_error
-        .as_deref()
-        .unwrap_or_default()
-        .contains("builtin:computer-use"));
-
     let app_ids = svc
         .list_apps()
         .unwrap()
@@ -271,15 +240,10 @@ fn existing_host_adapters_only_expose_registered_renderable_apps() {
             "{name} should expose a registered renderable host app"
         );
     }
-    assert!(
-        !app_ids.contains_key("computer-use@builtin"),
-        "computer-use must stay hidden from renderable apps until a real host component is registered"
-    );
-    assert!(
-        app_ids.values().all(|component| component
-            .strip_prefix("builtin:")
-            .is_some_and(|name| name != "computer-use")),
-        "list_apps should only expose registered builtin host components: {app_ids:?}"
+    assert_eq!(
+        app_ids.len(),
+        7,
+        "only the remaining host apps should be rendered"
     );
 }
 
@@ -358,23 +322,9 @@ fn count_markdown_path(path: &Path) -> u32 {
 
 #[test]
 fn complete_bundled_plugins_are_real_resources() {
-    for name in ["superpowers", "figma", "boltz-api-cli"] {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/desktop/src-tauri/resources/plugins")
-            .join(name);
-        assert!(root.is_dir(), "missing bundled plugin root: {name}");
-        let manifest = root.join(".codex-plugin").join("plugin.json");
-        assert!(manifest.is_file(), "missing manifest: {name}");
-        let text = std::fs::read_to_string(&manifest).expect("manifest text");
-        assert!(text.contains("\"name\""), "manifest missing name: {name}");
-        assert!(
-            root.join("skills").is_dir() || root.join("commands").is_dir(),
-            "expected real plugin content for {name}"
-        );
-    }
-
     let superpowers_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../apps/desktop/src-tauri/resources/plugins/superpowers");
+    assert!(superpowers_root.join(".codex-plugin/plugin.json").is_file());
     assert!(superpowers_root.join("README.md").is_file());
     assert!(superpowers_root.join("LICENSE").is_file());
     assert!(superpowers_root.join("assets").is_dir());
@@ -394,177 +344,6 @@ fn complete_bundled_plugins_are_real_resources() {
         .join("systematic-debugging")
         .join("SKILL.md")
         .is_file());
-
-    let figma_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/desktop/src-tauri/resources/plugins/figma");
-    assert!(
-        figma_root.join("commands").is_dir(),
-        "figma commands missing"
-    );
-    assert!(
-        figma_root.join("hooks.json").is_file(),
-        "figma hooks missing"
-    );
-    assert!(
-        figma_root.join(".app.json").is_file(),
-        "figma app config missing"
-    );
-    assert!(figma_root.join(".mcp.json").is_file());
-    assert!(figma_root.join("hooks.json").is_file());
-    assert!(figma_root.join("agents").is_dir());
-    assert!(figma_root.join("skills").is_dir());
-    assert!(figma_root.join("scripts").is_dir());
-    assert!(figma_root.join("assets").is_dir());
-    assert!(figma_root.join("LICENSE.txt").is_file());
-    assert!(figma_root.join("plugin.lock.json").is_file());
-    assert!(figma_root.join("README.md").is_file());
-
-    let boltz_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/desktop/src-tauri/resources/plugins/boltz-api-cli");
-    assert!(
-        boltz_root
-            .join("tests")
-            .join("test_scan_sites.py")
-            .is_file(),
-        "boltz dry-run fixture missing"
-    );
-    assert!(
-        boltz_root
-            .join("skills")
-            .join("boltz-protein-design")
-            .join("scripts")
-            .join("scan_sites.py")
-            .is_file(),
-        "boltz scan_sites script missing"
-    );
-    assert!(boltz_root.join("assets").is_dir());
-    assert!(boltz_root.join("skills").is_dir());
-    assert!(boltz_root.join("tests").is_dir());
-    assert!(boltz_root.join("LICENSE").is_file());
-}
-
-#[test]
-fn bundled_boltz_cli_requires_runtime_or_configuration_before_verification() {
-    let _guard = ENV_LOCK.lock().unwrap();
-    let root = bundled_plugins_root();
-    if !root.join("boltz-api-cli").is_dir() {
-        eprintln!("skipping: bundled boltz plugin resource is not present");
-        return;
-    }
-
-    let tmp = tempfile::tempdir().unwrap();
-    let _env_restore = EnvRestore::capture(&["BOLTZ_API_KEY"]);
-    std::env::remove_var("BOLTZ_API_KEY");
-
-    let svc = PluginService::new(
-        PluginRoots {
-            session: Vec::new(),
-            builtin: root,
-            workspace: None,
-            personal: tmp.path().join("personal"),
-        },
-        tmp.path().join("app-data"),
-    );
-
-    let checked = svc
-        .check_plugin_health("boltz-api-cli@builtin")
-        .unwrap()
-        .expect("bundled boltz plugin");
-    let plugin = svc
-        .read("boltz-api-cli@builtin")
-        .unwrap()
-        .expect("bundled boltz plugin");
-
-    assert_eq!(plugin.skill_count, 8);
-    assert!(checked.runtime_required);
-    assert_ne!(checked.state, PluginLifecycleState::Verified);
-    let health_error = checked.health_error.as_deref().unwrap_or_default();
-    match checked.health_status {
-        PluginHealthStatus::NeedsConfiguration => {
-            assert_eq!(checked.state, PluginLifecycleState::RuntimeReady);
-            assert!(
-                health_error.contains("BOLTZ_API_KEY")
-                    || health_error.contains("boltz-api auth status"),
-                "expected Boltz configuration evidence in health error, got {health_error:?}"
-            );
-        }
-        PluginHealthStatus::RuntimeUnavailable => {
-            assert_eq!(checked.state, PluginLifecycleState::Incomplete);
-            assert!(
-                health_error.contains("runtime")
-                    || health_error.contains("external command probes"),
-                "expected Boltz runtime evidence in health error, got {health_error:?}"
-            );
-        }
-        status => panic!("Boltz must not verify without runtime and API configuration: {status:?}"),
-    }
-}
-
-#[test]
-fn bundled_figma_requires_authorization_and_projects_real_runtime_entries() {
-    let root = bundled_plugins_root();
-    if !root.is_dir() {
-        eprintln!("skipping: bundled plugin resources are not present");
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let svc = PluginService::new(
-        PluginRoots {
-            session: Vec::new(),
-            builtin: root.clone(),
-            workspace: None,
-            personal: tmp.path().join("personal"),
-        },
-        tmp.path().join("app-data"),
-    );
-
-    let figma = svc.read("figma@builtin").unwrap().expect("bundled figma");
-
-    assert_eq!(figma.execution_kind, PluginExecutionKind::McpSidecar);
-    assert_eq!(figma.health_status, PluginHealthStatus::NeedsAuthorization);
-    assert_eq!(figma.state, PluginLifecycleState::RuntimeReady);
-    assert_eq!(figma.skill_count, 12);
-    assert_eq!(figma.command_count, 4);
-    assert_eq!(figma.agent_count, 4);
-    assert_eq!(figma.hook_count, 1);
-    assert_eq!(figma.mcp_server_count, 1);
-    assert_eq!(figma.app_count, 1);
-    assert!(figma.runtime_required);
-    assert!(figma
-        .health_error
-        .as_deref()
-        .unwrap_or_default()
-        .contains("authorization"));
-
-    let projection = svc.runtime_projection().unwrap();
-    assert!(projection
-        .mcp_server_sources
-        .values()
-        .any(|source| source.plugin_id == "figma@builtin" && source.declared_name == "figma"));
-    assert!(projection
-        .hook_definitions
-        .hooks
-        .get("PostToolUse")
-        .into_iter()
-        .flatten()
-        .any(|group| group.matcher.as_deref() == Some("Write|Edit")
-            && group.hooks.iter().any(|hook| hook
-                .command
-                .replace('\\', "/")
-                .ends_with("figma/scripts/post_write_figma_parity_check.sh"))));
-    assert!(projection
-        .connector_entries
-        .iter()
-        .any(|connector| connector.plugin_id == "figma@builtin"
-            && connector.provider == "figma"
-            && connector.id == "connector_68df038e0ba48191908c8434991bbac2"));
-    assert!(
-        !projection
-            .app_entries
-            .iter()
-            .any(|app| app.plugin_id == "figma@builtin"),
-        "figma connector must not be exposed as a renderable builtin app"
-    );
 }
 
 #[test]
@@ -669,32 +448,6 @@ fn bundled_plugins_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop/src-tauri/resources/plugins")
 }
 
-struct EnvRestore {
-    values: Vec<(&'static str, Option<OsString>)>,
-}
-
-impl EnvRestore {
-    fn capture(keys: &[&'static str]) -> Self {
-        Self {
-            values: keys
-                .iter()
-                .map(|key| (*key, std::env::var_os(key)))
-                .collect(),
-        }
-    }
-}
-
-impl Drop for EnvRestore {
-    fn drop(&mut self) {
-        for (key, value) in &self.values {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
-}
-
 fn sanitize_plugin_data_dir(id: &str) -> String {
     id.chars()
         .map(|ch| {
@@ -705,54 +458,4 @@ fn sanitize_plugin_data_dir(id: &str) -> String {
             }
         })
         .collect()
-}
-
-#[test]
-fn boltz_api_cli_python_dry_run_executes_bundled_script_tests() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/desktop/src-tauri/resources/plugins/boltz-api-cli");
-    if !root.is_dir() {
-        eprintln!("skipping: bundled boltz plugin resource is not present");
-        return;
-    }
-    let Some(python) = python_command() else {
-        eprintln!("skipping: python runtime is not available");
-        return;
-    };
-
-    let test_file = root.join("tests").join("test_scan_sites.py");
-    let output = Command::new(&python)
-        .arg(&test_file)
-        .current_dir(&root)
-        .output()
-        .unwrap_or_else(|error| panic!("failed to run {}: {error}", python.display()));
-
-    assert!(
-        output.status.success(),
-        "boltz python dry-run failed with {}\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Ran 6 tests") && stderr.contains("OK"),
-        "unexpected boltz dry-run output:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        stderr
-    );
-}
-
-fn python_command() -> Option<PathBuf> {
-    let mut candidates = vec![PathBuf::from("python"), PathBuf::from("python3")];
-    if let Some(path) = std::env::var_os("DEEPAGENT_PYTHON").filter(|value| !value.is_empty()) {
-        candidates.push(PathBuf::from(path));
-    }
-    candidates.into_iter().find(|candidate| {
-        Command::new(candidate)
-            .arg("--version")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-    })
 }

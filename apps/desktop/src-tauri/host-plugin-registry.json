@@ -54,11 +54,6 @@
       "command": "document-work",
       "components": ["file-preview"],
       "toolSurfaces": ["office-agent"]
-    },
-    {
-      "command": "control",
-      "components": ["computer-use"],
-      "toolSurfaces": ["computer-use"]
     }
   ]
 }

@@ -25,3 +25,18 @@ test("plugin toggle refreshes plugin state without a full page reload", () => {
     /listPluginMarketplaces|listPluginMarketplaceEntries/,
   );
 });
+
+test("tool launchers use enabled plugin apps instead of static plugin cards", () => {
+  const hook = readFileSync(
+    join(__dirname, "..", "src", "components", "plugins", "usePluginAppCards.ts"),
+    "utf8",
+  );
+  assert.match(hook, /listPluginApps\(\)/);
+  assert.match(hook, /PLUGINS_CHANGED_EVENT/);
+
+  for (const name of ["RightSidebarWorkbench.tsx", "ChatView.tsx", "StartView.tsx"]) {
+    const launcher = readFileSync(join(__dirname, "..", "src", "components", name), "utf8");
+    assert.match(launcher, /usePluginAppCards\(/, `${name} must use enabled plugin apps`);
+    assert.doesNotMatch(launcher, /PLUGIN_TOOL_CARDS/, `${name} must not expose static plugin cards`);
+  }
+});

@@ -5238,21 +5238,21 @@ rl.on('line', (line) => {
         let tmp = tempfile::tempdir().unwrap();
         let roots = roots(tmp.path());
         write_plugin_with_command_and_app_component(
-            &roots.builtin.join("computer-use"),
-            "computer-use",
-            "control",
-            "builtin:computer-use",
+            &roots.builtin.join("unregistered-host"),
+            "unregistered-host",
+            "unregistered-control",
+            "builtin:unregistered-host",
         );
         let svc = PluginService::new(roots, tmp.path().join("app-data"));
 
-        let plugin = svc.read("computer-use@builtin").unwrap().unwrap();
+        let plugin = svc.read("unregistered-host@builtin").unwrap().unwrap();
 
         assert_eq!(plugin.execution_kind, PluginExecutionKind::HostBacked);
         assert_eq!(plugin.health_status, PluginHealthStatus::Incomplete);
         let health_error = plugin.health_error.as_deref().unwrap_or_default();
         assert!(health_error.contains("host app component"));
         assert!(health_error.contains(
-            "host command 'control' references unregistered host app component 'computer-use'"
+            "host command 'unregistered-control' is not registered in the desktop host command registry"
         ));
     }
 
@@ -5736,35 +5736,6 @@ rl.on('line', (line) => {
     }
 
     #[test]
-    fn bundled_boltz_declares_cli_version_probe_from_real_package_docs() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/desktop/src-tauri/resources/plugins/boltz-api-cli");
-        if !root.is_dir() {
-            eprintln!("skipping: bundled boltz plugin resource is not present");
-            return;
-        }
-
-        let probes = documented_runtime_command_probes(&root);
-
-        assert!(
-            probes.contains(&PluginCommandProbe {
-                program: "boltz-api".to_string(),
-                args: vec!["--version".to_string()],
-            }),
-            "expected boltz-api --version probe from real boltz setup docs, got {probes:?}"
-        );
-        assert!(
-            !probes.iter().any(|probe| probe.args.iter().any(|arg| {
-                matches!(
-                    arg.as_str(),
-                    "start" | "estimate-cost" | "download-results" | "login"
-                )
-            })),
-            "only non-mutating version probes may be collected: {probes:?}"
-        );
-    }
-
-    #[test]
     fn documented_auth_status_probe_marks_rejected_check_as_needs_configuration() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("DEEPAGENT_DEEPAGENT_TEST_AUTH_CLI", "cargo");
@@ -5906,32 +5877,6 @@ rl.on('line', (line) => {
             args: vec!["whoami".to_string()],
         }));
         assert_eq!(probes.len(), 3);
-    }
-
-    #[test]
-    fn bundled_boltz_declares_auth_status_probe_from_real_package_docs() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/desktop/src-tauri/resources/plugins/boltz-api-cli");
-        if !root.is_dir() {
-            eprintln!("skipping: bundled boltz plugin resource is not present");
-            return;
-        }
-
-        let probes = documented_auth_command_probes(&root);
-
-        assert!(
-            probes.contains(&PluginCommandProbe {
-                program: "boltz-api".to_string(),
-                args: vec!["auth".to_string(), "status".to_string()],
-            }),
-            "expected boltz-api auth status probe from real boltz setup docs, got {probes:?}"
-        );
-        assert!(
-            !probes
-                .iter()
-                .any(|probe| probe.args.iter().any(|arg| arg == "login")),
-            "auth probe collection must not include login commands: {probes:?}"
-        );
     }
 
     #[test]
@@ -6084,28 +6029,6 @@ rl.on('line', (line) => {
             .unwrap();
         assert_eq!(checked.health_status, PluginHealthStatus::Ready);
         assert!(checked.runtime_available);
-    }
-
-    #[test]
-    fn bundled_figma_hook_command_script_resolves_without_errors() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/desktop/src-tauri/resources/plugins/figma");
-        if !root.is_dir() {
-            eprintln!("skipping: bundled figma plugin is not present");
-            return;
-        }
-        let inspection = inspect_hook_command_scripts(
-            &root,
-            &tempfile::tempdir().unwrap().path().join("plugin-data"),
-            None,
-            &[root.join("hooks.json")],
-        );
-
-        assert!(inspection.errors.is_empty(), "{inspection:?}");
-        assert!(inspection
-            .scripts
-            .iter()
-            .any(|script| script.ends_with("scripts/post_write_figma_parity_check.sh")));
     }
 
     #[test]
@@ -6870,7 +6793,7 @@ rl.on('line', (line) => {
         write_plugin_with_app_component_and_output_style(
             &roots.builtin.join("unknown"),
             "unknown",
-            "builtin:computer-use",
+            "builtin:unregistered-host",
         );
         let svc = PluginService::new(roots, tmp.path().join("app-data"));
 
@@ -6884,7 +6807,7 @@ rl.on('line', (line) => {
             .health_error
             .as_deref()
             .unwrap_or_default()
-            .contains("builtin:computer-use"));
+            .contains("builtin:unregistered-host"));
     }
 
     #[test]

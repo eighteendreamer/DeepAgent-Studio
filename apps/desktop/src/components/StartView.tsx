@@ -11,11 +11,12 @@ import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { GitBranchChip } from "./git/GitBranchChip";
 import {
   createPluginTab,
-  PLUGIN_TOOL_CARDS,
   renderPluginTab,
   type PluginTab,
   type PluginToolCard,
 } from "./plugins/pluginRegistry";
+import { usePluginAppCards } from "./plugins/usePluginAppCards";
+import { message } from "./message";
 import { RightSidebarWorkbench } from "./RightSidebarWorkbench";
 import { usePanelPresence } from "../hooks/usePanelPresence";
 import { MENU_LIST } from "./ui/motion";
@@ -186,20 +187,24 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
     setActiveBottomTabId(newTab.id);
   };
 
-  const handleToggleBottomTerminalPanel = () => {
+  const [pluginAppCards, refreshPluginAppCards] = usePluginAppCards(isBottomPanelOpen);
+
+  const handleToggleBottomTerminalPanel = async () => {
     if (isBottomPanelOpen) {
       setIsBottomPanelOpen(false);
     } else {
-      setIsBottomPanelOpen(true);
       if (!bottomTabs.some((t) => t.type === "terminal")) {
-        const terminalCard = PLUGIN_TOOL_CARDS.find((c) => c.type === "terminal");
-        if (terminalCard) {
-          void handleOpenBottomPlugin(terminalCard);
+        const terminalCard = (await refreshPluginAppCards()).find((c) => c.type === "terminal");
+        if (!terminalCard) {
+          message.error("请先在插件页启用 Terminal");
+          return;
         }
+        handleOpenBottomPlugin(terminalCard);
       } else {
         const termTab = bottomTabs.find((t) => t.type === "terminal");
         if (termTab) setActiveBottomTabId(termTab.id);
       }
+      setIsBottomPanelOpen(true);
     }
   };
 
@@ -752,7 +757,7 @@ export function StartView({ projectName, activeProjectPath = null, projectMapOpe
 
               <div className="flex-1 overflow-hidden flex flex-col relative">
                 {activeBottomTabId === "new" && (
-                  <ToolLauncherPanel cards={PLUGIN_TOOL_CARDS} onSelect={handleOpenBottomPlugin} variant="bottom" />
+                  <ToolLauncherPanel cards={pluginAppCards} onSelect={handleOpenBottomPlugin} variant="bottom" />
                 )}
 
                 {activeBottomTabId !== "new" && activeBottomTab

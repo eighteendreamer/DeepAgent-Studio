@@ -144,15 +144,6 @@ const PLUGIN_DEFINITION_MAP = new Map(
   PLUGIN_DEFINITIONS.map((definition) => [definition.type, definition]),
 );
 
-export const PLUGIN_TOOL_CARDS: PluginToolCard[] = PLUGIN_DEFINITIONS.map(
-  ({ icon, titleKey, descKey, type }) => ({
-    icon,
-    title: titleKey,
-    desc: descKey,
-    type,
-  }),
-);
-
 const BUILTIN_COMPONENT_TYPES: Record<string, PluginType> = {
   files: "files",
   "side-chat": "chat",

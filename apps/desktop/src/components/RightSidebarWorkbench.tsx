@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { SidebarPluginHeader } from "./SidebarPluginHeader";
 import { ToolLauncherPanel, type ToolLauncherCard } from "./ToolLauncherPanel";
 import {
   createPluginTab,
   getPluginDefinition,
-  pluginAppToToolCard,
-  PLUGIN_TOOL_CARDS,
   renderPluginTab,
   type PluginRenderContext,
   type PluginTab,
@@ -14,9 +12,10 @@ import {
   type PluginToolCard,
   type PluginType,
 } from "./plugins/pluginRegistry";
+import { usePluginAppCards } from "./plugins/usePluginAppCards";
 import { SIDEBAR_MIN_WIDTH, useResizableSidebar } from "../hooks/useResizableSidebar";
 import { usePanelPresence } from "../hooks/usePanelPresence";
-import { listPluginApps, openStudioCanvasWindow, PLUGINS_CHANGED_EVENT } from "../api";
+import { openStudioCanvasWindow } from "../api";
 import { message } from "./message";
 
 const STUDIO_CANVAS_CARD: ToolLauncherCard = {
@@ -25,8 +24,6 @@ const STUDIO_CANVAS_CARD: ToolLauncherCard = {
   title: "Studio Canvas",
   desc: "Open extensible workspace",
 };
-
-const STATIC_PLUGIN_TYPES = new Set(PLUGIN_TOOL_CARDS.map((card) => card.type));
 
 interface RightSidebarWorkbenchProps {
   open: boolean;
@@ -53,7 +50,7 @@ export function RightSidebarWorkbench({
   renderContext,
   extraActions,
 }: RightSidebarWorkbenchProps) {
-  const [pluginAppCards, setPluginAppCards] = useState<PluginToolCard[]>([]);
+  const [pluginAppCards] = usePluginAppCards(open);
   const presence = usePanelPresence(open, SIDEBAR_ANIM_MS);
   const [shellWidth, setShellWidth] = useState(0);
 
@@ -82,17 +79,7 @@ export function RightSidebarWorkbench({
 
   const { width, sidebarRef, isResizing, startResizing, isMaximized, toggleMaximize, resetMaximize } =
     useResizableSidebar({ defaultWidth: 400, minWidth: sidebarMinWidth });
-  const visiblePluginAppCards = useMemo(
-    () =>
-      pluginAppCards.filter(
-        (card) => !(card.pluginId?.endsWith("@builtin") && STATIC_PLUGIN_TYPES.has(card.type)),
-      ),
-    [pluginAppCards],
-  );
-  const availablePluginCards = useMemo(
-    () => [...PLUGIN_TOOL_CARDS, ...visiblePluginAppCards],
-    [visiblePluginAppCards],
-  );
+  const availablePluginCards = pluginAppCards;
   const launcherCards: ToolLauncherCard[] = useMemo(
     () => [...availablePluginCards, STUDIO_CANVAS_CARD],
     [availablePluginCards],
@@ -125,31 +112,6 @@ export function RightSidebarWorkbench({
 
     setShellWidth(targetShellWidth);
   }, [open, presence.shouldRender, presence.phase, targetShellWidth]);
-
-  const refreshPluginApps = useCallback(async () => {
-    if (!open) return;
-    try {
-      const apps = await listPluginApps();
-      const cards = apps
-        .map(pluginAppToToolCard)
-        .filter((card): card is PluginToolCard => Boolean(card));
-      setPluginAppCards(cards);
-    } catch (error) {
-      console.warn("failed to load plugin apps", error);
-      setPluginAppCards([]);
-    }
-  }, [open]);
-
-  useEffect(() => {
-    void refreshPluginApps();
-  }, [refreshPluginApps]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const handler = () => void refreshPluginApps();
-    window.addEventListener(PLUGINS_CHANGED_EVENT, handler);
-    return () => window.removeEventListener(PLUGINS_CHANGED_EVENT, handler);
-  }, [refreshPluginApps]);
 
   const handleLauncherSelect = (card: ToolLauncherCard) => {
     if (card.type === STUDIO_CANVAS_CARD.type) {

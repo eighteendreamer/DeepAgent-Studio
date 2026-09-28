@@ -13,7 +13,7 @@ test("every bundled plugin declares logo assets that exist", () => {
     .map((entry) => entry.name)
     .sort();
 
-  assert.equal(pluginNames.length, 12, "the bundled plugin inventory changed");
+  assert.equal(pluginNames.length, 9, "the bundled plugin inventory changed");
   for (const pluginName of pluginNames) {
     const manifestPath = join(pluginsRoot, pluginName, ".codex-plugin", "plugin.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));

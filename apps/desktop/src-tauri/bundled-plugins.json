@@ -22,7 +22,6 @@
   ],
   "firstParty": [
     "browser",
-    "computer-use",
     "files",
     "meeting-recorder",
     "office-agent",
@@ -41,28 +40,6 @@
       ],
       "upstream": "https://github.com/obra/superpowers",
       "version": "5.1.3"
-    },
-    {
-      "contentHash": "sha256:6a0b2075ef77d1fb6dc783b0ddf4f7b4b2aca170a9ac9530c458087065bb9f05",
-      "license": "LicenseRef-Figma-Developer-Terms",
-      "licenseFile": "LICENSE.txt",
-      "name": "figma",
-      "notes": [
-        "Complete plugin bundle with skills, commands, hooks, MCP, and UI assets."
-      ],
-      "upstream": "https://www.figma.com",
-      "version": "2.0.13"
-    },
-    {
-      "contentHash": "sha256:ff855a7a3fa29271019d3abe8e1dab24b6701ce8509523100fd77409445c43ba",
-      "license": "MIT",
-      "licenseFile": "LICENSE",
-      "name": "boltz-api-cli",
-      "notes": [
-        "Complete plugin bundle with skills and scripts."
-      ],
-      "upstream": "https://boltz.bio",
-      "version": "0.1.1"
     },
     {
       "contentHash": "sha256:4b28569a11b28d0bc73e746eae1d34d80830c103cbf84a95069c311ece8be93b",
