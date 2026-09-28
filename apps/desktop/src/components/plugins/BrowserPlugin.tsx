@@ -1,6 +1,6 @@
 import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { ArrowLeft, ArrowRight, Globe, RotateCw } from "lucide-react";
 import type { PluginDefinition } from "./pluginTypes";
 
 interface BrowserPluginProps {
@@ -137,15 +137,15 @@ export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
     <div className="w-full h-full flex flex-col bg-white">
       <div className="flex items-center gap-3 px-4 py-2 border-b border-border-theme flex-shrink-0">
         <div className="flex items-center gap-3 text-text-secondary">
-          <FontAwesomeIcon icon={["fas", "arrow-left"]} className="cursor-not-allowed opacity-40" />
-          <FontAwesomeIcon icon={["fas", "arrow-right"]} className="cursor-not-allowed opacity-40" />
+          <ArrowLeft className="h-4 w-4 cursor-not-allowed opacity-40" aria-hidden="true" />
+          <ArrowRight className="h-4 w-4 cursor-not-allowed opacity-40" aria-hidden="true" />
           <HoverInfo content="重新加载"><button
             type="button"
             className="text-text-secondary hover:text-text-base"
 
             onClick={() => setReloadKey((current) => current + 1)}
           >
-            <FontAwesomeIcon icon={["fas", "rotate-right"]} className="text-[13px]" />
+            <RotateCw className="h-4 w-4" aria-hidden="true" />
           </button></HoverInfo>
         </div>
         <form
@@ -175,7 +175,7 @@ export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
       <div ref={contentRef} className="relative flex-1 overflow-hidden bg-white">
         {!url ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-white px-6 text-center">
-            <FontAwesomeIcon icon={["fas", "globe"]} className="mb-3 text-2xl text-text-secondary" />
+            <Globe className="mb-3 h-8 w-8 text-text-secondary" aria-hidden="true" />
             <div className="mb-1 text-[14px] font-medium text-text-base">浏览器</div>
             <div className="text-[12px] text-text-secondary">输入 URL 后打开页面</div>
           </div>
@@ -184,7 +184,7 @@ export function BrowserPlugin({ initialUrl = "" }: BrowserPluginProps) {
         )}
         {nativeError && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-white px-6 text-center">
-            <FontAwesomeIcon icon={["fas", "globe"]} className="mb-3 text-2xl text-text-secondary" />
+            <Globe className="mb-3 h-8 w-8 text-text-secondary" aria-hidden="true" />
             <div className="mb-2 text-[14px] font-medium text-text-base">内置浏览器打开失败</div>
             <div className="max-w-sm text-[12px] leading-relaxed text-text-secondary">{nativeError}</div>
           </div>

@@ -73,3 +73,17 @@ test("right sidebar tools render component icons for every built-in tool type", 
   assert.match(header, /toolIconComponent\(tab\.type\)/);
   assert.match(header, /toolIconComponent\(plugin\.type\)/);
 });
+
+test("tool panels use component icons without Font Awesome renderers", () => {
+  const components = join(__dirname, "..", "src", "components");
+  for (const path of [
+    ["plugins", "BrowserPlugin.tsx"],
+    ["plugins", "FilesPlugin.tsx"],
+    ["plugins", "RecordingPlugin.tsx"],
+    ["project-map", "ProjectMapPanel.tsx"],
+  ]) {
+    const panel = readFileSync(join(components, ...path), "utf8");
+    assert.match(panel, /from "lucide-react"/, `${path.join("/")} needs component icons`);
+    assert.doesNotMatch(panel, /FontAwesomeIcon/, `${path.join("/")} must not render legacy icons`);
+  }
+});

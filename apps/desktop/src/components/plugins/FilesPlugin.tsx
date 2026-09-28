@@ -1,7 +1,10 @@
 import { HoverInfo } from "../ui/HoverInfo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import {
+  ChevronDown, ChevronRight, ChevronsLeft, ChevronsRight, Code2, Copy,
+  Ellipsis, FileSpreadsheet, FileText, Folder, FolderOpen, Image, LoaderCircle,
+  Presentation, Search, Table2, type LucideIcon,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   listProjectFiles,
@@ -139,8 +142,8 @@ function getStoredBool(key: string, fallback: boolean): boolean {
   return value === "true";
 }
 
-function fileIcon(entry: ProjectFileEntry): IconProp {
-  if (entry.is_dir) return ["far", "folder"];
+function fileIcon(entry: ProjectFileEntry): LucideIcon {
+  if (entry.is_dir) return Folder;
   switch (entry.ext) {
     case "png":
     case "jpg":
@@ -149,23 +152,23 @@ function fileIcon(entry: ProjectFileEntry): IconProp {
     case "webp":
     case "bmp":
     case "svg":
-      return ["far", "image"];
+      return Image;
     case "pdf":
-      return ["far", "file-pdf"];
+      return FileText;
     case "docx":
-      return ["far", "file-word"];
+      return FileText;
     case "xlsx":
-      return ["far", "file-excel"];
+      return FileSpreadsheet;
     case "pptx":
-      return ["far", "file-powerpoint"];
+      return Presentation;
     case "csv":
     case "tsv":
-      return ["fas", "table"];
+      return Table2;
     case "md":
     case "markdown":
-      return ["far", "file-lines"];
+      return FileText;
     default:
-      return ["far", "file-lines"];
+      return FileText;
   }
 }
 
@@ -271,7 +274,7 @@ function PreviewBody({
         {sheets.map((sheet) => (
           <div key={sheet.name}>
             <div className="mb-2 flex items-center text-[13px] font-semibold text-text-base">
-              <FontAwesomeIcon icon={["fas", "table"]} className="mr-2 text-text-secondary" />
+              <Table2 className="mr-2 h-4 w-4 text-text-secondary" aria-hidden="true" />
               {sheet.name}
               {sheet.truncated ? (
                 <span className="ml-2 text-[11px] font-normal text-text-secondary">
@@ -632,6 +635,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
       const hasExtension = !entry.is_dir && lastDotIdx > 0;
       const basename = hasExtension ? entry.name.substring(0, lastDotIdx) : entry.name;
       const extension = hasExtension ? entry.name.substring(lastDotIdx) : "";
+      const EntryIcon = fileIcon(entry);
 
       return [
         <div key={entry.path}>
@@ -651,17 +655,19 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
             }}
           >
             <span className="mr-1 flex h-4 w-4 flex-shrink-0 items-center justify-center text-[10px] text-text-secondary">
-              {entry.is_dir ? (
-                <FontAwesomeIcon icon={["fas", isExpanded ? "chevron-down" : "chevron-right"]} />
-              ) : null}
+              {entry.is_dir && (
+                isExpanded
+                  ? <ChevronDown className="h-3 w-3" aria-hidden="true" />
+                  : <ChevronRight className="h-3 w-3" aria-hidden="true" />
+              )}
             </span>
-            <FontAwesomeIcon icon={fileIcon(entry)} className="mr-2 w-4 flex-shrink-0 text-text-secondary" />
+            <EntryIcon className="mr-2 h-4 w-4 flex-shrink-0 text-text-secondary" aria-hidden="true" />
             <HoverInfo content={entry.name}><div className="flex min-w-0 flex-1 overflow-hidden" >
               <span className="truncate block">{basename}</span>
               <span className="flex-shrink-0">{extension}</span>
             </div></HoverInfo>
             {entry.is_dir && isLoadingChildren ? (
-              <FontAwesomeIcon icon={["fas", "circle-notch"]} className="ml-2 animate-spin text-[11px] text-text-secondary" />
+              <LoaderCircle className="ml-2 h-3 w-3 animate-spin text-text-secondary" aria-hidden="true" />
             ) : null}
           </div>
           {entry.is_dir && (isExpanded || !!filterQuery) && children.length > 0 ? (
@@ -679,7 +685,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
             {breadcrumbSegments.map((segment, index) => (
               <div key={`${segment}-${index}`} className="flex min-w-0 items-center">
                 {index > 0 ? (
-                  <FontAwesomeIcon icon={["fas", "chevron-right"]} className="mx-1.5 text-[9px] text-[#a0a7b4]" />
+                  <ChevronRight className="mx-1.5 h-3 w-3 flex-shrink-0 text-[#a0a7b4]" aria-hidden="true" />
                 ) : null}
                 <HoverInfo content={segment}><span
                   className={`truncate ${index === breadcrumbSegments.length - 1 ? "font-semibold text-text-base" : ""}`}
@@ -702,7 +708,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
               }}
               className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f4f5f7] hover:text-text-base"
             >
-              <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[12px]" />
+              <Ellipsis className="h-4 w-4" aria-hidden="true" />
             </button>
             {isMoreMenuOpen ? (
               <div className={`${FLOATING_MENU.shell} absolute right-0 top-full z-20 mt-2 w-[220px] overflow-hidden`}>
@@ -711,7 +717,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                   onClick={() => void handleCopyCurrentPath()}
                   className={`${FLOATING_MENU.row} w-full gap-3 text-left text-[14px] text-text-base`}
                 >
-                  <FontAwesomeIcon icon={["far", "copy"]} className="text-[13px] text-text-secondary" />
+                  <Copy className="h-4 w-4 text-text-secondary" aria-hidden="true" />
                   <span>复制路径</span>
                 </button>
                 <button
@@ -719,7 +725,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                   onClick={() => void handleCopyFileContent()}
                   className={`${FLOATING_MENU.row} w-full gap-3 text-left text-[14px] text-text-base`}
                 >
-                  <FontAwesomeIcon icon={["far", "file-lines"]} className="text-[13px] text-text-secondary" />
+                  <FileText className="h-4 w-4 text-text-secondary" aria-hidden="true" />
                   <span>复制文件内容</span>
                 </button>
                 <button
@@ -730,7 +736,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                   }}
                   className={`${FLOATING_MENU.row} w-full gap-3 text-left text-[14px] text-text-base`}
                 >
-                  <FontAwesomeIcon icon={["fas", "code"]} className="text-[13px] text-text-secondary" />
+                  <Code2 className="h-4 w-4 text-text-secondary" aria-hidden="true" />
                   <span>{enhancedViewEnabled ? "禁用增强视图" : "启用增强视图"}</span>
                 </button>
               </div>
@@ -746,9 +752,9 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
               }}
               className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border-theme px-2 text-[12px] font-medium text-text-base transition-colors hover:bg-[#f7f8fa]"
             >
-              <FontAwesomeIcon icon={["far", "folder-open"]} className="text-[12px] text-text-secondary" />
+              <FolderOpen className="h-4 w-4 text-text-secondary" aria-hidden="true" />
               <span>打开</span>
-              <FontAwesomeIcon icon={["fas", "chevron-down"]} className="text-[10px] text-text-secondary" />
+              <ChevronDown className="h-3.5 w-3.5 text-text-secondary" aria-hidden="true" />
             </button>
             {isOpenMenuOpen ? (
               <div className={`${FLOATING_MENU.shell} absolute right-0 top-full z-20 mt-2 w-[220px] overflow-hidden`}>
@@ -757,7 +763,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                   onClick={() => void handleOpenLocation(selectedOpenPath)}
                   className={`${FLOATING_MENU.row} w-full gap-3 text-left text-[14px] text-text-base`}
                 >
-                  <FontAwesomeIcon icon={["far", "folder-open"]} className="text-[13px] text-text-secondary" />
+                  <FolderOpen className="h-4 w-4 text-text-secondary" aria-hidden="true" />
                   <span>打开当前文件位置</span>
                 </button>
                 <button
@@ -765,7 +771,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                   onClick={() => void handleOpenLocation(rootPath)}
                   className={`${FLOATING_MENU.row} w-full gap-3 text-left text-[14px] text-text-base`}
                 >
-                  <FontAwesomeIcon icon={["far", "folder"]} className="text-[13px] text-text-secondary" />
+                  <Folder className="h-4 w-4 text-text-secondary" aria-hidden="true" />
                   <span>打开项目根目录</span>
                 </button>
               </div>
@@ -778,10 +784,9 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
             className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-[#f4f5f7] hover:text-text-base"
 
           >
-            <FontAwesomeIcon
-              icon={["fas", treeCollapsed ? "angles-left" : "angles-right"]}
-              className="text-[12px]"
-            />
+            {treeCollapsed
+              ? <ChevronsLeft className="h-4 w-4" aria-hidden="true" />
+              : <ChevronsRight className="h-4 w-4" aria-hidden="true" />}
           </button></HoverInfo>
         </div>
       </div>
@@ -790,7 +795,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
         <div className="min-w-0 flex-1 overflow-hidden">
           {treeLoading ? (
             <div className="flex h-full items-center justify-center px-6 text-[14px] text-text-secondary">
-              <FontAwesomeIcon icon={["fas", "circle-notch"]} className="mr-2 animate-spin" />
+              <LoaderCircle className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
               {t("plugins.filePreview.loading", { defaultValue: "正在加载..." })}
             </div>
           ) : treeError ? (
@@ -818,32 +823,35 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedDirectoryEntries.map((entry) => (
-                        <tr
-                          key={entry.path}
-                          className="border-t border-border-theme transition-colors hover:bg-[#fafafa]"
-                          onClick={() => {
-                            if (entry.is_dir) {
-                              void toggleDirectory(entry);
-                            } else {
-                              setSelectedPath(entry.path);
-                            }
-                          }}
-                        >
-                          <td className="px-4 py-3">
-                            <div className="flex items-center">
-                              <FontAwesomeIcon icon={fileIcon(entry)} className="mr-2 w-4 text-text-secondary" />
-                              <span className="truncate">{entry.name}</span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 text-text-secondary">
-                            {entry.is_dir ? "目录" : (entry.ext || "文件").toUpperCase()}
-                          </td>
-                          <td className="px-4 py-3 text-text-secondary">
-                            {entry.is_dir ? "--" : formatSize(entry.size_bytes)}
-                          </td>
-                        </tr>
-                      ))}
+                      {selectedDirectoryEntries.map((entry) => {
+                        const EntryIcon = fileIcon(entry);
+                        return (
+                          <tr
+                            key={entry.path}
+                            className="border-t border-border-theme transition-colors hover:bg-[#fafafa]"
+                            onClick={() => {
+                              if (entry.is_dir) {
+                                void toggleDirectory(entry);
+                              } else {
+                                setSelectedPath(entry.path);
+                              }
+                            }}
+                          >
+                            <td className="px-4 py-3">
+                              <div className="flex items-center">
+                                <EntryIcon className="mr-2 h-4 w-4 text-text-secondary" aria-hidden="true" />
+                                <span className="truncate">{entry.name}</span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 text-text-secondary">
+                              {entry.is_dir ? "目录" : (entry.ext || "文件").toUpperCase()}
+                            </td>
+                            <td className="px-4 py-3 text-text-secondary">
+                              {entry.is_dir ? "--" : formatSize(entry.size_bytes)}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -851,7 +859,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
             </div>
           ) : previewLoading ? (
             <div className="flex h-full items-center justify-center px-6 text-[14px] text-text-secondary">
-              <FontAwesomeIcon icon={["fas", "circle-notch"]} className="mr-2 animate-spin" />
+              <LoaderCircle className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
               {t("plugins.filePreview.loading")}
             </div>
           ) : previewError ? (
@@ -876,10 +884,7 @@ export function FilesPlugin({ projectPath = null }: FilesPluginProps) {
           <div className="flex w-[220px] flex-shrink-0 flex-col border-l border-border-theme bg-white">
             <div className="border-b border-border-theme px-4 py-4">
               <div className="relative">
-                <FontAwesomeIcon
-                  icon={["fas", "magnifying-glass"]}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[13px] text-text-secondary"
-                />
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-secondary" aria-hidden="true" />
                 <input
                   type="text"
                   value={filter}

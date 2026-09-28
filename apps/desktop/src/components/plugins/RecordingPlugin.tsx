@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import type { IconProp } from "@fortawesome/fontawesome-svg-core";
+import { Download, FileText, ListChecks, LoaderCircle, Mic, Pause, Play, Square, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { RecordingSession, TranscriptSegment } from "../../types";
 import {
@@ -332,19 +331,19 @@ export function RecordingPlugin() {
                 disabled={busy || checkingDependencies || downloading || !speechReady}
                 className="flex items-center px-5 py-2.5 rounded-full bg-primary text-white text-[14px] font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
               >
-                <FontAwesomeIcon icon={["fas", "microphone"]} className="mr-2" />
+                <Mic className="mr-2 h-4 w-4" aria-hidden="true" />
                 {t("plugins.recording.start")}
               </button>
             )}
             {isRecording && (
               <button type="button" onClick={pause} disabled={busy} className="flex items-center px-5 py-2.5 rounded-full border border-border-theme text-text-base text-[14px] hover:border-primary/50 transition-colors disabled:opacity-50">
-                <FontAwesomeIcon icon={["fas", "pause"]} className="mr-2" />
+                <Pause className="mr-2 h-4 w-4" aria-hidden="true" />
                 {t("plugins.recording.pause")}
               </button>
             )}
             {isPaused && (
               <button type="button" onClick={resume} disabled={busy} className="flex items-center px-5 py-2.5 rounded-full border border-border-theme text-text-base text-[14px] hover:border-primary/50 transition-colors disabled:opacity-50">
-                <FontAwesomeIcon icon={["fas", "play"]} className="mr-2" />
+                <Play className="mr-2 h-4 w-4" aria-hidden="true" />
                 {t("plugins.recording.resume")}
               </button>
             )}
@@ -355,7 +354,7 @@ export function RecordingPlugin() {
                 disabled={busy}
                 className="flex items-center px-5 py-2.5 rounded-full border border-red-300 text-red-500 text-[14px] hover:bg-red-50 transition-colors disabled:opacity-50"
               >
-                <FontAwesomeIcon icon={["fas", "stop"]} className="mr-2" />
+                <Square className="mr-2 h-4 w-4" aria-hidden="true" />
                 {t("plugins.recording.stop")}
               </button>
             )}
@@ -377,7 +376,7 @@ export function RecordingPlugin() {
           {status === "done" && (
             <div className="w-full flex flex-col space-y-2">
               <ActionButton
-                icon={["fas", "file-lines"]}
+                icon={FileText}
                 label={t("plugins.recording.transcribe")}
                 onClick={transcribe}
                 disabled={busy || transcribing || checkingDependencies || !speechReady}
@@ -385,7 +384,7 @@ export function RecordingPlugin() {
               />
               {segments && segments.length > 0 && (
                 <ActionButton
-                  icon={["fas", "list-check"]}
+                  icon={ListChecks}
                   label={t("plugins.recording.generateMinutes")}
                   onClick={generateMinutes}
                   disabled={busy || generatingMinutes}
@@ -423,7 +422,7 @@ export function RecordingPlugin() {
                   disabled={downloading}
                   className="flex items-center px-4 py-2 rounded-lg bg-primary text-white text-[13px] hover:opacity-90 disabled:opacity-50"
                 >
-                  <FontAwesomeIcon icon={["fas", "download"]} className="mr-2" />
+                  <Download className="mr-2 h-4 w-4" aria-hidden="true" />
                   下载转写引擎
                 </button>
               )}
@@ -458,7 +457,7 @@ export function RecordingPlugin() {
                   disabled={downloading}
                   className="flex items-center px-4 py-2 rounded-lg bg-primary text-white text-[13px] hover:opacity-90 disabled:opacity-50"
                 >
-                  <FontAwesomeIcon icon={["fas", "download"]} className="mr-2" />
+                  <Download className="mr-2 h-4 w-4" aria-hidden="true" />
                   {t("plugins.recording.downloadModel")}
                 </button>
               )}
@@ -561,12 +560,13 @@ function ActionButton({
   disabled,
   spinning,
 }: {
-  icon: IconProp;
+  icon: LucideIcon;
   label: string;
   onClick: () => void;
   disabled?: boolean;
   spinning?: boolean;
 }) {
+  const Icon = spinning ? LoaderCircle : icon;
   return (
     <button
       type="button"
@@ -574,10 +574,7 @@ function ActionButton({
       disabled={disabled}
       className="flex items-center justify-center px-4 py-2.5 rounded-lg border border-border-theme text-text-base text-[13px] hover:border-primary/50 hover:text-primary transition-colors disabled:opacity-50"
     >
-      <FontAwesomeIcon
-        icon={spinning ? ["fas", "circle-notch"] : icon}
-        className={`mr-2 ${spinning ? "animate-spin" : ""}`}
-      />
+      <Icon className={`mr-2 h-4 w-4 ${spinning ? "animate-spin" : ""}`} aria-hidden="true" />
       {label}
     </button>
   );

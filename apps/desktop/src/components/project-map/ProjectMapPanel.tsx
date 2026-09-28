@@ -1,6 +1,6 @@
 import { HoverInfo } from "../ui/HoverInfo";
 import { useEffect, useMemo, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { Box, ChevronRight, Code2, FileText, Network, RotateCw, Search } from "lucide-react";
 import {
   projectMapGraph,
   projectMapNeighbors,
@@ -285,7 +285,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
       <div className="px-4 py-2 border-b border-border-theme flex-shrink-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center min-w-0">
-            <FontAwesomeIcon icon={["fas", "share-nodes"]} className="text-text-secondary mr-2" />
+            <Network className="mr-2 h-4 w-4 text-text-secondary" aria-hidden="true" />
             <div className="text-[14px] font-medium text-text-base">项目地图</div>
 
             {status !== "missing" && status !== "failed" && !showDebugPanel && (
@@ -322,10 +322,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
               disabled={refreshing}
 
             >
-              <FontAwesomeIcon
-                icon={["fas", "rotate-right"]}
-                className={`text-[11px] ${refreshing ? "animate-spin" : "text-text-secondary"}`}
-              />
+              <RotateCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : "text-text-secondary"}`} aria-hidden="true" />
               <span className="text-[11px] font-medium">刷新</span>
             </button></HoverInfo>
           </div>
@@ -377,10 +374,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
               <div className="border-r border-border-theme min-h-0 flex flex-col">
                 <div className="p-3 flex-shrink-0">
                   <div className="relative">
-                    <FontAwesomeIcon
-                      icon={["fas", "magnifying-glass"]}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-[12px] text-text-secondary"
-                    />
+                    <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-secondary" aria-hidden="true" />
                     <input
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
@@ -405,16 +399,13 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0 pt-0.5">
-                          <FontAwesomeIcon
-                            icon={
-                              hit.node_type === "function"
-                                ? ["fas", "code"]
-                                : hit.node_type === "class"
-                                  ? ["fas", "cube"]
-                                  : ["far", "file-lines"]
-                            }
-                            className="text-[11px] flex-shrink-0"
-                          />
+                          {hit.node_type === "function" ? (
+                            <Code2 className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
+                          ) : hit.node_type === "class" ? (
+                            <Box className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
+                          ) : (
+                            <FileText className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
+                          )}
                           <span className="text-[13px] font-medium text-text-base truncate">{hit.name}</span>
                         </div>
                         <span className={`text-[10px] border rounded px-1.5 py-0.5 whitespace-nowrap flex-shrink-0 ${complexityClass(hit.complexity)}`}>
@@ -715,7 +706,7 @@ function RelationBlock({
                 {item.node.file_path ?? translateNodeType(item.node.node_type)}
               </div>
             </div>
-            <FontAwesomeIcon icon={["fas", "chevron-right"]} className="text-[10px] text-text-secondary" />
+            <ChevronRight className="h-3.5 w-3.5 text-text-secondary" aria-hidden="true" />
           </button>
         ))}
       </div>
