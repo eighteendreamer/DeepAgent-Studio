@@ -188,3 +188,8 @@ rust_xlsxwriter = "0.79"
 
 # Testing
 tempfile = "3"
+
+[profile.dev]
+# Avoid accumulating large rustc incremental caches in the kernel workspace.
+# The test profile inherits this setting from dev.
+incremental = false
