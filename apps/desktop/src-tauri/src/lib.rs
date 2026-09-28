@@ -30,18 +30,17 @@ use deepagent_app_core::{
     KnowledgeService, LocalPtyHandle, ManagedFileInventory, McpServerDto, McpService,
     NewRuntimeLogEntry, OfficeService, PdfRenderResultDto, PluginAppEntry, PluginDto,
     PluginOutputStyleEntry, PluginRoots, PluginRuntimeInspectionDto, PluginScanReportDto,
-    PluginService, PreflightToolCallDto,
-    PreviewMetadataDto, PreviewResultDto, ProjectDto, ProjectMapGraphDto, ProjectMapHitDto,
-    ProjectMapImpactDto, ProjectMapNeighborsDto, ProjectMapNodeDto, ProjectMapOverviewDto,
-    ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto, ProjectService, ProjectTrustDto,
-    PtyReadChunk, RecordingService, RecordingSessionDto, RewindResultDto, RuntimeBroker,
-    RuntimeLogEntry, RuntimeLogStore, RuntimeProgressDto, RuntimeRootsDto, RuntimeService,
-    RuntimeStatusDto, SandboxieExecutor, SandboxieService, SandboxieStatusDto, SecretStore,
-    SessionDetailDto, SessionSearchHitDto, SessionStateService, SessionSummaryDto,
-    SessionUiPrefsDto, SettingsService, SettingsView, SkillActivationDto, SkillDto,
-    SkillsMpClientHandle, SkillsRoots, SkillsService,
-    SpeechService, SqliteSecretStore, StoredRunEvent, TerminalResultDto, TerminalService,
-    TerminalShell, TranscriptDto, TranscriptSegmentDto, TrustService, VisionRecognizeRequestDto,
+    PluginService, PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto, ProjectDto,
+    ProjectMapGraphDto, ProjectMapHitDto, ProjectMapImpactDto, ProjectMapNeighborsDto,
+    ProjectMapNodeDto, ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService,
+    ProjectMapStatusDto, ProjectService, ProjectTrustDto, PtyReadChunk, RecordingService,
+    RecordingSessionDto, RewindResultDto, RuntimeBroker, RuntimeLogEntry, RuntimeLogStore,
+    RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxieExecutor,
+    SandboxieService, SandboxieStatusDto, SecretStore, SessionDetailDto, SessionSearchHitDto,
+    SessionStateService, SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView,
+    SkillActivationDto, SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService,
+    SqliteSecretStore, StoredRunEvent, TerminalResultDto, TerminalService, TerminalShell,
+    TranscriptDto, TranscriptSegmentDto, TrustService, VisionRecognizeRequestDto,
     VisionRecognizeResultDto, VisionService, VisionSettings, WebSearchSettings, WorkspaceInfoDto,
     WorkspaceService,
 };
@@ -528,7 +527,13 @@ fn dir_has_skill_md(dir: &Path) -> bool {
     false
 }
 
-fn locate_builtin_plugins_dir(resource_dir: &Path) -> PathBuf {
+fn locate_builtin_plugins_dir(resource_dir: &Path, development_source: Option<&Path>) -> PathBuf {
+    // Tauri dev copies resources into target/debug but does not prune plugin
+    // directories removed from source. Read the source tree in development so
+    // a deleted bundled plugin cannot reappear from a stale resource copy.
+    if let Some(source) = development_source.filter(|path| path.is_dir()) {
+        return source.to_path_buf();
+    }
     let candidates: [PathBuf; 3] = [
         resource_dir.join("resources").join("plugins"),
         resource_dir.join("plugins"),
@@ -6240,8 +6245,15 @@ pub fn run() {
             let projects = Arc::new(ProjectService::new(service.shared_database()));
             let project_map = Arc::new(ProjectMapService::new());
 
+            let development_plugins_dir = cfg!(debug_assertions).then(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("resources")
+                    .join("plugins")
+            });
             let resource_plugins_dir = match app.path().resource_dir() {
-                Ok(resource_dir) => locate_builtin_plugins_dir(&resource_dir),
+                Ok(resource_dir) => {
+                    locate_builtin_plugins_dir(&resource_dir, development_plugins_dir.as_deref())
+                }
                 Err(e) => {
                     eprintln!(
                         "[builtin-plugins] resource_dir() failed ({e}); built-in \
@@ -7000,6 +7012,21 @@ mod tests {
 
         let picked = locate_builtin_skills_dir(tmp.path());
         assert_eq!(picked, tmp.path().join("resources").join("skills"));
+    }
+
+    #[test]
+    fn development_plugins_ignore_stale_copied_resources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let copied = tmp.path().join("resources").join("plugins");
+        let source = tmp.path().join("source").join("plugins");
+        std::fs::create_dir_all(copied.join("removed-plugin")).unwrap();
+        std::fs::create_dir_all(source.join("browser")).unwrap();
+
+        assert_eq!(
+            locate_builtin_plugins_dir(tmp.path(), Some(&source)),
+            source
+        );
+        assert_eq!(locate_builtin_plugins_dir(tmp.path(), None), copied);
     }
 
     #[test]
