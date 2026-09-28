@@ -13,9 +13,10 @@
     "test:plugin-detail": "node --test scripts/check-plugin-detail-metrics.test.cjs",
     "test:plugin-page": "node --test scripts/check-plugin-page-lifecycle.test.cjs",
     "test:plugin-toggle": "node --test scripts/check-plugin-toggle-refresh.test.cjs",
+    "test:sidebar": "node --test scripts/check-sidebar-session-scope.test.cjs",
     "test:workflow": "node --test scripts/check-workflow.test.cjs",
     "test:canvas-ipc": "node --test scripts/check-canvas-ipc.test.cjs",
-    "build": "pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
+    "build": "pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm test:sidebar && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "review": "ocr"

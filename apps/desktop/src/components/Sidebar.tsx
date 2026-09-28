@@ -4,6 +4,7 @@ import { Archive, ArrowDown, Book, Check, ChevronDown, ChevronRight, Clock, Elli
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import { SidebarProjectMenu } from "./SidebarProjectMenu";
+import { partitionSidebarSessions, type SidebarSortCriterion } from "./sidebarSessions";
 import { SidebarSettingsMenu } from "./SidebarSettingsMenu";
 import { Panel } from "./ui/Panel";
 import { InputSurface } from "./ui/InputSurface";
@@ -44,7 +45,7 @@ interface Props {
   activeProjectPath: string | null;
   activeId: string | null;
   onSelect: (id: string) => void;
-  onSelectProject: (path: string) => void;
+  onSelectProject: (path: string | null) => void;
   onNewChat: () => void;
   onAddProject: () => void;
   onPinSession: (id: string, pinned: boolean) => void;
@@ -100,7 +101,6 @@ function formatTimeAgo(timestamp: number) {
 }
 
 type SidebarOrganizeMode = "project" | "recent" | "time" | "down";
-type SidebarSortCriterion = "updated" | "created";
 const SIDEBAR_ORGANIZE_MODES = ["project", "recent", "time", "down"] as const;
 const SIDEBAR_SORT_CRITERIA = ["updated", "created"] as const;
 const SIDEBAR_EXPANDED_PROJECTS_KEY = "deepagent:sidebar-expanded-projects";
@@ -224,8 +224,10 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   const sessionSortValue = (session: SessionSummary) =>
     sortCriterion === "created" ? session.created_at : session.updated_at;
 
-  const sortSessions = (items: SessionSummary[]) =>
-    [...items].sort((a, b) => sessionSortValue(b) - sessionSortValue(a));
+  const { projectSessions, recentSessions } = useMemo(
+    () => partitionSidebarSessions(sessions, sortCriterion),
+    [sessions, sortCriterion]
+  );
 
   // Group sessions by their project (display name). Seed the map from the real
   // projects list so projects with no sessions yet still appear.
@@ -234,14 +236,14 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     for (const p of projects) {
       groups[p.name] = [];
     }
-    for (const s of sortSessions(sessions)) {
-      if (s.pinned || !s.project) continue;
+    for (const s of projectSessions) {
       const proj = s.project;
+      if (!proj) continue;
       if (!groups[proj]) groups[proj] = [];
       groups[proj].push(s);
     }
     return groups;
-  }, [sessions, projects, sortCriterion, t]);
+  }, [projectSessions, projects]);
 
   // Map a project display name back to its path (for selecting the active one).
   const nameToPath = useMemo(() => {
@@ -255,10 +257,6 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     for (const p of projects) m[p.name] = p;
     return m;
   }, [projects]);
-
-  const pinnedSessions = useMemo(() => {
-    return sessions.filter((s) => s.pinned);
-  }, [sessions]);
 
   const pinnedProjectNames = useMemo(() => {
     return new Set(projects.filter((p) => p.pinned).map((p) => p.name));
@@ -314,9 +312,11 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     });
   };
 
-  const chronologicalSessions = useMemo(
-    () => sortSessions(sessions.filter((s) => !s.pinned)),
-    [sessions, sortCriterion]
+  const projectSessionsByTime = useMemo(
+    () => [...projectSessions].sort((a, b) =>
+      Number(pinnedProjectNames.has(b.project ?? "")) - Number(pinnedProjectNames.has(a.project ?? ""))
+    ),
+    [projectSessions, pinnedProjectNames]
   );
 
   const orderProjectEntries = (entries: [string, SessionSummary[]][]) => {
@@ -340,18 +340,14 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         return aEmpty - bEmpty || a[0].localeCompare(b[0], "zh-CN");
       });
     }
+    ordered.sort((a, b) => Number(pinnedProjectNames.has(b[0])) - Number(pinnedProjectNames.has(a[0])));
     return ordered;
   };
 
-  const pinnedProjectEntries = orderProjectEntries(
-    Object.entries(groupedSessions).filter(([proj]) => pinnedProjectNames.has(proj))
-  );
   const projectEntries =
     organizeMode === "time"
       ? []
-      : orderProjectEntries(
-          Object.entries(groupedSessions).filter(([proj]) => !pinnedProjectNames.has(proj))
-        );
+      : orderProjectEntries(Object.entries(groupedSessions));
 
   const renderSessionItem = (s: SessionSummary, isPinnedSection: boolean = false) => {
     const active = s.id === activeId;
@@ -588,19 +584,6 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
 
       {/* Project / session list */}
       <div className="stable-scrollbar-gutter flex-1 overflow-y-auto px-2 mt-4 space-y-3 pb-2 custom-scrollbar">
-        {/* Pinned projects and sessions */}
-        {(pinnedProjectEntries.length > 0 || pinnedSessions.length > 0) && (
-          <div className="flex flex-col">
-            <div className="px-2 mb-1 text-[12px] text-text-secondary">{t("sidebar.pinned")}</div>
-            <div className="space-y-0.5">
-              {pinnedProjectEntries.map(([proj, projSessions]) =>
-                renderProjectGroup(proj, projSessions)
-              )}
-              {pinnedSessions.map((s) => renderSessionItem(s, true))}
-            </div>
-          </div>
-        )}
-
         <div className="flex flex-col">
           <div
             className="flex items-center justify-between px-2 mb-1 text-text-secondary group cursor-pointer select-none"
@@ -718,11 +701,11 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               {projects.length === 0 && projectEntries.length === 0 && (
                 <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noProjects")}</div>
               )}
-              {organizeMode === "time" && chronologicalSessions.every((session) => !session.project) && (
+              {organizeMode === "time" && projectSessionsByTime.length === 0 && (
                 <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noChats")}</div>
               )}
               {organizeMode === "time" &&
-                chronologicalSessions.filter((session) => session.project).map((session) => renderSessionItem(session, true))}
+                projectSessionsByTime.map((session) => renderSessionItem(session, true))}
               {projectEntries.map(([proj, projSessions]) => renderProjectGroup(proj, projSessions))}
             </div>
           )}
@@ -751,11 +734,6 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-[11rem]">
-                  <DropdownMenuItem className="gap-2" onSelect={() => onArchiveAllSessions()}>
-                    <Archive className="h-4 w-4 shrink-0 text-text-secondary" />
-                    {t("sidebar.archiveAll")}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger>
                       <span className="flex items-center gap-2">
@@ -786,7 +764,10 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 type="button"
                 className="w-5 h-5 flex items-center justify-center hover:bg-sidebar-highlight rounded"
                 title={t("sidebar.newChat")}
-                onClick={onNewChat}
+                onClick={() => {
+                  onSelectProject(null);
+                  onNewChat();
+                }}
               >
                 <SquarePen className="h-3 w-3" />
               </button>
@@ -794,10 +775,10 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           </div>
           {!recentCollapsed && (
             <div className="space-y-0.5">
-              {chronologicalSessions.length === 0 && (
+              {recentSessions.length === 0 && (
                 <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noChats")}</div>
               )}
-              {chronologicalSessions.map((session) => renderSessionItem(session))}
+              {recentSessions.map((session) => renderSessionItem(session))}
             </div>
           )}
         </div>

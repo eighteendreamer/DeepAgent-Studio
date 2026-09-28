@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -19,10 +20,12 @@ use deepagent_context::{
 use deepagent_core::clock::SystemClock;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
+use deepagent_core::id::SessionId;
 use deepagent_core::message::{Message, ToolCall};
 use deepagent_hooks::{Hook, HookDefinitions, HookPoint, HookRegistry};
 use deepagent_models::transport::HttpTransport;
 use deepagent_models::{ModelCapabilityResolver, ModelClient, ModelRole};
+use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::runtime_log_store::{NewRuntimeLogEntry, RuntimeLogStore};
 use deepagent_persistence::Database;
 use deepagent_runtime::{
@@ -137,7 +140,7 @@ impl<'a> RunAssembler<'a> {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
-        let (root, session_project) = self.run_location()?;
+        let (root, session_project) = self.run_location(continue_session)?;
         let normalized_input = deepagent_runtime::InputIngress::normalize(
             continue_session.map(ToOwned::to_owned),
             root.clone(),
@@ -914,7 +917,7 @@ impl<'a> RunAssembler<'a> {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
-        let (root, session_project) = self.run_location()?;
+        let (root, session_project) = self.run_location(None)?;
         let cancellation = self.coordinator.register(run_id.clone(), None);
 
         append_runtime_log(
@@ -1115,20 +1118,15 @@ impl<'a> RunAssembler<'a> {
 
     // ── Helper methods (moved from ChatService, used only in the run path) ──
 
-    /// Resolve execution root and persisted project from the same snapshot.
-    /// Desktop's explicit no-project state still executes from its workspace,
-    /// but does not claim that launch directory as a registered project.
-    fn run_location(&self) -> Result<(PathBuf, Option<String>)> {
-        if let Some(projects) = self.projects {
-            let active = projects.active()?.filter(|path| !path.trim().is_empty());
-            let root = active
-                .as_ref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| self.workspace.to_path_buf());
-            return Ok((root, active));
-        }
-        let root = self.workspace.to_path_buf();
-        Ok((root.clone(), Some(root.to_string_lossy().into_owned())))
+    /// Existing sessions keep their persisted project even when the sidebar's
+    /// active project has changed. New sessions follow the active selection.
+    fn run_location(&self, continue_session: Option<&str>) -> Result<(PathBuf, Option<String>)> {
+        resolve_run_location(
+            self.db,
+            self.projects.as_deref(),
+            self.workspace,
+            continue_session,
+        )
     }
 
     /// Build a [`crate::slash_runtime::SlashRuntime`] from this assembler's
@@ -1437,6 +1435,38 @@ impl<'a> RunAssembler<'a> {
     }
 }
 
+fn resolve_run_location(
+    db: &Database,
+    projects: Option<&ProjectService>,
+    workspace: &Path,
+    continue_session: Option<&str>,
+) -> Result<(PathBuf, Option<String>)> {
+    if let Some(session_id) = continue_session {
+        let id = SessionId::from_str(session_id)
+            .map_err(|error| CoreError::invalid(format!("bad session id: {error}")))?;
+        let record = EventStore::new(db)
+            .get_session(id)?
+            .ok_or_else(|| CoreError::not_found(format!("session '{session_id}'")))?;
+        let root = record
+            .project
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace.to_path_buf());
+        return Ok((root, record.project));
+    }
+
+    if let Some(projects) = projects {
+        let active = projects.active()?.filter(|path| !path.trim().is_empty());
+        let root = active
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace.to_path_buf());
+        return Ok((root, active));
+    }
+    let root = workspace.to_path_buf();
+    Ok((root.clone(), Some(root.to_string_lossy().into_owned())))
+}
+
 /// Conservative project-hook file search paths.
 pub(crate) fn project_hook_paths(root: &Path) -> Vec<PathBuf> {
     vec![
@@ -1446,4 +1476,76 @@ pub(crate) fn project_hook_paths(root: &Path) -> Vec<PathBuf> {
         root.join(".deepagent").join("settings.local.json"),
         root.join(".deepagent").join("hooks.json"),
     ]
+}
+
+#[cfg(test)]
+mod run_location_tests {
+    use super::*;
+    use deepagent_core::clock::FixedClock;
+
+    #[test]
+    fn existing_session_uses_its_own_project_not_the_active_project() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let projects = ProjectService::new(db.clone());
+        projects.add_project("/work/first").unwrap();
+        projects.add_project("/work/second").unwrap();
+        let session = Session::create_in_project(
+            &db,
+            &clock,
+            Some("first"),
+            Default::default(),
+            Some("/work/first"),
+        )
+        .unwrap();
+        projects.set_active("/work/second").unwrap();
+
+        assert_eq!(
+            resolve_run_location(
+                &db,
+                Some(&projects),
+                Path::new("/default"),
+                Some(&session.id().to_string()),
+            )
+            .unwrap(),
+            (
+                PathBuf::from("/work/first"),
+                Some("/work/first".to_string())
+            )
+        );
+        assert_eq!(
+            resolve_run_location(&db, Some(&projects), Path::new("/default"), None).unwrap(),
+            (
+                PathBuf::from("/work/second"),
+                Some("/work/second".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn projectless_session_stays_in_default_workspace_when_project_is_active() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let projects = ProjectService::new(db.clone());
+        projects.add_project("/work/project").unwrap();
+        let session =
+            Session::create_in_project(&db, &clock, None, Default::default(), None).unwrap();
+        projects.set_active("/work/project").unwrap();
+
+        assert_eq!(
+            resolve_run_location(
+                &db,
+                Some(&projects),
+                Path::new("/default"),
+                Some(&session.id().to_string()),
+            )
+            .unwrap(),
+            (PathBuf::from("/default"), None)
+        );
+        projects.clear_active().unwrap();
+        assert_eq!(
+            resolve_run_location(&db, Some(&projects), Path::new("/default"), None).unwrap(),
+            (PathBuf::from("/default"), None)
+        );
+    }
 }
