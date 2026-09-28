@@ -205,7 +205,11 @@ impl AppService {
         let pinned = SessionStateService::new(self.db.clone()).pinned_ids()?;
         let projects = ProjectService::new(self.db.clone());
         let (registered_projects, project_names) = projects.session_projection()?;
-        let hits = store.search(query, project, limit)?;
+        let scope = project.map_or(
+            deepagent_persistence::event_store::SessionSearchScope::All,
+            deepagent_persistence::event_store::SessionSearchScope::Project,
+        );
+        let hits = store.search(query, scope, limit)?;
         Ok(hits
             .into_iter()
             .filter(|hit| !archived.contains(&hit.session.id.to_string()))

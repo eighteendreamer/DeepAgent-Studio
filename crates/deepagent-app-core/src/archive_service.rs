@@ -455,7 +455,11 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(EventStore::new(&db)
-            .search("expired searchable marker", None, 10)
+            .search(
+                "expired searchable marker",
+                deepagent_persistence::event_store::SessionSearchScope::All,
+                10
+            )
             .unwrap()
             .is_empty());
     }

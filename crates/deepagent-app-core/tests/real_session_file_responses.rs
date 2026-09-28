@@ -18,7 +18,7 @@ use deepagent_app_core::{
 use deepagent_core::event::EventPayload;
 use deepagent_core::id::SessionId;
 use deepagent_models::{ReqwestTransport, ThinkingDepth};
-use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::event_store::{EventStore, SessionSearchScope};
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::runtime_log_store::RuntimeLogStore;
 use deepagent_persistence::Database;
@@ -56,12 +56,20 @@ fn collect_session_files(root: &Path, out: &mut Vec<std::path::PathBuf>) {
 #[tokio::test]
 #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
 async fn real_responses_session_replays_tools_skills_files_and_logs() {
+    run_real_responses_session(ThinkingDepth::Simple).await;
+}
+
+#[tokio::test]
+#[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
+async fn real_responses_thinking_session_replays_tools_skills_files_and_logs() {
+    run_real_responses_session(ThinkingDepth::Medium).await;
+}
+
+async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
     let Some(key) = deepseek_key() else {
         eprintln!("[skip] no DeepSeek key in env or keychain");
         return;
     };
-    eprintln!("[real-session] key resolved (len={})", key.len());
-
     let temp = tempfile::tempdir().expect("temporary test root");
     let workspace = temp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -81,8 +89,8 @@ async fn real_responses_session_replays_tools_skills_files_and_logs() {
         .await
         .expect("live model discovery");
     settings
-        .set_thinking_depth(ThinkingDepth::Simple)
-        .expect("set deterministic low-cost thinking profile");
+        .set_thinking_depth(thinking_depth)
+        .expect("set requested thinking profile");
     settings
         .set_approval_policy(ApprovalPolicy::AutoReview)
         .expect("allow the live fixture to finish without UI approval");
@@ -190,6 +198,33 @@ async fn real_responses_session_replays_tools_skills_files_and_logs() {
     let session = SessionId::from_str(&session_id).unwrap();
     let store = EventStore::new(&db);
     let events = store.load_session(session).expect("replay file source");
+    if thinking_depth == ThinkingDepth::Medium {
+        let reasoning_ids: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::ResponseItemAppended {
+                    item:
+                        deepagent_core::response_item::ResponseItem::Reasoning {
+                            id: Some(id),
+                            content,
+                        },
+                } if !content.trim().is_empty() => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !reasoning_ids.is_empty(),
+            "thinking-mode run must durably retain non-empty reasoning for Responses replay"
+        );
+        assert_eq!(
+            reasoning_ids.len(),
+            reasoning_ids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            "each provider reasoning item must be persisted once"
+        );
+    }
     let usage: Vec<_> = events
         .iter()
         .filter_map(|event| match &event.payload {
@@ -287,7 +322,7 @@ async fn real_responses_session_replays_tools_skills_files_and_logs() {
     );
 
     let hits = store
-        .search("DEEPAGENT_FILE_SESSION_90210", None, 10)
+        .search("DEEPAGENT_FILE_SESSION_90210", SessionSearchScope::All, 10)
         .expect("search projection");
     assert!(hits.iter().any(|hit| hit.session.id == session));
 

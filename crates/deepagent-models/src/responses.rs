@@ -88,7 +88,7 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
 /// reject the *next* turn with HTTP 400 and effectively poisons the session.
 ///
 /// The repair is deliberately conservative:
-/// - preserve the original item order and all valid calls/outputs;
+/// - preserve each contiguous group of provider calls before its outputs;
 /// - repair orphaned outputs with a neutral placeholder call and drop duplicates;
 /// - synthesize one explicit failure output for each call that is still open.
 ///
@@ -97,26 +97,20 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
 /// execution reaches the tool pipeline.
 pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputItem> {
     let mut call_ids = HashSet::new();
-    let mut call_order = Vec::new();
     let mut custom_call_ids = HashSet::new();
     let mut outputs = std::collections::HashMap::<String, ResponseInputItem>::new();
     let mut orphan_outputs = Vec::new();
 
     // Index calls and retain only the first output for each call.  Indexing
-    // first lets the reconstruction below move an output next to its call,
-    // which DeepSeek requires even though OpenAI Responses accepts
-    // interleaved context items.
+    // first lets reconstruction below put outputs immediately after their
+    // contiguous provider call group, without splitting parallel calls.
     for item in items {
         match item {
             ResponseInputItem::FunctionCall { call_id, .. } => {
-                if call_ids.insert(call_id.clone()) {
-                    call_order.push(call_id.clone());
-                }
+                call_ids.insert(call_id.clone());
             }
             ResponseInputItem::CustomToolCall { call_id, .. } => {
-                if call_ids.insert(call_id.clone()) {
-                    call_order.push(call_id.clone());
-                }
+                call_ids.insert(call_id.clone());
                 custom_call_ids.insert(call_id.clone());
             }
             ResponseInputItem::FunctionCallOutput { call_id, .. }
@@ -136,7 +130,8 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
     let mut repaired = Vec::with_capacity(items.len() + orphan_outputs.len());
     let mut emitted_calls = HashSet::new();
     let mut emitted_outputs = HashSet::new();
-    for item in items {
+    let mut pending_group = Vec::new();
+    for (index, item) in items.iter().enumerate() {
         match item {
             ResponseInputItem::FunctionCall { call_id, .. }
             | ResponseInputItem::CustomToolCall { call_id, .. } => {
@@ -144,16 +139,35 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
                 // its output only.
                 if !emitted_calls.insert(call_id.clone()) {
                     tracing::warn!(call_id = %call_id, "dropping duplicate Responses tool call");
-                    continue;
+                } else {
+                    repaired.push(item.clone());
+                    pending_group.push(call_id.clone());
                 }
-                repaired.push(item.clone());
-                if let Some(output) = outputs.get(call_id) {
+            }
+            ResponseInputItem::FunctionCallOutput { call_id, .. }
+            | ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
+                // Outputs are emitted after their call group. An output that
+                // has no call gets a placeholder pair below.
+                if !emitted_outputs.contains(call_id) {
+                    tracing::debug!(call_id = %call_id, "deferring Responses tool output until its call");
+                }
+            }
+            _ => repaired.push(item.clone()),
+        }
+        let next_is_call = items.get(index + 1).is_some_and(|next| {
+            matches!(
+                next,
+                ResponseInputItem::FunctionCall { .. } | ResponseInputItem::CustomToolCall { .. }
+            )
+        });
+        if !next_is_call {
+            for call_id in pending_group.drain(..) {
+                if let Some(output) = outputs.get(&call_id) {
                     repaired.push(output.clone());
-                    emitted_outputs.insert(call_id.clone());
                 } else {
                     tracing::warn!(call_id = %call_id, "missing Responses tool output; synthesizing failure result");
                     let output = r#"{"status":"error","error":"tool result missing; the previous tool execution was interrupted or its result was not persisted"}"#.to_string();
-                    if custom_call_ids.contains(call_id) {
+                    if custom_call_ids.contains(&call_id) {
                         repaired.push(ResponseInputItem::CustomToolCallOutput {
                             call_id: call_id.clone(),
                             output,
@@ -164,18 +178,9 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
                             output,
                         });
                     }
-                    emitted_outputs.insert(call_id.clone());
                 }
+                emitted_outputs.insert(call_id);
             }
-            ResponseInputItem::FunctionCallOutput { call_id, .. }
-            | ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
-                // Outputs are emitted with their call above.  An output that
-                // has no call gets a placeholder pair below.
-                if !emitted_outputs.contains(call_id) {
-                    tracing::debug!(call_id = %call_id, "deferring Responses tool output until its call");
-                }
-            }
-            _ => repaired.push(item.clone()),
         }
     }
 
@@ -395,6 +400,35 @@ mod tests {
             &repaired[2],
             ResponseItem::Message { content, .. } if content == "hook context"
         ));
+    }
+
+    #[test]
+    fn keeps_parallel_calls_together_before_their_outputs() {
+        let items = vec![
+            ResponseItem::Reasoning {
+                id: Some("rs_1".into()),
+                content: "call both tools".into(),
+            },
+            ResponseItem::FunctionCall {
+                call_id: "call-1".into(),
+                name: "first".into(),
+                arguments: "{}".into(),
+            },
+            ResponseItem::FunctionCall {
+                call_id: "call-2".into(),
+                name: "second".into(),
+                arguments: "{}".into(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-1".into(),
+                output: "one".into(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-2".into(),
+                output: "two".into(),
+            },
+        ];
+        assert_eq!(repair_tool_call_pairs(&items), items);
     }
 
     #[test]

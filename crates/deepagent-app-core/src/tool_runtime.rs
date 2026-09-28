@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepagent_core::error::{CoreError, Result};
-use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::event_store::{EventStore, SessionSearchScope};
 use deepagent_persistence::Database;
 use deepagent_tools::{PermissionSet, RiskLevel, Tool, ToolDescriptor, ToolOutput, ToolRegistry};
 
@@ -135,6 +135,7 @@ impl deepagent_builtins::bash_tool::CommandExecutor for RuntimeCommandExecutor {
 pub(crate) struct ToolRegistryBuildRequest<'a> {
     pub(crate) db: Arc<Database>,
     pub(crate) root: &'a Path,
+    pub(crate) project: Option<String>,
     pub(crate) access: deepagent_builtins::FsAccess,
     pub(crate) env_mode: Option<&'a str>,
     pub(crate) connection_id: Option<&'a str>,
@@ -184,7 +185,7 @@ pub(crate) fn build_base_tool_registry(
     register_web_tools(&mut registry, &request.settings)?;
     registry.register(Arc::new(SessionSearchTool::new(
         request.db,
-        request.root.to_path_buf(),
+        request.project,
     )))?;
 
     registry.register(Arc::new(AskUserQuestionTool::new(DeclineResponder)))?;
@@ -213,12 +214,12 @@ pub(crate) fn build_base_tool_registry(
 
 struct SessionSearchTool {
     db: Arc<Database>,
-    project_root: PathBuf,
+    project: Option<String>,
 }
 
 impl SessionSearchTool {
-    fn new(db: Arc<Database>, project_root: PathBuf) -> Self {
-        Self { db, project_root }
+    fn new(db: Arc<Database>, project: Option<String>) -> Self {
+        Self { db, project }
     }
 }
 
@@ -271,9 +272,15 @@ impl Tool for SessionSearchTool {
             .get("cross_project")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        let project = (!cross_project).then(|| self.project_root.to_string_lossy().into_owned());
+        let scope = if cross_project {
+            SessionSearchScope::All
+        } else if let Some(project) = self.project.as_deref() {
+            SessionSearchScope::Project(project)
+        } else {
+            SessionSearchScope::NoProject
+        };
         let store = EventStore::new(&self.db);
-        let hits = store.search(query, project.as_deref(), limit)?;
+        let hits = store.search(query, scope, limit)?;
         let mut results = Vec::with_capacity(hits.len());
         for hit in hits {
             let start = hit.sequence.saturating_sub(2);
@@ -296,7 +303,7 @@ impl Tool for SessionSearchTool {
         }
         Ok(ToolOutput::success(serde_json::json!({
             "query": query,
-            "project": project,
+            "project": if cross_project { None } else { self.project.as_deref() },
             "results": results,
         })))
     }
@@ -1152,7 +1159,7 @@ mod session_search_tests {
             })
             .unwrap();
 
-        let tool = Arc::new(SessionSearchTool::new(db, PathBuf::from("/work/current")));
+        let tool = Arc::new(SessionSearchTool::new(db, Some("/work/current".into())));
         let descriptor = tool.descriptor();
         assert_eq!(descriptor.risk, RiskLevel::Safe);
         assert_eq!(descriptor.required_permissions, PermissionSet::read_only());
@@ -1236,5 +1243,58 @@ mod session_search_tests {
             scoped_workflow.output["results"].as_array().unwrap().len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn session_search_without_project_stays_unscoped_even_when_project_hit_is_newer() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let mut unscoped = Session::create(&db, &clock, Some("unscoped")).unwrap();
+        unscoped
+            .append(EventPayload::MessageAppended {
+                message: Message::user("shared needle from unscoped conversation"),
+            })
+            .unwrap();
+        let mut project = Session::create_in_project(
+            &db,
+            &clock,
+            Some("project"),
+            Default::default(),
+            Some("/work/current"),
+        )
+        .unwrap();
+        project
+            .append(EventPayload::MessageAppended {
+                message: Message::user("shared needle from project conversation"),
+            })
+            .unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(SessionSearchTool::new(db.clone(), None)))
+            .unwrap();
+        let scoped = registry
+            .invoke(
+                "session_search",
+                serde_json::json!({"query": "needle", "limit": 1}),
+                &PermissionSet::read_only(),
+                false,
+            )
+            .await
+            .unwrap();
+        let results = scoped.value["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["session_id"], unscoped.id().to_string());
+
+        let global = registry
+            .invoke(
+                "session_search",
+                serde_json::json!({"query": "needle", "cross_project": true}),
+                &PermissionSet::read_only(),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(global.value["results"].as_array().unwrap().len(), 2);
     }
 }

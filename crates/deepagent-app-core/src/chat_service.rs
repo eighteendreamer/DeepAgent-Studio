@@ -672,14 +672,18 @@ impl ChatService {
         local_exec_mode: Option<crate::settings::LocalExecutionMode>,
         bash_external_safety_gate: bool,
     ) -> Result<(ToolRegistry, deepagent_builtins::TodoStore)> {
-        build_base_tool_registry(self.base_registry_request(
+        let mut request = self.base_registry_request(
             root,
             access,
             env_mode,
             connection_id,
             local_exec_mode,
             bash_external_safety_gate,
-        ))
+        );
+        if let Some(projects) = &self.projects {
+            request.project = projects.active()?.filter(|path| !path.trim().is_empty());
+        }
+        build_base_tool_registry(request)
     }
 
     /// List the same base built-in descriptors used by headless runs.
@@ -734,6 +738,7 @@ impl ChatService {
         ToolRegistryBuildRequest {
             db: self.db.clone(),
             root,
+            project: Some(root.to_string_lossy().into_owned()),
             access,
             env_mode,
             connection_id,

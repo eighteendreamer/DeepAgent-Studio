@@ -67,6 +67,15 @@ pub struct SessionSearchHit {
     pub snippet: String,
 }
 
+/// Scope for a session-body query. `NoProject` is distinct from `All` so an
+/// unscoped desktop conversation cannot search registered projects by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionSearchScope<'a> {
+    All,
+    Project(&'a str),
+    NoProject,
+}
+
 impl<'db> EventStore<'db> {
     /// Wrap a database handle.
     pub fn new(db: &'db Database) -> Self {
@@ -560,7 +569,7 @@ impl<'db> EventStore<'db> {
     pub fn search(
         &self,
         query: &str,
-        project: Option<&str>,
+        scope: SessionSearchScope<'_>,
         limit: usize,
     ) -> Result<Vec<SessionSearchHit>> {
         let query = query.trim();
@@ -571,6 +580,11 @@ impl<'db> EventStore<'db> {
         let limit = limit.clamp(1, 100) as i64;
         let char_count = query.chars().count();
         let is_cjk_bigram = char_count == 2 && query.chars().all(is_cjk);
+        let (project, no_project) = match scope {
+            SessionSearchScope::All => (None, false),
+            SessionSearchScope::Project(project) => (Some(project), false),
+            SessionSearchScope::NoProject => (None, true),
+        };
         let candidates: Vec<(SessionId, Sequence, Option<Role>, Timestamp)> =
             self.db.with_conn(|c| {
                 let sql = if is_cjk_bigram {
@@ -579,6 +593,7 @@ impl<'db> EventStore<'db> {
                      JOIN session_search_docs d ON d.id = b.doc_id
                      JOIN sessions s ON s.id = d.session_id
                      WHERE b.gram = ?1 AND (?2 IS NULL OR s.project = ?2)
+                       AND (?4 = 0 OR s.project IS NULL)
                      ORDER BY d.timestamp DESC LIMIT ?3"
                 } else if char_count >= 3 {
                     "SELECT d.session_id, d.sequence, d.role, d.timestamp
@@ -587,6 +602,7 @@ impl<'db> EventStore<'db> {
                      JOIN sessions s ON s.id = d.session_id
                      WHERE session_search_fts MATCH ?1
                        AND (?2 IS NULL OR s.project = ?2)
+                       AND (?4 = 0 OR s.project IS NULL)
                      ORDER BY bm25(session_search_fts), d.timestamp DESC LIMIT ?3"
                 } else {
                     "SELECT d.session_id, d.sequence, d.role, d.timestamp
@@ -595,6 +611,7 @@ impl<'db> EventStore<'db> {
                      JOIN sessions s ON s.id = d.session_id
                      WHERE f.content LIKE ?1 ESCAPE '\\'
                        AND (?2 IS NULL OR s.project = ?2)
+                       AND (?4 = 0 OR s.project IS NULL)
                      ORDER BY d.timestamp DESC LIMIT ?3"
                 };
                 let search_term = if is_cjk_bigram {
@@ -606,7 +623,7 @@ impl<'db> EventStore<'db> {
                 };
                 let mut stmt = c.prepare(sql).map_err(map_sqlite)?;
                 let rows = stmt
-                    .query_map(params![search_term, project, limit], |row| {
+                    .query_map(params![search_term, project, limit, no_project], |row| {
                         let id: String = row.get(0)?;
                         let sequence: i64 = row.get(1)?;
                         let role: Option<String> = row.get(2)?;
@@ -1120,20 +1137,71 @@ fn search_document(event: &Event) -> Option<(Option<Role>, String)> {
         } => Some((
             None,
             format!(
-                "tool call {call_id} {} {}",
+                "tool call {call_id} {} {}{}",
                 if *ok { "completed" } else { "failed" },
-                json_shape(output)
+                json_shape(output),
+                tool_output_preview(output)
+                    .map(|preview| format!(" preview {preview}"))
+                    .unwrap_or_default()
             ),
         )),
         _ => None,
     }
 }
 
+/// Only explicit status/summary fields are eligible for the FTS projection.
+/// In particular, file contents, stdout, patches, and arbitrary result bodies
+/// remain solely in the authoritative session file.
+fn tool_output_preview(output: &serde_json::Value) -> Option<String> {
+    let object = output.as_object()?;
+    let text = ["summary", "message", "status"]
+        .iter()
+        .filter_map(|key| object.get(*key).and_then(serde_json::Value::as_str))
+        .find(|value| !value.trim().is_empty())?;
+    let mut redacted = String::new();
+    let mut redact_next = false;
+    for token in text.split_whitespace() {
+        if !redacted.is_empty() {
+            redacted.push(' ');
+        }
+        let lower = token.to_ascii_lowercase();
+        let sensitive_label = [
+            "api_key",
+            "apikey",
+            "password",
+            "secret",
+            "authorization",
+            "token",
+        ]
+        .iter()
+        .any(|secret| lower.contains(secret));
+        if redact_next || lower.starts_with("sk-") || sensitive_label {
+            redacted.push_str("<redacted>");
+        } else {
+            redacted.push_str(token);
+        }
+        redact_next = lower == "bearer"
+            || (sensitive_label && (lower.ends_with(':') || lower.ends_with('=')));
+    }
+    let preview: String = redacted.chars().take(160).collect();
+    (!preview.is_empty()).then_some(preview)
+}
+
 fn json_shape(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Object(map) => {
-            let keys: Vec<&str> = map.keys().take(16).map(String::as_str).collect();
-            format!("object keys [{}]", keys.join(", "))
+            // Arbitrary JSON keys can themselves contain credentials or private
+            // data. Only fixed schema labels are safe to duplicate into FTS.
+            const SAFE_KEYS: &[&str] = &[
+                "path", "status", "summary", "message", "content", "error", "result", "ok",
+                "count", "query", "limit",
+            ];
+            let keys: Vec<&str> = map
+                .keys()
+                .map(String::as_str)
+                .filter(|key| SAFE_KEYS.contains(key))
+                .collect();
+            format!("object with {} fields [{}]", map.len(), keys.join(", "))
         }
         serde_json::Value::Array(values) => format!("array length {}", values.len()),
         serde_json::Value::String(_) => "string output".into(),
@@ -1454,7 +1522,9 @@ mod tests {
             store.get_session(session_id).unwrap().unwrap().updated_at,
             Timestamp::from_millis(3)
         );
-        let hits = store.search("projection crash marker", None, 10).unwrap();
+        let hits = store
+            .search("projection crash marker", SessionSearchScope::All, 10)
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].sequence, 1);
     }
@@ -1504,7 +1574,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(appended.sequence, 0);
-        assert_eq!(store.search("orphan recovery", None, 10).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .search("orphan recovery", SessionSearchScope::All, 10)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1646,16 +1722,172 @@ mod tests {
 
         for query in ["缓存", "稳定性", "prefix", "src/runtime", "parse_config"] {
             let hits = store
-                .search(query, Some("G:/workspace/project-a"), 10)
+                .search(
+                    query,
+                    SessionSearchScope::Project("G:/workspace/project-a"),
+                    10,
+                )
                 .unwrap();
             assert!(!hits.is_empty(), "query {query:?} should match");
             assert_eq!(hits[0].session.id, session_id);
             assert!(hits[0].snippet.contains(query) || query == "prefix");
         }
         assert!(store
-            .search("缓存", Some("G:/workspace/other"), 10)
+            .search(
+                "缓存",
+                SessionSearchScope::Project("G:/workspace/other"),
+                10
+            )
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn tool_search_indexes_only_bounded_redacted_summary_not_result_body() {
+        let db = Database::open_in_memory().unwrap();
+        let store = EventStore::new(&db);
+        let session_id = SessionId::new();
+        store
+            .create_session(session_id, Some("tool preview"), Timestamp::from_millis(1))
+            .unwrap();
+        store
+            .append(
+                session_id,
+                EventPayload::ToolCallCompleted {
+                    call_id: "call-1".into(),
+                    ok: true,
+                    output: serde_json::json!({
+                        "summary": "review-marker Bearer secretvalue password=hunter2 api_key: keyvalue",
+                        "content": "private-result-marker",
+                        "sk-private-key-marker": "value"
+                    }),
+                    duration_ms: 1,
+                },
+                Timestamp::from_millis(2),
+            )
+            .unwrap();
+        let hits = store
+            .search("review-marker", SessionSearchScope::All, 10)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains("review-marker"));
+        for secret in [
+            "secretvalue",
+            "hunter2",
+            "keyvalue",
+            "private-result-marker",
+            "private-key-marker",
+        ] {
+            assert!(
+                store
+                    .search(secret, SessionSearchScope::All, 10)
+                    .unwrap()
+                    .is_empty(),
+                "{secret} must not enter the search projection"
+            );
+        }
+    }
+
+    #[test]
+    fn no_project_scope_applies_before_limit_for_all_search_query_lengths() {
+        let db = Database::open_in_memory().unwrap();
+        let store = EventStore::new(&db);
+        for (index, project) in [None, Some("G:/workspace/project-a")]
+            .into_iter()
+            .enumerate()
+        {
+            let session_id = SessionId::new();
+            store
+                .create_session_full(
+                    session_id,
+                    Some("search"),
+                    SessionMode::Normal,
+                    project,
+                    Timestamp::from_millis(index as i64 + 1),
+                )
+                .unwrap();
+            store
+                .append(
+                    session_id,
+                    EventPayload::MessageAppended {
+                        message: Message::user("缓存 alpha z"),
+                    },
+                    Timestamp::from_millis(index as i64 + 3),
+                )
+                .unwrap();
+        }
+        for query in ["缓存", "alpha", "z"] {
+            let hits = store
+                .search(query, SessionSearchScope::NoProject, 1)
+                .unwrap();
+            assert_eq!(hits.len(), 1, "query {query:?}");
+            assert_eq!(hits[0].session.project, None, "query {query:?}");
+            assert_eq!(
+                store
+                    .search(query, SessionSearchScope::All, 10)
+                    .unwrap()
+                    .len(),
+                2,
+                "query {query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn v20_rebuilds_tool_previews_from_files_without_rewriting_the_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.sqlite3");
+        let session_id = SessionId::new();
+        let source_bytes;
+        {
+            let db = Database::open(&db_path).unwrap();
+            let store = EventStore::new(&db);
+            store
+                .create_session(session_id, Some("tool preview"), Timestamp::from_millis(1))
+                .unwrap();
+            store
+                .append(
+                    session_id,
+                    EventPayload::ToolCallCompleted {
+                        call_id: "call-1".into(),
+                        ok: true,
+                        output: serde_json::json!({"summary": "migration-preview-marker"}),
+                        duration_ms: 1,
+                    },
+                    Timestamp::from_millis(2),
+                )
+                .unwrap();
+            source_bytes = std::fs::read(
+                session_files::session_dir(&db.session_files_root(), session_id)
+                    .join("session.g000001.v1.jsonl.zst"),
+            )
+            .unwrap();
+            db.with_conn(|connection| {
+                connection
+                    .execute_batch(
+                        "UPDATE session_search_fts SET content = 'old tool shape';
+                         PRAGMA user_version = 19;",
+                    )
+                    .map_err(map_sqlite)?;
+                Ok(())
+            })
+            .unwrap();
+        }
+
+        let db = Database::open(&db_path).unwrap();
+        let hits = EventStore::new(&db)
+            .search("migration-preview-marker", SessionSearchScope::All, 10)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session.id, session_id);
+        assert_eq!(
+            std::fs::read(
+                session_files::session_dir(&db.session_files_root(), session_id)
+                    .join("session.g000001.v1.jsonl.zst")
+            )
+            .unwrap(),
+            source_bytes
+        );
     }
 
     #[test]
@@ -1671,7 +1903,13 @@ mod tests {
                 clock.now(),
             )
             .unwrap();
-        assert_eq!(store.search("needle", None, 10).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .search("needle", SessionSearchScope::All, 10)
+                .unwrap()
+                .len(),
+            1
+        );
         db.with_conn(|connection| {
             connection
                 .execute_batch(
@@ -1685,7 +1923,7 @@ mod tests {
         })
         .unwrap();
 
-        let rebuilt = store.search("needle", None, 10).unwrap();
+        let rebuilt = store.search("needle", SessionSearchScope::All, 10).unwrap();
         assert_eq!(rebuilt.len(), 1);
         assert_eq!(rebuilt[0].session.id, session_id);
     }
@@ -1710,7 +1948,13 @@ mod tests {
                     Timestamp::from_millis(2),
                 )
                 .unwrap();
-            assert_eq!(store.search("projection", None, 10).unwrap().len(), 1);
+            assert_eq!(
+                store
+                    .search("projection", SessionSearchScope::All, 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
             db.with_conn(|connection| {
                 connection
                     .execute_batch("DROP TABLE session_search_fts;")
@@ -1721,7 +1965,7 @@ mod tests {
 
         let reopened = Database::open(&db_path).unwrap();
         let hits = EventStore::new(&reopened)
-            .search("projection", None, 10)
+            .search("projection", SessionSearchScope::All, 10)
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session.id, session_id);

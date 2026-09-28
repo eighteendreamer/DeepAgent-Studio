@@ -47,7 +47,7 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
     const visibleSessions = sessions
       .filter((session) => {
         if (!session.title?.trim()) return false;
-        if (!session.project || !projectNames.has(session.project)) return false;
+        if (session.project && !projectNames.has(session.project)) return false;
         return true;
       })
       .sort((a, b) => b.updated_at - a.updated_at);

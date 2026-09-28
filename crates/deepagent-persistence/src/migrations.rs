@@ -395,6 +395,11 @@ const MIGRATIONS: &[&str] = &[
         updated_at    INTEGER NOT NULL
     );
     "#,
+    // V20: tool-result previews changed. Mark the disposable search projection
+    // dirty so Database::open rebuilds it from authoritative session files.
+    r#"
+    UPDATE session_search_cursors SET dirty = 1;
+    "#,
 ];
 
 /// The highest schema version defined by this build.

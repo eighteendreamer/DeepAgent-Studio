@@ -678,17 +678,18 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 }
             }
             tracing::debug!(step, ?decision, "agent decision");
-            let mut provider_items_persisted =
-                persist_response_items(session, agent.take_pending_response_items())?;
+            let pending_response_items = agent.take_pending_response_items();
             raw_responses_usage.extend(agent.take_pending_raw_usage());
-            let decision = match decision {
+            let (decision, response_items) = match decision {
                 AgentDecision::CompleteItems { message, items } => {
-                    provider_items_persisted =
-                        persist_response_items(session, items)? || provider_items_persisted;
-                    AgentDecision::CompleteMessage(message)
+                    // CompleteItems is the final turn's authoritative output. ModelAgent
+                    // also exposes it through the pending drain; persisting both copies
+                    // duplicates reasoning in the next Responses request.
+                    (AgentDecision::CompleteMessage(message), items)
                 }
-                other => other,
+                other => (other, pending_response_items),
             };
+            let provider_items_persisted = persist_response_items(session, response_items)?;
 
             match decision {
                 AgentDecision::Complete(msg) => {
@@ -2642,6 +2643,7 @@ mod tests {
                         .with_id("native-call"),
                 ))
             } else {
+                self.items = self.final_items.clone();
                 Ok(AgentDecision::CompleteItems {
                     message: Message::assistant("done"),
                     items: std::mem::take(&mut self.final_items),
@@ -2997,10 +2999,16 @@ mod tests {
                     arguments: r#"{"path":"native.txt"}"#.into(),
                 },
             ],
-            final_items: vec![ResponseOutputItem::Message {
-                role: "assistant".into(),
-                content: "done".into(),
-            }],
+            final_items: vec![
+                ResponseOutputItem::Reasoning {
+                    id: Some("rs_final".into()),
+                    content: "final check".into(),
+                },
+                ResponseOutputItem::Message {
+                    role: "assistant".into(),
+                    content: "done".into(),
+                },
+            ],
         };
         let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default());
 
@@ -3031,11 +3039,29 @@ mod tests {
             item,
             ResponseOutputItem::FunctionCallOutput { call_id, .. } if call_id == "native-call"
         )));
-        assert!(response_items.iter().any(|item| matches!(
-            item,
-            ResponseOutputItem::Message { role, content }
-                if role == "assistant" && content == "done"
-        )));
+        assert_eq!(
+            response_items
+                .iter()
+                .filter(|item| matches!(
+                    item,
+                    ResponseOutputItem::Reasoning { id: Some(id), .. } if id == "rs_final"
+                ))
+                .count(),
+            1,
+            "final reasoning must be persisted once even when both agent channels expose it"
+        );
+        assert_eq!(
+            response_items
+                .iter()
+                .filter(|item| matches!(
+                    item,
+                    ResponseOutputItem::Message { role, content }
+                        if role == "assistant" && content == "done"
+                ))
+                .count(),
+            1,
+            "final assistant response must be persisted once"
+        );
     }
 
     #[tokio::test]

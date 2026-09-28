@@ -318,17 +318,16 @@ impl<'a> RunAssembler<'a> {
         );
 
         let (task_runner, task_agent_types) = {
-            let sub_registry = Arc::new(
-                self.build_registry(
-                    &root,
-                    access,
-                    None,
-                    None,
-                    Some(local_execution_mode),
-                    matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
-                )?
-                .0,
+            let mut sub_request = self.base_registry_request(
+                &root,
+                access,
+                None,
+                None,
+                Some(local_execution_mode),
+                matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
             );
+            sub_request.project = session_project.clone();
+            let sub_registry = Arc::new(build_base_tool_registry(sub_request)?.0);
             let runtime_agents = collect_runtime_agent_definitions(
                 [root.clone(), self.workspace.to_path_buf()],
                 plugin_projection.as_ref(),
@@ -373,15 +372,17 @@ impl<'a> RunAssembler<'a> {
             (runner, task_agent_types)
         };
 
+        let mut base = self.base_registry_request(
+            &root,
+            deepagent_builtins::FsAccess::Full,
+            effective_env_mode,
+            connection_id,
+            Some(local_execution_mode),
+            true,
+        );
+        base.project = session_project.clone();
         let toolset = build_main_run_toolset(MainRunToolsetRequest {
-            base: self.base_registry_request(
-                &root,
-                deepagent_builtins::FsAccess::Full,
-                effective_env_mode,
-                connection_id,
-                Some(local_execution_mode),
-                true,
-            ),
+            base,
             mcp: self.mcp.as_deref(),
             plugin_projection: plugin_projection.as_ref(),
             task_runner,
@@ -1389,26 +1390,6 @@ impl<'a> RunAssembler<'a> {
         (compacted, true)
     }
 
-    /// Build a base tool registry for sub-agent or standalone use.
-    fn build_registry(
-        &self,
-        root: &Path,
-        access: deepagent_builtins::FsAccess,
-        env_mode: Option<&str>,
-        connection_id: Option<&str>,
-        local_exec_mode: Option<crate::settings::LocalExecutionMode>,
-        bash_external_safety_gate: bool,
-    ) -> Result<(ToolRegistry, deepagent_builtins::TodoStore)> {
-        build_base_tool_registry(self.base_registry_request(
-            root,
-            access,
-            env_mode,
-            connection_id,
-            local_exec_mode,
-            bash_external_safety_gate,
-        ))
-    }
-
     /// Assemble the shared [`ToolRegistryBuildRequest`] from the assembler's
     /// borrowed fields.
     fn base_registry_request(
@@ -1438,6 +1419,7 @@ impl<'a> RunAssembler<'a> {
         ToolRegistryBuildRequest {
             db: self.db.clone(),
             root,
+            project: Some(root.to_string_lossy().into_owned()),
             access,
             env_mode,
             connection_id,

@@ -42,7 +42,7 @@ impl ThinkingDepth {
 pub struct ThinkingConfig {
     /// Whether reasoning is enabled.
     pub enabled: bool,
-    /// Reasoning effort hint, when enabled (`"high"` / `"max"`).
+    /// Responses reasoning effort (`"none"` disables thinking).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     /// Output token ceiling for this depth.
@@ -56,7 +56,7 @@ impl ThinkingConfig {
         match depth {
             ThinkingDepth::Simple => Self {
                 enabled: false,
-                effort: None,
+                effort: Some("none".to_string()),
                 max_tokens: Some(8_192),
             },
             ThinkingDepth::Medium => Self {
@@ -567,7 +567,7 @@ mod tests {
             ThinkingConfig::for_depth(ThinkingDepth::Simple),
             ThinkingConfig {
                 enabled: false,
-                effort: None,
+                effort: Some("none".to_string()),
                 max_tokens: Some(8_192)
             }
         );
@@ -618,7 +618,7 @@ mod tests {
         let req = ResponseRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
             .with_thinking_depth(ThinkingDepth::Simple);
         let json = serde_json::to_value(&req).unwrap();
-        assert!(json.get("reasoning").is_none());
+        assert_eq!(json["reasoning"]["effort"], "none");
         assert_eq!(json["max_output_tokens"], 8_192);
     }
 
