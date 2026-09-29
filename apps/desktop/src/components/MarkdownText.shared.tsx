@@ -81,7 +81,7 @@ export function createMarkdownComponents(onOpenUrl?: (url: string) => void) {
     },
     table({ children, ...props }: any) {
       return (
-        <div className="my-4 w-full overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm">
+        <div className="my-5 w-full">
           <table className="w-full text-left text-[14px] m-0" {...props}>
             {children}
           </table>
@@ -111,7 +111,7 @@ export function createMarkdownComponents(onOpenUrl?: (url: string) => void) {
     },
     th({ children, ...props }: any) {
       return (
-        <th className="px-4 py-3 font-semibold first:rounded-tl-lg last:rounded-tr-lg border-0 m-0 bg-slate-50 border-b border-gray-200 dark:bg-slate-800/40 dark:border-gray-700/50 text-slate-900 dark:text-slate-100" {...props}>
+        <th className="px-4 py-3 font-semibold m-0 bg-slate-50 border-b border-gray-200 dark:bg-slate-800/40 dark:border-gray-700/50 text-slate-900 dark:text-slate-100" {...props}>
           {children}
         </th>
       );
