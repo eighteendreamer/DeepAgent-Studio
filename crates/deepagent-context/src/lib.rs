@@ -26,6 +26,7 @@ pub mod pack;
 pub mod pipeline;
 pub mod policy;
 pub mod prompt;
+pub mod reminder;
 pub mod tokenizer;
 
 pub use assembler::{ContextAssembler, ContextEntry, ContextManifest, ContextSourceKind};
@@ -45,4 +46,5 @@ pub use pack::{
 pub use pipeline::ContextPipeline;
 pub use policy::ContextPolicy;
 pub use prompt::{CompiledPrompt, PromptFragment, PromptSource};
+pub use reminder::{append_to_tool_result, wrap};
 pub use tokenizer::{HeuristicTokenizer, TokenCounter};

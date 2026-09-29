@@ -1174,16 +1174,13 @@ impl ModelAgent {
         for memory in &fresh {
             self.surfaced_memory_ids.insert(memory.id.clone());
         }
-        let mut block = String::from(
-            "<system-reminder>\n# 相关记忆 (relevant memories, retrieved in background)\n",
-        );
+        let mut body = String::from("# 相关记忆 (relevant memories, retrieved in background)\n");
         for memory in &fresh {
-            block.push('\n');
-            block.push_str(memory.block.trim());
-            block.push('\n');
+            body.push('\n');
+            body.push_str(memory.block.trim());
+            body.push('\n');
         }
-        block.push_str("</system-reminder>");
-        self.push_message(Message::user(block));
+        self.push_message(Message::user(deepagent_context::reminder::wrap(&body)));
 
         let count = fresh.len();
         let latency_ms = started_at
@@ -1229,13 +1226,12 @@ impl ModelAgent {
         // No upstream counterpart recoverable (snipCompact.ts::SNIP_NUDGE_TEXT
         // was not restored): wording self-written, kept advisory per the
         // "attachments are reference, not commands" baseline.
-        self.push_message(Message::user(
-            "<system-reminder>Context is growing. If earlier conversation segments are clearly \
+        self.push_message(Message::user(deepagent_context::reminder::wrap(
+            "Context is growing. If earlier conversation segments are clearly \
              no longer needed for the remaining work, you may call the history-snip tool with \
              their [id:uN] tags to free context space. Only snip segments you are confident \
-             are finished; when unsure, keep them.</system-reminder>"
-                .to_string(),
-        ));
+             are finished; when unsure, keep them.",
+        )));
     }
 
     /// Client-side doom-loop detection (Grok's doom-loop is a server signal via
@@ -1268,15 +1264,14 @@ impl ModelAgent {
             repeats = self.recent_call_signatures.len(),
             "doom-loop: repeated identical tool call detected; injecting nudge"
         );
-        self.push_message(Message::user(
-            "<system-reminder>You have issued the same tool call with identical arguments \
+        self.push_message(Message::user(deepagent_context::reminder::wrap(
+            "You have issued the same tool call with identical arguments \
              several times in a row with no new result — this is a stall (doom-loop). STOP \
              repeating it. Do NOT run the identical call again. Instead: (1) change the \
              arguments or the approach, (2) use a different tool or a built-in capability, \
              or (3) if you are genuinely blocked, say so explicitly and state exactly what \
-             you need to proceed.</system-reminder>"
-                .to_string(),
-        ));
+             you need to proceed.",
+        )));
     }
 
     /// Periodic on-plan todo reminder (§3.1, Claude Code
@@ -1299,7 +1294,7 @@ impl ModelAgent {
         let snapshot = source.todo_snapshot();
         self.turns_since_todo_reminder = 0;
         let mut body = String::from(
-            "<system-reminder>The todo-tracking tool hasn't been used in a while. If you are \
+            "The todo-tracking tool hasn't been used in a while. If you are \
              working on a multi-step task that would benefit from tracking progress, consider \
              using the todo_write tool; also clean up the list if it has gone stale and no \
              longer matches what you are working on. Only if relevant to the current work — \
@@ -1310,8 +1305,7 @@ impl ModelAgent {
             body.push_str("\n\nCurrent todo list:\n");
             body.push_str(snapshot.rendered.trim());
         }
-        body.push_str("</system-reminder>");
-        self.push_message(Message::user(body));
+        self.push_message(Message::user(deepagent_context::reminder::wrap(&body)));
         tracing::info!(
             turns_since_write = self.turns_since_todo_write,
             has_items = snapshot.has_items,

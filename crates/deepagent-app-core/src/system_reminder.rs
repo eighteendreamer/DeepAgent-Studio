@@ -32,13 +32,13 @@
 //! - [`append_to_tool_result`] attaches a reminder to a [`serde_json::Value`]
 //!   that's about to be serialized as a tool result.
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 /// Format `content` into the `<system-reminder>...</system-reminder>` envelope.
-/// Newlines around the body are inserted so the model sees the open/close tags
-/// on their own lines.
+/// Delegates to the shared implementation in [`deepagent_context::reminder`] so
+/// the app layer and the runtime emit an identical envelope.
 pub fn wrap(content: &str) -> String {
-    format!("<system-reminder>\n{}\n</system-reminder>", content.trim())
+    deepagent_context::reminder::wrap(content)
 }
 
 /// Attach `reminder` (already wrapped or raw text — both accepted) to a tool
@@ -59,33 +59,13 @@ pub fn wrap(content: &str) -> String {
 /// are expected to pass [`wrap`]'s output, but the helper accepts either form
 /// because the destination field carries a clear "this is a reminder" name.
 pub fn append_to_tool_result(value: &mut Value, reminder: &str) {
-    if let Value::Object(map) = value {
-        match map.get_mut("_system_reminder") {
-            Some(existing @ Value::String(_)) => {
-                if let Value::String(s) = existing {
-                    s.push('\n');
-                    s.push_str(reminder);
-                }
-            }
-            _ => {
-                map.insert(
-                    "_system_reminder".to_string(),
-                    Value::String(reminder.into()),
-                );
-            }
-        }
-    } else {
-        let original = std::mem::take(value);
-        *value = json!({
-            "value": original,
-            "_system_reminder": reminder,
-        });
-    }
+    deepagent_context::reminder::append_to_tool_result(value, reminder);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn wrap_uses_open_close_tags_on_their_own_lines() {

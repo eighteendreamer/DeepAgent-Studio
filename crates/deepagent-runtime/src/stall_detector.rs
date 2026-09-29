@@ -352,11 +352,11 @@ pub fn build_stall_nudge(category: StallCategory, evidence: &str) -> String {
         | StallCategory::NotStalledWaitingOnBackground
         | StallCategory::NotStalledWaitingOnUser => return String::new(),
     };
-    format!(
-        "<system-reminder>Stall detector flagged this run: {evidence}\n\n{rule}\n\nThis is an \
+    deepagent_context::reminder::wrap(&format!(
+        "Stall detector flagged this run: {evidence}\n\n{rule}\n\nThis is an \
          advisory check and may be wrong — if the flagged concern does not apply, proceed with \
-         your answer.</system-reminder>"
-    )
+         your answer."
+    ))
 }
 
 /// Per-message cap in the rendered transcript so one huge tool result cannot
