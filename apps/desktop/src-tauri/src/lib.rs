@@ -1900,6 +1900,7 @@ fn start_chat_v2(
     preflight_tools: Option<Vec<PreflightToolCallDto>>,
     preflight_abort_message: Option<String>,
     initial_plan_mode: Option<bool>,
+    attachments: Option<Vec<deepagent_app_core::InputAttachment>>,
 ) -> Result<StartChatV2Ack, String> {
     let run_id = run_id.unwrap_or_else(|| format!("run_{}", deepagent_core::id::EventId::new()));
     let acknowledgement = StartChatV2Ack {
@@ -1913,11 +1914,12 @@ fn start_chat_v2(
     let completion_emitter = app.clone();
     let title_emitter = app;
     let preflight_tools = preflight_tools.unwrap_or_default();
+    let attachments = attachments.unwrap_or_default();
     state.rt.spawn(async move {
         let event_run_id = run_id.clone();
         let approval_run_id = run_id.clone();
         let result = chat
-            .run_in_session(
+            .run_in_session_with_attachments(
                 &prompt,
                 session_id.as_deref(),
                 env_mode.as_deref(),
@@ -1926,6 +1928,7 @@ fn start_chat_v2(
                 preflight_abort_message,
                 initial_plan_mode.unwrap_or(false),
                 Some(&run_id),
+                attachments,
                 move |event| {
                     let _ = event_emitter.emit(
                         "chat://event",

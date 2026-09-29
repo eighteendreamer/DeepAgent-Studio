@@ -52,6 +52,7 @@ import type {
   MessagePart,
   PersistedAttachment,
   Project,
+  RunAttachment,
   SessionDetail,
   SessionSummary,
   ToolCall,
@@ -986,6 +987,13 @@ export function App() {
       const contextBlocks = [skillContext, mentionContext].filter((block) => block.trim().length > 0);
       const promptText = [...contextBlocks, trimmedText].filter((block) => block.trim().length > 0).join("\n\n");
       if (!promptText.trim() && attachments.length === 0) return;
+      // Vision routing: in "model" mode the image is sent to the main model as
+      // structured image parts (native DeepSeek vision); otherwise the external
+      // vision API converts it to text before the run.
+      const visionSettings = attachments.some((a) => a.kind === "image")
+        ? await getVisionSettings().catch(() => null)
+        : null;
+      const nativeVision = visionSettings?.mode === "model";
       const projectSelection = projectSelectionRef.current;
       if (projectSelection && !(await projectSelection)) return;
       const storedEnvMode = localStorage.getItem("envMode");
@@ -1048,7 +1056,10 @@ export function App() {
       const prior: ChatMessage[] = continueId
         ? liveTranscripts.current.get(continueId) ?? messagesRef.current
         : [];
-      const userContent = buildPromptWithAttachments(promptText, attachments);
+      const userContent = buildPromptWithAttachments(
+        promptText,
+        nativeVision ? attachments.filter((a) => a.kind !== "image") : attachments,
+      );
       const visibleUserContent = displayText ?? trimmedText;
       const displaySkills = normalizeSkillSelections(selectedSkills);
       const seeded: ChatMessage[] = [
@@ -1600,7 +1611,7 @@ export function App() {
       let preflightAbortMessage: string | null = null;
       const imageAttachments = attachments.filter((attachment) => attachment.kind === "image");
       const pendingImageCount = imageAttachments.filter((attachment) => !attachment.extractedText).length;
-      if (imageAttachments.length > 0) {
+      if (imageAttachments.length > 0 && !nativeVision) {
         const visionCallId = `system_vision:${runId}`;
         const visionStartedAt = Date.now();
         const visionArguments = {
@@ -1727,6 +1738,17 @@ export function App() {
         }
       }
 
+      const runAttachments: RunAttachment[] = nativeVision
+        ? imageAttachments
+            .filter((a) => !!a.originalPath)
+            .map((a) => ({
+              type: "image" as const,
+              id: a.id,
+              path: a.originalPath as string,
+              media_type: a.mime || null,
+            }))
+        : [];
+
       runChat(
         submittedText,
         onEvent,
@@ -1740,7 +1762,8 @@ export function App() {
         effectiveConnectionId,
         preflightTools,
         preflightAbortMessage,
-        !continueId && requestedPlanMode
+        !continueId && requestedPlanMode,
+        runAttachments
       )
         .then((newSessionId) => {
           // The run created (or continued) a session under the active project;

@@ -296,6 +296,17 @@ export type ComposerAttachmentKind = "text" | "image" | "file";
 export type ComposerAttachmentSource = "paste" | "drop" | "picker";
 export type ComposerAttachmentStatus = "ready" | "processing" | "error";
 
+/**
+ * Structured attachment reference sent with a chat run. Mirrors the Rust
+ * `InputAttachment` tagged enum (`type` discriminator, snake_case fields).
+ * Only the reference travels; image bytes are materialized into provider image
+ * parts server-side at request time.
+ */
+export type RunAttachment =
+  | { type: "image"; id: string; path: string; media_type?: string | null }
+  | { type: "file"; id: string; path: string }
+  | { type: "text"; id: string; content: string };
+
 export interface ComposerAttachment {
   id: string;
   kind: ComposerAttachmentKind;

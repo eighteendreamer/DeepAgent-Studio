@@ -98,6 +98,7 @@ import type {
   WorkspaceInfo,
   WebSearchSettings,
   ResponsesApiSettings,
+  RunAttachment,
 } from "./types";
 
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
@@ -1313,7 +1314,8 @@ export async function runChat(
   connectionId?: string | null,
   preflightTools: PreflightToolCall[] = [],
   preflightAbortMessage?: string | null,
-  initialPlanMode = false
+  initialPlanMode = false,
+  attachments: RunAttachment[] = []
 ): Promise<string> {
   const invoke = getInvoke();
   if (invoke) {
@@ -1366,6 +1368,7 @@ export async function runChat(
         preflightTools,
         preflightAbortMessage: preflightAbortMessage ?? null,
         initialPlanMode,
+        attachments,
       });
       const nextSessionId = await completion;
       if (promptMayChangeSettings(prompt)) emitSettingsChanged({ reason: "slash_settings" });

@@ -1012,6 +1012,46 @@ impl ChatService {
         .await
     }
 
+    /// Like [`ChatService::run_in_session`], but carries this turn's structured
+    /// attachments (desktop file/image uploads). Attachments are reference-only;
+    /// image bytes are materialized into provider image parts at request time.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_in_session_with_attachments<F, A>(
+        &self,
+        prompt: &str,
+        continue_session: Option<&str>,
+        env_mode: Option<&str>,
+        connection_id: Option<&str>,
+        preflight_tools: Vec<PreflightToolCallDto>,
+        preflight_abort_message: Option<String>,
+        initial_plan_mode: bool,
+        diagnostic_run_id: Option<&str>,
+        attachments: Vec<deepagent_runtime::InputAttachment>,
+        on_event: F,
+        on_approval: A,
+    ) -> Result<String>
+    where
+        F: Fn(RuntimeEvent) + Send + 'static,
+        A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
+    {
+        self.run_assembler()
+            .with_attachments(attachments)
+            .run(
+                prompt,
+                continue_session,
+                env_mode,
+                connection_id,
+                preflight_tools,
+                preflight_abort_message,
+                initial_plan_mode,
+                diagnostic_run_id,
+                HarnessRunOverrides::default(),
+                on_event,
+                on_approval,
+            )
+            .await
+    }
+
     /// Headless/app-server entrypoint that uses the same runtime as Desktop
     /// while allowing transport-scoped model and permission overrides.
     #[allow(clippy::too_many_arguments)]
@@ -1107,6 +1147,7 @@ impl ChatService {
             runtime_broker: &self.runtime_broker,
             remote_context_factory: &self.remote_context_factory,
             remote_ops_factory: &self.remote_ops_factory,
+            attachments: Vec::new(),
         }
     }
 }

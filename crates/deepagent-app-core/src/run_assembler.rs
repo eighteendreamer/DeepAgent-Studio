@@ -78,6 +78,41 @@ use crate::RuntimeBroker;
 /// Per-session map of [`DiscoveredToolSet`]s, keyed by session id.
 type DiscoveredToolsMap = Arc<std::sync::Mutex<HashMap<String, DiscoveredToolSet>>>;
 
+/// Map structured input attachments to reference-only message attachments.
+fn message_attachments(
+    attachments: &[deepagent_runtime::InputAttachment],
+) -> Vec<deepagent_core::message::MessageAttachment> {
+    use deepagent_core::message::MessageAttachment;
+    use deepagent_runtime::InputAttachment;
+    attachments
+        .iter()
+        .map(|att| match att {
+            InputAttachment::Image {
+                id,
+                path,
+                media_type,
+            } => MessageAttachment {
+                id: id.clone(),
+                kind: "image".into(),
+                media_type: Some(media_type.clone()),
+                path: Some(path.to_string_lossy().into_owned()),
+            },
+            InputAttachment::File { id, path } => MessageAttachment {
+                id: id.clone(),
+                kind: "file".into(),
+                media_type: None,
+                path: Some(path.to_string_lossy().into_owned()),
+            },
+            InputAttachment::Text { id, .. } => MessageAttachment {
+                id: id.clone(),
+                kind: "text".into(),
+                media_type: None,
+                path: None,
+            },
+        })
+        .collect()
+}
+
 /// Holds references to every [`ChatService`](crate::ChatService) field the run
 /// pipeline touches. Constructed by [`ChatService::run_assembler`] and consumed
 /// by a single [`RunAssembler::run`] call.
@@ -117,9 +152,20 @@ pub(crate) struct RunAssembler<'a> {
     pub(crate) runtime_broker: &'a Option<Arc<RuntimeBroker>>,
     pub(crate) remote_context_factory: &'a Option<RemoteContextFactory>,
     pub(crate) remote_ops_factory: &'a Option<RemoteOpsFactory>,
+    /// File/image attachments supplied with this turn (structured refs). Empty
+    /// for runs without attachments and for the headless/test paths.
+    pub(crate) attachments: Vec<deepagent_runtime::InputAttachment>,
 }
 
 impl<'a> RunAssembler<'a> {
+    /// Attach this turn's structured attachments (builder style).
+    pub(crate) fn with_attachments(
+        mut self,
+        attachments: Vec<deepagent_runtime::InputAttachment>,
+    ) -> Self {
+        self.attachments = attachments;
+        self
+    }
     /// Execute the full run assembly pipeline.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run<F, A>(
@@ -146,7 +192,7 @@ impl<'a> RunAssembler<'a> {
             root.clone(),
             prompt,
             InputMode::Prompt,
-            Vec::new(),
+            self.attachments.clone(),
         )?;
         let raw_prompt = prompt;
         let effective_input_text = normalized_input.effective_text.clone();
@@ -601,7 +647,8 @@ impl<'a> RunAssembler<'a> {
                 .or_insert_with(|| plan.clone());
         }
         session.append(EventPayload::MessageAppended {
-            message: Message::user(&prompt_to_record),
+            message: Message::user(&prompt_to_record)
+                .with_attachments(message_attachments(&self.attachments)),
         })?;
         let task = session.create_task(&prompt_to_record)?;
         for tool in &preflight_tools {
@@ -1550,5 +1597,36 @@ mod run_location_tests {
             resolve_run_location(&db, Some(&projects), Path::new("/default"), None).unwrap(),
             (PathBuf::from("/default"), None)
         );
+    }
+}
+
+#[cfg(test)]
+mod attachment_mapping_tests {
+    use super::*;
+    use deepagent_runtime::InputAttachment;
+
+    #[test]
+    fn maps_input_attachments_to_reference_only_message_attachments() {
+        let mapped = message_attachments(&[
+            InputAttachment::Image {
+                id: "att_1".into(),
+                path: PathBuf::from("/tmp/a.png"),
+                media_type: "image/png".into(),
+            },
+            InputAttachment::Text {
+                id: "t1".into(),
+                content: "hello".into(),
+            },
+        ]);
+        assert_eq!(mapped.len(), 2);
+        assert_eq!(mapped[0].kind, "image");
+        assert_eq!(mapped[0].id, "att_1");
+        assert_eq!(mapped[0].media_type.as_deref(), Some("image/png"));
+        assert!(mapped[0]
+            .path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("a.png")));
+        assert_eq!(mapped[1].kind, "text");
+        assert!(mapped[1].path.is_none());
     }
 }
