@@ -358,6 +358,10 @@ impl<'a> RunAssembler<'a> {
         let subagent_parent_checkpoint: Arc<
             std::sync::OnceLock<Arc<deepagent_runtime::CheckpointManager>>,
         > = Arc::new(std::sync::OnceLock::new());
+        // Parent-run approval gate, shared with sub-agents so a risky sub-agent
+        // tool bubbles to the same UI approval channel instead of auto-denying.
+        let subagent_approvals: Arc<std::sync::OnceLock<Arc<dyn deepagent_runtime::ApprovalGate>>> =
+            Arc::new(std::sync::OnceLock::new());
         let pump = spawn_runtime_event_pump(
             rx,
             self.runtime_logs.clone(),
@@ -417,6 +421,7 @@ impl<'a> RunAssembler<'a> {
                 bash_full_access: matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
                 hooks: subagent_hooks.clone(),
                 parent_checkpoint: subagent_parent_checkpoint.clone(),
+                parent_approvals: subagent_approvals.clone(),
             };
             (runner, task_agent_types)
         };
@@ -486,6 +491,7 @@ impl<'a> RunAssembler<'a> {
             PolicyGate::new(policy, Arc::new(channel_gate))
                 .with_classifier(deepagent_builtins::SafetyClassifier::with_defaults()),
         );
+        let _ = subagent_approvals.set(gate.clone());
 
         let project_hooks = match self.project_hook_definitions(&root) {
             Ok(defs) => defs,

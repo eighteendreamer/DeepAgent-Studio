@@ -65,6 +65,11 @@ pub(crate) struct ChatSubagentRunner {
     pub(crate) hooks: Arc<std::sync::OnceLock<Arc<HookRegistry>>>,
     pub(crate) parent_checkpoint:
         Arc<std::sync::OnceLock<Arc<deepagent_runtime::CheckpointManager>>>,
+    /// Parent-run approval gate, shared so a risky sub-agent tool bubbles to the
+    /// same UI approval channel instead of auto-denying. Unset outside the
+    /// desktop run path (tests / headless), where the engine default applies.
+    pub(crate) parent_approvals:
+        Arc<std::sync::OnceLock<Arc<dyn deepagent_runtime::ApprovalGate>>>,
 }
 
 impl ChatSubagentRunner {
@@ -603,6 +608,11 @@ impl ChatSubagentRunner {
             ..Default::default()
         };
         let mut engine = RuntimeEngine::new(&sub_registry, Default::default(), config);
+        // Bubble a sub-agent tool's approval need to the parent's UI gate when
+        // one is wired; otherwise the engine keeps its default (auto-deny).
+        if let Some(approvals) = self.parent_approvals.get() {
+            engine = engine.with_approvals(approvals.clone());
+        }
         if let Some(cancel) = cancel {
             engine = engine.with_cancel(cancel);
         }
