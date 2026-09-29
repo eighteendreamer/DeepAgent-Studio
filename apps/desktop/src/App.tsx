@@ -987,13 +987,14 @@ export function App() {
       const contextBlocks = [skillContext, mentionContext].filter((block) => block.trim().length > 0);
       const promptText = [...contextBlocks, trimmedText].filter((block) => block.trim().length > 0).join("\n\n");
       if (!promptText.trim() && attachments.length === 0) return;
-      // Vision routing: in "model" mode the image is sent to the main model as
-      // structured image parts (native DeepSeek vision); otherwise the external
-      // vision API converts it to text before the run.
+      // Vision routing: the "启用系统视觉" toggle is the switch. ON (mode
+      // "system") routes images through the third-party vision model which
+      // converts them to text; OFF sends the original image to the main model
+      // as structured image parts (DeepSeek native vision).
       const visionSettings = attachments.some((a) => a.kind === "image")
         ? await getVisionSettings().catch(() => null)
         : null;
-      const nativeVision = visionSettings?.mode === "model";
+      const nativeVision = visionSettings !== null && visionSettings.mode !== "system";
       const projectSelection = projectSelectionRef.current;
       if (projectSelection && !(await projectSelection)) return;
       const storedEnvMode = localStorage.getItem("envMode");
