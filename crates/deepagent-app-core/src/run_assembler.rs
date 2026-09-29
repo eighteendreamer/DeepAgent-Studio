@@ -885,7 +885,12 @@ impl<'a> RunAssembler<'a> {
             .clone();
 
         let verification_plan = crate::completion_plan::discover_verification_plan(&root);
-        let (run_result, run_succeeded): (Result<()>, bool) = {
+        let (run_result, run_succeeded, terminal_kind, terminal_reason): (
+            Result<()>,
+            bool,
+            Option<String>,
+            Option<String>,
+        ) = {
             let mut kernel = AgentKernel::<SystemClock>::new(
                 self.db.clone(),
                 &registry,
@@ -921,11 +926,33 @@ impl<'a> RunAssembler<'a> {
             {
                 Ok(terminal) => {
                     let succeeded = terminal.succeeded();
-                    (terminal.into_completion_result(), succeeded)
+                    let kind = terminal.kind.label().to_string();
+                    let reason = terminal.reason.clone();
+                    (
+                        terminal.into_completion_result(),
+                        succeeded,
+                        Some(kind),
+                        reason,
+                    )
                 }
-                Err(error) => (Err(error), false),
+                Err(error) => {
+                    let reason = error.to_string();
+                    (Err(error), false, Some("failed".to_string()), Some(reason))
+                }
             }
         };
+
+        // Project the run terminal into the session stream so replaying the
+        // session log alone reconstructs the run outcome (closes the two-log
+        // gap; `runs`/`run_events` remain the run-local authority).
+        if let Some(kind) = terminal_kind {
+            if let Err(error) = session.append(EventPayload::RunTerminal {
+                kind,
+                reason: terminal_reason,
+            }) {
+                tracing::warn!(%error, "failed to record RunTerminal event");
+            }
+        }
 
         // Persist model-invoked history snips so a restart reconstructs the same
         // (snipped) working history instead of resurrecting removed segments.

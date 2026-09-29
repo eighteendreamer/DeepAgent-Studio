@@ -133,6 +133,18 @@ pub enum EventPayload {
         tags: Vec<String>,
     },
 
+    /// The kernel run reached a terminal state. Projected into the session
+    /// stream so replaying the session log alone reconstructs the run terminal
+    /// (the `runs`/`run_events` tables remain the run-local authority; this
+    /// closes the two-log gap).
+    RunTerminal {
+        /// Terminal kind label (e.g. `succeeded` / `cancelled` / `max_turns`).
+        kind: String,
+        /// Optional reason / message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+
     /// A free-form note / diagnostic recorded into the stream.
     Note {
         /// The note text.
@@ -193,6 +205,7 @@ impl EventPayload {
             EventPayload::ToolCallCompleted { .. } => "tool_call_completed",
             EventPayload::ContextCompacted { .. } => "context_compacted",
             EventPayload::ContextSnipped { .. } => "context_snipped",
+            EventPayload::RunTerminal { .. } => "run_terminal",
             EventPayload::Note { .. } => "note",
             EventPayload::UsageRecorded { .. } => "usage_recorded",
             EventPayload::ToolsDiscovered { .. } => "tools_discovered",

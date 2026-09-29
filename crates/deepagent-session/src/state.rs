@@ -106,6 +106,7 @@ impl SessionState {
             }
             EventPayload::ContextCompacted { .. }
             | EventPayload::ContextSnipped { .. }
+            | EventPayload::RunTerminal { .. }
             | EventPayload::Note { .. } => {}
             // `EventPayload` is `#[non_exhaustive]`; future variants that do
             // not affect the projection are intentionally ignored here.
@@ -171,5 +172,30 @@ mod tests {
         let b = SessionState::replay(sid, payloads.iter());
         assert_eq!(a, b);
         assert_eq!(a.message_count, 1);
+    }
+
+    #[test]
+    fn replay_tolerates_run_terminal_and_snipped_events() {
+        let sid = SessionId::new();
+        let payloads = [
+            EventPayload::SessionStarted {
+                title: Some("t".into()),
+                mode: deepagent_core::session_mode::SessionMode::Normal,
+            },
+            EventPayload::ContextSnipped {
+                tags: vec!["u1".into()],
+            },
+            EventPayload::RunTerminal {
+                kind: "succeeded".into(),
+                reason: None,
+            },
+            EventPayload::MessageAppended {
+                message: deepagent_core::message::Message::user("x"),
+            },
+        ];
+        // Replay must not panic or mis-fold on the projected events.
+        let state = SessionState::replay(sid, payloads.iter());
+        assert_eq!(state.title.as_deref(), Some("t"));
+        assert_eq!(state.message_count, 1);
     }
 }
