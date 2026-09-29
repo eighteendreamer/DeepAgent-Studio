@@ -1,7 +1,7 @@
 ---
 description: Turn meeting audio, transcript, or notes into structured minutes
 ---
-Use the Meeting Recorder plugin workflow to prepare concise meeting minutes from audio, transcript text, or rough notes.
+Use the 会议记录 plugin workflow to prepare concise meeting minutes from audio, transcript text, or rough notes.
 
 Include:
 - agenda or topic summary

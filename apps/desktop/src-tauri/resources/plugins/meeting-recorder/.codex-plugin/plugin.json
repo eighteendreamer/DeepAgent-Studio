@@ -9,9 +9,9 @@
   "commands": "commands",
   "apps": ".app.json",
   "interface": {
-    "displayName": "Meeting Recorder",
+    "displayName": "会议记录",
     "shortDescription": "Record and summarize meetings",
-    "longDescription": "Meeting Recorder declares the built-in audio capture, local transcription, meeting-minutes generation, and Word export workflows.",
+    "longDescription": "会议记录 declares the built-in audio capture, local transcription, meeting-minutes generation, and Word export workflows.",
     "developerName": "DeepAgent Studio",
     "category": "Productivity",
     "capabilities": ["App", "Audio", "Read", "Write"],

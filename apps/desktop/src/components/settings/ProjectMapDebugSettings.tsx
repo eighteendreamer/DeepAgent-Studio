@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import {
-  ProjectMapDebugView,
   readProjectMapDebugButtonVisible,
   writeProjectMapDebugButtonVisible,
   writeProjectMapDebugEnabled,
@@ -26,18 +25,28 @@ export function ProjectMapDebugSettings() {
   }, []);
 
   return (
-    <div>
-      <div className="mb-8 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-text-base mb-1">项目地图调试</h1>
-          <p className="text-[13px] text-text-secondary">
-            用于排查项目地图是否可用、是否过期，以及当前加载的 JSON 路径。
-          </p>
+    <section className="w-full space-y-8">
+      <header className="space-y-1">
+        <h1 className="text-2xl font-semibold text-text-base">项目地图调试</h1>
+        <p className="text-[13px] text-text-secondary">
+          管理项目地图面板中的 Debug 按钮显示。
+        </p>
+      </header>
+
+      <div className="rounded-xl border border-border-theme bg-white shadow-[0_1px_2px_rgb(0,0,0,0.02)]">
+        <div className="flex items-center justify-between gap-6 p-4">
+          <div className="min-w-0">
+            <h2 className="text-[14px] font-medium text-text-base">显示面板 Debug 按钮</h2>
+            <p className="mt-1 text-[12px] text-text-secondary">
+              {buttonVisible
+                ? "项目地图面板顶部会显示 Debug 入口。"
+                : "项目地图面板顶部不会显示 Debug 入口。"}
+            </p>
+          </div>
+          <SettingsSwitch enabled={buttonVisible} onChange={updateButtonVisible} />
         </div>
-        <SettingsSwitch enabled={buttonVisible} onChange={updateButtonVisible} />
       </div>
-      <ProjectMapDebugView />
-    </div>
+    </section>
   );
 }
 
@@ -51,30 +60,21 @@ function SettingsSwitch({
   return (
     <button
       type="button"
-      className={`min-w-[176px] rounded-lg px-3 py-2 text-left transition-colors ${
+      role="switch"
+      aria-checked={enabled}
+      aria-label="显示面板 Debug 按钮"
+      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
         enabled
-          ? "bg-gray-900 text-white"
-          : "bg-black/5 text-text-base hover:bg-black/5"
+          ? "bg-gray-900"
+          : "bg-gray-200 hover:bg-gray-300"
       }`}
       onClick={() => onChange(!enabled)}
     >
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-[13px] font-medium">显示面板 Debug 按钮</span>
-        <span
-          className={`relative h-5 w-9 rounded-full transition-colors ${
-            enabled ? "bg-white/30" : "bg-gray-200"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
-              enabled ? "translate-x-4" : "translate-x-0.5"
-            }`}
-          />
-        </span>
-      </div>
-      <div className={`mt-1 text-[11px] ${enabled ? "text-white/75" : "text-text-secondary"}`}>
-        {enabled ? "项目地图面板会显示 Debug 入口" : "项目地图面板隐藏 Debug 入口"}
-      </div>
+      <span
+        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
+          enabled ? "translate-x-5" : "translate-x-0.5"
+        }`}
+      />
     </button>
   );
 }

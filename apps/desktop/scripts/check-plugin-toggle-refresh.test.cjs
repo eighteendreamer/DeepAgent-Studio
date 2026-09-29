@@ -103,7 +103,10 @@ test("project map supports zooming and panning in a narrow sidebar", () => {
   assert.doesNotMatch(panel, /nodes\.slice\(0, 90\)|edges\.slice\(0, 220\)/);
   assert.match(panel, /图中 \{graph\.nodes\.length\}/);
   assert.match(panel, /ref=\{viewportRef\} className="absolute inset-0 overflow-hidden"/);
-  assert.match(panel, /svg\.addEventListener\("wheel", handleWheel, \{ passive: false \}\)/);
+  assert.match(panel, /canvas\.addEventListener\("wheel", handleWheel, \{ passive: false \}\)/);
+  assert.match(panel, /window\.requestAnimationFrame\(\(\) => \{/);
+  assert.match(panel, /ctx\.clearRect\(0, 0, width, height\)/);
+  assert.match(panel, /position\.x < left \|\| position\.x > right/);
   assert.match(panel, /onPointerMove=\{handlePointerMove\}/);
   assert.match(panel, /aria-label="缩小项目地图"/);
   assert.match(panel, /aria-label="放大项目地图"/);

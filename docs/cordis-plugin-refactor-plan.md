@@ -191,7 +191,7 @@ DSH 政策原文（`packages/AGENTS.md`）："Product-visible plugins require a 
 4. 断言的是**模型可见或持久化可见的输出**：工具 schema 出现在请求里、skill 被激活、hook 事件被触发、MCP 工具被列出、`run_events` 里能还原这条链路。
 5. 只 mock 外部服务（DeepSeek API、GitHub 市场）与不确定性输入。
 
-现有 12 个内置插件（Boltz / Browser / Computer Use / Figma / Files / Meeting Recorder / Office Agent / Project Map / Side Chat / Superpowers / Terminal / Wedecode）**每个至少 1 个 T3 用例**。已有的 `plugin_real_fixtures.rs` 9 个测试是起点，不是终点——它现在断的是组件计数与健康状态，不是"模型可见输出"。
+现有 12 个内置插件（Boltz / Browser / Computer Use / Figma / Files / 会议记录 / Office Agent / Project Map / Side Chat / Superpowers / Terminal / Wedecode）**每个至少 1 个 T3 用例**。已有的 `plugin_real_fixtures.rs` 9 个测试是起点，不是终点——它现在断的是组件计数与健康状态，不是"模型可见输出"。
 
 ### 5.4 T2 契约 invariant（对齐 DSH 的 disposal 证明要求）
 

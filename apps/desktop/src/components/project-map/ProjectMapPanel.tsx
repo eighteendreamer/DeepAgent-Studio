@@ -496,12 +496,12 @@ function ProjectMapGraphView({
   onSelect: (hit: ProjectMapHit | null) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const frameRef = useRef<number | null>(null);
   const viewportSizeRef = useRef({ width: 0, height: 0 });
-  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const [view, setView] = useState({ x: 0, y: 0, k: 1 });
-  const panRef = useRef<{ pointerId: number; startX: number; startY: number; x: number; y: number } | null>(null);
-  const didPanRef = useRef(false);
+  const viewRef = useRef({ x: 0, y: 0, k: 1 });
+  const [zoomPercent, setZoomPercent] = useState(100);
+  const panRef = useRef<{ pointerId: number; startX: number; startY: number; x: number; y: number; moved: boolean } | null>(null);
   const layout = useMemo(() => {
     const nodes = graph?.nodes ?? [];
     const edges = graph?.edges ?? [];
@@ -534,6 +534,94 @@ function ProjectMapGraphView({
     return { nodes, edges, positions, width, height };
   }, [graph]);
 
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    const { width, height } = viewportSizeRef.current;
+    if (!canvas || width <= 0 || height <= 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    const bitmapWidth = Math.round(width * dpr);
+    const bitmapHeight = Math.round(height * dpr);
+    if (canvas.width !== bitmapWidth || canvas.height !== bitmapHeight) {
+      canvas.width = bitmapWidth;
+      canvas.height = bitmapHeight;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    const view = viewRef.current;
+    const left = -view.x / view.k - 150;
+    const top = -view.y / view.k - 150;
+    const right = (width - view.x) / view.k + 150;
+    const bottom = (height - view.y) / view.k + 150;
+    const detailed = view.k >= 0.6;
+    ctx.save();
+    ctx.translate(view.x, view.y);
+    ctx.scale(view.k, view.k);
+
+    for (const edge of layout.edges) {
+      const source = layout.positions.get(edge.source);
+      const target = layout.positions.get(edge.target);
+      if (!source || !target) continue;
+      if (Math.max(source.x, target.x) < left || Math.min(source.x, target.x) > right
+        || Math.max(source.y, target.y) < top || Math.min(source.y, target.y) > bottom) continue;
+      ctx.strokeStyle = edgeColor(edge.edge_type);
+      ctx.globalAlpha = selected && edge.source !== selected.node_id && edge.target !== selected.node_id
+        ? 0.12 : detailed ? 0.58 : 0.3;
+      ctx.lineWidth = edge.edge_type === "calls" ? 1.8 : 1.2;
+      ctx.beginPath();
+      ctx.moveTo(source.x, source.y);
+      ctx.lineTo(target.x, target.y);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    for (const node of layout.nodes) {
+      const position = layout.positions.get(node.node_id);
+      if (!position || position.x < left || position.x > right || position.y < top || position.y > bottom) continue;
+      const isSelected = selected?.node_id === node.node_id;
+      if (!detailed && !isSelected) {
+        ctx.fillStyle = nodeAccent(node.node_type);
+        ctx.beginPath();
+        ctx.arc(position.x, position.y, Math.max(9, 2.5 / view.k), 0, Math.PI * 2);
+        ctx.fill();
+        continue;
+      }
+
+      const nodeWidth = node.node_type === "function" ? 118 : 136;
+      const x = position.x - nodeWidth / 2;
+      const y = position.y - 22;
+      ctx.beginPath();
+      ctx.roundRect(x, y, nodeWidth, 44, 8);
+      ctx.fillStyle = isSelected ? "#111827" : nodeFill(node.node_type);
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? "#111827" : nodeStroke(node.node_type);
+      ctx.lineWidth = isSelected ? 2 : 1;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(x + 17, y + 22, 5, 0, Math.PI * 2);
+      ctx.fillStyle = isSelected ? "#ffffff" : nodeAccent(node.node_type);
+      ctx.fill();
+      ctx.font = `${isSelected ? 700 : 600} 12px sans-serif`;
+      ctx.fillStyle = isSelected ? "#ffffff" : "#172033";
+      ctx.fillText(shortLabel(node.name, node.node_type === "function" ? 12 : 15), x + 30, y + 19);
+      ctx.font = "9px sans-serif";
+      ctx.fillStyle = isSelected ? "#d1d5db" : "#667085";
+      ctx.fillText(translateNodeType(node.node_type), x + 30, y + 34);
+    }
+    ctx.restore();
+  }, [layout, selected]);
+  const drawRef = useRef(draw);
+  drawRef.current = draw;
+  const scheduleDraw = useCallback(() => {
+    if (frameRef.current !== null) return;
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      drawRef.current();
+    });
+  }, []);
+
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
@@ -542,10 +630,11 @@ function ProjectMapGraphView({
       const previous = viewportSizeRef.current;
       if (width === previous.width && height === previous.height) return;
       viewportSizeRef.current = { width, height };
-      setViewportSize({ width, height });
-      setView((current) => previous.width === 0 && previous.height === 0
-        ? { ...current, x: (width - layout.width * current.k) / 2, y: (height - layout.height * current.k) / 2 }
-        : { ...current, x: current.x + (width - previous.width) / 2, y: current.y + (height - previous.height) / 2 });
+      const view = viewRef.current;
+      viewRef.current = previous.width === 0 && previous.height === 0
+        ? { ...view, x: (width - layout.width * view.k) / 2, y: (height - layout.height * view.k) / 2 }
+        : { ...view, x: view.x + (width - previous.width) / 2, y: view.y + (height - previous.height) / 2 };
+      scheduleDraw();
     };
     measure();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
@@ -555,75 +644,113 @@ function ProjectMapGraphView({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [graph, layout.width, layout.height]);
+  }, [graph, layout.width, layout.height, scheduleDraw]);
 
   useEffect(() => {
     if (!graph) return;
     const { width, height } = viewportSizeRef.current;
     const k = Math.max(MIN_GRAPH_ZOOM, Math.min(1, Math.min(width / layout.width, height / layout.height) * 0.95));
-    setView({ x: (width - layout.width * k) / 2, y: (height - layout.height * k) / 2, k });
-  }, [graph, layout.width, layout.height]);
-
-  const zoomAt = useCallback((factor: number, anchor: { x: number; y: number }) => {
-    setView((current) => {
-      const k = Math.max(MIN_GRAPH_ZOOM, Math.min(MAX_GRAPH_ZOOM, current.k * factor));
-      if (k === current.k) return current;
-      const worldX = (anchor.x - current.x) / current.k;
-      const worldY = (anchor.y - current.y) / current.k;
-      return { x: anchor.x - worldX * k, y: anchor.y - worldY * k, k };
-    });
-  }, []);
+    viewRef.current = { x: (width - layout.width * k) / 2, y: (height - layout.height * k) / 2, k };
+    setZoomPercent(Math.round(k * 100));
+    scheduleDraw();
+  }, [graph, layout.width, layout.height, scheduleDraw]);
 
   useEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
+    scheduleDraw();
+  }, [scheduleDraw, selected]);
+
+  useEffect(() => () => {
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
+  }, []);
+
+  const zoomAt = useCallback((factor: number, anchor: { x: number; y: number }) => {
+    const current = viewRef.current;
+    const k = Math.max(MIN_GRAPH_ZOOM, Math.min(MAX_GRAPH_ZOOM, current.k * factor));
+    if (k === current.k) return;
+    const worldX = (anchor.x - current.x) / current.k;
+    const worldY = (anchor.y - current.y) / current.k;
+    viewRef.current = { x: anchor.x - worldX * k, y: anchor.y - worldY * k, k };
+    setZoomPercent(Math.round(k * 100));
+    scheduleDraw();
+  }, [scheduleDraw]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault();
-      const rect = svg.getBoundingClientRect();
+      const rect = canvas.getBoundingClientRect();
       zoomAt(event.deltaY < 0 ? GRAPH_ZOOM_STEP : 1 / GRAPH_ZOOM_STEP, {
         x: event.clientX - rect.left,
         y: event.clientY - rect.top,
       });
     };
-    svg.addEventListener("wheel", handleWheel, { passive: false });
-    return () => svg.removeEventListener("wheel", handleWheel);
+    canvas.addEventListener("wheel", handleWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", handleWheel);
   }, [graph, zoomAt]);
 
   const zoomAtCenter = (factor: number) => {
-    zoomAt(factor, { x: viewportSize.width / 2, y: viewportSize.height / 2 });
+    const { width, height } = viewportSizeRef.current;
+    zoomAt(factor, { x: width / 2, y: height / 2 });
   };
 
   const resetView = () => {
-    setView({ x: (viewportSize.width - layout.width) / 2, y: (viewportSize.height - layout.height) / 2, k: 1 });
+    const { width, height } = viewportSizeRef.current;
+    viewRef.current = { x: (width - layout.width) / 2, y: (height - layout.height) / 2, k: 1 };
+    setZoomPercent(100);
+    scheduleDraw();
   };
 
   const fitView = () => {
-    if (viewportSize.width === 0 || viewportSize.height === 0) return;
+    const { width, height } = viewportSizeRef.current;
+    if (width === 0 || height === 0) return;
     const k = Math.max(MIN_GRAPH_ZOOM, Math.min(MAX_GRAPH_ZOOM,
-      Math.min(viewportSize.width / layout.width, viewportSize.height / layout.height) * 0.95));
-    setView({ x: (viewportSize.width - layout.width * k) / 2, y: (viewportSize.height - layout.height * k) / 2, k });
+      Math.min(width / layout.width, height / layout.height) * 0.95));
+    viewRef.current = { x: (width - layout.width * k) / 2, y: (height - layout.height * k) / 2, k };
+    setZoomPercent(Math.round(k * 100));
+    scheduleDraw();
   };
 
-  const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+  const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    didPanRef.current = false;
-    panRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: view.x, y: view.y };
+    const view = viewRef.current;
+    panRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: view.x, y: view.y, moved: false };
   };
 
-  const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+  const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const pan = panRef.current;
     if (!pan || pan.pointerId !== event.pointerId) return;
     const dx = event.clientX - pan.startX;
     const dy = event.clientY - pan.startY;
-    if (Math.abs(dx) + Math.abs(dy) > 3) didPanRef.current = true;
-    setView((current) => ({ ...current, x: pan.x + dx, y: pan.y + dy }));
+    if (Math.abs(dx) + Math.abs(dy) > 3) pan.moved = true;
+    viewRef.current = { ...viewRef.current, x: pan.x + dx, y: pan.y + dy };
+    scheduleDraw();
   };
 
-  const handlePointerUp = (event: ReactPointerEvent<SVGSVGElement>) => {
-    if (panRef.current?.pointerId !== event.pointerId) return;
+  const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const pan = panRef.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
     panRef.current = null;
     event.currentTarget.releasePointerCapture(event.pointerId);
+    if (pan.moved) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const view = viewRef.current;
+    const x = (event.clientX - rect.left - view.x) / view.k;
+    const y = (event.clientY - rect.top - view.y) / view.k;
+    const hit = [...layout.nodes].reverse().find((node) => {
+      const position = layout.positions.get(node.node_id);
+      if (!position) return false;
+      if (view.k < 0.6 && node.node_id !== selected?.node_id) {
+        return Math.hypot(x - position.x, y - position.y) <= Math.max(9, 4 / view.k);
+      }
+      const width = node.node_type === "function" ? 118 : 136;
+      return Math.abs(x - position.x) <= width / 2 && Math.abs(y - position.y) <= 22;
+    });
+    onSelect(hit ?? null);
   };
 
   if (!graph) {
@@ -645,117 +772,31 @@ function ProjectMapGraphView({
   return (
     <div className="relative min-h-0 flex-1 bg-[#fbfcfd]">
       <div ref={viewportRef} className="absolute inset-0 overflow-hidden" role="region" aria-label="项目地图画布" tabIndex={0}>
-        <svg
-        ref={svgRef}
-        width={viewportSize.width}
-        height={viewportSize.height}
-        className="block h-full w-full touch-none select-none cursor-grab active:cursor-grabbing"
-        role="img"
-        aria-label="项目关系图谱"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={() => { panRef.current = null; didPanRef.current = false; }}
-        onClick={() => {
-          if (didPanRef.current) { didPanRef.current = false; return; }
-          onSelect(null);
-        }}
-      >
-        <defs>
-          <marker id="project-map-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-            <path d="M0,0 L8,4 L0,8 Z" fill="#9aa4b2" />
-          </marker>
-        </defs>
-        <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
-        {layout.edges.map((edge, index) => {
-          const source = layout.positions.get(edge.source);
-          const target = layout.positions.get(edge.target);
-          if (!source || !target) return null;
-          return (
-            <line
-              key={`${edge.source}:${edge.target}:${edge.edge_type}:${index}`}
-              x1={source.x}
-              y1={source.y}
-              x2={target.x}
-              y2={target.y}
-              stroke={edgeColor(edge.edge_type)}
-              strokeWidth={edge.edge_type === "calls" ? 1.8 : 1.2}
-              strokeOpacity={selected && edge.source !== selected.node_id && edge.target !== selected.node_id ? 0.12 : view.k < 0.6 ? 0.3 : 0.58}
-              markerEnd={view.k >= 0.6 ? "url(#project-map-arrow)" : undefined}
-            />
-          );
-        })}
-        {layout.nodes.map((node) => {
-          const position = layout.positions.get(node.node_id);
-          if (!position) return null;
-          const isSelected = selected?.node_id === node.node_id;
-          const width = node.node_type === "function" ? 118 : 136;
-          if (view.k < 0.6 && !isSelected) {
-            return (
-              <circle
-                key={node.node_id}
-                cx={position.x}
-                cy={position.y}
-                r={Math.max(9, 4 / view.k)}
-                fill={nodeAccent(node.node_type)}
-                className="cursor-pointer"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onSelect(node); }}
-              />
-            );
-          }
-          return (
-            <g
-              key={node.node_id}
-              transform={`translate(${position.x - width / 2} ${position.y - 22})`}
-              className="cursor-pointer"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect(node);
-              }}
-            >
-              <rect
-                width={width}
-                height="44"
-                rx="8"
-                fill={isSelected ? "#111827" : nodeFill(node.node_type)}
-                stroke={isSelected ? "#111827" : nodeStroke(node.node_type)}
-                strokeWidth={isSelected ? 2 : 1}
-              />
-              <circle cx="17" cy="22" r="5" fill={isSelected ? "#ffffff" : nodeAccent(node.node_type)} />
-              <text
-                x="30"
-                y="19"
-                fontSize="12"
-                fontWeight={isSelected ? 700 : 600}
-                fill={isSelected ? "#ffffff" : "#172033"}
-              >
-                {shortLabel(node.name, node.node_type === "function" ? 12 : 15)}
-              </text>
-              <text x="30" y="34" fontSize="9" fill={isSelected ? "#d1d5db" : "#667085"}>
-                {translateNodeType(node.node_type)}
-              </text>
-            </g>
-          );
-        })}
-        </g>
-        </svg>
+        <canvas
+          ref={canvasRef}
+          className="block h-full w-full touch-none select-none cursor-grab active:cursor-grabbing"
+          role="img"
+          aria-label="项目关系图谱"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={() => { panRef.current = null; }}
+        />
       </div>
 
       <div className="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-xl border border-border-theme bg-elevated-bg/95 p-1 shadow-sm">
         <HoverInfo content="缩小">
-          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="缩小项目地图" disabled={view.k <= MIN_GRAPH_ZOOM} onClick={() => zoomAtCenter(1 / GRAPH_ZOOM_STEP)}>
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="缩小项目地图" disabled={zoomPercent <= MIN_GRAPH_ZOOM * 100} onClick={() => zoomAtCenter(1 / GRAPH_ZOOM_STEP)}>
             <ZoomOut className="h-4 w-4" aria-hidden="true" />
           </Button>
         </HoverInfo>
         <HoverInfo content="重置为 100%">
           <Button variant="ghost" size="sm" className="h-7 min-w-[48px] px-1.5" aria-label="重置项目地图缩放" onClick={resetView}>
-            {Math.round(view.k * 100)}%
+            {zoomPercent}%
           </Button>
         </HoverInfo>
         <HoverInfo content="放大">
-          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="放大项目地图" disabled={view.k >= MAX_GRAPH_ZOOM} onClick={() => zoomAtCenter(GRAPH_ZOOM_STEP)}>
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="放大项目地图" disabled={zoomPercent >= MAX_GRAPH_ZOOM * 100} onClick={() => zoomAtCenter(GRAPH_ZOOM_STEP)}>
             <ZoomIn className="h-4 w-4" aria-hidden="true" />
           </Button>
         </HoverInfo>
