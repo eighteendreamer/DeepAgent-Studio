@@ -1158,12 +1158,6 @@ pub struct SettingsView {
     pub available_models: Vec<String>,
     /// Selected chat model.
     pub chat_model: String,
-    /// Whether the selected chat model accepts image input natively (DeepSeek
-    /// flash line). The frontend uses this to route images to the main model
-    /// (native vision) vs the third-party system-vision conversion. Defaults
-    /// to `false` for backward-compatible deserialization of older views.
-    #[serde(default)]
-    pub chat_model_supports_vision: bool,
     /// Selected reasoner model.
     pub reasoner_model: String,
     /// Whether the project is initialized (key present + models discovered).
@@ -2061,9 +2055,6 @@ impl SettingsService {
                 .map(|m| m.id.clone())
                 .collect(),
             chat_model: settings.catalog.chat_model.clone(),
-            chat_model_supports_vision: deepagent_models::ModelCapabilityResolver::new()
-                .resolve_model_id(&settings.catalog.chat_model)
-                .supports_vision,
             reasoner_model: settings.catalog.reasoner_model.clone(),
             configured: key.map(|k| !k.trim().is_empty()).unwrap_or(false)
                 && !settings.catalog.available.is_empty(),
@@ -2251,27 +2242,6 @@ mod tests {
             .set_model(deepagent_models::ModelRole::Chat, "deepseek-v4-pro")
             .unwrap();
         assert_eq!(view.chat_model, "deepseek-v4-pro");
-    }
-
-    #[tokio::test]
-    async fn view_exposes_model_vision_capability_for_image_routing() {
-        // The frontend routes images to the main model (native vision) only
-        // when the model actually accepts image input; `deepseek-v4-pro` does
-        // not, and those images must fall back to the third-party system
-        // vision instead. This locks the capability switch the UI depends on.
-        let (svc, _) = service();
-        svc.initialize("sk-abcd1234").await.unwrap();
-
-        // Default chat model is the flash family → native vision available.
-        let view = svc.view().unwrap().unwrap();
-        assert_eq!(view.chat_model, "deepseek-v4-flash");
-        assert!(view.chat_model_supports_vision);
-
-        // Non-vision model reports false so the UI falls back to system vision.
-        let view = svc
-            .set_model(deepagent_models::ModelRole::Chat, "deepseek-v4-pro")
-            .unwrap();
-        assert!(!view.chat_model_supports_vision);
     }
 
     #[tokio::test]

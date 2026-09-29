@@ -163,7 +163,6 @@ mod tests {
             supports_tools: true,
             supports_thinking: true,
             supports_json_output: true,
-            supports_vision: false,
             capability_source: CapabilitySource::BundledOfficialSnapshot,
             fallback_reason: None,
         };

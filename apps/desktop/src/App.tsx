@@ -990,25 +990,14 @@ export function App() {
       // Vision routing: the "启用系统视觉" toggle is the switch. ON (mode
       // "system") routes images through the third-party vision model which
       // converts them to text; OFF sends the original image to the main model
-      // as structured image parts (DeepSeek native vision) — unconditionally,
-      // even for a non-vision model. A native-vision send against a model that
-      // cannot see is rejected up front with a clear message (below) rather
-      // than silently falling back to the third-party vision path.
+      // as structured image parts — unconditionally. Whether the model can
+      // actually see is decided by the model server itself (success or a 400
+      // rejection); the client does not guess vision capability from the model
+      // id or query it from /models.
       const visionSettings = attachments.some((a) => a.kind === "image")
         ? await getVisionSettings().catch(() => null)
         : null;
-      const modelSettings =
-        visionSettings !== null ? await getSettings().catch(() => null) : null;
       const nativeVision = visionSettings !== null && visionSettings.mode !== "system";
-      if (
-        nativeVision &&
-        attachments.some((a) => a.kind === "image") &&
-        modelSettings &&
-        !modelSettings.chat_model_supports_vision
-      ) {
-        message.error("当前模型不支持原生视觉。请启用系统视觉，或切换到支持视觉的模型（flash 系列）。");
-        return;
-      }
       const projectSelection = projectSelectionRef.current;
       if (projectSelection && !(await projectSelection)) return;
       const storedEnvMode = localStorage.getItem("envMode");
