@@ -776,6 +776,8 @@ export interface SettingsView {
   base_url: string;
   available_models: string[];
   chat_model: string;
+  /** Whether the selected chat model accepts image input natively (flash line). */
+  chat_model_supports_vision: boolean;
   reasoner_model: string;
   configured: boolean;
   approval_policy: string;
