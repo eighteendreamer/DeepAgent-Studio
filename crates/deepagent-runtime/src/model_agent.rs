@@ -252,6 +252,10 @@ const SNIP_NUDGE_INTERVAL_TOKENS: u64 = 10_000;
 /// Never snip inside the most recent messages: the live exchange (and its
 /// tool pairing) must survive. Defined in [`crate::snip`] so the live loop and
 /// history rebuild agree.
+/// Idle gap after which the time-triggered micro-compact clears stale tool
+/// result bodies (Claude Code `timeBasedMCConfig` ~60 min). Overridable via
+/// `DEEPAGENT_MICROCOMPACT_IDLE_SECS`.
+const MICROCOMPACT_IDLE_SECS: u64 = 60 * 60;
 /// Consecutive identical tool calls (same name + arguments) that trip the
 /// client-side doom-loop detector. Grok's doom-loop is a SERVER signal
 /// (`x-grok-doom-loop-check`); DeepSeek has no such header, so this is the
@@ -429,6 +433,12 @@ pub struct ModelAgent {
     /// layer persists these as `ContextSnipped` so a history rebuild after a
     /// restart re-applies the snip (Claude Code `removedUuids` parity).
     snipped_tags: std::collections::BTreeSet<String>,
+    /// Wall-clock time the last assistant turn was recorded, for the
+    /// time-triggered micro-compact (a cold prompt cache after a long gap).
+    last_assistant_at: Option<std::time::Instant>,
+    /// Whether the idle-triggered micro-compact already ran for the current
+    /// idle gap (reset on the next assistant turn).
+    microcompacted_for_current_gap: bool,
     /// Prefire (Grok two-pass) start line in tokens: below the real
     /// `proactive_compaction_threshold` by the lead margin. When the estimate
     /// crosses this, a background pass-1 is scheduled. `None` disables prefire.
@@ -517,6 +527,8 @@ impl ModelAgent {
             snip_tool: None,
             snip_nudge_baseline_tokens: None,
             snipped_tags: std::collections::BTreeSet::new(),
+            last_assistant_at: None,
+            microcompacted_for_current_gap: false,
             prefire_start_threshold: None,
             prefire_cache: None,
             prefire_handle: None,
@@ -595,6 +607,58 @@ impl ModelAgent {
         self.snipped_tags.iter().cloned().collect()
     }
 
+    /// Clear the BODIES of historical tool-result messages outside the protected
+    /// recent tail, keeping conversation/tool pairing intact. Returns how many
+    /// were cleared. Reversible in spirit: the model can re-run a tool if it
+    /// really needs the data again.
+    fn clear_stale_tool_results(&mut self) -> usize {
+        const CLEARED_MARKER: &str = "[tool result content cleared]";
+        let protected_start = self
+            .messages
+            .len()
+            .saturating_sub(crate::snip::SNIP_PROTECTED_RECENT_MESSAGES);
+        let mut cleared = 0;
+        for message in self.messages.iter_mut().take(protected_start) {
+            if message.role == deepagent_core::message::Role::Tool
+                && !message.content.is_empty()
+                && message.content != CLEARED_MARKER
+            {
+                message.content = CLEARED_MARKER.to_string();
+                cleared += 1;
+            }
+        }
+        cleared
+    }
+
+    /// Time-triggered micro-compact (Claude Code `timeBasedMCConfig`): when the
+    /// last assistant turn is older than the idle threshold, the provider's
+    /// prompt cache is cold, so clearing stale tool-result bodies costs nothing
+    /// cached and saves context on re-send. Fires at most once per idle gap.
+    fn maybe_time_based_microcompact(&mut self) {
+        if self.microcompacted_for_current_gap {
+            return;
+        }
+        let Some(last) = self.last_assistant_at else {
+            return;
+        };
+        let threshold_secs = std::env::var("DEEPAGENT_MICROCOMPACT_IDLE_SECS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(MICROCOMPACT_IDLE_SECS);
+        if last.elapsed() < std::time::Duration::from_secs(threshold_secs) {
+            return;
+        }
+        self.microcompacted_for_current_gap = true;
+        let cleared = self.clear_stale_tool_results();
+        if cleared > 0 {
+            tracing::info!(
+                cleared,
+                idle_secs = last.elapsed().as_secs(),
+                "time-based micro-compact cleared stale tool results after idle gap"
+            );
+        }
+    }
+
     fn request_for_current_history(&self) -> ResponseRequest {
         let mut request = self.response_history.request(self.model.clone());
         if let Some(resolver) = self.attachment_resolver.as_ref() {
@@ -624,6 +688,10 @@ impl ModelAgent {
     fn push_provider_output_items(&mut self, assistant: Message, items: &[ResponseOutputItem]) {
         self.response_history.extend_output_items(items);
         self.messages.push(assistant);
+        // A new assistant turn ends any idle gap; arm the time-triggered
+        // micro-compact for the next gap and update the gap clock.
+        self.last_assistant_at = Some(std::time::Instant::now());
+        self.microcompacted_for_current_gap = false;
     }
 
     /// Attach a live event sink so token/reasoning deltas stream out as
@@ -1615,6 +1683,7 @@ impl ModelAgent {
         self.collect_finished_prefire().await;
         self.collect_finished_memory_prefetch().await;
         self.maybe_proactive_compact(step).await;
+        self.maybe_time_based_microcompact();
         self.maybe_schedule_prefire();
         self.maybe_schedule_memory_prefetch();
         self.maybe_inject_snip_nudge();
@@ -3841,5 +3910,45 @@ mod tests {
             agent.maybe_inject_todo_reminder();
         }
         assert_eq!(todo_reminders_in(&agent), 0);
+    }
+
+    fn agent_with_stale_tool_result() -> ModelAgent {
+        let mut agent = ModelAgent::new(client(vec![]), "m", "sys", "goal", vec![]);
+        let mut messages = vec![
+            Message::user("do work"),
+            Message::tool_result("c1", "big tool output"),
+        ];
+        // Pad with assistant turns so the tool result falls outside the
+        // protected recent tail (SNIP_PROTECTED_RECENT_MESSAGES = 8).
+        for i in 0..8 {
+            messages.push(Message::assistant(format!("filler {i}")));
+        }
+        agent.replace_messages(messages);
+        agent
+    }
+
+    #[test]
+    fn time_based_microcompact_clears_stale_tool_results_after_idle() {
+        let mut agent = agent_with_stale_tool_result();
+        assert_eq!(agent.messages[1].content, "big tool output");
+        // Pretend the last assistant turn was a long time ago.
+        agent.last_assistant_at = Some(
+            std::time::Instant::now()
+                - std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS + 1),
+        );
+        agent.microcompacted_for_current_gap = false;
+        agent.maybe_time_based_microcompact();
+        assert_eq!(agent.messages[1].content, "[tool result content cleared]");
+        // Idempotent within the same idle gap.
+        assert_eq!(agent.clear_stale_tool_results(), 0);
+    }
+
+    #[test]
+    fn time_based_microcompact_noop_before_idle_threshold() {
+        let mut agent = agent_with_stale_tool_result();
+        agent.last_assistant_at = Some(std::time::Instant::now());
+        agent.microcompacted_for_current_gap = false;
+        agent.maybe_time_based_microcompact();
+        assert_eq!(agent.messages[1].content, "big tool output");
     }
 }
