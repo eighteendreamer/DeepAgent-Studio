@@ -1,4 +1,4 @@
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { ListChecks, LoaderCircle } from "lucide-react";
 import { formatMs } from "./format";
 import { CollapseChevron } from "./CollapseBlurPanel";
 
@@ -33,9 +33,9 @@ export function WorkMetaRow({
     >
       <span className="flex h-5 w-5 items-center justify-center">
         {processing ? (
-          <FontAwesomeIcon icon={["fas", "circle-notch"]} className="animate-spin text-[12px] text-primary" />
+          <LoaderCircle size={13} className="animate-spin text-primary" />
         ) : (
-          <FontAwesomeIcon icon={["fas", "list-check"]} className="text-[12px]" />
+          <ListChecks size={13} />
         )}
       </span>
       <span className={processing ? "bg-gradient-to-r from-primary via-blue-500 to-primary bg-[length:200%_100%] bg-clip-text text-transparent animate-pulse" : ""}>

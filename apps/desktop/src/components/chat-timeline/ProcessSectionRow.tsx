@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { Brain, MessageSquareText, Terminal, type LucideIcon } from "lucide-react";
 import type { ChatBlock, ProcessSection } from "./timelineTypes";
 import { MarkdownText } from "../MarkdownText";
 import { ProcessToolRow } from "./ProcessToolRow";
@@ -22,10 +22,10 @@ function sectionTitle(section: ProcessSection): string {
   return `执行 ${section.blocks.length} 步`;
 }
 
-function sectionIcon(section: ProcessSection): "lightbulb" | "terminal" | "robot" {
-  if (section.kind === "reasoning") return "lightbulb";
-  if (section.kind === "output") return "robot";
-  return "terminal";
+function sectionIcon(section: ProcessSection): LucideIcon {
+  if (section.kind === "reasoning") return Brain;
+  if (section.kind === "output") return MessageSquareText;
+  return Terminal;
 }
 
 function blockHasError(block: ChatBlock): boolean {
@@ -59,7 +59,7 @@ export function ProcessSectionRow({
   const open = userOpen ?? defaultOpen;
   const canOpen = section.blocks.length > 0;
   const title = useMemo(() => sectionTitle(section), [section]);
-  const icon = sectionIcon(section);
+  const Icon = sectionIcon(section);
 
   return (
     <div className="min-w-0">
@@ -70,7 +70,7 @@ export function ProcessSectionRow({
           hasError ? "text-orange-700" : "text-text-secondary hover:bg-black/5 hover:text-text-base"
         }`}
       >
-        <FontAwesomeIcon icon={["fas", icon]} className="w-4 shrink-0 text-[12px] opacity-75" />
+        <Icon size={14} className="shrink-0 opacity-75" />
         <span className={`inline-flex min-w-0 items-center gap-1 ${active && !hasError ? "text-primary" : ""}`}>
           <span className="truncate">{title}</span>
           <CollapseChevron open={open && canOpen} />

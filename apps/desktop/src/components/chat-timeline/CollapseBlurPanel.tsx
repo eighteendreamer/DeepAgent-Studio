@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { ChevronRight } from "lucide-react";
 import { cn } from "../shadcn/utils";
 
 /** K 方案：grid 高度 + blur/opacity 聚焦揭示 */
@@ -39,10 +39,10 @@ export function CollapseBlurPanel({
 
 export function CollapseChevron({ open, className }: { open: boolean; className?: string }) {
   return (
-    <FontAwesomeIcon
-      icon={["fas", "chevron-right"]}
+    <ChevronRight
+      size={12}
       className={cn(
-        "shrink-0 text-[10px] opacity-40 transition-transform duration-300 ease-out group-hover:opacity-70",
+        "shrink-0 opacity-40 transition-transform duration-300 ease-out group-hover:opacity-70",
         open && "rotate-90",
         className,
       )}

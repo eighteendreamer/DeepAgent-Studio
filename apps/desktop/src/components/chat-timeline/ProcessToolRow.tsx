@@ -1,6 +1,21 @@
 import { HoverInfo } from "../ui/HoverInfo";
 import { useMemo, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import {
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  File,
+  FileCode,
+  Folder,
+  GitBranch,
+  Globe,
+  ListChecks,
+  LoaderCircle,
+  Search,
+  Terminal,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 import type { ToolCall } from "../../types";
 import { DiffText } from "../git/GitDiffViewer";
 import { formatMs } from "./format";
@@ -19,18 +34,6 @@ type ToolSummary = {
   isDiff: boolean;
   isError: boolean;
 };
-
-type ToolIcon =
-  | "folder"
-  | "terminal"
-  | "file"
-  | "magnifying-glass"
-  | "wrench"
-  | "code"
-  | "code-branch"
-  | "list-check"
-  | "robot"
-  | "globe";
 
 function parseJsonObject(value?: string): Record<string, unknown> | null {
   if (!value?.trim()) return null;
@@ -102,23 +105,30 @@ function stripToolName(summary: string, name: string): string {
   return trimmed;
 }
 
-function toolIcon(name: string, kind?: string): ToolIcon {
-  if (kind === "command_execution") return "terminal";
-  if (kind === "file_change") return "code";
-  if (kind === "file_read") return name.toLowerCase().includes("list") ? "folder" : "file";
-  if (kind === "search") return "magnifying-glass";
-  if (kind === "git") return "code-branch";
-  if (kind === "planning") return "list-check";
-  if (kind === "agent") return "robot";
+function toolIcon(name: string, kind?: string): LucideIcon {
+  if (kind === "command_execution") return Terminal;
+  if (kind === "file_change") return FileCode;
+  if (kind === "file_read") return name.toLowerCase().includes("list") ? Folder : File;
+  if (kind === "search") return Search;
+  if (kind === "git") return GitBranch;
+  if (kind === "planning") return ListChecks;
+  if (kind === "agent") return Bot;
 
   const normalized = name.toLowerCase();
-  if (normalized.includes("glob") || normalized.includes("list") || normalized.includes("ls")) return "folder";
-  if (normalized.includes("bash") || normalized.includes("shell") || normalized.includes("exec")) return "terminal";
-  if (normalized.includes("fetch") || normalized.includes("web")) return "globe";
-  if (normalized.includes("read") || normalized.includes("file")) return "file";
-  if (normalized.includes("grep") || normalized.includes("search") || normalized.includes("find")) return "magnifying-glass";
-  if (normalized.includes("edit") || normalized.includes("write") || normalized.includes("patch")) return "code";
-  return "wrench";
+  if (normalized.includes("glob") || normalized.includes("list") || normalized.includes("ls")) return Folder;
+  if (normalized.includes("bash") || normalized.includes("shell") || normalized.includes("exec")) return Terminal;
+  if (normalized.includes("fetch") || normalized.includes("web")) return Globe;
+  if (normalized.includes("read") || normalized.includes("file")) return File;
+  if (normalized.includes("grep") || normalized.includes("search") || normalized.includes("find")) return Search;
+  if (normalized.includes("edit") || normalized.includes("write") || normalized.includes("patch")) return FileCode;
+  return Wrench;
+}
+
+// Tools that run for a long time keep their identity icon while running: the
+// "执行中" label and status dot already convey progress, and a spinner on a
+// shell command or sub-agent that runs for minutes only adds noise.
+function keepsIconWhileRunning(kind?: string): boolean {
+  return kind === "command_execution" || kind === "agent";
 }
 
 function statusMeta(tool: ToolCall): { label: string; className: string; dotClassName: string } {
@@ -199,8 +209,10 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
   const summary = useMemo(() => summarizeTool(tool, payload), [tool, payload]);
   const status = statusMeta(tool);
   const canOpen = Boolean(summary.detail.trim());
-  const icon = toolIcon(tool.name, tool.toolKind);
+  const Icon = toolIcon(tool.name, tool.toolKind);
   const running = tool.status === "running";
+  const showSpinner = running && !keepsIconWhileRunning(tool.toolKind);
+  const chevronClass = "shrink-0 text-text-secondary opacity-45 transition group-hover/tool:opacity-75";
 
   return (
     <div className="min-w-0">
@@ -212,10 +224,10 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
         }`}
       >
         <span className="flex h-5 w-5 shrink-0 items-center justify-center text-text-secondary">
-          {running ? (
-            <FontAwesomeIcon icon={["fas", "circle-notch"]} className="animate-spin text-[13px] text-primary" />
+          {showSpinner ? (
+            <LoaderCircle size={13} className="animate-spin text-primary" />
           ) : (
-            <FontAwesomeIcon icon={["fas", icon]} className="text-[13px]" />
+            <Icon size={13} />
           )}
         </span>
         <span className="flex min-w-0 flex-1 items-baseline gap-2">
@@ -238,12 +250,12 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
             </code></HoverInfo>
           )}
         </span>
-        {canOpen && tool.status !== "running" && (
-          <FontAwesomeIcon
-            icon={["fas", open ? "chevron-down" : "chevron-right"]}
-            className="shrink-0 text-[10px] text-text-secondary opacity-45 transition group-hover/tool:opacity-75"
-          />
-        )}
+        {canOpen && tool.status !== "running" &&
+          (open ? (
+            <ChevronDown size={12} className={chevronClass} />
+          ) : (
+            <ChevronRight size={12} className={chevronClass} />
+          ))}
       </button>
       {open && (
         <div className="ml-7 mt-1 overflow-hidden rounded-lg bg-gray-50/75">
