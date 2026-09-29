@@ -6270,13 +6270,31 @@ pub fn run() {
             let session_plugins = session_plugin_roots_from_env();
             let plugins = Arc::new(PluginService::new(
                 PluginRoots {
-                    session: session_plugins,
+                    session: session_plugins.clone(),
                     builtin: resource_plugins_dir.clone(),
                     workspace: Some(workspace_root.join(".deepagent").join("plugins")),
                     personal: plugin_install_dir.clone(),
                 },
                 &dir,
             ));
+            // Pre-warm built-in plugin `runtime.zip` payloads off the startup
+            // path: the largest (`wedecode`, ~30 MB compressed / hundreds of MB
+            // expanded) would otherwise be extracted synchronously the first
+            // time a plugin runtime projection is built on the session path.
+            // `prepare_runtime_payloads` reuses the runtime id → directory
+            // mapping and the per-payload marker makes the later call a no-op.
+            {
+                let warm_roots = PluginRoots {
+                    session: session_plugins.clone(),
+                    builtin: resource_plugins_dir.clone(),
+                    workspace: Some(workspace_root.join(".deepagent").join("plugins")),
+                    personal: plugin_install_dir.clone(),
+                };
+                let plugin_data_root = dir.join("plugins").join("data");
+                std::thread::spawn(move || {
+                    deepagent_app_core::prepare_runtime_payloads(&warm_roots, &plugin_data_root);
+                });
+            }
 
             // Knowledge base: a project-local vault (`<project>/.deepagent/knowledge`)
             // plus a user-global vault (under the app data dir), loaded into one
@@ -6342,18 +6360,39 @@ pub fn run() {
                 )
                 .map_err(|error| format!("initialize terminal lease store: {error}"))?,
             );
+            let builtin_mcp_root = match app.path().resource_dir() {
+                Ok(resource_dir) => locate_builtin_mcp_dir(&resource_dir).join("js-reverse"),
+                Err(_) => std::env::temp_dir().join("deepagent-builtin-mcp-missing"),
+            };
+            let builtin_mcp_data = mcp_dir.join("js-reverse");
             let mcp = Arc::new(
                 McpService::new(service.shared_database())
                     .with_runtime(runtime_broker.clone(), projects.clone())
-                    .with_builtin_mcp(
-                        match app.path().resource_dir() {
-                            Ok(resource_dir) => locate_builtin_mcp_dir(&resource_dir)
-                                .join("js-reverse"),
-                            Err(_) => std::env::temp_dir().join("deepagent-builtin-mcp-missing"),
-                        },
-                        mcp_dir.join("js-reverse"),
-                    ),
+                    .with_builtin_mcp(builtin_mcp_root.clone(), builtin_mcp_data.clone()),
             );
+            // Pre-warm the built-in MCP runtime payload off the startup path.
+            // `prepare_runtime_payload` extracts `js-reverse/runtime.zip` (13 MB,
+            // hundreds of MB expanded) and is otherwise first triggered on the
+            // session path when MCP config is assembled, which made the first
+            // session after an upgrade stall on a large one-off disk write.
+            // Running it here on a background thread keeps `setup` returning
+            // immediately; the marker file makes the later session-path call a
+            // cheap no-op. Failures are non-fatal: the session path retries and
+            // reports through the normal MCP error channel.
+            {
+                let payload_root = builtin_mcp_root.clone();
+                let data_dir = builtin_mcp_data.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) =
+                        deepagent_app_core::prepare_runtime_payload(&payload_root, &data_dir)
+                    {
+                        eprintln!(
+                            "[builtin-mcp] runtime payload pre-warm failed for {}: {error}",
+                            payload_root.display()
+                        );
+                    }
+                });
+            }
             let vision = Arc::new(VisionService::new(
                 settings_arc.clone(),
                 vision_cache_dir.clone(),

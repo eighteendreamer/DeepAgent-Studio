@@ -2046,7 +2046,13 @@ impl PluginService {
     }
 }
 
-pub(crate) fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<()> {
+/// Extract a plugin's `runtime.zip` payload into `data_dir/runtime`, skipping
+/// the work when the marker file already matches the archive size.
+///
+/// Public so the desktop entry point can pre-warm the extraction off the
+/// startup path (a background thread); the MCP/plugin assembly paths still call
+/// it synchronously and rely on the marker to make the repeat call a no-op.
+pub fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<()> {
     let archive_path = payload_root.join("runtime.zip");
     if !archive_path.is_file() {
         return Ok(());
@@ -2118,6 +2124,36 @@ pub(crate) fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> R
     std::fs::write(marker, archive_size.to_string())
         .map_err(|e| CoreError::Persistence(format!("write runtime payload marker: {e}")))?;
     Ok(())
+}
+
+/// Extract every enabled plugin's `runtime.zip` payload into its
+/// `PLUGIN_DATA/runtime` directory, using the same id → directory mapping as
+/// [`PluginService::runtime_projection`].
+///
+/// Intended for the desktop entry point to call on a background thread at
+/// startup, so the first session after an upgrade does not stall on the
+/// synchronous extraction of a large payload (e.g. `wedecode`'s ~30 MB zip).
+/// The per-payload marker file makes a later synchronous call a no-op. A
+/// failure for one plugin is logged and does not abort the others; the session
+/// path still surfaces genuine errors through the normal MCP/plugin channel.
+pub fn prepare_runtime_payloads(roots: &PluginRoots, data_root: &Path) {
+    for plugin in load_plugins(roots) {
+        if !plugin.enabled_default() {
+            continue;
+        }
+        if !plugin.root.join("runtime.zip").is_file() {
+            continue;
+        }
+        let data_dir = data_root.join(sanitize_file_name(&plugin.id));
+        if let Err(error) = prepare_runtime_payload(&plugin.root, &data_dir) {
+            tracing::warn!(
+                plugin = plugin.id.as_str(),
+                root = %plugin.root.display(),
+                error = %error,
+                "runtime payload pre-warm failed"
+            );
+        }
+    }
 }
 
 fn runtime_payload_declared_entrypoints(plugin_root: &Path) -> Vec<PathBuf> {
@@ -6797,6 +6833,58 @@ rl.on('line', (line) => {
             .as_deref()
             .unwrap_or_default()
             .contains("entrypoint"));
+    }
+
+    #[test]
+    fn prepare_runtime_payloads_extracts_builtin_payloads_idempotently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin_with_runtime_payload(
+            &roots.builtin.join("runtime-demo"),
+            "runtime-demo",
+            serde_json::json!({
+                "name": "runtime-demo",
+                "bin": {"runtime-demo": "./dist/cli.js"}
+            }),
+            &[("dist/cli.js", b"console.log('runtime ok');\n")],
+        );
+        let data_root = tmp.path().join("app-data").join("plugins").join("data");
+
+        prepare_runtime_payloads(&roots, &data_root);
+
+        // The id `runtime-demo@builtin` sanitizes to `runtime-demo-builtin`;
+        // the payload and the marker must land under exactly that directory so
+        // the later runtime-projection call reuses them instead of re-extracting.
+        let runtime_dir = data_root.join("runtime-demo-builtin").join("runtime");
+        assert!(runtime_dir.join("package.json").is_file());
+        assert!(runtime_dir.join("dist").join("cli.js").is_file());
+        let marker = runtime_dir.join(".payload-size");
+        let first = std::fs::read_to_string(&marker).unwrap();
+
+        // A second call is a no-op: the marker already matches the archive size,
+        // so the extraction is skipped and the marker is left untouched.
+        prepare_runtime_payloads(&roots, &data_root);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), first);
+    }
+
+    #[test]
+    fn prepare_runtime_payloads_skips_plugins_without_a_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin_with_version_and_dependencies(
+            &roots.builtin.join("plain"),
+            "plain",
+            "0.1.0",
+            &[],
+        );
+        let data_root = tmp.path().join("app-data").join("plugins").join("data");
+
+        prepare_runtime_payloads(&roots, &data_root);
+
+        assert!(
+            !data_root.join("plain-builtin").join("runtime").exists(),
+            "a plugin without runtime.zip must not get an extracted runtime"
+        );
     }
 
     #[test]
