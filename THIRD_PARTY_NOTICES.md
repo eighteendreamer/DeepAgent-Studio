@@ -20,7 +20,7 @@ below. An unclassified plugin fails CI.
 | Plugin | Upstream | Version | License | License file | Content hash |
 | --- | --- | --- | --- | --- | --- |
 | `superpowers` | https://github.com/obra/superpowers | 5.1.3 | MIT | `resources/plugins/superpowers/LICENSE` | `sha256:8f2161157731d3043dce139124f919b46203b84f5211dbbee1aec79103d3fe56` |
-| `wedecode` | https://gitee.com/xiaoshangongzuoshi/wxapkg | 0.9.1 | GPL-3.0-or-later | `resources/plugins/wedecode/LICENSE` | `sha256:4b28569a11b28d0bc73e746eae1d34d80830c103cbf84a95069c311ece8be93b` |
+| `wedecode` | https://gitee.com/xiaoshangongzuoshi/wxapkg | 0.9.1 | GPL-3.0-or-later | `resources/plugins/wedecode/LICENSE` | `sha256:7a1c433926537e561ff8300628e86f738f71c43ab47ed8b73e4d0fb102d0d9ac` |
 
 ### Open compliance item: `wedecode` corresponding source
 
