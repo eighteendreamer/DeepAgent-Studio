@@ -1218,6 +1218,7 @@ dependencies = [
 name = "deepagent-context"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "deepagent-core",
  "deepagent-models",
  "serde",

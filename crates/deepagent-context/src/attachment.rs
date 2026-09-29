@@ -1,11 +1,12 @@
 //! Unified context-attachment hub (aligned with Claude Code's `attachments.ts`).
 //!
 //! The runtime and the app layer previously built model-visible injections
-//! (todo reminders, snip/doom-loop nudges, relevant memories, catalogs, …) each
-//! in its own place, with its own budget/dedup/throttle rules. This module gives
-//! them one shape: providers implement [`AttachmentProvider`], and an
-//! [`AttachmentRegistry`] collects their [`ContextAttachment`]s under a single
-//! dedup + character-budget policy.
+//! (todo reminders, snip/doom-loop nudges, relevant memories, catalogs, remote
+//! context, …) each in its own place, with its own budget/dedup/throttle rules.
+//! This module gives them one shape: providers implement [`AttachmentProvider`]
+//! (async, like CC's `getAttachments` providers) and an [`AttachmentRegistry`]
+//! collects their [`ContextAttachment`]s under a single dedup + character-budget
+//! policy.
 //!
 //! The types live in `deepagent-context` so both `deepagent-runtime` and
 //! `deepagent-app-core` can share them (the runtime must not depend on the app
@@ -19,7 +20,7 @@ use std::sync::Arc;
 /// the caller collects only the layers relevant to the current point in the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentLayer {
-    /// Only when processing fresh user input (e.g. @-mentioned files).
+    /// Only when processing fresh user input (e.g. knowledge/@-mentions).
     UserInput,
     /// Any thread — main run or sub-agent (e.g. todo/skill nudges).
     AllThread,
@@ -75,6 +76,9 @@ pub struct AttachmentContext<'a> {
     pub session_id: &'a str,
     /// Effective working directory.
     pub cwd: &'a Path,
+    /// The current user query / prompt for this turn (empty for non-user
+    /// collection points).
+    pub query: &'a str,
     /// Whether the current run is a sub-agent (some attachments are main-only).
     pub is_subagent: bool,
     /// Estimated tokens used this turn (for pace-based providers).
@@ -82,6 +86,7 @@ pub struct AttachmentContext<'a> {
 }
 
 /// A source of context attachments.
+#[async_trait::async_trait]
 pub trait AttachmentProvider: Send + Sync {
     /// Stable provider id, used for logging and dedup bookkeeping.
     fn kind(&self) -> &str;
@@ -92,8 +97,9 @@ pub trait AttachmentProvider: Send + Sync {
     }
 
     /// Produce attachments for `ctx`. Implementations must not panic; return an
-    /// empty vec when there is nothing to attach.
-    fn collect(&self, ctx: &AttachmentContext<'_>) -> Vec<ContextAttachment>;
+    /// empty vec when there is nothing to attach. Synchronous providers simply
+    /// return without awaiting.
+    async fn collect(&self, ctx: &AttachmentContext<'_>) -> Vec<ContextAttachment>;
 }
 
 /// Collects attachments from registered providers under a dedup + character
@@ -136,11 +142,11 @@ impl AttachmentRegistry {
 
     /// Collect attachments for `layer` from every provider whose layer matches.
     ///
-    /// Order: providers are queried in registration order; already-seen
-    /// `dedup_key`s are dropped; survivors are fitted to the character budget by
-    /// dropping the lowest-priority attachments first, then returned with
-    /// higher priority first (ties keep provider order).
-    pub fn collect(
+    /// Providers are queried sequentially in registration order (deterministic),
+    /// already-seen `dedup_key`s are dropped, and survivors are fitted to the
+    /// character budget by dropping the lowest-priority attachments first, then
+    /// returned with higher priority first (ties keep provider order).
+    pub async fn collect(
         &mut self,
         ctx: &AttachmentContext<'_>,
         layer: AttachmentLayer,
@@ -150,7 +156,7 @@ impl AttachmentRegistry {
             if !layer_matches(provider.layer(), layer) {
                 continue;
             }
-            for attachment in provider.collect(ctx) {
+            for attachment in provider.collect(ctx).await {
                 if let Some(key) = attachment.dedup_key.as_ref() {
                     if self.seen.contains(key) {
                         continue;
@@ -206,6 +212,7 @@ mod tests {
         attachments: Vec<ContextAttachment>,
     }
 
+    #[async_trait::async_trait]
     impl AttachmentProvider for FixedProvider {
         fn kind(&self) -> &str {
             &self.kind
@@ -213,7 +220,7 @@ mod tests {
         fn layer(&self) -> AttachmentLayer {
             self.layer
         }
-        fn collect(&self, _ctx: &AttachmentContext<'_>) -> Vec<ContextAttachment> {
+        async fn collect(&self, _ctx: &AttachmentContext<'_>) -> Vec<ContextAttachment> {
             self.attachments.clone()
         }
     }
@@ -222,13 +229,14 @@ mod tests {
         AttachmentContext {
             session_id: "s1",
             cwd: Path::new("/work"),
+            query: "do the thing",
             is_subagent: false,
             estimated_tokens: 0,
         }
     }
 
-    #[test]
-    fn collects_from_matching_layer_only() {
+    #[tokio::test]
+    async fn collects_from_matching_layer_only() {
         let mut registry = AttachmentRegistry::new(10_000).with_provider(Arc::new(FixedProvider {
             kind: "main".into(),
             layer: AttachmentLayer::MainThread,
@@ -250,17 +258,17 @@ mod tests {
             )],
         }));
 
-        let all = registry.collect(&ctx(), AttachmentLayer::AllThread);
+        let all = registry.collect(&ctx(), AttachmentLayer::AllThread).await;
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].kind, "main");
 
-        let input = registry.collect(&ctx(), AttachmentLayer::UserInput);
+        let input = registry.collect(&ctx(), AttachmentLayer::UserInput).await;
         assert_eq!(input.len(), 1);
         assert_eq!(input[0].kind, "input");
     }
 
-    #[test]
-    fn dedup_key_surfaces_at_most_once() {
+    #[tokio::test]
+    async fn dedup_key_surfaces_at_most_once() {
         let mut registry = AttachmentRegistry::new(10_000).with_provider(Arc::new(FixedProvider {
             kind: "skill_lint".into(),
             layer: AttachmentLayer::AllThread,
@@ -272,14 +280,23 @@ mod tests {
             )
             .with_dedup_key("lint")],
         }));
-        assert_eq!(registry.collect(&ctx(), AttachmentLayer::AllThread).len(), 1);
-        assert!(registry.collect(&ctx(), AttachmentLayer::AllThread).is_empty());
+        assert_eq!(
+            registry.collect(&ctx(), AttachmentLayer::AllThread).await.len(),
+            1
+        );
+        assert!(registry
+            .collect(&ctx(), AttachmentLayer::AllThread)
+            .await
+            .is_empty());
         registry.reset_seen();
-        assert_eq!(registry.collect(&ctx(), AttachmentLayer::AllThread).len(), 1);
+        assert_eq!(
+            registry.collect(&ctx(), AttachmentLayer::AllThread).await.len(),
+            1
+        );
     }
 
-    #[test]
-    fn budget_drops_lowest_priority_first() {
+    #[tokio::test]
+    async fn budget_drops_lowest_priority_first() {
         let mut registry = AttachmentRegistry::new(5).with_provider(Arc::new(FixedProvider {
             kind: "mixed".into(),
             layer: AttachmentLayer::AllThread,
@@ -288,14 +305,14 @@ mod tests {
                 ContextAttachment::new("high", AttachmentLayer::AllThread, 200, "bbbbb"),
             ],
         }));
-        let kept = registry.collect(&ctx(), AttachmentLayer::AllThread);
+        let kept = registry.collect(&ctx(), AttachmentLayer::AllThread).await;
         // Only one fits in a 5-char budget; the high-priority one survives.
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].kind, "high");
     }
 
-    #[test]
-    fn results_are_priority_ordered() {
+    #[tokio::test]
+    async fn results_are_priority_ordered() {
         let mut registry = AttachmentRegistry::new(10_000).with_provider(Arc::new(FixedProvider {
             kind: "order".into(),
             layer: AttachmentLayer::AllThread,
@@ -304,7 +321,7 @@ mod tests {
                 ContextAttachment::new("b", AttachmentLayer::AllThread, 200, "b"),
             ],
         }));
-        let kept = registry.collect(&ctx(), AttachmentLayer::AllThread);
+        let kept = registry.collect(&ctx(), AttachmentLayer::AllThread).await;
         assert_eq!(kept[0].kind, "b");
         assert_eq!(kept[1].kind, "a");
     }
