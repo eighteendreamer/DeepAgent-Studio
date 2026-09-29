@@ -188,6 +188,26 @@ pub enum EventPayload {
         /// Tool names added to the active set in this turn.
         names: Vec<String>,
     },
+
+    /// MCP server `instructions` were (re)announced to the model. Persisted
+    /// as a delta so a resumed session rebuilds which servers have already had
+    /// their instructions surfaced — the MCP-instructions counterpart to
+    /// `mcpInstructionsDelta.ts` in Claude Code, which announces each server's
+    /// instructions once and only once per session instead of re-sending all
+    /// of them every turn.
+    ///
+    /// The payload carries only the **delta**: `added` names whose instructions
+    /// were newly surfaced this turn, plus `removed` names that were previously
+    /// announced but are no longer connected. The resume path replays both to
+    /// reconstruct the cumulative announced set.
+    McpInstructionsDelta {
+        /// Server names whose instructions were newly surfaced this turn.
+        #[serde(default)]
+        added: Vec<String>,
+        /// Server names previously announced that are no longer connected.
+        #[serde(default)]
+        removed: Vec<String>,
+    },
 }
 
 impl EventPayload {
@@ -209,6 +229,7 @@ impl EventPayload {
             EventPayload::Note { .. } => "note",
             EventPayload::UsageRecorded { .. } => "usage_recorded",
             EventPayload::ToolsDiscovered { .. } => "tools_discovered",
+            EventPayload::McpInstructionsDelta { .. } => "mcp_instructions_delta",
         }
     }
 }

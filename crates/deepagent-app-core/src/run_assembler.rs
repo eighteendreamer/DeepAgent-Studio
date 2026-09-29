@@ -466,6 +466,10 @@ impl<'a> RunAssembler<'a> {
         let hook_mcp_registry = toolset.hook_mcp_registry;
         let tool_manifest = toolset.manifest;
         let mcp_instructions_block = toolset.mcp_instructions_block;
+        // Snapshot the `(server, instructions)` pairs at run start so the
+        // rendered delta and the persisted delta event always describe the same
+        // run, even though MCP connections only change between runs.
+        let mcp_instructions_entries = toolset.mcp_instructions_entries;
         let tools = tool_manifest.tools.clone();
         let granted = PermissionSet::developer();
         append_runtime_log(
@@ -729,6 +733,7 @@ impl<'a> RunAssembler<'a> {
             sandbox_mode,
             plugin_projection: plugin_projection.as_ref(),
             mcp_instructions_block: mcp_instructions_block.as_deref(),
+            mcp_instructions_entries: Some(&mcp_instructions_entries),
             tool_manifest: &tool_manifest,
             skills: self.skills.as_ref(),
             settings: self.settings,
@@ -958,8 +963,29 @@ impl<'a> RunAssembler<'a> {
         // (snipped) working history instead of resurrecting removed segments.
         let snipped_tags = agent.snipped_tags();
         if !snipped_tags.is_empty() {
-            if let Err(error) = session.append(EventPayload::ContextSnipped { tags: snipped_tags }) {
+            if let Err(error) = session.append(EventPayload::ContextSnipped { tags: snipped_tags })
+            {
                 tracing::warn!(%error, "failed to record ContextSnipped event");
+            }
+        }
+
+        // Persist the MCP-instructions delta so a resumed session rebuilds which
+        // servers already had their instructions surfaced (`mcpInstructionsDelta`
+        // parity). `added` are exactly the servers rendered into this run's
+        // prompt; `removed` retracts servers that announced before but are no
+        // longer connected. Both `build_run_context` and this bound go through
+        // the shared `mcp_instructions_delta` implementation.
+        {
+            let announced =
+                crate::input_runtime::collect_announced_mcp_servers_from_events(&prior_events);
+            let (added, removed) =
+                crate::input_runtime::mcp_instructions_delta(&mcp_instructions_entries, &announced);
+            if !added.is_empty() || !removed.is_empty() {
+                if let Err(error) =
+                    session.append(EventPayload::McpInstructionsDelta { added, removed })
+                {
+                    tracing::warn!(%error, "failed to record McpInstructionsDelta event");
+                }
             }
         }
 

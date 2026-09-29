@@ -482,6 +482,59 @@ pub(crate) fn collect_discovered_tools_from_events(events: &[Event]) -> Vec<Stri
     out
 }
 
+/// Rebuild the cumulative set of MCP server names whose `instructions` have
+/// already been announced to the model in this session. Walks every
+/// `McpInstructionsDelta` payload: `added` names enter the set, `removed`
+/// names leave it — the resume-time counterpart to Claude Code's
+/// `mcpInstructionsDelta` attachment scan, so a restarted session does not
+/// re-announce instructions that a prior run already surfaced.
+pub(crate) fn collect_announced_mcp_servers_from_events(events: &[Event]) -> HashSet<String> {
+    let mut announced = HashSet::new();
+    for e in events {
+        if let EventPayload::McpInstructionsDelta { added, removed } = &e.payload {
+            for name in added {
+                announced.insert(name.clone());
+            }
+            for name in removed {
+                announced.remove(name);
+            }
+        }
+    }
+    announced
+}
+
+/// Compute the MCP-instructions delta between the currently-connected servers
+/// that declared instructions (`entries`) and what has already been announced
+/// this session (`announced`). Returns `(added, removed)`:
+/// - `added` — server names in `entries` not yet announced (render and persist).
+/// - `removed` — names previously announced but with no current instructions
+///   (disconnected or since dropped instructions); persist to retract.
+///
+/// One implementation shared by `build_run_context` (renders `added`) and the
+/// run bound (persists the whole delta as an event), so the two can never
+/// disagree about what was announced.
+pub(crate) fn mcp_instructions_delta(
+    entries: &[(String, String)],
+    announced: &HashSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    let current: HashSet<String> = entries.iter().map(|(name, _)| name.clone()).collect();
+    let added: Vec<String> = entries
+        .iter()
+        .map(|(name, _)| name.clone())
+        .filter(|name| !announced.contains(name))
+        .collect();
+    let removed: Vec<String> = {
+        let mut out: Vec<String> = announced
+            .iter()
+            .filter(|name| !current.contains(*name))
+            .cloned()
+            .collect();
+        out.sort();
+        out
+    };
+    (added, removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

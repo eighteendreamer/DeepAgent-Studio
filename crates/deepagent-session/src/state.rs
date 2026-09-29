@@ -107,6 +107,7 @@ impl SessionState {
             EventPayload::ContextCompacted { .. }
             | EventPayload::ContextSnipped { .. }
             | EventPayload::RunTerminal { .. }
+            | EventPayload::McpInstructionsDelta { .. }
             | EventPayload::Note { .. } => {}
             // `EventPayload` is `#[non_exhaustive]`; future variants that do
             // not affect the projection are intentionally ignored here.

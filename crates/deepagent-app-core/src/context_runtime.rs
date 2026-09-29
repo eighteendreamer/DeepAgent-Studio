@@ -921,7 +921,14 @@ pub(crate) struct RunContextRequest<'a> {
     pub(crate) sandbox_mode: SandboxMode,
     pub(crate) plugin_projection: Option<&'a PluginRuntimeProjection>,
     /// Aggregated MCP server instructions, surfaced as `McpCatalog` context.
+    /// This is the full-block fallback: when per-session delta mode is disabled
+    /// (or no entries are available) the whole block is sent every turn.
     pub(crate) mcp_instructions_block: Option<&'a str>,
+    /// Unrendered `(server_name, instructions)` pairs for per-session delta
+    /// rendering. When present, only servers not yet announced this session
+    /// (reconstructed from `prior_events`) are rendered, mirroring Claude Code's
+    /// `mcpInstructionsDelta`. `None` keeps the `mcp_instructions_block` path.
+    pub(crate) mcp_instructions_entries: Option<&'a [(String, String)]>,
     pub(crate) tool_manifest: &'a ToolManifest,
     pub(crate) skills: Option<&'a Arc<Mutex<SkillsService>>>,
     pub(crate) settings: &'a SettingsService,
@@ -964,13 +971,18 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         request.prior_events,
     )?;
 
+    let mcp_instructions_block = mcp_instructions_block_for_run(
+        request.mcp_instructions_block,
+        request.mcp_instructions_entries,
+        request.prior_events,
+    );
     let system_manifest = build_system_manifest(
         request.root,
         request.sandbox_mode,
         output_style_block,
         plugin_output_style_block,
         tool_catalog_block,
-        request.mcp_instructions_block.map(str::to_string),
+        mcp_instructions_block,
         skill_catalog_blocks,
     );
     let system_prompt = system_manifest.render();
@@ -1002,7 +1014,10 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         estimated_tokens: 0,
     };
     let user_attachments = registry
-        .collect(&attachment_ctx, deepagent_context::AttachmentLayer::UserInput)
+        .collect(
+            &attachment_ctx,
+            deepagent_context::AttachmentLayer::UserInput,
+        )
         .await;
     let final_user_prompt =
         compose_prompt_with_attachments(request.prompt_for_model, &user_attachments);
@@ -1022,6 +1037,49 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         final_user_prompt,
         context_usage,
     })
+}
+
+/// Resolve the MCP-instructions block this turn should present.
+///
+/// With the per-session delta mode enabled (the default) only servers not yet
+/// announced to the model are rendered, so a multi-server session no longer
+/// re-sends every server's `instructions` on each turn — the context-weight
+/// counterpart to Claude Code's `mcpInstructionsDelta` attachment. Either of
+/// two conditions falls back to the full-block path:
+/// - `DEEPAGENT_MCP_INSTR_DELTA=false` (explicit opt-out), or
+/// - no entries are supplied (the older, block-only plumbing).
+fn mcp_instructions_block_for_run(
+    full: Option<&str>,
+    entries: Option<&[(String, String)]>,
+    prior_events: &[Event],
+) -> Option<String> {
+    if !mcp_instructions_delta_enabled() {
+        return full.map(str::to_string);
+    }
+    let Some(entries) = entries else {
+        return full.map(str::to_string);
+    };
+    if entries.is_empty() {
+        return None;
+    }
+    let announced = crate::input_runtime::collect_announced_mcp_servers_from_events(prior_events);
+    let added: Vec<(String, String)> = entries
+        .iter()
+        .filter(|(name, _)| !announced.contains(name))
+        .cloned()
+        .collect();
+    crate::mcp_runtime::render_mcp_instruction_entries(&added)
+}
+
+/// Opt-out switch for the per-session MCP-instructions delta. Defaults to on
+/// (delta is the context-reduction default); set `DEEPAGENT_MCP_INSTR_DELTA=false`
+/// to restore full-block re-sending per turn.
+fn mcp_instructions_delta_enabled() -> bool {
+    match std::env::var("DEEPAGENT_MCP_INSTR_DELTA") {
+        Ok(v) if v.eq_ignore_ascii_case("false") || v == "0" => false,
+        Ok(v) if v.eq_ignore_ascii_case("true") || v == "1" => true,
+        _ => true,
+    }
 }
 
 fn build_skill_catalog_blocks(
@@ -2151,5 +2209,112 @@ mod tests {
             .iter()
             .any(|m| m.content.contains("Write the regression test")));
         eprintln!("[real-model] periodic todo reminder surfaced in a live run OK");
+    }
+
+    fn mcp_event(sid: deepagent_core::id::SessionId, seq: u64, payload: EventPayload) -> Event {
+        Event {
+            id: deepagent_core::id::EventId::new(),
+            session_id: sid,
+            sequence: seq,
+            timestamp: deepagent_core::clock::Timestamp::from_millis(seq as i64),
+            payload,
+        }
+    }
+
+    /// First turn of a session: no server announced yet, so the whole block is
+    /// rendered for the first (and only first) time.
+    #[test]
+    fn mcp_instructions_renders_full_block_before_any_announcement() {
+        let entries: Vec<(String, String)> = vec![
+            ("alpha".into(), "do X".into()),
+            ("beta".into(), "do Y".into()),
+        ];
+        let block = mcp_instructions_block_for_run(None, Some(&entries), &[]).unwrap();
+        assert!(block.contains("## alpha"));
+        assert!(block.contains("## beta"));
+        assert!(block.contains("do X"));
+        assert!(block.contains("do Y"));
+    }
+
+    /// Second turn: `alpha` was announced last turn, so the rendered block only
+    /// carries `beta`. Rendered `added` must equal what `mcp_instructions_delta`
+    /// reports — the two paths can never disagree.
+    #[test]
+    fn mcp_instructions_renders_only_unanounced_servers_after_first_turn() {
+        let sid = deepagent_core::id::SessionId::nil();
+        let entries: Vec<(String, String)> = vec![
+            ("alpha".into(), "do X".into()),
+            ("beta".into(), "do Y".into()),
+        ];
+        let prior = vec![mcp_event(
+            sid,
+            0,
+            EventPayload::McpInstructionsDelta {
+                added: vec!["alpha".into()],
+                removed: vec![],
+            },
+        )];
+        let block = mcp_instructions_block_for_run(None, Some(&entries), &prior).unwrap();
+        assert!(!block.contains("## alpha"), "alpha already announced");
+        assert!(!block.contains("do X"));
+        assert!(block.contains("## beta"));
+        assert!(block.contains("do Y"));
+
+        let announced = crate::input_runtime::collect_announced_mcp_servers_from_events(&prior);
+        let (added, removed) = crate::input_runtime::mcp_instructions_delta(&entries, &announced);
+        assert_eq!(added, vec!["beta".to_string()]);
+        assert!(removed.is_empty(), "no server should be retracted here");
+    }
+
+    /// A server that disconnected (dropped its instructions) is not rendered by
+    /// the delta path — there is nothing new to say — but the retraction is
+    /// reported so the persisted event can rebuild the announced set on resume.
+    #[test]
+    fn mcp_instructions_retracts_disconnected_server() {
+        let sid = deepagent_core::id::SessionId::nil();
+        // Previously announced both; `beta` is gone from the current connection.
+        let prior = vec![mcp_event(
+            sid,
+            0,
+            EventPayload::McpInstructionsDelta {
+                added: vec!["alpha".into(), "beta".into()],
+                removed: vec![],
+            },
+        )];
+        let entries: Vec<(String, String)> = vec![("alpha".into(), "do X".into())];
+        let block = mcp_instructions_block_for_run(None, Some(&entries), &prior);
+        assert!(
+            block.is_none(),
+            "nothing new to render after both were announced"
+        );
+
+        let announced = crate::input_runtime::collect_announced_mcp_servers_from_events(&prior);
+        let (added, removed) = crate::input_runtime::mcp_instructions_delta(&entries, &announced);
+        assert!(added.is_empty());
+        assert_eq!(removed, vec!["beta".to_string()]);
+    }
+
+    /// Reconnecting a previously-announced server does not re-announce it (the
+    /// announced set is cumulative), and the full-block entry path is preserved
+    /// as a fallback for callers without entries.
+    #[test]
+    fn mcp_instructions_resume_reports_no_duplicate_announcement() {
+        let sid = deepagent_core::id::SessionId::nil();
+        let prior = vec![mcp_event(
+            sid,
+            0,
+            EventPayload::McpInstructionsDelta {
+                added: vec!["alpha".into()],
+                removed: vec![],
+            },
+        )];
+        // Same entries as turn one; nothing should be freshly announced.
+        let entries: Vec<(String, String)> = vec![("alpha".into(), "do X".into())];
+        let block = mcp_instructions_block_for_run(None, Some(&entries), &prior);
+        assert!(block.is_none());
+
+        // Full-block fallback: entries = None keeps the old behavior verbatim.
+        let full = mcp_instructions_block_for_run(Some("full block"), None, &prior);
+        assert_eq!(full.as_deref(), Some("full block"));
     }
 }

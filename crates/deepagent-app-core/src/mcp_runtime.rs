@@ -16,6 +16,12 @@ pub(crate) struct McpRuntimeTools {
     /// surfaced to the model as `ContextSourceKind::McpCatalog`. `None` when no
     /// server declared any.
     pub(crate) instructions_block: Option<String>,
+    /// Unrendered `(server_name, instructions)` pairs from every connected
+    /// server that declared instructions. Kept so the run bound can render a
+    /// per-session **delta** (only servers not yet announced) instead of
+    /// re-sending the full block every turn; [`McpRuntimeTools::instructions_block`]
+    /// remains the full-block fallback when delta mode is off.
+    pub(crate) instructions_entries: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +93,7 @@ pub(crate) async fn attach_mcp_tools(
             return Ok(McpRuntimeTools {
                 hook_registry: None,
                 instructions_block: None,
+                instructions_entries: Vec::new(),
                 lifecycle: vec![McpLifecycleRecord {
                     server_id: "mcp".into(),
                     status: "degraded".into(),
@@ -150,6 +157,7 @@ pub(crate) async fn attach_mcp_tools(
     Ok(McpRuntimeTools {
         hook_registry: Some(mcp_registry.clone()),
         instructions_block: render_mcp_instructions(&mcp_registry),
+        instructions_entries: mcp_registry.server_instructions(),
         lifecycle,
     })
 }
@@ -157,7 +165,14 @@ pub(crate) async fn attach_mcp_tools(
 /// Render the aggregated MCP `instructions` from every connected server into a
 /// single context block, or `None` when no server declared any.
 fn render_mcp_instructions(registry: &deepagent_mcp::McpRegistry) -> Option<String> {
-    let entries = registry.server_instructions();
+    render_mcp_instruction_entries(&registry.server_instructions())
+}
+
+/// Render [`McpRuntimeTools::instructions_entries`] into a single context
+/// block, or `None` when `entries` is empty. Shared by the full-block path
+/// ([`render_mcp_instructions`]) and the per-session delta path (which passes
+/// only the not-yet-announced servers) so both render identically.
+pub(crate) fn render_mcp_instruction_entries(entries: &[(String, String)]) -> Option<String> {
     if entries.is_empty() {
         return None;
     }

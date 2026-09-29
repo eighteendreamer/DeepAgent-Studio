@@ -432,6 +432,10 @@ pub(crate) struct MainRunToolset {
     pub(crate) lifecycle: Vec<crate::mcp_runtime::McpLifecycleRecord>,
     /// Aggregated MCP server `instructions` for the system context, or `None`.
     pub(crate) mcp_instructions_block: Option<String>,
+    /// Unrendered `(server_name, instructions)` pairs, kept so `build_run_context`
+    /// can render a per-session delta of not-yet-announced servers instead of
+    /// re-sending the full `instructions_block` every turn.
+    pub(crate) mcp_instructions_entries: Vec<(String, String)>,
 }
 
 /// Inputs for [`build_main_run_toolset`]. `base` describes the shared
@@ -490,6 +494,7 @@ where
         hook_mcp_registry: mcp_runtime.hook_registry,
         lifecycle: mcp_runtime.lifecycle,
         mcp_instructions_block: mcp_runtime.instructions_block,
+        mcp_instructions_entries: mcp_runtime.instructions_entries,
     })
 }
 
