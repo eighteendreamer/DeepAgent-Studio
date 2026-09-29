@@ -1,5 +1,5 @@
 import { HoverInfo } from "./ui/HoverInfo";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { IconProp } from "@fortawesome/fontawesome-svg-core";
 import { useTranslation } from "react-i18next";
@@ -31,7 +31,7 @@ export type OutputItem =
     };
 
 interface EnvironmentInfoMenuProps {
-  children: ReactNode;
+  children: ReactElement;
   activeProjectPath?: string | null;
   gitStatus: GitProjectStatus | null;
   gitLoading: boolean;
@@ -119,7 +119,12 @@ export function EnvironmentInfoMenu({
 
   return (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+      {/* HoverInfo wraps the trigger (not the reverse): Radix's `asChild` slot
+          clones its child with a positioning ref and trigger props, so the
+          direct child must be a forwardRef DOM element. */}
+      <HoverInfo content={t("chatView.environmentInfo")}>
+        <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+      </HoverInfo>
       <DropdownMenuContent
         align="end"
         alignOffset={-128}

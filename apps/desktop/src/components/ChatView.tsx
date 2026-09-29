@@ -1354,14 +1354,13 @@ export function ChatView({
                     setSelectedConnection(connection ?? null);
                   }}
                 >
-                <HoverInfo content={t("chatView.environmentInfo")}><button
+                <button
                   type="button"
                   className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover-bg hover:text-text-base data-[state=open]:text-text-base"
-
                   aria-label={t("chatView.environmentInfo")}
                 >
                   <FontAwesomeIcon icon={["fas", "sliders"]} className="text-[15px]" />
-                </button></HoverInfo>
+                </button>
                 </EnvironmentInfoMenu>
               )}
             </div>
