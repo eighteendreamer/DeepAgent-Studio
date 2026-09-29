@@ -423,6 +423,13 @@ pub fn render_stall_transcript_from_response_items(
                     out.push('\n');
                 }
             }
+            ResponseInputItem::InputMessage { role, content, .. } => {
+                if role == "user" && !content.trim().is_empty() {
+                    out.push_str("[user] ");
+                    out.push_str(&truncate_snippet(content));
+                    out.push('\n');
+                }
+            }
             ResponseInputItem::FunctionCall {
                 call_id,
                 name,

@@ -726,6 +726,7 @@ fn micro_compact_response_item_outputs(
 fn render_response_item_for_compaction(item: &ResponseInputItem) -> String {
     match item {
         ResponseInputItem::Message { role, content } => format!("{role}: {content}"),
+        ResponseInputItem::InputMessage { role, content, .. } => format!("{role}: {content}"),
         ResponseInputItem::Reasoning { content, .. } => format!("reasoning: {content}"),
         ResponseInputItem::FunctionCall {
             call_id,

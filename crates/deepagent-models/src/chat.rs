@@ -212,6 +212,20 @@ fn response_input_items_to_wire(items: &[ResponseInputItem]) -> Vec<serde_json::
                     "content": content,
                 })
             }
+            ResponseInputItem::InputMessage {
+                role,
+                content,
+                attachments,
+            } => {
+                // Text-only rendering here; the attachments map (image parts) is
+                // materialized by the caller that owns attachment storage.
+                let _ = attachments;
+                serde_json::json!({
+                    "type": "message",
+                    "role": role,
+                    "content": content,
+                })
+            }
             ResponseInputItem::Reasoning { id, content } => {
                 let mut value = serde_json::json!({
                     "type": "reasoning",

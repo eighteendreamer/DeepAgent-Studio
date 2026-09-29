@@ -476,6 +476,8 @@ fn response_item_already_present(
                 } if existing_role == role && existing_content == content
             )
         }),
+        // Input-only variant; never produced as a model output.
+        ResponseOutputItem::InputMessage { .. } => false,
         ResponseOutputItem::Reasoning { id, content } => items.iter().any(|item| {
             matches!(
                 item,

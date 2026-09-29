@@ -9,6 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::message::MessageAttachment;
+
 /// A semantic Responses API item used for provider input/output persistence.
 ///
 /// Source alignment:
@@ -24,6 +26,17 @@ pub enum ResponseItem {
     Message {
         role: String,
         content: String,
+    },
+    /// A user message that carries file/image attachment *references* (never
+    /// inline bytes). The provider wire layer materializes them into
+    /// `input_image` content parts at request time, so the persisted item stays
+    /// small and the event stream is not bloated by image payloads.
+    InputMessage {
+        role: String,
+        #[serde(default)]
+        content: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<MessageAttachment>,
     },
     Reasoning {
         #[serde(default, skip_serializing_if = "Option::is_none")]

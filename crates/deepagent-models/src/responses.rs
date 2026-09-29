@@ -67,10 +67,18 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
                     }
                 }
                 if !message.content.is_empty() || message.tool_calls.is_empty() {
-                    items.push(ResponseItem::Message {
-                        role: message.role.as_str().to_string(),
-                        content: message.content.clone(),
-                    });
+                    if message.attachments.is_empty() {
+                        items.push(ResponseItem::Message {
+                            role: message.role.as_str().to_string(),
+                            content: message.content.clone(),
+                        });
+                    } else {
+                        items.push(ResponseItem::InputMessage {
+                            role: message.role.as_str().to_string(),
+                            content: message.content.clone(),
+                            attachments: message.attachments.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -255,6 +263,25 @@ pub fn messages_from_response_items(
                 if role == Role::Assistant {
                     message.reasoning_content = pending_reasoning.take();
                 }
+                out.push(message);
+            }
+            ResponseItem::InputMessage {
+                role,
+                content,
+                attachments,
+            } => {
+                flush_tool_calls(&mut pending_tool_calls, &mut out);
+                let role = match role.as_str() {
+                    "system" => Role::System,
+                    "assistant" => Role::Assistant,
+                    "tool" => Role::Tool,
+                    _ => Role::User,
+                };
+                let mut message = Message::text(role, content.clone());
+                if role == Role::Assistant {
+                    message.reasoning_content = pending_reasoning.take();
+                }
+                message.attachments = attachments.clone();
                 out.push(message);
             }
             ResponseItem::FunctionCall {
