@@ -824,6 +824,7 @@
       "alwaysAllowed": "始终允许",
       "none": "无",
       "installChrome": "安装 Chrome 集成",
+      "close": "关闭",
       "developedBy": "由 OpenAI 开发",
       "providedBy": "提供者: OpenAI",
       "category": "类别: 浏览器集成",

@@ -824,6 +824,7 @@
       "alwaysAllowed": "Always Allowed",
       "none": "None",
       "installChrome": "Install Chrome Integration",
+      "close": "Close",
       "developedBy": "Developed by OpenAI",
       "providedBy": "Provided by: OpenAI",
       "category": "Category: Browser Integration",
