@@ -624,29 +624,8 @@ impl Drop for WindowsJob {
 }
 
 /// Patterns that always force high-risk classification (require approval).
-const DANGEROUS: &[&str] = &[
-    "rm -rf",
-    "rm -fr",
-    ":(){", // fork bomb
-    "mkfs",
-    "dd if=",
-    "> /dev/sd",
-    "chmod -r 777",
-    "curl", // network fetch (often piped to sh)
-    "wget",
-    "| sh",
-    "| bash",
-    "sudo",
-    "git push", // remote mutation
-];
-
-/// Classify whether a command is dangerous (needs approval). Combines the
-/// static [`DANGEROUS`] fragment list with the §6.1 command-injection /
-/// exfiltration heuristic ([`detect_command_injection`]).
-pub fn is_dangerous(command: &str) -> bool {
-    let lower = command.to_lowercase();
-    DANGEROUS.iter().any(|d| lower.contains(d)) || detect_command_injection(command).is_some()
-}
+/// Re-exported from [`crate::bash_analysis`] (structured analyzer, Phase F).
+pub use crate::bash_analysis::is_dangerous;
 
 /// Heuristic command-injection / exfiltration detector (§6.1, pattern layer).
 ///

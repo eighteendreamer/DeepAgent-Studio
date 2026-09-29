@@ -43,6 +43,7 @@
 #![warn(missing_docs)]
 
 pub mod ask_user_tool;
+pub mod bash_analysis;
 pub mod bash_tool;
 pub mod classifier;
 pub mod codegraph_tools;
@@ -80,6 +81,7 @@ pub use ask_user_tool::{
     AskUserQuestionTool, DeclineResponder, Question, QuestionOption, QuestionResponder,
     ASK_USER_QUESTION_TOOL_NAME,
 };
+pub use bash_analysis::{analyze, danger_reasons};
 pub use bash_tool::{
     detect_command_injection, is_allowed, is_dangerous, BashTool, CommandExecutor, CommandOutcome,
     CommandShell, SystemExecutor,
