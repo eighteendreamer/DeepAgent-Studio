@@ -593,6 +593,13 @@ pub struct RunRecoveryDto {
     pub previous_state: String,
     pub terminal_kind: String,
     pub terminal_reason: String,
+    /// Read-only interruption classification from the session log (Claude Code
+    /// `detectTurnInterruption` parity): `interrupted_prompt` when the user's
+    /// prompt never got a reply, `interrupted_turn` when the run died mid-turn
+    /// (a tool call has no completing assistant reply). `None` when the run
+    /// ended cleanly between turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interruption: Option<String>,
 }
 
 /// An exported session transcript ready for the UI to save.

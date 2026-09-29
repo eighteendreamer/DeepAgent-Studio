@@ -89,7 +89,11 @@ impl AppService {
                 .list_for_run(&run.id)
                 .map(|records| records.into_iter().map(|record| record.id).collect())
                 .unwrap_or_default();
+            let mut interruption: Option<String> = None;
             if let Ok(session_id) = SessionId::from_str(&run.session_id) {
+                if let Ok(events) = EventStore::new(&self.db).load_session(session_id) {
+                    interruption = classify_interruption(&events).map(str::to_string);
+                }
                 if let Ok(mut session) = Session::recover(&self.db, &clock, session_id) {
                     if let Some(task_id) = run
                         .task_id
@@ -126,6 +130,7 @@ impl AppService {
                     "previous_state": run.state.clone(),
                     "terminal_kind": "failed",
                     "reason": reason,
+                    "interruption": interruption,
                     // Phase D: incremental checkpoint commits keep backups
                     // reachable across a crash. Surface them so the UI (or a
                     // later auto-resume) can offer rolling files back to the
@@ -147,6 +152,7 @@ impl AppService {
                 previous_state: run.state,
                 terminal_kind: "failed".to_string(),
                 terminal_reason: reason,
+                interruption,
             });
         }
         Ok(recovered)
@@ -897,6 +903,52 @@ fn now_millis() -> i64 {
         .unwrap_or_default()
         .as_millis()
         .min(i64::MAX as u128) as i64
+}
+
+/// Classify an interrupted run from its session event log (Claude Code
+/// `detectTurnInterruption` parity). Read-only: surfaces *why* a recovered run
+/// was interrupted without changing the recovery behavior.
+///
+/// - `Some("interrupted_prompt")` — the last decisive turn is a user message:
+///   the prompt never got a reply.
+/// - `Some("interrupted_turn")` — the run died mid-turn (a tool call/output has
+///   no completing assistant reply).
+/// - `None` — the run ended between turns (last turn is a completed assistant
+///   reply) or no decisive turn exists.
+fn classify_interruption(events: &[deepagent_core::event::Event]) -> Option<&'static str> {
+    use deepagent_core::event::EventPayload;
+    use deepagent_core::message::Role;
+    use deepagent_core::response_item::ResponseItem;
+    for event in events.iter().rev() {
+        match &event.payload {
+            EventPayload::ResponseItemAppended { item } => match item {
+                ResponseItem::Message { role, .. } | ResponseItem::InputMessage { role, .. } => {
+                    match role.as_str() {
+                        "assistant" => return None,
+                        "user" => return Some("interrupted_prompt"),
+                        _ => continue,
+                    }
+                }
+                ResponseItem::FunctionCall { .. }
+                | ResponseItem::FunctionCallOutput { .. }
+                | ResponseItem::CustomToolCall { .. }
+                | ResponseItem::CustomToolCallOutput { .. }
+                | ResponseItem::WebSearchCall { .. } => return Some("interrupted_turn"),
+                ResponseItem::Reasoning { .. } => continue,
+            },
+            EventPayload::MessageAppended { message } => match message.role {
+                Role::Assistant => return None,
+                Role::User => return Some("interrupted_prompt"),
+                Role::Tool => return Some("interrupted_turn"),
+                Role::System => continue,
+            },
+            EventPayload::ToolCallRequested { .. } | EventPayload::ToolCallCompleted { .. } => {
+                return Some("interrupted_turn")
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1671,5 +1723,61 @@ mod tests {
 
         // Unknown format errors.
         assert!(svc.export_transcript(&sid, "pdf").is_err());
+    }
+
+    #[test]
+    fn classify_interruption_detects_prompt_midturn_and_clean() {
+        use deepagent_core::event::{Event, EventPayload};
+        use deepagent_core::id::EventId;
+        use deepagent_core::message::Message;
+        let sid = SessionId::nil();
+        let ev = |seq: u64, payload: EventPayload| Event {
+            id: EventId::new(),
+            session_id: sid,
+            sequence: seq,
+            timestamp: deepagent_core::clock::Timestamp::from_millis(seq as i64),
+            payload,
+        };
+
+        // User message last → the prompt never got a reply.
+        let events = vec![ev(
+            0,
+            EventPayload::MessageAppended {
+                message: Message::user("hi"),
+            },
+        )];
+        assert_eq!(classify_interruption(&events), Some("interrupted_prompt"));
+
+        // Tool completion last → died mid-turn.
+        let events = vec![
+            ev(
+                0,
+                EventPayload::MessageAppended {
+                    message: Message::assistant("calling a tool"),
+                },
+            ),
+            ev(
+                1,
+                EventPayload::ToolCallCompleted {
+                    call_id: "c1".into(),
+                    ok: true,
+                    output: serde_json::json!({ "ok": true }),
+                    duration_ms: 1,
+                },
+            ),
+        ];
+        assert_eq!(classify_interruption(&events), Some("interrupted_turn"));
+
+        // Assistant message last → ended cleanly between turns.
+        let events = vec![ev(
+            0,
+            EventPayload::MessageAppended {
+                message: Message::assistant("done"),
+            },
+        )];
+        assert_eq!(classify_interruption(&events), None);
+
+        // Empty log → unknown.
+        assert_eq!(classify_interruption(&[]), None);
     }
 }
