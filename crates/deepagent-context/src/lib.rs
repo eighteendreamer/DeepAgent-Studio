@@ -18,6 +18,7 @@
 //!   that compresses older turns when the window grows too large.
 
 pub mod assembler;
+pub mod attachment;
 pub mod budget;
 pub mod compaction;
 pub mod config_overlay;
@@ -30,6 +31,9 @@ pub mod reminder;
 pub mod tokenizer;
 
 pub use assembler::{ContextAssembler, ContextEntry, ContextManifest, ContextSourceKind};
+pub use attachment::{
+    AttachmentContext, AttachmentLayer, AttachmentProvider, AttachmentRegistry, ContextAttachment,
+};
 pub use budget::{BudgetOutcome, PromptBudget};
 pub use compaction::{
     CompactionPolicy, CompactionResult, Compactor, HeuristicSummarizer, Summarizer, TaskSummary,
