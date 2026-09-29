@@ -32,6 +32,7 @@ pub mod loop_engine;
 pub mod model_agent;
 pub mod phase;
 pub mod redaction;
+pub mod schedule;
 pub mod snip;
 pub mod stall_detector;
 pub mod tool_budget;
@@ -62,6 +63,10 @@ pub use model_agent::{
     TodoReminderSource,
 };
 pub use phase::LoopPhase;
+pub use schedule::{
+    next_local_match, parse_5_field, run_tick_loop, CronFields, CronScheduler, FireOutcome,
+    ScheduledTask, ScheduledTaskStore,
+};
 pub use snip::{plan_snip, snip_segments, SnipPlan, SNIP_PROTECTED_RECENT_MESSAGES};
 pub use stall_detector::{
     build_stall_nudge, evaluate_stall, parse_stall_verdict, render_stall_transcript, NoNudgeReason,
