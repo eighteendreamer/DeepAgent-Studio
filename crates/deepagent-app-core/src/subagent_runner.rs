@@ -547,18 +547,37 @@ impl ChatSubagentRunner {
         let clock = SystemClock;
         let mut session = Session::create(&db, &clock, Some(&request.description))?;
         let task = session.create_task(&request.prompt)?;
+        let sub_model = request.model.clone().unwrap_or_else(|| self.model.clone());
+        let sub_thinking = subagent_thinking_depth(request.effort.as_deref(), self.thinking_depth)?;
+        // Sub-agents run their own model loop; without compaction a long task
+        // would only be bounded by the 64-step / 1M-token hard ceilings. Give it
+        // the same reactive + proactive compaction the main run uses. The
+        // sub-agent engine has no hook registry, so it compacts without hook
+        // dispatch (an empty registry returns `Continue`).
+        let context_policy = deepagent_context::ContextPolicy::for_capability(
+            &deepagent_models::ModelCapabilityResolver::new().resolve_model_id(&sub_model),
+            sub_thinking,
+        );
+        let reactive_compactor: Arc<dyn deepagent_runtime::ReactiveContextCompactor> =
+            Arc::new(crate::context_runtime::HookedReactiveContextCompactor::new(
+                self.client.clone(),
+                sub_model.clone(),
+                Arc::new(deepagent_hooks::HookRegistry::new()),
+                session.id(),
+            ));
         let mut agent = ModelAgent::new(
             self.client.clone(),
-            request.model.clone().unwrap_or_else(|| self.model.clone()),
+            sub_model,
             system,
             &request.prompt,
             tools,
         )
         .with_response_history(fork_response_history)
-        .with_thinking_depth(subagent_thinking_depth(
-            request.effort.as_deref(),
-            self.thinking_depth,
-        )?);
+        .with_thinking_depth(sub_thinking)
+        .with_reactive_compactor(reactive_compactor)
+        .with_proactive_compaction(
+            context_policy.autocompact_threshold_tokens(None, None) as u64,
+        );
         let checkpoint = Arc::new(deepagent_runtime::CheckpointManager::new(
             self.db.clone(),
             self.parent_run_id.clone(),
