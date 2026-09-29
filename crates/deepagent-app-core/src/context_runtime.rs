@@ -975,22 +975,37 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
     );
     let system_prompt = system_manifest.render();
 
-    let knowledge_reminder = request
-        .knowledge
-        .map(|k| k.passive_block(request.prompt_for_model))
-        .filter(|b| !b.trim().is_empty())
-        .map(|b| crate::system_reminder::wrap(&b));
-    let remote_reminder = build_remote_reminder(
-        request.effective_env_mode,
-        request.connection_id,
-        request.remote_context_factory,
-    )
-    .await;
-
-    let final_user_prompt = compose_prompt_with_runtime_reminders(
-        request.prompt_for_model,
-        [&remote_reminder, &knowledge_reminder],
-    );
+    // User-input layer attachments (knowledge passive block, remote context)
+    // are collected through the shared attachment hub rather than hand-composed.
+    let mut registry =
+        deepagent_context::AttachmentRegistry::new(USER_INPUT_ATTACHMENT_CHAR_BUDGET);
+    if let Some(knowledge) = request.knowledge {
+        registry.register(Arc::new(KnowledgeReminderProvider {
+            knowledge: knowledge.clone(),
+        }));
+    }
+    if matches!(request.effective_env_mode, Some("remote")) {
+        if let (Some(factory), Some(connection_id)) =
+            (request.remote_context_factory, request.connection_id)
+        {
+            registry.register(Arc::new(RemoteContextProvider {
+                connection_id: connection_id.to_string(),
+                factory: factory.clone(),
+            }));
+        }
+    }
+    let attachment_ctx = deepagent_context::AttachmentContext {
+        session_id: request.session_id,
+        cwd: request.root,
+        query: request.prompt_for_model,
+        is_subagent: false,
+        estimated_tokens: 0,
+    };
+    let user_attachments = registry
+        .collect(&attachment_ctx, deepagent_context::AttachmentLayer::UserInput)
+        .await;
+    let final_user_prompt =
+        compose_prompt_with_attachments(request.prompt_for_model, &user_attachments);
     let context_usage = build_context_pack_snapshot(
         request.context_policy,
         &system_prompt,
@@ -1047,41 +1062,98 @@ fn build_skill_catalog_blocks(
     Ok(blocks)
 }
 
-async fn build_remote_reminder(
-    effective_env_mode: Option<&str>,
-    connection_id: Option<&str>,
-    remote_context_factory: Option<&RemoteContextFactory>,
-) -> Option<String> {
-    if !matches!(effective_env_mode, Some("remote")) {
-        return None;
+/// Character budget for the user-input attachment layer in one run.
+const USER_INPUT_ATTACHMENT_CHAR_BUDGET: usize = 12_000;
+
+/// Knowledge-base passive injection (§3.2) as a user-input attachment.
+struct KnowledgeReminderProvider {
+    knowledge: Arc<KnowledgeService>,
+}
+
+#[async_trait]
+impl deepagent_context::AttachmentProvider for KnowledgeReminderProvider {
+    fn kind(&self) -> &str {
+        "knowledge_passive"
     }
-    let (Some(factory), Some(conn_id)) = (remote_context_factory, connection_id) else {
-        return None;
-    };
-    match factory(conn_id.to_string()).await {
-        Ok(Some(block)) if !block.trim().is_empty() => Some(crate::system_reminder::wrap(&block)),
-        Ok(_) => None,
-        Err(err) => {
-            tracing::warn!(connection_id = conn_id, error = %err, "failed to collect remote context");
-            None
+
+    fn layer(&self) -> deepagent_context::AttachmentLayer {
+        deepagent_context::AttachmentLayer::UserInput
+    }
+
+    async fn collect(
+        &self,
+        ctx: &deepagent_context::AttachmentContext<'_>,
+    ) -> Vec<deepagent_context::ContextAttachment> {
+        let block = self.knowledge.passive_block(ctx.query);
+        if block.trim().is_empty() {
+            return Vec::new();
+        }
+        vec![deepagent_context::ContextAttachment::new(
+            "knowledge_passive",
+            deepagent_context::AttachmentLayer::UserInput,
+            120,
+            deepagent_context::reminder::wrap(&block),
+        )]
+    }
+}
+
+/// Remote-workspace (SSH) context as a user-input attachment.
+struct RemoteContextProvider {
+    connection_id: String,
+    factory: RemoteContextFactory,
+}
+
+#[async_trait]
+impl deepagent_context::AttachmentProvider for RemoteContextProvider {
+    fn kind(&self) -> &str {
+        "remote_context"
+    }
+
+    fn layer(&self) -> deepagent_context::AttachmentLayer {
+        deepagent_context::AttachmentLayer::UserInput
+    }
+
+    async fn collect(
+        &self,
+        _ctx: &deepagent_context::AttachmentContext<'_>,
+    ) -> Vec<deepagent_context::ContextAttachment> {
+        match (self.factory)(self.connection_id.clone()).await {
+            Ok(Some(block)) if !block.trim().is_empty() => {
+                vec![deepagent_context::ContextAttachment::new(
+                    "remote_context",
+                    deepagent_context::AttachmentLayer::UserInput,
+                    130,
+                    deepagent_context::reminder::wrap(&block),
+                )]
+            }
+            Ok(_) => Vec::new(),
+            Err(err) => {
+                tracing::warn!(
+                    connection_id = %self.connection_id,
+                    error = %err,
+                    "failed to collect remote context"
+                );
+                Vec::new()
+            }
         }
     }
 }
 
-fn compose_prompt_with_runtime_reminders<'a>(
+/// Compose the final user prompt from the collected user-input attachments
+/// (already priority-ordered, so the highest-priority block precedes the rest).
+fn compose_prompt_with_attachments(
     prompt: &str,
-    reminders: impl IntoIterator<Item = &'a Option<String>>,
+    attachments: &[deepagent_context::ContextAttachment],
 ) -> String {
-    let prefixes = reminders
-        .into_iter()
-        .filter_map(|reminder| reminder.as_ref())
-        .cloned()
-        .collect::<Vec<_>>();
-    if prefixes.is_empty() {
-        prompt.to_string()
-    } else {
-        format!("{}\n\n{}", prefixes.join("\n\n"), prompt)
+    if attachments.is_empty() {
+        return prompt.to_string();
     }
+    let prefix = attachments
+        .iter()
+        .map(|attachment| attachment.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("{prefix}\n\n{prompt}")
 }
 
 pub(crate) fn pairing_safe_compaction_split(
@@ -1622,9 +1694,20 @@ mod tests {
 
     #[test]
     fn compose_prompt_keeps_runtime_reminders_before_user_text() {
-        let remote = Some("<system-reminder>\nremote\n</system-reminder>".to_string());
-        let knowledge = Some("<system-reminder>\nknowledge\n</system-reminder>".to_string());
-        let composed = compose_prompt_with_runtime_reminders("delete temp", [&remote, &knowledge]);
+        use deepagent_context::{AttachmentLayer, ContextAttachment};
+        let remote = ContextAttachment::new(
+            "remote_context",
+            AttachmentLayer::UserInput,
+            130,
+            "<system-reminder>\nremote\n</system-reminder>",
+        );
+        let knowledge = ContextAttachment::new(
+            "knowledge_passive",
+            AttachmentLayer::UserInput,
+            120,
+            "<system-reminder>\nknowledge\n</system-reminder>",
+        );
+        let composed = compose_prompt_with_attachments("delete temp", &[remote, knowledge]);
 
         assert!(composed.starts_with("<system-reminder>\nremote"));
         assert!(composed.contains("</system-reminder>\n\n<system-reminder>\nknowledge"));
