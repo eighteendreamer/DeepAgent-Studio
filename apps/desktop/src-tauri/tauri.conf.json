@@ -40,6 +40,7 @@
       "resources/skills/**/*",
       "resources/sandbox/**/*"
     ],
+    "externalBin": ["binaries/deepagent"],
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
