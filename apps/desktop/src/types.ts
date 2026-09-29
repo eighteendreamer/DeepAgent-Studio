@@ -842,7 +842,7 @@ export interface AnySearchTestResult {
   count: number | null;
 }
 
-export type VisionMode = "off" | "system" | "model";
+export type VisionMode = "off" | "system";
 
 export interface VisionSettings {
   mode: VisionMode;
@@ -853,7 +853,6 @@ export interface VisionSettings {
   system_model: string;
   timeout_ms: number;
   auto_analyze_pasted_images: boolean;
-  send_original_image_to_model: boolean;
 }
 
 export interface VisionRecognizeRequest {

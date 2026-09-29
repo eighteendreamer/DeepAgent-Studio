@@ -843,17 +843,28 @@ impl ResponseScenePreset {
 }
 
 /// How pasted/dropped images are converted into model-readable context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VisionMode {
-    /// Do not analyze images automatically.
+    /// Do not use a third-party vision API: image attachments are sent to the
+    /// main model directly as structured image parts (native DeepSeek vision).
     Off,
     /// Use the configured third-party vision API, then pass the text result to
     /// the main chat model.
     #[default]
     System,
-    /// Use a provider model that explicitly supports image input.
-    Model,
+}
+
+impl<'de> Deserialize<'de> for VisionMode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Tolerant read: unknown values (including the removed legacy `"model"`
+        // mode) fall back instead of failing the whole settings load.
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::parse(&raw).unwrap_or(VisionMode::System))
+    }
 }
 
 impl VisionMode {
@@ -861,7 +872,6 @@ impl VisionMode {
         match self {
             VisionMode::Off => "off",
             VisionMode::System => "system",
-            VisionMode::Model => "model",
         }
     }
 
@@ -869,7 +879,9 @@ impl VisionMode {
         match s.trim().to_ascii_lowercase().as_str() {
             "off" => Some(Self::Off),
             "system" => Some(Self::System),
-            "model" => Some(Self::Model),
+            // Legacy: the removed `model` mode selected native vision, which the
+            // `system`/`off` toggle now expresses as `off`.
+            "model" => Some(Self::Off),
             _ => None,
         }
     }
@@ -914,8 +926,6 @@ pub struct VisionSettings {
     pub timeout_ms: u64,
     #[serde(default = "default_auto_analyze_pasted_images")]
     pub auto_analyze_pasted_images: bool,
-    #[serde(default)]
-    pub send_original_image_to_model: bool,
 }
 
 impl Default for VisionSettings {
@@ -929,7 +939,6 @@ impl Default for VisionSettings {
             system_model: default_system_vision_model(),
             timeout_ms: default_vision_timeout_ms(),
             auto_analyze_pasted_images: default_auto_analyze_pasted_images(),
-            send_original_image_to_model: false,
         }
     }
 }
@@ -2092,6 +2101,19 @@ mod tests {
     use super::*;
     use crate::secret_store::MemorySecretStore;
     use deepagent_models::transport::MockTransport;
+
+    #[test]
+    fn vision_mode_tolerates_legacy_and_unknown_values() {
+        // Legacy persisted "model" selected native vision → maps to Off now.
+        let legacy: VisionMode = serde_json::from_str("\"model\"").unwrap();
+        assert_eq!(legacy, VisionMode::Off);
+        // Unknown values fall back to the safe default (third-party off? no: system).
+        let unknown: VisionMode = serde_json::from_str("\"nonsense\"").unwrap();
+        assert_eq!(unknown, VisionMode::System);
+        assert_eq!(VisionMode::parse("system"), Some(VisionMode::System));
+        assert_eq!(VisionMode::parse("off"), Some(VisionMode::Off));
+        assert_eq!(VisionMode::parse("model"), Some(VisionMode::Off));
+    }
 
     fn transport_with_models() -> Arc<dyn HttpTransport> {
         let body = r#"{"object":"list","data":[

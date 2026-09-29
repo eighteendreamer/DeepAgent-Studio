@@ -1558,7 +1558,6 @@ export async function getVisionSettings(): Promise<VisionSettings> {
     system_model: "moonshotai/Kimi-K2.5:DashScope",
     timeout_ms: 60000,
     auto_analyze_pasted_images: true,
-    send_original_image_to_model: false,
   };
 }
 
