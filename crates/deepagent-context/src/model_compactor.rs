@@ -14,7 +14,9 @@
 
 use std::sync::Arc;
 
-use deepagent_models::{ModelClient, ResponseRequest};
+use deepagent_models::{
+    classify_model_error, ModelClient, ModelFailureKind, ResponseRequest,
+};
 
 use crate::compaction::{HeuristicSummarizer, Summarizer, TaskSummary};
 
@@ -43,6 +45,10 @@ Return ONLY a single JSON object (no markdown fence, no prose outside any <analy
   "failures": ["dead-ends or errors to avoid repeating"]
 }
 Each array holds short strings (max ~12 items). If a section is empty, use []."#;
+
+/// Retries after a compaction request is rejected as too long (Claude Code
+/// `MAX_PTL_RETRIES`). Each retry drops the oldest half of the remaining turns.
+const MAX_PTL_RETRIES: usize = 3;
 
 impl ModelCompactor {
     /// Build a compactor over a model client and model id. Defaults: temperature
@@ -87,6 +93,12 @@ impl ModelCompactor {
     }
 
     /// Attempt the model-backed summary; `None` on any failure.
+    ///
+    /// PTL-aware retry (Claude Code `truncateHeadForPTLRetry`): if the compaction
+    /// request itself is rejected as too long, drop the OLDEST half of the
+    /// remaining turns and retry, up to [`MAX_PTL_RETRIES`]. Turns are already
+    /// pre-rendered strings, so truncating the head cannot split a tool-call /
+    /// result pair.
     async fn try_model_summary(
         &self,
         goal: &str,
@@ -96,19 +108,44 @@ impl ModelCompactor {
         if older_turns.is_empty() {
             return Some(prior.clone());
         }
-        let user = build_user_prompt(goal, prior, older_turns);
-        let request = ResponseRequest::with_instructions_and_user_input(
-            self.model.clone(),
-            COMPACT_SYSTEM,
-            user,
-        )
-        .with_temperature(self.temperature)
-        .with_max_output_tokens(self.max_tokens);
+        let mut keep_from = 0usize;
+        for attempt in 0..=MAX_PTL_RETRIES {
+            let slice = &older_turns[keep_from..];
+            if slice.is_empty() {
+                return None;
+            }
+            let user = build_user_prompt(goal, prior, slice);
+            let request = ResponseRequest::with_instructions_and_user_input(
+                self.model.clone(),
+                COMPACT_SYSTEM,
+                user,
+            )
+            .with_temperature(self.temperature)
+            .with_max_output_tokens(self.max_tokens);
 
-        let response = self.client.stream_response(request).await.ok()?;
-        let content = response.output_text_projection();
-        let parsed = parse_summary_json(&content)?;
-        Some(merge_into_prior(prior, parsed, goal))
+            match self.client.stream_response(request).await {
+                Ok(response) => {
+                    let content = response.output_text_projection();
+                    return parse_summary_json(&content)
+                        .map(|parsed| merge_into_prior(prior, parsed, goal));
+                }
+                Err(error) => {
+                    if classify_model_error(&error) != ModelFailureKind::ContextOverflow
+                        || attempt == MAX_PTL_RETRIES
+                    {
+                        return None;
+                    }
+                    let remaining = older_turns.len() - keep_from;
+                    keep_from += (remaining / 2).max(1);
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        dropped = keep_from,
+                        "compaction request hit context overflow; retrying with truncated head"
+                    );
+                }
+            }
+        }
+        None
     }
 }
 
@@ -340,5 +377,64 @@ mod tests {
         };
         let summary = compactor.summarize("g", &prior, &[]).await;
         assert_eq!(summary, prior);
+    }
+
+    /// First call fails with a context-overflow (PTL) error; the retry succeeds.
+    struct PtlThenOkTransport {
+        calls: std::sync::atomic::AtomicUsize,
+        events: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl deepagent_models::transport::HttpTransport for PtlThenOkTransport {
+        async fn stream(
+            &self,
+            _request: deepagent_models::TransportRequest,
+            sink: &mut dyn deepagent_models::transport::EventSink,
+        ) -> deepagent_core::error::Result<()> {
+            let call = self
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call == 0 {
+                return Err(deepagent_core::error::CoreError::provider(
+                    Some(413),
+                    Some("context_length_exceeded".to_string()),
+                    "maximum context window exceeded".to_string(),
+                ));
+            }
+            for event in &self.events {
+                if sink.on_event(event)? {
+                    break;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_compaction_on_context_overflow() {
+        let transport = Arc::new(PtlThenOkTransport {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            events: vec![
+                r#"{"type":"response.output_text.delta","delta":"{\"goal\":\"g\",\"completed\":[\"ok\"]}"}"#
+                    .to_string(),
+                r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+            ],
+        });
+        let client = Arc::new(ModelClient::new(
+            transport,
+            deepagent_models::ModelConfig::deepseek("test"),
+        ));
+        let compactor = ModelCompactor::new(client, "deepseek-flash");
+        let summary = compactor
+            .summarize(
+                "g",
+                &TaskSummary::default(),
+                &["a".into(), "b".into(), "c".into(), "d".into()],
+            )
+            .await;
+        // The PTL retry dropped the oldest half and succeeded on the second call.
+        assert_eq!(summary.goal, "g");
+        assert!(summary.completed_steps.iter().any(|s| s.contains("ok")));
     }
 }
