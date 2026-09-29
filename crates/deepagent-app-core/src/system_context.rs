@@ -16,6 +16,11 @@ pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "\n\n<<<DYNAMIC>>>\n\n";
 /// Build the effective system context manifest for a run: the stable,
 /// prefix-cacheable base, then the dynamic environment, permissions, and
 /// optional runtime-contributed blocks.
+///
+/// The single assembly entry for the system prompt; the named block parameters
+/// make the cacheable/dynamic split explicit rather than hiding it behind a
+/// struct the callers would have to re-derive.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_system_manifest(
     root: &Path,
     sandbox_mode: SandboxMode,
@@ -24,6 +29,7 @@ pub(crate) fn build_system_manifest(
     tool_catalog_block: Option<String>,
     mcp_instructions_block: Option<String>,
     skill_catalog_blocks: Vec<String>,
+    prompt_budget: usize,
 ) -> ContextManifest {
     let today = current_date_string();
     let os = std::env::consts::OS;
@@ -149,7 +155,7 @@ pub(crate) fn build_system_manifest(
         );
     }
 
-    assembler.assemble(&HeuristicTokenizer::new(), usize::MAX)
+    assembler.assemble(&HeuristicTokenizer::new(), prompt_budget)
 }
 
 pub(crate) fn build_context_pack_snapshot(
@@ -267,6 +273,7 @@ pub(crate) fn build_system_prompt(root: &Path) -> String {
         None,
         None,
         Vec::new(),
+        usize::MAX,
     )
     .render()
 }
@@ -325,6 +332,7 @@ mod tests {
             None,
             Some("# MCP server instructions\n\n## demo\nUse the demo tools.".to_string()),
             Vec::new(),
+            usize::MAX,
         );
         let entry = manifest
             .entries
@@ -348,6 +356,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            usize::MAX,
         );
         assert!(!manifest
             .entries
@@ -376,6 +385,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            usize::MAX,
         );
         let system_entry = manifest
             .entries
@@ -417,6 +427,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            usize::MAX,
         );
         let ws = manifest
             .entries
@@ -520,5 +531,89 @@ mod tests {
             answer.to_ascii_uppercase().contains("YES"),
             "model must confirm the marker file from the injected structure; got: {answer}"
         );
+    }
+
+    /// S1-3: dynamic context blocks (MCP instructions, skill catalog) over the
+    /// prompt budget must be dropped, but the required system/edge blocks are
+    /// always kept. This is the safety net behind the MCP-instructions delta:
+    /// even if a single server is verbose, the assembled manifest can no longer
+    /// blow past the prompt allowance.
+    #[test]
+    fn drops_optional_dynamic_blocks_but_keeps_required_system() {
+        let big_mcp = "# MCP server instructions\n\n## verbose\n".to_string()
+            + &"Repeat this instruction. ".repeat(300);
+        let big_skill =
+            "<system-reminder>\n<available-skills>\n</available-skills>\n</system-reminder>"
+                .to_string()
+                + &" skill".repeat(300);
+
+        // A small budget that the dynamic blocks alone overshoot by far. The
+        // required System / RuntimeEnvironment / PermissionContext entries must
+        // survive; the optional McpCatalog / SkillCatalog entries must drop.
+        let manifest = build_system_manifest(
+            Path::new("/work/proj"),
+            SandboxMode::WorkspaceWrite,
+            None,
+            None,
+            None,
+            Some(big_mcp),
+            vec![big_skill],
+            120,
+        );
+        let sources = manifest
+            .entries
+            .iter()
+            .map(|entry| entry.source)
+            .collect::<Vec<_>>();
+        assert!(sources.contains(&ContextSourceKind::System), "system kept");
+        assert!(
+            sources.contains(&ContextSourceKind::RuntimeEnvironment),
+            "runtime env kept"
+        );
+        assert!(
+            sources.contains(&ContextSourceKind::PermissionContext),
+            "permission block kept (required)"
+        );
+        assert!(
+            !sources.contains(&ContextSourceKind::McpCatalog),
+            "verbose MCP instructions dropped under budget"
+        );
+        assert!(
+            !sources.contains(&ContextSourceKind::SkillCatalog),
+            "verbose skill catalog dropped under budget"
+        );
+        // The dropped origins are recorded so the run log can explain WHY a
+        // block is missing (assembler.rs `dropped_origins` field).
+        assert!(
+            manifest
+                .dropped_origins
+                .contains(&"deepagent.mcp_instructions".to_string()),
+            "dropped_origins must name the MCP block"
+        );
+    }
+
+    /// The same inputs with an unlimited budget keep every dynamic block — the
+    /// delta is purely budget-driven, not a lossy default.
+    #[test]
+    fn keeps_dynamic_blocks_when_budget_fits() {
+        let manifest = build_system_manifest(
+            Path::new("/work/proj"),
+            SandboxMode::WorkspaceWrite,
+            None,
+            None,
+            None,
+            Some("# MCP server instructions\n\n## demo\nUse demo.".to_string()),
+            vec!["<system-reminder>\n<available-skills />\n</system-reminder>".to_string()],
+            usize::MAX,
+        );
+        assert!(manifest
+            .entries
+            .iter()
+            .any(|e| e.source == ContextSourceKind::McpCatalog));
+        assert!(manifest
+            .entries
+            .iter()
+            .any(|e| e.source == ContextSourceKind::SkillCatalog));
+        assert!(manifest.dropped_origins.is_empty());
     }
 }

@@ -2022,6 +2022,7 @@ mod tests {
             Some("# Deferred tools\n- tool_search".to_string()),
             None,
             vec!["<system-reminder>\n<available-skills />\n</system-reminder>".to_string()],
+            usize::MAX,
         );
         let sources = manifest
             .entries

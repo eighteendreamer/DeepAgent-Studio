@@ -984,6 +984,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         tool_catalog_block,
         mcp_instructions_block,
         skill_catalog_blocks,
+        request.context_policy.prompt_budget,
     );
     let system_prompt = system_manifest.render();
 
@@ -1505,6 +1506,7 @@ or updated resources.\n\n<invoked-skills>\n",
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deepagent_context::TokenCounter;
 
     fn tool_call(
         id: &str,
@@ -2316,5 +2318,64 @@ mod tests {
         // Full-block fallback: entries = None keeps the old behavior verbatim.
         let full = mcp_instructions_block_for_run(Some("full block"), None, &prior);
         assert_eq!(full.as_deref(), Some("full block"));
+    }
+
+    /// Token-baseline measurement for the MCP delta (S1-3 / §5): once a few
+    /// servers have been announced, the per-turn block carries only the
+    /// not-yet-announced remainder, so per-turn MCP-instruction pressure drops
+    /// monotonically as the session progresses and converges to nothing.
+    #[test]
+    fn mcp_instructions_delta_slashes_per_turn_token_pressure() {
+        let counter = HeuristicTokenizer::new();
+        let make_server = |n: usize| -> (String, String) {
+            (
+                format!("server-{n}"),
+                format!("Use the tools from server-{n} to inspect and modify state. ").repeat(12),
+            )
+        };
+        let entries: Vec<(String, String)> = (0..5).map(make_server).collect();
+
+        let full = crate::mcp_runtime::render_mcp_instruction_entries(&entries)
+            .expect("full block renders");
+        let full_tokens = counter.count(&full);
+        assert!(
+            full_tokens > 300,
+            "full block over 5 verbose servers is sizable (got {full_tokens})"
+        );
+
+        // Turn 2: three already announced → only two remain in the prompt.
+        let sid = deepagent_core::id::SessionId::nil();
+        let announced = vec![mcp_event(
+            sid,
+            0,
+            EventPayload::McpInstructionsDelta {
+                added: vec!["server-0".into(), "server-1".into(), "server-2".into()],
+                removed: vec![],
+            },
+        )];
+        let delta_block = mcp_instructions_block_for_run(None, Some(&entries), &announced)
+            .expect("two servers remain");
+        let delta_tokens = counter.count(&delta_block);
+        assert!(
+            delta_tokens <= full_tokens * 2 / 3,
+            "fewer servers announced must shrink the block (delta {delta_tokens} vs full {full_tokens})"
+        );
+
+        // Turn 3: the rest announced → zero new instructions (idempotent
+        // convergence, same inputs as before must yield nothing new).
+        let rest = vec![mcp_event(
+            sid,
+            1,
+            EventPayload::McpInstructionsDelta {
+                added: vec!["server-3".into(), "server-4".into()],
+                removed: vec![],
+            },
+        )];
+        let combined = [announced[0].clone(), rest[0].clone()];
+        let converged = mcp_instructions_block_for_run(None, Some(&entries), &combined);
+        assert!(
+            converged.is_none(),
+            "fully-announced session adds no MCP block"
+        );
     }
 }
