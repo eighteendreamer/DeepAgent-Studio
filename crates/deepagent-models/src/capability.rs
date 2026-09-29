@@ -32,6 +32,11 @@ pub struct ModelCapability {
     pub supports_tools: bool,
     pub supports_thinking: bool,
     pub supports_json_output: bool,
+    /// Whether the model accepts image input natively (DeepSeek multimodal).
+    /// Defaulted to `false` for backward-compatible deserialization of older
+    /// capability snapshots.
+    #[serde(default)]
+    pub supports_vision: bool,
     pub capability_source: CapabilitySource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
@@ -95,6 +100,7 @@ impl ModelCapabilityResolver {
                 || looks_like_reasoner_model_id(model_id)
                 || model_id.contains("reason"),
             supports_json_output: true,
+            supports_vision: looks_like_vision_model_id(model_id),
             capability_source: CapabilitySource::ProviderMetadata,
             fallback_reason: None,
         })
@@ -111,6 +117,7 @@ impl ModelCapabilityResolver {
             supports_tools: true,
             supports_thinking: true,
             supports_json_output: true,
+            supports_vision: looks_like_vision_model_id(model_id),
             capability_source: CapabilitySource::BundledOfficialSnapshot,
             fallback_reason: None,
         })
@@ -124,6 +131,7 @@ impl ModelCapabilityResolver {
             supports_tools: true,
             supports_thinking: false,
             supports_json_output: true,
+            supports_vision: false,
             capability_source: CapabilitySource::ConservativeFallback,
             fallback_reason: Some(
                 "model capability is not published by /models and no official snapshot matched"
@@ -133,9 +141,33 @@ impl ModelCapabilityResolver {
     }
 }
 
+/// Whether `model_id` belongs to a DeepSeek vision-capable family. Per the
+/// official Vision guide, the `flash` line (including the legacy
+/// `deepseek-v4-flash-vision-exp` alias) accepts image input.
+fn looks_like_vision_model_id(model_id: &str) -> bool {
+    model_id.to_ascii_lowercase().contains("flash")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deepseek_flash_family_reports_vision() {
+        // Per DeepSeek's Vision guide, `deepseek-flash` accepts images; the
+        // legacy `deepseek-v4-flash-vision-exp` name routes to the same model.
+        assert!(looks_like_vision_model_id("deepseek-flash"));
+        assert!(looks_like_vision_model_id("deepseek-v4-flash"));
+        assert!(looks_like_vision_model_id("deepseek-v4-flash-vision-exp"));
+        assert!(!looks_like_vision_model_id("deepseek-chat"));
+        assert!(!looks_like_vision_model_id("deepseek-v4-pro"));
+    }
+
+    #[test]
+    fn flash_snapshot_marks_vision_support() {
+        let cap = ModelCapabilityResolver::new().resolve_model_id("deepseek-v4-flash");
+        assert!(cap.supports_vision);
+    }
 
     #[test]
     fn deepseek_high_context_model_uses_official_snapshot() {

@@ -1394,6 +1394,7 @@ mod tests {
             reasoning_content: None,
             tool_calls: calls,
             tool_call_id: None,
+            attachments: Vec::new(),
         }
     }
 

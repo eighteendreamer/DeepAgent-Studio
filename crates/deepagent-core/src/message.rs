@@ -45,6 +45,26 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
+/// A reference to a file/image attachment carried by a user message.
+///
+/// Only the *reference* is stored on [`Message`] (and therefore in the
+/// append-only event log) — never the inline bytes. The model request layer
+/// materializes the bytes (e.g. a base64 data URL) at send time, so image
+/// payloads never bloat the event stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageAttachment {
+    /// Attachment id as assigned when the file was ingested.
+    pub id: String,
+    /// Logical kind: `image` | `text` | `file`.
+    pub kind: String,
+    /// MIME type (e.g. `image/png`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    /// On-disk path of the persisted original, resolved at request time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
 /// A single conversation message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
@@ -68,6 +88,12 @@ pub struct Message {
     /// For [`Role::Tool`] messages, the id of the originating tool call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+
+    /// File/image attachments carried by this message (user messages only in
+    /// practice). Reference-only — see [`MessageAttachment`]. Omitted from JSON
+    /// when empty, so existing events round-trip unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MessageAttachment>,
 }
 
 impl Message {
@@ -94,6 +120,7 @@ impl Message {
             reasoning_content: None,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -105,6 +132,7 @@ impl Message {
             reasoning_content: None,
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
+            attachments: Vec::new(),
         }
     }
 
@@ -118,6 +146,17 @@ impl Message {
     pub fn with_tool_calls(mut self, calls: Vec<ToolCall>) -> Self {
         self.tool_calls = calls;
         self
+    }
+
+    /// Attach file/image attachment references (builder style).
+    pub fn with_attachments(mut self, attachments: Vec<MessageAttachment>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    /// Whether this message carries any attachments.
+    pub fn has_attachments(&self) -> bool {
+        !self.attachments.is_empty()
     }
 
     /// Whether this message carries tool calls.
@@ -164,6 +203,33 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         assert!(!json.contains("reasoning_content"));
         assert!(!json.contains("tool_calls"));
+    }
+
+    #[test]
+    fn attachments_omitted_from_json_when_empty() {
+        let m = Message::user("hello");
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("attachments"));
+        // Old events (no attachments field) deserialize unchanged.
+        let back: Message = serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
+        assert!(!back.has_attachments());
+    }
+
+    #[test]
+    fn attachment_reference_roundtrips() {
+        let m = Message::user("look at this").with_attachments(vec![MessageAttachment {
+            id: "att_1".into(),
+            kind: "image".into(),
+            media_type: Some("image/png".into()),
+            path: Some("/tmp/att_1/shot.png".into()),
+        }]);
+        let json = serde_json::to_string(&m).unwrap();
+        // Reference-only: no inline bytes in the event payload.
+        assert!(!json.contains("data:"));
+        assert!(json.contains("att_1"));
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+        assert!(back.has_attachments());
     }
 
     #[test]

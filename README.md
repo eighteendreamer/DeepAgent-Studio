@@ -9,8 +9,8 @@
 ## 当前状态
 
 **内核已完成，桌面平台已连通。** 整个工作区由 **33 个内核 crate + 一个无头 CLI +
-一个 Tauri 桌面应用**组成，构建干净、Lint 干净（`clippy -D warnings`），并由测试覆盖
-（默认离线运行）。
+一个 Tauri 桌面应用**组成，构建干净、Lint 干净（`clippy -D warnings`），并由 **2456 个
+通过的测试**覆盖（`cargo test --workspace`）。
 
 Phase A（让平台真正可用）和 Phase B（声明式配置面）已全部完成；Phase C
 （平台化与可观测）进行中。

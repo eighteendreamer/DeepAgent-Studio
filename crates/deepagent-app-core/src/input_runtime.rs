@@ -270,6 +270,7 @@ pub(crate) fn conversation_with_tool_pairs_from_events(events: &[Event]) -> Vec<
             reasoning_content: None,
             tool_calls: calls,
             tool_call_id: None,
+            attachments: Vec::new(),
         });
     }
 
