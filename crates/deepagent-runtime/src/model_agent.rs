@@ -151,6 +151,19 @@ pub trait ReactiveContextCompactor: Send + Sync {
     }
 }
 
+/// Resolves an attachment reference to a base64 data URL for provider wire
+/// encoding. Implemented by the app layer, which owns attachment storage, so the
+/// runtime crate stays free of any filesystem/attachment dependency (parity with
+/// [`RelevantMemoryProvider`] / [`ReactiveContextCompactor`]).
+///
+/// The returned string must be a `data:<mime>;base64,<...>` URL (DeepSeek's
+/// Chat Completions `image_url.url` and Responses `input_image.image_url` both
+/// accept data URLs). Returning `None` means the attachment could not be
+/// materialized; the message then falls back to its text content.
+pub trait AttachmentDataResolver: Send + Sync {
+    fn data_url(&self, attachment: &deepagent_core::message::MessageAttachment) -> Option<String>;
+}
+
 /// One background-prefetched memory ready for injection (§3.2, Claude Code
 /// `relevant_memories` attachment). `id` is a stable entry id used for
 /// per-session de-duplication; `block` is the already-rendered content
@@ -434,6 +447,8 @@ pub struct ModelAgent {
     doom_loop_nudged_signature: Option<String>,
     /// Background relevant-memory prefetch provider (§3.2). `None` disables it.
     memory_provider: Option<Arc<dyn RelevantMemoryProvider>>,
+    /// Resolves image attachment references to data URLs at request build time.
+    attachment_resolver: Option<Arc<dyn AttachmentDataResolver>>,
     /// In-flight background prefetch task; polled non-blocking each turn.
     memory_prefetch_handle: Option<tokio::task::JoinHandle<Result<Vec<RelevantMemory>>>>,
     /// When the in-flight prefetch started (for injection-latency telemetry).
@@ -505,6 +520,7 @@ impl ModelAgent {
             recent_call_signatures: std::collections::VecDeque::new(),
             doom_loop_nudged_signature: None,
             memory_provider: None,
+            attachment_resolver: None,
             memory_prefetch_handle: None,
             memory_prefetch_started_at: None,
             last_prefetch_query: None,
@@ -569,7 +585,29 @@ impl ModelAgent {
     }
 
     fn request_for_current_history(&self) -> ResponseRequest {
-        self.response_history.request(self.model.clone())
+        let mut request = self.response_history.request(self.model.clone());
+        if let Some(resolver) = self.attachment_resolver.as_ref() {
+            let mut urls = std::collections::BTreeMap::new();
+            for item in &request.input {
+                if let deepagent_core::response_item::ResponseInputItem::InputMessage {
+                    attachments,
+                    ..
+                } = item
+                {
+                    for attachment in attachments {
+                        if attachment.kind == "image" {
+                            if let Some(url) = resolver.data_url(attachment) {
+                                urls.insert(attachment.id.clone(), url);
+                            }
+                        }
+                    }
+                }
+            }
+            if !urls.is_empty() {
+                request.attachment_data_urls = urls;
+            }
+        }
+        request
     }
 
     fn push_provider_output_items(&mut self, assistant: Message, items: &[ResponseOutputItem]) {
@@ -632,6 +670,16 @@ impl ModelAgent {
         provider: Arc<dyn RelevantMemoryProvider>,
     ) -> Self {
         self.memory_provider = Some(provider);
+        self
+    }
+
+    /// Attach an attachment resolver so image attachment references are
+    /// materialized into provider image parts at request build time.
+    pub fn with_attachment_resolver(
+        mut self,
+        resolver: Arc<dyn AttachmentDataResolver>,
+    ) -> Self {
+        self.attachment_resolver = Some(resolver);
         self
     }
 

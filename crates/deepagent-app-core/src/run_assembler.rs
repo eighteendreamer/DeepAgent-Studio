@@ -773,6 +773,7 @@ impl<'a> RunAssembler<'a> {
             .with_response_history(response_history)
             .with_proactive_compaction(proactive_threshold)
             .with_prefire(prefire_start)
+            .with_attachment_resolver(Arc::new(crate::attachment_service::FileAttachmentResolver))
             .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME);
 
         if let Some(knowledge) = self.knowledge {

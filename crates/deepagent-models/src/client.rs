@@ -458,6 +458,7 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
         chat = chat.with_reasoning_effort(value);
     }
     chat.user = request.user;
+    chat.attachment_data_urls = request.attachment_data_urls;
     Ok(chat)
 }
 

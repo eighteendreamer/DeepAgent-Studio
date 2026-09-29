@@ -7,7 +7,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
 use deepagent_core::error::{CoreError, Result};
+use deepagent_core::message::MessageAttachment;
+use deepagent_runtime::AttachmentDataResolver;
 use sha2::{Digest, Sha256};
 
 use crate::dto::{AttachmentDto, AttachmentIngestDto, PreviewResultDto};
@@ -316,9 +319,88 @@ fn clean_file_name(value: &str) -> String {
     }
 }
 
+/// Resolves a persisted image attachment to a base64 data URL for provider wire
+/// encoding, reading the file referenced by [`MessageAttachment::path`].
+///
+/// DeepSeek accepts `data:` URLs for both Chat Completions (`image_url.url`) and
+/// Responses (`input_image.image_url`). A single image must be ≤ 32 MiB; larger
+/// images are skipped (returns `None`) so the message falls back to its text.
+pub struct FileAttachmentResolver;
+
+impl AttachmentDataResolver for FileAttachmentResolver {
+    fn data_url(&self, attachment: &MessageAttachment) -> Option<String> {
+        if attachment.kind != "image" {
+            return None;
+        }
+        let path = attachment.path.as_deref()?;
+        let bytes = std::fs::read(path).ok()?;
+        const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+        if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+            return None;
+        }
+        let mime = attachment
+            .media_type
+            .clone()
+            .or_else(|| sniff_image_mime(path))
+            .unwrap_or_else(|| "image/png".to_string());
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Some(format!("data:{mime};base64,{encoded}"))
+    }
+}
+
+fn sniff_image_mime(path: &str) -> Option<String> {
+    let ext = std::path::Path::new(path)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    Some(mime.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_attachment_resolver_encodes_png_data_url() {
+        use deepagent_runtime::AttachmentDataResolver;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, [0x89u8, b'P', b'N', b'G']).unwrap();
+        let attachment = MessageAttachment {
+            id: "att_1".into(),
+            kind: "image".into(),
+            media_type: Some("image/png".into()),
+            path: Some(path.to_string_lossy().into_owned()),
+        };
+        let url = FileAttachmentResolver.data_url(&attachment).unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn file_attachment_resolver_skips_non_image_and_missing() {
+        use deepagent_runtime::AttachmentDataResolver;
+        let non_image = MessageAttachment {
+            id: "t".into(),
+            kind: "text".into(),
+            media_type: None,
+            path: Some("x".into()),
+        };
+        assert!(FileAttachmentResolver.data_url(&non_image).is_none());
+        let no_path = MessageAttachment {
+            id: "i".into(),
+            kind: "image".into(),
+            media_type: None,
+            path: None,
+        };
+        assert!(FileAttachmentResolver.data_url(&no_path).is_none());
+    }
 
     #[test]
     fn ingests_plain_text_attachment() {
