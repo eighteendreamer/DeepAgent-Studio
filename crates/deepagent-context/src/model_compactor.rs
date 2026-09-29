@@ -32,7 +32,9 @@ pub struct ModelCompactor {
 /// The compaction system prompt: instructs the model to emit ONLY JSON.
 const COMPACT_SYSTEM: &str = r#"You compress an agent's older conversation turns into a compact, structured progress summary so the agent can keep working without the full transcript. Preserve intent and hard-won facts; drop chatter.
 
-Return ONLY a single JSON object (no markdown fence, no prose) with exactly these keys:
+Do NOT call any tools — respond with text only. You MAY precede the JSON with a short <analysis>...</analysis> scratch block; it is stripped before parsing.
+
+Return ONLY a single JSON object (no markdown fence, no prose outside any <analysis> block) with exactly these keys:
 {
   "goal": "the overall task in one sentence",
   "completed": ["concrete things already done"],
@@ -141,10 +143,33 @@ struct SummaryJson {
     failures: Vec<String>,
 }
 
+/// Strip a leading/embedded `<analysis>...</analysis>` scratch block (Claude
+/// Code `formatCompactSummary` parity) so the model's private reasoning never
+/// leaks into the parsed summary.
+fn strip_analysis(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find("<analysis>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</analysis>") {
+            Some(end) => rest = &rest[start + end + "</analysis>".len()..],
+            None => {
+                // Unclosed block: drop the remainder.
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Parse the model output into a [`SummaryJson`], tolerating a stray markdown
-/// fence or surrounding prose by extracting the first `{...}` block.
+/// fence or surrounding prose by extracting the first `{...}` block. Any
+/// `<analysis>` scratch block is stripped first.
 fn parse_summary_json(content: &str) -> Option<SummaryJson> {
-    let trimmed = content.trim();
+    let cleaned = strip_analysis(content);
+    let trimmed = cleaned.trim();
     // Fast path: whole thing is JSON.
     if let Ok(v) = serde_json::from_str::<SummaryJson>(trimmed) {
         return Some(v);
@@ -215,6 +240,21 @@ mod tests {
     #[test]
     fn rejects_non_json() {
         assert!(parse_summary_json("no json here").is_none());
+    }
+
+    #[test]
+    fn strips_leading_analysis_block_before_parsing() {
+        let s = "<analysis>\nprivate reasoning\n</analysis>\n{\"goal\":\"g\",\"completed\":[\"a\"]}";
+        let v = parse_summary_json(s).unwrap();
+        assert_eq!(v.goal, "g");
+        assert_eq!(v.completed, vec!["a"]);
+    }
+
+    #[test]
+    fn unclosed_analysis_block_drops_remainder() {
+        let s = "{\"goal\":\"kept\",\"completed\":[]} trailing <analysis> never closed";
+        let v = parse_summary_json(s).unwrap();
+        assert_eq!(v.goal, "kept");
     }
 
     #[test]
