@@ -189,16 +189,10 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
               // so tool icons stay consistent across entry points.
               const Icon = toolIconComponent(card.type);
               const ownTitle = explicitLabel(card.title, card.type);
-              const ownDesc = explicitLabel(card.desc, card.type, "Desc");
               const translatedTitle =
                 ownTitle ||
                 t(`chatView.tools.${card.type}`, {
                   defaultValue: toolLabel(card.type),
-                });
-              const translatedDesc =
-                ownDesc ||
-                t(`chatView.tools.${card.type}Desc`, {
-                  defaultValue: toolDescription(card.type),
                 });
 
               return (
@@ -206,17 +200,14 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
                   key={`${card.type}:${card.title}`}
                   type="button"
                   onClick={() => onSelect(card)}
-                  className="group grid min-h-[88px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl border border-border-theme bg-white px-4 py-3 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/45 hover:shadow-[0_12px_28px_rgba(15,23,42,0.08)]"
+                  className="group grid min-h-[64px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl border border-border-theme bg-white px-4 py-3 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/45 hover:shadow-[0_12px_28px_rgba(15,23,42,0.08)]"
                 >
-                  <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-black/[0.03] text-text-secondary transition-transform duration-200 group-hover:scale-105">
                     <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden="true" />
                   </div>
                   <div className="min-w-0">
                     <div className="truncate text-[14px] font-semibold text-text-base transition-colors group-hover:text-primary">
                       {translatedTitle}
-                    </div>
-                    <div className="mt-0.5 line-clamp-2 text-[12px] leading-5 text-text-secondary">
-                      {translatedDesc}
                     </div>
                   </div>
                   <div className="flex justify-end">
