@@ -927,6 +927,15 @@ impl<'a> RunAssembler<'a> {
             }
         };
 
+        // Persist model-invoked history snips so a restart reconstructs the same
+        // (snipped) working history instead of resurrecting removed segments.
+        let snipped_tags = agent.snipped_tags();
+        if !snipped_tags.is_empty() {
+            if let Err(error) = session.append(EventPayload::ContextSnipped { tags: snipped_tags }) {
+                tracing::warn!(%error, "failed to record ContextSnipped event");
+            }
+        }
+
         AppRunFinalizer::new(
             self.db.clone(),
             self.cost.clone(),

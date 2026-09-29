@@ -240,7 +240,34 @@ const REPLAY_TOOL_RESULT_MAX_CHARS: usize = 2_000;
 /// never arrived because the process crashed or the run was cancelled
 /// mid-flight — get a synthesized failure result so the transcript NEVER
 /// contains a dangling `tool_use` (strict providers reject those).
+/// Collect the union of every persisted snipped tag across the session's log.
+fn persisted_snipped_tags(events: &[Event]) -> Vec<String> {
+    let mut tags = std::collections::BTreeSet::new();
+    for event in events {
+        if let EventPayload::ContextSnipped { tags: snipped } = &event.payload {
+            tags.extend(snipped.iter().cloned());
+        }
+    }
+    tags.into_iter().collect()
+}
+
+/// Rebuild a run's conversation from the event log and re-apply any persisted
+/// history snips, so a restart reconstructs the same (snipped) working history
+/// instead of resurrecting removed segments.
 pub(crate) fn conversation_with_tool_pairs_from_events(events: &[Event]) -> Vec<Message> {
+    let messages = build_conversation(events);
+    let tags = persisted_snipped_tags(events);
+    if tags.is_empty() {
+        return messages;
+    }
+    deepagent_runtime::snip_segments(
+        &messages,
+        &tags,
+        deepagent_runtime::SNIP_PROTECTED_RECENT_MESSAGES,
+    )
+}
+
+fn build_conversation(events: &[Event]) -> Vec<Message> {
     if events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ResponseItemAppended { .. }))
@@ -501,6 +528,43 @@ mod tests {
             timestamp: deepagent_core::clock::Timestamp::from_millis(seq as i64),
             payload,
         }
+    }
+
+    #[test]
+    fn rebuild_reapplies_persisted_snips() {
+        let sid = SessionId::nil();
+        let user = |text: &str| EventPayload::MessageAppended {
+            message: Message::user(text),
+        };
+        let assistant = |text: &str| EventPayload::MessageAppended {
+            message: Message::assistant(text),
+        };
+        // 12 messages so the protected tail (last 8) starts at index 4, leaving
+        // the tagged segment at index 1 removable.
+        let mut events = vec![
+            event(sid, 0, user("first")),
+            event(sid, 1, user("[id:u1] old task")),
+            event(sid, 2, assistant("old answer")),
+            event(sid, 3, user("[id:u2] live task")),
+        ];
+        for i in 0..8u64 {
+            events.push(event(sid, 4 + i, assistant(&format!("filler {i}"))));
+        }
+
+        let full = conversation_with_tool_pairs_from_events(&events);
+        assert!(full.iter().any(|m| m.content.contains("old task")));
+
+        events.push(event(
+            sid,
+            events.len() as u64,
+            EventPayload::ContextSnipped {
+                tags: vec!["u1".to_string()],
+            },
+        ));
+        let snipped = conversation_with_tool_pairs_from_events(&events);
+        assert!(!snipped.iter().any(|m| m.content.contains("old task")));
+        assert!(!snipped.iter().any(|m| m.content.contains("old answer")));
+        assert!(snipped.iter().any(|m| m.content.contains("live task")));
     }
 
     #[test]

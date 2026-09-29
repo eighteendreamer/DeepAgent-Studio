@@ -124,6 +124,15 @@ pub enum EventPayload {
         strategy: String,
     },
 
+    /// Earlier conversation segments were snipped (model-invoked history-snip).
+    /// Records the `[id:uN]` tags of the removed segments so history rebuild
+    /// after a restart re-applies the snip (Claude Code `removedUuids` parity).
+    ContextSnipped {
+        /// The snipped segment tags (e.g. `["u3", "u5"]`).
+        #[serde(default)]
+        tags: Vec<String>,
+    },
+
     /// A free-form note / diagnostic recorded into the stream.
     Note {
         /// The note text.
@@ -183,6 +192,7 @@ impl EventPayload {
             EventPayload::ToolCallRequested { .. } => "tool_call_requested",
             EventPayload::ToolCallCompleted { .. } => "tool_call_completed",
             EventPayload::ContextCompacted { .. } => "context_compacted",
+            EventPayload::ContextSnipped { .. } => "context_snipped",
             EventPayload::Note { .. } => "note",
             EventPayload::UsageRecorded { .. } => "usage_recorded",
             EventPayload::ToolsDiscovered { .. } => "tools_discovered",

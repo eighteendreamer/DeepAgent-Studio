@@ -104,7 +104,9 @@ impl SessionState {
             EventPayload::ToolCallCompleted { .. } => {
                 self.tool_calls_completed += 1;
             }
-            EventPayload::ContextCompacted { .. } | EventPayload::Note { .. } => {}
+            EventPayload::ContextCompacted { .. }
+            | EventPayload::ContextSnipped { .. }
+            | EventPayload::Note { .. } => {}
             // `EventPayload` is `#[non_exhaustive]`; future variants that do
             // not affect the projection are intentionally ignored here.
             _ => {}

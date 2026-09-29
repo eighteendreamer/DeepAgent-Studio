@@ -250,9 +250,8 @@ const RATE_LIMIT_RETRY_THRESHOLD: usize = 2;
 /// growth without a snip”, ~10k pacing).
 const SNIP_NUDGE_INTERVAL_TOKENS: u64 = 10_000;
 /// Never snip inside the most recent messages: the live exchange (and its
-/// tool pairing) must survive. Parity with the compactor's
-/// KEEP_RECENT_MESSAGES protected tail.
-const SNIP_PROTECTED_RECENT_MESSAGES: usize = 8;
+/// tool pairing) must survive. Defined in [`crate::snip`] so the live loop and
+/// history rebuild agree.
 /// Consecutive identical tool calls (same name + arguments) that trip the
 /// client-side doom-loop detector. Grok's doom-loop is a SERVER signal
 /// (`x-grok-doom-loop-check`); DeepSeek has no such header, so this is the
@@ -426,6 +425,10 @@ pub struct ModelAgent {
     snip_tool: Option<String>,
     /// Estimated context size at the last snip nudge (or last snip/compact).
     snip_nudge_baseline_tokens: Option<u64>,
+    /// Tags (`uN`) of conversation segments actually snipped this run. The app
+    /// layer persists these as `ContextSnipped` so a history rebuild after a
+    /// restart re-applies the snip (Claude Code `removedUuids` parity).
+    snipped_tags: std::collections::BTreeSet<String>,
     /// Prefire (Grok two-pass) start line in tokens: below the real
     /// `proactive_compaction_threshold` by the lead margin. When the estimate
     /// crosses this, a background pass-1 is scheduled. `None` disables prefire.
@@ -513,6 +516,7 @@ impl ModelAgent {
             snip_tokens_freed_unreflected: 0,
             snip_tool: None,
             snip_nudge_baseline_tokens: None,
+            snipped_tags: std::collections::BTreeSet::new(),
             prefire_start_threshold: None,
             prefire_cache: None,
             prefire_handle: None,
@@ -582,6 +586,13 @@ impl ModelAgent {
         } else {
             self.replace_messages(compacted.messages.clone());
         }
+    }
+
+    /// Tags of conversation segments snipped during this run (sorted, empty
+    /// when none). The app layer persists these so a restart re-applies the
+    /// snip.
+    pub fn snipped_tags(&self) -> Vec<String> {
+        self.snipped_tags.iter().cloned().collect()
     }
 
     fn request_for_current_history(&self) -> ResponseRequest {
@@ -1336,56 +1347,17 @@ impl ModelAgent {
                 deepagent_context::TokenCounter::count(&counter, &render_for_estimate(m)) as u64
             })
             .sum();
-        let protected_start = self
-            .messages
-            .len()
-            .saturating_sub(SNIP_PROTECTED_RECENT_MESSAGES);
-        let mut remove = vec![false; self.messages.len()];
-        for id in &ids {
-            let tag = format!("[id:{id}]");
-            let Some(start) = self.messages.iter().position(|m| {
-                m.role == deepagent_core::message::Role::User && m.content.contains(&tag)
-            }) else {
-                continue;
-            };
-            if start == 0 || start >= protected_start {
-                continue;
-            }
-            // Segment runs to the next tagged user turn or the protected tail.
-            let mut end = self.messages[start + 1..protected_start]
-                .iter()
-                .position(|m| {
-                    m.role == deepagent_core::message::Role::User && m.content.contains("[id:u")
-                })
-                .map(|offset| start + 1 + offset)
-                .unwrap_or(protected_start);
-            // Pairing safety: the first retained message must not be a tool
-            // result whose requesting assistant sits inside the removal zone.
-            while end > start
-                && self
-                    .messages
-                    .get(end)
-                    .is_some_and(|m| m.role == deepagent_core::message::Role::Tool)
-            {
-                end -= 1;
-            }
-            if end <= start {
-                continue;
-            }
-            for flag in remove.iter_mut().take(end).skip(start) {
-                *flag = true;
-            }
-        }
-        if !remove.iter().any(|flag| *flag) {
+        let plan = crate::snip::plan_snip(
+            &self.messages,
+            &ids,
+            crate::snip::SNIP_PROTECTED_RECENT_MESSAGES,
+        );
+        if !plan.removes_anything() {
             return;
         }
-        let mut kept = Vec::with_capacity(self.messages.len());
-        for (index, message) in self.messages.drain(..).enumerate() {
-            if !remove[index] {
-                kept.push(message);
-            }
-        }
-        self.replace_messages(kept);
+        self.snipped_tags.extend(plan.applied_tags.iter().cloned());
+        let messages = std::mem::take(&mut self.messages);
+        self.replace_messages(plan.apply(messages));
         let tokens_after: u64 = self
             .messages
             .iter()
