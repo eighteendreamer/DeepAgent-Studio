@@ -919,6 +919,8 @@ pub(crate) struct RunContextRequest<'a> {
     pub(crate) root: &'a Path,
     pub(crate) sandbox_mode: SandboxMode,
     pub(crate) plugin_projection: Option<&'a PluginRuntimeProjection>,
+    /// Aggregated MCP server instructions, surfaced as `McpCatalog` context.
+    pub(crate) mcp_instructions_block: Option<&'a str>,
     pub(crate) tool_manifest: &'a ToolManifest,
     pub(crate) skills: Option<&'a Arc<Mutex<SkillsService>>>,
     pub(crate) settings: &'a SettingsService,
@@ -967,6 +969,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         output_style_block,
         plugin_output_style_block,
         tool_catalog_block,
+        request.mcp_instructions_block.map(str::to_string),
         skill_catalog_blocks,
     );
     let system_prompt = system_manifest.render();

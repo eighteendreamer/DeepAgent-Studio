@@ -711,8 +711,11 @@ impl McpService {
         let mut failures = Vec::new();
         for (name, result) in connected {
             match result {
-                Ok(client) => {
-                    if let Err(e) = registry.register(&name, client).await {
+                Ok((client, instructions)) => {
+                    if let Err(e) = registry
+                        .register_with_instructions(&name, client, instructions)
+                        .await
+                    {
                         failures.push((name, e.to_string()));
                     }
                 }
@@ -822,7 +825,10 @@ impl McpService {
     /// transport with bounded auto-reconnect (§5.2 MCP resilience, Grok
     /// `mcp_restart.rs` backoff): if the server crashes mid-run, a later tool
     /// call transparently respawns it instead of staying dead for the session.
-    async fn connect_one_resilient(name: &str, cfg: &McpServerConfig) -> Result<Arc<McpClient>> {
+    async fn connect_one_resilient(
+        name: &str,
+        cfg: &McpServerConfig,
+    ) -> Result<(Arc<McpClient>, Option<String>)> {
         let transport = connect_transport(cfg)?;
         let factory = Arc::new(deepagent_mcp::ConfigReconnectFactory::new(
             cfg.clone(),
@@ -832,9 +838,13 @@ impl McpService {
             deepagent_mcp::ReconnectingTransport::new(transport, factory),
         );
         let client = Arc::new(McpClient::new(resilient));
-        client.initialize("deepagent-studio").await?;
+        let init = client.initialize("deepagent-studio").await?;
+        let instructions = init
+            .get("instructions")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
         tracing::info!(server = name, "MCP server initialized (self-healing)");
-        Ok(client)
+        Ok((client, instructions))
     }
 
     /// Test-connect a single (possibly unsaved) server config: expand `${VAR}`

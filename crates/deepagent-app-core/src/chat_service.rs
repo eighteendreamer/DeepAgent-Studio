@@ -1979,6 +1979,7 @@ mod tests {
             None,
             Some("# Plugin output style\nUse a terse style.".to_string()),
             Some("# Deferred tools\n- tool_search".to_string()),
+            None,
             vec!["<system-reminder>\n<available-skills />\n</system-reminder>".to_string()],
         );
         let sources = manifest

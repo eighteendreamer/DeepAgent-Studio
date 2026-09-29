@@ -48,6 +48,9 @@ struct ConnectedServer {
     /// Background liveness pinger (long-lived registries only); aborts with
     /// the entry, so probing stops exactly when the connection is dropped.
     probe: Option<LivenessProbe>,
+    /// Server `instructions` from the MCP `initialize` result, surfaced to the
+    /// model via `<mcp-instructions>` context. `None` when the server omits it.
+    instructions: Option<String>,
 }
 
 /// Registry of connected MCP servers and their tools.
@@ -65,6 +68,18 @@ impl McpRegistry {
     /// Register an already-connected client under `server_name`, discovering and
     /// namespacing its tools via `tools/list`.
     pub async fn register(&mut self, server_name: &str, client: Arc<McpClient>) -> Result<usize> {
+        self.register_with_instructions(server_name, client, None)
+            .await
+    }
+
+    /// Like [`Self::register`], but also stores the server's `instructions`
+    /// from the `initialize` handshake so they can be surfaced to the model.
+    pub async fn register_with_instructions(
+        &mut self,
+        server_name: &str,
+        client: Arc<McpClient>,
+        instructions: Option<String>,
+    ) -> Result<usize> {
         if self.servers.contains_key(server_name) {
             return Err(CoreError::invalid(format!(
                 "MCP server '{server_name}' is already registered"
@@ -88,6 +103,7 @@ impl McpRegistry {
                 client,
                 tools,
                 probe: None,
+                instructions,
             },
         );
         Ok(count)
@@ -122,6 +138,22 @@ impl McpRegistry {
     }
 
     /// All namespaced tools across all servers (for advertising to the model).
+    /// Server-provided `instructions` (from the `initialize` handshake), paired
+    /// with the server name, for every server that declared any. Empty when no
+    /// server provided instructions.
+    pub fn server_instructions(&self) -> Vec<(String, String)> {
+        self.servers
+            .iter()
+            .filter_map(|(name, server)| {
+                server
+                    .instructions
+                    .as_ref()
+                    .filter(|text| !text.trim().is_empty())
+                    .map(|text| (name.clone(), text.clone()))
+            })
+            .collect()
+    }
+
     pub fn all_tools(&self) -> Vec<RemoteTool> {
         self.servers
             .values()
@@ -199,6 +231,33 @@ mod tests {
         assert_eq!(n, "mcp__asana__create_task");
         assert_eq!(split_namespaced(&n), Some(("asana", "create_task")));
         assert_eq!(split_namespaced("read_file"), None);
+    }
+
+    #[tokio::test]
+    async fn register_with_instructions_surfaces_server_instructions() {
+        let mut registry = McpRegistry::new();
+        registry
+            .register_with_instructions(
+                "demo",
+                client(tools_transport()),
+                Some("Use the demo tools.".to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.server_instructions(),
+            vec![("demo".to_string(), "Use the demo tools.".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn register_without_instructions_reports_none() {
+        let mut registry = McpRegistry::new();
+        registry
+            .register("demo", client(tools_transport()))
+            .await
+            .unwrap();
+        assert!(registry.server_instructions().is_empty());
     }
 
     #[tokio::test]

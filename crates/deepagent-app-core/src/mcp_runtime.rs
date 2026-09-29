@@ -12,6 +12,10 @@ use crate::plugin_runtime::PluginRuntimeProjection;
 pub(crate) struct McpRuntimeTools {
     pub(crate) hook_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
     pub(crate) lifecycle: Vec<McpLifecycleRecord>,
+    /// Aggregated `instructions` from every connected server (MCP `initialize`),
+    /// surfaced to the model as `ContextSourceKind::McpCatalog`. `None` when no
+    /// server declared any.
+    pub(crate) instructions_block: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +86,7 @@ pub(crate) async fn attach_mcp_tools(
             tracing::warn!(%error, "MCP connected_registry failed; continuing without MCP tools");
             return Ok(McpRuntimeTools {
                 hook_registry: None,
+                instructions_block: None,
                 lifecycle: vec![McpLifecycleRecord {
                     server_id: "mcp".into(),
                     status: "degraded".into(),
@@ -143,9 +148,24 @@ pub(crate) async fn attach_mcp_tools(
     }
 
     Ok(McpRuntimeTools {
-        hook_registry: Some(mcp_registry),
+        hook_registry: Some(mcp_registry.clone()),
+        instructions_block: render_mcp_instructions(&mcp_registry),
         lifecycle,
     })
+}
+
+/// Render the aggregated MCP `instructions` from every connected server into a
+/// single context block, or `None` when no server declared any.
+fn render_mcp_instructions(registry: &deepagent_mcp::McpRegistry) -> Option<String> {
+    let entries = registry.server_instructions();
+    if entries.is_empty() {
+        return None;
+    }
+    let mut out = String::from("# MCP server instructions\n");
+    for (server, text) in entries {
+        out.push_str(&format!("\n## {server}\n{}\n", text.trim()));
+    }
+    Some(out.trim_end().to_string())
 }
 
 fn config_hash(config: &deepagent_mcp::config::McpServerConfig) -> String {

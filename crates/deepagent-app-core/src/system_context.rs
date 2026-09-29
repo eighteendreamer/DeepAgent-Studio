@@ -22,6 +22,7 @@ pub(crate) fn build_system_manifest(
     output_style_block: Option<String>,
     plugin_output_style_block: Option<String>,
     tool_catalog_block: Option<String>,
+    mcp_instructions_block: Option<String>,
     skill_catalog_blocks: Vec<String>,
 ) -> ContextManifest {
     let today = current_date_string();
@@ -101,25 +102,6 @@ pub(crate) fn build_system_manifest(
         crate::permissions_prompt::sandbox_instructions(sandbox_mode),
     );
 
-    // Project structure (§3.1 `directory` high-value context): a bounded,
-    // noise-skipping snapshot of the layout so the model has structural
-    // awareness up front instead of spending turns on `list_dir`/`glob`. Skips
-    // `target`/`node_modules`/dot-dirs, bounded (depth 4 / 200 entries), so it
-    // stays cheap in large repos. Scan failure is non-fatal (skip the block).
-    if let Ok(snapshot) = deepagent_workspace::WorkspaceScanner::default().scan(root) {
-        let block = snapshot.to_context_block();
-        if !block.trim().is_empty() {
-            assembler = assembler.push(
-                ContextSourceKind::RuntimeEnvironment,
-                "deepagent.workspace_structure",
-                880,
-                false,
-                false,
-                block,
-            );
-        }
-    }
-
     if let Some(block) = plugin_output_style_block {
         assembler = assembler.push(
             ContextSourceKind::PluginContext,
@@ -136,6 +118,20 @@ pub(crate) fn build_system_manifest(
             ContextSourceKind::ToolCatalog,
             "deepagent.deferred_tool_catalog",
             890,
+            false,
+            false,
+            block,
+        );
+    }
+
+    // MCP server instructions (from each server's `initialize` handshake):
+    // surfaced as the previously-unused `McpCatalog` source. Dynamic (not in the
+    // cacheable prefix) because connected servers can change between runs.
+    if let Some(block) = mcp_instructions_block {
+        assembler = assembler.push(
+            ContextSourceKind::McpCatalog,
+            "deepagent.mcp_instructions",
+            885,
             false,
             false,
             block,
@@ -269,6 +265,7 @@ pub(crate) fn build_system_prompt(root: &Path) -> String {
         None,
         None,
         None,
+        None,
         Vec::new(),
     )
     .render()
@@ -319,6 +316,46 @@ mod tests {
     }
 
     #[test]
+    fn injects_mcp_instructions_as_mcp_catalog() {
+        let manifest = build_system_manifest(
+            Path::new("/work/proj"),
+            SandboxMode::WorkspaceWrite,
+            None,
+            None,
+            None,
+            Some("# MCP server instructions\n\n## demo\nUse the demo tools.".to_string()),
+            Vec::new(),
+        );
+        let entry = manifest
+            .entries
+            .iter()
+            .find(|e| e.source == ContextSourceKind::McpCatalog)
+            .expect("MCP instructions entry present");
+        assert_eq!(entry.origin, "deepagent.mcp_instructions");
+        assert!(entry.content.contains("Use the demo tools."));
+        // Dynamic (not cacheable), enrichment-only.
+        assert!(!entry.cacheable);
+        assert!(!entry.required);
+    }
+
+    #[test]
+    fn omits_mcp_catalog_when_no_instructions() {
+        let manifest = build_system_manifest(
+            Path::new("/work/proj"),
+            SandboxMode::WorkspaceWrite,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+        );
+        assert!(!manifest
+            .entries
+            .iter()
+            .any(|e| e.source == ContextSourceKind::McpCatalog));
+    }
+
+    #[test]
     fn output_style_block_default_is_none_others_present() {
         use crate::settings::OutputStyle;
         assert!(output_style_prompt_block(OutputStyle::Default).is_none());
@@ -335,6 +372,7 @@ mod tests {
             Path::new("/work/proj"),
             SandboxMode::WorkspaceWrite,
             output_style_prompt_block(crate::settings::OutputStyle::Explanatory),
+            None,
             None,
             None,
             Vec::new(),
@@ -374,6 +412,7 @@ mod tests {
         let manifest = build_system_manifest(
             root,
             SandboxMode::WorkspaceWrite,
+            None,
             None,
             None,
             None,

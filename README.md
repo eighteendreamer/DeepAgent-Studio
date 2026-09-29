@@ -8,9 +8,9 @@
 
 ## 当前状态
 
-**内核已完成，桌面平台已连通。** 整个工作区由 **26 个内核 crate + 一个无头 CLI +
-一个 Tauri 桌面应用**组成，构建干净、Lint 干净（`clippy -D warnings`），并由
-**1407 个通过的测试**覆盖（默认离线运行；另有 2 个按设计忽略）。
+**内核已完成，桌面平台已连通。** 整个工作区由 **33 个内核 crate + 一个无头 CLI +
+一个 Tauri 桌面应用**组成，构建干净、Lint 干净（`clippy -D warnings`），并由测试覆盖
+（默认离线运行）。
 
 Phase A（让平台真正可用）和 Phase B（声明式配置面）已全部完成；Phase C
 （平台化与可观测）进行中。
@@ -19,7 +19,7 @@ Phase A（让平台真正可用）和 Phase B（声明式配置面）已全部�
 
 **运行时内核**
 
-- Cargo 工作区，26 个内核 crate，以 SQLite 上的**仅追加事件存储**（带版本化迁移）
+- Cargo 工作区，33 个内核 crate，以 SQLite 上的**仅追加事件存储**（带版本化迁移）
   作为全系统的唯一真相来源。
 - **会话管理器**：纯从事件折叠出的 replay + 崩溃恢复，并支持 **fork / rewind /
   export**（Markdown · JSON transcript 导出）。
@@ -47,7 +47,7 @@ Phase A（让平台真正可用）和 Phase B（声明式配置面）已全部�
 - 流式聊天 + token 实时渲染 + 审批对话框；会话 fork/rewind/export 可从聊天菜单触发。
 - 设置：模型发现、审批策略、权限规则、`hooks.json` 编辑器、MCP 服务器可视化管理。
 - 可用的 Terminal 与 SideChat 面板；自定义无边框标题栏。
-- 231 个 Tauri 命令将 React UI 桥接到 `deepagent-app-core`。
+- 310 个 Tauri 命令将 React UI 桥接到 `deepagent-app-core`。
 
 ## 环境要求
 
@@ -104,8 +104,15 @@ crates/
   deepagent-subagents    DAG 调度器 + worktree 隔离
   deepagent-observation  Agent 时间线 + 会话统计 + transcript 导出
   deepagent-security     密钥扫描器 + CI 门禁
+  deepagent-knowledge    知识库（vault / entry / capture / base）
   deepagent-app-core     应用服务门面（DTO + 面向任意 UI 的服务）
+  deepagent-harness-protocol  机器协议 DTO（thread/turn/approval/tool-list）
   deepagent-mcp          Model Context Protocol 客户端 + 传输 + 适配器
+  deepagent-codegraph    原生代码图谱（tree-sitter + SQLite/FTS5 + 项目地图投影）
+  deepagent-ssh          远程开发（SSH 会话与文件）
+  deepagent-terminal     终端能力
+  deepagent-vision       本地图像分析（metadata/color/ascii/layout/OCR）
+  deepagent-mobile-core/-protocol/-runtime/-android/-ios  移动端设备代理
 apps/
   cli                    无头端到端演示驱动
   desktop                Tauri v2 + React 桌面应用

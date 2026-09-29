@@ -414,6 +414,7 @@ impl<'a> RunAssembler<'a> {
         let todo_store = toolset.todo_store;
         let hook_mcp_registry = toolset.hook_mcp_registry;
         let tool_manifest = toolset.manifest;
+        let mcp_instructions_block = toolset.mcp_instructions_block;
         let tools = tool_manifest.tools.clone();
         let granted = PermissionSet::developer();
         append_runtime_log(
@@ -674,6 +675,7 @@ impl<'a> RunAssembler<'a> {
             root: &root,
             sandbox_mode,
             plugin_projection: plugin_projection.as_ref(),
+            mcp_instructions_block: mcp_instructions_block.as_deref(),
             tool_manifest: &tool_manifest,
             skills: self.skills.as_ref(),
             settings: self.settings,
