@@ -336,3 +336,45 @@ DeepSeek 端到端流式）必须在提交信息中如实标注，不以"应该�
   settings 级 agent 源。
 - ❌ 改动既有 `explore`/`plan` 只读白名单表达为 disallowedTools（测试友好且语义已等价）。
 - ❌ 真机远程 daemon / HTTP transport（协议稳定后另行评估）。
+
+---
+
+## 8. 附录：S3 基础设施核实（B6，2026-09-29）
+
+B6 两项目标（S3-1 迁移框架 / S3-2 session 级本地事件台账）经证据核实**均已在代码库中存在**，
+按 AGENTS.md §3「已存在同类实现」执行**零新增代码**——只留核实记录，不对已在生产运行的实现
+做无消费方的重写。
+
+### 8.1 S3-1 迁移框架 —— ✅ 已存在
+
+`crates/deepagent-persistence/src/migrations.rs`：
+
+- 有序 SQL 清单 `MIGRATIONS`（V1–V20），`LATEST_VERSION = MIGRATIONS.len()`（:406）。
+- 版本追踪走 `PRAGMA user_version`，`current_version()` 读取，已是最新版本时仅补 FTS 投影（:409–421）。
+- `run()` 幂等：逐版本应用并在每步后 `PRAGMA user_version = next`，事务内失败即回滚（:418–434）。
+- `ensure_session_search_projection()` 在非最新版本时重建会话搜索投影（:457）。
+- 在 `Database::open` 启动路径执行（lib.rs:98），对外暴露 `schema_version()`（lib.rs:127）。
+- 测试覆盖 fresh→latest、幂等 reopen、预期表存在、V17/V18 数据迁移（migrations.rs:496-594）。
+
+结论：`2.6【P2】无迁移框架` 的缺口不成立，无需新建迁移设施。
+
+### 8.2 S3-2 session 级本地事件台账 —— ✅ 已存在
+
+四条链路各自闭环，全部本地存储、无云上报：
+
+1. **权威事件源**：`crates/deepagent-persistence/src/session_files.rs` —— 每 session 的 append-only
+   ZSTD 压缩 JSONL，分代管理。`FORMAT_VERSION=1`、`.v1.jsonl.zst`、`StoredRecord {Header|Event}`、
+   读锁 + 分代写入（:13-28、:531-577、:638-639）。
+2. **运行诊断台账**：`runtime_log_store`（SQLite append-only 诊断轨迹，run/session/category），
+   由 app-core 运行链路生产消费。
+3. **会话统计投影**：`deepagent-observation`（`SessionStats::from_events` / `build_timeline` /
+   `export_transcript`，lib.rs:21-22），经 `service.rs::session_detail`（service.rs:250）合成
+   `SessionDetailDto`（timeline :264、stats :277-278、DTO :289）供 UI。
+4. **内存 live 计数**：`deepagent-tracing::metrics` 常量级计数器。
+
+结论：`2.6【P2】无产品级遥测` 在本仓库语境下"产品级"（本地、可 replay、供 UI）部分已存在；
+**云上报确实无实现，但按 DeepSeek 数据合规边界（AGENTS.md §10）属于"明确不做"，而非缺口**，
+B6 不引入遥测上报。
+
+**B6 交付形态**：核实结论落在本设计文档附录；未触碰用户未跟踪的
+`docs/deepagent-defects-and-fixes.md` / `docs/claudecode-harness-research-report.md`。
