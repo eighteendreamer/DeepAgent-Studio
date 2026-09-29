@@ -185,6 +185,9 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
         ) : (
           <div className="mx-auto grid max-w-5xl grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
             {cards.map((card) => {
+              // Same icon set as the right-sidebar launcher (variant="codex")
+              // so tool icons stay consistent across entry points.
+              const Icon = toolIconComponent(card.type);
               const ownTitle = explicitLabel(card.title, card.type);
               const ownDesc = explicitLabel(card.desc, card.type, "Desc");
               const translatedTitle =
@@ -206,7 +209,7 @@ export function ToolLauncherPanel<T extends ToolLauncherCard>({
                   className="group grid min-h-[88px] w-full grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl border border-border-theme bg-white px-4 py-3 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/45 hover:shadow-[0_12px_28px_rgba(15,23,42,0.08)]"
                 >
                   <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105">
-                    <FontAwesomeIcon icon={card.icon} className="text-[18px]" />
+                    <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden="true" />
                   </div>
                   <div className="min-w-0">
                     <div className="truncate text-[14px] font-semibold text-text-base transition-colors group-hover:text-primary">
