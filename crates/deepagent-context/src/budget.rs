@@ -2,10 +2,15 @@
 //!
 //! > Agent 最大问题：Context 爆炸。必须：动态裁剪。
 //!
-//! [`PromptBudget`] partitions a model's context window into reserves (output,
-//! tools) and a remaining allowance for the prompt itself. The [`PromptBudget::fit`]
-//! routine greedily keeps the highest-value fragments (mandatory first, then by
-//! source order + priority) until the allowance is exhausted, dropping the rest.
+//! **退役说明（Teammate-1b）**：生产裁剪运行时只有一个——[`crate::assembler::ContextAssembler::assemble`]
+//! 的 priority-drop 路径（`dropped_origins` 记录被裁块）。[`PromptBudget::fit`] 保留了
+//! 一套完整的"mandatory first + source/priority 排序"裁剪，但**无生产消费方**
+//! （`ContextPolicy.prompt_budget` 是 `usize` 预算数字，直接喂给 `assemble`；`fit` 仅被本模块
+//! 测试使用）。它被 `#[doc(hidden)]` 退役一个 release：代码与测试保留编译，防止两套裁剪
+//! 语义漂移；若未来需要独立的 token-economy 原语可恢复导出。
+//!
+//! [`PromptBudget`] 分区 context window（output/tools 保留 + prompt allowance）；
+//! [`PromptBudget::prompt_allowance`] 仍被保留作为预算计算原语。
 
 use serde::{Deserialize, Serialize};
 
@@ -47,13 +52,9 @@ impl PromptBudget {
 
     /// Fit `fragments` (already in arbitrary order) into the allowance.
     ///
-    /// Algorithm:
-    /// 1. Sort by keep-priority: mandatory fragments first, then by source
-    ///    order, then descending priority.
-    /// 2. Greedily accumulate while the running token total stays within
-    ///    allowance. Mandatory fragments are always kept (even if they alone
-    ///    exceed the allowance — the caller is told via [`BudgetOutcome`]).
-    /// 3. Re-render the kept set in canonical prompt order.
+    /// **退役**：无生产消费方（见模块文档）。裁剪的唯一运行时是
+    /// `ContextAssembler::assemble` 的 priority-drop 路径。保留仅为历史/测试。
+    #[doc(hidden)]
     pub fn fit(&self, fragments: &[PromptFragment], counter: &dyn TokenCounter) -> BudgetOutcome {
         let allowance = self.prompt_allowance();
 
@@ -108,8 +109,9 @@ impl PromptBudget {
     }
 }
 
-/// The result of fitting fragments to a budget.
+/// The result of fitting fragments to a budget (retired with [`PromptBudget::fit`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
 pub struct BudgetOutcome {
     /// The compiled prompt after budgeting.
     pub prompt: CompiledPrompt,

@@ -20,7 +20,7 @@ use deepagent_models::{ModelClient, ThinkingDepth, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{RuntimeEvent, RuntimeEventSink};
 use deepagent_session::Session;
-use deepagent_tools::{PermissionSet, ToolRegistry};
+use deepagent_tools::{Permission, PermissionSet, ToolRegistry};
 
 use crate::chat_service::ChatService;
 use crate::system_context::SYSTEM_PROMPT_DYNAMIC_BOUNDARY;
@@ -68,8 +68,7 @@ pub(crate) struct ChatSubagentRunner {
     /// Parent-run approval gate, shared so a risky sub-agent tool bubbles to the
     /// same UI approval channel instead of auto-denying. Unset outside the
     /// desktop run path (tests / headless), where the engine default applies.
-    pub(crate) parent_approvals:
-        Arc<std::sync::OnceLock<Arc<dyn deepagent_runtime::ApprovalGate>>>,
+    pub(crate) parent_approvals: Arc<std::sync::OnceLock<Arc<dyn deepagent_runtime::ApprovalGate>>>,
 }
 
 impl ChatSubagentRunner {
@@ -360,7 +359,9 @@ impl ChatSubagentRunner {
             let path = execution_root.to_string_lossy().to_string();
             if state == "succeeded" {
                 if let Ok(outcome) = &mut result {
-                    outcome.result.push_str("\n\nIsolated worktree retained at: ");
+                    outcome
+                        .result
+                        .push_str("\n\nIsolated worktree retained at: ");
                     outcome.result.push_str(&path);
                 }
             } else if let Err(error) = self.remove_worktree(&subagent_id, &path).await {
@@ -522,7 +523,7 @@ impl ChatSubagentRunner {
             sub_discovered.clone(),
             self.tool_search_auto_threshold,
         );
-        let granted = PermissionSet::developer();
+        let granted = permission_set_for_agent(agent_profile);
         let mut tools: Vec<ToolSchema> = build_visible_tool_schemas(
             &sub_registry,
             &granted,
@@ -546,14 +547,26 @@ impl ChatSubagentRunner {
         } else {
             Vec::new()
         };
-        let preloaded_skills = self.preload_skills(&request.skills)?;
+        // Skills: agent-file defaults unioned with the per-call `skills` override.
+        let mut skills = agent_profile
+            .and_then(|agent| agent.def.skills.clone())
+            .unwrap_or_default();
+        for skill in &request.skills {
+            if !skills.iter().any(|existing| existing == skill) {
+                skills.push(skill.clone());
+            }
+        }
+        let preloaded_skills = self.preload_skills(&skills)?;
         let system = subagent_system_prompt(execution_root, agent_profile, &preloaded_skills);
         let db = Database::open_in_memory()?;
         let clock = SystemClock;
         let mut session = Session::create(&db, &clock, Some(&request.description))?;
         let task = session.create_task(&request.prompt)?;
         let sub_model = request.model.clone().unwrap_or_else(|| self.model.clone());
-        let sub_thinking = subagent_thinking_depth(request.effort.as_deref(), self.thinking_depth)?;
+        let sub_thinking = subagent_thinking_depth(
+            subagent_effort_str(agent_profile, &request),
+            self.thinking_depth,
+        )?;
         // Sub-agents run their own model loop; without compaction a long task
         // would only be bounded by the 64-step / 1M-token hard ceilings. Give it
         // the same reactive + proactive compaction the main run uses. The
@@ -580,9 +593,7 @@ impl ChatSubagentRunner {
         .with_response_history(fork_response_history)
         .with_thinking_depth(sub_thinking)
         .with_reactive_compactor(reactive_compactor)
-        .with_proactive_compaction(
-            context_policy.autocompact_threshold_tokens(None, None) as u64,
-        );
+        .with_proactive_compaction(context_policy.autocompact_threshold_tokens(None, None) as u64);
         let checkpoint = Arc::new(deepagent_runtime::CheckpointManager::new(
             self.db.clone(),
             self.parent_run_id.clone(),
@@ -605,13 +616,28 @@ impl ChatSubagentRunner {
             // = model self-reports; never blocks on keyword heuristics.
             completion_policy: deepagent_runtime::CompletionPolicy::default(),
             checkpoint: Some(checkpoint.clone()),
+            // maxTurns (agent file) maps onto the engine's step cap; the
+            // default keeps the previous hard-coded 64.
+            max_steps: agent_profile
+                .and_then(|agent| agent.def.max_turns)
+                .unwrap_or(64),
             ..Default::default()
         };
         let mut engine = RuntimeEngine::new(&sub_registry, Default::default(), config);
         // Bubble a sub-agent tool's approval need to the parent's UI gate when
         // one is wired; otherwise the engine keeps its default (auto-deny).
-        if let Some(approvals) = self.parent_approvals.get() {
-            engine = engine.with_approvals(approvals.clone());
+        // `permissionMode: bypassPermissions` replaces any human gate outright.
+        match agent_profile.and_then(|agent| agent.def.permission_mode) {
+            Some(deepagent_prompts::PermissionMode::BypassPermissions) => {
+                engine = engine.with_approvals(std::sync::Arc::new(
+                    deepagent_runtime::approval::AutoApproveGate,
+                ));
+            }
+            _ => {
+                if let Some(approvals) = self.parent_approvals.get() {
+                    engine = engine.with_approvals(approvals.clone());
+                }
+            }
         }
         if let Some(cancel) = cancel {
             engine = engine.with_cancel(cancel);
@@ -961,6 +987,139 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deepagent_models::ToolSchema;
+    use deepagent_prompts::AgentDef;
+
+    fn profile(tools: &[&str], disallowed: &[&str]) -> Option<RuntimeAgentDefinition> {
+        let def = AgentDef {
+            name: "t".into(),
+            description: "d".into(),
+            tools: tools.iter().map(|s| s.to_string()).collect(),
+            model: deepagent_prompts::ModelPref::Inherit,
+            color: None,
+            body: "b".into(),
+            disallowed_tools: (!disallowed.is_empty())
+                .then(|| disallowed.iter().map(|s| s.to_string()).collect()),
+            permission_mode: None,
+            max_turns: None,
+            effort: None,
+            skills: None,
+            background: None,
+            isolation: None,
+        };
+        Some(RuntimeAgentDefinition {
+            type_name: "t".into(),
+            source_label: "test".into(),
+            def,
+        })
+    }
+
+    fn allowlist_profile_tools(tools: &[&str]) -> Vec<ToolSchema> {
+        tools
+            .iter()
+            .map(|name| ToolSchema::function(*name, "desc", serde_json::Value::Null))
+            .collect()
+    }
+
+    #[test]
+    fn tool_filter_drops_disallowed_without_allowlist() {
+        // No `tools:` allowlist at all — only `disallowedTools: Bash`.
+        let mut schemas = allowlist_profile_tools(&["read_file", "bash", "grep"]);
+        let profile = profile(&[], &["Bash"]);
+        apply_runtime_agent_tool_filter(&mut schemas, profile.as_ref());
+        let names: Vec<&str> = schemas.iter().map(|s| s.function.name.as_str()).collect();
+        assert_eq!(names, vec!["read_file", "grep"]);
+    }
+
+    #[test]
+    fn tool_filter_disallowed_overrides_allowlist() {
+        let mut schemas = allowlist_profile_tools(&["read_file", "bash"]);
+        let profile = profile(&["Read", "Bash"], &["Bash"]);
+        apply_runtime_agent_tool_filter(&mut schemas, profile.as_ref());
+        let names: Vec<&str> = schemas.iter().map(|s| s.function.name.as_str()).collect();
+        assert_eq!(names, vec!["read_file"], "disallowedTools wins over tools");
+    }
+
+    #[test]
+    fn tool_filter_none_profile_passes_through() {
+        let mut schemas = allowlist_profile_tools(&["bash"]);
+        apply_runtime_agent_tool_filter(&mut schemas, None);
+        assert_eq!(schemas.len(), 1);
+    }
+
+    #[test]
+    fn permission_mode_bypass_grants_everything() {
+        let def = profile(&[], &[]).map(|mut p| {
+            p.def.permission_mode = Some(deepagent_prompts::PermissionMode::BypassPermissions);
+            p
+        });
+        let granted = permission_set_for_agent(def.as_ref());
+        for p in [
+            Permission::ReadOnly,
+            Permission::WorkspaceWrite,
+            Permission::ShellSafe,
+            Permission::ShellDangerous,
+            Permission::Network,
+            Permission::GitPush,
+            Permission::Secrets,
+            Permission::Sandbox,
+            Permission::Subagent,
+        ] {
+            assert!(granted.contains(p), "bypassPermissions must grant {p:?}");
+        }
+        assert_eq!(granted.len(), 9);
+    }
+
+    #[test]
+    fn permission_mode_default_is_developer() {
+        assert_eq!(
+            permission_set_for_agent(profile(&[], &[]).as_ref()),
+            PermissionSet::developer()
+        );
+        assert_eq!(permission_set_for_agent(None), PermissionSet::developer());
+    }
+
+    #[test]
+    fn effort_precedence_request_then_file_then_inherit() {
+        let mut file_deep = profile(&[], &[]).unwrap();
+        file_deep.def.effort = Some(deepagent_prompts::EffortLevel::Deep);
+
+        let request_with_effort = deepagent_builtins::SubagentRequest {
+            description: "d".into(),
+            prompt: "p".into(),
+            subagent_type: None,
+            allowed_tools: vec![],
+            model: None,
+            effort: Some("simple".into()),
+            skills: vec![],
+            isolation: "shared".into(),
+            fork: false,
+        };
+        assert_eq!(
+            subagent_effort_str(Some(&file_deep), &request_with_effort),
+            Some("simple"),
+            "per-call effort wins over file default"
+        );
+        let request_default = deepagent_builtins::SubagentRequest {
+            effort: None,
+            ..request_with_effort.clone()
+        };
+        assert_eq!(
+            subagent_effort_str(Some(&file_deep), &request_default),
+            Some("deep"),
+            "file default applies when no per-call effort"
+        );
+        assert_eq!(
+            subagent_effort_str(profile(&[], &[]).as_ref(), &request_default),
+            None,
+            "no file effort, no request effort -> inherit parent"
+        );
+    }
+}
+
 async fn wait_for_subagent_cancel(cancel: Arc<AtomicBool>) {
     while !cancel.load(std::sync::atomic::Ordering::Acquire) {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1053,6 +1212,13 @@ pub(crate) fn builtin_runtime_agent_definitions() -> Vec<RuntimeAgentDefinition>
                 model: deepagent_prompts::ModelPref::Inherit,
                 color: None,
                 body: EXPLORE_AGENT_BODY.to_string(),
+                disallowed_tools: None,
+                permission_mode: None,
+                max_turns: None,
+                effort: None,
+                skills: None,
+                background: None,
+                isolation: None,
             },
         },
         RuntimeAgentDefinition {
@@ -1068,6 +1234,13 @@ pub(crate) fn builtin_runtime_agent_definitions() -> Vec<RuntimeAgentDefinition>
                 model: deepagent_prompts::ModelPref::Inherit,
                 color: None,
                 body: PLAN_AGENT_BODY.to_string(),
+                disallowed_tools: None,
+                permission_mode: None,
+                max_turns: None,
+                effort: None,
+                skills: None,
+                background: None,
+                isolation: None,
             },
         },
     ]
@@ -1207,10 +1380,19 @@ pub(crate) fn apply_runtime_agent_tool_filter(
     let Some(agent) = agent_profile else {
         return;
     };
-    let Some(allowlist) = runtime_agent_tool_allowlist(&agent.def.tools) else {
-        return;
-    };
-    tools.retain(|tool| allowlist.contains(&tool.function.name));
+    let allowlist = runtime_agent_tool_allowlist(&agent.def.tools);
+    // Negative allowlist (`disallowedTools`). Independent of the positive list,
+    // so a tool can be dropped even when the profile's `tools:` would keep it.
+    let disallowed =
+        runtime_agent_tool_allowlist(agent.def.disallowed_tools.as_deref().unwrap_or_default());
+    tools.retain(|tool| {
+        allowlist
+            .as_ref()
+            .map_or(true, |set| set.contains(&tool.function.name))
+            && !disallowed
+                .as_ref()
+                .is_some_and(|set| set.contains(&tool.function.name))
+    });
 }
 
 fn runtime_agent_tool_allowlist(
@@ -1276,4 +1458,52 @@ fn normalize_runtime_agent_tool_name(raw: &str) -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+/// Sub-agent granted permissions from the agent profile's `permissionMode`.
+/// `None`/`Default` → the regular developer set (high-risk calls still bubble to
+/// the parent approval channel). `AcceptEdits` keeps the same set but the
+/// calling loop skips no risk gate for file writes — expressed below by the
+/// approval gate, and `BypassPermissions` grants every permission and replaces
+/// any human gate with `AutoApproveGate`.
+///
+/// Kept behind this one function so the permission model has a single mapping
+/// point (`PermissionSet` as defined in `deepagent-tools`; no second permission
+/// model — AGENTS.md §5.5).
+fn permission_set_for_agent(profile: Option<&RuntimeAgentDefinition>) -> PermissionSet {
+    let Some(agent) = profile else {
+        return PermissionSet::developer();
+    };
+    match agent.def.permission_mode {
+        Some(deepagent_prompts::PermissionMode::BypassPermissions) => {
+            PermissionSet::from_iter_perms([
+                Permission::ReadOnly,
+                Permission::WorkspaceWrite,
+                Permission::ShellSafe,
+                Permission::ShellDangerous,
+                Permission::Network,
+                Permission::GitPush,
+                Permission::Secrets,
+                Permission::Sandbox,
+                Permission::Subagent,
+            ])
+        }
+        Some(_) | None => PermissionSet::developer(),
+    }
+}
+
+/// Effective sub-agent reasoning depth: per-call `effort` wins, then the agent
+/// file's declared `effort`, then the parent's inherited depth.
+fn subagent_effort_str<'a>(
+    profile: Option<&'a RuntimeAgentDefinition>,
+    request: &'a deepagent_builtins::SubagentRequest,
+) -> Option<&'a str> {
+    request
+        .effort
+        .as_deref()
+        .or_else(|| match profile?.def.effort? {
+            deepagent_prompts::EffortLevel::Simple => Some("simple"),
+            deepagent_prompts::EffortLevel::Medium => Some("medium"),
+            deepagent_prompts::EffortLevel::Deep => Some("deep"),
+        })
 }

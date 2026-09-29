@@ -11,14 +11,18 @@
 //!
 //! - [`frontmatter`] — a dependency-light YAML-frontmatter splitter supporting
 //!   scalars, inline CSV lists, and YAML block lists.
-//! - [`agent_def::AgentDef`] — Claude Code `agents/<name>.md` (name/description/
-//!   tools/model/color + system-prompt body).
+//! - [`agent_def`] — Claude Code `agents/<name>.md` (name/description/tools/
+//!   model/color plus Teammate fields `disallowedTools`/`permissionMode`/
+//!   `maxTurns`/`effort`/`skills`/`background`/`isolation`, and the system-prompt
+//!   body).
 //! - [`command_loader`] — load `commands/<name>.md` into
 //!   [`deepagent_intent::CommandDef`] (`$ARGUMENTS`, `allowed-tools`,
 //!   `disable-model-invocation`).
-//! - [`builder::SystemPromptBuilder`] — assemble the layered system prompt
-//!   (System Core → Safety → Workspace → Agent Identity → Tool Rules → Memory →
-//!   Context → User Goal) as ordered fragments the budgeter can fit.
+//! - `builder` — **退役**（Teammate-1b）：layered `SystemPromptBuilder` had no
+//!   production consumer; the live assembly path is `deepagent-context`'s
+//!   [`deepagent_context::ContextAssembler::assemble`] (via `system_context.rs`).
+//!   The module stays `#[doc(hidden)]` for one release so its tests keep
+//!   compiling; do not export it.
 //!
 //! Everything here is synchronous, IO-light, and offline-testable; the actual
 //! model call lives in `deepagent-models`, and budget-fitted assembly in
@@ -27,13 +31,13 @@
 #![warn(missing_docs)]
 
 pub mod agent_def;
+#[doc(hidden)]
 pub mod builder;
 pub mod canvas_prompt;
 pub mod command_loader;
 pub mod frontmatter;
 
-pub use agent_def::{AgentDef, ModelPref};
-pub use builder::SystemPromptBuilder;
+pub use agent_def::{AgentDef, EffortLevel, IsolationChoice, ModelPref, PermissionMode};
 pub use command_loader::{discover_commands, load_command_file, parse_command};
 pub use frontmatter::Frontmatter;
 
@@ -59,7 +63,7 @@ mod tests {
         let rendered = cmd.render("diff --git a/x b/x");
 
         let counter = HeuristicTokenizer::new();
-        let compiled = SystemPromptBuilder::new()
+        let compiled = crate::builder::SystemPromptBuilder::new()
             .core("You are DeepAgent, a verifiable agent runtime.")
             .safety("Never exfiltrate secrets.")
             .with_agent(&agent)

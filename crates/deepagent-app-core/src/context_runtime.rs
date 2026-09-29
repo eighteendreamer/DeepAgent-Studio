@@ -2363,7 +2363,7 @@ mod tests {
 
         // Turn 3: the rest announced → zero new instructions (idempotent
         // convergence, same inputs as before must yield nothing new).
-        let rest = vec![mcp_event(
+        let rest = [mcp_event(
             sid,
             1,
             EventPayload::McpInstructionsDelta {
