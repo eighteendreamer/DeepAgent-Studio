@@ -322,7 +322,11 @@ fn response_input_message_to_wire(
     }
     let mut parts = Vec::new();
     if !content.is_empty() {
-        parts.push(serde_json::json!({ "type": "text", "text": content }));
+        // Per the DeepSeek Vision guide, Responses content parts use the
+        // `input_text` type name (OpenAI Responses semantics), not the Chat
+        // Completions `text` type. A `text`-typed block inside the parts
+        // array is not recognized by the provider and breaks image messages.
+        parts.push(serde_json::json!({ "type": "input_text", "text": content }));
     }
     for url in image_urls {
         parts.push(serde_json::json!({
@@ -638,11 +642,18 @@ mod tests {
             }],
         };
         let mut urls = std::collections::BTreeMap::new();
-        urls.insert("att_1".to_string(), "data:image/png;base64,AAAA".to_string());
+        urls.insert(
+            "att_1".to_string(),
+            "data:image/png;base64,AAAA".to_string(),
+        );
         let wire = response_input_items_to_wire(&[item], &urls);
         let content = &wire[0]["content"];
         assert!(content.is_array(), "user message with image → parts array");
-        assert_eq!(content[0]["type"], "text");
+        // Responses content parts use the `input_*` type names (per the
+        // DeepSeek Vision guide): `input_text` for text, `input_image` for
+        // images. `text` would be the Chat Completions spelling and is not
+        // recognized inside the Responses parts array.
+        assert_eq!(content[0]["type"], "input_text");
         assert_eq!(content[1]["type"], "input_image");
         assert_eq!(content[1]["image_url"], "data:image/png;base64,AAAA");
         assert_eq!(content[1]["detail"], "auto");
@@ -662,7 +673,10 @@ mod tests {
             }],
         };
         let mut urls = std::collections::BTreeMap::new();
-        urls.insert("att_1".to_string(), "data:image/png;base64,AAAA".to_string());
+        urls.insert(
+            "att_1".to_string(),
+            "data:image/png;base64,AAAA".to_string(),
+        );
         let wire = response_input_items_to_wire(&[item], &urls);
         // Images are only valid on user messages; content stays a string.
         assert_eq!(wire[0]["content"], "hi");
