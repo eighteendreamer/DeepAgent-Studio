@@ -30,10 +30,19 @@ async fn main() {
         }
     };
 
+    let log_writer = if matches!(command, CliCommand::Server { .. }) {
+        // `server --transport stdio` owns stdout as the machine protocol
+        // channel; every tracing line must go to stderr to keep it clean JSON.
+        deepagent_tracing::LogWriter::Stderr
+    } else {
+        deepagent_tracing::LogWriter::Stdout
+    };
+
     deepagent_tracing::init(deepagent_tracing::TracingConfig {
         default_directive: "warn,deepagent=info".to_string(),
         format: deepagent_tracing::LogFormat::Pretty,
         with_location: false,
+        log_writer,
     });
 
     let result = match command {

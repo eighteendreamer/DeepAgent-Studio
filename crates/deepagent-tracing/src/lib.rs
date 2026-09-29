@@ -18,6 +18,16 @@ use std::sync::Once;
 
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+/// Where the tracing subscriber writes formatted events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogWriter {
+    /// Write to stdout (default; existing behavior).
+    Stdout,
+    /// Write to stderr — required by `deepagent-cli server --transport stdio`,
+    /// where stdout is the machine protocol channel and must stay clean JSON.
+    Stderr,
+}
+
 static INIT: Once = Once::new();
 
 /// Output format for the tracing subscriber.
@@ -38,6 +48,8 @@ pub struct TracingConfig {
     pub format: LogFormat,
     /// Whether to include source file/line in events.
     pub with_location: bool,
+    /// Where formatted output is written (default: stdout).
+    pub log_writer: LogWriter,
 }
 
 impl Default for TracingConfig {
@@ -46,6 +58,7 @@ impl Default for TracingConfig {
             default_directive: "info,deepagent=debug".to_string(),
             format: LogFormat::Pretty,
             with_location: false,
+            log_writer: LogWriter::Stdout,
         }
     }
 }
@@ -59,11 +72,17 @@ pub fn init(config: TracingConfig) {
             .or_else(|_| EnvFilter::try_new(&config.default_directive))
             .unwrap_or_else(|_| EnvFilter::new("info"));
 
+        let writer: fn() -> Box<dyn std::io::Write + Send> = match config.log_writer {
+            LogWriter::Stdout => || Box::new(std::io::stdout()),
+            LogWriter::Stderr => || Box::new(std::io::stderr()),
+        };
+
         let registry = tracing_subscriber::registry().with(filter);
 
         match config.format {
             LogFormat::Pretty => {
                 let layer = fmt::layer()
+                    .with_writer(writer)
                     .with_target(true)
                     .with_file(config.with_location)
                     .with_line_number(config.with_location);
@@ -72,6 +91,7 @@ pub fn init(config: TracingConfig) {
             LogFormat::Json => {
                 let layer = fmt::layer()
                     .json()
+                    .with_writer(writer)
                     .with_target(true)
                     .with_file(config.with_location)
                     .with_line_number(config.with_location);

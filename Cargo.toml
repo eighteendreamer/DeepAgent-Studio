@@ -31,6 +31,7 @@ members = [
     "crates/deepagent-security",
     "crates/deepagent-app-core",
     "crates/deepagent-harness-protocol",
+    "crates/deepagent-harness-sdk",
     "crates/deepagent-mcp",
     "crates/deepagent-codegraph",
     "crates/deepagent-ssh",
