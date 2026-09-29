@@ -30,6 +30,9 @@ pub struct ChatCompletionRequest {
     pub top_p: Option<f32>,
     pub tool_choice: Option<serde_json::Value>,
     pub user: Option<String>,
+    /// Attachment id → base64 data URL, resolved by the caller that owns
+    /// attachment storage (materialized into `image_url` content parts).
+    pub attachment_data_urls: BTreeMap<String, String>,
 }
 
 impl Serialize for ChatCompletionRequest {
@@ -39,7 +42,7 @@ impl Serialize for ChatCompletionRequest {
     {
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("model", &self.model)?;
-        map.serialize_entry("messages", &ChatMessages(&self.messages))?;
+        map.serialize_entry("messages", &ChatMessages(&self.messages, &self.attachment_data_urls))?;
         map.serialize_entry("stream", &self.stream)?;
         if self.stream_options_include_usage {
             map.serialize_entry(
@@ -104,6 +107,7 @@ impl ChatCompletionRequest {
             top_p: None,
             tool_choice: None,
             user: None,
+            attachment_data_urls: BTreeMap::new(),
         }
     }
 
@@ -197,7 +201,7 @@ impl ChatCompletionRequest {
     }
 }
 
-struct ChatMessages<'a>(&'a [Message]);
+struct ChatMessages<'a>(&'a [Message], &'a BTreeMap<String, String>);
 
 impl Serialize for ChatMessages<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -206,7 +210,7 @@ impl Serialize for ChatMessages<'_> {
     {
         let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
         for message in self.0 {
-            let value = serialize_message(message)
+            let value = serialize_message(message, self.1)
                 .map_err(|error| serde::ser::Error::custom(error.to_string()))?;
             sequence.serialize_element(&value)?;
         }
@@ -214,7 +218,10 @@ impl Serialize for ChatMessages<'_> {
     }
 }
 
-fn serialize_message(message: &Message) -> serde_json::Result<serde_json::Value> {
+fn serialize_message(
+    message: &Message,
+    data_urls: &BTreeMap<String, String>,
+) -> serde_json::Result<serde_json::Value> {
     let mut value = serde_json::Map::new();
     value.insert(
         "role".to_string(),
@@ -270,10 +277,40 @@ fn serialize_message(message: &Message) -> serde_json::Result<serde_json::Value>
             );
         }
         Role::System | Role::User => {
-            value.insert(
-                "content".to_string(),
-                serde_json::Value::String(message.content.clone()),
-            );
+            // User messages may carry image attachments: emit a content-parts
+            // array (text part + one `image_url` data-URL part per image).
+            // Images are only valid on user messages per the provider.
+            let image_urls: Vec<String> = if message.role == Role::User {
+                message
+                    .attachments
+                    .iter()
+                    .filter(|att| att.kind == "image")
+                    .filter_map(|att| data_urls.get(&att.id).cloned())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if image_urls.is_empty() {
+                value.insert(
+                    "content".to_string(),
+                    serde_json::Value::String(message.content.clone()),
+                );
+            } else {
+                let mut parts = Vec::new();
+                if !message.content.is_empty() {
+                    parts.push(serde_json::json!({
+                        "type": "text",
+                        "text": message.content,
+                    }));
+                }
+                for url in image_urls {
+                    parts.push(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": { "url": url },
+                    }));
+                }
+                value.insert("content".to_string(), serde_json::Value::Array(parts));
+            }
         }
     }
     Ok(serde_json::Value::Object(value))
@@ -568,6 +605,36 @@ fn parse_chat_usage(value: &serde_json::Value) -> Usage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deepagent_core::message::MessageAttachment;
+
+    #[test]
+    fn chat_wire_materializes_user_image_attachment() {
+        let mut request = ChatCompletionRequest::new(
+            "deepseek-flash",
+            vec![Message::user("look at this").with_attachments(vec![MessageAttachment {
+                id: "att_1".into(),
+                kind: "image".into(),
+                media_type: Some("image/png".into()),
+                path: None,
+            }])],
+        );
+        request
+            .attachment_data_urls
+            .insert("att_1".to_string(), "data:image/png;base64,AAAA".to_string());
+        let json = serde_json::to_value(&request).unwrap();
+        let content = &json["messages"][0]["content"];
+        assert!(content.is_array(), "image → content parts array");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,AAAA");
+    }
+
+    #[test]
+    fn chat_wire_keeps_string_content_without_images() {
+        let request = ChatCompletionRequest::new("deepseek-flash", vec![Message::user("plain")]);
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["messages"][0]["content"], "plain");
+    }
     use crate::stream::{DeltaObserver, ModelStreamEvent};
     use crate::{FinishReason, ToolSchema, Usage};
     use deepagent_core::message::{Message, ToolCall};

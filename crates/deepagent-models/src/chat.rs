@@ -149,6 +149,10 @@ pub struct ResponseRequest {
     pub text: Option<serde_json::Value>,
     /// Optional end-user identifier.
     pub user: Option<String>,
+    /// Attachment id → base64 data URL, resolved by the caller that owns
+    /// attachment storage. Used to materialize `input_image` content parts;
+    /// empty when the turn carries no image attachments.
+    pub attachment_data_urls: std::collections::BTreeMap<String, String>,
 }
 
 impl Serialize for ResponseRequest {
@@ -162,7 +166,10 @@ impl Serialize for ResponseRequest {
         if let Some(value) = &self.instructions {
             map.serialize_entry("instructions", &value)?;
         }
-        map.serialize_entry("input", &response_input_items_to_wire(&self.input))?;
+        map.serialize_entry(
+            "input",
+            &response_input_items_to_wire(&self.input, &self.attachment_data_urls),
+        )?;
         map.serialize_entry("stream", &self.stream)?;
         if let Some(value) = self.temperature {
             map.serialize_entry("temperature", &value)?;
@@ -201,7 +208,10 @@ impl Serialize for ResponseRequest {
     }
 }
 
-fn response_input_items_to_wire(items: &[ResponseInputItem]) -> Vec<serde_json::Value> {
+fn response_input_items_to_wire(
+    items: &[ResponseInputItem],
+    data_urls: &std::collections::BTreeMap<String, String>,
+) -> Vec<serde_json::Value> {
     items
         .iter()
         .map(|item| match item {
@@ -216,16 +226,7 @@ fn response_input_items_to_wire(items: &[ResponseInputItem]) -> Vec<serde_json::
                 role,
                 content,
                 attachments,
-            } => {
-                // Text-only rendering here; the attachments map (image parts) is
-                // materialized by the caller that owns attachment storage.
-                let _ = attachments;
-                serde_json::json!({
-                    "type": "message",
-                    "role": role,
-                    "content": content,
-                })
-            }
+            } => response_input_message_to_wire(role, content, attachments, data_urls),
             ResponseInputItem::Reasoning { id, content } => {
                 let mut value = serde_json::json!({
                     "type": "reasoning",
@@ -292,6 +293,51 @@ fn response_input_items_to_wire(items: &[ResponseInputItem]) -> Vec<serde_json::
         .collect()
 }
 
+/// Render a Responses user message that carries attachment references into the
+/// wire form. Text-only messages keep `content` as a string; messages with
+/// resolvable image attachments emit a content-parts array (text part + one
+/// `input_image` part per image). Per the DeepSeek Vision guide images are only
+/// permitted on `user` messages, so non-user roles fall back to text.
+fn response_input_message_to_wire(
+    role: &str,
+    content: &str,
+    attachments: &[deepagent_core::message::MessageAttachment],
+    data_urls: &std::collections::BTreeMap<String, String>,
+) -> serde_json::Value {
+    let image_urls: Vec<String> = if role == "user" {
+        attachments
+            .iter()
+            .filter(|att| att.kind == "image")
+            .filter_map(|att| data_urls.get(&att.id).cloned())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if image_urls.is_empty() {
+        return serde_json::json!({
+            "type": "message",
+            "role": role,
+            "content": content,
+        });
+    }
+    let mut parts = Vec::new();
+    if !content.is_empty() {
+        parts.push(serde_json::json!({ "type": "text", "text": content }));
+    }
+    for url in image_urls {
+        parts.push(serde_json::json!({
+            "type": "input_image",
+            "image_url": url,
+            "detail": "auto",
+        }));
+    }
+    serde_json::json!({
+        "type": "message",
+        "role": role,
+        "content": parts,
+    })
+}
+
 impl ResponseRequest {
     /// Build a non-streaming request for `model` with `messages`.
     pub fn new(model: impl Into<String>, messages: Vec<Message>) -> Self {
@@ -339,7 +385,18 @@ impl ResponseRequest {
             top_logprobs: None,
             text: None,
             user: None,
+            attachment_data_urls: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Attach the resolved attachment id → data URL map, materialized into
+    /// `input_image` content parts at serialization time.
+    pub fn with_attachment_data_urls(
+        mut self,
+        data_urls: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.attachment_data_urls = data_urls;
+        self
     }
 
     /// Enable streaming (builder style). Also requests usage in the stream.
@@ -566,6 +623,67 @@ fn parse_function_arguments(raw: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn responses_wire_materializes_user_image_attachment() {
+        use deepagent_core::message::MessageAttachment;
+        let item = ResponseInputItem::InputMessage {
+            role: "user".into(),
+            content: "what is this?".into(),
+            attachments: vec![MessageAttachment {
+                id: "att_1".into(),
+                kind: "image".into(),
+                media_type: Some("image/png".into()),
+                path: None,
+            }],
+        };
+        let mut urls = std::collections::BTreeMap::new();
+        urls.insert("att_1".to_string(), "data:image/png;base64,AAAA".to_string());
+        let wire = response_input_items_to_wire(&[item], &urls);
+        let content = &wire[0]["content"];
+        assert!(content.is_array(), "user message with image → parts array");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "input_image");
+        assert_eq!(content[1]["image_url"], "data:image/png;base64,AAAA");
+        assert_eq!(content[1]["detail"], "auto");
+    }
+
+    #[test]
+    fn responses_wire_omits_image_for_non_user_role() {
+        use deepagent_core::message::MessageAttachment;
+        let item = ResponseInputItem::InputMessage {
+            role: "assistant".into(),
+            content: "hi".into(),
+            attachments: vec![MessageAttachment {
+                id: "att_1".into(),
+                kind: "image".into(),
+                media_type: None,
+                path: None,
+            }],
+        };
+        let mut urls = std::collections::BTreeMap::new();
+        urls.insert("att_1".to_string(), "data:image/png;base64,AAAA".to_string());
+        let wire = response_input_items_to_wire(&[item], &urls);
+        // Images are only valid on user messages; content stays a string.
+        assert_eq!(wire[0]["content"], "hi");
+    }
+
+    #[test]
+    fn responses_wire_falls_back_to_text_when_unresolved() {
+        use deepagent_core::message::MessageAttachment;
+        let item = ResponseInputItem::InputMessage {
+            role: "user".into(),
+            content: "hi".into(),
+            attachments: vec![MessageAttachment {
+                id: "missing".into(),
+                kind: "image".into(),
+                media_type: None,
+                path: None,
+            }],
+        };
+        let wire = response_input_items_to_wire(&[item], &std::collections::BTreeMap::new());
+        assert_eq!(wire[0]["content"], "hi");
+    }
 
     #[test]
     fn thinking_depth_flags() {
