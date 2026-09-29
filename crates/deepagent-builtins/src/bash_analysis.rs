@@ -563,6 +563,51 @@ pub fn is_dangerous(command: &str) -> bool {
     !danger_reasons(command).is_empty()
 }
 
+/// Whether `command`'s effective command matches any allow-list prefix.
+///
+/// Mirrors Claude Code's `bashPermissions` prefix semantics:
+/// - a prefix rule must match on **token boundaries** (`ls` does not match
+///   `lsof`);
+/// - a prefix rule **never authorizes a compound command** (`cd a && evil` is
+///   not covered by `cd`);
+/// - leading `NAME=value` assignments are stripped before matching, so
+///   `FOO=bar git status` matches `git`;
+/// - `xargs <prefix>` is honored (`xargs rm file` matches `rm`).
+pub fn is_allowed(command: &str, allow: &[String]) -> bool {
+    let analysis = analyze(command);
+    if analysis.too_complex.is_some() {
+        return false;
+    }
+    // Prefix rules must not authorize compound commands.
+    if analysis.commands.len() != 1 {
+        return false;
+    }
+    let argv: Vec<&str> = analysis.commands[0]
+        .argv
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let Some((first, rest)) = argv.split_first() else {
+        return false;
+    };
+    // `xargs <prefix> ...` is judged by the carried command.
+    let candidate: &[&str] = if *first == "xargs" && !rest.is_empty() {
+        rest
+    } else {
+        &argv
+    };
+    allow.iter().any(|prefix| prefix_matches(candidate, prefix))
+}
+
+/// Token-boundary prefix match: `parts` must be a leading subsequence of `argv`.
+fn prefix_matches(argv: &[&str], prefix: &str) -> bool {
+    let parts: Vec<&str> = prefix.split_whitespace().collect();
+    if parts.is_empty() || parts.len() > argv.len() {
+        return false;
+    }
+    parts.iter().zip(argv).all(|(a, b)| a == b)
+}
+
 fn is_destructive_rm(name: &str, args: &[String]) -> bool {
     if name != "rm" {
         return false;
@@ -773,5 +818,36 @@ mod tests {
         // The word is a quoted argument to echo, not a command.
         assert!(!is_dangerous("echo \"rm -rf /\""));
         assert!(!is_dangerous("git log --grep=\"git push\""));
+    }
+
+    // ---- Allow-list prefix semantics (CC bashPermissions parity) ----------
+
+    #[test]
+    fn prefix_matches_on_token_boundaries_only() {
+        let allow = vec!["git".to_string(), "npm run".to_string()];
+        assert!(is_allowed("git status", &allow));
+        assert!(is_allowed("git", &allow));
+        assert!(is_allowed("npm run build", &allow));
+        assert!(!is_allowed("npm install", &allow));
+        assert!(!is_allowed("rm file", &allow));
+        // `ls` must NOT match `lsof`.
+        assert!(!is_allowed("lsof", &["ls".to_string()]));
+    }
+
+    #[test]
+    fn prefix_rule_does_not_authorize_compound_commands() {
+        // CC: `Bash(cd:*)` must not cover `cd /path && python3 evil.py`.
+        let allow = vec!["cd".to_string()];
+        assert!(is_allowed("cd src", &allow));
+        assert!(!is_allowed("cd src && python3 evil.py", &allow));
+        assert!(!is_allowed("cd src | tee out", &allow));
+    }
+
+    #[test]
+    fn prefix_strips_env_vars_and_honors_xargs() {
+        let allow = vec!["git".to_string()];
+        assert!(is_allowed("FOO=bar git status", &allow));
+        // xargs carries the real command.
+        assert!(is_allowed("xargs rm file", &["rm".to_string()]));
     }
 }

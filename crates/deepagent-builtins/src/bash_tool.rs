@@ -688,16 +688,8 @@ pub fn detect_command_injection(command: &str) -> Option<&'static str> {
 }
 
 /// Whether `command`'s leading token(s) match any allow-list prefix.
-pub fn is_allowed(command: &str, allow: &[String]) -> bool {
-    let trimmed = command.trim();
-    allow.iter().any(|prefix| {
-        let p = prefix.trim();
-        !p.is_empty()
-            && (trimmed == p
-                || trimmed.starts_with(&format!("{p} "))
-                || trimmed.starts_with(&format!("{p}\t")))
-    })
-}
+/// Re-exported from [`crate::bash_analysis`] (token-boundary + compound-aware).
+pub use crate::bash_analysis::is_allowed;
 
 /// The `bash` tool.
 pub struct BashTool<E: CommandExecutor> {
