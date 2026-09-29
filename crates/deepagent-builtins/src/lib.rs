@@ -138,8 +138,8 @@ pub use remote_tools::{
 pub use skill_tool::{SkillTool, SKILL_TOOL_NAME};
 pub use snip_tool::{SnipHistoryTool, SNIP_HISTORY_TOOL_NAME};
 pub use task_tool::{
-    BackgroundSubagent, SubagentRequest, SubagentRunner, SubagentStatus, TaskAgentType, TaskTool,
-    UnavailableSubagentRunner, TASK_TOOL_NAME,
+    BackgroundSubagent, SubagentOutcome, SubagentRequest, SubagentRunner, SubagentStatus,
+    TaskAgentType, TaskTool, UnavailableSubagentRunner, TASK_TOOL_NAME,
 };
 pub use todo_tool::{TaskListTool, TodoItem, TodoStatus, TodoStore, TodoWriteTool};
 pub use tool_search::{

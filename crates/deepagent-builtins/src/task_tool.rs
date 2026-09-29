@@ -94,6 +94,30 @@ pub struct SubagentStatus {
 
 /// Runs a sub-agent to completion and returns its final result text.
 ///
+/// Outcome of a synchronous sub-agent run: the final answer plus lightweight
+/// stats surfaced to the parent model (Claude Code `AgentToolResult` parity).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubagentOutcome {
+    /// The sub-agent's final answer text.
+    pub result: String,
+    /// Number of tool calls the sub-agent requested.
+    pub tool_use_count: usize,
+    /// Wall-clock duration of the sub-agent run (ms).
+    pub duration_ms: u64,
+    /// Total tokens the provider reported for the sub-agent run.
+    pub tokens: u64,
+}
+
+impl SubagentOutcome {
+    /// Outcome carrying only the final answer (stats default to zero).
+    pub fn text(result: impl Into<String>) -> Self {
+        Self {
+            result: result.into(),
+            ..Default::default()
+        }
+    }
+}
+
 /// The default impl reports that sub-agents aren't configured; the desktop app
 /// supplies a runner that executes a nested agent loop rooted at the project.
 #[async_trait]
@@ -106,13 +130,13 @@ pub trait SubagentRunner: Send + Sync {
         &self,
         request: SubagentRequest,
         context: ToolExecutionContext,
-    ) -> Result<String> {
+    ) -> Result<SubagentOutcome> {
         if context.is_cancelled() {
             return Err(deepagent_core::error::CoreError::other(
                 "sub-agent cancelled before start",
             ));
         }
-        self.run(request).await
+        self.run(request).await.map(SubagentOutcome::text)
     }
 
     /// Start a child run and return immediately.
@@ -530,8 +554,11 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
             };
         }
         match self.runner.run_controlled(request, context).await {
-            Ok(result) => Ok(ToolOutput::success(serde_json::json!({
-                "result": result,
+            Ok(outcome) => Ok(ToolOutput::success(serde_json::json!({
+                "result": outcome.result,
+                "tool_use_count": outcome.tool_use_count,
+                "duration_ms": outcome.duration_ms,
+                "tokens": outcome.tokens,
             }))),
             Err(e) => Ok(ToolOutput::failure(format!("sub-agent failed: {e}"))),
         }
@@ -613,6 +640,41 @@ mod tests {
             .unwrap();
         assert!(out.ok);
         assert!(out.value["result"].as_str().unwrap().contains("explore"));
+    }
+
+    /// Runner that returns populated stats, to exercise the structured output.
+    struct StatsRunner;
+    #[async_trait]
+    impl SubagentRunner for StatsRunner {
+        async fn run(&self, _request: SubagentRequest) -> Result<String> {
+            Ok("unused".to_string())
+        }
+        async fn run_controlled(
+            &self,
+            request: SubagentRequest,
+            _context: ToolExecutionContext,
+        ) -> Result<SubagentOutcome> {
+            Ok(SubagentOutcome {
+                result: format!("done: {}", request.prompt),
+                tool_use_count: 3,
+                duration_ms: 42,
+                tokens: 1234,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn surfaces_structured_subagent_stats() {
+        let tool = TaskTool::new(StatsRunner, ["general".to_string()]);
+        let out = tool
+            .invoke(serde_json::json!({ "prompt": "survey the repo" }))
+            .await
+            .unwrap();
+        assert!(out.ok);
+        assert_eq!(out.value["result"], "done: survey the repo");
+        assert_eq!(out.value["tool_use_count"], 3);
+        assert_eq!(out.value["duration_ms"], 42);
+        assert_eq!(out.value["tokens"], 1234);
     }
 
     #[tokio::test]

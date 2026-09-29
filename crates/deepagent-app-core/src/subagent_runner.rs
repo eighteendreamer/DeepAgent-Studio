@@ -72,7 +72,7 @@ impl ChatSubagentRunner {
         &self,
         request: deepagent_builtins::SubagentRequest,
         cancel: Option<Arc<AtomicBool>>,
-    ) -> Result<String> {
+    ) -> Result<deepagent_builtins::SubagentOutcome> {
         let subagent_id = format!("sub_{}", deepagent_core::id::EventId::new());
         let persist = self.begin_tracking(&subagent_id, &request, false)?;
         self.run_tracked(subagent_id, request, cancel, persist, false)
@@ -299,7 +299,7 @@ impl ChatSubagentRunner {
         cancel: Option<Arc<AtomicBool>>,
         persist: bool,
         background: bool,
-    ) -> Result<String> {
+    ) -> Result<deepagent_builtins::SubagentOutcome> {
         let transcript_path = self.transcript_root.join(format!("{subagent_id}.json"));
         let created_at = subagent_now_ms();
         let _ = self
@@ -354,16 +354,16 @@ impl ChatSubagentRunner {
         if isolated {
             let path = execution_root.to_string_lossy().to_string();
             if state == "succeeded" {
-                if let Ok(summary) = &mut result {
-                    summary.push_str("\n\nIsolated worktree retained at: ");
-                    summary.push_str(&path);
+                if let Ok(outcome) = &mut result {
+                    outcome.result.push_str("\n\nIsolated worktree retained at: ");
+                    outcome.result.push_str(&path);
                 }
             } else if let Err(error) = self.remove_worktree(&subagent_id, &path).await {
                 tracing::warn!(%error, subagent_id, "failed to clean up terminal child worktree");
             }
         }
         let summary = match &result {
-            Ok(summary) => summary.clone(),
+            Ok(outcome) => outcome.result.clone(),
             Err(error) => error.to_string(),
         };
         let bounded_summary = subagent_summary(&summary, 2_000);
@@ -477,7 +477,7 @@ impl ChatSubagentRunner {
         request: deepagent_builtins::SubagentRequest,
         cancel: Option<Arc<AtomicBool>>,
         execution_root: &Path,
-    ) -> Result<String> {
+    ) -> Result<deepagent_builtins::SubagentOutcome> {
         use deepagent_runtime::{ModelAgent, RunOutcome, RuntimeConfig, RuntimeEngine};
 
         let agent_profile = request
@@ -606,6 +606,7 @@ impl ChatSubagentRunner {
         if let Some(cancel) = cancel {
             engine = engine.with_cancel(cancel);
         }
+        let started_at = std::time::Instant::now();
         let outcome = engine.run(&mut session, task, &mut agent).await;
         if let Ok(evidence) = checkpoint.mutation_evidence() {
             if let Some(parent) = self.parent_checkpoint.get() {
@@ -613,7 +614,17 @@ impl ChatSubagentRunner {
             }
         }
         match outcome? {
-            RunOutcome::Completed(msg) => Ok(msg),
+            RunOutcome::Completed(msg) => {
+                let tokens = deepagent_runtime::Agent::cumulative_usage(&agent)
+                    .map(|usage| usage.total_tokens as u64)
+                    .unwrap_or(0);
+                Ok(deepagent_builtins::SubagentOutcome {
+                    result: msg,
+                    tool_use_count: session.state().tool_calls_requested,
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    tokens,
+                })
+            }
             RunOutcome::AwaitingApproval(message) => Err(CoreError::other(format!(
                 "sub-agent paused awaiting approval: {message}"
             ))),
@@ -797,14 +808,16 @@ fn subagent_thinking_depth(
 #[async_trait::async_trait]
 impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
     async fn run(&self, request: deepagent_builtins::SubagentRequest) -> Result<String> {
-        self.run_inner(request, None).await
+        self.run_inner(request, None)
+            .await
+            .map(|outcome| outcome.result)
     }
 
     async fn run_controlled(
         &self,
         request: deepagent_builtins::SubagentRequest,
         context: deepagent_tools::ToolExecutionContext,
-    ) -> Result<String> {
+    ) -> Result<deepagent_builtins::SubagentOutcome> {
         self.run_inner(request, Some(context.cancel_flag())).await
     }
 
@@ -917,6 +930,7 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
             false,
         )
         .await
+        .map(|outcome| outcome.result)
     }
 
     async fn cleanup(&self, id: &str) -> Result<bool> {
