@@ -11,11 +11,10 @@
 //!   estimator now; a real BPE tokenizer can be slotted in later).
 //!
 //! Composed pipeline:
-//! - [`pipeline`]   — the **Five-Layer Context Pipeline**: recent conversation,
-//!   task summary, memory injection, workspace context, semantic retrieval —
-//!   fitted to a budget.
 //! - [`compaction`] — structured-summary compaction (开发提示词.md §4 Layer 2)
-//!   that compresses older turns when the window grows too large.
+//!   that compresses older turns when the window grows too large. The composed
+//!   request path is [`assembler`]'s `ContextAssembler` (source-ranked
+//!   manifest), not a separate five-layer pipeline.
 
 pub mod assembler;
 pub mod attachment;
@@ -24,7 +23,6 @@ pub mod compaction;
 pub mod config_overlay;
 pub mod model_compactor;
 pub mod pack;
-pub mod pipeline;
 pub mod policy;
 pub mod prompt;
 pub mod reminder;
@@ -47,7 +45,6 @@ pub use pack::{
     CacheScope, ContextBlock, ContextBlockKind, ContextBlockUsage, ContextPack,
     ContextUsageSnapshot,
 };
-pub use pipeline::ContextPipeline;
 pub use policy::ContextPolicy;
 pub use prompt::{CompiledPrompt, PromptFragment, PromptSource};
 pub use reminder::{append_to_tool_result, wrap};

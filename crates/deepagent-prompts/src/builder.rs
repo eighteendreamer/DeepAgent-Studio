@@ -6,7 +6,8 @@
 //! Memory → Context → User Goal). That maps one-to-one onto the existing
 //! [`deepagent_context::PromptSource`] ordering, so this builder just collects
 //! typed sections and emits ordered [`PromptFragment`]s that the
-//! [`deepagent_context::ContextPipeline`] / budgeter can consume directly.
+//! [`deepagent_context::PromptBudget`] / [`deepagent_context::ContextAssembler`]
+//! can consume directly.
 //!
 //! An [`AgentDef`] contributes the `AgentIdentity` section (its body) and its
 //! tool allow-list feeds the `ToolRules` section, so a sub-agent's persona and
