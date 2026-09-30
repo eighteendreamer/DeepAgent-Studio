@@ -13,11 +13,18 @@
 //! | Workspace Memory   | project structure      |
 //! | Failure Memory     | past failures          |
 //!
-//! This crate defines the [`MemoryTier`] taxonomy, the [`MemoryItem`] record,
-//! the [`ranking`] model (importance / recency / decay), an in-memory keyword
-//! [`store::MemoryStore`], a vector-based [`semantic::SemanticMemoryStore`]
-//! (embeddings + cosine similarity), and a [`repository::MemoryRepository`] that
-//! persists memory across sessions via the document store.
+//! This crate provides two retrieval tracks over that model:
+//!
+//! - **Chunk-level Contextual Retrieval** — the production path, consumed by
+//!   `deepagent-knowledge`. Markdown is chunked and heading-contextualized,
+//!   then retrieved via embeddings + BM25 fused with RRF and reranked
+//!   ([`contextual_retrieval::ContextualRetriever`], tuned by [`HybridConfig`]).
+//! - **Item-level tier stores** — in-memory primitives for the multi-tier
+//!   blueprint: the [`MemoryTier`] taxonomy and [`MemoryItem`] record, the
+//!   [`ranking`] model (importance / recency / decay), an in-memory keyword
+//!   [`store::MemoryStore`], and a vector-based [`semantic::SemanticMemoryStore`]
+//!   (embeddings + cosine similarity). These are not yet wired to cross-session
+//!   persistence.
 
 pub mod bm25;
 pub mod chunking;
@@ -28,7 +35,6 @@ pub mod fusion;
 pub mod hybrid;
 pub mod observation;
 pub mod ranking;
-pub mod repository;
 pub mod semantic;
 pub mod store;
 
@@ -42,7 +48,6 @@ pub use embedding::{cosine_similarity, Embedder, HashingEmbedder};
 pub use fusion::reciprocal_rank_fusion;
 pub use hybrid::{to_l5_block, HybridConfig, HybridRetriever, Reranker, SignalReranker};
 pub use observation::{Observation, ObservationType};
-pub use repository::{MemoryRepository, MEMORY_COLLECTION};
 pub use semantic::SemanticMemoryStore;
 
 use serde::{Deserialize, Serialize};

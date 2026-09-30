@@ -1321,10 +1321,7 @@ name = "deepagent-memory"
 version = "0.1.0"
 dependencies = [
  "deepagent-core",
- "deepagent-persistence",
  "serde",
- "serde_json",
- "tempfile",
  "tracing",
 ]
 
