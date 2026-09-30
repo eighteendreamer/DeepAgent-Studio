@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -411,6 +411,11 @@ pub struct SandboxieExecutor {
     /// Atomic sandbox mode: 0=ReadOnly, 1=WorkspaceWrite, 2=FullAccess.
     /// Updated per-run so concurrent sessions use the correct confinement.
     sandbox_mode: Arc<AtomicU8>,
+    /// Whether a Sandboxie failure/absence may silently degrade to direct
+    /// host execution. Default `false`: an isolation failure is a hard error,
+    /// matching `WindowsSandboxBackend`'s "unavailable must NOT fall back to
+    /// direct" posture (AGENTS.md §5.5 / §6 no-silent-degradation).
+    allow_direct_fallback: Arc<AtomicBool>,
 }
 
 impl SandboxieExecutor {
@@ -419,7 +424,31 @@ impl SandboxieExecutor {
             service,
             fallback: SystemExecutor,
             sandbox_mode: Arc::new(AtomicU8::new(1)),
+            allow_direct_fallback: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Explicitly permit degrading to uncontained host execution when
+    /// Sandboxie is unavailable or errors (builder). Off by default; turning
+    /// it on is an audited, deliberate safety trade-off, not a silent one.
+    pub fn with_direct_fallback(self, allow: bool) -> Self {
+        self.allow_direct_fallback.store(allow, Ordering::Relaxed);
+        self
+    }
+
+    /// Whether an isolation failure may silently degrade to host execution.
+    fn direct_fallback_allowed(&self) -> bool {
+        self.allow_direct_fallback.load(Ordering::Relaxed)
+    }
+
+    /// The hard-fail error when Sandboxie cannot contain a command and direct
+    /// fallback is not explicitly permitted.
+    fn containment_error(reason: &str) -> CoreError {
+        CoreError::other(format!(
+            "Sandboxie containment unavailable ({reason}); refusing to run \
+             uncontained on the host. Install Sandboxie-Plus, select the \
+             Direct/WindowsSandbox backend, or explicitly enable direct fallback."
+        ))
     }
 
     /// Set the sandbox mode for OS-level file access configuration (builder).
@@ -499,10 +528,28 @@ impl CommandExecutor for SandboxieExecutor {
         .await
         {
             Ok(Ok(out)) => Ok(out),
-            Ok(Err(_)) | Err(_) => {
-                self.fallback
-                    .run_with_environment(command.as_str(), cwd.as_str(), shell, &environment)
-                    .await
+            result => {
+                let reason = match result {
+                    Ok(Err(error)) => error.to_string(),
+                    Err(join) => format!("sandbox task join error: {join}"),
+                    Ok(Ok(_)) => unreachable!("handled above"),
+                };
+                if self.direct_fallback_allowed() {
+                    tracing::warn!(
+                        reason,
+                        "Sandboxie unavailable; direct fallback explicitly enabled — running \
+                         uncontained on host"
+                    );
+                    self.fallback
+                        .run_with_environment(command.as_str(), cwd.as_str(), shell, &environment)
+                        .await
+                } else {
+                    tracing::error!(
+                        reason,
+                        "Sandboxie containment failed; refusing silent host fallback"
+                    );
+                    Err(Self::containment_error(&reason))
+                }
             }
         }
     }
@@ -539,13 +586,29 @@ impl CommandExecutor for SandboxieExecutor {
         if cancel.load(Ordering::Acquire) {
             return Err(CoreError::other("command cancelled before start"));
         }
-        // Fall back to the system executor (with its own full kill support)
-        // when Sandboxie is not installed, instead of losing control flags.
+        // When Sandboxie is not installed, do NOT silently run uncontained on
+        // the host (§6 no-silent-degradation). Only degrade if direct fallback
+        // was explicitly enabled; otherwise hard-fail like WindowsSandboxBackend.
         if self.service.locate_tools().is_none() {
-            return self
-                .fallback
-                .run_controlled_with_environment(command, cwd, shell, cancel, timeout, environment)
-                .await;
+            if self.direct_fallback_allowed() {
+                tracing::warn!(
+                    "Sandboxie not installed; direct fallback explicitly enabled — running \
+                     uncontained on host"
+                );
+                return self
+                    .fallback
+                    .run_controlled_with_environment(
+                        command,
+                        cwd,
+                        shell,
+                        cancel,
+                        timeout,
+                        environment,
+                    )
+                    .await;
+            }
+            tracing::error!("Sandboxie not installed; refusing silent host fallback");
+            return Err(Self::containment_error("Sandboxie-Plus not installed"));
         }
 
         let service = self.service.clone();
@@ -576,17 +639,35 @@ impl CommandExecutor for SandboxieExecutor {
 
         match outcome {
             Some(Ok(Ok(out))) => Ok(out),
-            Some(Ok(Err(_))) | Some(Err(_)) => {
-                self.fallback
-                    .run_controlled_with_environment(
-                        command,
-                        cwd,
-                        shell,
-                        cancel,
-                        timeout,
-                        environment,
-                    )
-                    .await
+            Some(result) => {
+                let reason = match result {
+                    Ok(Err(error)) => error.to_string(),
+                    Err(join) => format!("sandbox task join error: {join}"),
+                    Ok(Ok(_)) => unreachable!("handled above"),
+                };
+                if self.direct_fallback_allowed() {
+                    tracing::warn!(
+                        reason,
+                        "Sandboxie run failed; direct fallback explicitly enabled — running \
+                         uncontained on host"
+                    );
+                    self.fallback
+                        .run_controlled_with_environment(
+                            command,
+                            cwd,
+                            shell,
+                            cancel,
+                            timeout,
+                            environment,
+                        )
+                        .await
+                } else {
+                    tracing::error!(
+                        reason,
+                        "Sandboxie containment failed; refusing silent host fallback"
+                    );
+                    Err(Self::containment_error(&reason))
+                }
             }
             None => {
                 // Cancelled or timed out: kill everything in the box, then
@@ -872,6 +953,57 @@ mod tests {
         // The capture file must not survive (no litter in the workspace).
         assert!(!dir.join("c.out").exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sandboxie_unavailable_does_not_silently_run_on_host() {
+        // Regression (D8): with the strict default, a missing/failing Sandboxie
+        // must hard-fail rather than silently execute uncontained on the host.
+        let service = Arc::new(SandboxieService::new(None));
+        if service.locate_tools().is_some() {
+            return; // Sandboxie actually installed here — skip the negative case.
+        }
+        let exec = SandboxieExecutor::new(service);
+        let out = exec
+            .run_with_environment("echo should-not-run", ".", CommandShell::Auto, &[])
+            .await;
+        assert!(
+            out.is_err(),
+            "must not silently fall back to uncontained host execution"
+        );
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let controlled = exec
+            .run_controlled_with_environment(
+                "echo should-not-run",
+                ".",
+                CommandShell::Auto,
+                cancel,
+                std::time::Duration::from_secs(5),
+                &[],
+            )
+            .await;
+        assert!(
+            controlled.is_err(),
+            "controlled path must also refuse silent host fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn sandboxie_direct_fallback_is_opt_in() {
+        // With explicit opt-in, a missing sandbox is allowed to degrade to host
+        // execution — a deliberate, audited trade-off (not the default).
+        let service = Arc::new(SandboxieService::new(None));
+        if service.locate_tools().is_some() {
+            return;
+        }
+        let exec = SandboxieExecutor::new(service).with_direct_fallback(true);
+        let out = exec
+            .run_with_environment("echo ok", ".", CommandShell::Auto, &[])
+            .await;
+        assert!(
+            out.is_ok(),
+            "explicit direct fallback should run on host: {out:?}"
+        );
     }
 
     #[test]
