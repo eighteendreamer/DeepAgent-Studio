@@ -6,6 +6,7 @@
 //! another tool runtime.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use deepagent_builtins::bash_tool::{
 use deepagent_core::error::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::sandboxie_service::{sandbox_mode_code, sandbox_mode_from_code};
 use crate::settings::SandboxMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -438,7 +440,11 @@ impl WindowsSandboxTaskPlan {
 pub struct SandboxBackendCommandExecutor {
     backend: Arc<dyn SandboxBackend>,
     workspace_root: PathBuf,
-    sandbox_mode: SandboxMode,
+    /// Atomic so a long-lived host (the desktop app) can switch the run's
+    /// sandbox mode at runtime through this single boundary. A one-shot CLI
+    /// simply never updates it. Sharing this handle with the underlying
+    /// executor keeps the mode consistent across the boundary.
+    sandbox_mode: Arc<AtomicU8>,
     network: SandboxNetworkPolicy,
     allow_writable_host_workspace: bool,
 }
@@ -452,7 +458,7 @@ impl SandboxBackendCommandExecutor {
         Self {
             backend,
             workspace_root: workspace_root.into(),
-            sandbox_mode,
+            sandbox_mode: Arc::new(AtomicU8::new(sandbox_mode_code(sandbox_mode))),
             network: SandboxNetworkPolicy::Disabled,
             allow_writable_host_workspace: false,
         }
@@ -466,6 +472,25 @@ impl SandboxBackendCommandExecutor {
     pub fn with_writable_host_workspace(mut self, allowed: bool) -> Self {
         self.allow_writable_host_workspace = allowed;
         self
+    }
+
+    /// Adopt an externally-owned sandbox-mode atomic so per-run mode updates
+    /// applied to the underlying executor (via `run_environment`) are observed
+    /// here too. Used by the desktop to route through the unified boundary
+    /// without freezing the runtime-switchable sandbox mode.
+    pub fn with_shared_mode(mut self, mode: Arc<AtomicU8>) -> Self {
+        self.sandbox_mode = mode;
+        self
+    }
+
+    /// Update the current sandbox mode (per-run).
+    pub fn set_sandbox_mode(&self, mode: SandboxMode) {
+        self.sandbox_mode
+            .store(sandbox_mode_code(mode), Ordering::Relaxed);
+    }
+
+    fn current_mode(&self) -> SandboxMode {
+        sandbox_mode_from_code(self.sandbox_mode.load(Ordering::Relaxed))
     }
 }
 
@@ -542,7 +567,7 @@ impl CommandExecutor for SandboxBackendCommandExecutor {
                 timeout,
                 cancel,
                 environment: environment.to_vec(),
-                sandbox_mode: self.sandbox_mode,
+                sandbox_mode: self.current_mode(),
                 network: self.network,
                 allow_writable_host_workspace: self.allow_writable_host_workspace,
             })

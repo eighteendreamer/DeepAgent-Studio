@@ -35,7 +35,8 @@ use deepagent_app_core::{
     ProjectMapNodeDto, ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService,
     ProjectMapStatusDto, ProjectService, ProjectTrustDto, PtyReadChunk, RecordingService,
     RecordingSessionDto, RewindResultDto, RuntimeBroker, RuntimeLogEntry, RuntimeLogStore,
-    RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxieExecutor,
+    RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxBackend,
+    SandboxBackendCommandExecutor, SandboxNetworkPolicy, SandboxieBackend, SandboxieExecutor,
     SandboxieService, SandboxieStatusDto, SecretStore, SessionDetailDto, SessionSearchHitDto,
     SessionStateService, SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView,
     SkillActivationDto, SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService,
@@ -6492,7 +6493,27 @@ pub fn run() {
                 let ssh_clone = ssh.clone();
                 let ssh_context = ssh.clone();
                 let ssh_ops = ssh.clone();
-                let sandboxie_executor = Arc::new(SandboxieExecutor::new(sandboxie.clone()));
+                // Route local command execution through the unified
+                // SandboxBackend boundary (§5.5) instead of wiring the legacy
+                // SandboxieExecutor directly. The desktop is long-lived and
+                // switches sandbox mode at runtime, so the boundary shares the
+                // executor's atomic mode handle (per-run updates applied by
+                // run_environment stay visible through the boundary).
+                // Desktop preserves usability when Sandboxie is absent via an
+                // explicit, audited direct fallback — not the silent default.
+                let sandboxie_executor =
+                    Arc::new(SandboxieExecutor::new(sandboxie.clone()).with_direct_fallback(true));
+                let sandbox_backend: Arc<dyn SandboxBackend> =
+                    Arc::new(SandboxieBackend::new(sandboxie_executor.clone()));
+                let local_command_executor = Arc::new(
+                    SandboxBackendCommandExecutor::new(
+                        sandbox_backend,
+                        workspace_root.clone(),
+                        deepagent_app_core::SandboxMode::WorkspaceWrite,
+                    )
+                    .with_shared_mode(sandboxie_executor.sandbox_mode_handle())
+                    .with_network(SandboxNetworkPolicy::Disabled),
+                );
                 Arc::new(
                     ChatService::new(
                         service.shared_database(),
@@ -6507,7 +6528,7 @@ pub fn run() {
                             connection_id,
                         })
                     })
-                    .with_local_command_executor(sandboxie_executor.clone())
+                    .with_local_command_executor(local_command_executor)
                     .with_sandboxie_executor(sandboxie_executor)
                     .with_remote_context_factory(move |connection_id: String| {
                         build_remote_context(ssh_context.clone(), connection_id)

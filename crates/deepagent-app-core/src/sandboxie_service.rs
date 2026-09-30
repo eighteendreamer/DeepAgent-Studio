@@ -459,12 +459,17 @@ impl SandboxieExecutor {
 
     /// Dynamically update the sandbox mode (called per-chat-run).
     pub fn set_sandbox_mode(&self, mode: SandboxMode) {
-        let val = match mode {
-            SandboxMode::ReadOnly => 0,
-            SandboxMode::WorkspaceWrite => 1,
-            SandboxMode::FullAccess => 2,
-        };
-        self.sandbox_mode.store(val, Ordering::Relaxed);
+        self.sandbox_mode
+            .store(sandbox_mode_code(mode), Ordering::Relaxed);
+    }
+
+    /// The shared atomic backing the current sandbox mode. Handing this out
+    /// lets the unified `SandboxBackendCommandExecutor` observe the same
+    /// per-run mode updates this executor receives (applied by
+    /// `run_environment`), so wrapping this executor behind the
+    /// `SandboxBackend` boundary does not freeze the runtime-switchable mode.
+    pub fn sandbox_mode_handle(&self) -> Arc<AtomicU8> {
+        self.sandbox_mode.clone()
     }
 
     /// Whether the underlying Sandboxie tools are available.
@@ -477,11 +482,28 @@ impl SandboxieExecutor {
     }
 
     fn current_mode(&self) -> SandboxMode {
-        match self.sandbox_mode.load(Ordering::Relaxed) {
-            0 => SandboxMode::ReadOnly,
-            2 => SandboxMode::FullAccess,
-            _ => SandboxMode::WorkspaceWrite,
-        }
+        sandbox_mode_from_code(self.sandbox_mode.load(Ordering::Relaxed))
+    }
+}
+
+/// Encode a [`SandboxMode`] as the atomic code shared between the legacy
+/// [`SandboxieExecutor`] and the unified `SandboxBackendCommandExecutor`.
+/// Single source of truth so the two never drift.
+pub(crate) const fn sandbox_mode_code(mode: SandboxMode) -> u8 {
+    match mode {
+        SandboxMode::ReadOnly => 0,
+        SandboxMode::WorkspaceWrite => 1,
+        SandboxMode::FullAccess => 2,
+    }
+}
+
+/// Decode an atomic sandbox-mode code (see [`sandbox_mode_code`]). Unknown
+/// values conservatively map to `WorkspaceWrite`.
+pub(crate) fn sandbox_mode_from_code(code: u8) -> SandboxMode {
+    match code {
+        0 => SandboxMode::ReadOnly,
+        2 => SandboxMode::FullAccess,
+        _ => SandboxMode::WorkspaceWrite,
     }
 }
 
