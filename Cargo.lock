@@ -1150,6 +1150,7 @@ dependencies = [
  "deepagent-hooks",
  "deepagent-mobile-core",
  "deepagent-mobile-protocol",
+ "deepagent-security",
  "deepagent-skills",
  "deepagent-tools",
  "libc",

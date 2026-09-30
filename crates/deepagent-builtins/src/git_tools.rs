@@ -270,6 +270,39 @@ impl<E: CommandExecutor> Tool for GitCommitTool<E> {
             }
         }
 
+        // Secret pre-commit guard (D10): refuse to commit almost-certainly-live
+        // credentials so the agent cannot leak a secret into git history. Only
+        // High-severity findings block (masked, never echoing the value) to keep
+        // false positives from locking out legitimate commits; the agent is told
+        // to remove the secret or unstage the file and retry.
+        if let Ok(diff) = self.executor.run("git diff --staged", &self.cwd).await {
+            if diff.exit_code == Some(0) {
+                let findings = deepagent_security::SecretScanner::default().scan(&diff.stdout);
+                let blocking: Vec<&deepagent_security::SecretFinding> = findings
+                    .iter()
+                    .filter(|finding| finding.severity >= deepagent_security::Severity::High)
+                    .collect();
+                if !blocking.is_empty() {
+                    return Ok(ToolOutput {
+                        ok: false,
+                        value: serde_json::json!({
+                            "error": "refusing to commit: potential secret(s) detected in staged changes",
+                            "findings": blocking
+                                .iter()
+                                .map(|finding| serde_json::json!({
+                                    "rule": finding.rule,
+                                    "line": finding.line,
+                                    "masked": finding.masked,
+                                }))
+                                .collect::<Vec<_>>(),
+                            "hint": "remove the secret (or unstage that file) and retry the commit",
+                        }),
+                        truncated: false,
+                    });
+                }
+            }
+        }
+
         let command = format!("git commit -m \"{message}\"");
         run_git(&self.executor, &self.cwd, &command).await
     }
@@ -355,6 +388,50 @@ mod tests {
         let tool = GitCommitTool::new(RecordingExecutor::default(), "/work");
         let out = tool.invoke(serde_json::json!({})).await.unwrap();
         assert!(!out.ok);
+    }
+
+    /// Returns a staged diff containing an AWS access key for `git diff
+    /// --staged`, and success for everything else.
+    #[derive(Default)]
+    struct SecretDiffExecutor {
+        ran: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl CommandExecutor for SecretDiffExecutor {
+        async fn run(&self, command: &str, _cwd: &str) -> Result<CommandOutcome> {
+            self.ran.lock().unwrap().push(command.to_string());
+            let stdout = if command.contains("git diff --staged") {
+                "+const key = \"AKIAIOSFODNN7EXAMPLE\";".to_string()
+            } else {
+                format!("ran: {command}")
+            };
+            Ok(CommandOutcome {
+                exit_code: Some(0),
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_refuses_when_staged_changes_contain_a_secret() {
+        let tool = GitCommitTool::new(SecretDiffExecutor::default(), "/work");
+        let out = tool
+            .invoke(serde_json::json!({ "message": "add config" }))
+            .await
+            .unwrap();
+        assert!(!out.ok, "commit must be refused when a secret is staged");
+        assert!(out.value.get("findings").is_some());
+        // The actual commit must NOT have run.
+        let ran = tool.executor.ran.lock().unwrap().clone();
+        assert!(
+            !ran.iter().any(|c| c.starts_with("git commit")),
+            "git commit must not run when a secret is detected: {ran:?}"
+        );
+        // The masked finding must not leak the raw key.
+        let masked = out.value["findings"][0]["masked"].as_str().unwrap_or("");
+        assert!(!masked.contains("AKIAIOSFODNN7EXAMPLE"));
     }
 
     #[tokio::test]
