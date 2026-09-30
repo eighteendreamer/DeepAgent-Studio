@@ -487,7 +487,15 @@ where
     R: deepagent_builtins::SubagentRunner + 'static,
 {
     let knowledge = request.base.knowledge.clone();
+    #[cfg(feature = "wasm")]
+    let wasm_tools_root = request.base.root.to_path_buf();
     let (mut registry, todo_store) = build_base_tool_registry(request.base)?;
+    // Untrusted WASM tools (D9): register any `.deepagent/wasm-tools/*.wasm`
+    // modules as capability-sandboxed tools. Compiled only with `--features wasm`.
+    #[cfg(feature = "wasm")]
+    {
+        crate::wasm_tools::register_wasm_tools(&mut registry, &wasm_tools_root)?;
+    }
     let mcp_runtime =
         attach_mcp_tools(&mut registry, request.mcp, request.plugin_projection).await?;
     register_task_tool(&mut registry, request.task_runner, request.task_agent_types)?;

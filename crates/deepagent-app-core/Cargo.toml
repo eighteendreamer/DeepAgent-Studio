@@ -112,6 +112,13 @@ audio = ["dep:cpal", "dep:hound"]
 # pdfium library is loaded at runtime when installed. Without it, PDF preview
 # degrades to Tier C text extraction.
 pdfium = ["dep:pdfium-render", "dep:image"]
+# Untrusted WASM tool support: enables the Wasmtime backend in deepagent-tools
+# and the discovery/registration of `.deepagent/wasm-tools/*.wasm` modules as
+# capability-sandboxed tools. OFF by default so the standard build/CI stay light
+# (Wasmtime is heavyweight); an app that wants confinable third-party tools
+# turns it on.
+wasm = ["deepagent-tools/wasm"]
 
 [dev-dependencies]
 tokio = { workspace = true }
+wat = "1"

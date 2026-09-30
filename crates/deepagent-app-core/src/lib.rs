@@ -94,6 +94,8 @@ pub mod verification_panel;
 pub mod vision_cache_service;
 pub mod vision_provider_service;
 pub mod vision_service;
+#[cfg(feature = "wasm")]
+pub(crate) mod wasm_tools;
 pub mod workspace_service;
 
 pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};

@@ -1136,6 +1136,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "wat",
  "zip 2.4.2",
 ]
 
