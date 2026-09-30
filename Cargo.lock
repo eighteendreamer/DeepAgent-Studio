@@ -1096,6 +1096,7 @@ dependencies = [
  "deepagent-intent",
  "deepagent-knowledge",
  "deepagent-mcp",
+ "deepagent-memory",
  "deepagent-mobile-android",
  "deepagent-mobile-core",
  "deepagent-mobile-protocol",

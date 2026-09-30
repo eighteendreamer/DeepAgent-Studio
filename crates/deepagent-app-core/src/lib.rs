@@ -40,6 +40,7 @@ pub mod knowledge_service;
 pub mod managed_files;
 pub mod mcp_runtime;
 pub mod mcp_service;
+pub mod memory_service;
 pub mod mobile_service;
 pub mod model_runtime;
 pub mod nested_instructions;
@@ -130,6 +131,7 @@ pub use knowledge_service::{
 };
 pub use managed_files::ManagedFileInventory;
 pub use mcp_service::{McpConnectionStatusDto, McpServerDto, McpService, McpToolInfoDto};
+pub use memory_service::MemoryService;
 pub use office_service::{markdown_to_docspec, DocBlock, DocSpec, OfficeService};
 pub use plugin_loader::{PluginLoadError, PluginOrigin, PluginRoots};
 pub use plugin_runtime::{

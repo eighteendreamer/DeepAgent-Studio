@@ -26,6 +26,7 @@ deepagent-hooks.workspace = true
 deepagent-mcp.workspace = true
 deepagent-terminal.workspace = true
 deepagent-intent.workspace = true
+deepagent-memory.workspace = true
 deepagent-planner.workspace = true
 deepagent-prompts.workspace = true
 deepagent-subagents.workspace = true

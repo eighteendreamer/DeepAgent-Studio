@@ -440,6 +440,10 @@ impl<'a> RunAssembler<'a> {
         let plan_executor: Option<Arc<dyn deepagent_builtins::PlanExecutor>> = Some(Arc::new(
             crate::dag_orchestration::ChatPlanExecutor::new(task_runner.clone()),
         ));
+        // Cross-session multi-tier memory (D3): persistent memory_write/recall.
+        let memory_backend: Option<Arc<dyn deepagent_builtins::MemoryBackend>> = Some(Arc::new(
+            crate::memory_service::MemoryService::new(self.db.clone()),
+        ));
         let toolset = build_main_run_toolset(MainRunToolsetRequest {
             base,
             mcp: self.mcp.as_deref(),
@@ -447,6 +451,7 @@ impl<'a> RunAssembler<'a> {
             task_runner,
             task_agent_types,
             plan_executor,
+            memory_backend,
             plan: plan.clone(),
             skills: self.skills.as_ref(),
             tool_search_mode,

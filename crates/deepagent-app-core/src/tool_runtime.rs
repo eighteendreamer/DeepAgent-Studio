@@ -401,6 +401,23 @@ pub(crate) fn register_plan_execute_tool(
     Ok(())
 }
 
+/// Register the cross-session memory tools (`memory_write` / `memory_recall`)
+/// into the MAIN run's registry only. No-op when no
+/// [`MemoryBackend`](deepagent_builtins::MemoryBackend) is wired (headless/tests).
+pub(crate) fn register_memory_tools(
+    registry: &mut ToolRegistry,
+    backend: Option<Arc<dyn deepagent_builtins::MemoryBackend>>,
+) -> Result<()> {
+    let Some(backend) = backend else {
+        return Ok(());
+    };
+    registry.register(Arc::new(deepagent_builtins::MemoryWriteTool::new(
+        backend.clone(),
+    )))?;
+    registry.register(Arc::new(deepagent_builtins::MemoryRecallTool::new(backend)))?;
+    Ok(())
+}
+
 /// Register the `knowledge_write` tool into the MAIN run's registry only
 /// (sub-agents get `knowledge_search` but not write). No-op when no
 /// [`KnowledgeService`] is attached.
@@ -467,6 +484,9 @@ where
     /// Multi-agent control plane: the `plan_execute` tool's executor. `None`
     /// leaves the tool unregistered (headless/tests).
     pub(crate) plan_executor: Option<Arc<dyn deepagent_builtins::PlanExecutor>>,
+    /// Cross-session memory backend for `memory_write`/`memory_recall`. `None`
+    /// leaves the tools unregistered (headless/tests).
+    pub(crate) memory_backend: Option<Arc<dyn deepagent_builtins::MemoryBackend>>,
     pub(crate) plan: deepagent_builtins::PlanMode,
     pub(crate) skills: Option<&'a Arc<Mutex<crate::skills_service::SkillsService>>>,
     pub(crate) tool_search_mode: deepagent_builtins::ToolSearchMode,
@@ -500,6 +520,7 @@ where
         attach_mcp_tools(&mut registry, request.mcp, request.plugin_projection).await?;
     register_task_tool(&mut registry, request.task_runner, request.task_agent_types)?;
     register_plan_execute_tool(&mut registry, request.plan_executor)?;
+    register_memory_tools(&mut registry, request.memory_backend)?;
     register_knowledge_write_tool(&mut registry, knowledge.as_ref())?;
     register_plan_mode_tools(&mut registry, &request.plan)?;
     register_skill_tool(&mut registry, request.skills)?;

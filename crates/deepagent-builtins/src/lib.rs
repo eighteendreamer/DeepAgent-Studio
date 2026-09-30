@@ -54,6 +54,7 @@ pub mod git_tools;
 pub mod glob_match;
 pub mod guard_hooks;
 pub mod knowledge_tools;
+pub mod memory_tools;
 #[allow(missing_docs)]
 pub mod mobile_tools;
 pub mod office_tools;
@@ -110,6 +111,10 @@ pub use knowledge_tools::{
     KnowledgeBackend, KnowledgeSearchTool, KnowledgeToolDraft, KnowledgeToolHit,
     KnowledgeWriteTool, UnavailableKnowledgeBackend, KNOWLEDGE_SEARCH_TOOL_NAME,
     KNOWLEDGE_WRITE_TOOL_NAME,
+};
+pub use memory_tools::{
+    MemoryBackend, MemoryRecallHit, MemoryRecallTool, MemoryWriteDraft, MemoryWriteTool,
+    UnavailableMemoryBackend, MEMORY_RECALL_TOOL_NAME, MEMORY_WRITE_TOOL_NAME,
 };
 pub use mobile_tools::{
     mobile_tools, ArtifactRefDto, MobileBackend, MobileDeviceDto, MobileDeviceInfoTool,
