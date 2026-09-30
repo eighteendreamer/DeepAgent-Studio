@@ -754,10 +754,7 @@ impl ModelAgent {
 
     /// Attach an attachment resolver so image attachment references are
     /// materialized into provider image parts at request build time.
-    pub fn with_attachment_resolver(
-        mut self,
-        resolver: Arc<dyn AttachmentDataResolver>,
-    ) -> Self {
+    pub fn with_attachment_resolver(mut self, resolver: Arc<dyn AttachmentDataResolver>) -> Self {
         self.attachment_resolver = Some(resolver);
         self
     }
@@ -3933,8 +3930,7 @@ mod tests {
         assert_eq!(agent.messages[1].content, "big tool output");
         // Pretend the last assistant turn was a long time ago.
         agent.last_assistant_at = Some(
-            std::time::Instant::now()
-                - std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS + 1),
+            std::time::Instant::now() - std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS + 1),
         );
         agent.microcompacted_for_current_gap = false;
         agent.maybe_time_based_microcompact();

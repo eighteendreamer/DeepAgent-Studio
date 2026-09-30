@@ -84,7 +84,11 @@ pub fn plan_snip(messages: &[Message], tags: &[String], protected_recent: usize)
 }
 
 /// Convenience: drop the tagged segments from `messages`.
-pub fn snip_segments(messages: &[Message], tags: &[String], protected_recent: usize) -> Vec<Message> {
+pub fn snip_segments(
+    messages: &[Message],
+    tags: &[String],
+    protected_recent: usize,
+) -> Vec<Message> {
     plan_snip(messages, tags, protected_recent).apply(messages.to_vec())
 }
 
@@ -102,12 +106,12 @@ mod tests {
     #[test]
     fn removes_segment_between_tagged_turns() {
         let messages = vec![
-            user("first"),                    // 0: protected (index 0)
-            user("[id:u1] do a"),             // 1
-            assistant("a done"),              // 2
-            user("[id:u2] do b"),             // 3
-            assistant("b done"),              // 4
-            assistant("tail"),                // 5
+            user("first"),        // 0: protected (index 0)
+            user("[id:u1] do a"), // 1
+            assistant("a done"),  // 2
+            user("[id:u2] do b"), // 3
+            assistant("b done"),  // 4
+            assistant("tail"),    // 5
         ];
         let plan = plan_snip(&messages, &["u1".to_string()], 0);
         assert_eq!(plan.applied_tags, vec!["u1".to_string()]);
