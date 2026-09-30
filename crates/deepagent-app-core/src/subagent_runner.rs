@@ -72,7 +72,15 @@ pub(crate) struct ChatSubagentRunner {
 }
 
 impl ChatSubagentRunner {
-    async fn run_inner(
+    /// Re-root this runner at `root` (builder). Used by the DAG orchestrator to
+    /// run a node's sub-agent inside the scheduler-owned worktree instead of the
+    /// runner provisioning its own — so worktree isolation has a single owner.
+    pub(crate) fn with_root(mut self, root: PathBuf) -> Self {
+        self.root = root;
+        self
+    }
+
+    pub(crate) async fn run_inner(
         &self,
         request: deepagent_builtins::SubagentRequest,
         cancel: Option<Arc<AtomicBool>>,
@@ -195,7 +203,7 @@ impl ChatSubagentRunner {
             .await
     }
 
-    fn worktree_base(&self) -> PathBuf {
+    pub(crate) fn worktree_base(&self) -> PathBuf {
         let project = self
             .root
             .file_name()
@@ -984,6 +992,68 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
         };
         self.remove_worktree(id, &path).await?;
         Ok(true)
+    }
+}
+
+/// Bridges the production sub-agent loop ([`ChatSubagentRunner`]) to the
+/// planner's [`deepagent_subagents::SubAgentExecutor`] seam, so a DAG of
+/// sub-tasks runs through the SAME agent loop the `task` tool uses — one
+/// executor, not a second orchestration stack (D1 convergence).
+///
+/// The scheduler ([`deepagent_subagents::DagScheduler`]) owns worktree
+/// isolation, so each node's runner is re-rooted at the scheduler-provided
+/// worktree and runs with `shared` isolation (it does not provision a second
+/// worktree per node).
+pub(crate) struct DagSubagentExecutor {
+    runner: ChatSubagentRunner,
+}
+
+impl DagSubagentExecutor {
+    pub(crate) fn new(runner: ChatSubagentRunner) -> Self {
+        Self { runner }
+    }
+}
+
+#[async_trait::async_trait]
+impl deepagent_subagents::SubAgentExecutor for DagSubagentExecutor {
+    async fn execute(
+        &self,
+        context: deepagent_subagents::SubAgentContext,
+    ) -> Result<deepagent_subagents::SubAgentResult> {
+        let mut prompt = context.goal.clone();
+        if !context.upstream_results.is_empty() {
+            prompt.push_str("\n\n## Upstream results\n");
+            for (index, summary) in context.upstream_results.iter().enumerate() {
+                prompt.push_str(&format!("{}. {}\n", index + 1, summary));
+            }
+        }
+        let request = deepagent_builtins::SubagentRequest {
+            description: context.node_id.clone(),
+            prompt,
+            subagent_type: context.role.clone(),
+            allowed_tools: Vec::new(),
+            model: None,
+            effort: None,
+            skills: Vec::new(),
+            // The DAG scheduler owns the worktree; run inside it rather than
+            // provisioning a second one.
+            isolation: "shared".to_string(),
+            fork: false,
+        };
+        let runner = self
+            .runner
+            .clone()
+            .with_root(PathBuf::from(context.worktree.path.clone()));
+        match runner.run_inner(request, None).await {
+            Ok(outcome) => Ok(deepagent_subagents::SubAgentResult::success(
+                context.node_id,
+                subagent_summary(&outcome.result, 2000),
+            )),
+            Err(error) => Ok(deepagent_subagents::SubAgentResult::failure(
+                context.node_id,
+                error.to_string(),
+            )),
+        }
     }
 }
 

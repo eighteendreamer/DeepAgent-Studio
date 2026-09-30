@@ -26,6 +26,7 @@ pub mod commands;
 pub mod completion_plan;
 pub mod context_runtime;
 pub mod cost_service;
+pub(crate) mod dag_orchestration;
 pub mod diff;
 pub mod doctor;
 pub mod dto;

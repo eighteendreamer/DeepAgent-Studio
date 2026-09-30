@@ -435,12 +435,18 @@ impl<'a> RunAssembler<'a> {
             true,
         );
         base.project = session_project.clone();
+        // Multi-agent control plane: the `plan_execute` tool plans a goal into a
+        // DAG and runs it over the SAME sub-agent loop as `task` (one executor).
+        let plan_executor: Option<Arc<dyn deepagent_builtins::PlanExecutor>> = Some(Arc::new(
+            crate::dag_orchestration::ChatPlanExecutor::new(task_runner.clone()),
+        ));
         let toolset = build_main_run_toolset(MainRunToolsetRequest {
             base,
             mcp: self.mcp.as_deref(),
             plugin_projection: plugin_projection.as_ref(),
             task_runner,
             task_agent_types,
+            plan_executor,
             plan: plan.clone(),
             skills: self.skills.as_ref(),
             tool_search_mode,

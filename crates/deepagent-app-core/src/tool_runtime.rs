@@ -387,6 +387,20 @@ where
     Ok(())
 }
 
+/// Register the `plan_execute` tool (multi-agent control plane) into the MAIN
+/// run's registry only — sub-agents do not recursively plan. No-op when no
+/// [`PlanExecutor`](deepagent_builtins::PlanExecutor) is wired (headless/tests).
+pub(crate) fn register_plan_execute_tool(
+    registry: &mut ToolRegistry,
+    executor: Option<Arc<dyn deepagent_builtins::PlanExecutor>>,
+) -> Result<()> {
+    let Some(executor) = executor else {
+        return Ok(());
+    };
+    registry.register(Arc::new(deepagent_builtins::PlanExecuteTool::new(executor)))?;
+    Ok(())
+}
+
 /// Register the `knowledge_write` tool into the MAIN run's registry only
 /// (sub-agents get `knowledge_search` but not write). No-op when no
 /// [`KnowledgeService`] is attached.
@@ -450,6 +464,9 @@ where
     pub(crate) plugin_projection: Option<&'a PluginRuntimeProjection>,
     pub(crate) task_runner: R,
     pub(crate) task_agent_types: Vec<deepagent_builtins::TaskAgentType>,
+    /// Multi-agent control plane: the `plan_execute` tool's executor. `None`
+    /// leaves the tool unregistered (headless/tests).
+    pub(crate) plan_executor: Option<Arc<dyn deepagent_builtins::PlanExecutor>>,
     pub(crate) plan: deepagent_builtins::PlanMode,
     pub(crate) skills: Option<&'a Arc<Mutex<crate::skills_service::SkillsService>>>,
     pub(crate) tool_search_mode: deepagent_builtins::ToolSearchMode,
@@ -474,6 +491,7 @@ where
     let mcp_runtime =
         attach_mcp_tools(&mut registry, request.mcp, request.plugin_projection).await?;
     register_task_tool(&mut registry, request.task_runner, request.task_agent_types)?;
+    register_plan_execute_tool(&mut registry, request.plan_executor)?;
     register_knowledge_write_tool(&mut registry, knowledge.as_ref())?;
     register_plan_mode_tools(&mut registry, &request.plan)?;
     register_skill_tool(&mut registry, request.skills)?;

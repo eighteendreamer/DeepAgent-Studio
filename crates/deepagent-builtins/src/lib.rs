@@ -57,6 +57,7 @@ pub mod knowledge_tools;
 #[allow(missing_docs)]
 pub mod mobile_tools;
 pub mod office_tools;
+pub mod plan_execute;
 pub mod plan_mode;
 pub mod project_map_tools;
 pub mod remote_tools;
@@ -121,6 +122,9 @@ pub use mobile_tools::{
 pub use office_tools::{
     OfficeBackend, OfficeDocxCreateTool, OfficeReadTool, OfficeXlsxCreateTool,
     OFFICE_DOCX_CREATE_TOOL_NAME, OFFICE_READ_TOOL_NAME, OFFICE_XLSX_CREATE_TOOL_NAME,
+};
+pub use plan_execute::{
+    PlanExecuteTool, PlanExecutor, UnavailablePlanExecutor, PLAN_EXECUTE_TOOL_NAME,
 };
 pub use plan_mode::{
     is_plan_safe_tool, EnterPlanModeTool, ExitPlanModeTool, PlanMode, PlanModeHook, PLAN_SAFE_TOOLS,
