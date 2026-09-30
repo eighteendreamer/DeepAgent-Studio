@@ -11,6 +11,12 @@
 //! timezone (Claude Code parity). [`cron::epoch_ms_to_local`] translates a
 //! persisted anchor into that same calendar view so one monotonic wall clock
 //! drives both.
+//!
+//! TODO(schedule): this subsystem is not yet wired into app-core. Nothing in
+//! production constructs a [`CronScheduler`] or drives [`run_tick_loop`] — the
+//! store, poll semantics and tick loop exist and are tested, but the app-core
+//! runtime binding (and a `CronCreate`/`CronDelete` tool surface) is still
+//! pending. The comments below mark where that binding *will* attach.
 
 use std::path::Path;
 
@@ -61,7 +67,9 @@ impl CronScheduler {
         Self { store }
     }
 
-    /// Store rooted at `workspace` (used by the app-core integration).
+    /// Store rooted at `workspace` — the constructor the app-core runtime
+    /// binding will use once the scheduler is wired in (see the module-level
+    /// `TODO(schedule)`); no production caller today.
     pub fn for_workspace(workspace: &Path) -> Self {
         Self::new(ScheduledTaskStore::new(workspace))
     }
@@ -127,8 +135,10 @@ impl CronScheduler {
 }
 
 /// Run the scheduler loop at a fixed tick until `shutdown` fires. One poll per
-/// tick. `clock` yields the current local calendar minute (the app-core bound
-/// plugs the real wall clock here; tests plug a deterministic one).
+/// tick. `clock` yields the current local calendar minute; the app-core runtime
+/// binding *will* plug the real wall clock here once wired (see the module-level
+/// `TODO(schedule)`), and a test can plug a deterministic one. No caller drives
+/// this loop yet.
 pub async fn run_tick_loop(
     scheduler: CronScheduler,
     tick: std::time::Duration,
