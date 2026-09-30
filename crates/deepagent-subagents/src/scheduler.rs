@@ -1,8 +1,8 @@
 //! The DAG scheduler (开发计划.md Phase 6 §4).
 //!
 //! Executes a [`PlanDag`] layer by layer:
-//! - **fan-out**: all nodes in a topological layer are independent and are
-//!   executed together,
+//! - **fan-out**: all runnable nodes in a topological layer are independent, so
+//!   they execute concurrently, bounded by [`DagScheduler`]'s concurrency cap,
 //! - **fan-in**: the next layer starts only once the previous completes, and
 //!   each node receives the summaries of its upstream dependencies,
 //! - **isolation**: every node gets its own git worktree (no code clobbering).
@@ -12,6 +12,8 @@
 //! [`ScheduleReport`]. Worktrees are always cleaned up.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+use futures::stream::StreamExt;
 
 use deepagent_core::error::Result;
 use deepagent_planner::PlanDag;
@@ -41,19 +43,36 @@ impl ScheduleReport {
     }
 }
 
+/// Default cap on how many sibling sub-agents run at once within a layer.
+///
+/// Sub-agents are heavyweight — each drives a full agent loop and provisions a
+/// git worktree — so the fan-out is bounded rather than unbounded. Override with
+/// [`DagScheduler::with_max_concurrency`].
+pub const DEFAULT_LAYER_CONCURRENCY: usize = 8;
+
 /// Schedules a plan DAG across isolated sub-agents.
 pub struct DagScheduler<'a> {
     executor: &'a dyn SubAgentExecutor,
     worktrees: &'a dyn WorktreeProvider,
+    max_concurrency: usize,
 }
 
 impl<'a> DagScheduler<'a> {
-    /// Build a scheduler from an executor and a worktree provider.
+    /// Build a scheduler from an executor and a worktree provider, using
+    /// [`DEFAULT_LAYER_CONCURRENCY`] as the per-layer fan-out cap.
     pub fn new(executor: &'a dyn SubAgentExecutor, worktrees: &'a dyn WorktreeProvider) -> Self {
         Self {
             executor,
             worktrees,
+            max_concurrency: DEFAULT_LAYER_CONCURRENCY,
         }
+    }
+
+    /// Set the maximum number of sibling nodes executed concurrently within a
+    /// layer. Values below 1 are clamped to 1 (fully serial).
+    pub fn with_max_concurrency(mut self, max_concurrency: usize) -> Self {
+        self.max_concurrency = max_concurrency.max(1);
+        self
     }
 
     /// Execute `dag` to completion (or until a failure blocks progress).
@@ -64,6 +83,11 @@ impl<'a> DagScheduler<'a> {
         let mut skipped: Vec<String> = Vec::new();
 
         for layer in layers {
+            // Partition the layer into skipped vs runnable nodes. Within a
+            // topological layer no node depends on another, so every read of
+            // `results`/`failed`/`skipped` here observes only prior layers and
+            // the partition is independent of intra-layer execution order.
+            let mut runnable: Vec<(String, Vec<String>)> = Vec::new();
             for node_id in layer {
                 let node = dag.node(&node_id).expect("layer node exists in dag");
 
@@ -74,7 +98,7 @@ impl<'a> DagScheduler<'a> {
                     .any(|d| failed.contains(d) || skipped.contains(d));
                 if blocked {
                     tracing::warn!(node = %node_id, "skipping: upstream dependency unmet");
-                    skipped.push(node_id.clone());
+                    skipped.push(node_id);
                     continue;
                 }
 
@@ -84,20 +108,40 @@ impl<'a> DagScheduler<'a> {
                     .iter()
                     .filter_map(|d| results.get(d).map(|r| r.summary.clone()))
                     .collect();
+                runnable.push((node_id, upstream));
+            }
 
-                // Provision an isolated worktree.
-                let worktree = self.worktrees.create(&node_id).await?;
+            // Fan-out: run the layer's independent nodes concurrently, bounded
+            // by `max_concurrency`. Each node gets its own worktree, always torn
+            // down before its future resolves (even on executor failure).
+            let node_runs = runnable.into_iter().map(|(node_id, upstream)| async move {
+                let node = dag.node(&node_id).expect("layer node exists in dag");
+                let worktree = match self.worktrees.create(&node_id).await {
+                    Ok(worktree) => worktree,
+                    Err(error) => return (node_id, Err(error)),
+                };
                 let ctx = context_for(node, worktree, upstream);
-
-                // Execute the sub-agent, always cleaning up the worktree after.
                 let exec_result = self.executor.execute(ctx).await;
                 let _ = self.worktrees.remove(&node_id).await;
+                (node_id, exec_result)
+            });
+            let mut layer_results: Vec<(String, Result<SubAgentResult>)> =
+                futures::stream::iter(node_runs)
+                    .buffer_unordered(self.max_concurrency)
+                    .collect()
+                    .await;
 
+            // Fan-in: aggregate in a stable (node-id) order so the recorded
+            // results and any propagated error do not depend on completion
+            // timing. `results`/`failed` are ordered collections anyway, but a
+            // deterministic order also fixes *which* error surfaces first.
+            layer_results.sort_by(|(a, _), (b, _)| a.cmp(b));
+            for (node_id, exec_result) in layer_results {
                 let result = exec_result?;
                 if !result.ok {
                     failed.insert(node_id.clone());
                 }
-                results.insert(node_id.clone(), result);
+                results.insert(node_id, result);
             }
         }
 
@@ -117,6 +161,7 @@ mod tests {
     use crate::worktree::InMemoryWorktrees;
     use async_trait::async_trait;
     use deepagent_planner::{HeuristicPlanner, PlanNode, PlanStrategy, Planner};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     /// Records execution order and worktree paths; succeeds for all nodes.
@@ -165,6 +210,70 @@ mod tests {
 
         // All worktrees were cleaned up.
         assert!(worktrees.active().is_empty());
+    }
+
+    /// Records the peak number of sub-agents executing at the same instant.
+    /// The `yield_now` between increment and decrement opens an overlap window:
+    /// a true fan-out parks every sibling there together, so the gauge climbs to
+    /// the layer width; a serial loop would peak at 1.
+    #[derive(Default)]
+    struct ConcurrencyProbe {
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl SubAgentExecutor for ConcurrencyProbe {
+        async fn execute(&self, ctx: SubAgentContext) -> Result<SubAgentResult> {
+            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            Ok(SubAgentResult::success(ctx.node_id, "ok"))
+        }
+    }
+
+    #[tokio::test]
+    async fn layer_nodes_execute_concurrently() {
+        // The MultiAgent plan's middle layer {backend, frontend, database} has
+        // three independent nodes; a genuine fan-out overlaps them.
+        let dag = HeuristicPlanner
+            .plan("x", PlanStrategy::MultiAgent)
+            .unwrap();
+        let executor = ConcurrencyProbe::default();
+        let worktrees = InMemoryWorktrees::new("/tmp/wt");
+
+        let report = DagScheduler::new(&executor, &worktrees)
+            .run(&dag)
+            .await
+            .unwrap();
+        assert!(report.all_succeeded);
+
+        let peak = executor.max_in_flight.load(Ordering::SeqCst);
+        assert!(
+            peak >= 2,
+            "expected concurrent layer execution, peak in-flight was {peak}"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrency_cap_of_one_serializes() {
+        // A cap of 1 must degrade to serial execution: peak in-flight is 1.
+        let dag = HeuristicPlanner
+            .plan("x", PlanStrategy::MultiAgent)
+            .unwrap();
+        let executor = ConcurrencyProbe::default();
+        let worktrees = InMemoryWorktrees::new("/tmp/wt");
+
+        let report = DagScheduler::new(&executor, &worktrees)
+            .with_max_concurrency(1)
+            .run(&dag)
+            .await
+            .unwrap();
+        assert!(report.all_succeeded);
+
+        let peak = executor.max_in_flight.load(Ordering::SeqCst);
+        assert_eq!(peak, 1, "cap=1 must serialize, peak in-flight was {peak}");
     }
 
     #[tokio::test]

@@ -1566,6 +1566,7 @@ dependencies = [
  "async-trait",
  "deepagent-core",
  "deepagent-planner",
+ "futures",
  "serde",
  "serde_json",
  "tempfile",
