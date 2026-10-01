@@ -5,17 +5,19 @@ import { MOTION } from "./ui/motion";
 
 interface Props {
   snapshot?: ContextUsageSnapshot | null;
-  modelId?: string;
+  /**
+   * Provider-resolved context window for the active model, from the backend
+   * capability resolver. Used when there is no snapshot yet (e.g. an empty
+   * session) so the denominator is the model's real capacity, never a
+   * hardcoded guess. See deepagent-models::ModelCapabilityResolver.
+   */
+  contextWindow?: number;
   fallbackPromptTokens?: number;
   /** Hide popover while another toolbar overlay is open. */
   popoverSuppressed?: boolean;
   /** Increment to force-close the popover. */
   overlayCloseSignal?: number;
   onPopoverOpenChange?: (open: boolean) => void;
-}
-
-function contextWindowForModel(_modelId?: string): number {
-  return 128_000;
 }
 
 function formatTokens(value: number): string {
@@ -40,7 +42,7 @@ function capacityTone(ratio: number, isEmptySession: boolean): string {
 
 export function ContextCapacityIndicator({
   snapshot,
-  modelId,
+  contextWindow: capabilityContextWindow = 0,
   fallbackPromptTokens = 0,
   popoverSuppressed = false,
   overlayCloseSignal = 0,
@@ -49,13 +51,17 @@ export function ContextCapacityIndicator({
   const [open, setOpen] = useState(false);
   const lastOverlayCloseSignal = useRef(overlayCloseSignal);
   const lastReportedOpen = useRef(false);
-  const contextWindow = snapshot?.context_window ?? contextWindowForModel(modelId);
+  // The run's own snapshot wins (the runtime produced it from the same policy),
+  // then the provider-resolved capability. Never a hardcoded cap.
+  const contextWindow = snapshot?.context_window ?? capabilityContextWindow;
+  const hasWindow = contextWindow > 0;
   const usedTokens = snapshot?.estimated_prompt_tokens ?? Math.max(0, Math.round(fallbackPromptTokens));
   const isEmptySession = !snapshot && usedTokens === 0;
-  const ratio = Math.max(
-    0,
-    Math.min(1, snapshot?.used_ratio ?? usedTokens / Math.max(1, contextWindow)),
-  );
+  // Without a denominator there is no meaningful occupancy — show an empty ring
+  // rather than dividing by a placeholder.
+  const ratio = !hasWindow
+    ? 0
+    : Math.max(0, Math.min(1, snapshot?.used_ratio ?? usedTokens / contextWindow));
   const percent = Math.round(ratio * 100);
   const stroke = capacityTone(ratio, isEmptySession);
   const circumference = 2 * Math.PI * 8.5;
@@ -133,7 +139,9 @@ export function ContextCapacityIndicator({
             <span className="text-[18px] font-semibold leading-none">{percent}%</span>
           </div>
           <div className="mt-1.5 text-[13px] text-text-secondary">
-            {formatTokens(usedTokens)} / {formatTokens(contextWindow)}
+            {hasWindow
+              ? `${formatTokens(usedTokens)} / ${formatTokens(contextWindow)}`
+              : formatTokens(usedTokens)}
           </div>
 
           {blocks.length > 0 && (

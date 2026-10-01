@@ -33,6 +33,7 @@ import type {
   ComposerMention,
   ComposerSkillSelection,
   ContextUsageSnapshot,
+  ModelCapability,
   ProjectFileEntry,
   Skill,
 } from "../types";
@@ -243,6 +244,10 @@ export function Composer({
   // settings (populated by API-key validation at login).
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
+  // Resolved capability (context window / max output) per discovered model,
+  // straight from the backend resolver the runtime itself uses. Keeps the
+  // capacity indicator from guessing from the model id.
+  const [modelCapabilities, setModelCapabilities] = useState<ModelCapability[]>([]);
   const [selectedThinking, setSelectedThinking] = useState<"simple" | "medium" | "deep">("medium");
   const [switching, setSwitching] = useState(false);
   const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
@@ -266,6 +271,7 @@ export function Composer({
       .then((s) => {
         if (cancelled?.() || !s) return;
         setModels(s.available_models);
+        setModelCapabilities(s.model_capabilities ?? []);
         setSelectedModel(s.chat_model);
         setSelectedThinking(s.thinking_depth ?? "medium");
       })
@@ -1725,7 +1731,9 @@ export function Composer({
         <div className="flex h-8 shrink-0 items-center gap-2">
           <ContextCapacityIndicator
             snapshot={contextUsage}
-            modelId={selectedModel}
+            contextWindow={
+              modelCapabilities.find((c) => c.model_id === selectedModel)?.context_window
+            }
             fallbackPromptTokens={contextUsageFallbackTokens}
             popoverSuppressed={isModelDropdownOpen || isApprovalDropdownOpen}
             overlayCloseSignal={overlayCloseSignal}

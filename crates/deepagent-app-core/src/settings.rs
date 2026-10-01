@@ -19,6 +19,7 @@ use deepagent_core::clock::Timestamp;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::PermissionRules;
 use deepagent_models::balance::{fetch_balance, BalanceResponse};
+use deepagent_models::capability::{ModelCapability, ModelCapabilityResolver};
 use deepagent_models::discovery::{ModelCatalog, ModelDiscovery};
 use deepagent_models::transport::HttpTransport;
 use deepagent_models::ThinkingDepth;
@@ -1156,6 +1157,13 @@ pub struct SettingsView {
     pub base_url: String,
     /// All discovered model ids.
     pub available_models: Vec<String>,
+    /// Resolved capability (context window / max output) for every discovered
+    /// model, resolved exactly the way the runtime resolves it (provider
+    /// metadata wins, then the bundled official-doc snapshot, then a
+    /// conservative fallback). Lets the UI show the real context capacity
+    /// instead of guessing it from the model id.
+    #[serde(default)]
+    pub model_capabilities: Vec<ModelCapability>,
     /// Selected chat model.
     pub chat_model: String,
     /// Selected reasoner model.
@@ -2045,6 +2053,9 @@ impl SettingsService {
     }
 
     fn view_with_key(&self, key: Option<&str>, settings: &AppSettings) -> Result<SettingsView> {
+        // Resolve through the same resolver the runtime uses so the UI never
+        // has to guess a model's context window from its id.
+        let capability_resolver = ModelCapabilityResolver::new();
         Ok(SettingsView {
             api_key_masked: key.map(mask_key).unwrap_or_else(|| "(not set)".to_string()),
             base_url: settings.catalog.base_url.clone(),
@@ -2053,6 +2064,12 @@ impl SettingsService {
                 .available
                 .iter()
                 .map(|m| m.id.clone())
+                .collect(),
+            model_capabilities: settings
+                .catalog
+                .available
+                .iter()
+                .map(|m| capability_resolver.resolve_model_id(&m.id))
                 .collect(),
             chat_model: settings.catalog.chat_model.clone(),
             reasoner_model: settings.catalog.reasoner_model.clone(),

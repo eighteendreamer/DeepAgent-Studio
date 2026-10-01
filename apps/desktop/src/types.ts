@@ -187,6 +187,29 @@ export interface TokenUsage {
   costYuan?: number;
 }
 
+/** Where a resolved model capability came from (mirrors CapabilitySource). */
+export type CapabilitySource =
+  | "provider_metadata"
+  | "bundled_official_snapshot"
+  | "user_override"
+  | "conservative_fallback";
+
+/**
+ * Resolved capability for one model (mirrors deepagent-models::ModelCapability).
+ * Resolved by the backend through the same resolver the runtime uses, so the UI
+ * shows the real context capacity instead of guessing it from the model id.
+ */
+export interface ModelCapability {
+  model_id: string;
+  context_window: number;
+  max_output_tokens: number;
+  supports_tools: boolean;
+  supports_thinking: boolean;
+  supports_json_output: boolean;
+  capability_source: CapabilitySource;
+  fallback_reason?: string;
+}
+
 export type ContextBlockKind =
   | "stable_prefix"
   | "dynamic_runtime"
@@ -775,6 +798,12 @@ export interface SettingsView {
   api_key_masked: string;
   base_url: string;
   available_models: string[];
+  /**
+   * Resolved capability (context window / max output) for every discovered
+   * model, resolved by the runtime's own resolver. Lets the UI show the model's
+   * real context capacity instead of guessing it from the model id.
+   */
+  model_capabilities: ModelCapability[];
   chat_model: string;
   reasoner_model: string;
   configured: boolean;

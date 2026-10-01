@@ -1214,12 +1214,18 @@ export function App() {
         });
       };
 
-      // Accumulate token usage onto the (last) assistant message of the run.
+      // Merge a per-request usage report onto the (last) assistant message of
+      // the run. The provider reports whole-context totals per request, not
+      // deltas: prompt_tokens / prompt_cache_*_tokens describe the entire
+      // prompt sent for that step. Those are last-wins (the current context
+      // snapshot). Only completion / reasoning tokens are genuine per-step
+      // deltas and stay cumulative. `totalTokens` is derived from the stored
+      // values rather than taken from the provider so the footer can never show
+      // a stale "total" that contradicts prompt + completion.
       const addUsage = (u: {
         prompt: number;
         completion: number;
         reasoning: number;
-        total: number;
         cacheHit: number;
         cacheMiss: number;
         costYuan?: number;
@@ -1237,15 +1243,17 @@ export function App() {
             cacheHitTokens: 0,
             cacheMissTokens: 0,
           };
+          const promptTokens = u.prompt;
+          const completionTokens = cur.completionTokens + u.completion;
           next[lastIdx] = {
             ...msg,
             usage: {
-              promptTokens: cur.promptTokens + u.prompt,
-              completionTokens: cur.completionTokens + u.completion,
+              promptTokens,
+              completionTokens,
               reasoningTokens: cur.reasoningTokens + u.reasoning,
-              totalTokens: cur.totalTokens + u.total,
-              cacheHitTokens: cur.cacheHitTokens + u.cacheHit,
-              cacheMissTokens: cur.cacheMissTokens + u.cacheMiss,
+              totalTokens: promptTokens + completionTokens,
+              cacheHitTokens: u.cacheHit,
+              cacheMissTokens: u.cacheMiss,
               costYuan: u.costYuan ?? cur.costYuan,
             },
           };
@@ -1556,11 +1564,12 @@ export function App() {
               const cacheMiss = Number(event.prompt_cache_miss_tokens ?? 0);
               const cacheTotal = cacheHit + cacheMiss;
               const next = new Map(prev);
+              const updatedPromptTokens = Number(event.prompt_tokens ?? current.estimated_prompt_tokens);
               next.set(runKey, {
-                ...current,
-                estimated_prompt_tokens: Number(event.prompt_tokens ?? current.estimated_prompt_tokens),
+                ...current,  // Keep all fields: blocks, reserved_*, compacted, etc.
+                estimated_prompt_tokens: updatedPromptTokens,
                 used_ratio: current.context_window > 0
-                  ? Number(event.prompt_tokens ?? current.estimated_prompt_tokens) / current.context_window
+                  ? updatedPromptTokens / current.context_window
                   : current.used_ratio,
                 cache_hit_tokens: cacheHit,
                 cache_miss_tokens: cacheMiss,
@@ -1572,7 +1581,6 @@ export function App() {
               prompt: Number(event.prompt_tokens ?? 0),
               completion: Number(event.completion_tokens ?? 0),
               reasoning: Number(event.reasoning_tokens ?? 0),
-              total: Number(event.total_tokens ?? 0),
               cacheHit: Number(event.prompt_cache_hit_tokens ?? 0),
               cacheMiss: Number(event.prompt_cache_miss_tokens ?? 0),
               costYuan: typeof event.cost_yuan === "number" ? event.cost_yuan : undefined,

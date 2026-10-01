@@ -608,9 +608,11 @@ impl WorkflowAgent {
             });
 
         if let Some(u) = &response.usage {
-            self.usage.prompt_tokens += u.prompt_tokens;
+            // Canvas workflow nodes: use last-wins replacement for prompt_tokens
+            // (same fix as model_agent.rs) to prevent context-size inflation.
+            self.usage.prompt_tokens = u.prompt_tokens;
             self.usage.completion_tokens += u.completion_tokens;
-            self.usage.total_tokens += u.total_tokens;
+            self.usage.total_tokens = u.total_tokens;
         }
 
         Ok(serde_json::json!({
