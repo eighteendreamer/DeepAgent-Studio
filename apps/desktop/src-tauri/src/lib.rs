@@ -6553,6 +6553,28 @@ pub fn run() {
                 )
             };
 
+            // Initialize and attach Cron service for scheduled tasks
+            let cron_service = Arc::new(deepagent_app_core::CronService::new(
+                &workspace_root,
+                chat.clone(),
+            ));
+
+            // Start Cron tick loop in background (will run until process exit)
+            let cron_for_loop = cron_service.clone();
+            tauri::async_runtime::spawn(async move {
+                use tokio_util::sync::CancellationToken;
+                let shutdown = CancellationToken::new();
+                if let Err(e) = cron_for_loop.run_tick_loop(shutdown).await {
+                    eprintln!("cron tick loop failed: {}", e);
+                }
+            });
+
+            // Attach cron service to chat (returns new Arc, need to shadow)
+            let chat = {
+                let inner = Arc::try_unwrap(chat).unwrap_or_else(|arc| (*arc).clone());
+                Arc::new(inner.with_cron(cron_service))
+            };
+
             // Speech: transcription engine (whisper when the `whisper` feature
             // is enabled, else an "engine unavailable" guide) + the runtime
             // manager (to locate the model) + chat (for meeting minutes).

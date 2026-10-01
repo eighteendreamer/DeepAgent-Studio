@@ -265,6 +265,14 @@ fn build_chat_service(
     if let Some(sandboxie) = sandboxie {
         chat = chat.with_sandboxie_executor(sandboxie);
     }
+
+    // Initialize Cron service for scheduled tasks
+    let cron_service = Arc::new(deepagent_app_core::CronService::new(
+        workspace,
+        Arc::new(chat.clone()),
+    ));
+    chat = chat.with_cron(cron_service.clone());
+
     // Reconcile both lifecycle and durable control-plane projections before
     // exposing the CLI harness. This keeps CLI restarts consistent with the
     // Desktop startup path and prevents stale actions/approvals/leases from

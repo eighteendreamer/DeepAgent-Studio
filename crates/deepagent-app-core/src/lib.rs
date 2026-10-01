@@ -26,6 +26,7 @@ pub mod commands;
 pub mod completion_plan;
 pub mod context_runtime;
 pub mod cost_service;
+pub mod cron_service;
 pub(crate) mod dag_orchestration;
 pub mod diff;
 pub mod doctor;
@@ -107,6 +108,7 @@ pub use commands::{
     builtin_commands, commands_from_roots, commands_from_roots_and_plugins, filter_commands,
 };
 pub use cost_service::{BudgetConfig, CostRecord, CostService, CostSummary, ModelPricing};
+pub use cron_service::CronService;
 pub use deepagent_persistence::subagent_store::SubagentRunRecord;
 pub use diff::{diff_lines, DiffKind, DiffLine, DiffResult};
 pub use doctor::{format_diagnostics, run_diagnostics, DiagStatus, DiagnosticResult};

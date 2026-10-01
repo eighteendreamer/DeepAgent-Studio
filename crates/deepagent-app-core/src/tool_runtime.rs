@@ -147,6 +147,7 @@ pub(crate) struct ToolRegistryBuildRequest<'a> {
     pub(crate) local_command_executor:
         Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>,
     pub(crate) knowledge: Option<Arc<KnowledgeService>>,
+    pub(crate) cron: Option<Arc<crate::CronService>>,
     pub(crate) project_map: Option<Arc<ProjectMapService>>,
     pub(crate) office: Option<Arc<OfficeService>>,
     pub(crate) remote_ops_factory: Option<RemoteOpsFactory>,
@@ -190,6 +191,7 @@ pub(crate) fn build_base_tool_registry(
 
     registry.register(Arc::new(AskUserQuestionTool::new(DeclineResponder)))?;
     register_knowledge_search(&mut registry, request.knowledge);
+    register_cron_tools(&mut registry, request.cron);
     // Shared lazy code-index builder: the first code_map_*/codegraph_* call that
     // finds the index missing builds it once (grok-build code_nav.rs parity),
     // so the model isn't stuck being told to use a map it can't create.
@@ -507,6 +509,7 @@ where
     R: deepagent_builtins::SubagentRunner + 'static,
 {
     let knowledge = request.base.knowledge.clone();
+    let cron = request.base.cron.clone();
     #[cfg(feature = "wasm")]
     let wasm_tools_root = request.base.root.to_path_buf();
     let (mut registry, todo_store) = build_base_tool_registry(request.base)?;
@@ -522,6 +525,7 @@ where
     register_plan_execute_tool(&mut registry, request.plan_executor)?;
     register_memory_tools(&mut registry, request.memory_backend)?;
     register_knowledge_write_tool(&mut registry, knowledge.as_ref())?;
+    register_cron_tools(&mut registry, cron.as_ref().cloned());
     register_plan_mode_tools(&mut registry, &request.plan)?;
     register_skill_tool(&mut registry, request.skills)?;
     // History-snip tool (Claude Code HISTORY_SNIP): lets the model free
@@ -553,6 +557,14 @@ fn register_knowledge_search(
         use deepagent_builtins::KnowledgeSearchTool;
         let backend = crate::knowledge_service::KnowledgeServiceBackend::new(knowledge);
         let _ = registry.register(Arc::new(KnowledgeSearchTool::new(backend)));
+    }
+}
+
+fn register_cron_tools(registry: &mut ToolRegistry, cron: Option<Arc<crate::CronService>>) {
+    if let Some(cron) = cron {
+        use deepagent_builtins::{CronCreateTool, CronDeleteTool};
+        let _ = registry.register(Arc::new(CronCreateTool::new(cron.clone())));
+        let _ = registry.register(Arc::new(CronDeleteTool::new(cron)));
     }
 }
 
