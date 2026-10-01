@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeepAgent DAG Visualization Prototype</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    :root {
+      --theme-bg: #ffffff;
+      --theme-fg: #1F2937;
+      --theme-text-secondary: #6B7280;
+      --theme-border: #E5E7EB;
+      --theme-primary: #3B82F6;
+    }
+
+    .dark {
+      --theme-bg: #111827;
+      --theme-fg: #F9FAFB;
+      --theme-text-secondary: #9CA3AF;
+      --theme-border: #374151;
+      --theme-primary: #60A5FA;
+    }
+
+    body {
+      background-color: var(--theme-bg);
+      color: var(--theme-fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    .chat-container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    .user-bubble {
+      background: #F3F4F6;
+      border-radius: 1rem;
+      border-top-right-radius: 0.25rem;
+      padding: 0.75rem 1rem;
+      max-width: 80%;
+      margin-left: auto;
+    }
+
+    .assistant-bubble {
+      background: transparent;
+      padding: 0.75rem 0;
+      max-width: 100%;
+    }
+
+    .dag-card {
+      background: var(--theme-bg);
+      border: 1px solid var(--theme-border);
+      border-radius: 0.75rem;
+      overflow: hidden;
+      margin: 1rem 0;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .dag-header {
+      padding: 1rem;
+      border-bottom: 1px solid var(--theme-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .dag-body {
+      padding: 1rem;
+    }
+
+    .phase-section {
+      margin-bottom: 1.5rem;
+    }
+
+    .phase-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--theme-border);
+    }
+
+    .node-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 0.5rem 0.75rem;
+      margin: 0.25rem 0;
+      border-radius: 0.5rem;
+      transition: background-color 0.15s;
+    }
+
+    .node-row:hover {
+      background: rgba(59, 130, 246, 0.05);
+    }
+
+    .node-row.running {
+      background: rgba(59, 130, 246, 0.1);
+      border-left: 3px solid var(--theme-primary);
+      padding-left: 0.625rem;
+    }
+
+    .status-icon {
+      font-size: 1.25rem;
+      flex-shrink: 0;
+      width: 1.5rem;
+      text-align: center;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.25rem 0.625rem;
+      border-radius: 0.375rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      border: 1px solid;
+    }
+
+    .badge-done {
+      background: #DCFCE7;
+      color: #16A34A;
+      border-color: #86EFAC;
+    }
+
+    .badge-running {
+      background: #DBEAFE;
+      color: #2563EB;
+      border-color: #93C5FD;
+    }
+
+    .badge-pending {
+      background: #F3F4F6;
+      color: #6B7280;
+      border-color: #D1D5DB;
+    }
+
+    .badge-failed {
+      background: #FEE2E2;
+      color: #DC2626;
+      border-color: #FECACA;
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 0.5rem;
+      background: var(--theme-border);
+      border-radius: 9999px;
+      overflow: hidden;
+      margin: 0.5rem 0;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #3B82F6, #60A5FA);
+      transition: width 0.3s ease;
+    }
+
+    .btn {
+      padding: 0.5rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      border: 1px solid var(--theme-border);
+      background: var(--theme-bg);
+    }
+
+    .btn:hover {
+      background: rgba(59, 130, 246, 0.1);
+      border-color: var(--theme-primary);
+    }
+
+    .dark .user-bubble {
+      background: #374151;
+    }
+
+    .dark .dag-card {
+      background: #1F2937;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .spinning {
+      animation: spin 1.5s linear infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .pulsing {
+      animation: pulse 2s ease-in-out infinite;
+    }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <div class="chat-container">
+    <!-- User Message -->
+    <div class="mb-8 flex justify-end">
+      <div class="user-bubble">
+        <p class="text-sm">Plan and implement a complete authentication system with review phases</p>
+      </div>
+    </div>
+
+    <!-- Assistant Response with DAG Card -->
+    <div class="mb-8">
+      <div class="assistant-bubble">
+        <p class="text-sm mb-4">I'll break this down into phases: Review, Implementation, and Testing. Let me start the execution plan:</p>
+
+        <!-- DAG Execution Card -->
+        <div class="dag-card" id="dagCard">
+          <!-- Header -->
+          <div class="dag-header">
+            <div class="flex items-center gap-2">
+              <i class="fas fa-project-diagram text-blue-500"></i>
+              <h3 class="font-semibold text-base">DAG Execution: Authentication System</h3>
+            </div>
+            <button class="btn px-3 py-1" onclick="toggleExpand()">
+              <i class="fas fa-chevron-down" id="expandIcon"></i>
+            </button>
+          </div>
+
+          <!-- Compact Progress (Always Visible) -->
+          <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+            <div class="progress-bar">
+              <div class="progress-fill" id="progressFill" style="width: 60%"></div>
+            </div>
+            <div class="flex justify-between text-xs text-gray-500 mt-1">
+              <span>Progress: <span id="progressText">3/5</span> nodes complete (<span id="progressPercent">60</span>%)</span>
+              <span>Current: <span id="currentNodes">fix-frontend</span></span>
+            </div>
+          </div>
+
+          <!-- Detailed View (Collapsible) -->
+          <div class="dag-body" id="dagBody">
+            <!-- Phase: Review -->
+            <div class="phase-section">
+              <div class="phase-header">
+                <h4 class="font-medium text-sm flex items-center gap-2">
+                  <i class="fas fa-layer-group text-purple-500 text-xs"></i>
+                  Phase: Review
+                </h4>
+                <span class="badge badge-done">2/2 ✓</span>
+              </div>
+
+              <div class="space-y-1">
+                <div class="node-row">
+                  <div class="status-icon">✅</div>
+                  <div class="flex-1">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="font-mono text-xs text-gray-600 dark:text-gray-400">review-backend</span>
+                      <span class="badge badge-done text-xs">Done</span>
+                    </div>
+                    <p class="text-xs text-gray-500">└─ Found 2 SQL injection risks</p>
+                  </div>
+                </div>
+
+                <div class="node-row">
+                  <div class="status-icon">✅</div>
+                  <div class="flex-1">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="font-mono text-xs text-gray-600 dark:text-gray-400">review-frontend</span>
+                      <span class="badge badge-done text-xs">Done</span>
+                    </div>
+                    <p class="text-xs text-gray-500">└─ Missing CSRF token validation</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Phase: Implementation -->
+            <div class="phase-section">
+              <div class="phase-header">
+                <h4 class="font-medium text-sm flex items-center gap-2">
+                  <i class="fas fa-code text-blue-500 text-xs"></i>
+                  Phase: Implementation
+                </h4>
+                <span class="badge badge-running">1/2 ⚙️</span>
+              </div>
+
+              <div class="space-y-1">
+                <div class="node-row">
+                  <div class="status-icon">✅</div>
+                  <div class="flex-1">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="font-mono text-xs text-gray-600 dark:text-gray-400">fix-backend</span>
+                      <span class="badge badge-done text-xs">Done</span>
+                    </div>
+                    <p class="text-xs text-gray-500">└─ Added parameterized queries</p>
+                  </div>
+                </div>
+
+                <div class="node-row running">
+                  <div class="status-icon spinning">⚙️</div>
+                  <div class="flex-1">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="font-mono text-xs text-gray-600 dark:text-gray-400">fix-frontend</span>
+                      <span class="badge badge-running text-xs">Running</span>
+                    </div>
+                    <p class="text-xs text-blue-600 pulsing">└─ Running for <span id="runningTime">45</span>s...</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Phase: Testing -->
+            <div class="phase-section">
+              <div class="phase-header">
+                <h4 class="font-medium text-sm flex items-center gap-2">
+                  <i class="fas fa-flask text-green-500 text-xs"></i>
+                  Phase: Testing
+                </h4>
+                <span class="badge badge-pending">0/1</span>
+              </div>
+
+              <div class="space-y-1">
+                <div class="node-row">
+                  <div class="status-icon">⏸️</div>
+                  <div class="flex-1">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="font-mono text-xs text-gray-600 dark:text-gray-400">run-tests</span>
+                      <span class="badge badge-pending text-xs">Pending</span>
+                    </div>
+                    <p class="text-xs text-gray-500">└─ Depends on: fix-frontend</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Footer Actions -->
+          <div class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex gap-2">
+            <button class="btn flex items-center gap-2" onclick="showGraph()">
+              <i class="fas fa-project-diagram text-xs"></i>
+              View Graph
+            </button>
+            <button class="btn flex items-center gap-2" onclick="showLogs()">
+              <i class="fas fa-file-lines text-xs"></i>
+              View Logs
+            </button>
+            <button class="btn flex items-center gap-2 ml-auto text-red-600 hover:bg-red-50">
+              <i class="fas fa-stop text-xs"></i>
+              Stop All
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Theme Toggle (Top Right) -->
+    <div class="fixed top-4 right-4">
+      <button class="btn px-4 py-2" onclick="toggleTheme()">
+        <i class="fas fa-moon" id="themeIcon"></i>
+      </button>
+    </div>
+  </div>
+
+  <script>
+    let expanded = true;
+    let runningSeconds = 45;
+
+    function toggleExpand() {
+      expanded = !expanded;
+      const body = document.getElementById('dagBody');
+      const icon = document.getElementById('expandIcon');
+
+      if (expanded) {
+        body.style.display = 'block';
+        icon.className = 'fas fa-chevron-down';
+      } else {
+        body.style.display = 'none';
+        icon.className = 'fas fa-chevron-right';
+      }
+    }
+
+    function toggleTheme() {
+      const html = document.documentElement;
+      const icon = document.getElementById('themeIcon');
+
+      if (html.classList.contains('dark')) {
+        html.classList.remove('dark');
+        icon.className = 'fas fa-moon';
+      } else {
+        html.classList.add('dark');
+        icon.className = 'fas fa-sun';
+      }
+    }
+
+    function showGraph() {
+      alert('Graph view would open in a side panel with Mermaid diagram:\n\n' +
+            'review-backend → fix-backend → run-tests\n' +
+            'review-frontend → fix-frontend → run-tests');
+    }
+
+    function showLogs() {
+      alert('Logs panel would show detailed execution logs for each node');
+    }
+
+    // Simulate real-time updates
+    setInterval(() => {
+      runningSeconds++;
+      document.getElementById('runningTime').textContent = runningSeconds;
+
+      // Simulate completion after 60 seconds
+      if (runningSeconds >= 60) {
+        completeCurrentNode();
+      }
+    }, 1000);
+
+    function completeCurrentNode() {
+      // Update progress
+      document.getElementById('progressFill').style.width = '80%';
+      document.getElementById('progressText').textContent = '4/5';
+      document.getElementById('progressPercent').textContent = '80';
+      document.getElementById('currentNodes').textContent = 'run-tests';
+
+      // Mark fix-frontend as done
+      const runningRow = document.querySelector('.node-row.running');
+      runningRow.classList.remove('running');
+      runningRow.querySelector('.status-icon').textContent = '✅';
+      runningRow.querySelector('.status-icon').classList.remove('spinning');
+      runningRow.querySelector('.badge').className = 'badge badge-done text-xs';
+      runningRow.querySelector('.badge').textContent = 'Done';
+      runningRow.querySelector('.pulsing').textContent = '└─ Added CSRF token validation';
+      runningRow.querySelector('.pulsing').className = 'text-xs text-gray-500';
+
+      // Start run-tests
+      const testRow = document.querySelectorAll('.node-row')[5];
+      testRow.classList.add('running');
+      testRow.querySelector('.status-icon').textContent = '⚙️';
+      testRow.querySelector('.status-icon').classList.add('spinning');
+      testRow.querySelector('.badge').className = 'badge badge-running text-xs';
+      testRow.querySelector('.badge').textContent = 'Running';
+
+      // Update phase badges
+      document.querySelectorAll('.phase-header .badge')[1].className = 'badge badge-done';
+      document.querySelectorAll('.phase-header .badge')[1].textContent = '2/2 ✓';
+      document.querySelectorAll('.phase-header .badge')[2].className = 'badge badge-running';
+      document.querySelectorAll('.phase-header .badge')[2].textContent = '1/1 ⚙️';
+
+      runningSeconds = 0;
+    }
+  </script>
+</body>
+</html>
