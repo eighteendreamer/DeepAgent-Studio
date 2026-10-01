@@ -133,7 +133,8 @@ pub use office_tools::{
     OFFICE_DOCX_CREATE_TOOL_NAME, OFFICE_READ_TOOL_NAME, OFFICE_XLSX_CREATE_TOOL_NAME,
 };
 pub use plan_execute::{
-    PlanExecuteTool, PlanExecutor, UnavailablePlanExecutor, PLAN_EXECUTE_TOOL_NAME,
+    DagExecutionData, DagNodeData, PlanExecuteTool, PlanExecutionResult, PlanExecutor,
+    UnavailablePlanExecutor, PLAN_EXECUTE_TOOL_NAME,
 };
 pub use plan_mode::{
     is_plan_safe_tool, EnterPlanModeTool, ExitPlanModeTool, PlanMode, PlanModeHook, PLAN_SAFE_TOOLS,

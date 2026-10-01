@@ -68,6 +68,15 @@ pub struct SubagentRequest {
     /// child's output out of the parent context. Overrides `subagent_type` tool
     /// restrictions.
     pub fork: bool,
+    /// Optional phase label for DAG orchestration (e.g. "Review", "Implementation").
+    /// Used to group agents in UI and track workflow progress.
+    pub phase: Option<String>,
+    /// Optional short label for UI display (e.g. "review:correctness", "backend:api").
+    /// Shown in agent cards and logs for quick identification.
+    pub label: Option<String>,
+    /// Optional JSON schema for structured output validation.
+    /// When present, the agent's response must conform to this schema.
+    pub schema: Option<serde_json::Value>,
 }
 
 /// Handle returned when a sub-agent is launched without blocking its parent.
@@ -341,6 +350,18 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
                         "type": "boolean",
                         "default": false,
                         "description": "Fork the current agent: the child inherits your COMPLETE conversation context and full tool pool, runs in the background, and its output does NOT return into your context. Use to explore a tangent or run an independent long task from the exact current state. Ignores subagent_type tool restrictions."
+                    },
+                    "phase": {
+                        "type": "string",
+                        "description": "Optional phase label for workflow orchestration (e.g. 'Review', 'Implementation'). Groups agents in UI."
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Optional short label for UI display (e.g. 'review:correctness', 'backend:api')."
+                    },
+                    "schema": {
+                        "type": "object",
+                        "description": "Optional JSON schema for structured output validation. The agent's response must conform to this schema."
                     }
                 },
                 "additionalProperties": false
@@ -523,6 +544,17 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
             }
         }
 
+        // Extract optional frontmatter fields
+        let phase = args
+            .get("phase")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from);
+        let label = args
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from);
+        let schema = args.get("schema").cloned();
+
         let request = SubagentRequest {
             description,
             prompt: prompt.to_string(),
@@ -533,6 +565,9 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
             skills,
             isolation,
             fork,
+            phase,
+            label,
+            schema,
         };
         if args
             .get("background")

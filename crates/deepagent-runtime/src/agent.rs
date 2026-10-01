@@ -103,20 +103,24 @@ impl Observation {
     }
 }
 
-/// Cumulative token usage across an agent run (summed over every model call).
+/// Token usage snapshot for the current run. After the replacement-semantics
+/// fix, `prompt_tokens`, `total_tokens`, and cache tokens are last-wins (each
+/// model response overwrites the prior value, mirroring harness's pressure
+/// projection). Only `completion_tokens` and `reasoning_tokens` are cumulative.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RunUsage {
-    /// Prompt (input) tokens.
+    /// Prompt (input) tokens reported by the most recent provider response
+    /// (last-wins, not cumulative).
     pub prompt_tokens: u32,
-    /// Completion (output) tokens.
+    /// Completion (output) tokens, cumulative across the run.
     pub completion_tokens: u32,
-    /// Reasoning output tokens (a subset of completion tokens).
+    /// Reasoning output tokens (a subset of completion tokens), cumulative.
     pub reasoning_tokens: u32,
-    /// Total tokens.
+    /// Total tokens reported by the most recent provider response (last-wins).
     pub total_tokens: u32,
-    /// Prompt tokens served from the context cache (a "hit").
+    /// Prompt tokens served from the context cache, last-wins.
     pub prompt_cache_hit_tokens: u32,
-    /// Prompt tokens NOT served from cache (a "miss").
+    /// Prompt tokens NOT served from cache, last-wins.
     pub prompt_cache_miss_tokens: u32,
 }
 

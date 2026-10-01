@@ -42,7 +42,10 @@ impl Serialize for ChatCompletionRequest {
     {
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("model", &self.model)?;
-        map.serialize_entry("messages", &ChatMessages(&self.messages, &self.attachment_data_urls))?;
+        map.serialize_entry(
+            "messages",
+            &ChatMessages(&self.messages, &self.attachment_data_urls),
+        )?;
         map.serialize_entry("stream", &self.stream)?;
         if self.stream_options_include_usage {
             map.serialize_entry(
@@ -611,16 +614,19 @@ mod tests {
     fn chat_wire_materializes_user_image_attachment() {
         let mut request = ChatCompletionRequest::new(
             "deepseek-flash",
-            vec![Message::user("look at this").with_attachments(vec![MessageAttachment {
-                id: "att_1".into(),
-                kind: "image".into(),
-                media_type: Some("image/png".into()),
-                path: None,
-            }])],
+            vec![
+                Message::user("look at this").with_attachments(vec![MessageAttachment {
+                    id: "att_1".into(),
+                    kind: "image".into(),
+                    media_type: Some("image/png".into()),
+                    path: None,
+                }]),
+            ],
         );
-        request
-            .attachment_data_urls
-            .insert("att_1".to_string(), "data:image/png;base64,AAAA".to_string());
+        request.attachment_data_urls.insert(
+            "att_1".to_string(),
+            "data:image/png;base64,AAAA".to_string(),
+        );
         let json = serde_json::to_value(&request).unwrap();
         let content = &json["messages"][0]["content"];
         assert!(content.is_array(), "image → content parts array");

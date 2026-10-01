@@ -26,8 +26,25 @@ const MAX_COMMAND_LENGTH: usize = 10_000;
 /// Shell builtins that evaluate their arguments as code (Claude Code
 /// `EVAL_LIKE_BUILTINS`): running any of these is treated as high-risk.
 const EVAL_LIKE_BUILTINS: &[&str] = &[
-    "eval", "source", ".", "exec", "command", "builtin", "fc", "coproc", "noglob", "nocorrect",
-    "trap", "enable", "mapfile", "readarray", "hash", "bind", "complete", "compgen", "alias",
+    "eval",
+    "source",
+    ".",
+    "exec",
+    "command",
+    "builtin",
+    "fc",
+    "coproc",
+    "noglob",
+    "nocorrect",
+    "trap",
+    "enable",
+    "mapfile",
+    "readarray",
+    "hash",
+    "bind",
+    "complete",
+    "compgen",
+    "alias",
     "let",
 ];
 
@@ -40,8 +57,7 @@ const ZSH_DANGEROUS_BUILTINS: &[&str] = &[
 
 /// Commands whose argv may be evaluated as arithmetic/subscript (Claude Code
 /// `SUBSCRIPT_EVAL_FLAGS`): a `[...]` argument can execute code.
-const SUBSCRIPT_EVAL_COMMANDS: &[&str] =
-    &["test", "[", "[[", "printf", "read", "unset", "wait"];
+const SUBSCRIPT_EVAL_COMMANDS: &[&str] = &["test", "[", "[[", "printf", "read", "unset", "wait"];
 
 /// Leading wrappers stripped before the real command is inspected.
 const WRAPPERS: &[&str] = &["time", "nohup", "timeout", "nice", "env", "stdbuf"];
@@ -383,7 +399,9 @@ fn split_assignment(word: &str) -> Option<(String, String)> {
 /// A `NAME=value` word whose name is NOT a valid identifier (e.g. `1VAR=x`).
 fn is_malformed_assignment(word: &str) -> bool {
     match word.split_once('=') {
-        Some((name, _)) if !name.is_empty() => split_assignment(word).is_none() && !word.starts_with('-'),
+        Some((name, _)) if !name.is_empty() => {
+            split_assignment(word).is_none() && !word.starts_with('-')
+        }
         _ => false,
     }
 }
@@ -449,10 +467,11 @@ fn is_dangerous_removal_path(target: &str) -> bool {
     if t.is_empty() {
         return false;
     }
-    matches!(t, "/" | "/*" | "~" | "~/" | "*" | "." | ".." | "C:\\" | "c:\\")
-        || t == "C:/"
-        || (t.starts_with('/')
-            && t[1..].split('/').filter(|s| !s.is_empty()).count() == 1)
+    matches!(
+        t,
+        "/" | "/*" | "~" | "~/" | "*" | "." | ".." | "C:\\" | "c:\\"
+    ) || t == "C:/"
+        || (t.starts_with('/') && t[1..].split('/').filter(|s| !s.is_empty()).count() == 1)
         || (t.starts_with('~') && t.split('/').filter(|s| !s.is_empty()).count() <= 1)
 }
 
@@ -522,9 +541,7 @@ pub fn danger_reasons(command: &str) -> Vec<&'static str> {
         if matches!(name.as_str(), "sudo" | "su" | "doas") {
             reasons.push("privilege_escalation");
         }
-        if matches!(name.as_str(), "dd" | "mkfs" | "fdisk" | "shred")
-            || name.starts_with("mkfs.")
-        {
+        if matches!(name.as_str(), "dd" | "mkfs" | "fdisk" | "shred") || name.starts_with("mkfs.") {
             reasons.push("disk_destructive");
         }
         if name == "git" && args.first().map(String::as_str) == Some("push") {
@@ -707,7 +724,10 @@ mod tests {
     #[test]
     fn recurses_into_command_substitutions() {
         let a = analyze("VAR=$(rm -rf /)");
-        assert!(a.commands.iter().any(|c| c.argv.first().map(|s| s.as_str()) == Some("rm")));
+        assert!(a
+            .commands
+            .iter()
+            .any(|c| c.argv.first().map(|s| s.as_str()) == Some("rm")));
     }
 
     // ---- CC-aligned danger cases -----------------------------------------

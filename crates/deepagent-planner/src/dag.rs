@@ -33,6 +33,10 @@ pub struct PlanNode {
     /// Optional role/agent hint (e.g. "backend", "frontend", "review").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Optional phase label for workflow orchestration (e.g. "Review", "Implementation").
+    /// Used to group nodes in UI and track workflow progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 impl PlanNode {
@@ -43,6 +47,7 @@ impl PlanNode {
             goal: goal.into(),
             depends_on: Vec::new(),
             role: None,
+            phase: None,
         }
     }
 
@@ -55,6 +60,12 @@ impl PlanNode {
     /// Set a role hint (builder style).
     pub fn with_role(mut self, role: impl Into<String>) -> Self {
         self.role = Some(role.into());
+        self
+    }
+
+    /// Set a phase label (builder style).
+    pub fn with_phase(mut self, phase: impl Into<String>) -> Self {
+        self.phase = Some(phase.into());
         self
     }
 }

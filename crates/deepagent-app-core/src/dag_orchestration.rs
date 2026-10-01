@@ -118,15 +118,33 @@ impl ChatPlanExecutor {
 
 #[async_trait]
 impl deepagent_builtins::PlanExecutor for ChatPlanExecutor {
-    async fn execute_plan(&self, goal: String) -> Result<String> {
+    async fn execute_plan(&self, goal: String) -> Result<deepagent_builtins::PlanExecutionResult> {
         let dag = plan_dag_via_model(&self.runner.client, &self.runner.model, &goal).await?;
         let worktrees = GitWorktrees::new(&self.runner.root, self.runner.worktree_base());
         let executor = DagSubagentExecutor::new(self.runner.clone());
+
+        let start_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
         let report = DagScheduler::new(&executor, &worktrees)
             .with_max_concurrency(self.max_concurrency)
             .run(&dag)
             .await?;
-        Ok(format_report(&dag, &report))
+
+        let end_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Build DAG execution data for frontend
+        let dag_execution = build_dag_execution_data(&dag, &report, start_time, end_time);
+
+        Ok(deepagent_builtins::PlanExecutionResult {
+            report: format_report(&dag, &report),
+            dag_execution: Some(dag_execution),
+        })
     }
 }
 
@@ -159,6 +177,82 @@ fn format_report(dag: &PlanDag, report: &deepagent_subagents::ScheduleReport) ->
         }
     }
     out
+}
+
+/// Build DAG execution data for frontend visualization.
+fn build_dag_execution_data(
+    dag: &PlanDag,
+    report: &deepagent_subagents::ScheduleReport,
+    start_time: u64,
+    end_time: u64,
+) -> deepagent_builtins::DagExecutionData {
+    use deepagent_builtins::{DagExecutionData, DagNodeData};
+
+    let execution_id = format!("exec_{}", start_time);
+
+    // Extract title from first node or use generic
+    let title = dag
+        .nodes()
+        .next()
+        .map(|n| {
+            // Try to extract a meaningful title from the first goal
+            let goal = &n.goal;
+            if goal.len() > 50 {
+                format!("{}...", &goal[..47])
+            } else {
+                goal.clone()
+            }
+        })
+        .unwrap_or_else(|| "DAG Execution".to_string());
+
+    let nodes = dag
+        .nodes()
+        .map(|node| {
+            let (status, duration, summary, error) =
+                if let Some(result) = report.results.get(&node.id) {
+                    // Node executed
+                    let status = if result.ok { "done" } else { "failed" };
+                    let summary = Some(result.summary.trim().to_string());
+                    let error = if !result.ok {
+                        Some(result.summary.clone())
+                    } else {
+                        None
+                    };
+                    (status, None, summary, error)
+                } else if report.skipped.contains(&node.id) {
+                    // Node skipped
+                    (
+                        "failed",
+                        None,
+                        Some("Skipped due to upstream failure".to_string()),
+                        None,
+                    )
+                } else {
+                    // Node pending (shouldn't happen after execution)
+                    ("pending", None, None, None)
+                };
+
+            DagNodeData {
+                id: node.id.clone(),
+                goal: node.goal.clone(),
+                phase: node.phase.clone(),
+                role: node.role.clone(),
+                status: status.to_string(),
+                depends_on: node.depends_on.clone(),
+                duration,
+                summary,
+                error,
+            }
+        })
+        .collect();
+
+    DagExecutionData {
+        execution_id,
+        title,
+        nodes,
+        created_at: start_time,
+        updated_at: end_time,
+    }
 }
 
 #[cfg(test)]

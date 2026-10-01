@@ -565,7 +565,8 @@ impl ChatSubagentRunner {
             }
         }
         let preloaded_skills = self.preload_skills(&skills)?;
-        let system = subagent_system_prompt(execution_root, agent_profile, &preloaded_skills);
+        let system =
+            subagent_system_prompt(execution_root, agent_profile, &preloaded_skills, &request);
         let db = Database::open_in_memory()?;
         let clock = SystemClock;
         let mut session = Session::create(&db, &clock, Some(&request.description))?;
@@ -791,6 +792,16 @@ impl ChatSubagentRunner {
                 .to_string(),
             // A resumed child continues its own line; it is not a fresh fork.
             fork: false,
+            // Frontmatter fields preserved from original request
+            phase: saved
+                .get("phase")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            label: saved
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            schema: saved.get("schema").cloned(),
         })
     }
 
@@ -1039,6 +1050,10 @@ impl deepagent_subagents::SubAgentExecutor for DagSubagentExecutor {
             // provisioning a second one.
             isolation: "shared".to_string(),
             fork: false,
+            // Frontmatter fields from DAG context
+            phase: context.phase.clone(),
+            label: Some(context.node_id.clone()),
+            schema: None,
         };
         let runner = self
             .runner
@@ -1167,6 +1182,9 @@ mod tests {
             skills: vec![],
             isolation: "shared".into(),
             fork: false,
+            label: None,
+            phase: None,
+            schema: None,
         };
         assert_eq!(
             subagent_effort_str(Some(&file_deep), &request_with_effort),
@@ -1392,12 +1410,37 @@ pub(crate) fn subagent_system_prompt(
     root: &std::path::Path,
     agent_profile: Option<&RuntimeAgentDefinition>,
     preloaded_skills: &str,
+    request: &deepagent_builtins::SubagentRequest,
 ) -> String {
     let mut system = format!(
         "{base}{boundary}",
         base = crate::system_prompt::system_prompt_base(),
         boundary = SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     );
+
+    // Inject frontmatter metadata (phase, label, schema) if present
+    let has_frontmatter =
+        request.phase.is_some() || request.label.is_some() || request.schema.is_some();
+
+    if has_frontmatter {
+        system.push_str("---\n");
+        if let Some(phase) = &request.phase {
+            system.push_str("phase: ");
+            system.push_str(phase);
+            system.push('\n');
+        }
+        if let Some(label) = &request.label {
+            system.push_str("label: ");
+            system.push_str(label);
+            system.push('\n');
+        }
+        if let Some(schema) = &request.schema {
+            system.push_str("schema: ");
+            system.push_str(&serde_json::to_string(schema).unwrap_or_default());
+            system.push('\n');
+        }
+        system.push_str("---\n\n");
+    }
 
     if let Some(agent) = agent_profile {
         system.push_str("# Sub-agent identity\n");
@@ -1434,11 +1477,16 @@ pub(crate) fn subagent_system_prompt(
     }
 
     system.push_str("# Sub-agent task\n");
-    system.push_str(
+    let task_instruction = if request.schema.is_some() {
         "You are a focused sub-agent. Do exactly the delegated task and return a complete, \
          self-contained final answer - the calling agent sees only your final message, not \
-         your intermediate steps.\n- Working directory: ",
-    );
+         your intermediate steps. YOUR RESPONSE MUST BE VALID JSON MATCHING THE SCHEMA ABOVE.\n- Working directory: "
+    } else {
+        "You are a focused sub-agent. Do exactly the delegated task and return a complete, \
+         self-contained final answer - the calling agent sees only your final message, not \
+         your intermediate steps.\n- Working directory: "
+    };
+    system.push_str(task_instruction);
     system.push_str(&root.display().to_string());
     system
 }

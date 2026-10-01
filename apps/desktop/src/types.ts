@@ -1844,3 +1844,6 @@ export interface LogPage {
   records: LogRecord[];
   truncated: boolean;
 }
+
+// DAG Execution types for plan_execute tool visualization
+export type { DagNodeStatus, DagNode, DagExecution, DagStatusUpdate } from './types/dag';

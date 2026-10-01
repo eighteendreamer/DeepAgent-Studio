@@ -17,8 +17,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { ToolCall } from "../../types";
+import type { DagExecution } from "../../types/dag";
 import { DiffText } from "../git/GitDiffViewer";
 import { formatMs } from "./format";
+import { DagExecutionRow } from "./DagExecutionRow";
 
 type ParsedToolPayload = {
   args: Record<string, unknown> | null;
@@ -204,6 +206,18 @@ function summarizeTool(tool: ToolCall, payload: ParsedToolPayload): ToolSummary 
 }
 
 export function ProcessToolRow({ tool }: { tool: ToolCall }) {
+  // Special handling for plan_execute tool - render DAG visualization
+  if (tool.name === 'plan_execute' && tool.output) {
+    try {
+      const dagData = parseDagExecution(tool);
+      if (dagData) {
+        return <DagExecutionRow execution={dagData} />;
+      }
+    } catch (error) {
+      console.warn('Failed to parse DAG execution data, falling back to default display', error);
+    }
+  }
+
   const [open, setOpen] = useState(false);
   const payload = useMemo(() => parsePayload(tool), [tool]);
   const summary = useMemo(() => summarizeTool(tool, payload), [tool, payload]);
@@ -284,4 +298,48 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
       )}
     </div>
   );
+}
+
+/**
+ * Parse plan_execute tool output into DagExecution structure.
+ * Returns null if the output doesn't contain valid DAG data.
+ */
+function parseDagExecution(tool: ToolCall): DagExecution | null {
+  try {
+    const output = typeof tool.output === 'string' ? JSON.parse(tool.output) : tool.output;
+
+    // Check if output contains DAG execution data
+    if (!output || typeof output !== 'object') return null;
+
+    // Try to extract DAG data from various possible locations
+    const dagData = output.dag_execution || output.dagExecution || output.execution || output;
+
+    if (!dagData.executionId && !dagData.execution_id) return null;
+    if (!dagData.nodes || !Array.isArray(dagData.nodes)) return null;
+
+    // Transform to our DagExecution format
+    const execution: DagExecution = {
+      executionId: dagData.executionId || dagData.execution_id || `exec_${Date.now()}`,
+      title: dagData.title || tool.detail || 'DAG Execution',
+      nodes: dagData.nodes.map((node: any) => ({
+        id: node.id || node.node_id || 'unknown',
+        goal: node.goal || node.description || '',
+        phase: node.phase,
+        role: node.role,
+        status: node.status || 'pending',
+        dependsOn: node.dependsOn || node.depends_on || [],
+        startedAt: node.startedAt || node.started_at,
+        completedAt: node.completedAt || node.completed_at,
+        duration: node.duration || node.durationMs,
+        summary: node.summary,
+        error: node.error,
+      })),
+      createdAt: dagData.createdAt || dagData.created_at || Date.now(),
+      updatedAt: dagData.updatedAt || dagData.updated_at || Date.now(),
+    };
+
+    return execution;
+  } catch (error) {
+    return null;
+  }
 }

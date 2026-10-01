@@ -768,7 +768,11 @@ mod tests {
         }
 
         fn cumulative_usage(&self) -> Option<RunUsage> {
+            // After the replacement-semantics fix, prompt_tokens is now the
+            // pressure value (current context size), not a cumulative sum.
+            // The loop_engine gate now checks prompt_tokens against the limit.
             Some(RunUsage {
+                prompt_tokens: 11,
                 total_tokens: 11,
                 ..RunUsage::default()
             })
@@ -1149,7 +1153,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(terminal.kind, TerminalKind::BudgetExceeded);
-        assert!(terminal.reason.unwrap().contains("used 11 tokens"));
+        assert!(terminal
+            .reason
+            .unwrap()
+            .contains("run context pressure exceeded"));
         assert_eq!(session.state().task(task).unwrap().state, TaskState::Failed);
     }
 

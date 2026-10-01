@@ -14,9 +14,7 @@
 
 use std::sync::Arc;
 
-use deepagent_models::{
-    classify_model_error, ModelClient, ModelFailureKind, ResponseRequest,
-};
+use deepagent_models::{classify_model_error, ModelClient, ModelFailureKind, ResponseRequest};
 
 use crate::compaction::{HeuristicSummarizer, Summarizer, TaskSummary};
 
@@ -281,7 +279,8 @@ mod tests {
 
     #[test]
     fn strips_leading_analysis_block_before_parsing() {
-        let s = "<analysis>\nprivate reasoning\n</analysis>\n{\"goal\":\"g\",\"completed\":[\"a\"]}";
+        let s =
+            "<analysis>\nprivate reasoning\n</analysis>\n{\"goal\":\"g\",\"completed\":[\"a\"]}";
         let v = parse_summary_json(s).unwrap();
         assert_eq!(v.goal, "g");
         assert_eq!(v.completed, vec!["a"]);
@@ -392,9 +391,7 @@ mod tests {
             _request: deepagent_models::TransportRequest,
             sink: &mut dyn deepagent_models::transport::EventSink,
         ) -> deepagent_core::error::Result<()> {
-            let call = self
-                .calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if call == 0 {
                 return Err(deepagent_core::error::CoreError::provider(
                     Some(413),

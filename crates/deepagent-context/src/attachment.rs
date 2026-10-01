@@ -167,7 +167,10 @@ impl AttachmentRegistry {
         }
 
         // Fit to budget: drop lowest priority first (stable by provider order).
-        let mut total: usize = collected.iter().map(|(_, a)| a.content.chars().count()).sum();
+        let mut total: usize = collected
+            .iter()
+            .map(|(_, a)| a.content.chars().count())
+            .sum();
         if total > self.char_budget {
             let mut by_priority: Vec<usize> = (0..collected.len()).collect();
             by_priority.sort_by_key(|&i| (collected[i].1.priority, collected[i].0));
@@ -281,7 +284,10 @@ mod tests {
             .with_dedup_key("lint")],
         }));
         assert_eq!(
-            registry.collect(&ctx(), AttachmentLayer::AllThread).await.len(),
+            registry
+                .collect(&ctx(), AttachmentLayer::AllThread)
+                .await
+                .len(),
             1
         );
         assert!(registry
@@ -290,7 +296,10 @@ mod tests {
             .is_empty());
         registry.reset_seen();
         assert_eq!(
-            registry.collect(&ctx(), AttachmentLayer::AllThread).await.len(),
+            registry
+                .collect(&ctx(), AttachmentLayer::AllThread)
+                .await
+                .len(),
             1
         );
     }

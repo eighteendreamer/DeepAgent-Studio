@@ -23,6 +23,8 @@ pub struct SubAgentContext {
     pub goal: String,
     /// Role hint, if any.
     pub role: Option<String>,
+    /// Phase label for workflow orchestration, if any.
+    pub phase: Option<String>,
     /// The isolated worktree assigned to this sub-agent.
     pub worktree: Worktree,
     /// Summaries of upstream dependencies' results, injected so this agent can
@@ -83,6 +85,7 @@ pub fn context_for(
         node_id: node.id.clone(),
         goal: node.goal.clone(),
         role: node.role.clone(),
+        phase: node.phase.clone(),
         worktree,
         upstream_results,
     }
