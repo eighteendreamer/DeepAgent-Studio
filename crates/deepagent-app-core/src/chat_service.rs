@@ -104,6 +104,11 @@ pub struct ChatService {
     /// are registered. When unset, behavior is identical to before the feature
     /// (no injection, no tools) — preserving backward compatibility.
     knowledge: Option<Arc<crate::knowledge_service::KnowledgeService>>,
+    /// Optional cron scheduler: when set, the `cron_create` / `cron_delete` /
+    /// `cron_list` tools are registered so the model can schedule prompts to run
+    /// at fixed intervals. When unset, behavior is identical to before the
+    /// feature (no tools) — preserving backward compatibility.
+    cron: Option<Arc<crate::CronService>>,
     /// Canvas provider gateway. When set, canvas workflow nodes call the
     /// model the user configured in canvas settings instead of the chat model.
     canvas_model: Option<Arc<crate::canvas_model_gateway::CanvasModelGateway>>,
@@ -242,6 +247,7 @@ impl ChatService {
             plugins: None,
             projects: None,
             knowledge: None,
+            cron: None,
             canvas_model: None,
             project_map: None,
             office: None,
@@ -392,6 +398,13 @@ impl ChatService {
         knowledge: Arc<crate::knowledge_service::KnowledgeService>,
     ) -> Self {
         self.knowledge = Some(knowledge);
+        self
+    }
+
+    /// Attach the cron scheduler so the model can schedule prompts to run at
+    /// fixed intervals via the `cron_create` / `cron_delete` / `cron_list` tools.
+    pub fn with_cron(mut self, cron: Arc<crate::CronService>) -> Self {
+        self.cron = Some(cron);
         self
     }
 
@@ -749,6 +762,7 @@ impl ChatService {
             executor_factory: self.executor_factory.clone(),
             local_command_executor,
             knowledge: self.knowledge.clone(),
+            cron: self.cron.clone(),
             project_map: self.project_map.clone(),
             office: self.office.clone(),
             remote_ops_factory: self.remote_ops_factory.clone(),
@@ -1131,6 +1145,7 @@ impl ChatService {
             runtime_logs: &self.runtime_logs,
             cost: &self.cost,
             knowledge: &self.knowledge,
+            cron: &self.cron,
             canvas_model: &self.canvas_model,
             skills: &self.skills,
             mcp: &self.mcp,
@@ -2569,14 +2584,29 @@ mod tests {
             def,
         };
 
-        let prompt = subagent_system_prompt(tmp.path(), Some(&agent), "");
+        let dummy_request = deepagent_builtins::SubagentRequest {
+            description: "test".into(),
+            prompt: "".into(),
+            subagent_type: None,
+            allowed_tools: vec![],
+            model: None,
+            effort: None,
+            skills: vec![],
+            isolation: "shared".into(),
+            fork: false,
+            label: None,
+            phase: None,
+            schema: None,
+        };
+
+        let prompt = subagent_system_prompt(tmp.path(), Some(&agent), "", &dummy_request);
         assert!(prompt.contains("Agent type: audit-pack:inspect"));
         assert!(prompt.contains("plugin:audit-pack"));
         assert!(prompt.contains("Declared tools: Read, Grep"));
         assert!(prompt.contains("Use the plugin inspection checklist."));
         assert!(prompt.contains(&tmp.path().display().to_string()));
 
-        let general = subagent_system_prompt(tmp.path(), None, "");
+        let general = subagent_system_prompt(tmp.path(), None, "", &dummy_request);
         assert!(!general.contains("# Sub-agent identity"));
         assert!(general.contains("# Sub-agent task"));
     }

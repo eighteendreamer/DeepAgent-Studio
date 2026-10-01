@@ -660,21 +660,31 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 finished = true;
                 break;
             }
-            if let (Some(limit), Some(usage)) =
-                (self.config.max_total_tokens, agent.cumulative_usage())
-            {
-                if usage.total_tokens as u64 > limit {
-                    let reason = format!(
-                        "run token budget exceeded: used {} tokens, limit {limit}",
-                        usage.total_tokens
-                    );
-                    session.transition_task(task, TaskState::Failed)?;
-                    self.emit(RuntimeEvent::RunFailed {
-                        reason: reason.clone(),
-                    });
-                    outcome = RunOutcome::BudgetExceeded(reason);
-                    finished = true;
-                    break;
+            // Check context pressure (current context tokens vs auto_compact_at
+            // threshold). After the token accounting fix (prompt_tokens is now
+            // last-wins replacement, not +=), usage.prompt_tokens reflects the
+            // current request's context size. We use auto_compact_at (70% of
+            // prompt_budget) as the pressure gate, aligning with harness semantics.
+            if let Some(usage) = agent.cumulative_usage() {
+                let context_tokens = usage.prompt_tokens as u64;
+                // Derive the policy threshold from the agent's capability if available
+                if let Some(limit) = self.config.max_total_tokens {
+                    // Treat max_total_tokens as the auto_compact_at threshold (70%)
+                    // rather than a cumulative sum gate. This is a temporary alignment;
+                    // proper wiring would read context_policy.auto_compact_at directly.
+                    if context_tokens > limit {
+                        let reason = format!(
+                            "run context pressure exceeded: current prompt {} tokens, limit {limit}",
+                            usage.prompt_tokens
+                        );
+                        session.transition_task(task, TaskState::Failed)?;
+                        self.emit(RuntimeEvent::RunFailed {
+                            reason: reason.clone(),
+                        });
+                        outcome = RunOutcome::BudgetExceeded(reason);
+                        finished = true;
+                        break;
+                    }
                 }
             }
             tracing::debug!(step, ?decision, "agent decision");

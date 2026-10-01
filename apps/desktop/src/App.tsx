@@ -1545,7 +1545,10 @@ export function App() {
             }
             break;
           }
-          case "usage":
+          case "usage": {
+            // Update the live context snapshot with current prompt tokens (pressure),
+            // and aggregate cache stats. After the P0 fix, event.prompt_tokens is
+            // the current context size (last-wins), not a cumulative sum.
             setContextUsageByKey((prev) => {
               const current = prev.get(runKey);
               if (!current) return prev;
@@ -1555,6 +1558,10 @@ export function App() {
               const next = new Map(prev);
               next.set(runKey, {
                 ...current,
+                estimated_prompt_tokens: Number(event.prompt_tokens ?? current.estimated_prompt_tokens),
+                used_ratio: current.context_window > 0
+                  ? Number(event.prompt_tokens ?? current.estimated_prompt_tokens) / current.context_window
+                  : current.used_ratio,
                 cache_hit_tokens: cacheHit,
                 cache_miss_tokens: cacheMiss,
                 cache_hit_ratio: cacheTotal > 0 ? cacheHit / cacheTotal : current.cache_hit_ratio,
@@ -1571,6 +1578,7 @@ export function App() {
               costYuan: typeof event.cost_yuan === "number" ? event.cost_yuan : undefined,
             });
             break;
+          }
           case "run_completed":
             // Reconcile streamed content with the authoritative final message.
             finalize(String(event.message ?? ""), undefined);

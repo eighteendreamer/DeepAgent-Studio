@@ -1771,12 +1771,16 @@ impl ModelAgent {
                             tools.abort(attempt, "max_tokens truncation; resuming in a new turn");
                         }
                         if let Some(usage) = response.usage {
-                            self.usage.prompt_tokens += usage.prompt_tokens;
+                            // prompt_tokens and total_tokens are per-request context
+                            // totals from the provider (not deltas), so we replace
+                            // rather than accumulate (harness replacement semantics).
+                            // Cache tokens are also last-wins (next call overwrites).
+                            self.usage.prompt_tokens = usage.prompt_tokens;
                             self.usage.completion_tokens += usage.completion_tokens;
                             self.usage.reasoning_tokens += usage.reasoning_tokens;
-                            self.usage.total_tokens += usage.total_tokens;
-                            self.usage.prompt_cache_hit_tokens += usage.prompt_cache_hit_tokens;
-                            self.usage.prompt_cache_miss_tokens += usage.prompt_cache_miss_tokens;
+                            self.usage.total_tokens = usage.total_tokens;
+                            self.usage.prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
+                            self.usage.prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
                         }
                         if let Some(raw_usage) = response.raw_usage.clone() {
                             self.pending_raw_usage.push(raw_usage);
@@ -1929,15 +1933,20 @@ impl ModelAgent {
         }
 
         // Forward token usage to the event sink so the UI can show input/output
-        // and DeepSeek cache hit/miss totals for the run. Also accumulate it so
-        // the loop can persist the run's total usage at completion.
+        // and DeepSeek cache hit/miss totals for the run. Also track it so the
+        // loop can persist the run's total usage at completion.
         if let Some(usage) = response.usage {
-            self.usage.prompt_tokens += usage.prompt_tokens;
+            // prompt_tokens and total_tokens are per-request context totals from
+            // the provider (not deltas), so we replace rather than accumulate
+            // (harness replacement semantics). Cache tokens are also last-wins
+            // (next call overwrites). Only completion_tokens and reasoning_tokens
+            // are incremental and summed.
+            self.usage.prompt_tokens = usage.prompt_tokens;
             self.usage.completion_tokens += usage.completion_tokens;
             self.usage.reasoning_tokens += usage.reasoning_tokens;
-            self.usage.total_tokens += usage.total_tokens;
-            self.usage.prompt_cache_hit_tokens += usage.prompt_cache_hit_tokens;
-            self.usage.prompt_cache_miss_tokens += usage.prompt_cache_miss_tokens;
+            self.usage.total_tokens = usage.total_tokens;
+            self.usage.prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
+            self.usage.prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
             // Usage-grounded context size for the proactive auto-compact check
             // (this response already reflects any snips applied before it).
             self.last_call_context_tokens =
