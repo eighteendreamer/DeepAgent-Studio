@@ -1222,6 +1222,9 @@ pub struct SettingsView {
     /// Selected built-in output style (§7.1): `default`/`explanatory`/`learning`.
     #[serde(default)]
     pub output_style: String,
+    /// Pricing catalog dynamically fetched from official sources.
+    #[serde(default)]
+    pub pricing_catalog: PricingCatalog,
 }
 
 /// One per-currency balance row exposed to the UI.
@@ -2190,6 +2193,7 @@ impl SettingsService {
             vision: self.vision_settings_view(settings.vision.clone())?,
             execution_features: settings.execution_features,
             output_style: settings.output_style.as_str().to_string(),
+            pricing_catalog: settings.pricing_catalog.clone(),
         })
     }
 
@@ -2689,7 +2693,7 @@ mod tests {
         let transport: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(body));
         let svc = SettingsService::new(db, transport, secrets);
         // Seed a minimal AppSettings so query_balance can read the base_url.
-        let settings = AppSettings {
+        let mut settings = AppSettings {
             catalog: ModelCatalog::auto_select(
                 deepagent_models::DEEPSEEK_BASE_URL.to_string(),
                 vec![
