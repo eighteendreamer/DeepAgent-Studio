@@ -26,7 +26,6 @@ function formatCny(value: number): string {
 export function SessionUsageBar({ sessionId }: Props) {
   const [summary, setSummary] = useState<CostSummary | null>(null);
   const [balance, setBalance] = useState<Balance | null>(null);
-  const [liveCache, setLiveCache] = useState<{ hit: number; miss: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const unlistenRef = useRef<(() => void) | null>(null);
 
@@ -74,15 +73,10 @@ export function SessionUsageBar({ sessionId }: Props) {
     const setupListener = async () => {
       try {
         const mod = await import("@tauri-apps/api/event");
-        const unlisten = await mod.listen<{ type: string; prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number }>(
+        const unlisten = await mod.listen<{ type: string }>(
           "chat://event",
           (event) => {
-            if (event.payload.type === "usage") {
-              const hit = event.payload.prompt_cache_hit_tokens ?? 0;
-              const miss = event.payload.prompt_cache_miss_tokens ?? 0;
-              setLiveCache({ hit, miss });
-              setTimeout(fetchSummary, 300);
-            } else if (event.payload.type === "cost_recorded") {
+            if (event.payload.type === "usage" || event.payload.type === "cost_recorded") {
               setTimeout(fetchSummary, 300);
             }
           }
@@ -101,9 +95,9 @@ export function SessionUsageBar({ sessionId }: Props) {
   if (!sessionId) return null;
   if (loading && !summary) return null;
 
-  const cacheHitRate =
-    liveCache && liveCache.hit + liveCache.miss > 0
-      ? (liveCache.hit / (liveCache.hit + liveCache.miss)) * 100
+  const sessionCacheHitRate =
+    summary && summary.cache_hit_tokens + summary.cache_miss_tokens > 0
+      ? (summary.cache_hit_tokens / (summary.cache_hit_tokens + summary.cache_miss_tokens)) * 100
       : null;
 
   return (
@@ -119,14 +113,11 @@ export function SessionUsageBar({ sessionId }: Props) {
               <ArrowUp size={11} className="mr-0.5 inline" />
               输出 {formatTokens(summary.output_tokens)}
             </span>
-            {summary.cache_hit_tokens > 0 && (
+            {sessionCacheHitRate !== null && (
               <span className="font-medium text-green-600">
                 <Zap size={11} className="mr-0.5 inline" />
-                缓存命中 {formatTokens(summary.cache_hit_tokens)}
+                缓存命中 {sessionCacheHitRate.toFixed(1)}%
               </span>
-            )}
-            {cacheHitRate !== null && (
-              <span className="text-text-tertiary">命中率 {cacheHitRate.toFixed(1)}%</span>
             )}
             <span>
               <Coins size={11} className="mr-0.5 inline" />
