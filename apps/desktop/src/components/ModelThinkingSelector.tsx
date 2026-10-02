@@ -1,6 +1,6 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useId } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { Check, ChevronDown, type LucideIcon } from "lucide-react";
 
 import { Slider } from "./ui/Slider";
 
@@ -26,7 +26,7 @@ type ThinkingOption = {
 
   label: string;
 
-  icon: readonly unknown[];
+  icon: LucideIcon;
 
 };
 
@@ -126,10 +126,10 @@ export function ModelThinkingSelector({
       className={cn("flex h-8 max-w-[210px] flex-shrink-0 items-center rounded-full px-3 text-xs", triggerClassName)}
 
     >
-      <FontAwesomeIcon icon={selectedThinkingOption.icon as any} className="mr-1.5 text-[11px] text-text-secondary" />
+      <selectedThinkingOption.icon size={12} className="mr-1.5 text-text-secondary" />
       <span className="font-medium">{pillModel}</span>
       <span className="ml-1.5 shrink-0 text-text-secondary">{selectedThinkingOption.label}</span>
-      <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-2 text-[9px] text-text-secondary" />
+      <ChevronDown size={10} className="ml-2 text-text-secondary" />
     </TintButton></HoverInfo>
   );
 
@@ -195,7 +195,7 @@ export function ModelThinkingSelector({
 
                         <span className="font-medium">{modelLabel(id)}</span>
 
-                        {selected && <FontAwesomeIcon icon={["fas", "check"]} className="ml-3 text-[10px] text-text-base" />}
+                        {selected && <Check size={10} className="ml-3 text-text-base" />}
 
                       </ListItem>
 

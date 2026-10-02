@@ -1,6 +1,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import type { LucideIcon } from "lucide-react";
 import { cn } from "../shadcn/utils";
 
 /** 方案 E：简单 / 中等 / 深度 对应粒子速度（越大越快） */
@@ -18,8 +18,8 @@ function reasoningMotionAt(index: number, maxIndex: number): number {
 export type SliderStop<T extends string = string> = {
   value: T;
   label: string;
-  /** Optional Font Awesome icon rendered before the stop label. */
-  icon?: readonly unknown[];
+  /** Optional lucide-react icon rendered before the stop label. */
+  icon?: LucideIcon;
 };
 
 type Props<T extends string> = {
@@ -303,7 +303,7 @@ export function Slider<T extends string>({ stops, value, onChange, ariaLabel }: 
                 selected ? "font-medium text-text-base" : "text-text-secondary hover:text-text-base",
               )}
             >
-              {stop.icon && <FontAwesomeIcon icon={stop.icon as any} className="text-[9px]" />}
+              {stop.icon && <stop.icon size={10} className="inline" />}
               {stop.label}
             </button>
           );

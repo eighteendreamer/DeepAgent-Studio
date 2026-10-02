@@ -1,6 +1,7 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { Brain, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, ShieldHalf } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
@@ -350,9 +351,9 @@ export function Composer({
   };
 
   const THINKING_OPTIONS = [
-    { id: "simple", label: "composer.thinkingSimple", icon: ["fas", "feather"] as const },
-    { id: "medium", label: "composer.thinkingMedium", icon: ["fas", "lightbulb"] as const },
-    { id: "deep", label: "composer.thinkingDeep", icon: ["fas", "brain"] as const },
+    { id: "simple", label: "composer.thinkingSimple", icon: Feather },
+    { id: "medium", label: "composer.thinkingMedium", icon: Lightbulb },
+    { id: "deep", label: "composer.thinkingDeep", icon: Brain },
   ] as const;
 
   const chooseThinking = async (id: "simple" | "medium" | "deep") => {
@@ -370,9 +371,9 @@ export function Composer({
   };
 
   const ALL_APPROVAL_OPTIONS = [
-    { id: "default", label: "composer.defaultPermission", desc: "composer.defaultPermissionDesc", icon: ["fas", "hand"] as const },
-    { id: "auto", label: "composer.autoReview", desc: "composer.autoReviewDesc", icon: ["fas", "shield-halved"] as const },
-    { id: "full", label: "composer.fullAccess", desc: "composer.fullAccessDesc", icon: ["fas", "circle-exclamation"] as const },
+    { id: "default", label: "composer.defaultPermission", desc: "composer.defaultPermissionDesc", icon: Hand },
+    { id: "auto", label: "composer.autoReview", desc: "composer.autoReviewDesc", icon: ShieldHalf },
+    { id: "full", label: "composer.fullAccess", desc: "composer.fullAccessDesc", icon: CircleAlert },
   ];
 
   const [visibleOptions, setVisibleOptions] = useState(ALL_APPROVAL_OPTIONS);
@@ -1646,17 +1647,17 @@ export function Composer({
                   >
                     {selectedApproval && (
                       <>
-                        <FontAwesomeIcon
-                          icon={selectedApproval.icon as any}
+                        <selectedApproval.icon
+                          size={12}
                           className={cn(
-                            "mr-1.5 shrink-0 text-[11px]",
+                            "mr-1.5 shrink-0",
                             selectedApproval.id === "full" ? "text-[#e25507]" : "text-text-secondary",
                           )}
                         />
                         <span className="truncate">{t(selectedApproval.label)}</span>
                       </>
                     )}
-                    <FontAwesomeIcon icon={["fas", "chevron-down"]} className="ml-1 shrink-0 text-[10px]" />
+                    <ChevronDown size={10} className="ml-1 shrink-0" />
                   </button>
                 }
                 className="min-w-0 max-w-full"
@@ -1691,10 +1692,9 @@ export function Composer({
                           onClick={() => chooseApproval(opt)}
                         >
                           <div className="mt-0.5 flex w-4 shrink-0 justify-center">
-                            <FontAwesomeIcon
-                              icon={opt.icon as any}
+                            <opt.icon
+                              size={14}
                               className={cn(
-                                "text-[14px]",
                                 selected && isFull ? "text-[#e25507]" : "text-text-secondary",
                               )}
                             />
@@ -1713,9 +1713,9 @@ export function Composer({
                             </div>
                           </div>
                           {selected && (
-                            <FontAwesomeIcon
-                              icon={["fas", "check"]}
-                              className={cn("mt-1 shrink-0 text-[11px]", isFull ? "text-[#e25507]" : "text-text-secondary")}
+                            <Check
+                              size={11}
+                              className={cn("mt-1 shrink-0", isFull ? "text-[#e25507]" : "text-text-secondary")}
                             />
                           )}
                         </div>

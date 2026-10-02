@@ -1,6 +1,6 @@
 import { HoverInfo } from "../ui/HoverInfo";
 import { useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { ArrowDown, ArrowUp, Check, CircleX, Clock, Coins, Copy, GitBranch, Hash, Zap } from "lucide-react";
 import type { TokenUsage } from "../../types";
 import { cnySymbol, formatCny, formatMs, formatTokens } from "./format";
 
@@ -36,38 +36,38 @@ export function TurnFooter({
         {usage && (
           <>
             <span className="font-semibold text-text-base">
-              <FontAwesomeIcon icon={["fas", "hashtag"]} className="mr-0.5 text-[9px]" />
+              <Hash size={12} className="mr-0.5 inline" />
               {formatTokens(usage.totalTokens)} tokens
             </span>
             <span className="text-text-tertiary">
-              <FontAwesomeIcon icon={["fas", "arrow-down"]} className="mr-0.5 text-[9px]" />
+              <ArrowDown size={12} className="mr-0.5 inline" />
               输入 {formatTokens(usage.promptTokens)}
             </span>
             <span className="text-text-tertiary">
-              <FontAwesomeIcon icon={["fas", "arrow-up"]} className="mr-0.5 text-[9px]" />
+              <ArrowUp size={12} className="mr-0.5 inline" />
               输出 {formatTokens(usage.completionTokens)}
             </span>
             {usage.cacheHitTokens > 0 && (
               <span className="font-medium text-green-600">
-                <FontAwesomeIcon icon={["fas", "bolt"]} className="mr-0.5 text-[9px]" />
+                <Zap size={12} className="mr-0.5 inline" />
                 缓存命中 {formatTokens(usage.cacheHitTokens)}
               </span>
             )}
             {usage.cacheMissTokens > 0 && (
               <span className="text-text-tertiary">
-                <FontAwesomeIcon icon={["fas", "circle-xmark"]} className="mr-0.5 text-[9px]" />
+                <CircleX size={12} className="mr-0.5 inline" />
                 缓存未命中 {formatTokens(usage.cacheMissTokens)}
               </span>
             )}
             <span>
-              <FontAwesomeIcon icon={["fas", "coins"]} className="mr-0.5 text-[9px]" />
+              <Coins size={12} className="mr-0.5 inline" />
               {typeof usage.costYuan === "number" ? formatCny(usage.costYuan) : `${cnySymbol}--`}
             </span>
           </>
         )}
         {durationMs > 0 && (
           <span>
-            <FontAwesomeIcon icon={["far", "clock"]} className="mr-1 text-[9px]" />
+            <Clock size={12} className="mr-1 inline" />
             总耗时: {formatMs(durationMs)}
           </span>
         )}
@@ -80,7 +80,7 @@ export function TurnFooter({
 
           aria-label="复制回答"
         >
-          <FontAwesomeIcon icon={copied ? ["fas", "check"] : ["far", "copy"]} className="text-[12px]" />
+          {copied ? <Check size={12} /> : <Copy size={12} />}
         </button></HoverInfo>
         <HoverInfo content="从这里创建分支"><button
           type="button"
@@ -88,7 +88,7 @@ export function TurnFooter({
 
           aria-label="从这里创建分支"
         >
-          <FontAwesomeIcon icon={["fas", "code-branch"]} className="text-[12px]" />
+          <GitBranch size={12} />
         </button></HoverInfo>
       </div>
     </div>
