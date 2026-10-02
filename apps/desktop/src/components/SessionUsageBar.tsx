@@ -107,11 +107,11 @@ export function SessionUsageBar({ sessionId }: Props) {
           <>
             <span className="text-text-tertiary">
               <ArrowDown size={11} className="mr-0.5 inline" />
-              输入 {formatTokens(summary.input_tokens)}
+              累计输入 {formatTokens(summary.input_tokens)}
             </span>
             <span className="text-text-tertiary">
               <ArrowUp size={11} className="mr-0.5 inline" />
-              输出 {formatTokens(summary.output_tokens)}
+              累计输出 {formatTokens(summary.output_tokens)}
             </span>
             {sessionCacheHitRate !== null && (
               <span className="font-medium text-green-600">
@@ -121,7 +121,7 @@ export function SessionUsageBar({ sessionId }: Props) {
             )}
             <span>
               <Coins size={11} className="mr-0.5 inline" />
-              {formatCny(summary.session_cost)}
+              累计消耗 {formatCny(summary.session_cost)}
             </span>
           </>
         )}
