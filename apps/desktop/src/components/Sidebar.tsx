@@ -1,7 +1,7 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Archive, ArrowDown, Book, Check, ChevronDown, ChevronRight, Clock, Ellipsis, Folder, FolderPlus, Layers, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
+import { Archive, ArrowDown, Book, Check, ChevronDown, ChevronRight, Clock, Ellipsis, Folder, FolderPlus, Layers, MessageSquare, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import { SidebarProjectMenu } from "./SidebarProjectMenu";
@@ -374,6 +374,9 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               spin
               className="flex-shrink-0 text-[11px] text-blue-500"
             /></HoverInfo>
+          )}
+          {!isRunning && (
+            <MessageSquare className="h-4 w-4 flex-shrink-0 text-text-secondary" />
           )}
           <span className="truncate">{s.title?.trim() || t("sidebar.newChat")}</span>
         </div>
