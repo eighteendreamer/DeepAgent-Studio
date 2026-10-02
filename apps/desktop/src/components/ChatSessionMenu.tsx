@@ -1,5 +1,17 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import {
+  Archive,
+  ArrowUpRightFromSquare,
+  ChevronRight,
+  Clock,
+  Copy,
+  Ellipsis,
+  FileOutput,
+  GitBranch,
+  History,
+  Pencil,
+  Pin,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TimelineEntry } from "../types";
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
@@ -89,7 +101,7 @@ export function ChatSessionMenu({
       onClick={() => onOpenChange(!open)}
     >
       <span className="truncate">{title?.trim() || t("chatView.chat")}</span>
-      <FontAwesomeIcon icon={["fas", "ellipsis"]} className="shrink-0 text-[10px] text-text-secondary" />
+      <Ellipsis className="h-3 w-3 shrink-0 text-text-secondary" />
     </button>
   );
 
@@ -115,7 +127,7 @@ export function ChatSessionMenu({
             className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
             onClick={() => run(onPin)}
           >
-            <FontAwesomeIcon icon={["fas", "thumbtack"]} className={SESSION_MENU.icon} />
+            <Pin className={SESSION_MENU.icon} />
             <span>{pinned ? t("sidebar.unpin") : t("chatView.pinChat")}</span>
             <span className={SESSION_MENU.shortcut}>Ctrl+Alt+P</span>
           </div>
@@ -124,7 +136,7 @@ export function ChatSessionMenu({
             className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
             onClick={() => run(onRename)}
           >
-            <FontAwesomeIcon icon={["fas", "pen"]} className={SESSION_MENU.icon} />
+            <Pencil className={SESSION_MENU.icon} />
             <span>{t("chatView.renameChat")}</span>
             <span className={SESSION_MENU.shortcut}>Ctrl+Alt+R</span>
           </div>
@@ -133,7 +145,7 @@ export function ChatSessionMenu({
             className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
             onClick={() => run(onArchive)}
           >
-            <FontAwesomeIcon icon={["fas", "box-archive"]} className={SESSION_MENU.icon} />
+            <Archive className={SESSION_MENU.icon} />
             <span>{t("chatView.archiveChat")}</span>
             <span className={SESSION_MENU.shortcut}>Ctrl+Shift+A</span>
           </div>
@@ -145,7 +157,7 @@ export function ChatSessionMenu({
             className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
             onClick={() => run(onCopy)}
           >
-            <FontAwesomeIcon icon={["far", "copy"]} className={SESSION_MENU.icon} />
+            <Copy className={SESSION_MENU.icon} />
             <span>{t("chatView.copy")}</span>
           </div>
           <div
@@ -153,7 +165,7 @@ export function ChatSessionMenu({
             className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
             onClick={() => run(onExport)}
           >
-            <FontAwesomeIcon icon={["fas", "file-export"]} className={SESSION_MENU.icon} />
+            <FileOutput className={SESSION_MENU.icon} />
             <span>{t("chatView.exportJson")}</span>
           </div>
           <div
@@ -161,7 +173,7 @@ export function ChatSessionMenu({
             className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
             onClick={() => run(onFork)}
           >
-            <FontAwesomeIcon icon={["fas", "code-branch"]} className={SESSION_MENU.icon} />
+            <GitBranch className={SESSION_MENU.icon} />
             <span>{t("chatView.branch")}</span>
           </div>
 
@@ -171,9 +183,9 @@ export function ChatSessionMenu({
             className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
             onMouseEnter={() => setIsRewindFlyoutOpen(true)}
           >
-            <FontAwesomeIcon icon={["fas", "clock-rotate-left"]} className={SESSION_MENU.icon} />
+            <History className={SESSION_MENU.icon} />
             <span className="min-w-0 flex-1 truncate">{t("chatView.rewind")}</span>
-            <FontAwesomeIcon icon={["fas", "chevron-right"]} className="ml-2 shrink-0 text-[10px] text-text-secondary" />
+            <ChevronRight className="ml-2 h-3 w-3 shrink-0 text-text-secondary" />
           </div>
 
           <div className={MENU_LIST.divider} />
@@ -183,7 +195,7 @@ export function ChatSessionMenu({
             className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
             onClick={() => run(onOpenAutomation)}
           >
-            <FontAwesomeIcon icon={["far", "clock"]} className={SESSION_MENU.icon} />
+            <Clock className={SESSION_MENU.icon} />
             <span>{t("chatView.addAutomation")}</span>
           </div>
 
@@ -194,7 +206,7 @@ export function ChatSessionMenu({
             className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
             onClick={() => run(onOpenInNewWindow)}
           >
-            <FontAwesomeIcon icon={["fas", "arrow-up-right-from-square"]} className={SESSION_MENU.icon} />
+            <ArrowUpRightFromSquare className={SESSION_MENU.icon} />
             <span>{t("chatView.openInNewWindow")}</span>
           </div>
         </SlidingMenuList>
