@@ -154,7 +154,6 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
   const [mode, setMode] = useState<PanelMode>("graph");
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const [debugEnabled, setDebugEnabled] = useState(() => readProjectMapDebugEnabled());
   const [debugButtonVisible, setDebugButtonVisible] = useState(() => readProjectMapDebugButtonVisible());
 
@@ -170,7 +169,6 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
 
     setSelected(null);
     setNeighbors(null);
-    setNotice(null);
 
     const cached = readProjectMapPanelCache(projectPath);
     if (cached) {
@@ -279,9 +277,8 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    setNotice(null);
     try {
-      const result = await projectMapRefreshDeep(projectPath);
+      await projectMapRefreshDeep(projectPath);
       const next = await projectMapOverview(projectPath);
       const graphNext = await projectMapGraph(0, projectPath).catch(() => null);
       setOverview(next);
@@ -290,11 +287,8 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
       onStatusChange?.(next.status);
       setHits(next.complex_nodes);
       setSelected(null);
-      setNotice(
-        `${result.message} ${result.nodes} 个节点 / ${result.edges} 条关系，耗时 ${result.duration_ms}ms。`
-      );
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : String(err));
+      console.error('Project map refresh failed:', err);
     } finally {
       setRefreshing(false);
     }
@@ -356,11 +350,7 @@ export function ProjectMapPanel({ projectPath, onStatusChange }: Props) {
           <span className="whitespace-nowrap">更新于 {formatTime(stats?.updated_at ?? null)}</span>
         </div>
 
-        {notice && (
-          <div className="mt-2 rounded-md border border-border-theme bg-sidebar-bg px-2 py-1.5 text-[11px] text-text-secondary">
-            {notice}
-          </div>
-        )}
+        {/* notice 提示已隐藏 */}
       </div>
 
       {showDebugPanel ? (
