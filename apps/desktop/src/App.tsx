@@ -1610,6 +1610,23 @@ export function App() {
             });
             break;
           }
+          case "cost_recorded": {
+            // The run's cost was persisted. Update only the costYuan field without
+            // touching any token counts (which were already delivered via "usage").
+            updateTranscript((prev) => {
+              const next = [...prev];
+              const lastIdx = next.length - 1;
+              if (lastIdx < 0 || next[lastIdx].role !== "assistant") return prev;
+              const msg = next[lastIdx];
+              const costYuan = typeof event.cost_yuan === "number" ? event.cost_yuan : undefined;
+              next[lastIdx] = {
+                ...msg,
+                usage: msg.usage ? { ...msg.usage, costYuan } : undefined,
+              };
+              return next;
+            });
+            break;
+          }
           case "run_completed":
             // Reconcile streamed content with the authoritative final message.
             finalize(String(event.message ?? ""), undefined);

@@ -330,6 +330,7 @@ fn phase_for_event(event: &RuntimeEvent) -> (RunPhase, &'static str) {
         | RuntimeEvent::ResponsesStreamEvent { .. }
         | RuntimeEvent::ResponsesWebSearchCall { .. }
         | RuntimeEvent::Usage { .. }
+        | RuntimeEvent::CostRecorded { .. }
         | RuntimeEvent::ContextUsage { .. }
         | RuntimeEvent::ContextCompacted { .. }
         | RuntimeEvent::RelevantMemoriesInjected { .. }

@@ -373,6 +373,17 @@ pub enum RuntimeEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         raw_responses_usage: Option<serde_json::Value>,
     },
+    /// The run's cost was persisted to the cost ledger. Carries only the cost so
+    /// consumers attach it to the turn without re-counting any token fields
+    /// already delivered through [`RuntimeEvent::Usage`]. `cost_yuan` is `None`
+    /// when no official pricing exists for the model (usage is still recorded).
+    CostRecorded {
+        /// Model id the cost was billed against.
+        model: String,
+        /// Backend-computed RMB cost, or `None` when pricing is unavailable.
+        #[serde(default)]
+        cost_yuan: Option<f64>,
+    },
     /// A workflow node changed execution status (pending → running → completed/failed/etc.).
     WorkflowNode {
         event: crate::workflow::NodeExecutionEvent,
@@ -609,6 +620,7 @@ impl RuntimeEvent {
             RuntimeEvent::RelevantMemoriesInjected { .. } => "relevant_memories_injected",
             RuntimeEvent::StallNudgeInjected { .. } => "stall_nudge_injected",
             RuntimeEvent::Usage { .. } => "usage",
+            RuntimeEvent::CostRecorded { .. } => "cost_recorded",
             RuntimeEvent::WorkflowNode { .. } => "workflow_node",
             RuntimeEvent::RunCompleted { .. } => "run_completed",
             RuntimeEvent::RunAwaitingApproval { .. } => "run_awaiting_approval",

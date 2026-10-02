@@ -1203,6 +1203,7 @@ export interface RuntimeEvent {
     | "completion_evidence"
     | "context_usage"
     | "usage"
+    | "cost_recorded"
     | "run_completed"
     | "run_awaiting_approval"
     | "run_failed"
